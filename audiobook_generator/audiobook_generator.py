@@ -22,7 +22,6 @@ import shutil
 from CTkMessagebox import CTkMessagebox
 import ctypes
 import math
-from CTkListbox import CTkListbox
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
