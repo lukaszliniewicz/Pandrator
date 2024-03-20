@@ -32,7 +32,7 @@ Please refer to the repositories linked above for excellent installation instruc
 2. Clone this repository (git clone https://github.com/lukaszliniewicz/Audiobook-Generator/) using for example Windows Terminal.
 3. `cd` to the repository directory.
 4. Install requirements using `pip install -r requirements.txt`.
-5. Run `python Audiobook_Generator/audiobook_generator.py`.
+5. Run `python audiobook_generator.py`.
 
 ## Features
 - **Text Pre-processing:** Splits text into sentences while preserving paragraphs. Profiles for multiple languages are available.
