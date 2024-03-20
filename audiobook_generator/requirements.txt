@@ -1,0 +1,8 @@
+customtkinter
+requests
+pydub
+unidecode
+sentence-splitter
+pygame
+CTkMessagebox
+ctypes
