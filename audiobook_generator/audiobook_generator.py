@@ -77,7 +77,7 @@ class TTSOptimizerGUI:
         ctk.set_default_color_theme("dark-blue")
 
         # Create a main scrollable frame
-        self.main_scrollable_frame = ctk.CTkScrollableFrame(master, width=680, height=720)
+        self.main_scrollable_frame = ctk.CTkScrollableFrame(master, width=680, height=650)
         self.main_scrollable_frame.grid(row=0, column=0, padx=10, pady=10, sticky=tk.NSEW)
         self.main_scrollable_frame.grid_columnconfigure(0, weight=1)
         self.main_scrollable_frame.grid_rowconfigure(0, weight=1)
@@ -103,7 +103,7 @@ class TTSOptimizerGUI:
         self.session_label = ctk.CTkLabel(self.session_tab, text="Session", font=ctk.CTkFont(size=14, weight="bold"))
         self.session_label.grid(row=3, column=0, columnspan=2, padx=5, pady=5, sticky=tk.W)
         
-        ctk.CTkButton(self.session_tab, text="New Session", command=self.new_session).grid(row=4, column=0, padx=5, pady=5, sticky=tk.EW)
+        ctk.CTkButton(self.session_tab, text="New Session", command=self.new_session, fg_color="#2e8b57", hover_color="#3cb371").grid(row=4, column=0, padx=5, pady=5, sticky=tk.EW)
         ctk.CTkButton(self.session_tab, text="Load Session", command=self.load_session).grid(row=4, column=1, padx=5, pady=5, sticky=tk.EW)
         ctk.CTkButton(self.session_tab, text="Delete Session", command=self.delete_session, fg_color="dark red", hover_color="red").grid(row=4, column=2, padx=5, pady=5, sticky=tk.EW)
 
@@ -122,7 +122,7 @@ class TTSOptimizerGUI:
         self.speaker_dropdown = ctk.CTkOptionMenu(self.session_tab, variable=self.selected_speaker, values=[])
         self.speaker_dropdown.grid(row=7, column=1, padx=5, pady=5, sticky=tk.EW)
 
-        ctk.CTkButton(self.session_tab, text="Start Generation", command=self.start_optimisation_thread).grid(row=8, column=0, padx=5, pady=5, sticky=tk.EW)
+        ctk.CTkButton(self.session_tab, text="Start Generation", command=self.start_optimisation_thread, fg_color="#2e8b57", hover_color="#3cb371").grid(row=8, column=0, padx=5, pady=5, sticky=tk.EW)
         ctk.CTkButton(self.session_tab, text="Stop Generation", command=self.stop_generation).grid(row=8, column=1, padx=5, pady=5, sticky=tk.EW)
         ctk.CTkButton(self.session_tab, text="Resume Generation", command=self.resume_generation).grid(row=9, column=0, padx=5, pady=5, sticky=tk.EW)
         ctk.CTkButton(self.session_tab, text="Cancel Generation", command=self.cancel_generation, fg_color="dark red", hover_color="red").grid(row=9, column=1, padx=5, pady=5, sticky=tk.EW)
@@ -138,7 +138,7 @@ class TTSOptimizerGUI:
 
         ctk.CTkLabel(self.session_tab, text="Generated Sentences", font=ctk.CTkFont(size=14, weight="bold")).grid(row=13, column=0, padx=5, pady=5, sticky=tk.W)
         
-        self.play_button = ctk.CTkButton(self.session_tab, text="Play", command=self.toggle_playback)
+        self.play_button = ctk.CTkButton(self.session_tab, text="Play", command=self.toggle_playback, fg_color="#2e8b57", hover_color="#3cb371")
         self.play_button.grid(row=14, column=0, padx=5, pady=5, sticky=tk.EW)
         ctk.CTkButton(self.session_tab, text="Stop", command=self.stop_playback).grid(row=14, column=1, padx=5, pady=5, sticky=tk.EW)
         ctk.CTkButton(self.session_tab, text="Play as Playlist", command=self.play_sentences_as_playlist).grid(row=14, column=2, padx=5, pady=5, sticky=tk.EW)
