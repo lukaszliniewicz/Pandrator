@@ -1,4 +1,4 @@
-# Audiobook Generator
+# Pandrator, an audiobook generator
 
 Audiobook Generator is a tool designed to transform text files into spoken audio using a variety of APIs and processing techniques. 
 It is still in alpha stage and I'm not an experience developer, so the code is far from perfect, both in terms of optimisation, features and reliability. Please keep this in mind.
