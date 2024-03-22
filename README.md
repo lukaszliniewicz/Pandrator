@@ -31,8 +31,8 @@ It creates a Pandrator folder, installs `curl`, `git`, `ffmpeg` and `Miniconda`,
 
 For additional functionality:
 - Install Text Generation Webui and remember to enable the API.
-- Set up `RVC_CLI` for enhancing generations with RVC.
-- Set up `NISQA API` for automatic evaluation of generations.
+- Set up RVC_CLI for enhancing generations with RVC.
+- Set up NISQA API for automatic evaluation of generations.
 Please refer to the repositories linked above for detailed installation instructions. Remember that the APIs must be running to make use of the functionalities they offer.
 
 ### Manual Installation:
@@ -45,7 +45,7 @@ Please refer to the repositories linked above for detailed installation instruct
 
 ## Features
 - **Text Pre-processing:** Splits text into sentences and (attempts to) preserve paragraphs. Profiles for multiple languages are available.
-- **LLM Text Pre-processing:** Utilizes a local LLM for text corrections and enhancements with up to three different prompts run sequentially, and an evaluation mechanism that asks the model to perform a task twice and then choose the better response. I've been using 'openchat-3.5-0106.Q5_K_M.gguf' with good results, as well as for example 'Mistral 7B Instruct 0.2'. Different models may perform different tasks well, so it's possible to choose a specific model for a specific prompt.
+- **LLM Text Pre-processing:** Utilizes a local LLM for text corrections and enhancements with up to three different prompts run sequentially, and an evaluation mechanism that asks the model to perform a task twice and then choose the better response. I've been using `openchat-3.5-0106.Q5_K_M.gguf` with good results, as well as for example `Mistral 7B Instruct 0.2`. Different models may perform different tasks well, so it's possible to choose a specific model for a specific prompt.
 - **Audio Generation:** Converts processed text into speech, with options for voice cloning and quality enhancement.
 - **Audio Evaluation:** An experimental feature that predicts Mean Opinion Score (MOS) for generated sentences and sets a score threshold or chooses the best score from a set number of generations.
 - **Session Management:** Supports creating, deleting, and loading sessions for organized workflow.
