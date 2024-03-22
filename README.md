@@ -58,8 +58,9 @@ Follow the manual or minimal installation steps to set up the Audiobook Generato
 Contributions, suggestions for improvements, and bug reports are welcome. Please refer to the contributing guidelines for more information.
 
 ## To-do
-- [ ] Develop a robust installation and startup script.
-- [ ] Add support for proprietary APIs for text and LLM pre-processing.
-- [ ] Enhance file format support (e.g., HTML, XML, PDF) including direct PDF to TXT conversion with OCR.
+- [ ] Add the other APIs to the setup script.
+- [ ] Add support for proprietary APIs for text pre-processing and TTS generation.
+- [ ] Enhance file format support (e.g., HTML, XML, PDF, Epub) including direct PDF to TXT conversion with OCR.
 - [ ] Integrate editing capabilities for processed sentences within the UI.
-- [ ] Add other local TTS models, e.g. Tortoise. 
+- [ ] Add support for a higher quality local TTS model, Tortoise.
+- [ ] Add support for a lower quality but faster local TTS model that can easily run on CPU, e.g. Silero.
