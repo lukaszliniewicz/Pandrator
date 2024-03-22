@@ -1,3 +1,7 @@
+<p align="left">
+  <img src="pandrator.png" alt="Icon" width="200" height="200"/>
+</p>
+
 # Pandrator, an audiobook generator
 
 Audiobook Generator is a tool designed to transform text files into spoken audio using a variety of APIs and processing techniques. 
