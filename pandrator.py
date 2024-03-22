@@ -35,14 +35,10 @@ class TTSOptimizerGUI:
         self.stop_flag = False
         self.delete_session_flag = False
         self.server_connected = False
-
-
-        # Define the tts_voices_folder attribute before using it
         self.tts_voices_folder = "tts_voices"
         if not os.path.exists(self.tts_voices_folder):
             os.makedirs(self.tts_voices_folder)
 
-        # Variables
         self.source_file = ""
         self.first_optimisation_prompt = ctk.StringVar(value="Your task is to spell out abbreviations and titles and convert Roman numerals to English words in the sentence(s) you are given. For example: Prof. to Professor, Dr. to Doctor, et. al. to et alia, etc. to et cetera, Section III to Section Three, Chapter V to Chapter Five and so on. Don't change ANYTHING ELSE and output ONLY the complete processed text. If no adjustments are necessary, just output the sentence(s) without changing or appending ANYTHING. Include ABSOLUTELY NO comments, NO acknowledgments, NO explanations, NO notes and so on. This is your text: ")
         self.second_optimisation_prompt = ctk.StringVar(value="Your task is to analyze a text fragment carefully and correct punctuation. Also, correct any misspelled words and possible OCR artifacts based on context. If there is a number that looks out of place because it could have been a page number captured by OCR and doesn't fit in the context, remove it. Don't change ANYTHING ELSE and output ONLY the complete processed text (even if no changes were made). No comments, acknowledgments, explanations or notes. This is your text: ")
@@ -83,8 +79,15 @@ class TTSOptimizerGUI:
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("dark-blue")
 
-        # Create a main scrollable frame
-        self.main_scrollable_frame = ctk.CTkScrollableFrame(master, width=680, height=650)
+        # Get the screen resolution
+        screen_width = self.master.winfo_screenwidth()
+        screen_height = self.master.winfo_screenheight()
+
+        # Calculate the desired frame height (85% of the screen height)
+        frame_height = int(screen_height * 0.85)
+
+        # Create the main scrollable frame with the calculated height
+        self.main_scrollable_frame = ctk.CTkScrollableFrame(master, width=680, height=frame_height)
         self.main_scrollable_frame.grid(row=0, column=0, padx=10, pady=10, sticky=tk.NSEW)
         self.main_scrollable_frame.grid_columnconfigure(0, weight=1)
         self.main_scrollable_frame.grid_rowconfigure(0, weight=1)
