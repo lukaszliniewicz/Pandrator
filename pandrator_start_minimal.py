@@ -1,0 +1,172 @@
+import os
+import subprocess
+import logging
+import time
+import shutil
+import requests
+
+# Configure logging
+logging.basicConfig(filename='installation.log', level=logging.DEBUG,
+                    format='%(asctime)s - %(levelname)s - %(message)s')
+
+def run_command(command):
+    try:
+        subprocess.run(command, check=True)
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Error executing command: {command}")
+        logging.error(f"Error message: {str(e)}")
+        raise
+
+def check_program_installed(program):
+    return shutil.which(program) is not None
+
+def check_choco():
+    return check_program_installed('choco')
+
+def install_choco():
+    logging.info("Installing Chocolatey...")
+    run_command(['powershell', '-Command', "Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))"])
+
+def install_dependencies():
+    dependencies = ['git', 'curl', 'ffmpeg']
+    for dependency in dependencies:
+        if not check_program_installed(dependency):
+            logging.info(f"Installing {dependency}...")
+            try:
+                run_command(['choco', 'install', dependency, '-y'])
+            except subprocess.CalledProcessError as e:
+                logging.error(f"Failed to install {dependency}.")
+                raise
+
+def install_conda(install_path):
+    logging.info("Installing Miniconda...")
+    conda_installer = 'Miniconda3-latest-Windows-x86_64.exe'
+    run_command(['curl', '-O', f'https://repo.anaconda.com/miniconda/{conda_installer}'])
+    run_command([conda_installer, '/InstallationType=JustMe', '/RegisterPython=0', '/S', f'/D={install_path}'])
+    os.remove(conda_installer)
+
+def check_conda(conda_path):
+    return os.path.exists(os.path.join(conda_path, 'Scripts', 'conda.exe'))
+
+def create_conda_env(conda_path, env_name, python_version):
+    logging.info(f"Creating conda environment {env_name}...")
+    try:
+        run_command([f'{conda_path}\\Scripts\\conda.exe', 'create', '-n', env_name, f'python={python_version}', '-y'])
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Failed to create conda environment {env_name}")
+        logging.error(f"Error message: {str(e)}")
+        raise
+
+def install_requirements(conda_path, env_name, requirements_file):
+    logging.info(f"Installing requirements for {env_name}...")
+    run_command([f'{conda_path}\\Scripts\\conda.exe', 'run', '-n', env_name, 'pip', 'install', '-r', requirements_file])
+
+def install_pytorch_and_xtts_api_server(conda_path, env_name):
+    logging.info(f"Installing PyTorch and xtts_api_server package in {env_name}...")
+    run_command([f'{conda_path}\\Scripts\\conda.exe', 'run', '-n', env_name, 'pip', 'install', 'torch==2.1.1+cu118', 'torchaudio==2.1.1+cu118', '--extra-index-url', 'https://download.pytorch.org/whl/cu118'])
+    run_command([f'{conda_path}\\Scripts\\conda.exe', 'run', '-n', env_name, 'pip', 'install', 'xtts_api_server'])
+
+def run_script(conda_path, env_name, script_path):
+    logging.info(f"Running script {script_path} in {env_name}...")
+    
+    # Change to the directory of the audiobook_generator script
+    script_dir = os.path.dirname(script_path)
+    os.chdir(script_dir)
+    
+    subprocess.Popen([f'{conda_path}\\Scripts\\conda.exe', 'run', '-n', env_name, 'python', script_path], creationflags=subprocess.DETACHED_PROCESS)
+
+def run_xtts_api_server(conda_path, env_name, xtts_server_path):
+    logging.info(f"Running xtts_api_server in {env_name}...")
+    os.chdir(xtts_server_path)
+
+    # Create log file for xtts server output
+    xtts_log_file = os.path.join(xtts_server_path, 'xtts_server.log')
+
+    # Run xtts server command with output redirection
+    xtts_server_command = f'"{conda_path}\\Scripts\\conda.exe" run -n {env_name} python -m xtts_api_server --lowvram --deepspeed > "{xtts_log_file}" 2>&1'
+    subprocess.Popen(xtts_server_command, cwd=xtts_server_path, shell=True)
+
+def check_xtts_server_online(url, max_attempts=30, wait_interval=10):
+    attempt = 1
+    while attempt <= max_attempts:
+        try:
+            response = requests.get(url)
+            if response.status_code == 200:
+                logging.info("xtts server is online.")
+                return True
+        except requests.exceptions.RequestException as e:
+            logging.info(f"xtts server is not online. Waiting... (Attempt {attempt}/{max_attempts})")
+        
+        time.sleep(wait_interval)
+        attempt += 1
+    
+    logging.error("xtts server failed to come online within the specified attempts.")
+    return False
+
+def main():
+    # Create Audiobook_Generator folder
+    audiobook_generator_path = os.path.join(os.getcwd(), 'Audiobook_Generator')
+    
+    if not os.path.exists(audiobook_generator_path):
+        # Check if Chocolatey is installed, if not, install it
+        if not check_choco():
+            logging.info("Chocolatey is not installed.")
+            install_choco()
+        
+        # Check and install dependencies
+        install_dependencies()
+        
+        os.makedirs(audiobook_generator_path, exist_ok=True)
+        logging.info(f"Created Audiobook_Generator folder at {audiobook_generator_path}")
+
+        # Clone repositories
+        logging.info("Cloning repositories...")
+        run_command(['git', 'clone', 'https://github.com/daswer123/xtts-api-server.git', os.path.join(audiobook_generator_path, 'xtts-api-server')])
+        run_command(['git', 'clone', 'https://github.com/lukaszliniewicz/Audiobook-Generator', os.path.join(audiobook_generator_path, 'Audiobook-Generator')])
+
+        # Install Miniconda
+        conda_path = os.path.join(audiobook_generator_path, 'conda')
+        install_conda(conda_path)
+
+        # Check if conda is installed correctly
+        if not check_conda(conda_path):
+            logging.error("Conda installation failed. Please check the installation logs.")
+            return
+
+        # Create conda environments
+        create_conda_env(conda_path, 'xtts_api_server_installer', '3.10')
+        create_conda_env(conda_path, 'audiobook_generator_installer', '3.10')
+
+        # Install PyTorch and xtts_api_server package
+        install_pytorch_and_xtts_api_server(conda_path, 'xtts_api_server_installer')
+
+        # Install requirements for audiobook_generator
+        audiobook_generator_repo_path = os.path.join(audiobook_generator_path, 'Audiobook-Generator')
+        install_requirements(conda_path, 'audiobook_generator_installer', os.path.join(audiobook_generator_repo_path, 'audiobook_generator', 'requirements.txt'))
+    else:
+        logging.info("Audiobook_Generator folder exists. Skipping installation steps.")
+        
+    # Get the conda path
+    conda_path = os.path.join(audiobook_generator_path, 'conda')
+
+    # Run xtts_api_server
+    xtts_server_path = os.path.join(audiobook_generator_path, 'xtts-api-server')
+    run_xtts_api_server(conda_path, 'xtts_api_server_installer', xtts_server_path)
+    
+    # Wait for xtts server to come online
+    xtts_server_url = 'http://127.0.0.1:8020/docs'
+    if not check_xtts_server_online(xtts_server_url):
+        logging.error("xtts server failed to come online. Exiting...")
+        return
+
+    # Run audiobook_generator script
+    audiobook_generator_repo_path = os.path.join(audiobook_generator_path, 'Audiobook-Generator')
+    audiobook_generator_script_path = os.path.join(audiobook_generator_repo_path, 'audiobook_generator', 'audiobook_generator.py')
+    run_script(conda_path, 'audiobook_generator_installer', audiobook_generator_script_path)
+    
+    # Keep the main script running to prevent immediate exit
+    while True:
+        time.sleep(1)
+
+if __name__ == '__main__':
+    main()
