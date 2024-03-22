@@ -28,7 +28,7 @@ This project relies on several APIs and services (running locally):
 ## Installation
 
 ### Minimal One-Click Installation Executable (Windows with an Nvidia GPU only):
-Run `pandrator_start_minimal.exe` with administrator priviliges. The executable was created usinng `pyinstaller` from `pandrator_start_minimal.py` in the repository.
+Run `pandrator_start_minimal.exe` with administrator priviliges. The executable was created usinng [pyinstaller](https://github.com/pyinstaller/pyinstaller) from `pandrator_start_minimal.py` in the repository.
 
 **It may be flagged as a threat by antivirus software, so you may have to add it as an exception.**
 
