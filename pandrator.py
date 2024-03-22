@@ -722,39 +722,46 @@ class TTSOptimizerGUI:
             "paragraph": "no"
         })
 
-        if isinstance(split_part_prefix, int):
-            if split_part_prefix == 0 and paragraph == "yes":
-                split_sentences.append({
-                    "original_sentence": second_part,
-                    "split_part": "1",
-                    "paragraph": "yes"
-                })
+        if len(second_part) > self.max_sentence_length.get():
+            if isinstance(split_part_prefix, int):
+                if split_part_prefix == 0 and paragraph == "yes":
+                    split_sentences.append({
+                        "original_sentence": second_part,
+                        "split_part": "1",
+                        "paragraph": "yes"
+                    })
+                else:
+                    split_sentences.append({
+                        "original_sentence": second_part,
+                        "split_part": "1",
+                        "paragraph": "no"
+                    })
             else:
-                split_sentences.append({
-                    "original_sentence": second_part,
-                    "split_part": "1",
-                    "paragraph": "no"
-                })
-        else:
-            if (split_part_prefix.endswith("b") or split_part_prefix == "1") and paragraph == "yes":
-                split_sentences.append({
-                    "original_sentence": second_part,
-                    "split_part": f"{split_part_prefix}b",
-                    "paragraph": "yes"
-                })
-            else:
-                split_sentences.append({
-                    "original_sentence": second_part,
-                    "split_part": f"{split_part_prefix}b",
-                    "paragraph": "no"
-                })
+                if (split_part_prefix.endswith("b") or split_part_prefix == "1") and paragraph == "yes":
+                    split_sentences.append({
+                        "original_sentence": second_part,
+                        "split_part": f"{split_part_prefix}b",
+                        "paragraph": "yes"
+                    })
+                else:
+                    split_sentences.append({
+                        "original_sentence": second_part,
+                        "split_part": f"{split_part_prefix}b",
+                        "paragraph": "no"
+                    })
 
-        split_sentences.extend(self.split_long_sentences_2({
-            "original_sentence": second_part,
-            "split_part": f"{split_part_prefix}b" if isinstance(split_part_prefix, str) else "1",
-            "paragraph": "yes" if (isinstance(split_part_prefix, int) and split_part_prefix == 0 and paragraph == "yes") or
-                                (isinstance(split_part_prefix, str) and (split_part_prefix.endswith("b") or split_part_prefix == "1") and paragraph == "yes") else "no"
-        }))
+            split_sentences.extend(self.split_long_sentences_2({
+                "original_sentence": second_part,
+                "split_part": f"{split_part_prefix}b" if isinstance(split_part_prefix, str) else "1",
+                "paragraph": "yes" if (isinstance(split_part_prefix, int) and split_part_prefix == 0 and paragraph == "yes") or
+                                    (isinstance(split_part_prefix, str) and (split_part_prefix.endswith("b") or split_part_prefix == "1") and paragraph == "yes") else "no"
+            }))
+        else:
+            split_sentences.append({
+                "original_sentence": second_part,
+                "split_part": f"{split_part_prefix}b" if isinstance(split_part_prefix, str) else "1",
+                "paragraph": paragraph
+            })
 
         return split_sentences
 
@@ -767,22 +774,32 @@ class TTSOptimizerGUI:
             if current_sentence["paragraph"] == "no":
                 if i > 0:
                     prev_sentence = appended_sentences[-1]
-                    combined_text = prev_sentence["original_sentence"] + ' ' + current_sentence["original_sentence"]
+                    if prev_sentence["paragraph"] == "no":
+                        combined_text = prev_sentence["original_sentence"] + ' ' + current_sentence["original_sentence"]
+                        if len(combined_text) <= self.max_sentence_length.get():
+                            prev_sentence["original_sentence"] = combined_text
+                            i += 1
+                            continue
+                if i < len(sentence_dicts) - 1:
+                    next_sentence = sentence_dicts[i + 1]
+                    combined_text = current_sentence["original_sentence"] + ' ' + next_sentence["original_sentence"]
                     if len(combined_text) <= self.max_sentence_length.get():
-                        prev_sentence["original_sentence"] = combined_text
-                        if prev_sentence["paragraph"] == "yes":
+                        current_sentence["original_sentence"] = combined_text
+                        if next_sentence["paragraph"] == "yes":
                             current_sentence["paragraph"] = "yes"
-                        i += 1
+                        i += 2
+                        appended_sentences.append(current_sentence)
                         continue
             else:  # current_sentence["paragraph"] == "yes"
                 if i > 0:
                     prev_sentence = appended_sentences[-1]
-                    combined_text = prev_sentence["original_sentence"] + ' ' + current_sentence["original_sentence"]
-                    if len(combined_text) <= self.max_sentence_length.get():
-                        prev_sentence["original_sentence"] = combined_text
-                        prev_sentence["paragraph"] = "yes"
-                        i += 1
-                        continue
+                    if prev_sentence["paragraph"] == "no":
+                        combined_text = prev_sentence["original_sentence"] + ' ' + current_sentence["original_sentence"]
+                        if len(combined_text) <= self.max_sentence_length.get():
+                            prev_sentence["original_sentence"] = combined_text
+                            prev_sentence["paragraph"] = "yes"
+                            i += 1
+                            continue
 
             appended_sentences.append(current_sentence)
             i += 1
