@@ -8,6 +8,27 @@ Pandrator is a tool designed to transform text into spoken audio using a variety
 It is still in alpha stage and I'm not an experience developer (I'm a noob, in fact), so the code is far from perfect in terms of optimisation, features and reliability. Please keep this in mind.
 It leverages the XTTS model(s) for text-to-speech conversion, enhanced by RVC_CLI for quality improvement and better voice cloning results, and NISQA for audio quality evaluation. Additionally, it incorporates Text Generation Webui's API for local LLM-based text pre-processing, enabling a wide range of text manipulations before audio generation.
 
+# Table of Contents
+- [Pandrator, an audiobook generator](#pandrator-an-audiobook-generator)
+  - [Requirments](#requirments)
+    - [Hardware](#hardware)
+    - [Dependencies](#dependencies)
+      - [Required](#required)
+      - [Optional](#optional)
+  - [Installation](#installation)
+    - [Minimal One-Click Installation Executable (Windows with an Nvidia GPU only)](#minimal-one-click-installation-executable-windows-with-an-nvidia-gpu-only)
+    - [Manual Installation](#manual-installation)
+  - [Features](#features)
+  - [Quick Start Guide](#quick-start-guide)
+    - [Basic Usage](#basic-usage)
+    - [General Audio Settings](#general-audio-settings)
+    - [General Text Pre-Processing Settings](#general-text-pre-processing-settings)
+  - [LLM Preprocessing](#llm-preprocessing)
+  - [RVC Quality Enhancement and Voice Cloning](#rvc-quality-enhancement-and-voice-cloning)
+  - [NISQA TTS Evaluation](#nisqa-tts-evaluation)
+  - [Contributing](#contributing)
+  - [To-do](#to-do)
+
 ## Requirments
 
 ### Hardware
@@ -56,8 +77,44 @@ Please refer to the repositories linked above for detailed installation instruct
 - **Session Management:** Supports creating, deleting, and loading sessions for organized workflow.
 - **GUI:** Built with customtkinker for a user-friendly experience.
 
-## Usage
-Follow the manual or minimal installation steps to set up the Audiobook Generator. Once the setup is complete, the GUI will guide you through the process of converting text files into audiobooks.
+## Quick Start Guide
+
+### Basic Usage
+If you don't want to use the additional functionalities, you have everything you need in the Session tab. 
+1. Either create a new session or load an existing one (select a folder in `Outputs` to do that).
+2. Choose you `txt ` file.
+3. Select a language from the dropdown.
+4. Choose the voice you want to use (voices are short, 8-12s `wav` files in the `tts_voices` directory). You may use the example ones in the repository, which I borrowed from daswer123, or upload you own. Please make sure that it is between 8 and 12s, mono, and 22050khz. You may use a tool like Audacity to make these.
+5. Start the generation. You may stop and resume it later, or close the programme and load the session later.
+6. You can play back the generated sentenced, also as a playlist, and regenerate or remove individual ones.
+7. "Save Output" concatenated the sentences generated so far an encodes them as one file (default is `.opus` at 64k bitrate; you may change it in the Audio tab to wav or mp3).
+
+### General Audio Settings
+1. You can change the lenght of silence appended at the end of sentences and paragraphs.
+2. You can enable adding a fade-in and -out effect to sentences and set the duration.
+3. You can choose the output format and bitrate.
+
+### General Text Pre-Processing Settings
+1. You can disable/enable splitting long sentences and set the max lenght a text fragment sent for TTS generation may have (enabled by default; it tries to split sentences whose lenght exceeds the max lenght value; it looks for punctuation marks (, ; : -) and chooses the one closest to the midpoint of the sentence.
+2. You can disable/enable appending short sentences to preceding or following sentences (disabled by default, may perhaps improve the flow as the lenght of text fragments sent to the TTS API is more uniform).
+3. Remove diacritics (useful when generating a text that contains many foreign words or transliterations from foreign alphabets). Do not enable this if you generate in a language that needs diacritics! The pronounciation will be wrong then.
+
+## LLM Preprocessing
+- Enable LLM processing to use language models for preprocessing the text before sending it to the TTS API.
+- You can define up to three prompts for text optimization. Each prompt is sent to the LLM API separately, and the output of the last prompt is used for TTS generation.
+- For each prompt, you can enable/disable it, set the prompt text, choose the LLM model to use, and enable/disable evaluation (if enabled, the LLM API will be called twice for each prompt, and the better output will be chosen based on a similarity score).
+- Load the available LLM models using the "Load LLM Models" button in the Session tab.
+
+## RVC Quality Enhancement and Voice Cloning
+- Enable RVC (Real-time Voice Cloning) to enhance the generated audio quality and apply voice cloning.
+- Select the RVC model file (.pth) and the corresponding index file using the "Select RVC Model" and "Select RVC Index" buttons in the Audio Processing tab.
+- When RVC is enabled, the generated audio will be processed using the selected RVC model and index before being saved.
+
+## NISQA TTS Evaluation
+- Enable TTS evaluation to assess the quality of the generated audio using the NISQA (Non-Intrusive Speech Quality Assessment) model.
+- Set the target MOS (Mean Opinion Score) value and the maximum number of attempts for each sentence.
+- When TTS evaluation is enabled, the generated audio will be evaluated using the NISQA model, and the best audio (based on the MOS score) will be chosen for each sentence.
+- If the target MOS value is not reached within the maximum number of attempts, the best audio generated so far will be used.
 
 ## Contributing
 Contributions, suggestions for improvements, and bug reports are welcome. Please refer to the contributing guidelines for more information.
