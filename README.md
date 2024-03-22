@@ -124,7 +124,7 @@ If you don't want to use the additional functionalities, you have everything you
 Contributions, suggestions for improvements, and bug reports are welcome. Please refer to the contributing guidelines for more information.
 
 ## Tips
-- You can find a collection  of voice sample for example [here](https://aiartes.com/voiceai). They are intended for use with ElevenLabs, so you will need to pick an 8-12s fragment and save it as 22050khz mono .wav usuing for example Audacity. 
+- You can find a collection of voice sample for example [here](https://aiartes.com/voiceai). They are intended for use with ElevenLabs, so you will need to pick an 8-12s fragment and save it as 22050khz mono `.wav` usuing Audacity, for instance. 
 - You can find a collection of RVC models for example [here](https://voice-models.com/).
 
 ## To-do
