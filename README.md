@@ -11,7 +11,7 @@ It leverages the XTTS model(s) for text-to-speech conversion, enhanced by RVC_CL
 ## Requirments
 
 ### Hardware
-I was able to run all functionalities on a laptop with a Ryzen 5600h and a 3050 (4GB of VRAM). It's likely that you will need at least 16GB of RAM, a reasonably modern CPU, and ideally an NVIDIA GPU with 4 GB+ of VRAM for usable performance. 
+I was able to run all functionalities on a laptop with a Ryzen 5600h and a 3050 (4GB of VRAM). It's likely that you will need at least 16GB of RAM, a reasonably modern CPU, and ideally an NVIDIA GPU with 4 GB+ of VRAM for usable performance. Consult the requirments of the services listed below.
 
 ### Dependencies
 This project relies on several APIs and services (running locally), including:
