@@ -4,36 +4,40 @@
 
 # Pandrator, an audiobook generator
 
-Audiobook Generator is a tool designed to transform text files into spoken audio using a variety of APIs and processing techniques. 
-It is still in alpha stage and I'm not an experience developer, so the code is far from perfect, both in terms of optimisation, features and reliability. Please keep this in mind.
-It leverages the the XTTS model(s) for text-to-speech conversion, enhanced by RVC_CLI for voice cloning and NISQA for audio quality evaluation. Additionally, it incorporates Text Generation Webui's API for additional local LLM-based text pre-processing, enabling a wide range of text manipulations before audio generation.
+Pandrator is a tool designed to transform text into spoken audio using a variety of APIs and processing techniques. 
+It is still in alpha stage and I'm not an experience developer, so the code is far from perfect in terms of optimisation, features and reliability. Please keep this in mind.
+It leverages the XTTS model(s) for text-to-speech conversion, enhanced by RVC_CLI for voice cloning and NISQA for audio quality evaluation. Additionally, it incorporates Text Generation Webui's API for local LLM-based text pre-processing, enabling a wide range of text manipulations before audio generation.
 
 ## Requirments
 
 ### Hardware
-I was able to run all functionalities on a laptop with a Ryzen 5600h and a 3050 (4GB of VRAM). It's likely that you will need 16GB of RAM, a processor with 8+ threads, and ideally an NVIDIA GPU with 6 GB+ of VRAM for optimal performance. 
+I was able to run all functionalities on a laptop with a Ryzen 5600h and a 3050 (4GB of VRAM). It's likely that you will need at least 16GB of RAM, a reasonably modern CPU, and ideally an NVIDIA GPU with 4 GB+ of VRAM for usable performance. 
 
 ### Dependencies
 This project relies on several APIs and services (running locally), including:
-- [XTTS API Server by daswer123](https://github.com/daswer123/xtts-api-server.git)
-- [Text Generation Webui API by oobabooga](https://github.com/oobabooga/text-generation-webui.git)
-- [RVC_CLI by blaise-tk](https://github.com/blaise-tk/RVC_CLI.git)
-- [NISQA by gabrielmittag](https://github.com/gabrielmittag/NISQA.git)
+- [XTTS API Server by daswer123](https://github.com/daswer123/xtts-api-server.git) (required) 
+- [Text Generation Webui API by oobabooga](https://github.com/oobabooga/text-generation-webui.git) (optional)
+- [RVC_CLI by blaise-tk](https://github.com/blaise-tk/RVC_CLI.git) (optional) 
+- [NISQA by gabrielmittag](https://github.com/gabrielmittag/NISQA.git) (optional)
 
 ## Installation
 
-### Minimal One-Click Installation Script:
-Run `min_start.bat` from the command line. This script automates the setup by installing Conda, creating an environment, installing XTTS API Server, placing a sample voice file in its speakers directory, starting it and the Audiobook Generator. 
+### Minimal One-Click Installation Executable:
+Run `pandrator_start_minimal.exe` with administrator priviliges. The executable was created usinng 'pyinstaller' from 'pandrator_start_minimal.py' in the repository. 
+
+It may be flagged as a threat by antivirus software, so you may have to add it as an exception. 
+
+It creates a Pandrator folder, installs curl, git, ffmpeg, Conda and PyTorch, creates an environment, clones the XTTS Api Server repository and the Pandrator repository, and launches them. You may use it to launch Pandrator later. If you want to perform the setup again, you have to remove the Pandrator folder it created. 
 
 For additional functionality:
-- Enable the 'Text Generation Webui API'.
+- Install Text Generation Webui and remember to enable the API.
 - Set up 'RVC_CLI' for enhancing generations with RVC.
 - Set up 'NISQA API' for automatic evaluation of generations.
-Please refer to the repositories linked above for excellent installation instructions. Remember that the APIs must be running to make use of the functionalities they offer.
+Please refer to the repositories linked above for detailed installation instructions. Remember that the APIs must be running to make use of the functionalities they offer.
 
 ### Manual Installation:
 1. Make sure that Python 3 is installed.
-2. Clone this repository (git clone https://github.com/lukaszliniewicz/Audiobook-Generator/) using for example Windows Terminal.
+2. Clone this repository.
 3. `cd` to the repository directory.
 4. Install requirements using `pip install -r requirements.txt`.
 5. Run `python audiobook_generator.py`.
