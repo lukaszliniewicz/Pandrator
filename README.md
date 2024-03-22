@@ -22,7 +22,7 @@ It leverages the XTTS model(s) for text-to-speech conversion, enhanced by RVC_CL
     - [Basic Usage](#basic-usage)
     - [General Audio Settings](#general-audio-settings)
     - [General Text Pre-Processing Settings](#general-text-pre-processing-settings)
-    - [LLM Preprocessing](#llm-preprocessing)
+    - [LLM Pre-processing](#llm-preprocessing)
     - [RVC Quality Enhancement and Voice Cloning](#rvc-quality-enhancement-and-voice-cloning)
     - [NISQA TTS Evaluation](#nisqa-tts-evaluation)
   - [Contributing](#contributing)
@@ -103,7 +103,7 @@ If you don't want to use the additional functionalities, you have everything you
 2. You can disable/enable appending short sentences to preceding or following sentences (disabled by default, may perhaps improve the flow as the lenght of text fragments sent to the TTS API is more uniform).
 3. Remove diacritics (useful when generating a text that contains many foreign words or transliterations from foreign alphabets). Do not enable this if you generate in a language that needs diacritics! The pronounciation will be wrong then.
 
-### LLM Preprocessing
+### LLM Pre-processing
 - Enable LLM processing to use language models for preprocessing the text before sending it to the TTS API. For example, you may ask the LLM to remove OCR artifacts, spell out abbreviations, correct punctuation etc.
 - You can define up to three prompts for text optimization. Each prompt is sent to the LLM API separately, and the output of the last prompt is used for TTS generation.
 - For each prompt, you can enable/disable it, set the prompt text, choose the LLM model to use, and enable/disable evaluation (if enabled, the LLM API will be called twice for each prompt, and they again for the model to choose the better result).
