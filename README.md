@@ -11,14 +11,19 @@ It leverages the XTTS model(s) for text-to-speech conversion, enhanced by RVC_CL
 ## Requirments
 
 ### Hardware
-I was able to run all functionalities on a laptop with a Ryzen 5600h and a 3050 (4GB of VRAM). It's likely that you will need at least 16GB of RAM, a reasonably modern CPU, and ideally an NVIDIA GPU with 4 GB+ of VRAM for usable performance. Consult the requirments of the services listed below.
+I was able to run all functionalities on a laptop with a Ryzen 5600h and a 3050 laptop GPU (4GB of VRAM). It's likely that you will need at least 16GB of RAM, a reasonably modern CPU, and ideally an NVIDIA GPU with 4 GB+ of VRAM for usable performance. Consult the requirments of the services listed below.
 
 ### Dependencies
-This project relies on several APIs and services (running locally), including:
-- [XTTS API Server by daswer123](https://github.com/daswer123/xtts-api-server.git) (required) 
-- [Text Generation Webui API by oobabooga](https://github.com/oobabooga/text-generation-webui.git) (optional)
-- [RVC_CLI by blaise-tk](https://github.com/blaise-tk/RVC_CLI.git) (optional) 
-- [NISQA by gabrielmittag](https://github.com/gabrielmittag/NISQA.git) (optional)
+This project relies on several APIs and services (running locally):
+
+#### Required
+- [XTTS API Server by daswer123](https://github.com/daswer123/xtts-api-server.git) for Text-to-Speech (TTS) generation using Coqui [XTTSv2](https://huggingface.co/coqui/XTTS-v2)
+- [FFmpeg](https://github.com/FFmpeg/FFmpeg) for audio manipulation and encoding
+
+#### Optional
+- [Text Generation Webui API by oobabooga](https://github.com/oobabooga/text-generation-webui.git) for LLM-based text pre-processing
+- [RVC_CLI by blaise-tk](https://github.com/blaise-tk/RVC_CLI.git) for enhancing voice quality and cloning results with [Retrieval Based Voice Conversion](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI)
+- [NISQA by gabrielmittag](https://github.com/gabrielmittag/NISQA.git) for evaluating TTS generations (using the [FastAPI implementation](https://github.com/lukaszliniewicz/NISQA-API))
 
 ## Installation
 
@@ -27,7 +32,7 @@ Run `pandrator_start_minimal.exe` with administrator priviliges. The executable 
 
 **It may be flagged as a threat by antivirus software, so you may have to add it as an exception.**
 
-It creates a Pandrator folder, installs `curl`, `git`, `ffmpeg` and `Miniconda`, creates an environment, clones the XTTS Api Server repository and the Pandrator repository, and launches them. You may use it to launch Pandrator later. If you want to perform the setup again, you have to remove the Pandrator folder it created. Please allow at least a couple of minutes for the initial setup process to download models and install dependencies.
+It creates a Pandrator folder, installs `curl`, `git`, `ffmpeg` and `Miniconda`, creates an environment, clones the XTTS Api Server repository and the Pandrator repository, installs dependencies and launches them. You may use it to launch Pandrator later. If you want to perform the setup again, remove the Pandrator folder it created. Please allow at least a couple of minutes for the initial setup process to download models and install dependencies.
 
 For additional functionality:
 - Install Text Generation Webui and remember to enable the API.
