@@ -6,7 +6,7 @@
 
 Pandrator is a tool designed to transform text into spoken audio using a variety of APIs and processing techniques. 
 It is still in alpha stage and I'm not an experience developer, so the code is far from perfect in terms of optimisation, features and reliability. Please keep this in mind.
-It leverages the XTTS model(s) for text-to-speech conversion, enhanced by RVC_CLI for voice cloning and NISQA for audio quality evaluation. Additionally, it incorporates Text Generation Webui's API for local LLM-based text pre-processing, enabling a wide range of text manipulations before audio generation.
+It leverages the XTTS model(s) for text-to-speech conversion, enhanced by RVC_CLI for quality improvement and better voice cloning results, and NISQA for audio quality evaluation. Additionally, it incorporates Text Generation Webui's API for local LLM-based text pre-processing, enabling a wide range of text manipulations before audio generation.
 
 ## Requirments
 
@@ -66,3 +66,4 @@ Contributions, suggestions for improvements, and bug reports are welcome. Please
 - [ ] Add support for a higher quality local TTS model, Tortoise.
 - [ ] Add support for a lower quality but faster local TTS model that can easily run on CPU, e.g. Silero or Piper.
 - [ ] Implement a better text segmentation method, e.g. NLP-based.
+- [ ] Add option to record a voice sample and use it for TTS.
