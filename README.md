@@ -22,8 +22,8 @@ This project relies on several APIs and services (running locally), including:
 
 ## Installation
 
-### Minimal One-Click Installation Executable:
-Run `pandrator_start_minimal.exe` with administrator priviliges. The executable was created usinng `pyinstaller` from `pandrator_start_minimal.py` in the repository. 
+### Minimal One-Click Installation Executable (Windows with an Nvidia GPU only):
+Run `pandrator_start_minimal.exe` with administrator priviliges. The executable was created usinng `pyinstaller` from `pandrator_start_minimal.py` in the repository.
 
 **It may be flagged as a threat by antivirus software, so you may have to add it as an exception.**
 
@@ -44,8 +44,8 @@ Please refer to the repositories linked above for detailed installation instruct
 6. Run `python pandrator.py`.
 
 ## Features
-- **Text Pre-processing:** Splits text into sentences while preserving paragraphs. Profiles for multiple languages are available.
-- **LLM Text Pre-processing:** Utilizes a local LLM for text corrections and enhancements with up to three different prompts run sequentially, and an evaluation mechanism that asks the model to perform a tas twice and then choose the better response. I've been using 'openchat-3.5-0106.Q5_K_M.gguf' with good results, as well as for example 'Mistral 7B Instruct 0.2'.
+- **Text Pre-processing:** Splits text into sentences and (attempts to) preserve paragraphs. Profiles for multiple languages are available.
+- **LLM Text Pre-processing:** Utilizes a local LLM for text corrections and enhancements with up to three different prompts run sequentially, and an evaluation mechanism that asks the model to perform a task twice and then choose the better response. I've been using 'openchat-3.5-0106.Q5_K_M.gguf' with good results, as well as for example 'Mistral 7B Instruct 0.2'. Different models may perform different tasks well, so it's possible to choose a specific model for a specific prompt.
 - **Audio Generation:** Converts processed text into speech, with options for voice cloning and quality enhancement.
 - **Audio Evaluation:** An experimental feature that predicts Mean Opinion Score (MOS) for generated sentences and sets a score threshold or chooses the best score from a set number of generations.
 - **Session Management:** Supports creating, deleting, and loading sessions for organized workflow.
@@ -59,8 +59,10 @@ Contributions, suggestions for improvements, and bug reports are welcome. Please
 
 ## To-do
 - [ ] Add the other APIs to the setup script.
+- [ ] Add importing/exporting settings.
 - [ ] Add support for proprietary APIs for text pre-processing and TTS generation.
 - [ ] Enhance file format support (e.g., HTML, XML, PDF, Epub) including direct PDF to TXT conversion with OCR.
 - [ ] Integrate editing capabilities for processed sentences within the UI.
 - [ ] Add support for a higher quality local TTS model, Tortoise.
-- [ ] Add support for a lower quality but faster local TTS model that can easily run on CPU, e.g. Silero.
+- [ ] Add support for a lower quality but faster local TTS model that can easily run on CPU, e.g. Silero or Piper.
+- [ ] Implement a better text segmentation method, e.g. NLP-based.
