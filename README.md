@@ -23,24 +23,25 @@ This project relies on several APIs and services (running locally), including:
 ## Installation
 
 ### Minimal One-Click Installation Executable:
-Run `pandrator_start_minimal.exe` with administrator priviliges. The executable was created usinng 'pyinstaller' from 'pandrator_start_minimal.py' in the repository. 
+Run `pandrator_start_minimal.exe` with administrator priviliges. The executable was created usinng `pyinstaller` from `pandrator_start_minimal.py` in the repository. 
 
-It may be flagged as a threat by antivirus software, so you may have to add it as an exception. 
+**It may be flagged as a threat by antivirus software, so you may have to add it as an exception.**
 
-It creates a Pandrator folder, installs curl, git, ffmpeg, Conda and PyTorch, creates an environment, clones the XTTS Api Server repository and the Pandrator repository, and launches them. You may use it to launch Pandrator later. If you want to perform the setup again, you have to remove the Pandrator folder it created. 
+It creates a Pandrator folder, installs `curl`, `git`, `ffmpeg` and `Miniconda`, creates an environment, clones the XTTS Api Server repository and the Pandrator repository, and launches them. You may use it to launch Pandrator later. If you want to perform the setup again, you have to remove the Pandrator folder it created. 
 
 For additional functionality:
 - Install Text Generation Webui and remember to enable the API.
-- Set up 'RVC_CLI' for enhancing generations with RVC.
-- Set up 'NISQA API' for automatic evaluation of generations.
+- Set up `RVC_CLI` for enhancing generations with RVC.
+- Set up `NISQA API` for automatic evaluation of generations.
 Please refer to the repositories linked above for detailed installation instructions. Remember that the APIs must be running to make use of the functionalities they offer.
 
 ### Manual Installation:
 1. Make sure that Python 3 is installed.
-2. Clone this repository.
-3. `cd` to the repository directory.
-4. Install requirements using `pip install -r requirements.txt`.
-5. Run `python audiobook_generator.py`.
+2. Install and run at last XTTS API Server. 
+3. Clone this repository.
+4. `cd` to the repository directory.
+5. Install requirements using `pip install -r requirements.txt`.
+6. Run `python pandrator.py`.
 
 ## Features
 - **Text Pre-processing:** Splits text into sentences while preserving paragraphs. Profiles for multiple languages are available.
