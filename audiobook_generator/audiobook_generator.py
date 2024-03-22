@@ -34,6 +34,8 @@ class TTSOptimizerGUI:
         self.enable_tts_evaluation = ctk.BooleanVar(value=False)
         self.stop_flag = False
         self.delete_session_flag = False
+        self.server_connected = False
+
 
         # Define the tts_voices_folder attribute before using it
         self.tts_voices_folder = "tts_voices"
@@ -274,16 +276,29 @@ class TTSOptimizerGUI:
     def set_speaker_folder(self):
         speaker_folder_path = os.path.abspath(self.tts_voices_folder)
         data = {"speaker_folder": speaker_folder_path}
-        response = requests.post("http://localhost:8020/set_speaker_folder", json=data)
-        if response.status_code == 200:
-            print(f"Speaker folder set to: {speaker_folder_path}")
-        else:
-            print(f"Error {response.status_code}: Failed to set speaker folder.")
+        try:
+            response = requests.post("http://localhost:8020/set_speaker_folder", json=data)
+            if response.status_code == 200:
+                print(f"Speaker folder set to: {speaker_folder_path}")
+                self.server_connected = True
+            else:
+                print(f"Error {response.status_code}: Failed to set speaker folder.")
+                self.server_connected = False
+        except requests.exceptions.ConnectionError:
+            print("Server is offline. Retrying in 5 seconds...")
+            self.server_connected = False
+            self.master.after(10000, self.set_speaker_folder)
 
     def populate_speaker_dropdown(self):
         wav_files = [f for f in os.listdir(self.tts_voices_folder) if f.endswith(".wav")]
         speakers = [os.path.splitext(f)[0] for f in wav_files]
         self.speaker_dropdown.configure(values=speakers)
+
+    def check_server_connection(self):
+        if not self.server_connected:
+            messagebox.showerror("Error", "Server is offline. Cannot start generation.")
+            return False
+        return True
 
     def upload_speaker_voice(self):
         wav_file = filedialog.askopenfilename(filetypes=[("WAV files", "*.wav")])
@@ -547,6 +562,9 @@ class TTSOptimizerGUI:
         session_name = self.session_name.get()
         if not session_name:
             messagebox.showerror("Error", "Please enter a session name.")
+            return
+
+        if not self.check_server_connection():
             return
 
         # Read the file content into 'text' variable
