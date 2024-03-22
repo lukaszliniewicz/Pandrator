@@ -78,6 +78,8 @@ Please refer to the repositories linked above for detailed installation instruct
 
 ## Quick Start Guide
 
+![Demonstration GIF](demonstration.gif)
+
 ### Basic Usage
 If you don't want to use the additional functionalities, you have everything you need in the Session tab. 
 1. Either create a new session or load an existing one (select a folder in `Outputs` to do that).
