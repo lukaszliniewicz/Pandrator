@@ -28,7 +28,7 @@ logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %
 class TTSOptimizerGUI:
     def __init__(self, master):
         self.master = master
-        master.title("Audiobook Generator")
+        master.title("Pandrator")
         pygame.mixer.init()
         self.channel = pygame.mixer.Channel(0)
         self.enable_tts_evaluation = ctk.BooleanVar(value=False)
@@ -1467,6 +1467,7 @@ class TTSOptimizerGUI:
 
 def main():
     root = ctk.CTk()
+    root.iconbitmap("pandrator.ico")  # Add this line to set the icon
     gui = TTSOptimizerGUI(root)
     root.mainloop()
 
