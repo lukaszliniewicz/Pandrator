@@ -4,11 +4,10 @@
 
 # Pandrator, an audiobook generator
 
-Pandrator is a tool designed to transform text into spoken audio using a variety of APIs and processing techniques. 
+Pandrator is a tool designed to transform text into spoken audio in multiple languages using a variety of APIs and processing techniques. 
 It is still in alpha stage and I'm not an experience developer (I'm a noob, in fact), so the code is far from perfect in terms of optimisation, features and reliability. Please keep this in mind.
 It leverages the XTTS model(s) for text-to-speech conversion, enhanced by RVC_CLI for quality improvement and better voice cloning results, and NISQA for audio quality evaluation. Additionally, it incorporates Text Generation Webui's API for local LLM-based text pre-processing, enabling a wide range of text manipulations before audio generation.
 
-# Table of Contents
 - [Pandrator, an audiobook generator](#pandrator-an-audiobook-generator)
   - [Requirments](#requirments)
     - [Hardware](#hardware)
@@ -39,7 +38,7 @@ This project relies on several APIs and services (running locally):
 
 #### Required
 - [XTTS API Server by daswer123](https://github.com/daswer123/xtts-api-server.git) for Text-to-Speech (TTS) generation using Coqui [XTTSv2](https://huggingface.co/coqui/XTTS-v2)
-- [FFmpeg](https://github.com/FFmpeg/FFmpeg) for audio manipulation and encoding
+- [FFmpeg](https://github.com/FFmpeg/FFmpeg) for audio encoding
 
 #### Optional
 - [Text Generation Webui API by oobabooga](https://github.com/oobabooga/text-generation-webui.git) for LLM-based text pre-processing
@@ -53,7 +52,7 @@ Run `pandrator_start_minimal.exe` with administrator priviliges. The executable 
 
 **It may be flagged as a threat by antivirus software, so you may have to add it as an exception.**
 
-It creates a Pandrator folder, installs `curl`, `git`, `ffmpeg` and `Miniconda`, clones the XTTS Api Server repository and the Pandrator repository, creates conda environments, installs dependencies and launches them. You may use it to launch Pandrator later. If you want to perform the setup again, remove the Pandrator folder it created. Please allow at least a couple of minutes for the initial setup process to download models and install dependencies (it takes about 7 minutes for me).
+On first use it creates the Pandrator folder, installs `curl`, `git`, `ffmpeg` and `Miniconda`, clones the XTTS Api Server repository and the Pandrator repository, creates conda environments, installs dependencies and launches them. You may use it to launch Pandrator later. If you want to perform the setup again, remove the Pandrator folder it created. Please allow at least a couple of minutes for the initial setup process to download models and install dependencies (it takes about 7 minutes for me).
 
 For additional functionality:
 - Install Text Generation Webui and remember to enable the API (add `--api` to `CMD_FLAGS.txt` in the main directory of the Webui before starting it).
@@ -82,16 +81,16 @@ Please refer to the repositories linked above for detailed installation instruct
 ### Basic Usage
 If you don't want to use the additional functionalities, you have everything you need in the Session tab. 
 1. Either create a new session or load an existing one (select a folder in `Outputs` to do that).
-2. Choose you `txt ` file.
+2. Choose your `.txt` file.
 3. Select a language from the dropdown.
-4. Choose the voice you want to use (voices are short, 8-12s `wav` files in the `tts_voices` directory). You may use the example ones in the repository, which I borrowed from daswer123, or upload you own. Please make sure that it is between 8 and 12s, mono, and 22050khz. You may use a tool like Audacity to make these.
+4. Choose the voice you want to use (voices are short, 8-12s `.wav` files in the `tts_voices` directory). The XTTS model uses the audio to clone the voice and use it for generation. You may use the example ones in the repository, which I borrowed from daswer123, or upload your own. Please make sure that the audio is between 8 and 12s, mono, and 22050khz. You may use a tool like Audacity prepare the files. The less noise, the better. You may use a tool like [Resemble AI](https://github.com/resemble-ai/resemble-enhance) for denoising and/or enhancement of your samples on [Hugging Face](https://huggingface.co/spaces/ResembleAI/resemble-enhance). 
 5. Start the generation. You may stop and resume it later, or close the programme and load the session later.
 6. You can play back the generated sentenced, also as a playlist, and regenerate or remove individual ones.
-7. "Save Output" concatenated the sentences generated so far an encodes them as one file (default is `.opus` at 64k bitrate; you may change it in the Audio tab to wav or mp3).
+7. "Save Output" concatenates the sentences generated so far an encodes them as one file (default is `.opus` at 64k bitrate; you may change it in the Audio tab to `.wav` or `.mp3`).
 
 ### General Audio Settings
 1. You can change the lenght of silence appended at the end of sentences and paragraphs.
-2. You can enable adding a fade-in and -out effect to sentences and set the duration.
+2. You can enable a fade-in and -out effect and set the duration.
 3. You can choose the output format and bitrate.
 
 ### General Text Pre-Processing Settings
@@ -119,6 +118,10 @@ If you don't want to use the additional functionalities, you have everything you
 ## Contributing
 Contributions, suggestions for improvements, and bug reports are welcome. Please refer to the contributing guidelines for more information.
 
+## Tips
+- You can find a collection  of voice sample for example [here](https://aiartes.com/voiceai). They are intended for use with ElevenLabs, so you will need to pick an 8-12s fragment and save it as 22050khz mono .wav usuing for example Audacity. 
+- You can find a collection of RVC models for example [here](https://voice-models.com/).
+
 ## To-do
 - [ ] Add the other APIs to the setup script.
 - [ ] Add importing/exporting settings.
@@ -128,4 +131,4 @@ Contributions, suggestions for improvements, and bug reports are welcome. Please
 - [ ] Add support for a higher quality local TTS model, Tortoise.
 - [ ] Add support for a lower quality but faster local TTS model that can easily run on CPU, e.g. Silero or Piper.
 - [ ] Implement a better text segmentation method, e.g. NLP-based.
-- [ ] Add option to record a voice sample and use it for TTS.
+- [ ] Add option to record a voice sample and use it for TTS to the GUI.
