@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import filedialog, messagebox, Label, Button, Text, Scrollbar, Entry, simpledialog
+from tkinter import filedialog, messagebox
 import customtkinter as ctk
 import re
 import json
@@ -34,6 +34,11 @@ class TTSOptimizerGUI:
         self.enable_tts_evaluation = ctk.BooleanVar(value=False)
         self.stop_flag = False
         self.delete_session_flag = False
+
+        # Define the tts_voices_folder attribute before using it
+        self.tts_voices_folder = "tts_voices"
+        if not os.path.exists(self.tts_voices_folder):
+            os.makedirs(self.tts_voices_folder)
 
         # Variables
         self.source_file = ""
@@ -98,7 +103,7 @@ class TTSOptimizerGUI:
         self.api_connection_label.grid(row=1, column=0, columnspan=2, padx=5, pady=5, sticky=tk.W)
         
         ctk.CTkButton(self.session_tab, text="Load LLM Models", command=self.load_models).grid(row=2, column=0, padx=5, pady=5, sticky=tk.EW)
-        ctk.CTkButton(self.session_tab, text="Load Speakers", command=self.fetch_speakers_list).grid(row=2, column=1, padx=5, pady=5, sticky=tk.EW)
+        ctk.CTkButton(self.session_tab, text="Upload Speaker Voice", command=self.upload_speaker_voice).grid(row=2, column=1, padx=5, pady=5, sticky=tk.EW)
         
         self.session_label = ctk.CTkLabel(self.session_tab, text="Session", font=ctk.CTkFont(size=14, weight="bold"))
         self.session_label.grid(row=3, column=0, columnspan=2, padx=5, pady=5, sticky=tk.W)
@@ -244,6 +249,9 @@ class TTSOptimizerGUI:
 
         self.sentence_audio_data = {}  # Dictionary to store sentence audio data
 
+        self.populate_speaker_dropdown()
+        self.set_speaker_folder()
+
     def select_file(self):
         self.source_file = filedialog.askopenfilename(filetypes=[("Text files", "*.txt")])
         if self.source_file:
@@ -263,6 +271,29 @@ class TTSOptimizerGUI:
                 shutil.copy(self.source_file, session_dir)
                 self.source_file = os.path.join(session_dir, file_name)
             
+    def set_speaker_folder(self):
+        speaker_folder_path = os.path.abspath(self.tts_voices_folder)
+        data = {"speaker_folder": speaker_folder_path}
+        response = requests.post("http://localhost:8020/set_speaker_folder", json=data)
+        if response.status_code == 200:
+            print(f"Speaker folder set to: {speaker_folder_path}")
+        else:
+            print(f"Error {response.status_code}: Failed to set speaker folder.")
+
+    def populate_speaker_dropdown(self):
+        wav_files = [f for f in os.listdir(self.tts_voices_folder) if f.endswith(".wav")]
+        speakers = [os.path.splitext(f)[0] for f in wav_files]
+        self.speaker_dropdown.configure(values=speakers)
+
+    def upload_speaker_voice(self):
+        wav_file = filedialog.askopenfilename(filetypes=[("WAV files", "*.wav")])
+        if wav_file:
+            speaker_name = os.path.splitext(os.path.basename(wav_file))[0]
+            destination_path = os.path.join(self.tts_voices_folder, f"{speaker_name}.wav")
+            shutil.copy(wav_file, destination_path)
+            self.populate_speaker_dropdown()  # Refresh the speaker dropdown after uploading
+            messagebox.showinfo("Speaker Voice Uploaded", f"The speaker voice '{speaker_name}' has been uploaded successfully.")
+
     def new_session(self):
         new_session_name = ctk.CTkInputDialog(text="Enter a name for the new session:", title="New Session").get_input()
         if new_session_name:
@@ -1122,7 +1153,13 @@ class TTSOptimizerGUI:
         
         for attempt in range(self.max_attempts.get()):
             try:
-                response = requests.post("http://localhost:8020/tts_to_audio/", json={"text": text, "speaker_wav": speaker_wav, "language": language})
+                data = {
+                    "text": text,
+                    "speaker_wav": speaker_wav,  # Pass only the speaker WAV file name
+                    "language": language
+                }
+                response = requests.post("http://localhost:8020/tts_to_audio/", json=data)
+                
                 if response.status_code == 200:
                     audio_data = io.BytesIO(response.content)
                     audio = AudioSegment.from_file(audio_data, format="wav")
@@ -1143,7 +1180,6 @@ class TTSOptimizerGUI:
                 print(f"Error in tts_to_audio: {str(e)}")
         
         return best_audio
-
     def add_silence(self, audio_segment, silence_length_ms):
         silence = AudioSegment.silent(duration=silence_length_ms)
         return audio_segment + silence
@@ -1379,36 +1415,36 @@ class TTSOptimizerGUI:
     def save_output(self):
         session_name = self.session_name.get()
         output_format = self.output_format.get()
-        output_directory = os.path.join("Outputs", session_name)
 
-        base_filename = f"{session_name}"
-        file_ext = output_format
-        counter = 2
-        output_filename = base_filename + f"_{counter}.{file_ext}"
-        output_path = os.path.join(output_directory, output_filename)
+        # Open a file dialog to choose the output directory and file name
+        output_path = filedialog.asksaveasfilename(
+            initialdir="Outputs",
+            initialfile=f"{session_name}.{output_format}",
+            filetypes=[(f"{output_format.upper()} Files", f"*.{output_format}")],
+            defaultextension=f".{output_format}"
+        )
 
-        while os.path.exists(output_path):
-            counter += 1
-            output_filename = base_filename + f"_{counter}.{file_ext}"
-            output_path = os.path.join(output_directory, output_filename)
+        if output_path:
+            output_directory = os.path.dirname(output_path)
+            output_filename = os.path.basename(output_path)
 
-        sentence_wavs = [os.path.join(output_directory, "Sentence_wavs", f"{session_name}_sentence{i + 1}.wav") for i in range(self.playlist_listbox.size())]
+            sentence_wavs = [os.path.join("Outputs", session_name, "Sentence_wavs", f"{session_name}_sentence{i + 1}.wav") for i in range(self.playlist_listbox.size())]
 
-        final_audio = AudioSegment.empty()
+            final_audio = AudioSegment.empty()
 
-        for wav_file in sentence_wavs:
-            if os.path.exists(wav_file):
-                audio_data = AudioSegment.from_file(wav_file, format="wav")
-                final_audio += audio_data
+            for wav_file in sentence_wavs:
+                if os.path.exists(wav_file):
+                    audio_data = AudioSegment.from_file(wav_file, format="wav")
+                    final_audio += audio_data
 
-        if output_format == "wav":
-            final_audio.export(output_path, format="wav")
-        elif output_format == "mp3":
-            final_audio.export(output_path, format="mp3", bitrate=self.bitrate.get())
-        elif output_format == "opus":
-            final_audio.export(output_path, format="opus", bitrate=self.bitrate.get())
+            if output_format == "wav":
+                final_audio.export(output_path, format="wav")
+            elif output_format == "mp3":
+                final_audio.export(output_path, format="mp3", bitrate=self.bitrate.get())
+            elif output_format == "opus":
+                final_audio.export(output_path, format="opus", bitrate=self.bitrate.get())
 
-        messagebox.showinfo("Output Saved", f"The output file has been saved as {output_filename}")
+            messagebox.showinfo("Output Saved", f"The output file has been saved as {output_filename}")
 
 
 def main():
