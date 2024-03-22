@@ -28,14 +28,14 @@ This project relies on several APIs and services (running locally):
 ## Installation
 
 ### Minimal One-Click Installation Executable (Windows with an Nvidia GPU only):
-Run `pandrator_start_minimal.exe` with administrator priviliges. The executable was created usinng [pyinstaller](https://github.com/pyinstaller/pyinstaller) from `pandrator_start_minimal.py` in the repository.
+Run `pandrator_start_minimal.exe` with administrator priviliges. The executable was created using [pyinstaller](https://github.com/pyinstaller/pyinstaller) from `pandrator_start_minimal.py` in the repository.
 
 **It may be flagged as a threat by antivirus software, so you may have to add it as an exception.**
 
-It creates a Pandrator folder, installs `curl`, `git`, `ffmpeg` and `Miniconda`, creates an environment, clones the XTTS Api Server repository and the Pandrator repository, installs dependencies and launches them. You may use it to launch Pandrator later. If you want to perform the setup again, remove the Pandrator folder it created. Please allow at least a couple of minutes for the initial setup process to download models and install dependencies.
+It creates a Pandrator folder, installs `curl`, `git`, `ffmpeg` and `Miniconda`, clones the XTTS Api Server repository and the Pandrator repository, creates conda environments, installs dependencies and launches them. You may use it to launch Pandrator later. If you want to perform the setup again, remove the Pandrator folder it created. Please allow at least a couple of minutes for the initial setup process to download models and install dependencies (it takes about 7 minutes for me).
 
 For additional functionality:
-- Install Text Generation Webui and remember to enable the API.
+- Install Text Generation Webui and remember to enable the API (add `--api` to `CMD_FLAGS.txt` in the main directory of the Webui before starting it).
 - Set up RVC_CLI for enhancing generations with RVC.
 - Set up NISQA API for automatic evaluation of generations.
 Please refer to the repositories linked above for detailed installation instructions. Remember that the APIs must be running to make use of the functionalities they offer.
