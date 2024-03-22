@@ -28,6 +28,8 @@ It leverages the XTTS model(s) for text-to-speech conversion, enhanced by RVC_CL
   - [Contributing](#contributing)
   - [To-do](#to-do)
 
+![UI Demonstration Image](ui_demonstration.png)
+
 ## Requirments
 
 ### Hardware
@@ -100,18 +102,18 @@ If you don't want to use the additional functionalities, you have everything you
 2. You can disable/enable appending short sentences to preceding or following sentences (disabled by default, may perhaps improve the flow as the lenght of text fragments sent to the TTS API is more uniform).
 3. Remove diacritics (useful when generating a text that contains many foreign words or transliterations from foreign alphabets). Do not enable this if you generate in a language that needs diacritics! The pronounciation will be wrong then.
 
-## LLM Preprocessing
-- Enable LLM processing to use language models for preprocessing the text before sending it to the TTS API.
+### LLM Preprocessing
+- Enable LLM processing to use language models for preprocessing the text before sending it to the TTS API. For example, you may ask the LLM to remove OCR artifacts, spell out abbreviations, correct punctuation etc.
 - You can define up to three prompts for text optimization. Each prompt is sent to the LLM API separately, and the output of the last prompt is used for TTS generation.
-- For each prompt, you can enable/disable it, set the prompt text, choose the LLM model to use, and enable/disable evaluation (if enabled, the LLM API will be called twice for each prompt, and the better output will be chosen based on a similarity score).
+- For each prompt, you can enable/disable it, set the prompt text, choose the LLM model to use, and enable/disable evaluation (if enabled, the LLM API will be called twice for each prompt, and they again for the model to choose the better result).
 - Load the available LLM models using the "Load LLM Models" button in the Session tab.
 
-## RVC Quality Enhancement and Voice Cloning
+### RVC Quality Enhancement and Voice Cloning
 - Enable RVC (Real-time Voice Cloning) to enhance the generated audio quality and apply voice cloning.
 - Select the RVC model file (.pth) and the corresponding index file using the "Select RVC Model" and "Select RVC Index" buttons in the Audio Processing tab.
 - When RVC is enabled, the generated audio will be processed using the selected RVC model and index before being saved.
 
-## NISQA TTS Evaluation
+### NISQA TTS Evaluation
 - Enable TTS evaluation to assess the quality of the generated audio using the NISQA (Non-Intrusive Speech Quality Assessment) model.
 - Set the target MOS (Mean Opinion Score) value and the maximum number of attempts for each sentence.
 - When TTS evaluation is enabled, the generated audio will be evaluated using the NISQA model, and the best audio (based on the MOS score) will be chosen for each sentence.
