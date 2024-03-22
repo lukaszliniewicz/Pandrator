@@ -1467,7 +1467,7 @@ class TTSOptimizerGUI:
 
 def main():
     root = ctk.CTk()
-    root.iconbitmap("pandrator.ico")  # Add this line to set the icon
+    root.iconbitmap("pandrator.ico")
     gui = TTSOptimizerGUI(root)
     root.mainloop()
 
