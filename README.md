@@ -27,7 +27,7 @@ Run `pandrator_start_minimal.exe` with administrator priviliges. The executable 
 
 **It may be flagged as a threat by antivirus software, so you may have to add it as an exception.**
 
-It creates a Pandrator folder, installs `curl`, `git`, `ffmpeg` and `Miniconda`, creates an environment, clones the XTTS Api Server repository and the Pandrator repository, and launches them. You may use it to launch Pandrator later. If you want to perform the setup again, you have to remove the Pandrator folder it created. 
+It creates a Pandrator folder, installs `curl`, `git`, `ffmpeg` and `Miniconda`, creates an environment, clones the XTTS Api Server repository and the Pandrator repository, and launches them. You may use it to launch Pandrator later. If you want to perform the setup again, you have to remove the Pandrator folder it created. Please allow at least a couple of minutes for the initial setup process to download models and install dependencies.
 
 For additional functionality:
 - Install Text Generation Webui and remember to enable the API.
