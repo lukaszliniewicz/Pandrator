@@ -5,7 +5,7 @@
 # Pandrator, an audiobook generator
 
 Pandrator is a tool designed to transform text into spoken audio in multiple languages using a variety of APIs and processing techniques. 
-It is still in alpha stage and I'm not an experience developer (I'm a noob, in fact), so the code is far from perfect in terms of optimisation, features and reliability. Please keep this in mind.
+It is still in alpha stage and I'm not an experienced developer (I'm a noob, in fact), so the code is far from perfect in terms of optimisation, features and reliability. Please keep this in mind.
 It leverages the XTTS model(s) for text-to-speech conversion, enhanced by RVC_CLI for quality improvement and better voice cloning results, and NISQA for audio quality evaluation. Additionally, it incorporates Text Generation Webui's API for local LLM-based text pre-processing, enabling a wide range of text manipulations before audio generation.
 
 - [Pandrator, an audiobook generator](#pandrator-an-audiobook-generator)
