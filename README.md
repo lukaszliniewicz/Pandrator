@@ -65,7 +65,7 @@ Please refer to the repositories linked above for detailed installation instruct
 
 ### Manual Installation:
 1. Make sure that Python 3 is installed.
-2. Install and run at last XTTS API Server. 
+2. Install and run at least XTTS API Server. 
 3. Clone this repository.
 4. `cd` to the repository directory.
 5. Install requirements using `pip install -r requirements.txt`.
