@@ -106,11 +106,11 @@ If you don't want to use the additional functionalities, you have everything you
 ### LLM Pre-processing
 - Enable LLM processing to use language models for preprocessing the text before sending it to the TTS API. For example, you may ask the LLM to remove OCR artifacts, spell out abbreviations, correct punctuation etc.
 - You can define up to three prompts for text optimization. Each prompt is sent to the LLM API separately, and the output of the last prompt is used for TTS generation.
-- For each prompt, you can enable/disable it, set the prompt text, choose the LLM model to use, and enable/disable evaluation (if enabled, the LLM API will be called twice for each prompt, and they again for the model to choose the better result).
+- For each prompt, you can enable/disable it, set the prompt text, choose the LLM model to use, and enable/disable evaluation (if enabled, the LLM API will be called twice for each prompt, and then again for the model to choose the better result).
 - Load the available LLM models using the "Load LLM Models" button in the Session tab.
 
 ### RVC Quality Enhancement and Voice Cloning
-- Enable RVC (Real-time Voice Cloning) to enhance the generated audio quality and apply voice cloning.
+- Enable RVC to enhance the generated audio quality and apply voice cloning.
 - Select the RVC model file (.pth) and the corresponding index file using the "Select RVC Model" and "Select RVC Index" buttons in the Audio Processing tab.
 - When RVC is enabled, the generated audio will be processed using the selected RVC model and index before being saved.
 
@@ -128,7 +128,7 @@ Contributions, suggestions for improvements, and bug reports are most welcome!
 - You can find a collection of RVC models for example [here](https://voice-models.com/).
 
 ## To-do
-- [ ] Add the other APIs to the setup script.
+- [ ] Add the other API servers to the setup script.
 - [ ] Add importing/exporting settings.
 - [ ] Add support for proprietary APIs for text pre-processing and TTS generation.
 - [ ] Enhance file format support (e.g., HTML, XML, PDF, Epub) including direct PDF to TXT conversion with OCR.
