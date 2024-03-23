@@ -90,7 +90,7 @@ If you don't want to use the additional functionalities, you have everything you
 3. Select a language from the dropdown.
 4. Choose the voice you want to use (voices are short, 8-12s `.wav` files in the `tts_voices` directory). The XTTS model uses the audio to clone the voice and use it for generation. You may use the example ones in the repository, which I borrowed from daswer123, or upload your own. Please make sure that the audio is between 8 and 12s, mono, and 22050khz. You may use a tool like Audacity to prepare the files. The less noise, the better. You may use a tool like [Resemble AI](https://github.com/resemble-ai/resemble-enhance) for denoising and/or enhancement of your samples on [Hugging Face](https://huggingface.co/spaces/ResembleAI/resemble-enhance). 
 5. Start the generation. You may stop and resume it later, or close the programme and load the session later.
-6. You can play back the generated sentenced, also as a playlist, and regenerate or remove individual ones.
+6. You can play back the generated sentences, also as a playlist, and regenerate or remove individual ones.
 7. "Save Output" concatenates the sentences generated so far an encodes them as one file (default is `.opus` at 64k bitrate; you may change it in the Audio tab to `.wav` or `.mp3`).
 
 ### General Audio Settings
