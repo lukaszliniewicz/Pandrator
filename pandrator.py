@@ -60,7 +60,7 @@ class TTSOptimizerGUI:
         self.enable_sentence_splitting = ctk.BooleanVar(value=True)
         self.max_sentence_length = ctk.IntVar(value=160)
         self.enable_sentence_appending = ctk.BooleanVar(value=True)
-        self.remove_diacritics = ctk.BooleanVar(value=True)
+        self.remove_diacritics = ctk.BooleanVar(value=False)
         self.enable_fade = ctk.BooleanVar(value=True)
         self.fade_in_duration = ctk.IntVar(value=75)
         self.fade_out_duration = ctk.IntVar(value=75)
