@@ -64,9 +64,9 @@ For additional functionality:
 Please refer to the repositories linked above for detailed installation instructions. Remember that the APIs must be running to make use of the functionalities they offer.
 
 ### Manual Installation:
-1. Make sure that Python 3 is installed.
+1. Make sure that Python 3 and git are installed and in PATH.
 2. Install and run at least XTTS API Server. 
-3. Clone this repository.
+3. Clone this repository (`git clone https://github.com/lukaszliniewicz/Pandrator.git`).
 4. `cd` to the repository directory.
 5. Install requirements using `pip install -r requirements.txt`.
 6. Run `python pandrator.py`.
