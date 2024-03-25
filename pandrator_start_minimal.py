@@ -69,7 +69,7 @@ def install_pytorch_and_xtts_api_server(conda_path, env_name):
 def run_script(conda_path, env_name, script_path):
     logging.info(f"Running script {script_path} in {env_name}...")
     
-    # Change to the directory of the audiobook_generator script
+    # Change to the directory of the pandrator script
     script_dir = os.path.dirname(script_path)
     os.chdir(script_dir)
     
@@ -104,10 +104,10 @@ def check_xtts_server_online(url, max_attempts=30, wait_interval=10):
     return False
 
 def main():
-    # Create Audiobook_Generator folder
-    audiobook_generator_path = os.path.join(os.getcwd(), 'Audiobook_Generator')
+    # Create Pandrator folder
+    pandrator_path = os.path.join(os.getcwd(), 'Pandrator')
     
-    if not os.path.exists(audiobook_generator_path):
+    if not os.path.exists(pandrator_path):
         # Check if Chocolatey is installed, if not, install it
         if not check_choco():
             logging.info("Chocolatey is not installed.")
@@ -116,16 +116,16 @@ def main():
         # Check and install dependencies
         install_dependencies()
         
-        os.makedirs(audiobook_generator_path, exist_ok=True)
-        logging.info(f"Created Audiobook_Generator folder at {audiobook_generator_path}")
+        os.makedirs(pandrator_path, exist_ok=True)
+        logging.info(f"Created Pandrator folder at {pandrator_path}")
 
         # Clone repositories
         logging.info("Cloning repositories...")
-        run_command(['git', 'clone', 'https://github.com/daswer123/xtts-api-server.git', os.path.join(audiobook_generator_path, 'xtts-api-server')])
-        run_command(['git', 'clone', 'https://github.com/lukaszliniewicz/Audiobook-Generator', os.path.join(audiobook_generator_path, 'Audiobook-Generator')])
+        run_command(['git', 'clone', 'https://github.com/daswer123/xtts-api-server.git', os.path.join(pandrator_path, 'xtts-api-server')])
+        run_command(['git', 'clone', 'https://github.com/lukaszliniewicz/Pandrator.git', os.path.join(pandrator_path, 'Pandrator')])
 
         # Install Miniconda
-        conda_path = os.path.join(audiobook_generator_path, 'conda')
+        conda_path = os.path.join(pandrator_path, 'conda')
         install_conda(conda_path)
 
         # Check if conda is installed correctly
@@ -135,22 +135,22 @@ def main():
 
         # Create conda environments
         create_conda_env(conda_path, 'xtts_api_server_installer', '3.10')
-        create_conda_env(conda_path, 'audiobook_generator_installer', '3.10')
+        create_conda_env(conda_path, 'pandrator_installer', '3.10')
 
         # Install PyTorch and xtts_api_server package
         install_pytorch_and_xtts_api_server(conda_path, 'xtts_api_server_installer')
 
-        # Install requirements for audiobook_generator
-        audiobook_generator_repo_path = os.path.join(audiobook_generator_path, 'Audiobook-Generator')
-        install_requirements(conda_path, 'audiobook_generator_installer', os.path.join(audiobook_generator_repo_path, 'audiobook_generator', 'requirements.txt'))
+        # Install requirements for pandrator
+        pandrator_repo_path = os.path.join(pandrator_path, 'Pandrator')
+        install_requirements(conda_path, 'pandrator_installer', os.path.join(pandrator_repo_path, 'requirements.txt'))
     else:
-        logging.info("Audiobook_Generator folder exists. Skipping installation steps.")
+        logging.info("Pandrator folder exists. Skipping installation steps.")
         
     # Get the conda path
-    conda_path = os.path.join(audiobook_generator_path, 'conda')
+    conda_path = os.path.join(pandrator_path, 'conda')
 
     # Run xtts_api_server
-    xtts_server_path = os.path.join(audiobook_generator_path, 'xtts-api-server')
+    xtts_server_path = os.path.join(pandrator_path, 'xtts-api-server')
     run_xtts_api_server(conda_path, 'xtts_api_server_installer', xtts_server_path)
     
     # Wait for xtts server to come online
@@ -159,10 +159,9 @@ def main():
         logging.error("xtts server failed to come online. Exiting...")
         return
 
-    # Run audiobook_generator script
-    audiobook_generator_repo_path = os.path.join(audiobook_generator_path, 'Audiobook-Generator')
-    audiobook_generator_script_path = os.path.join(audiobook_generator_repo_path, 'audiobook_generator', 'audiobook_generator.py')
-    run_script(conda_path, 'audiobook_generator_installer', audiobook_generator_script_path)
+    # Run pandrator script
+    pandrator_script_path = os.path.join(pandrator_path, 'Pandrator', 'pandrator.py')
+    run_script(conda_path, 'pandrator_installer', pandrator_script_path)
     
     # Keep the main script running to prevent immediate exit
     while True:
