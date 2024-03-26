@@ -5,3 +5,4 @@ unidecode
 sentence-splitter
 pygame
 CTkMessagebox
+CTkToolTip
