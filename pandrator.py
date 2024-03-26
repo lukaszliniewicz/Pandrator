@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 import customtkinter as ctk
 import re
 import json
@@ -84,7 +84,7 @@ class TTSOptimizerGUI:
         # Get the screen resolution
         screen_width = self.master.winfo_screenwidth()
         screen_height = self.master.winfo_screenheight()
-        frame_height = int(screen_height * 0.85)
+        frame_height = int(screen_height * 0.90)
 
         # Create the main scrollable frame with the calculated height
         self.main_scrollable_frame = ctk.CTkScrollableFrame(master, width=750, height=frame_height)
@@ -105,69 +105,95 @@ class TTSOptimizerGUI:
         self.session_name_label = ctk.CTkLabel(self.session_tab, text="Untitled Session", font=ctk.CTkFont(size=20, weight="bold"))
         self.session_name_label.grid(row=0, column=0, columnspan=4, padx=5, pady=5, sticky=tk.W)
 
+        # API Connection Section
         self.api_connection_label = ctk.CTkLabel(self.session_tab, text="API Connection", font=ctk.CTkFont(size=14, weight="bold"))
-        self.api_connection_label.grid(row=1, column=0, columnspan=4, padx=5, pady=5, sticky=tk.W)
+        self.api_connection_label.grid(row=1, column=0, columnspan=4, padx=10, pady=10, sticky=tk.W)
 
-        ctk.CTkButton(self.session_tab, text="Load LLM Models", command=self.load_models).grid(row=2, column=0, padx=5, pady=5, sticky=tk.EW)
-        ctk.CTkButton(self.session_tab, text="Upload Speaker Voice", command=self.upload_speaker_voice).grid(row=2, column=1, padx=5, pady=5, sticky=tk.EW)
-        upload_speaker_voice_tooltip = CTkToolTip(
-            self.session_tab.winfo_children()[-1],
-            message="Voices are short, 8-12s `.wav` files. The XTTS model uses them to clone the voice and use it for generation. Please make sure that the audio is between 8 and 12s, mono, and 22050khz. You may use a tool like Audacity to prepare the files. The less noise, the better. After you upload a voice, you will see it in the dropdown below.",
-            wraplength=400
-        ) 
-        ctk.CTkSwitch(self.session_tab, text="Unload LLM Model After Each Sentence", variable=self.unload_model_after_sentence).grid(row=2, column=2, columnspan=2, padx=5, pady=5, sticky=tk.W)
-        unload_model_switch_tooltip = CTkToolTip(
-            self.session_tab.winfo_children()[-1],
-            message="Helps prevent the generation from slowing down significantly if LLM processing is enabled and you have less than 8GB of VRAM.",
-            wraplength=250  # Set the wrap length to 250 pixels
-        )
+        api_connection_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
+        api_connection_frame.grid(row=2, column=0, columnspan=4, padx=10, pady=(0, 20), sticky=tk.EW)
+        api_connection_frame.grid_columnconfigure(0, weight=1)
+        api_connection_frame.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkButton(api_connection_frame, text="Load LLM Models", command=self.load_models).grid(row=0, column=0, padx=10, pady=(10, 10), sticky=tk.EW)
+        ctk.CTkButton(api_connection_frame, text="Upload Speaker Voice", command=self.upload_speaker_voice).grid(row=0, column=1, padx=10, pady=(10, 10), sticky=tk.EW)
+
+        # Session Section
         self.session_label = ctk.CTkLabel(self.session_tab, text="Session", font=ctk.CTkFont(size=14, weight="bold"))
-        self.session_label.grid(row=3, column=0, columnspan=4, padx=5, pady=5, sticky=tk.W)
+        self.session_label.grid(row=3, column=0, columnspan=4, padx=10, pady=10, sticky=tk.W)
 
-        ctk.CTkButton(self.session_tab, text="New Session", command=self.new_session, fg_color="#2e8b57", hover_color="#3cb371").grid(row=4, column=0, padx=5, pady=5, sticky=tk.EW)
-        ctk.CTkButton(self.session_tab, text="Load Session", command=self.load_session).grid(row=4, column=1, padx=5, pady=5, sticky=tk.EW)
-        ctk.CTkButton(self.session_tab, text="Delete Session", command=self.delete_session, fg_color="dark red", hover_color="red").grid(row=4, column=2, padx=5, pady=5, sticky=tk.EW)
-        ctk.CTkButton(self.session_tab, text="View Session Folder", command=self.view_session_folder).grid(row=4, column=3, padx=5, pady=5, sticky=tk.EW)
+        session_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
+        session_frame.grid(row=4, column=0, columnspan=4, padx=10, pady=(0, 20), sticky=tk.EW)
+        session_frame.grid_columnconfigure(0, weight=1)
+        session_frame.grid_columnconfigure(1, weight=1)
+        session_frame.grid_columnconfigure(2, weight=1)
+        session_frame.grid_columnconfigure(3, weight=1)
 
-        self.selected_file_label = ctk.CTkLabel(self.session_tab, text="No file selected")
-        self.select_file_button = ctk.CTkButton(self.session_tab, text="Select Source File", command=self.select_file)
-        self.select_file_button.grid(row=5, column=0, padx=5, pady=5, sticky=tk.EW)
-        self.selected_file_label.grid(row=5, column=1, padx=5, pady=5, sticky=tk.W)
+        ctk.CTkButton(session_frame, text="New Session", command=self.new_session, fg_color="#2e8b57", hover_color="#3cb371").grid(row=0, column=0, padx=10, pady=(10, 10), sticky=tk.EW)
+        ctk.CTkButton(session_frame, text="Load Session", command=self.load_session).grid(row=0, column=1, padx=10, pady=(10, 10), sticky=tk.EW)
+        ctk.CTkButton(session_frame, text="Delete Session", command=self.delete_session, fg_color="dark red", hover_color="red").grid(row=0, column=3, padx=10, pady=(10, 10), sticky=tk.EW)
+        ctk.CTkButton(session_frame, text="View Session Folder", command=self.view_session_folder).grid(row=0, column=2, padx=10, pady=(10, 10), sticky=tk.EW)
+
+        # Generation Section
+        ctk.CTkLabel(self.session_tab, text="Generation", font=ctk.CTkFont(size=14, weight="bold")).grid(row=5, column=0, padx=10, pady=10, sticky=tk.W)
+
+        generation_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
+        generation_frame.grid(row=6, column=0, columnspan=4, padx=10, pady=(0, 20), sticky=tk.EW)
+        generation_frame.grid_columnconfigure(0, weight=1)
+        generation_frame.grid_columnconfigure(1, weight=1)
+        generation_frame.grid_columnconfigure(2, weight=1)
+        generation_frame.grid_columnconfigure(3, weight=1)
+
+        self.selected_file_label = ctk.CTkLabel(generation_frame, text="No file selected")
+        self.select_file_button = ctk.CTkButton(generation_frame, text="Select Source File", command=self.select_file)
+        self.select_file_button.grid(row=0, column=0, padx=10, pady=(10, 5), sticky=tk.EW)
+        self.selected_file_label.grid(row=0, column=1, padx=10, pady=(10, 5), sticky=tk.W)
 
         self.language = ctk.StringVar(value="en")
-        ctk.CTkLabel(self.session_tab, text="Language:").grid(row=6, column=0, padx=5, pady=5, sticky=tk.W)
-        self.language_dropdown = ctk.CTkOptionMenu(self.session_tab, variable=self.language, values=["en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko", "hi"])
-        self.language_dropdown.grid(row=6, column=1, padx=5, pady=5, sticky=tk.EW)
+        ctk.CTkLabel(generation_frame, text="Language:").grid(row=1, column=0, padx=10, pady=5, sticky=tk.W)
+        self.language_dropdown = ctk.CTkOptionMenu(generation_frame, variable=self.language, values=["en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko", "hi"])
+        self.language_dropdown.grid(row=1, column=1, padx=10, pady=5, sticky=tk.EW)
 
         self.selected_speaker = ctk.StringVar(value="")
-        ctk.CTkLabel(self.session_tab, text="Speaker Voice:").grid(row=7, column=0, padx=5, pady=5, sticky=tk.W)
-        self.speaker_dropdown = ctk.CTkOptionMenu(self.session_tab, variable=self.selected_speaker, values=[])
-        self.speaker_dropdown.grid(row=7, column=1, padx=5, pady=5, sticky=tk.EW)
+        ctk.CTkLabel(generation_frame, text="Speaker Voice:").grid(row=2, column=0, padx=10, pady=5, sticky=tk.W)
+        self.speaker_dropdown = ctk.CTkOptionMenu(generation_frame, variable=self.selected_speaker, values=[])
+        self.speaker_dropdown.grid(row=2, column=1, padx=10, pady=5, sticky=tk.EW)
+        self.populate_speaker_dropdown()
 
-        ctk.CTkButton(self.session_tab, text="Start Generation", command=self.start_optimisation_thread, fg_color="#2e8b57", hover_color="#3cb371").grid(row=8, column=0, padx=5, pady=5, sticky=tk.EW)
-        ctk.CTkButton(self.session_tab, text="Stop Generation", command=self.stop_generation).grid(row=8, column=1, padx=5, pady=5, sticky=tk.EW)
-        ctk.CTkButton(self.session_tab, text="Resume Generation", command=self.resume_generation).grid(row=9, column=0, padx=5, pady=5, sticky=tk.EW)
-        ctk.CTkButton(self.session_tab, text="Cancel Generation", command=self.cancel_generation, fg_color="dark red", hover_color="red").grid(row=9, column=1, padx=5, pady=5, sticky=tk.EW)
+        ctk.CTkButton(generation_frame, text="Start Generation", command=self.start_optimisation_thread, fg_color="#2e8b57", hover_color="#3cb371").grid(row=3, column=0, padx=10, pady=(5, 20), sticky=tk.EW)
+        ctk.CTkButton(generation_frame, text="Stop Generation", command=self.stop_generation).grid(row=3, column=2, padx=10, pady=(5, 20), sticky=tk.EW)
+        ctk.CTkButton(generation_frame, text="Resume Generation", command=self.resume_generation).grid(row=3, column=1, padx=10, pady=(5, 20), sticky=tk.EW)
+        ctk.CTkButton(generation_frame, text="Cancel Generation", command=self.cancel_generation, fg_color="dark red", hover_color="red").grid(row=3, column=3, padx=10, pady=(5, 20), sticky=tk.EW)
 
-        ctk.CTkLabel(self.session_tab, text="Progress:").grid(row=10, column=0, padx=5, pady=5, sticky=tk.W)
-        self.progress_label = ctk.CTkLabel(self.session_tab, text="0.00%")
-        self.progress_label.grid(row=10, column=1, padx=5, pady=5, sticky=tk.W)
-        self.progress_bar = ctk.CTkProgressBar(self.session_tab)
-        self.progress_bar.grid(row=11, column=0, columnspan=4, padx=5, pady=5, sticky=tk.EW)
-        ctk.CTkLabel(self.session_tab, text="Estimated Remaining Time:").grid(row=12, column=0, padx=5, pady=5, sticky=tk.W)
-        self.remaining_time_label = ctk.CTkLabel(self.session_tab, text="N/A")
-        self.remaining_time_label.grid(row=12, column=1, padx=5, pady=5, sticky=tk.W)
+        ctk.CTkLabel(generation_frame, text="Progress:").grid(row=4, column=0, padx=10, pady=5, sticky=tk.W)
+        self.progress_label = ctk.CTkLabel(generation_frame, text="0.00%")
+        self.progress_label.grid(row=4, column=1, padx=10, pady=5, sticky=tk.W)
+        self.progress_bar = ctk.CTkProgressBar(generation_frame)
+        self.progress_bar.grid(row=5, column=0, columnspan=4, padx=10, pady=5, sticky=tk.EW)
+        ctk.CTkLabel(generation_frame, text="Estimated Remaining Time:").grid(row=6, column=0, padx=10, pady=(5, 20), sticky=tk.W)
+        self.remaining_time_label = ctk.CTkLabel(generation_frame, text="N/A")
+        self.remaining_time_label.grid(row=6, column=1, padx=10, pady=(5, 20), sticky=tk.W)
 
-        ctk.CTkLabel(self.session_tab, text="Generated Sentences", font=ctk.CTkFont(size=14, weight="bold")).grid(row=13, column=0, padx=5, pady=5, sticky=tk.W)
+        # Generated Sentences Section
+        ctk.CTkLabel(self.session_tab, text="Generated Sentences", font=ctk.CTkFont(size=14, weight="bold")).grid(row=14, column=0, padx=10, pady=10, sticky=tk.W)
 
-        self.play_button = ctk.CTkButton(self.session_tab, text="Play", command=self.toggle_playback, fg_color="#2e8b57", hover_color="#3cb371")
-        self.play_button.grid(row=14, column=0, padx=5, pady=5, sticky=tk.EW)
-        ctk.CTkButton(self.session_tab, text="Stop", command=self.stop_playback).grid(row=14, column=2, padx=5, pady=5, sticky=tk.EW)
-        ctk.CTkButton(self.session_tab, text="Play as Playlist", command=self.play_sentences_as_playlist).grid(row=14, column=1, padx=5, pady=5, sticky=tk.EW)
+        generated_sentences_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
+        generated_sentences_frame.grid(row=15, column=0, columnspan=4, padx=10, pady=(0, 20), sticky=tk.EW)
+        generated_sentences_frame.grid_columnconfigure(0, weight=1)
+        generated_sentences_frame.grid_columnconfigure(1, weight=1)
 
+        self.play_button = ctk.CTkButton(generated_sentences_frame, text="Play", command=self.toggle_playback, fg_color="#2e8b57", hover_color="#3cb371")
+        self.play_button.grid(row=0, column=0, padx=10, pady=(10, 5), sticky=tk.EW)
+        ctk.CTkButton(generated_sentences_frame, text="Stop", command=self.stop_playback).grid(row=0, column=2, padx=10, pady=(10, 5), sticky=tk.EW)
+        ctk.CTkButton(generated_sentences_frame, text="Play as Playlist", command=self.play_sentences_as_playlist).grid(row=0, column=1, padx=10, pady=(10, 5), sticky=tk.EW)
+
+        # Create a frame to hold the Listbox and Scrollbar
+        listbox_frame = ctk.CTkFrame(generated_sentences_frame, fg_color="#444444")  # Updated color
+        listbox_frame.grid(row=1, column=0, columnspan=4, padx=10, pady=5, sticky=tk.EW)
+
+        # Create the Listbox
         self.playlist_listbox = tk.Listbox(
-            self.session_tab,
-            bg="#333333",
+            listbox_frame,
+            bg="#444444",  # Updated color
             fg="#FFFFFF",
             font=("Helvetica", 9),
             selectbackground="#555555",
@@ -176,15 +202,26 @@ class TTSOptimizerGUI:
             activestyle="none",
             highlightthickness=0,
             bd=0,
-            relief=tk.FLAT
-            )        
-        self.playlist_listbox.grid(row=15, column=0, columnspan=4, padx=5, pady=5, sticky=tk.EW)
+            relief=tk.FLAT,
+            height=10,  # Set the height to display a specific number of items
+        )
+        self.playlist_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        ctk.CTkButton(self.session_tab, text="Regenerate", command=self.regenerate_selected_sentence).grid(row=16, column=0, padx=5, pady=5, sticky=tk.EW)
-        ctk.CTkButton(self.session_tab, text="Edit", command=self.edit_selected_sentence).grid(row=16, column=3, padx=5, pady=5, sticky=tk.EW)
+        # Create the Scrollbar
+        scrollbar = ctk.CTkScrollbar(listbox_frame, orientation="vertical", command=self.playlist_listbox.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        ctk.CTkButton(self.session_tab, text="Remove", command=self.remove_selected_sentences).grid(row=16, column=1, padx=5, pady=5, sticky=tk.EW)
-        ctk.CTkButton(self.session_tab, text="Save Output", command=self.save_output).grid(row=16, column=2, padx=5, pady=5, sticky=tk.EW)
+        # Configure the Listbox to use the Scrollbar
+        self.playlist_listbox.configure(yscrollcommand=scrollbar.set)
+
+        # Enable word wrapping in the Listbox
+        self.playlist_listbox.configure(justify=tk.LEFT)
+
+        ctk.CTkButton(generated_sentences_frame, text="Regenerate", command=self.regenerate_selected_sentence).grid(row=2, column=0, padx=10, pady=(5, 20), sticky=tk.EW)
+        ctk.CTkButton(generated_sentences_frame, text="Edit", command=self.edit_selected_sentence).grid(row=2, column=3, padx=10, pady=(5, 20), sticky=tk.EW)
+
+        ctk.CTkButton(generated_sentences_frame, text="Remove", command=self.remove_selected_sentences).grid(row=2, column=1, padx=10, pady=(5, 20), sticky=tk.EW)
+        ctk.CTkButton(generated_sentences_frame, text="Save Output", command=self.save_output).grid(row=2, column=2, padx=10, pady=(5, 20), sticky=tk.EW)
 
         # Text Processing Tab
         self.text_processing_tab = self.tabview.add("Text Processing")
@@ -198,7 +235,12 @@ class TTSOptimizerGUI:
         ctk.CTkSwitch(self.text_processing_tab, text="Append Short Sentences", variable=self.enable_sentence_appending).grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
         ctk.CTkSwitch(self.text_processing_tab, text="Remove Diacritics", variable=self.remove_diacritics).grid(row=3, column=0, padx=5, pady=5, sticky=tk.W)
         ctk.CTkSwitch(self.text_processing_tab, text="Enable LLM Processing", variable=self.enable_llm_processing).grid(row=4, column=0, padx=5, pady=5, sticky=tk.W)
-
+        ctk.CTkSwitch(self.text_processing_tab, text="Unload LLM Model After Each Sentence", variable=self.unload_model_after_sentence).grid(row=4, column=1, columnspan=2, padx=5, pady=5, sticky=tk.W)
+        unload_model_switch_tooltip = CTkToolTip(
+            self.text_processing_tab.winfo_children()[-1],
+            message="Helps prevent the generation from slowing down significantly if LLM processing is enabled and you have less than 8GB of VRAM.",
+            wraplength=250  # Set the wrap length to 250 pixels
+        )
         ctk.CTkLabel(self.text_processing_tab, text="First Prompt").grid(row=5, column=0, padx=5, pady=5, sticky=tk.W)
         self.first_prompt_text = ctk.CTkTextbox(self.text_processing_tab, height=100, width=500, wrap="word")
         self.first_prompt_text.insert("0.0", self.first_optimisation_prompt.get())
@@ -271,24 +313,27 @@ class TTSOptimizerGUI:
         self.set_speaker_folder()
 
     def select_file(self):
-        self.source_file = filedialog.askopenfilename(filetypes=[("Text files", "*.txt")])
-        if self.source_file:
-            file_name = os.path.basename(self.source_file)
+        self.pre_selected_source_file = filedialog.askopenfilename(filetypes=[("Text files", "*.txt")])
+        if self.pre_selected_source_file:
+            file_name = os.path.basename(self.pre_selected_source_file)
             self.selected_file_label.configure(text=file_name)
-            
-            session_name = self.session_name.get()
-            if session_name:
+
+            if self.session_name.get():
+                session_name = self.session_name.get()
                 session_dir = os.path.join("Outputs", session_name)
                 os.makedirs(session_dir, exist_ok=True)
-                
+
                 # Remove the old text file from the session directory
                 txt_files = [file for file in os.listdir(session_dir) if file.endswith(".txt")]
                 for file in txt_files:
                     os.remove(os.path.join(session_dir, file))
-                
-                shutil.copy(self.source_file, session_dir)
+
+                shutil.copy(self.pre_selected_source_file, session_dir)
                 self.source_file = os.path.join(session_dir, file_name)
-            
+        else:
+            self.pre_selected_source_file = None
+            self.selected_file_label.configure(text="No file selected")
+
     def set_speaker_folder(self):
         speaker_folder_path = os.path.abspath(self.tts_voices_folder)
         data = {"speaker_folder": speaker_folder_path}
@@ -307,8 +352,10 @@ class TTSOptimizerGUI:
 
     def populate_speaker_dropdown(self):
         wav_files = [f for f in os.listdir(self.tts_voices_folder) if f.endswith(".wav")]
-        speakers = [os.path.splitext(f)[0] for f in wav_files]
+        speakers = [os.path.splitext(f)[0] for f in sorted(wav_files)]  # Sort wav_files alphabetically
         self.speaker_dropdown.configure(values=speakers)
+        if speakers:
+            self.selected_speaker.set(speakers[0])  # Set the first speaker as the default
 
     def check_server_connection(self):
         if not self.server_connected:
@@ -354,6 +401,16 @@ class TTSOptimizerGUI:
             self.selected_file_label.configure(text="No file selected")  # Reset the selected file label
             self.progress_bar.set(0)
             self.remaining_time_label.configure(text="N/A")
+
+            # Copy the pre-selected source file to the new session folder
+            if self.pre_selected_source_file:
+                session_dir = os.path.join("Outputs", new_session_name)
+                os.makedirs(session_dir, exist_ok=True)
+                file_name = os.path.basename(self.pre_selected_source_file)
+                destination_path = os.path.join(session_dir, file_name)
+                shutil.copy(self.pre_selected_source_file, destination_path)
+                self.source_file = destination_path
+                self.selected_file_label.configure(text=file_name)
 
     def stop_generation(self):
         self.stop_flag = True
@@ -453,10 +510,12 @@ class TTSOptimizerGUI:
         if session_name:
             session_dir = os.path.join("Outputs", session_name)
             if os.path.exists(session_dir):
-                self.stop_playback()  # Stop any ongoing playback
-                pygame.mixer.quit()  # Quit the pygame mixer
-                time.sleep(1)  # Wait for a short duration before deleting files
-                
+                # Check if the mixer is initialized
+                if pygame.mixer.get_init() is not None:
+                    self.stop_playback()  # Stop any ongoing playback
+                    pygame.mixer.quit()  # Quit the pygame mixer
+                    time.sleep(1)  # Wait for a short duration before deleting files
+
                 try:
                     shutil.rmtree(session_dir)  # Delete the session directory and its contents
                     CTkMessagebox(title="Session Deleted", message=f"The session '{session_name}' has been deleted.", icon="info")
@@ -477,9 +536,18 @@ class TTSOptimizerGUI:
             response = requests.get("http://127.0.0.1:5000/v1/internal/model/list")
             if response.status_code == 200:
                 model_names = response.json()["model_names"]
+                model_names.sort()  # Sort the model names in alphabetical order
+
+                # Update the dropdown values and pre-select the first model
                 self.first_prompt_model_dropdown.configure(values=model_names)
                 self.second_prompt_model_dropdown.configure(values=model_names)
                 self.third_prompt_model_dropdown.configure(values=model_names)
+
+                if model_names:
+                    self.first_prompt_model.set(model_names[0])
+                    self.second_prompt_model.set(model_names[0])
+                    self.third_prompt_model.set(model_names[0])
+
                 CTkMessagebox(title="Models Loaded", message="LLM models loaded successfully.", icon="info")
             else:
                 CTkMessagebox(title="Error", message="Failed to load models from the API.", icon="cancel")
@@ -1341,9 +1409,10 @@ class TTSOptimizerGUI:
     def stop_playback(self):
         if self.channel is not None and self.channel.get_busy():
             self.channel.stop()
-        if pygame.mixer.music.get_busy():
-            pygame.mixer.music.stop()
-            pygame.mixer.music.unload()  # Unload the music file
+        if pygame.mixer.get_init() is not None:
+            if pygame.mixer.music.get_busy():
+                pygame.mixer.music.stop()
+                pygame.mixer.music.unload()  # Unload the music file
         self.playlist_stopped = True
         self.paused = False
         self.playing = False
@@ -1475,6 +1544,10 @@ class TTSOptimizerGUI:
                             self.playlist_listbox.delete(selected_index)
                             self.playlist_listbox.insert(selected_index, edited_sentence)
 
+                            # Set the "tts_generated" flag to "yes" after successful regeneration
+                            sentence_dict["tts_generated"] = "yes"
+                            self.save_json(processed_sentences, json_filename)
+
                         else:
                             logging.error(f"Failed to generate audio for sentence {sentence_number}")
 
@@ -1565,7 +1638,7 @@ class TTSOptimizerGUI:
                 for sentence_dict in processed_sentences:
                     sentence_number = sentence_dict.get("sentence_number")
                     sentence_text = sentence_dict.get("processed_sentence") if sentence_dict.get("processed_sentence") else sentence_dict.get("original_sentence")
-                    if sentence_text:
+                    if sentence_text and sentence_dict.get("tts_generated") == "yes":
                         self.playlist_listbox.insert(int(sentence_number) - 1, sentence_text)
 
                 # Load the text file from the session directory
@@ -1581,7 +1654,6 @@ class TTSOptimizerGUI:
                 messagebox.showinfo("Session Loaded", f"The session '{session_name}' has been loaded.")
             else:
                 messagebox.showerror("Error", "Session JSON file not found.")
-
     def update_sentence_in_json(self, sentence_number, edited_sentence):
         try:
             session_dir = os.path.join("Outputs", self.session_name.get())
