@@ -164,14 +164,14 @@ class TTSOptimizerGUI:
         ctk.CTkButton(generation_frame, text="Resume Generation", command=self.resume_generation).grid(row=3, column=1, padx=10, pady=(5, 20), sticky=tk.EW)
         ctk.CTkButton(generation_frame, text="Cancel Generation", command=self.cancel_generation, fg_color="dark red", hover_color="red").grid(row=3, column=3, padx=10, pady=(5, 20), sticky=tk.EW)
 
-        ctk.CTkLabel(generation_frame, text="Progress:").grid(row=4, column=0, padx=10, pady=5, sticky=tk.W)
+        ctk.CTkLabel(generation_frame, text="Progress:").grid(row=5, column=0, padx=10, pady=5, sticky=tk.W)
         self.progress_label = ctk.CTkLabel(generation_frame, text="0.00%")
-        self.progress_label.grid(row=4, column=1, padx=10, pady=5, sticky=tk.W)
+        self.progress_label.grid(row=5, column=1, padx=10, pady=5, sticky=tk.W)
         self.progress_bar = ctk.CTkProgressBar(generation_frame)
-        self.progress_bar.grid(row=5, column=0, columnspan=4, padx=10, pady=5, sticky=tk.EW)
-        ctk.CTkLabel(generation_frame, text="Estimated Remaining Time:").grid(row=6, column=0, padx=10, pady=(5, 20), sticky=tk.W)
+        self.progress_bar.grid(row=4, column=0, columnspan=4, padx=10, pady=5, sticky=tk.EW)
+        ctk.CTkLabel(generation_frame, text="Estimated Remaining Time:").grid(row=5, column=2, padx=10, pady=(5), sticky=tk.W)
         self.remaining_time_label = ctk.CTkLabel(generation_frame, text="N/A")
-        self.remaining_time_label.grid(row=6, column=1, padx=10, pady=(5, 20), sticky=tk.W)
+        self.remaining_time_label.grid(row=5, column=3, padx=10, pady=(5), sticky=tk.W)
 
         # Generated Sentences Section
         ctk.CTkLabel(self.session_tab, text="Generated Sentences", font=ctk.CTkFont(size=14, weight="bold")).grid(row=14, column=0, padx=10, pady=10, sticky=tk.W)
