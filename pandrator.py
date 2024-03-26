@@ -22,6 +22,8 @@ import shutil
 from CTkMessagebox import CTkMessagebox
 import ctypes
 import math
+import platform
+from CTkToolTip import CTkToolTip
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -29,8 +31,8 @@ class TTSOptimizerGUI:
     def __init__(self, master):
         self.master = master
         master.title("Pandrator")
-        pygame.mixer.init()
-        self.channel = pygame.mixer.Channel(0)
+        self.channel = None
+        self.playlist_index = None
         self.enable_tts_evaluation = ctk.BooleanVar(value=False)
         self.stop_flag = False
         self.delete_session_flag = False
@@ -38,7 +40,7 @@ class TTSOptimizerGUI:
         self.tts_voices_folder = "tts_voices"
         if not os.path.exists(self.tts_voices_folder):
             os.makedirs(self.tts_voices_folder)
-
+        self.unload_model_after_sentence = ctk.BooleanVar(value=False)
         self.source_file = ""
         self.first_optimisation_prompt = ctk.StringVar(value="Your task is to spell out abbreviations and titles and convert Roman numerals to English words in the sentence(s) you are given. For example: Prof. to Professor, Dr. to Doctor, et. al. to et alia, etc. to et cetera, Section III to Section Three, Chapter V to Chapter Five and so on. Don't change ANYTHING ELSE and output ONLY the complete processed text. If no adjustments are necessary, just output the sentence(s) without changing or appending ANYTHING. Include ABSOLUTELY NO comments, NO acknowledgments, NO explanations, NO notes and so on. This is your text: ")
         self.second_optimisation_prompt = ctk.StringVar(value="Your task is to analyze a text fragment carefully and correct punctuation. Also, correct any misspelled words and possible OCR artifacts based on context. If there is a number that looks out of place because it could have been a page number captured by OCR and doesn't fit in the context, remove it. Don't change ANYTHING ELSE and output ONLY the complete processed text (even if no changes were made). No comments, acknowledgments, explanations or notes. This is your text: ")
@@ -82,12 +84,10 @@ class TTSOptimizerGUI:
         # Get the screen resolution
         screen_width = self.master.winfo_screenwidth()
         screen_height = self.master.winfo_screenheight()
-
-        # Calculate the desired frame height (85% of the screen height)
         frame_height = int(screen_height * 0.85)
 
         # Create the main scrollable frame with the calculated height
-        self.main_scrollable_frame = ctk.CTkScrollableFrame(master, width=680, height=frame_height)
+        self.main_scrollable_frame = ctk.CTkScrollableFrame(master, width=750, height=frame_height)
         self.main_scrollable_frame.grid(row=0, column=0, padx=10, pady=10, sticky=tk.NSEW)
         self.main_scrollable_frame.grid_columnconfigure(0, weight=1)
         self.main_scrollable_frame.grid_rowconfigure(0, weight=1)
@@ -98,24 +98,36 @@ class TTSOptimizerGUI:
 
         # Session Tab
         self.session_tab = self.tabview.add("Session")
-        self.session_tab.grid_columnconfigure(0, weight=1)
-        self.session_tab.grid_columnconfigure(1, weight=1)
-        self.session_tab.grid_columnconfigure(2, weight=1)
+        self.session_tab.grid_columnconfigure(0, weight=1, uniform="session_columns")
+        self.session_tab.grid_columnconfigure(1, weight=1, uniform="session_columns")
+        self.session_tab.grid_columnconfigure(2, weight=1, uniform="session_columns")
+        self.session_tab.grid_columnconfigure(3, weight=1, uniform="session_columns")
         self.session_name_label = ctk.CTkLabel(self.session_tab, text="Untitled Session", font=ctk.CTkFont(size=20, weight="bold"))
-        self.session_name_label.grid(row=0, column=0, columnspan=2, padx=5, pady=5, sticky=tk.W)
-        
+        self.session_name_label.grid(row=0, column=0, columnspan=4, padx=5, pady=5, sticky=tk.W)
+
         self.api_connection_label = ctk.CTkLabel(self.session_tab, text="API Connection", font=ctk.CTkFont(size=14, weight="bold"))
-        self.api_connection_label.grid(row=1, column=0, columnspan=2, padx=5, pady=5, sticky=tk.W)
-        
+        self.api_connection_label.grid(row=1, column=0, columnspan=4, padx=5, pady=5, sticky=tk.W)
+
         ctk.CTkButton(self.session_tab, text="Load LLM Models", command=self.load_models).grid(row=2, column=0, padx=5, pady=5, sticky=tk.EW)
         ctk.CTkButton(self.session_tab, text="Upload Speaker Voice", command=self.upload_speaker_voice).grid(row=2, column=1, padx=5, pady=5, sticky=tk.EW)
-        
+        upload_speaker_voice_tooltip = CTkToolTip(
+            self.session_tab.winfo_children()[-1],
+            message="Voices are short, 8-12s `.wav` files. The XTTS model uses them to clone the voice and use it for generation. Please make sure that the audio is between 8 and 12s, mono, and 22050khz. You may use a tool like Audacity to prepare the files. The less noise, the better. After you upload a voice, you will see it in the dropdown below.",
+            wraplength=400
+        ) 
+        ctk.CTkSwitch(self.session_tab, text="Unload LLM Model After Each Sentence", variable=self.unload_model_after_sentence).grid(row=2, column=2, columnspan=2, padx=5, pady=5, sticky=tk.W)
+        unload_model_switch_tooltip = CTkToolTip(
+            self.session_tab.winfo_children()[-1],
+            message="Helps prevent the generation from slowing down significantly if LLM processing is enabled and you have less than 8GB of VRAM.",
+            wraplength=250  # Set the wrap length to 250 pixels
+        )
         self.session_label = ctk.CTkLabel(self.session_tab, text="Session", font=ctk.CTkFont(size=14, weight="bold"))
-        self.session_label.grid(row=3, column=0, columnspan=2, padx=5, pady=5, sticky=tk.W)
-        
+        self.session_label.grid(row=3, column=0, columnspan=4, padx=5, pady=5, sticky=tk.W)
+
         ctk.CTkButton(self.session_tab, text="New Session", command=self.new_session, fg_color="#2e8b57", hover_color="#3cb371").grid(row=4, column=0, padx=5, pady=5, sticky=tk.EW)
         ctk.CTkButton(self.session_tab, text="Load Session", command=self.load_session).grid(row=4, column=1, padx=5, pady=5, sticky=tk.EW)
         ctk.CTkButton(self.session_tab, text="Delete Session", command=self.delete_session, fg_color="dark red", hover_color="red").grid(row=4, column=2, padx=5, pady=5, sticky=tk.EW)
+        ctk.CTkButton(self.session_tab, text="View Session Folder", command=self.view_session_folder).grid(row=4, column=3, padx=5, pady=5, sticky=tk.EW)
 
         self.selected_file_label = ctk.CTkLabel(self.session_tab, text="No file selected")
         self.select_file_button = ctk.CTkButton(self.session_tab, text="Select Source File", command=self.select_file)
@@ -147,32 +159,33 @@ class TTSOptimizerGUI:
         self.remaining_time_label.grid(row=12, column=1, padx=5, pady=5, sticky=tk.W)
 
         ctk.CTkLabel(self.session_tab, text="Generated Sentences", font=ctk.CTkFont(size=14, weight="bold")).grid(row=13, column=0, padx=5, pady=5, sticky=tk.W)
-        
+
         self.play_button = ctk.CTkButton(self.session_tab, text="Play", command=self.toggle_playback, fg_color="#2e8b57", hover_color="#3cb371")
         self.play_button.grid(row=14, column=0, padx=5, pady=5, sticky=tk.EW)
-        ctk.CTkButton(self.session_tab, text="Stop", command=self.stop_playback).grid(row=14, column=1, padx=5, pady=5, sticky=tk.EW)
-        ctk.CTkButton(self.session_tab, text="Play as Playlist", command=self.play_sentences_as_playlist).grid(row=14, column=2, padx=5, pady=5, sticky=tk.EW)
+        ctk.CTkButton(self.session_tab, text="Stop", command=self.stop_playback).grid(row=14, column=2, padx=5, pady=5, sticky=tk.EW)
+        ctk.CTkButton(self.session_tab, text="Play as Playlist", command=self.play_sentences_as_playlist).grid(row=14, column=1, padx=5, pady=5, sticky=tk.EW)
 
         self.playlist_listbox = tk.Listbox(
             self.session_tab,
-            bg="#333333",  
-            fg="#FFFFFF",  
-            font=("Helvetica", 9),  
-            selectbackground="#555555",  
-            selectforeground="#FFFFFF",  
-            selectborderwidth=0,  
-            activestyle="none",  
-            highlightthickness=0,  
-            bd=0,  
+            bg="#333333",
+            fg="#FFFFFF",
+            font=("Helvetica", 9),
+            selectbackground="#555555",
+            selectforeground="#FFFFFF",
+            selectborderwidth=0,
+            activestyle="none",
+            highlightthickness=0,
+            bd=0,
             relief=tk.FLAT
             )        
         self.playlist_listbox.grid(row=15, column=0, columnspan=4, padx=5, pady=5, sticky=tk.EW)
 
         ctk.CTkButton(self.session_tab, text="Regenerate", command=self.regenerate_selected_sentence).grid(row=16, column=0, padx=5, pady=5, sticky=tk.EW)
+        ctk.CTkButton(self.session_tab, text="Edit", command=self.edit_selected_sentence).grid(row=16, column=3, padx=5, pady=5, sticky=tk.EW)
+
         ctk.CTkButton(self.session_tab, text="Remove", command=self.remove_selected_sentences).grid(row=16, column=1, padx=5, pady=5, sticky=tk.EW)
         ctk.CTkButton(self.session_tab, text="Save Output", command=self.save_output).grid(row=16, column=2, padx=5, pady=5, sticky=tk.EW)
-        
-    
+
         # Text Processing Tab
         self.text_processing_tab = self.tabview.add("Text Processing")
         self.text_processing_tab.grid_columnconfigure(0, weight=1)
@@ -310,7 +323,7 @@ class TTSOptimizerGUI:
             destination_path = os.path.join(self.tts_voices_folder, f"{speaker_name}.wav")
             shutil.copy(wav_file, destination_path)
             self.populate_speaker_dropdown()  # Refresh the speaker dropdown after uploading
-            messagebox.showinfo("Speaker Voice Uploaded", f"The speaker voice '{speaker_name}' has been uploaded successfully.")
+            CTkMessagebox(title="Speaker Voice Uploaded", message=f"The speaker voice '{speaker_name}' has been uploaded successfully.", icon="info")
 
     def new_session(self):
         new_session_name = ctk.CTkInputDialog(text="Enter a name for the new session:", title="New Session").get_input()
@@ -344,7 +357,7 @@ class TTSOptimizerGUI:
 
     def stop_generation(self):
         self.stop_flag = True
-        messagebox.showinfo("Generation Stopped", "The generation process will stop after completing the current sentence.")
+        CTkMessagebox(title="Generation Stopped", message="The generation process will stop after completing the current sentence.", icon="info")
 
     def resume_generation(self):
         if self.session_name.get():
@@ -360,9 +373,9 @@ class TTSOptimizerGUI:
                 self.optimization_thread = threading.Thread(target=self.start_optimisation, args=(total_sentences, current_sentence))
                 self.optimization_thread.start()
             else:
-                messagebox.showerror("Error", "Session JSON file not found.")
+                CTkMessagebox(title="Error", message="Session JSON file not found.", icon="cancel")
         else:
-            messagebox.showerror("Error", "Please load a session before resuming generation.")
+            CTkMessagebox(title="Error", message="Please load a session before resuming generation.", icon="cancel")
 
     def cancel_generation(self):
         if hasattr(self, 'optimization_thread') and self.optimization_thread.is_alive():
@@ -401,11 +414,11 @@ class TTSOptimizerGUI:
                 self.progress_bar.set(0)
                 self.remaining_time_label.configure(text="N/A")
 
-                messagebox.showinfo("Generation Canceled", "The generation process has been canceled, and the session JSON file and WAV files have been removed.")
+                CTkMessagebox(title="Generation Canceled", message="The generation process has been canceled, and the session JSON file and WAV files have been removed.", icon="info")
             except Exception as e:
-                messagebox.showerror("Cancellation Error", f"An error occurred while canceling the generation: {str(e)}")
+                CTkMessagebox(title="Cancellation Error", message=f"An error occurred while canceling the generation: {str(e)}", icon="cancel")
         else:
-            messagebox.showinfo("No Generation in Progress", "There is no generation process currently running.")
+            CTkMessagebox(title="No Generation in Progress", message="There is no generation process currently running.", icon="info")
 
     def delete_session(self):
         if hasattr(self, 'optimization_thread') and self.optimization_thread.is_alive():
@@ -446,9 +459,9 @@ class TTSOptimizerGUI:
                 
                 try:
                     shutil.rmtree(session_dir)  # Delete the session directory and its contents
-                    messagebox.showinfo("Session Deleted", f"The session '{session_name}' has been deleted.")
+                    CTkMessagebox(title="Session Deleted", message=f"The session '{session_name}' has been deleted.", icon="info")
                 except Exception as e:
-                    messagebox.showerror("Deletion Error", f"An error occurred while deleting the session: {str(e)}")
+                    CTkMessagebox(title="Deletion Error", message=f"An error occurred while deleting the session: {str(e)}", icon="cancel")
 
     def reset_ui_elements(self):
         self.session_name.set("")
@@ -467,11 +480,11 @@ class TTSOptimizerGUI:
                 self.first_prompt_model_dropdown.configure(values=model_names)
                 self.second_prompt_model_dropdown.configure(values=model_names)
                 self.third_prompt_model_dropdown.configure(values=model_names)
-                messagebox.showinfo("Models Loaded", "LLM models loaded successfully.")
+                CTkMessagebox(title="Models Loaded", message="LLM models loaded successfully.", icon="info")
             else:
-                messagebox.showerror("Error", "Failed to load models from the API.")
+                CTkMessagebox(title="Error", message="Failed to load models from the API.", icon="cancel")
         except requests.exceptions.ConnectionError:
-            messagebox.showerror("Error", "Failed to connect to the LLM API.")
+            CTkMessagebox(title="Error", message="Failed to connect to the LLM API.", icon="cancel")
 
     def toggle_playback(self):
         if self.playing:
@@ -502,24 +515,37 @@ class TTSOptimizerGUI:
     def remove_selected_sentences(self):
         session_name = self.session_name.get()
         session_directory = os.path.join("Outputs", session_name)
+        json_filename = os.path.join(session_directory, f"{session_name}_sentences.json")
 
         selected_indices = self.playlist_listbox.curselection()
         if not selected_indices:
             messagebox.showerror("Error", "Please select at least one sentence to remove.")
             return
 
+        processed_sentences = self.load_json(json_filename)
+
         for index in reversed(selected_indices):
             sentence_text = self.playlist_listbox.get(index)
-            sentence_index = index + 1
-            wav_filename = os.path.join(session_directory, "Sentence_wavs", f"{session_name}_sentence{sentence_index}.wav")
+            sentence_index = self.playlist_listbox.get(0, tk.END).index(sentence_text)
+
+            # Find the sentence in the processed_sentences list and remove it
+            sentence_dict = next((s for s in processed_sentences if s["sentence_number"] == str(sentence_index + 1)), None)
+            if sentence_dict:
+                processed_sentences.remove(sentence_dict)
+
+                # Delete the corresponding WAV file
+                wav_filename = os.path.join(session_directory, "Sentence_wavs", f"{session_name}_sentence{sentence_index + 1}.wav")
+                if os.path.exists(wav_filename):
+                    os.remove(wav_filename)
 
             self.playlist_listbox.delete(index)
 
-            if sentence_text in self.sentence_audio_data:
-                del self.sentence_audio_data[sentence_text]
+        # Update the sentence numbers in the processed_sentences list
+        for i, sentence_dict in enumerate(processed_sentences, start=1):
+            sentence_dict["sentence_number"] = str(i)
 
-            if os.path.exists(wav_filename):
-                os.remove(wav_filename)
+        # Save the updated processed_sentences list to the JSON file
+        self.save_json(processed_sentences, json_filename)
 
     def fetch_speakers_list(self):
         try:
@@ -559,12 +585,12 @@ class TTSOptimizerGUI:
 
     def start_optimisation_thread(self):
         if not self.source_file:
-            messagebox.showerror("Error", "Please select a source file.")
+            CTkMessagebox(title="Error", message="Please select a source file.", icon="cancel")
             return
 
         session_name = self.session_name.get()
         if not session_name:
-            messagebox.showerror("Error", "Please enter a session name.")
+            CTkMessagebox(title="Error", message="Please enter a session name.", icon="cancel")
             return
 
         if not self.check_server_connection():
@@ -815,7 +841,6 @@ class TTSOptimizerGUI:
         final_audio = AudioSegment.empty()
 
         json_filename = os.path.join(session_dir, f"{self.session_name.get()}_sentences.json")
-        preprocessed_sentences = self.load_json(json_filename)
 
         # Initialize lists to store sentence generation times and MOS scores
         sentence_generation_times = []
@@ -825,7 +850,7 @@ class TTSOptimizerGUI:
         self.cancel_flag = False
         self.delete_session_flag = False
 
-        for sentence_dict in preprocessed_sentences[current_sentence:]:
+        for sentence_index in range(current_sentence, total_sentences):
             while self.paused:
                 time.sleep(1)
 
@@ -843,23 +868,39 @@ class TTSOptimizerGUI:
                 messagebox.showinfo("Generation Stopped", "The generation process has been stopped.")
                 break
 
-            if sentence_dict.get("tts_generated") == "yes":
+            # Load the preprocessed_sentences from the JSON file
+            preprocessed_sentences = self.load_json(json_filename)
+
+            # Check if the sentence has already been processed
+            if sentence_index < len(preprocessed_sentences) and preprocessed_sentences[sentence_index].get("tts_generated") == "yes":
                 current_sentence += 1
                 continue
 
             sentence_start_time = time.time()
 
             try:
+                # If the sentence index is out of range, create a new sentence_dict
+                if sentence_index >= len(preprocessed_sentences):
+                    sentence_dict = {
+                        "sentence_number": str(sentence_index + 1),
+                        "tts_generated": "no"
+                    }
+                else:
+                    sentence_dict = preprocessed_sentences[sentence_index]
+
                 # Optimize the sentence
-                processed_sentence = self.optimise_sentence(sentence_dict, current_sentence, session_dir)
+                processed_sentence = self.optimise_sentence(sentence_dict, sentence_index, session_dir)
 
                 if processed_sentence is None or processed_sentence["original_sentence"] == "":
                     current_sentence += 1
                     continue
 
-                # Update the processed_sentence in the preprocessed_sentences list
+                # Update the processed_sentence in the current sentence_dict
                 if self.enable_llm_processing.get() and "processed_sentence" in processed_sentence:
-                    preprocessed_sentences[current_sentence]["processed_sentence"] = processed_sentence["processed_sentence"]
+                    sentence_dict["processed_sentence"] = processed_sentence["processed_sentence"]
+
+                # Save the updated sentence_dict to the JSON file
+                self.save_sentence_to_json(preprocessed_sentences, json_filename, sentence_index, sentence_dict)
 
                 best_audio = None
                 best_mos = -1
@@ -923,17 +964,14 @@ class TTSOptimizerGUI:
                     self.master.after(0, self.update_playlist, processed_sentence)
 
                     # Save the individual sentence WAV file
-                    sentence_output_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence{current_sentence + 1}.wav")
+                    sentence_output_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence{processed_sentence['sentence_number']}.wav")
                     best_audio.export(sentence_output_filename, format="wav")
 
                     # Append the audio to the final concatenated audio
                     final_audio += best_audio
 
                     # Update the tts_generated flag for the current sentence in the preprocessed_sentences list
-                    preprocessed_sentences[current_sentence]["tts_generated"] = "yes"
-
-                # Save the updated preprocessed sentences to the JSON file
-                self.save_json(preprocessed_sentences, json_filename)
+                    sentence_dict["tts_generated"] = "yes"
 
             except Exception as e:
                 print(f"Error processing sentence: {str(e)}")
@@ -972,13 +1010,23 @@ class TTSOptimizerGUI:
             average_mos_score = sum(mos_scores) / len(mos_scores)
             print(f"Average MOS Score: {average_mos_score:.2f}")
 
+    def save_sentence_to_json(self, preprocessed_sentences, json_filename, sentence_index, sentence_dict):
+        # Update the tts_generated flag for the current sentence
+        sentence_dict["tts_generated"] = "yes"
+
+        preprocessed_sentences[sentence_index] = sentence_dict
+        with open(json_filename, "w") as f:
+            json.dump(preprocessed_sentences, f, indent=2)
+        logging.info(f"Updated sentence {sentence_dict['sentence_number']} in JSON file: {json_filename}")
+
     def update_progress_bar(self, progress_percentage):
         self.progress_bar.set(progress_percentage / 100)  # Set the progress bar value
         self.progress_label.configure(text=f"{progress_percentage:.2f}%")  # Update the progress percentage label
 
     def optimise_sentence(self, sentence_dict, current_sentence, session_dir):
+        sentence_number = sentence_dict["sentence_number"]
         original_sentence = sentence_dict["original_sentence"]
-        paragraph = sentence_dict["paragraph"]
+        paragraph = sentence_dict.get("paragraph", "no")
         split_part = sentence_dict.get("split_part")
 
         if not original_sentence:  # Skip processing if sentence is empty
@@ -990,8 +1038,9 @@ class TTSOptimizerGUI:
             processed_sentences = self.load_json(json_filename)
             if len(processed_sentences) > current_sentence:
                 processed_sentence = processed_sentences[current_sentence]
-                if self.enable_llm_processing.get() and processed_sentence.get("processed_sentence") is not None:
-                    return processed_sentence
+                if processed_sentence.get("processed_sentence") is not None:
+                    # Use the processed_sentence if it exists, regardless of LLM processing
+                    original_sentence = processed_sentence["processed_sentence"]
         else:
             processed_sentences = []
 
@@ -1020,7 +1069,11 @@ class TTSOptimizerGUI:
                 })
                 self.save_json(processed_sentences_list, f"{os.path.splitext(self.source_file)[0]}_prompt_{prompt_number}.json")
 
+                if self.unload_model_after_sentence.get():  # Check if unloading the model is enabled
+                    self.unload_model()
+
             processed_sentence = {
+                "sentence_number": sentence_number,
                 "original_sentence": original_sentence,
                 "paragraph": paragraph,
                 "processed_sentence": processed_sentences_list[-1]["text"],
@@ -1029,11 +1082,14 @@ class TTSOptimizerGUI:
             }
         else:
             processed_sentence = {
+                "sentence_number": sentence_number,
                 "original_sentence": original_sentence,
                 "paragraph": paragraph,
                 "split_part": split_part,
                 "tts_generated": "no"
             }
+            if "processed_sentence" in sentence_dict:
+                processed_sentence["processed_sentence"] = sentence_dict["processed_sentence"]
 
         if current_sentence < len(processed_sentences):
             processed_sentences[current_sentence] = processed_sentence
@@ -1283,10 +1339,11 @@ class TTSOptimizerGUI:
             self.loaded_model = None
 
     def stop_playback(self):
-        if self.channel.get_busy():
+        if self.channel is not None and self.channel.get_busy():
             self.channel.stop()
         if pygame.mixer.music.get_busy():
             pygame.mixer.music.stop()
+            pygame.mixer.music.unload()  # Unload the music file
         self.playlist_stopped = True
         self.paused = False
         self.playing = False
@@ -1298,78 +1355,149 @@ class TTSOptimizerGUI:
 
     def update_playlist(self, processed_sentence):
         sentence_text = processed_sentence["processed_sentence"] if self.enable_llm_processing.get() and "processed_sentence" in processed_sentence else processed_sentence["original_sentence"]
+        sentence_number = int(processed_sentence["sentence_number"])
         if sentence_text not in self.playlist_listbox.get(0, tk.END):
-            self.playlist_listbox.insert(tk.END, sentence_text)
+            self.playlist_listbox.insert(sentence_number - 1, sentence_text)
 
     def play_selected_sentence(self):
+        if pygame.mixer.get_init() is None:
+            pygame.mixer.init()
+            
+        if self.channel is None:
+            self.channel = pygame.mixer.Channel(0)
+            
         selected_index = self.playlist_listbox.curselection()
         if selected_index:
             selected_sentence = self.playlist_listbox.get(selected_index)
-            sentence_index = self.playlist_listbox.get(0, tk.END).index(selected_sentence)
             session_name = self.session_name.get()
             session_dir = os.path.join("Outputs", session_name)
-            wav_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence{sentence_index + 1}.wav")
-            if os.path.exists(wav_filename):
-                print("WAV file exists")
-                sound = pygame.mixer.Sound(wav_filename)
-                self.channel.play(sound)
-                self.current_sentence = selected_sentence
-                self.playing = True
-                self.master.after(10, self.update_play_button_text, "Pause")
-                self.master.after(math.ceil(sound.get_length() * 1000), self.stop_playback)
+            json_filename = os.path.join(session_dir, f"{session_name}_sentences.json")
+            processed_sentences = self.load_json(json_filename)
+            sentence_dict = next((s for s in processed_sentences if s["original_sentence"] == selected_sentence or s.get("processed_sentence") == selected_sentence), None)
+
+            if sentence_dict:
+                sentence_number = int(sentence_dict["sentence_number"])
+                wav_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence{sentence_number}.wav")
+
+                if os.path.exists(wav_filename):
+                    sound = pygame.mixer.Sound(wav_filename)
+                    self.channel.play(sound)
+                    self.current_sentence = selected_sentence
+                    self.playing = True
+                    self.master.after(10, self.update_play_button_text, "Pause")
+                    self.master.after(math.ceil(sound.get_length() * 1000), self.stop_playback)
+                    self.master.after(math.ceil(sound.get_length() * 1000), sound.stop)  # Stop the sound after playback
+                else:
+                    messagebox.showinfo("Audio Not Available", "The audio for the selected sentence is not available.")
             else:
-                print("WAV file does not exist")
-                messagebox.showinfo("Audio Not Available", "The audio for the selected sentence is not available.")
+                messagebox.showinfo("Sentence Not Found", "The selected sentence was not found in the JSON file.")
+
+
+    def view_session_folder(self):
+        session_name = self.session_name.get()
+        if session_name:
+            session_dir = os.path.join("Outputs", session_name)
+            if os.path.exists(session_dir):
+                if platform.system() == "Windows":
+                    os.startfile(session_dir)
+                elif platform.system() == "Darwin":
+                    subprocess.Popen(["open", session_dir])
+                else:
+                    subprocess.Popen(["xdg-open", session_dir])
+            else:
+                CTkMessagebox(title="Session Folder Not Found", message=f"The session folder for '{session_name}' does not exist.", icon="info")
+        else:
+            CTkMessagebox(title="No Session", message="There is no active session.", icon="info")
 
     def regenerate_selected_sentence(self):
-        selected_index = self.playlist_listbox.curselection()
-        if selected_index:
-            selected_sentence = self.playlist_listbox.get(selected_index)
-            session_dir = os.path.join("Outputs", self.session_name.get())
-            json_filename = os.path.join(session_dir, f"{self.session_name.get()}_sentences.json")
-            processed_sentences = self.load_json(json_filename)
-            sentence_dict = next((s for s in processed_sentences if s["processed_sentence"] == selected_sentence or s["original_sentence"] == selected_sentence), None)
-            if sentence_dict:
-                original_sentence_index = processed_sentences.index(sentence_dict)
-                processed_sentence = self.optimise_sentence(sentence_dict, current_sentence=original_sentence_index, session_dir=session_dir)
-                if self.enable_llm_processing.get():
-                    audio_data = self.tts_to_audio(processed_sentence["processed_sentence"])
-                else:
-                    audio_data = self.tts_to_audio(processed_sentence["original_sentence"])
+        try:
+            selected_index = self.playlist_listbox.curselection()
+            if selected_index:
+                selected_sentence = self.playlist_listbox.get(selected_index)
+                session_dir = os.path.join("Outputs", self.session_name.get())
+                json_filename = os.path.join(session_dir, f"{self.session_name.get()}_sentences.json")
+                processed_sentences = self.load_json(json_filename)
+                sentence_dict = next((s for s in processed_sentences if s["original_sentence"] == selected_sentence or s.get("processed_sentence") == selected_sentence), None)
 
-                if audio_data is not None:
-                    if self.enable_rvc.get():
-                        audio_data = self.process_with_rvc(audio_data)
+                if sentence_dict:
+                    original_sentence_index = processed_sentences.index(sentence_dict)
+                    sentence_number = int(sentence_dict["sentence_number"])
 
-                    if self.enable_fade.get():
-                        audio_data = self.apply_fade(audio_data, self.fade_in_duration.get(), self.fade_out_duration.get())
+                    # Update the sentence_dict with the edited sentence
+                    edited_sentence = selected_sentence
 
-                    silence_length = self.silence_length.get()
-                    if processed_sentence.get("split_part") == 0:
-                        silence_length = self.silence_length.get() // 4
-                    elif processed_sentence.get("split_part") is None and processed_sentence.get("paragraph", "no") == "yes":
-                        silence_length = self.paragraph_silence_length.get()
-                    if silence_length > 0:
-                        audio_data += AudioSegment.silent(duration=silence_length)
+                    sentence_dict["original_sentence"] = edited_sentence
+                    sentence_dict["processed_sentence"] = edited_sentence
 
-                    sentence_output_filename = os.path.join(session_dir, "Sentence_wavs", f"{self.session_name.get()}_sentence{sentence_dict['sentence_number']}.wav")
-                    audio_data.export(sentence_output_filename, format="wav")
-
-                    self.sentence_audio_data[processed_sentence["processed_sentence"] if self.enable_llm_processing.get() else processed_sentence["original_sentence"]] = audio_data
-                    self.playlist_listbox.delete(selected_index)
-                    self.playlist_listbox.insert(selected_index, processed_sentence["processed_sentence"] if self.enable_llm_processing.get() else processed_sentence["original_sentence"])
-
-                    sentence_dict["processed_sentence"] = processed_sentence["processed_sentence"]
-                    sentence_dict["original_sentence"] = processed_sentence["original_sentence"]
                     processed_sentences[original_sentence_index] = sentence_dict
                     self.save_json(processed_sentences, json_filename)
+                    logging.info(f"Updated sentence {sentence_number} in JSON file before regeneration: {json_filename}")
+
+                    # Optimize the sentence
+                    processed_sentence = self.optimise_sentence(sentence_dict, original_sentence_index, session_dir)
+
+                    if processed_sentence is not None:
+                        # Generate audio using the processed sentence
+                        audio_data = self.tts_to_audio(processed_sentence["processed_sentence"] if "processed_sentence" in processed_sentence else processed_sentence["original_sentence"])
+
+                        if audio_data is not None:
+                            # Apply RVC if enabled
+                            if self.enable_rvc.get():
+                                audio_data = self.process_with_rvc(audio_data)
+
+                            # Apply fade in/out if enabled
+                            if self.enable_fade.get():
+                                audio_data = self.apply_fade(audio_data, self.fade_in_duration.get(), self.fade_out_duration.get())
+
+                            if processed_sentence.get("paragraph", "no") == "yes":
+                                silence_length = self.paragraph_silence_length.get()
+                            elif processed_sentence.get("split_part") is not None:
+                                if isinstance(processed_sentence.get("split_part"), str):
+                                    if processed_sentence.get("split_part") in ["0a", "0b", "1a"]:
+                                        silence_length = self.silence_length.get() // 4
+                                    elif processed_sentence.get("split_part") == "1b":
+                                        silence_length = self.silence_length.get()
+                                elif isinstance(processed_sentence.get("split_part"), int):
+                                    if processed_sentence.get("split_part") == 0:
+                                        silence_length = self.silence_length.get() // 4
+                                    elif processed_sentence.get("split_part") == 1:
+                                        silence_length = self.silence_length.get()
+                            else:
+                                silence_length = self.silence_length.get()
+
+                            if silence_length > 0:
+                                audio_data += AudioSegment.silent(duration=silence_length)
+
+                            sentence_output_filename = os.path.join(session_dir, "Sentence_wavs", f"{self.session_name.get()}_sentence{sentence_number}.wav")
+                            audio_data.export(sentence_output_filename, format="wav")
+                            logging.info(f"Regenerated audio for sentence {sentence_number}: {sentence_output_filename}")
+
+                            self.playlist_listbox.delete(selected_index)
+                            self.playlist_listbox.insert(selected_index, edited_sentence)
+
+                        else:
+                            logging.error(f"Failed to generate audio for sentence {sentence_number}")
+
+                    else:
+                        logging.error(f"Failed to process sentence {sentence_number}")
+
+                else:
+                    logging.warning(f"Sentence not found in JSON file")
+
+            else:
+                logging.warning("No sentence selected for regeneration")
+
+        except Exception as e:
+            logging.error(f"Error regenerating sentence: {str(e)}")
 
     def play_sentences_as_playlist(self):
+        if pygame.mixer.get_init() is None:
+            pygame.mixer.init()
+            
+        self.channel = pygame.mixer.Channel(0)
+            
         sentences = self.playlist_listbox.get(0, tk.END)
-        print(f"Sentences in playlist: {sentences}")
         if sentences:
-            if pygame.mixer.get_init() is None:
-                pygame.mixer.init()
             selected_index = self.playlist_listbox.curselection()
             if selected_index:
                 self.playlist_index = selected_index[0]
@@ -1380,41 +1508,49 @@ class TTSOptimizerGUI:
             self.master.after(10, self.update_play_button_text, "Pause")  # Schedule button text update
             self.play_next_sentence_in_playlist()
         else:
-            print("Playlist is empty")
             messagebox.showinfo("Playlist Empty", "There are no sentences in the playlist.")
- 
+
     def play_next_sentence_in_playlist(self):
         if not self.playlist_stopped and 0 <= self.playlist_index < self.playlist_listbox.size():
             sentence = self.playlist_listbox.get(self.playlist_index)
-            sentence_index = self.playlist_listbox.get(0, tk.END).index(sentence)
             session_name = self.session_name.get()
             session_dir = os.path.join("Outputs", session_name)
-            wav_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence{sentence_index + 1}.wav")
-            print(f"Next sentence in playlist: {sentence}")
-            print(f"Sentence index: {sentence_index}")
-            print(f"WAV filename: {wav_filename}")
-            if os.path.exists(wav_filename):
-                print("WAV file exists")
-                pygame.mixer.music.load(wav_filename)
-                pygame.mixer.music.play()
-                self.current_sentence = sentence
-                self.playlist_index += 1
-                self.master.after(100, self.check_playlist_playback)
+            json_filename = os.path.join(session_dir, f"{session_name}_sentences.json")
+            processed_sentences = self.load_json(json_filename)
+            sentence_dict = next((s for s in processed_sentences if s["original_sentence"] == sentence or s.get("processed_sentence") == sentence), None)
+
+            if sentence_dict:
+                sentence_number = int(sentence_dict["sentence_number"])
+                wav_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence{sentence_number}.wav")
+
+                if os.path.exists(wav_filename):
+                    if pygame.mixer.get_init() is None:
+                        pygame.mixer.init()
+                    if self.channel is None:
+                        self.channel = pygame.mixer.Channel(0)
+                    sound = pygame.mixer.Sound(wav_filename)
+                    self.channel.play(sound)
+                    self.current_sentence = sentence
+                    sound_length = sound.get_length()
+                    self.master.after(math.ceil(sound_length * 1000), self.play_next_sentence_callback)
+                else:
+                    self.playlist_index += 1
+                    self.play_next_sentence_in_playlist()
             else:
-                print("WAV file does not exist")
                 self.playlist_index += 1
                 self.play_next_sentence_in_playlist()
         else:
-            print("Reached the end of the playlist or playback stopped")
             self.stop_playback()
 
-    def check_playlist_playback(self):
-        if not self.paused and not self.playlist_stopped and pygame.mixer.music.get_busy():
-            self.master.after(100, self.check_playlist_playback)
-        elif not self.paused and not self.playlist_stopped and not pygame.mixer.music.get_busy():
-            # This call was causing the playlist to advance too quickly after a resume
-            # Adding a condition to ensure it's called only when it's the appropriate time to move to the next sentence
+    def play_next_sentence_callback(self):
+        if not self.playlist_stopped and not self.paused:
+            self.playlist_index += 1
             self.play_next_sentence_in_playlist()
+
+    def check_playlist_playback(self):
+        if not self.paused and not self.playlist_stopped and self.channel.get_busy():
+            self.master.after(100, self.check_playlist_playback)
+
             
     def load_session(self):
         session_folder = filedialog.askdirectory(initialdir="Outputs")
@@ -1428,13 +1564,9 @@ class TTSOptimizerGUI:
                 self.playlist_listbox.delete(0, tk.END)
                 for sentence_dict in processed_sentences:
                     sentence_number = sentence_dict.get("sentence_number")
-                    sentence_text = sentence_dict.get("original_sentence")
+                    sentence_text = sentence_dict.get("processed_sentence") if sentence_dict.get("processed_sentence") else sentence_dict.get("original_sentence")
                     if sentence_text:
-                        self.playlist_listbox.insert(tk.END, sentence_text)
-                        wav_filename = os.path.join(session_folder, "Sentence_wavs", f"{session_name}_sentence{sentence_number}.wav")
-                        if os.path.exists(wav_filename):
-                            audio_data = AudioSegment.from_wav(wav_filename)
-                            self.sentence_audio_data[sentence_text] = audio_data
+                        self.playlist_listbox.insert(int(sentence_number) - 1, sentence_text)
 
                 # Load the text file from the session directory
                 txt_files = [file for file in os.listdir(session_folder) if file.endswith(".txt")]
@@ -1449,7 +1581,83 @@ class TTSOptimizerGUI:
                 messagebox.showinfo("Session Loaded", f"The session '{session_name}' has been loaded.")
             else:
                 messagebox.showerror("Error", "Session JSON file not found.")
-                 
+
+    def update_sentence_in_json(self, sentence_number, edited_sentence):
+        try:
+            session_dir = os.path.join("Outputs", self.session_name.get())
+            json_filename = os.path.join(session_dir, f"{self.session_name.get()}_sentences.json")
+            processed_sentences = self.load_json(json_filename)
+            
+            sentence_changed = False
+            
+            for sentence_dict in processed_sentences:
+                if sentence_dict["sentence_number"] == sentence_number:
+                    if "processed_sentence" in sentence_dict:
+                        if sentence_dict["processed_sentence"] != edited_sentence:
+                            sentence_dict["processed_sentence"] = edited_sentence
+                            sentence_changed = True
+                    else:
+                        if sentence_dict["original_sentence"] != edited_sentence:
+                            sentence_dict["original_sentence"] = edited_sentence
+                            sentence_changed = True
+                    break
+            
+            if sentence_changed:
+                self.save_json(processed_sentences, json_filename)
+                logging.info(f"Updated sentence {sentence_number} in JSON file: {json_filename}")
+            else:
+                logging.info(f"No changes made to sentence {sentence_number}")
+        
+        except Exception as e:
+            logging.error(f"Error updating sentence {sentence_number} in JSON file: {str(e)}")
+
+    def edit_selected_sentence(self):
+        try:
+            selected_index = self.playlist_listbox.curselection()
+            if selected_index:
+                selected_sentence = self.playlist_listbox.get(selected_index)
+                session_dir = os.path.join("Outputs", self.session_name.get())
+                json_filename = os.path.join(session_dir, f"{self.session_name.get()}_sentences.json")
+                processed_sentences = self.load_json(json_filename)
+                sentence_dict = next((s for s in processed_sentences if s["original_sentence"] == selected_sentence or s.get("processed_sentence") == selected_sentence), None)
+
+                if sentence_dict:
+                    sentence_number = sentence_dict["sentence_number"]
+
+                    edit_window = ctk.CTkToplevel(self.master)
+                    edit_window.title("Edit Sentence")
+
+                    sentence_entry = ctk.CTkEntry(edit_window, width=400)
+                    sentence_entry.insert(0, selected_sentence)
+                    sentence_entry.pack(padx=10, pady=10)
+
+                    def save_edited_sentence():
+                        edited_sentence = sentence_entry.get()
+                        self.update_sentence_in_json(sentence_number, edited_sentence)
+                        self.playlist_listbox.delete(selected_index)
+                        self.playlist_listbox.insert(int(sentence_number) - 1, edited_sentence)
+                        edit_window.destroy()
+                        logging.info(f"Edited sentence {sentence_number}: {edited_sentence}")
+
+                    def discard_changes():
+                        edit_window.destroy()
+                        logging.info(f"Discarded changes for sentence {sentence_number}")
+
+                    save_button = ctk.CTkButton(edit_window, text="Save", command=save_edited_sentence)
+                    save_button.pack(side=tk.LEFT, padx=10, pady=10)
+
+                    discard_button = ctk.CTkButton(edit_window, text="Discard", command=discard_changes)
+                    discard_button.pack(side=tk.LEFT, padx=10, pady=10)
+
+                else:
+                    messagebox.showinfo("Sentence Not Found", "The selected sentence was not found in the JSON file.")
+
+            else:
+                logging.warning("No sentence selected for editing")
+
+        except Exception as e:
+            logging.error(f"Error editing sentence: {str(e)}")
+
     def save_output(self):
         session_name = self.session_name.get()
         output_format = self.output_format.get()
@@ -1466,13 +1674,17 @@ class TTSOptimizerGUI:
             output_directory = os.path.dirname(output_path)
             output_filename = os.path.basename(output_path)
 
-            sentence_wavs = [os.path.join("Outputs", session_name, "Sentence_wavs", f"{session_name}_sentence{i + 1}.wav") for i in range(self.playlist_listbox.size())]
+            session_dir = os.path.join("Outputs", session_name)
+            json_filename = os.path.join(session_dir, f"{session_name}_sentences.json")
+            processed_sentences = self.load_json(json_filename)
 
             final_audio = AudioSegment.empty()
 
-            for wav_file in sentence_wavs:
-                if os.path.exists(wav_file):
-                    audio_data = AudioSegment.from_file(wav_file, format="wav")
+            for sentence_dict in processed_sentences:
+                sentence_number = int(sentence_dict["sentence_number"])
+                wav_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence{sentence_number}.wav")
+                if os.path.exists(wav_filename):
+                    audio_data = AudioSegment.from_file(wav_filename, format="wav")
                     final_audio += audio_data
 
             if output_format == "wav":
@@ -1493,4 +1705,4 @@ def main():
 
 if __name__ == "main":
     logging.debug("Script started")
-main()
+main()  
