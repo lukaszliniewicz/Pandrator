@@ -132,7 +132,7 @@ Contributions, suggestions for improvements, and bug reports are most welcome!
 - [ ] Add importing/exporting settings.
 - [ ] Add support for proprietary APIs for text pre-processing and TTS generation.
 - [ ] Enhance file format support (e.g., HTML, XML, PDF, Epub) including direct PDF to TXT conversion with OCR.
-- [ ] Integrate editing capabilities for processed sentences within the UI.
+- [x] Integrate editing capabilities for processed sentences within the UI.
 - [ ] Add support for a higher quality local TTS model, Tortoise.
 - [ ] Add support for a lower quality but faster local TTS model that can easily run on CPU, e.g. Silero or Piper.
 - [ ] Implement a better text segmentation method, e.g. NLP-based.
