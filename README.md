@@ -41,14 +41,14 @@ This project relies on several APIs and services (running locally):
 
 #### Required
 - [XTTS API Server by daswer123](https://github.com/daswer123/xtts-api-server.git) for Text-to-Speech (TTS) generation using Coqui [XTTSv2](https://huggingface.co/coqui/XTTS-v2) OR [Silero API Server by ouoertheo](https://github.com/ouoertheo/silero-api-server) for TTS generaton using the [Silero models](https://github.com/snakers4/silero-models). XTTS uses the GPU (Nvidia), and Silero uses the CPU. Silero can be run on low-end systems.
-- [FFmpeg](https://github.com/FFmpeg/FFmpeg) for audio encoding
-- [Sentence Splitter by mediacloud](https://github.com/mediacloud/sentence-splitter)
+- [FFmpeg](https://github.com/FFmpeg/FFmpeg) for audio encoding.
+- [Sentence Splitter by mediacloud](https://github.com/mediacloud/sentence-splitter) for splitting `.txt ` files into sentences.
 - [num2words by savoirfairelinux](https://github.com/savoirfairelinux/num2words) for converting numbers to words (Silero requirs this). 
 
 #### Optional
-- [Text Generation Webui API by oobabooga](https://github.com/oobabooga/text-generation-webui.git) for LLM-based text pre-processing
-- [RVC_CLI by blaise-tk](https://github.com/blaise-tk/RVC_CLI.git) for enhancing voice quality and cloning results with [Retrieval Based Voice Conversion](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI)
-- [NISQA by gabrielmittag](https://github.com/gabrielmittag/NISQA.git) for evaluating TTS generations (using the [FastAPI implementation](https://github.com/lukaszliniewicz/NISQA-API))
+- [Text Generation Webui API by oobabooga](https://github.com/oobabooga/text-generation-webui.git) for LLM-based text pre-processing.
+- [RVC_CLI by blaise-tk](https://github.com/blaise-tk/RVC_CLI.git) for enhancing voice quality and cloning results with [Retrieval Based Voice Conversion](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI).
+- [NISQA by gabrielmittag](https://github.com/gabrielmittag/NISQA.git) for evaluating TTS generations (using the [FastAPI implementation](https://github.com/lukaszliniewicz/NISQA-API)).
 
 ## Installation
 
@@ -88,9 +88,9 @@ Please refer to the repositories linked above for detailed installation instruct
 ### Basic Usage
 If you don't want to use the additional functionalities, you have everything you need in the Session tab. 
 1. Either create a new session or load an existing one (select a folder in `Outputs` to do that).
-2. Choose your `.txt` file.
-3. Select a language from the dropdown.
-4. Choose the voice you want to use (voices are short, 8-12s `.wav` files in the `tts_voices` directory). The XTTS model uses the audio to clone the voice and use it for generation. You may use the example ones in the repository, which I borrowed from daswer123, or upload your own. Please make sure that the audio is between 8 and 12s, mono, and 22050khz. You may use a tool like Audacity to prepare the files. The less noise, the better. You may use a tool like [Resemble AI](https://github.com/resemble-ai/resemble-enhance) for denoising and/or enhancement of your samples on [Hugging Face](https://huggingface.co/spaces/ResembleAI/resemble-enhance). 
+2. Choose your `.txt` or `.srt` file.
+3. Select the TTS server you want to use - XTTS or Silero - and language from the dropdown.
+4. Choose the voice you want to use (for XTTS, voices are short, 8-12s `.wav` files in the `tts_voices` directory). The XTTS model uses the audio to clone the voice and use it for generation. You may use the example ones in the repository, which I borrowed from daswer123, or upload your own. Please make sure that the audio is between 8 and 12s, mono, and 22050khz. You may use a tool like Audacity to prepare the files. The less noise, the better. You may use a tool like [Resemble AI](https://github.com/resemble-ai/resemble-enhance) for denoising and/or enhancement of your samples on [Hugging Face](https://huggingface.co/spaces/ResembleAI/resemble-enhance). Silero offers a number of voices for each language it supports.
 5. Start the generation. You may stop and resume it later, or close the programme and load the session later.
 6. You can play back the generated sentences, also as a playlist, and regenerate or remove individual ones.
 7. "Save Output" concatenates the sentences generated so far an encodes them as one file (default is `.opus` at 64k bitrate; you may change it in the Audio tab to `.wav` or `.mp3`).
