@@ -6,3 +6,5 @@ sentence-splitter
 pygame
 CTkMessagebox
 CTkToolTip
+pysrt
+num2words
