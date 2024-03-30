@@ -24,8 +24,25 @@ import ctypes
 import math
 import platform
 from CTkToolTip import CTkToolTip
+import pysrt
+from num2words import num2words
+
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+
+silero_languages = [
+    {"name": "German (v3)", "code": "v3_de.pt"},
+    {"name": "English (v3)", "code": "v3_en.pt"},
+    {"name": "English Indic (v3)", "code": "v3_en_indic.pt"},
+    {"name": "Spanish (v3)", "code": "v3_es.pt"},
+    {"name": "French (v3)", "code": "v3_fr.pt"},
+    {"name": "Indic (v3)", "code": "v3_indic.pt"},
+    {"name": "Russian (v3.1)", "code": "v3_1_ru.pt"},
+    {"name": "Tatar (v3)", "code": "v3_tt.pt"},
+    {"name": "Ukrainian (v3)", "code": "v3_ua.pt"},
+    {"name": "Uzbek (v3)", "code": "v3_uz.pt"},
+    {"name": "Kalmyk (v3)", "code": "v3_xal.pt"}
+]
 
 class TTSOptimizerGUI:
     def __init__(self, master):
@@ -36,6 +53,7 @@ class TTSOptimizerGUI:
         self.enable_tts_evaluation = ctk.BooleanVar(value=False)
         self.stop_flag = False
         self.delete_session_flag = False
+        self.pre_selected_source_file = None
         self.server_connected = False
         self.tts_voices_folder = "tts_voices"
         if not os.path.exists(self.tts_voices_folder):
@@ -76,6 +94,7 @@ class TTSOptimizerGUI:
         self.paused = False
         self.playing = False
         self.session_name = ctk.StringVar()
+        self.tts_service = ctk.StringVar(value="XTTS")
 
         # Layout
         ctk.set_appearance_mode("dark")
@@ -105,17 +124,6 @@ class TTSOptimizerGUI:
         self.session_name_label = ctk.CTkLabel(self.session_tab, text="Untitled Session", font=ctk.CTkFont(size=20, weight="bold"))
         self.session_name_label.grid(row=0, column=0, columnspan=4, padx=5, pady=5, sticky=tk.W)
 
-        # API Connection Section
-        self.api_connection_label = ctk.CTkLabel(self.session_tab, text="API Connection", font=ctk.CTkFont(size=14, weight="bold"))
-        self.api_connection_label.grid(row=1, column=0, columnspan=4, padx=10, pady=10, sticky=tk.W)
-
-        api_connection_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
-        api_connection_frame.grid(row=2, column=0, columnspan=4, padx=10, pady=(0, 20), sticky=tk.EW)
-        api_connection_frame.grid_columnconfigure(0, weight=1)
-        api_connection_frame.grid_columnconfigure(1, weight=1)
-
-        ctk.CTkButton(api_connection_frame, text="Load LLM Models", command=self.load_models).grid(row=0, column=0, padx=10, pady=(10, 10), sticky=tk.EW)
-        ctk.CTkButton(api_connection_frame, text="Upload Speaker Voice", command=self.upload_speaker_voice).grid(row=0, column=1, padx=10, pady=(10, 10), sticky=tk.EW)
 
         # Session Section
         self.session_label = ctk.CTkLabel(self.session_tab, text="Session", font=ctk.CTkFont(size=14, weight="bold"))
@@ -146,32 +154,45 @@ class TTSOptimizerGUI:
         self.selected_file_label = ctk.CTkLabel(generation_frame, text="No file selected")
         self.select_file_button = ctk.CTkButton(generation_frame, text="Select Source File", command=self.select_file)
         self.select_file_button.grid(row=0, column=0, padx=10, pady=(10, 5), sticky=tk.EW)
-        self.selected_file_label.grid(row=0, column=1, padx=10, pady=(10, 5), sticky=tk.W)
+        self.selected_file_label.grid(row=0, column=1, columnspan=2, padx=10, pady=(10, 5), sticky=tk.W)
 
-        self.language = ctk.StringVar(value="en")
-        ctk.CTkLabel(generation_frame, text="Language:").grid(row=1, column=0, padx=10, pady=5, sticky=tk.W)
-        self.language_dropdown = ctk.CTkOptionMenu(generation_frame, variable=self.language, values=["en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko", "hi"])
-        self.language_dropdown.grid(row=1, column=1, padx=10, pady=5, sticky=tk.EW)
+        ctk.CTkLabel(generation_frame, text="TTS Service:").grid(row=1, column=0, padx=10, pady=5, sticky=tk.W)
+        self.tts_service_dropdown = ctk.CTkOptionMenu(generation_frame, variable=self.tts_service, values=["XTTS", "Silero"], command=self.update_language_dropdown)
+        self.tts_service_dropdown.grid(row=1, column=1, padx=10, pady=5, sticky=tk.EW)
+
+        self.language_var = ctk.StringVar(value="en")
+        ctk.CTkLabel(generation_frame, text="Language:").grid(row=2, column=0, padx=10, pady=5, sticky=tk.W)
+        self.language_dropdown = ctk.CTkComboBox(
+            generation_frame,
+            variable=self.language_var,
+            values=["en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko", "hi"]
+        )
+        self.language_dropdown.grid(row=2, column=1, padx=10, pady=5, sticky=tk.EW)
+
+        # Add the trace to the self.language_var
+        self.language_var.trace_add("write", self.on_language_selected)
 
         self.selected_speaker = ctk.StringVar(value="")
-        ctk.CTkLabel(generation_frame, text="Speaker Voice:").grid(row=2, column=0, padx=10, pady=5, sticky=tk.W)
+        ctk.CTkLabel(generation_frame, text="Speaker Voice:").grid(row=3, column=0, padx=10, pady=5, sticky=tk.W)
         self.speaker_dropdown = ctk.CTkOptionMenu(generation_frame, variable=self.selected_speaker, values=[])
-        self.speaker_dropdown.grid(row=2, column=1, padx=10, pady=5, sticky=tk.EW)
+        self.speaker_dropdown.grid(row=3, column=1, padx=10, pady=5, sticky=tk.EW)
         self.populate_speaker_dropdown()
+        self.upload_new_voices_button = ctk.CTkButton(generation_frame, text="Upload New Voices", command=self.upload_speaker_voice)
+        self.upload_new_voices_button.grid(row=3, column=2, padx=10, pady=(10, 10), sticky=tk.EW)
 
-        ctk.CTkButton(generation_frame, text="Start Generation", command=self.start_optimisation_thread, fg_color="#2e8b57", hover_color="#3cb371").grid(row=3, column=0, padx=10, pady=(5, 20), sticky=tk.EW)
-        ctk.CTkButton(generation_frame, text="Stop Generation", command=self.stop_generation).grid(row=3, column=2, padx=10, pady=(5, 20), sticky=tk.EW)
-        ctk.CTkButton(generation_frame, text="Resume Generation", command=self.resume_generation).grid(row=3, column=1, padx=10, pady=(5, 20), sticky=tk.EW)
-        ctk.CTkButton(generation_frame, text="Cancel Generation", command=self.cancel_generation, fg_color="dark red", hover_color="red").grid(row=3, column=3, padx=10, pady=(5, 20), sticky=tk.EW)
+        ctk.CTkButton(generation_frame, text="Start Generation", command=self.start_optimisation_thread, fg_color="#2e8b57", hover_color="#3cb371").grid(row=4, column=0, padx=10, pady=(5, 20), sticky=tk.EW)
+        ctk.CTkButton(generation_frame, text="Stop Generation", command=self.stop_generation).grid(row=4, column=2, padx=10, pady=(5, 20), sticky=tk.EW)
+        ctk.CTkButton(generation_frame, text="Resume Generation", command=self.resume_generation).grid(row=4, column=1, padx=10, pady=(5, 20), sticky=tk.EW)
+        ctk.CTkButton(generation_frame, text="Cancel Generation", command=self.cancel_generation, fg_color="dark red", hover_color="red").grid(row=4, column=3, padx=10, pady=(5, 20), sticky=tk.EW)
 
-        ctk.CTkLabel(generation_frame, text="Progress:").grid(row=5, column=0, padx=10, pady=5, sticky=tk.W)
+        ctk.CTkLabel(generation_frame, text="Progress:").grid(row=6, column=0, padx=10, pady=5, sticky=tk.W)
         self.progress_label = ctk.CTkLabel(generation_frame, text="0.00%")
-        self.progress_label.grid(row=5, column=1, padx=10, pady=5, sticky=tk.W)
+        self.progress_label.grid(row=6, column=1, padx=10, pady=5, sticky=tk.W)
         self.progress_bar = ctk.CTkProgressBar(generation_frame)
-        self.progress_bar.grid(row=4, column=0, columnspan=4, padx=10, pady=5, sticky=tk.EW)
-        ctk.CTkLabel(generation_frame, text="Estimated Remaining Time:").grid(row=5, column=2, padx=10, pady=(5), sticky=tk.W)
+        self.progress_bar.grid(row=5, column=0, columnspan=4, padx=10, pady=5, sticky=tk.EW)
+        ctk.CTkLabel(generation_frame, text="Estimated Remaining Time:").grid(row=6, column=2, padx=10, pady=(5), sticky=tk.W)
         self.remaining_time_label = ctk.CTkLabel(generation_frame, text="N/A")
-        self.remaining_time_label.grid(row=5, column=3, padx=10, pady=(5), sticky=tk.W)
+        self.remaining_time_label.grid(row=6, column=3, padx=10, pady=(5), sticky=tk.W)
 
         # Generated Sentences Section
         ctk.CTkLabel(self.session_tab, text="Generated Sentences", font=ctk.CTkFont(size=14, weight="bold")).grid(row=14, column=0, padx=10, pady=10, sticky=tk.W)
@@ -223,89 +244,170 @@ class TTSOptimizerGUI:
         ctk.CTkButton(generated_sentences_frame, text="Remove", command=self.remove_selected_sentences).grid(row=2, column=1, padx=10, pady=(5, 20), sticky=tk.EW)
         ctk.CTkButton(generated_sentences_frame, text="Save Output", command=self.save_output).grid(row=2, column=2, padx=10, pady=(5, 20), sticky=tk.EW)
 
+
+
         # Text Processing Tab
         self.text_processing_tab = self.tabview.add("Text Processing")
         self.text_processing_tab.grid_columnconfigure(0, weight=1)
         self.text_processing_tab.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkSwitch(self.text_processing_tab, text="Split Long Sentences", variable=self.enable_sentence_splitting).grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
-        ctk.CTkLabel(self.text_processing_tab, text="Max Sentence Length:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
-        ctk.CTkEntry(self.text_processing_tab, textvariable=self.max_sentence_length).grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
+        # General Text Processing Settings
+        ctk.CTkLabel(self.text_processing_tab, text="General Text Processing Settings", font=ctk.CTkFont(size=14, weight="bold")).grid(row=0, column=0, columnspan=2, padx=10, pady=10, sticky=tk.W)
 
-        ctk.CTkSwitch(self.text_processing_tab, text="Append Short Sentences", variable=self.enable_sentence_appending).grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
-        ctk.CTkSwitch(self.text_processing_tab, text="Remove Diacritics", variable=self.remove_diacritics).grid(row=3, column=0, padx=5, pady=5, sticky=tk.W)
-        ctk.CTkSwitch(self.text_processing_tab, text="Enable LLM Processing", variable=self.enable_llm_processing).grid(row=4, column=0, padx=5, pady=5, sticky=tk.W)
-        ctk.CTkSwitch(self.text_processing_tab, text="Unload LLM Model After Each Sentence", variable=self.unload_model_after_sentence).grid(row=4, column=1, columnspan=2, padx=5, pady=5, sticky=tk.W)
-        unload_model_switch_tooltip = CTkToolTip(
-            self.text_processing_tab.winfo_children()[-1],
-            message="Helps prevent the generation from slowing down significantly if LLM processing is enabled and you have less than 8GB of VRAM.",
-            wraplength=250  # Set the wrap length to 250 pixels
-        )
-        ctk.CTkLabel(self.text_processing_tab, text="First Prompt").grid(row=5, column=0, padx=5, pady=5, sticky=tk.W)
-        self.first_prompt_text = ctk.CTkTextbox(self.text_processing_tab, height=100, width=500, wrap="word")
+        general_settings_frame = ctk.CTkFrame(self.text_processing_tab, fg_color="gray20", corner_radius=10)
+        general_settings_frame.grid(row=1, column=0, columnspan=2, padx=10, pady=(0, 20), sticky=tk.EW)
+        general_settings_frame.grid_columnconfigure(0, weight=1)
+        general_settings_frame.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkSwitch(general_settings_frame, text="Split Long Sentences", variable=self.enable_sentence_splitting).grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+        ctk.CTkLabel(general_settings_frame, text="Max Sentence Length:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
+        ctk.CTkEntry(general_settings_frame, textvariable=self.max_sentence_length).grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
+        ctk.CTkSwitch(general_settings_frame, text="Append Short Sentences", variable=self.enable_sentence_appending).grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
+        ctk.CTkSwitch(general_settings_frame, text="Remove Diacritics", variable=self.remove_diacritics).grid(row=3, column=0, padx=5, pady=5, sticky=tk.W)
+
+        # LLM Processing
+        ctk.CTkLabel(self.text_processing_tab, text="LLM Processing", font=ctk.CTkFont(size=14, weight="bold")).grid(row=2, column=0, columnspan=2, padx=10, pady=10, sticky=tk.W)
+
+        llm_processing_frame = ctk.CTkFrame(self.text_processing_tab, fg_color="gray20", corner_radius=10)
+        llm_processing_frame.grid(row=3, column=0, columnspan=2, padx=10, pady=(0, 20), sticky=tk.EW)
+        llm_processing_frame.grid_columnconfigure(0, weight=1)
+        llm_processing_frame.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkSwitch(llm_processing_frame, text="Enable LLM Processing", variable=self.enable_llm_processing).grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+        ctk.CTkButton(llm_processing_frame, text="Load LLM Models", command=self.load_models).grid(row=0, column=1, padx=10, pady=(10, 10), sticky=tk.EW)
+        ctk.CTkSwitch(llm_processing_frame, text="Unload LLM Model After Each Sentence", variable=self.unload_model_after_sentence).grid(row=1, column=0, columnspan=2, padx=5, pady=5, sticky=tk.W)
+
+        # First Prompt
+        ctk.CTkLabel(self.text_processing_tab, text="First Prompt", font=ctk.CTkFont(size=14, weight="bold")).grid(row=4, column=0, columnspan=2, padx=10, pady=10, sticky=tk.W)
+
+        first_prompt_frame = ctk.CTkFrame(self.text_processing_tab, fg_color="gray20", corner_radius=10)
+        first_prompt_frame.grid(row=5, column=0, columnspan=2, padx=10, pady=(0, 20), sticky=tk.EW)
+        first_prompt_frame.grid_columnconfigure(0, weight=1)
+        first_prompt_frame.grid_columnconfigure(1, weight=1)
+
+        self.first_prompt_text = ctk.CTkTextbox(first_prompt_frame, height=100, width=500, wrap="word")
         self.first_prompt_text.insert("0.0", self.first_optimisation_prompt.get())
-        self.first_prompt_text.grid(row=6, column=0, columnspan=2, padx=5, pady=5, sticky=tk.EW)
-        ctk.CTkSwitch(self.text_processing_tab, text="Enable First Prompt", variable=self.enable_first_prompt).grid(row=7, column=0, padx=5, pady=5, sticky=tk.W)
-        ctk.CTkSwitch(self.text_processing_tab, text="Enable Evaluation", variable=self.enable_first_evaluation).grid(row=7, column=1, padx=5, pady=5, sticky=tk.W)
-        ctk.CTkLabel(self.text_processing_tab, text="First Prompt Model:").grid(row=8, column=0, padx=5, pady=5, sticky=tk.W)
-        self.first_prompt_model_dropdown = ctk.CTkOptionMenu(self.text_processing_tab, variable=self.first_prompt_model, values=["default"])
-        self.first_prompt_model_dropdown.grid(row=8, column=1, padx=5, pady=5, sticky=tk.EW)
+        self.first_prompt_text.grid(row=0, column=0, columnspan=2, padx=5, pady=5, sticky=tk.EW)
+        ctk.CTkSwitch(first_prompt_frame, text="Enable First Prompt", variable=self.enable_first_prompt).grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
+        ctk.CTkSwitch(first_prompt_frame, text="Enable Evaluation", variable=self.enable_first_evaluation).grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
+        ctk.CTkLabel(first_prompt_frame, text="First Prompt Model:").grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
+        self.first_prompt_model_dropdown = ctk.CTkOptionMenu(first_prompt_frame, variable=self.first_prompt_model, values=["default"])
+        self.first_prompt_model_dropdown.grid(row=2, column=1, padx=5, pady=5, sticky=tk.EW)
 
-        ctk.CTkSwitch(self.text_processing_tab, text="Enable Second Prompt", variable=self.enable_second_prompt).grid(row=9, column=0, padx=5, pady=5, sticky=tk.W)
-        ctk.CTkLabel(self.text_processing_tab, text="Second Prompt").grid(row=10, column=0, padx=5, pady=5, sticky=tk.W)
-        self.second_prompt_text = ctk.CTkTextbox(self.text_processing_tab, height=100, wrap="word")
+        # Second Prompt
+        ctk.CTkLabel(self.text_processing_tab, text="Second Prompt", font=ctk.CTkFont(size=14, weight="bold")).grid(row=6, column=0, columnspan=2, padx=10, pady=10, sticky=tk.W)
+
+        second_prompt_frame = ctk.CTkFrame(self.text_processing_tab, fg_color="gray20", corner_radius=10)
+        second_prompt_frame.grid(row=7, column=0, columnspan=2, padx=10, pady=(0, 20), sticky=tk.EW)
+        second_prompt_frame.grid_columnconfigure(0, weight=1)
+        second_prompt_frame.grid_columnconfigure(1, weight=1)
+
+        self.second_prompt_text = ctk.CTkTextbox(second_prompt_frame, height=100, wrap="word")
         self.second_prompt_text.insert("0.0", self.second_optimisation_prompt.get())
-        self.second_prompt_text.grid(row=11, column=0, columnspan=2, padx=5, pady=5, sticky=tk.EW)
-        ctk.CTkSwitch(self.text_processing_tab, text="Enable Evaluation", variable=self.enable_second_evaluation).grid(row=12, column=0, padx=5, pady=5, sticky=tk.W)
-        ctk.CTkLabel(self.text_processing_tab, text="Second Prompt Model:").grid(row=13, column=0, padx=5, pady=5, sticky=tk.W)
-        self.second_prompt_model_dropdown = ctk.CTkOptionMenu(self.text_processing_tab, variable=self.second_prompt_model, values=["default"])
-        self.second_prompt_model_dropdown.grid(row=13, column=1, padx=5, pady=5, sticky=tk.EW)
+        self.second_prompt_text.grid(row=0, column=0, columnspan=2, padx=5, pady=5, sticky=tk.EW)
+        ctk.CTkSwitch(second_prompt_frame, text="Enable Second Prompt", variable=self.enable_second_prompt).grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
+        ctk.CTkSwitch(second_prompt_frame, text="Enable Evaluation", variable=self.enable_second_evaluation).grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
+        ctk.CTkLabel(second_prompt_frame, text="Second Prompt Model:").grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
+        self.second_prompt_model_dropdown = ctk.CTkOptionMenu(second_prompt_frame, variable=self.second_prompt_model, values=["default"])
+        self.second_prompt_model_dropdown.grid(row=2, column=1, padx=5, pady=5, sticky=tk.EW)
 
-        ctk.CTkSwitch(self.text_processing_tab, text="Enable Third Prompt", variable=self.enable_third_prompt).grid(row=14, column=0, padx=5, pady=5, sticky=tk.W)
-        ctk.CTkLabel(self.text_processing_tab, text="Third Prompt").grid(row=15, column=0, padx=5, pady=5, sticky=tk.W)
-        self.third_prompt_text = ctk.CTkTextbox(self.text_processing_tab, height=100, wrap="word")
+        # Third Prompt
+        ctk.CTkLabel(self.text_processing_tab, text="Third Prompt", font=ctk.CTkFont(size=14, weight="bold")).grid(row=8, column=0, columnspan=2, padx=10, pady=10, sticky=tk.W)
+
+        third_prompt_frame = ctk.CTkFrame(self.text_processing_tab, fg_color="gray20", corner_radius=10)
+        third_prompt_frame.grid(row=9, column=0, columnspan=2, padx=10, pady=(0, 20), sticky=tk.EW)
+        third_prompt_frame.grid_columnconfigure(0, weight=1)
+        third_prompt_frame.grid_columnconfigure(1, weight=1)
+
+        self.third_prompt_text = ctk.CTkTextbox(third_prompt_frame, height=100, wrap="word")
         self.third_prompt_text.insert("0.0", self.third_optimisation_prompt.get())
-        self.third_prompt_text.grid(row=16, column=0, columnspan=2, padx=5, pady=5, sticky=tk.EW)
-        ctk.CTkSwitch(self.text_processing_tab, text="Enable Evaluation", variable=self.enable_third_evaluation).grid(row=17, column=0, padx=5, pady=5, sticky=tk.W)
-        ctk.CTkLabel(self.text_processing_tab, text="Third Prompt Model:").grid(row=18, column=0, padx=5, pady=5, sticky=tk.W)
-        self.third_prompt_model_dropdown = ctk.CTkOptionMenu(self.text_processing_tab, variable=self.third_prompt_model, values=["default"])
-        self.third_prompt_model_dropdown.grid(row=18, column=1, padx=5, pady=5, sticky=tk.EW)
+        self.third_prompt_text.grid(row=0, column=0, columnspan=2, padx=5, pady=5, sticky=tk.EW)
+        ctk.CTkSwitch(third_prompt_frame, text="Enable Third Prompt", variable=self.enable_third_prompt).grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
+        ctk.CTkSwitch(third_prompt_frame, text="Enable Evaluation", variable=self.enable_third_evaluation).grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
+        ctk.CTkLabel(third_prompt_frame, text="Third Prompt Model:").grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
+        self.third_prompt_model_dropdown = ctk.CTkOptionMenu(third_prompt_frame, variable=self.third_prompt_model, values=["default"])
+        self.third_prompt_model_dropdown.grid(row=2, column=1, padx=5, pady=5, sticky=tk.EW)
 
         # Audio Processing Tab
         self.audio_processing_tab = self.tabview.add("Audio Processing")
         self.audio_processing_tab.grid_columnconfigure(0, weight=1)
         self.audio_processing_tab.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkLabel(self.audio_processing_tab, text="RVC", font=ctk.CTkFont(size=14, weight="bold")).grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
-        ctk.CTkSwitch(self.audio_processing_tab, text="Enable RVC", variable=self.enable_rvc).grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
-        ctk.CTkButton(self.audio_processing_tab, text="Select RVC Model", command=self.select_rvc_model).grid(row=2, column=0, padx=5, pady=5, sticky=tk.EW)
-        ctk.CTkButton(self.audio_processing_tab, text="Select RVC Index", command=self.select_rvc_index).grid(row=3, column=0, padx=5, pady=5, sticky=tk.EW)
+        # Appended Silence Section
+        ctk.CTkLabel(self.audio_processing_tab, text="Appended Silence", font=ctk.CTkFont(size=14, weight="bold")).grid(row=0, column=0, columnspan=4, padx=10, pady=10, sticky=tk.W)
 
-        ctk.CTkLabel(self.audio_processing_tab, text="Appended Silence", font=ctk.CTkFont(size=14, weight="bold")).grid(row=4, column=0, padx=5, pady=5, sticky=tk.W)
-        ctk.CTkLabel(self.audio_processing_tab, text="Length:").grid(row=5, column=0, padx=5, pady=5, sticky=tk.W)
-        ctk.CTkEntry(self.audio_processing_tab, textvariable=self.silence_length).grid(row=5, column=1, padx=5, pady=5, sticky=tk.EW)
-        ctk.CTkLabel(self.audio_processing_tab, text="Length Paragraph:").grid(row=6, column=0, padx=5, pady=5, sticky=tk.W)
-        ctk.CTkEntry(self.audio_processing_tab, textvariable=self.paragraph_silence_length).grid(row=6, column=1, padx=5, pady=5, sticky=tk.EW)
+        silence_frame = ctk.CTkFrame(self.audio_processing_tab, fg_color="gray20", corner_radius=10)
+        silence_frame.grid(row=1, column=0, columnspan=4, padx=10, pady=(0, 20), sticky=tk.EW)
+        silence_frame.grid_columnconfigure(0, weight=1)
+        silence_frame.grid_columnconfigure(1, weight=1)
+        silence_frame.grid_columnconfigure(2, weight=1)
+        silence_frame.grid_columnconfigure(3, weight=1)
 
-        ctk.CTkLabel(self.audio_processing_tab, text="Fade", font=ctk.CTkFont(size=14, weight="bold")).grid(row=7, column=0, padx=5, pady=5, sticky=tk.W)
-        ctk.CTkSwitch(self.audio_processing_tab, text="Enable Fade-in and Fade-out", variable=self.enable_fade).grid(row=8, column=0, padx=5, pady=5, sticky=tk.W)
-        ctk.CTkLabel(self.audio_processing_tab, text="Fade-in Duration:").grid(row=9, column=0, padx=5, pady=5, sticky=tk.W)
-        ctk.CTkEntry(self.audio_processing_tab, textvariable=self.fade_in_duration).grid(row=9, column=1, padx=5, pady=5, sticky=tk.EW)
-        ctk.CTkLabel(self.audio_processing_tab, text="Fade-out Duration:").grid(row=10, column=0, padx=5, pady=5, sticky=tk.W)
-        ctk.CTkEntry(self.audio_processing_tab, textvariable=self.fade_out_duration).grid(row=10, column=1, padx=5, pady=5, sticky=tk.EW)
+        ctk.CTkLabel(silence_frame, text="Length:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+        ctk.CTkEntry(silence_frame, textvariable=self.silence_length).grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
+        ctk.CTkLabel(silence_frame, text="Length Paragraph:").grid(row=0, column=2, padx=5, pady=5, sticky=tk.W)
+        ctk.CTkEntry(silence_frame, textvariable=self.paragraph_silence_length).grid(row=0, column=3, padx=5, pady=5, sticky=tk.EW)
 
-        ctk.CTkLabel(self.audio_processing_tab, text="Evaluation", font=ctk.CTkFont(size=14, weight="bold")).grid(row=11, column=0, padx=5, pady=5, sticky=tk.W)
-        ctk.CTkSwitch(self.audio_processing_tab, text="Enable Evaluation", variable=self.enable_tts_evaluation).grid(row=12, column=0, padx=5, pady=5, sticky=tk.W)
-        ctk.CTkLabel(self.audio_processing_tab, text="Target MOS Value:").grid(row=13, column=0, padx=5, pady=5, sticky=tk.W)
-        ctk.CTkEntry(self.audio_processing_tab, textvariable=self.target_mos_value).grid(row=13, column=1, padx=5, pady=5, sticky=tk.EW)
-        ctk.CTkLabel(self.audio_processing_tab, text="Max Attempts:").grid(row=14, column=0, padx=5, pady=5, sticky=tk.W)
-        ctk.CTkEntry(self.audio_processing_tab, textvariable=self.max_attempts).grid(row=14, column=1, padx=5, pady=5, sticky=tk.EW)
+        # RVC Section
+        ctk.CTkLabel(self.audio_processing_tab, text="RVC", font=ctk.CTkFont(size=14, weight="bold")).grid(row=2, column=0, columnspan=3, padx=10, pady=10, sticky=tk.W)
 
-        ctk.CTkLabel(self.audio_processing_tab, text="Output", font=ctk.CTkFont(size=14, weight="bold")).grid(row=15, column=0, padx=5, pady=5, sticky=tk.W)
-        ctk.CTkLabel(self.audio_processing_tab, text="Format:").grid(row=16, column=0, padx=5, pady=5, sticky=tk.W)
-        ctk.CTkEntry(self.audio_processing_tab, textvariable=self.output_format).grid(row=16, column=1, padx=5, pady=5, sticky=tk.EW)
-        ctk.CTkLabel(self.audio_processing_tab, text="Bitrate:").grid(row=17, column=0, padx=5, pady=5, sticky=tk.W)
-        ctk.CTkEntry(self.audio_processing_tab, textvariable=self.bitrate).grid(row=17, column=1, padx=5, pady=5, sticky=tk.EW)
+        rvc_frame = ctk.CTkFrame(self.audio_processing_tab, fg_color="gray20", corner_radius=10)
+        rvc_frame.grid(row=3, column=0, columnspan=3, padx=10, pady=(0, 20), sticky=tk.EW)
+        rvc_frame.grid_columnconfigure(0, weight=1)
+        rvc_frame.grid_columnconfigure(1, weight=1)
+        rvc_frame.grid_columnconfigure(2, weight=1)
+
+        ctk.CTkSwitch(rvc_frame, text="Enable RVC", variable=self.enable_rvc).grid(row=0, column=0, padx=5, pady=5, sticky=tk.EW)
+        ctk.CTkButton(rvc_frame, text="Select RVC Model", command=self.select_rvc_model).grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
+        ctk.CTkButton(rvc_frame, text="Select RVC Index", command=self.select_rvc_index).grid(row=0, column=2, padx=5, pady=5, sticky=tk.EW)
+
+        # Fade Section
+        ctk.CTkLabel(self.audio_processing_tab, text="Fade", font=ctk.CTkFont(size=14, weight="bold")).grid(row=4, column=0, columnspan=4, padx=10, pady=10, sticky=tk.W)
+
+        fade_frame = ctk.CTkFrame(self.audio_processing_tab, fg_color="gray20", corner_radius=10)
+        fade_frame.grid(row=5, column=0, columnspan=4, padx=10, pady=(0, 20), sticky=tk.EW)
+        fade_frame.grid_columnconfigure(0, weight=1)
+        fade_frame.grid_columnconfigure(1, weight=1)
+        fade_frame.grid_columnconfigure(2, weight=1)
+        fade_frame.grid_columnconfigure(3, weight=1)
+
+        ctk.CTkSwitch(fade_frame, text="Enable Fade-in and Fade-out", variable=self.enable_fade).grid(row=0, column=0, columnspan=4, padx=5, pady=5, sticky=tk.W)
+        ctk.CTkLabel(fade_frame, text="Fade-in Duration:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
+        ctk.CTkEntry(fade_frame, textvariable=self.fade_in_duration).grid(row=1, column=1, padx=5, pady=5, sticky=tk.EW)
+        ctk.CTkLabel(fade_frame, text="Fade-out Duration:").grid(row=1, column=2, padx=5, pady=5, sticky=tk.W)
+        ctk.CTkEntry(fade_frame, textvariable=self.fade_out_duration).grid(row=1, column=3, padx=5, pady=5, sticky=tk.EW)
+
+        # Evaluation Section
+        ctk.CTkLabel(self.audio_processing_tab, text="Evaluation", font=ctk.CTkFont(size=14, weight="bold")).grid(row=6, column=0, columnspan=5, padx=10, pady=10, sticky=tk.W)
+
+        evaluation_frame = ctk.CTkFrame(self.audio_processing_tab, fg_color="gray20", corner_radius=10)
+        evaluation_frame.grid(row=7, column=0, columnspan=5, padx=10, pady=(0, 20), sticky=tk.EW)
+        evaluation_frame.grid_columnconfigure(0, weight=1)
+        evaluation_frame.grid_columnconfigure(1, weight=1)
+        evaluation_frame.grid_columnconfigure(2, weight=1)
+        evaluation_frame.grid_columnconfigure(3, weight=1)
+        evaluation_frame.grid_columnconfigure(4, weight=1)
+
+        ctk.CTkSwitch(evaluation_frame, text="Enable Evaluation", variable=self.enable_tts_evaluation).grid(row=0, column=0, padx=5, pady=5, sticky=tk.EW)
+        ctk.CTkLabel(evaluation_frame, text="Target MOS Value:").grid(row=0, column=1, padx=5, pady=5, sticky=tk.W)
+        ctk.CTkEntry(evaluation_frame, textvariable=self.target_mos_value).grid(row=0, column=2, padx=5, pady=5, sticky=tk.EW)
+        ctk.CTkLabel(evaluation_frame, text="Max Attempts:").grid(row=0, column=3, padx=5, pady=5, sticky=tk.W)
+        ctk.CTkEntry(evaluation_frame, textvariable=self.max_attempts).grid(row=0, column=4, padx=5, pady=5, sticky=tk.EW)
+
+        # Output Section
+        ctk.CTkLabel(self.audio_processing_tab, text="Output", font=ctk.CTkFont(size=14, weight="bold")).grid(row=8, column=0, columnspan=4, padx=10, pady=10, sticky=tk.W)
+
+        output_frame = ctk.CTkFrame(self.audio_processing_tab, fg_color="gray20", corner_radius=10)
+        output_frame.grid(row=9, column=0, columnspan=4, padx=10, pady=(0, 20), sticky=tk.EW)
+        output_frame.grid_columnconfigure(0, weight=1)
+        output_frame.grid_columnconfigure(1, weight=1)
+        output_frame.grid_columnconfigure(2, weight=1)
+        output_frame.grid_columnconfigure(3, weight=1)
+
+        ctk.CTkLabel(output_frame, text="Format:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+        ctk.CTkEntry(output_frame, textvariable=self.output_format).grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
+        ctk.CTkLabel(output_frame, text="Bitrate:").grid(row=0, column=2, padx=5, pady=5, sticky=tk.W)
+        ctk.CTkEntry(output_frame, textvariable=self.bitrate).grid(row=0, column=3, padx=5, pady=5, sticky=tk.EW)
 
         self.sentence_audio_data = {}  # Dictionary to store sentence audio data
 
@@ -313,7 +415,8 @@ class TTSOptimizerGUI:
         self.set_speaker_folder()
 
     def select_file(self):
-        self.pre_selected_source_file = filedialog.askopenfilename(filetypes=[("Text files", "*.txt")])
+        # Modify filetypes to combine .txt and .srt into a single option
+        self.pre_selected_source_file = filedialog.askopenfilename(filetypes=[("Text and SRT files", "*.txt;*.srt")])
         if self.pre_selected_source_file:
             file_name = os.path.basename(self.pre_selected_source_file)
             self.selected_file_label.configure(text=file_name)
@@ -323,8 +426,8 @@ class TTSOptimizerGUI:
                 session_dir = os.path.join("Outputs", session_name)
                 os.makedirs(session_dir, exist_ok=True)
 
-                # Remove the old text file from the session directory
-                txt_files = [file for file in os.listdir(session_dir) if file.endswith(".txt")]
+                # Remove the old text or srt file from the session directory
+                txt_files = [file for file in os.listdir(session_dir) if file.endswith(".txt") or file.endswith(".srt")]
                 for file in txt_files:
                     os.remove(os.path.join(session_dir, file))
 
@@ -350,18 +453,47 @@ class TTSOptimizerGUI:
             self.server_connected = False
             self.master.after(10000, self.set_speaker_folder)
 
-    def populate_speaker_dropdown(self):
-        wav_files = [f for f in os.listdir(self.tts_voices_folder) if f.endswith(".wav")]
-        speakers = [os.path.splitext(f)[0] for f in sorted(wav_files)]  # Sort wav_files alphabetically
+    def populate_speaker_dropdown(self, event=None):
+        if self.tts_service.get() == "XTTS":
+            wav_files = [f for f in os.listdir(self.tts_voices_folder) if f.endswith(".wav")]
+            speakers = [os.path.splitext(f)[0] for f in sorted(wav_files)]
+        else:  # Silero
+            try:
+                language_name = self.language_var.get()  # Use self.language_var.get() instead of self.language.get()
+                language_code = next((lang["code"] for lang in silero_languages if lang["name"] == language_name), None)
+                if language_code:
+                    response = requests.get(f"http://localhost:8001/tts/speakers")
+                    if response.status_code == 200:
+                        speakers = [speaker["name"] for speaker in response.json()]
+                    else:
+                        speakers = []
+                        messagebox.showerror("Error", "Failed to fetch Silero speakers.")
+                else:
+                    speakers = []
+                    messagebox.showerror("Error", "Invalid language selected.")
+            except requests.exceptions.ConnectionError:
+                speakers = []
+                messagebox.showerror("Error", "Failed to connect to the Silero API.")
+
         self.speaker_dropdown.configure(values=speakers)
         if speakers:
-            self.selected_speaker.set(speakers[0])  # Set the first speaker as the default
+            self.selected_speaker.set(speakers[0])
 
-    def check_server_connection(self):
-        if not self.server_connected:
-            messagebox.showerror("Error", "Server is offline. Cannot start generation.")
-            return False
-        return True
+    def on_language_selected(self, *args):
+        print("on_language_selected method called")
+        selected_language = self.language_var.get()
+
+        if self.tts_service.get() == "Silero":
+            selected_language_code = next((lang["code"] for lang in silero_languages if lang["name"] == selected_language), None)
+            if selected_language_code:
+                try:
+                    response = requests.post("http://localhost:8001/tts/language", json={"id": selected_language_code})
+                    if response.status_code == 200:
+                        self.populate_speaker_dropdown()
+                    else:
+                        messagebox.showerror("Error", "Failed to set Silero language.")
+                except requests.exceptions.ConnectionError:
+                    messagebox.showerror("Error", "Failed to connect to the Silero API.")
 
     def upload_speaker_voice(self):
         wav_file = filedialog.askopenfilename(filetypes=[("WAV files", "*.wav")])
@@ -685,6 +817,27 @@ class TTSOptimizerGUI:
         self.optimization_thread = threading.Thread(target=self.start_optimisation, args=(total_sentences,))
         self.optimization_thread.start()
 
+    def check_server_connection(self):
+        try:
+            if self.tts_service.get() == "XTTS":
+                url = "http://localhost:8020/docs#"
+            else:  # Silero
+                url = "http://localhost:8001/docs#"
+
+            response = requests.get(url)
+
+            if response.status_code == 200:
+                return True
+            else:
+                messagebox.showerror("Error", f"{self.tts_service.get()} server returned status code {response.status_code}. Cannot start generation.")
+                return False
+        except requests.exceptions.ConnectionError as e:
+            messagebox.showerror("Error", f"Failed to connect to {self.tts_service.get()} server:\n{str(e)}")
+            return False
+        except Exception as e:
+            messagebox.showerror("Error", f"An error occurred while checking {self.tts_service.get()} server connection:\n{str(e)}")
+            return False
+
     def session_name_exists(self, session_name):
         session_dir = os.path.join("Outputs", session_name)
         return os.path.exists(session_dir)
@@ -706,6 +859,30 @@ class TTSOptimizerGUI:
             text = ''.join(char for char in text if not unicodedata.combining(char))
             text = unidecode(text)
         
+        # Check if the source file is an srt file
+        if self.source_file.endswith(".srt"):
+            # Parse the srt file and extract subtitle information
+            subtitles = pysrt.open(self.source_file)
+            
+            processed_sentences = []
+            for subtitle in subtitles:
+                start_time = subtitle.start.to_time().strftime("%H:%M:%S.%f")
+                end_time = subtitle.end.to_time().strftime("%H:%M:%S.%f")
+                text = subtitle.text.replace("\n", " ")
+                
+                sentence_dict = {
+                    "original_sentence": text,
+                    "paragraph": "no",
+                    "split_part": None,
+                    "start": start_time,
+                    "end": end_time,
+                    "tts_generated": "no"  # Add this line
+                }
+                
+                processed_sentences.append(sentence_dict)
+            
+            return processed_sentences
+        
         sentences = self.split_into_sentences(text)
         processed_sentences = []
 
@@ -720,6 +897,10 @@ class TTSOptimizerGUI:
                 if self.calculate_similarity(preceding_text, sentence_end) >= 0.8:
                     is_paragraph = True
                     break
+
+            # Use num2words to convert digits to words for Silero
+            if self.tts_service.get() == "Silero":
+                sentence = self.convert_digits_to_words(sentence)
 
             sentence_dict = {
                 "original_sentence": sentence,
@@ -744,6 +925,76 @@ class TTSOptimizerGUI:
             split_sentences.extend(self.split_long_sentences_2(sentence_dict))
 
         return split_sentences
+
+    def convert_digits_to_words(self, sentence):
+        import re
+
+        def replace_numbers(match):
+            number = match.group(0)
+            try:
+                # Get the selected Silero language
+                silero_language_name = self.language_var.get()
+                
+                # Map Silero language names to num2words language codes
+                silero_to_num2words_lang = {
+                    "German (v3)": "de",
+                    "English (v3)": "en",
+                    "English Indic (v3)": "en",
+                    "Spanish (v3)": "es",
+                    "French (v3)": "fr",
+                    "Indic (v3)": "hi",
+                    "Russian (v3.1)": "ru",
+                    "Tatar (v3)": "tt",
+                    "Ukrainian (v3)": "uk",
+                    "Uzbek (v3)": "uz",
+                    "Kalmyk (v3)": "xal"
+                }
+
+                # Get the corresponding num2words language code
+                num2words_lang = silero_to_num2words_lang.get(silero_language_name, "en")
+
+                return num2words(int(number), lang=num2words_lang)
+            except ValueError:
+                return number
+
+        return re.sub(r'\d+', replace_numbers, sentence)
+
+    def synchronize_audio(self, processed_sentences, session_name):
+        final_audio = AudioSegment.empty()
+        current_time = datetime.datetime.strptime("00:00:00.000", "%H:%M:%S.%f")
+        session_dir = os.path.join("Outputs", session_name)
+
+        for sentence_dict in processed_sentences:
+            sentence_number = int(sentence_dict["sentence_number"])
+            wav_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence{sentence_number}.wav")
+            if os.path.exists(wav_filename):
+                audio_data = AudioSegment.from_file(wav_filename, format="wav")
+
+                start_time = sentence_dict["start"]
+                end_time = sentence_dict["end"]
+
+                # Parse the start and end times
+                start_time_obj = datetime.datetime.strptime(start_time, "%H:%M:%S.%f")
+                end_time_obj = datetime.datetime.strptime(end_time, "%H:%M:%S.%f")
+
+                # Calculate the duration of the generated audio
+                generated_audio_duration = len(audio_data) / 1000
+
+                # Check if the current time is ahead of the subtitle's start time
+                if current_time > start_time_obj:
+                    # The audio should start immediately
+                    final_audio += audio_data
+                    current_time += datetime.timedelta(seconds=generated_audio_duration)
+                else:
+                    # Calculate the silence duration needed to match the subtitle's start time
+                    silence_duration = (start_time_obj - current_time).total_seconds() * 1000
+                    if silence_duration > 0:
+                        silence = AudioSegment.silent(duration=silence_duration)
+                        final_audio += silence
+                    final_audio += audio_data
+                    current_time = start_time_obj + datetime.timedelta(seconds=generated_audio_duration)
+
+        return final_audio
 
     def split_long_sentences(self, sentence_dict):
         sentence = sentence_dict["original_sentence"]
@@ -906,8 +1157,6 @@ class TTSOptimizerGUI:
         os.makedirs(session_dir, exist_ok=True)
         os.makedirs(os.path.join(session_dir, "Sentence_wavs"), exist_ok=True)
 
-        final_audio = AudioSegment.empty()
-
         json_filename = os.path.join(session_dir, f"{self.session_name.get()}_sentences.json")
 
         # Initialize lists to store sentence generation times and MOS scores
@@ -955,6 +1204,13 @@ class TTSOptimizerGUI:
                     }
                 else:
                     sentence_dict = preprocessed_sentences[sentence_index]
+
+                if self.source_file.endswith(".srt"):
+                    # Disable sentence splitting, appending, and silence appending for srt files
+                    self.enable_sentence_splitting.set(False)
+                    self.enable_sentence_appending.set(False)
+                    self.silence_length.set(0)
+                    self.paragraph_silence_length.set(0)
 
                 # Optimize the sentence
                 processed_sentence = self.optimise_sentence(sentence_dict, sentence_index, session_dir)
@@ -1009,24 +1265,25 @@ class TTSOptimizerGUI:
                     if self.enable_fade.get():
                         best_audio = self.apply_fade(best_audio, self.fade_in_duration.get(), self.fade_out_duration.get())
 
-                    if processed_sentence.get("paragraph", "no") == "yes":
-                        silence_length = self.paragraph_silence_length.get()
-                    elif processed_sentence.get("split_part") is not None:
-                        if isinstance(processed_sentence.get("split_part"), str):
-                            if processed_sentence.get("split_part") in ["0a", "0b", "1a"]:
-                                silence_length = self.silence_length.get() // 4
-                            elif processed_sentence.get("split_part") == "1b":
-                                silence_length = self.silence_length.get()
-                        elif isinstance(processed_sentence.get("split_part"), int):
-                            if processed_sentence.get("split_part") == 0:
-                                silence_length = self.silence_length.get() // 4
-                            elif processed_sentence.get("split_part") == 1:
-                                silence_length = self.silence_length.get()
-                    else:
-                        silence_length = self.silence_length.get()
+                    if not self.source_file.endswith(".srt"):
+                        if processed_sentence.get("paragraph", "no") == "yes":
+                            silence_length = self.paragraph_silence_length.get()
+                        elif processed_sentence.get("split_part") is not None:
+                            if isinstance(processed_sentence.get("split_part"), str):
+                                if processed_sentence.get("split_part") in ["0a", "0b", "1a"]:
+                                    silence_length = self.silence_length.get() // 4
+                                elif processed_sentence.get("split_part") == "1b":
+                                    silence_length = self.silence_length.get()
+                            elif isinstance(processed_sentence.get("split_part"), int):
+                                if processed_sentence.get("split_part") == 0:
+                                    silence_length = self.silence_length.get() // 4
+                                elif processed_sentence.get("split_part") == 1:
+                                    silence_length = self.silence_length.get()
+                        else:
+                            silence_length = self.silence_length.get()
 
-                    if silence_length > 0:
-                        best_audio += AudioSegment.silent(duration=silence_length)
+                        if silence_length > 0:
+                            best_audio += AudioSegment.silent(duration=silence_length)
 
                     # Update the playlist in the GUI
                     self.master.after(0, self.update_playlist, processed_sentence)
@@ -1034,9 +1291,6 @@ class TTSOptimizerGUI:
                     # Save the individual sentence WAV file
                     sentence_output_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence{processed_sentence['sentence_number']}.wav")
                     best_audio.export(sentence_output_filename, format="wav")
-
-                    # Append the audio to the final concatenated audio
-                    final_audio += best_audio
 
                     # Update the tts_generated flag for the current sentence in the preprocessed_sentences list
                     sentence_dict["tts_generated"] = "yes"
@@ -1065,13 +1319,29 @@ class TTSOptimizerGUI:
 
             # Update the remaining time label
             self.master.after(0, self.update_remaining_time_label, estimated_remaining_time)
+            # Synchronize the audio segments based on subtitle timings if the source file is an srt file
+            if self.source_file.endswith(".srt"):
+                final_audio = self.synchronize_audio(preprocessed_sentences, session_name)
+                output_filename = os.path.join(session_dir, f"{session_name}_synchronized.{self.output_format.get()}")
+                if self.output_format.get() in ['mp3', 'opus']:
+                    final_audio.export(output_filename, format=self.output_format.get(), bitrate=self.bitrate.get())
+                else:
+                    final_audio.export(output_filename, format=self.output_format.get())
+        # Save the final concatenated audio file only if the source file is not an srt file
+        if not self.source_file.endswith(".srt"):
+            final_audio = AudioSegment.empty()
+            for sentence_dict in preprocessed_sentences:
+                sentence_number = int(sentence_dict["sentence_number"])
+                wav_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence{sentence_number}.wav")
+                if os.path.exists(wav_filename):
+                    audio_data = AudioSegment.from_file(wav_filename, format="wav")
+                    final_audio += audio_data
 
-        # Save the final concatenated audio file
-        output_filename = os.path.join(session_dir, f"{session_name}.{self.output_format.get()}")
-        if self.output_format.get() in ['mp3', 'opus']:
-            final_audio.export(output_filename, format=self.output_format.get(), bitrate=self.bitrate.get())
-        else:
-            final_audio.export(output_filename, format=self.output_format.get())
+            output_filename = os.path.join(session_dir, f"{session_name}.{self.output_format.get()}")
+            if self.output_format.get() in ['mp3', 'opus']:
+                final_audio.export(output_filename, format=self.output_format.get(), bitrate=self.bitrate.get())
+            else:
+                final_audio.export(output_filename, format=self.output_format.get())
 
         # Calculate the average MOS score
         if mos_scores:
@@ -1168,7 +1438,26 @@ class TTSOptimizerGUI:
         return processed_sentence
 
     def split_into_sentences(self, text):
-        language = self.language.get()
+        silero_to_simple_lang_codes = {
+            "German (v3)": "de",
+            "English (v3)": "en",
+            "English Indic (v3)": "en",
+            "Spanish (v3)": "es",
+            "French (v3)": "fr",
+            "Indic (v3)": "hi",
+            "Russian (v3.1)": "ru",
+            "Tatar (v3)": "tt",
+            "Ukrainian (v3)": "uk",
+            "Uzbek (v3)": "uz",
+            "Kalmyk (v3)": "xal"
+        }
+
+        if self.tts_service.get() == "XTTS":
+            language = self.language_var.get()  # Replace self.language.get() with self.language_var.get()
+        else:  # Silero
+            silero_language_name = self.language_var.get()  # Replace self.language.get() with self.language_var.get()
+            language = silero_to_simple_lang_codes.get(silero_language_name, "en")
+
         splitter = SentenceSplitter(language=language)
         sentences = splitter.split(text)
         return sentences
@@ -1288,6 +1577,8 @@ class TTSOptimizerGUI:
         for sentence_dict in data:
             split_part = sentence_dict.get("split_part")
             paragraph = sentence_dict.get("paragraph", "no")
+            start = sentence_dict.get("start")  # Add this line
+            end = sentence_dict.get("end")  # Add this line
             
             sentence_number = str(sentence_counter)
             sentence_counter += 1
@@ -1298,50 +1589,115 @@ class TTSOptimizerGUI:
                 "split_part": split_part,
                 "original_sentence": sentence_dict.get("original_sentence"),
                 "processed_sentence": sentence_dict.get("processed_sentence"),
-                "tts_generated": sentence_dict.get("tts_generated", "no")
+                "tts_generated": sentence_dict.get("tts_generated", "no"),
+                "start": start,  # Add this line
+                "end": end  # Add this line
             }
             numbered_data.append(numbered_sentence)
         
         with open(filename, 'w') as f:
             json.dump(numbered_data, f, indent=2)
-            
+
+    def update_language_dropdown(self, event=None):
+        if self.tts_service.get() == "XTTS":
+            languages = ["en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko", "hi"]
+            self.language_dropdown.configure(values=languages)
+            self.language_var.set("en")  # Use self.language_var.set("en") instead of self.language.set("en")
+            self.upload_new_voices_button.configure(state=tk.NORMAL)  # Enable the button for XTTS
+            self.populate_speaker_dropdown()  # Update the speaker dropdown with XTTS speakers
+        else:  # Silero
+            language_names = [lang["name"] for lang in silero_languages]
+            self.language_dropdown.configure(values=language_names)
+            self.language_var.set("English (v3)")  # Use self.language_var.set("English (v3)") instead of self.language.set("English (v3)")
+            self.upload_new_voices_button.configure(state=tk.DISABLED)  # Disable the button for Silero
+
+            selected_language_name = self.language_var.get()  # Use self.language_var.get() instead of self.language.get()
+            selected_language_code = next((lang["code"] for lang in silero_languages if lang["name"] == selected_language_name), None)
+
+            if selected_language_code:
+                try:
+                    response = requests.post("http://localhost:8001/tts/language", json={"id": selected_language_code})
+                    if response.status_code == 200:
+                        # Fetch the updated list of speakers for the selected language
+                        self.master.after(1000, self.populate_speaker_dropdown)
+                    else:
+                        messagebox.showerror("Error", "Failed to set Silero language.")
+                except requests.exceptions.ConnectionError:
+                    messagebox.showerror("Error", "Failed to connect to the Silero API.")
+
     def tts_to_audio(self, text):
-        language = self.language.get()
-        speaker = self.selected_speaker.get()
-        speaker_wav = f"{speaker}.wav"  # Append ".wav" to the speaker name
-        
         best_audio = None
         best_mos = -1
-        
-        for attempt in range(self.max_attempts.get()):
-            try:
-                data = {
-                    "text": text,
-                    "speaker_wav": speaker_wav,  # Pass only the speaker WAV file name
-                    "language": language
-                }
-                response = requests.post("http://localhost:8020/tts_to_audio/", json=data)
-                
-                if response.status_code == 200:
-                    audio_data = io.BytesIO(response.content)
-                    audio = AudioSegment.from_file(audio_data, format="wav")
-                    
-                    if self.enable_tts_evaluation.get():
-                        mos_score = self.evaluate_tts(text, audio)
-                        if mos_score > best_mos:
-                            best_audio = audio
-                            best_mos = mos_score
-                        
-                        if mos_score >= float(self.target_mos_value.get()):
-                            return best_audio
+        if self.tts_service.get() == "XTTS":
+            language = self.language_dropdown.get()  # Get the value directly from the language dropdown/combobox
+            speaker = self.selected_speaker.get()
+            speaker_wav = f"{speaker}.wav"
+
+            for attempt in range(self.max_attempts.get()):
+                try:
+                    data = {
+                        "text": text,
+                        "speaker_wav": speaker_wav,
+                        "language": language
+                    }
+                    print(f"Request data: {data}")  # Print the request data
+                    response = requests.post("http://localhost:8020/tts_to_audio/", json=data)
+                    print(f"Response status code: {response.status_code}")  # Print the response status code
+                    if response.status_code == 200:
+                        audio_data = io.BytesIO(response.content)
+                        audio = AudioSegment.from_file(audio_data, format="wav")
+
+                        if self.enable_tts_evaluation.get():
+                            mos_score = self.evaluate_tts(text, audio)
+                            if mos_score > best_mos:
+                                best_audio = audio
+                                best_mos = mos_score
+
+                            if mos_score >= float(self.target_mos_value.get()):
+                                return best_audio
+                        else:
+                            return audio
                     else:
-                        return audio
-                else:
-                    print(f"Error {response.status_code}: Failed to convert text to audio.")
-            except Exception as e:
-                print(f"Error in tts_to_audio: {str(e)}")
-        
+                        print(f"Error {response.status_code}: Failed to convert text to audio.")
+                except Exception as e:
+                    print(f"Error in tts_to_audio: {str(e)}")
+
+        else:  # Silero
+            speaker = self.selected_speaker.get()
+            language = self.language_var.get()  # Replace self.language.get() with self.language_var.get()
+            for attempt in range(self.max_attempts.get()):
+                try:
+                    data = {
+                        "speaker": speaker,
+                        "text": text,
+                        "session": ""
+                    }
+                    url = "http://localhost:8001/tts/generate"
+                    print(f"Making POST request to: {url}")  # Add this line
+                    response = requests.post(url, json=data)
+                    print(f"Response status code: {response.status_code}")  # Add this line
+
+                    if response.status_code == 200:
+                        audio_data = io.BytesIO(response.content)
+                        audio = AudioSegment.from_file(audio_data, format="wav")
+
+                        if self.enable_tts_evaluation.get():
+                            mos_score = self.evaluate_tts(text, audio)
+                            if mos_score > best_mos:
+                                best_audio = audio
+                                best_mos = mos_score
+
+                            if mos_score >= float(self.target_mos_value.get()):
+                                return best_audio
+                        else:
+                            return audio
+                    else:
+                        print(f"Error {response.status_code}: Failed to convert text to audio using Silero.")
+                except Exception as e:
+                    print(f"Error in tts_to_audio (Silero): {str(e)}")
+
         return best_audio
+        
     def add_silence(self, audio_segment, silence_length_ms):
         silence = AudioSegment.silent(duration=silence_length_ms)
         return audio_segment + silence
@@ -1502,6 +1858,13 @@ class TTSOptimizerGUI:
                     self.save_json(processed_sentences, json_filename)
                     logging.info(f"Updated sentence {sentence_number} in JSON file before regeneration: {json_filename}")
 
+                    if self.source_file.endswith(".srt"):
+                        # Disable sentence splitting, appending, and silence appending for srt files
+                        self.enable_sentence_splitting.set(False)
+                        self.enable_sentence_appending.set(False)
+                        self.silence_length.set(0)
+                        self.paragraph_silence_length.set(0)
+
                     # Optimize the sentence
                     processed_sentence = self.optimise_sentence(sentence_dict, original_sentence_index, session_dir)
 
@@ -1518,24 +1881,25 @@ class TTSOptimizerGUI:
                             if self.enable_fade.get():
                                 audio_data = self.apply_fade(audio_data, self.fade_in_duration.get(), self.fade_out_duration.get())
 
-                            if processed_sentence.get("paragraph", "no") == "yes":
-                                silence_length = self.paragraph_silence_length.get()
-                            elif processed_sentence.get("split_part") is not None:
-                                if isinstance(processed_sentence.get("split_part"), str):
-                                    if processed_sentence.get("split_part") in ["0a", "0b", "1a"]:
-                                        silence_length = self.silence_length.get() // 4
-                                    elif processed_sentence.get("split_part") == "1b":
-                                        silence_length = self.silence_length.get()
-                                elif isinstance(processed_sentence.get("split_part"), int):
-                                    if processed_sentence.get("split_part") == 0:
-                                        silence_length = self.silence_length.get() // 4
-                                    elif processed_sentence.get("split_part") == 1:
-                                        silence_length = self.silence_length.get()
-                            else:
-                                silence_length = self.silence_length.get()
+                            if not self.source_file.endswith(".srt"):
+                                if processed_sentence.get("paragraph", "no") == "yes":
+                                    silence_length = self.paragraph_silence_length.get()
+                                elif processed_sentence.get("split_part") is not None:
+                                    if isinstance(processed_sentence.get("split_part"), str):
+                                        if processed_sentence.get("split_part") in ["0a", "0b", "1a"]:
+                                            silence_length = self.silence_length.get() // 4
+                                        elif processed_sentence.get("split_part") == "1b":
+                                            silence_length = self.silence_length.get()
+                                    elif isinstance(processed_sentence.get("split_part"), int):
+                                        if processed_sentence.get("split_part") == 0:
+                                            silence_length = self.silence_length.get() // 4
+                                        elif processed_sentence.get("split_part") == 1:
+                                            silence_length = self.silence_length.get()
+                                else:
+                                    silence_length = self.silence_length.get()
 
-                            if silence_length > 0:
-                                audio_data += AudioSegment.silent(duration=silence_length)
+                                if silence_length > 0:
+                                    audio_data += AudioSegment.silent(duration=silence_length)
 
                             sentence_output_filename = os.path.join(session_dir, "Sentence_wavs", f"{self.session_name.get()}_sentence{sentence_number}.wav")
                             audio_data.export(sentence_output_filename, format="wav")
@@ -1562,6 +1926,7 @@ class TTSOptimizerGUI:
 
         except Exception as e:
             logging.error(f"Error regenerating sentence: {str(e)}")
+
 
     def play_sentences_as_playlist(self):
         if pygame.mixer.get_init() is None:
@@ -1654,6 +2019,7 @@ class TTSOptimizerGUI:
                 messagebox.showinfo("Session Loaded", f"The session '{session_name}' has been loaded.")
             else:
                 messagebox.showerror("Error", "Session JSON file not found.")
+
     def update_sentence_in_json(self, sentence_number, edited_sentence):
         try:
             session_dir = os.path.join("Outputs", self.session_name.get())
@@ -1692,7 +2058,6 @@ class TTSOptimizerGUI:
                 json_filename = os.path.join(session_dir, f"{self.session_name.get()}_sentences.json")
                 processed_sentences = self.load_json(json_filename)
                 sentence_dict = next((s for s in processed_sentences if s["original_sentence"] == selected_sentence or s.get("processed_sentence") == selected_sentence), None)
-
                 if sentence_dict:
                     sentence_number = sentence_dict["sentence_number"]
 
@@ -1714,6 +2079,13 @@ class TTSOptimizerGUI:
                     def discard_changes():
                         edit_window.destroy()
                         logging.info(f"Discarded changes for sentence {sentence_number}")
+
+                    if self.source_file.endswith(".srt"):
+                        # Disable sentence splitting, appending, and silence appending for srt files
+                        self.enable_sentence_splitting.set(False)
+                        self.enable_sentence_appending.set(False)
+                        self.silence_length.set(0)
+                        self.paragraph_silence_length.set(0)
 
                     save_button = ctk.CTkButton(edit_window, text="Save", command=save_edited_sentence)
                     save_button.pack(side=tk.LEFT, padx=10, pady=10)
@@ -1750,14 +2122,18 @@ class TTSOptimizerGUI:
             json_filename = os.path.join(session_dir, f"{session_name}_sentences.json")
             processed_sentences = self.load_json(json_filename)
 
-            final_audio = AudioSegment.empty()
-
-            for sentence_dict in processed_sentences:
-                sentence_number = int(sentence_dict["sentence_number"])
-                wav_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence{sentence_number}.wav")
-                if os.path.exists(wav_filename):
-                    audio_data = AudioSegment.from_file(wav_filename, format="wav")
-                    final_audio += audio_data
+            if self.source_file.endswith(".srt"):
+                # Synchronize the audio segments based on subtitle timings for srt files
+                final_audio = self.synchronize_audio(processed_sentences, session_name)
+            else:
+                # Concatenate the audio segments for non-srt files
+                final_audio = AudioSegment.empty()
+                for sentence_dict in processed_sentences:
+                    sentence_number = int(sentence_dict["sentence_number"])
+                    wav_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence{sentence_number}.wav")
+                    if os.path.exists(wav_filename):
+                        audio_data = AudioSegment.from_file(wav_filename, format="wav")
+                        final_audio += audio_data
 
             if output_format == "wav":
                 final_audio.export(output_path, format="wav")
@@ -1767,7 +2143,6 @@ class TTSOptimizerGUI:
                 final_audio.export(output_path, format="opus", bitrate=self.bitrate.get())
 
             messagebox.showinfo("Output Saved", f"The output file has been saved as {output_filename}")
-
 
 def main():
     root = ctk.CTk()
