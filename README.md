@@ -33,6 +33,7 @@ It leverages the XTTS or Silero model(s) for text-to-speech conversion, enhanced
 ![UI Demonstration Image](ui_demonstration.png)
 
 ## Samples
+The samples were generated using the minimal settings - no LLM text processing, RVC or TTS evaluation, and no sentences were regenerated. Both XTTS and Silero generations were faster than playback speed. 
 
 https://github.com/lukaszliniewicz/Pandrator/assets/75737665/fe0f2f5c-d608-4378-96cb-f4c576b72eb8
 
