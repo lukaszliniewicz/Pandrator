@@ -139,7 +139,7 @@ Contributions, suggestions for improvements, and bug reports are most welcome!
 - [ ] Enhance file format support (e.g., HTML, XML, PDF, Epub) including direct PDF to TXT conversion with OCR.
 - [x] Integrate editing capabilities for processed sentences within the UI.
 - [ ] Add support for a higher quality local TTS model, Tortoise.
-- [ ] Add support for a lower quality but faster local TTS model that can easily run on CPU, e.g. Silero or Piper.
+- [x] Add support for a lower quality but faster local TTS model that can easily run on CPU, e.g. Silero or Piper.
 - [ ] Implement a better text segmentation method, e.g. NLP-based.
 - [ ] Add option to record a voice sample and use it for TTS to the GUI.
-- [ ] Add workflow to create dubbing from `.srt` subtitle files.
+- [x] Add workflow to create dubbing from `.srt` subtitle files.
