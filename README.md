@@ -63,7 +63,7 @@ This project relies on several APIs and services (running locally):
 ## Installation
 
 ### Minimal One-Click Installation Executables (Windows only):
-Run `pandrator_start_minimal_xtts.exe` or `pandrator_start_minimal_silero.exe` with administrator priviliges. The executables were created using [pyinstaller](https://github.com/pyinstaller/pyinstaller) from `pandrator_start_minimal_xtts.py` `pandrator_start_minimal_silero.py` in the repository.
+Run `pandrator_start_minimal_xtts.exe` or `pandrator_start_minimal_silero.exe` with administrator priviliges. The executables were created using [pyinstaller](https://github.com/pyinstaller/pyinstaller) from `pandrator_start_minimal_xtts.py` and `pandrator_start_minimal_silero.py` in the repository.
 
 **The file may be flagged as a threat by antivirus software, so you may have to add it as an exception.**
 
