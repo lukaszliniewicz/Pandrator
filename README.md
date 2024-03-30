@@ -40,8 +40,10 @@ I was able to run all functionalities on a laptop with a Ryzen 5600h and a 3050 
 This project relies on several APIs and services (running locally):
 
 #### Required
-- [XTTS API Server by daswer123](https://github.com/daswer123/xtts-api-server.git) for Text-to-Speech (TTS) generation using Coqui [XTTSv2](https://huggingface.co/coqui/XTTS-v2)
+- [XTTS API Server by daswer123](https://github.com/daswer123/xtts-api-server.git) for Text-to-Speech (TTS) generation using Coqui [XTTSv2](https://huggingface.co/coqui/XTTS-v2) OR [Silero API Server by ouoertheo](https://github.com/ouoertheo/silero-api-server) for TTS generaton using the [Silero models](https://github.com/snakers4/silero-models). XTTS uses the GPU (Nvidia), and Silero uses the CPU. Silero can be run on low-end systems.
 - [FFmpeg](https://github.com/FFmpeg/FFmpeg) for audio encoding
+- [Sentence Splitter by mediacloud](https://github.com/mediacloud/sentence-splitter)
+- [num2words by savoirfairelinux](https://github.com/savoirfairelinux/num2words) for converting numbers to words (Silero requirs this). 
 
 #### Optional
 - [Text Generation Webui API by oobabooga](https://github.com/oobabooga/text-generation-webui.git) for LLM-based text pre-processing
@@ -50,12 +52,12 @@ This project relies on several APIs and services (running locally):
 
 ## Installation
 
-### Minimal One-Click Installation Executable (Windows with an Nvidia GPU only):
-Run `pandrator_start_minimal.exe` with administrator priviliges. The executable was created using [pyinstaller](https://github.com/pyinstaller/pyinstaller) from `pandrator_start_minimal.py` in the repository.
+### Minimal One-Click Installation Executables (Windows only):
+Run `pandrator_start_minimal_xtts.exe` or `pandrator_start_minimal_silero.exe` with administrator priviliges. The executables were created using [pyinstaller](https://github.com/pyinstaller/pyinstaller) from `pandrator_start_minimal_xtts.py` `pandrator_start_minimal_silero.py` in the repository.
 
-**It may be flagged as a threat by antivirus software, so you may have to add it as an exception.**
+**The file may be flagged as a threat by antivirus software, so you may have to add it as an exception.**
 
-On first use it creates the Pandrator folder, installs `curl`, `git`, `ffmpeg` and `Miniconda`, clones the XTTS Api Server repository and the Pandrator repository, creates conda environments, installs dependencies and launches them. You may use it to launch Pandrator later. If you want to perform the setup again, remove the Pandrator folder it created. Please allow at least a couple of minutes for the initial setup process to download models and install dependencies (it takes about 7 minutes for me).
+On first use it creates the Pandrator folder, installs `curl`, `git`, `ffmpeg` and `Miniconda`, clones the XTTS Api Server repository or the Silero Api Server and the Pandrator repository, creates conda environments, installs dependencies and launches them. You may use it to launch Pandrator later. If you want to perform the setup again, remove the Pandrator folder it created. Please allow at least a couple of minutes for the initial setup process to download models and install dependencies (it takes about 7 minutes for me).
 
 For additional functionality:
 - Install Text Generation Webui and remember to enable the API (add `--api` to `CMD_FLAGS.txt` in the main directory of the Webui before starting it).
@@ -65,7 +67,7 @@ Please refer to the repositories linked above for detailed installation instruct
 
 ### Manual Installation:
 1. Make sure that Python 3 and git are installed and in PATH.
-2. Install and run at least XTTS API Server. 
+2. Install and run at least XTTS API Server or Silero API Server. 
 3. Clone this repository (`git clone https://github.com/lukaszliniewicz/Pandrator.git`).
 4. `cd` to the repository directory.
 5. Install requirements using `pip install -r requirements.txt`.
