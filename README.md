@@ -9,6 +9,7 @@ It is still in alpha stage and I'm not an experienced developer (I'm a noob, in 
 It leverages the XTTS or Silero model(s) for text-to-speech conversion, enhanced by RVC_CLI for quality improvement and better voice cloning results, and NISQA for audio quality evaluation. Additionally, it incorporates Text Generation Webui's API for local LLM-based text pre-processing, enabling a wide range of text manipulations before audio generation.
 
 - [Pandrator, an audiobook generator](#pandrator-an-audiobook-generator)
+  - [Samples](#samples)
   - [Requirments](#requirments)
     - [Hardware](#hardware)
     - [Dependencies](#dependencies)
@@ -30,6 +31,12 @@ It leverages the XTTS or Silero model(s) for text-to-speech conversion, enhanced
   - [To-do](#to-do)
 
 ![UI Demonstration Image](ui_demonstration.png)
+
+## Samples
+
+https://github.com/lukaszliniewicz/Pandrator/assets/75737665/fe0f2f5c-d608-4378-96cb-f4c576b72eb8
+
+https://github.com/lukaszliniewicz/Pandrator/assets/75737665/bf9738ae-5510-49ec-ab3f-31438c8663e2
 
 ## Requirments
 
