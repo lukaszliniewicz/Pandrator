@@ -2,7 +2,7 @@
   <img src="pandrator.png" alt="Icon" width="200" height="200"/>
 </p>
 
-# Pandrator, an audiobook and dubbing generator with voice cloning and AI text optimisation
+# Pandrator, a GUI audiobook and dubbing generator with voice cloning and AI text optimisation
 
 Pandrator is a tool designed to transform text and srt files into spoken audio in multiple languages based on open source software, including voice cloning, LLM-based text preprocessing and the ability to directly save generated subtitle audio to a video file by mixing the synchronized output with the original audio track of the video.
 
@@ -93,8 +93,9 @@ Please refer to the repositories linked under [Dependencies](#Dependencies) for 
 ## Features
 - **Text Pre-processing:** Splits text into sentences and (attempts to) preserve paragraphs. Profiles for multiple languages are available.
 - **LLM Text Pre-processing:** Utilizes a local LLM for text corrections and enhancements with up to three different prompts run sequentially, and an evaluation mechanism that asks the model to perform a task twice and then choose the better response. I've been using `openchat-3.5-0106.Q5_K_M.gguf` with good results, as well as for example `Mistral 7B Instruct 0.2`. Different models may perform different tasks well, so it's possible to choose a specific model for a specific prompt.
-- **Audio Generation:** Converts processed text into speech, with options for voice cloning and quality enhancement.
+- **Audio Generation:** Converts processed text into speech, with options for voice cloning and quality enhancement. It currently supports `.txt` and  `.srt` files. 
 - **Audio Evaluation:** An experimental feature that predicts Mean Opinion Score (MOS) for generated sentences and sets a score threshold or chooses the best score from a set number of generations.
+- **Generating and adding dubbing to video files:** Speech generated from subtitle files is synchronized with the SRT timestamps and can be saved as a file or mixed with an audio track of a video file, effectively producing dubbing. It handles cases where generated speech exceeds the time alloted for a subtitle and self-corrects synchronisation. It's possible to speed up or slow down generated audio. 
 - **Session Management:** Supports creating, deleting, and loading sessions for organized workflow.
 - **GUI:** Built with customtkinker for a user-friendly experience.
 
