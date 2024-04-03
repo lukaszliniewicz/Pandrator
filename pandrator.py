@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox
 import customtkinter as ctk
 import re
 import json
@@ -26,7 +26,7 @@ import platform
 from CTkToolTip import CTkToolTip
 import pysrt
 from num2words import num2words
-
+import ffmpeg
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -50,10 +50,12 @@ class TTSOptimizerGUI:
         master.title("Pandrator")
         self.channel = None
         self.playlist_index = None
+        self.previous_tts_service = None
         self.enable_tts_evaluation = ctk.BooleanVar(value=False)
         self.stop_flag = False
         self.delete_session_flag = False
         self.pre_selected_source_file = None
+        self.enable_dubbing = ctk.BooleanVar(value=False)
         self.server_connected = False
         self.tts_voices_folder = "tts_voices"
         if not os.path.exists(self.tts_voices_folder):
@@ -124,13 +126,12 @@ class TTSOptimizerGUI:
         self.session_name_label = ctk.CTkLabel(self.session_tab, text="Untitled Session", font=ctk.CTkFont(size=20, weight="bold"))
         self.session_name_label.grid(row=0, column=0, columnspan=4, padx=5, pady=5, sticky=tk.W)
 
-
         # Session Section
         self.session_label = ctk.CTkLabel(self.session_tab, text="Session", font=ctk.CTkFont(size=14, weight="bold"))
-        self.session_label.grid(row=3, column=0, columnspan=4, padx=10, pady=10, sticky=tk.W)
+        self.session_label.grid(row=1, column=0, columnspan=4, padx=10, pady=10, sticky=tk.W)
 
         session_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
-        session_frame.grid(row=4, column=0, columnspan=4, padx=10, pady=(0, 20), sticky=tk.EW)
+        session_frame.grid(row=2, column=0, columnspan=4, padx=10, pady=(0, 20), sticky=tk.EW)
         session_frame.grid_columnconfigure(0, weight=1)
         session_frame.grid_columnconfigure(1, weight=1)
         session_frame.grid_columnconfigure(2, weight=1)
@@ -141,8 +142,62 @@ class TTSOptimizerGUI:
         ctk.CTkButton(session_frame, text="Delete Session", command=self.delete_session, fg_color="dark red", hover_color="red").grid(row=0, column=3, padx=10, pady=(10, 10), sticky=tk.EW)
         ctk.CTkButton(session_frame, text="View Session Folder", command=self.view_session_folder).grid(row=0, column=2, padx=10, pady=(10, 10), sticky=tk.EW)
 
+        # Session Settings Section
+        ctk.CTkLabel(self.session_tab, text="Session Settings", font=ctk.CTkFont(size=14, weight="bold")).grid(row=3, column=0, padx=10, pady=10, sticky=tk.W)
+
+        session_settings_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
+        session_settings_frame.grid(row=4, column=0, columnspan=4, padx=10, pady=(0, 20), sticky=tk.EW)
+        session_settings_frame.grid_columnconfigure(0, weight=1)
+        session_settings_frame.grid_columnconfigure(1, weight=1)
+        session_settings_frame.grid_columnconfigure(2, weight=1)
+        session_settings_frame.grid_columnconfigure(3, weight=1)
+
+        self.selected_file_label = ctk.CTkLabel(session_settings_frame, text="No file selected")
+        self.select_file_button = ctk.CTkButton(session_settings_frame, text="Select Source File", command=self.select_file)
+        self.select_file_button.grid(row=0, column=0, padx=10, pady=(10, 5), sticky=tk.EW)
+        self.selected_file_label.grid(row=0, column=1, columnspan=3, padx=10, pady=(10, 5), sticky=tk.W)
+
+        self.dubbing_switch = ctk.CTkSwitch(session_settings_frame, text="Add synchronized audio to video file (dubbing effect)", variable=self.enable_dubbing, command=self.toggle_dubbing_frame)
+        self.dubbing_switch.grid(row=1, column=0, columnspan=4, padx=10, pady=(5, 10), sticky=tk.W)
+        self.dubbing_switch.grid_remove()  # Hide the dubbing switch by default
+
+        ctk.CTkLabel(session_settings_frame, text="TTS Service:").grid(row=2, column=0, padx=10, pady=5, sticky=tk.W)
+        self.tts_service_dropdown = ctk.CTkOptionMenu(session_settings_frame, variable=self.tts_service, values=["XTTS", "Silero", "VoiceCraft"], command=self.update_language_dropdown)
+        self.tts_service_dropdown.grid(row=2, column=1, padx=10, pady=5, sticky=tk.EW)
+
+        self.language_var = ctk.StringVar(value="en")
+        ctk.CTkLabel(session_settings_frame, text="Language:").grid(row=3, column=0, padx=10, pady=5, sticky=tk.W)
+        self.language_dropdown = ctk.CTkComboBox(
+            session_settings_frame,
+            variable=self.language_var,
+            values=["en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko", "hi"]
+        )
+        self.language_dropdown.grid(row=3, column=1, padx=10, pady=5, sticky=tk.EW)
+
+        self.language_var.trace_add("write", self.on_language_selected)
+
+        self.selected_speaker = ctk.StringVar(value="")
+        ctk.CTkLabel(session_settings_frame, text="Speaker Voice:").grid(row=4, column=0, padx=10, pady=5, sticky=tk.W)
+        self.speaker_dropdown = ctk.CTkOptionMenu(session_settings_frame, variable=self.selected_speaker, values=[])
+        self.speaker_dropdown.grid(row=4, column=1, padx=10, pady=5, sticky=tk.EW)
+        self.populate_speaker_dropdown()
+        self.upload_new_voices_button = ctk.CTkButton(session_settings_frame, text="Upload New Voices", command=self.upload_speaker_voice)
+        self.upload_new_voices_button.grid(row=4, column=2, padx=10, pady=(10, 10), sticky=tk.EW)
+        self.sample_length = ctk.StringVar(value="3")
+        self.sample_length_dropdown = ctk.CTkOptionMenu(session_settings_frame, variable=self.sample_length, values=[str(i) for i in range(3, 13)])
+        self.sample_length_dropdown.grid(row=4, column=3, padx=10, pady=5, sticky=tk.EW)
+        self.sample_length_dropdown.grid_remove()  # Hide the dropdown initially
+        ctk.CTkLabel(session_settings_frame, text="Playback Speed:").grid(row=5, column=0, padx=10, pady=5, sticky=tk.W)
+        self.playback_speed = ctk.DoubleVar(value=1.0)
+
+        # Create a list of values for the dropdown menu
+        values = [str(value) for value in [0.8, 0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15, 1.2]]
+
+        self.playback_speed_dropdown = ctk.CTkComboBox(session_settings_frame, values=values, variable=self.playback_speed)
+        self.playback_speed_dropdown.grid(row=5, column=1, columnspan=3, padx=10, pady=5, sticky=tk.EW)    
         # Generation Section
-        ctk.CTkLabel(self.session_tab, text="Generation", font=ctk.CTkFont(size=14, weight="bold")).grid(row=5, column=0, padx=10, pady=10, sticky=tk.W)
+        generation_label = ctk.CTkLabel(self.session_tab, text="Generation", font=ctk.CTkFont(size=14, weight="bold"))
+        generation_label.grid(row=5, column=0, padx=10, pady=10, sticky=tk.W)
 
         generation_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
         generation_frame.grid(row=6, column=0, columnspan=4, padx=10, pady=(0, 20), sticky=tk.EW)
@@ -151,48 +206,47 @@ class TTSOptimizerGUI:
         generation_frame.grid_columnconfigure(2, weight=1)
         generation_frame.grid_columnconfigure(3, weight=1)
 
-        self.selected_file_label = ctk.CTkLabel(generation_frame, text="No file selected")
-        self.select_file_button = ctk.CTkButton(generation_frame, text="Select Source File", command=self.select_file)
-        self.select_file_button.grid(row=0, column=0, padx=10, pady=(10, 5), sticky=tk.EW)
-        self.selected_file_label.grid(row=0, column=1, columnspan=2, padx=10, pady=(10, 5), sticky=tk.W)
+        ctk.CTkButton(generation_frame, text="Start Generation", command=self.start_optimisation_thread, fg_color="#2e8b57", hover_color="#3cb371").grid(row=0, column=0, padx=10, pady=(5, 20), sticky=tk.EW)
+        ctk.CTkButton(generation_frame, text="Stop Generation", command=self.stop_generation).grid(row=0, column=2, padx=10, pady=(5, 20), sticky=tk.EW)
+        ctk.CTkButton(generation_frame, text="Resume Generation", command=self.resume_generation).grid(row=0, column=1, padx=10, pady=(5, 20), sticky=tk.EW)
+        ctk.CTkButton(generation_frame, text="Cancel Generation", command=self.cancel_generation, fg_color="dark red", hover_color="red").grid(row=0, column=3, padx=10, pady=(5, 20), sticky=tk.EW)
 
-        ctk.CTkLabel(generation_frame, text="TTS Service:").grid(row=1, column=0, padx=10, pady=5, sticky=tk.W)
-        self.tts_service_dropdown = ctk.CTkOptionMenu(generation_frame, variable=self.tts_service, values=["XTTS", "Silero"], command=self.update_language_dropdown)
-        self.tts_service_dropdown.grid(row=1, column=1, padx=10, pady=5, sticky=tk.EW)
-
-        self.language_var = ctk.StringVar(value="en")
-        ctk.CTkLabel(generation_frame, text="Language:").grid(row=2, column=0, padx=10, pady=5, sticky=tk.W)
-        self.language_dropdown = ctk.CTkComboBox(
-            generation_frame,
-            variable=self.language_var,
-            values=["en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko", "hi"]
-        )
-        self.language_dropdown.grid(row=2, column=1, padx=10, pady=5, sticky=tk.EW)
-
-        # Add the trace to the self.language_var
-        self.language_var.trace_add("write", self.on_language_selected)
-
-        self.selected_speaker = ctk.StringVar(value="")
-        ctk.CTkLabel(generation_frame, text="Speaker Voice:").grid(row=3, column=0, padx=10, pady=5, sticky=tk.W)
-        self.speaker_dropdown = ctk.CTkOptionMenu(generation_frame, variable=self.selected_speaker, values=[])
-        self.speaker_dropdown.grid(row=3, column=1, padx=10, pady=5, sticky=tk.EW)
-        self.populate_speaker_dropdown()
-        self.upload_new_voices_button = ctk.CTkButton(generation_frame, text="Upload New Voices", command=self.upload_speaker_voice)
-        self.upload_new_voices_button.grid(row=3, column=2, padx=10, pady=(10, 10), sticky=tk.EW)
-
-        ctk.CTkButton(generation_frame, text="Start Generation", command=self.start_optimisation_thread, fg_color="#2e8b57", hover_color="#3cb371").grid(row=4, column=0, padx=10, pady=(5, 20), sticky=tk.EW)
-        ctk.CTkButton(generation_frame, text="Stop Generation", command=self.stop_generation).grid(row=4, column=2, padx=10, pady=(5, 20), sticky=tk.EW)
-        ctk.CTkButton(generation_frame, text="Resume Generation", command=self.resume_generation).grid(row=4, column=1, padx=10, pady=(5, 20), sticky=tk.EW)
-        ctk.CTkButton(generation_frame, text="Cancel Generation", command=self.cancel_generation, fg_color="dark red", hover_color="red").grid(row=4, column=3, padx=10, pady=(5, 20), sticky=tk.EW)
-
-        ctk.CTkLabel(generation_frame, text="Progress:").grid(row=6, column=0, padx=10, pady=5, sticky=tk.W)
+        ctk.CTkLabel(generation_frame, text="Progress:").grid(row=2, column=0, padx=10, pady=5, sticky=tk.W)
         self.progress_label = ctk.CTkLabel(generation_frame, text="0.00%")
-        self.progress_label.grid(row=6, column=1, padx=10, pady=5, sticky=tk.W)
+        self.progress_label.grid(row=2, column=1, padx=10, pady=5, sticky=tk.W)
         self.progress_bar = ctk.CTkProgressBar(generation_frame)
-        self.progress_bar.grid(row=5, column=0, columnspan=4, padx=10, pady=5, sticky=tk.EW)
-        ctk.CTkLabel(generation_frame, text="Estimated Remaining Time:").grid(row=6, column=2, padx=10, pady=(5), sticky=tk.W)
+        self.progress_bar.grid(row=1, column=0, columnspan=4, padx=10, pady=5, sticky=tk.EW)
+        ctk.CTkLabel(generation_frame, text="Estimated Remaining Time:").grid(row=2, column=2, padx=10, pady=(5), sticky=tk.W)
         self.remaining_time_label = ctk.CTkLabel(generation_frame, text="N/A")
-        self.remaining_time_label.grid(row=6, column=3, padx=10, pady=(5), sticky=tk.W)
+        self.remaining_time_label.grid(row=2, column=3, padx=10, pady=(5), sticky=tk.W)
+
+        # Dubbing Frame
+        self.dubbing_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
+        self.dubbing_frame.grid(row=7, column=0, columnspan=4, padx=10, pady=(0, 20), sticky=tk.EW)
+        self.dubbing_frame.grid_columnconfigure(0, weight=1)
+        self.dubbing_frame.grid_columnconfigure(1, weight=1)
+        self.dubbing_frame.grid_remove()  # Hide the dubbing frame by default
+
+        # Video File Selection
+        ctk.CTkLabel(self.dubbing_frame, text="Video File", font=ctk.CTkFont(size=14, weight="bold")).grid(row=0, column=0, padx=10, pady=10, sticky=tk.W)
+        self.selected_video_file = ctk.StringVar()
+        ctk.CTkEntry(self.dubbing_frame, textvariable=self.selected_video_file, state="readonly").grid(row=1, column=0, padx=10, pady=(0, 10), sticky=tk.EW)
+        ctk.CTkButton(self.dubbing_frame, text="Select Video", command=self.select_video_file).grid(row=1, column=1, padx=10, pady=(0, 10), sticky=tk.EW)
+
+        # Audio Track Selection
+        ctk.CTkLabel(self.dubbing_frame, text="Audio Track", font=ctk.CTkFont(size=14, weight="bold")).grid(row=2, column=0, padx=10, pady=10, sticky=tk.W)
+        self.selected_audio_track = ctk.StringVar()
+        self.audio_track_dropdown = ctk.CTkOptionMenu(self.dubbing_frame, variable=self.selected_audio_track, values=[])
+        self.audio_track_dropdown.grid(row=3, column=0, padx=10, pady=(0, 10), sticky=tk.EW)
+        ctk.CTkButton(self.dubbing_frame, text="Refresh Tracks", command=self.refresh_audio_tracks).grid(row=3, column=1, padx=10, pady=(0, 10), sticky=tk.EW)
+
+        # Volume Lowering Options
+        ctk.CTkLabel(self.dubbing_frame, text="Volume Lowering", font=ctk.CTkFont(size=14, weight="bold")).grid(row=4, column=0, padx=10, pady=10, sticky=tk.W)
+        self.enable_volume_lowering = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(self.dubbing_frame, text="Enable Volume Lowering", variable=self.enable_volume_lowering).grid(row=5, column=0, padx=10, pady=(0, 10), sticky=tk.W)
+        ctk.CTkLabel(self.dubbing_frame, text="Volume Percentage").grid(row=6, column=0, padx=10, pady=(0, 10), sticky=tk.W)
+        self.volume_percentage = ctk.DoubleVar(value=0.5)
+        ctk.CTkSlider(self.dubbing_frame, variable=self.volume_percentage, from_=0, to=1, number_of_steps=10).grid(row=6, column=1, padx=10, pady=(0, 10), sticky=tk.EW)
 
         # Generated Sentences Section
         ctk.CTkLabel(self.session_tab, text="Generated Sentences", font=ctk.CTkFont(size=14, weight="bold")).grid(row=14, column=0, padx=10, pady=10, sticky=tk.W)
@@ -414,6 +468,128 @@ class TTSOptimizerGUI:
         self.populate_speaker_dropdown()
         self.set_speaker_folder()
 
+    def select_video_file(self):
+        video_file = filedialog.askopenfilename(filetypes=[("Video Files", "*.mp4;*.mkv")])
+        if video_file:
+            self.selected_video_file.set(video_file)
+            self.refresh_audio_tracks()
+
+    def refresh_audio_tracks(self):
+        video_file = self.selected_video_file.get()
+        if video_file:
+            try:
+                probe = ffmpeg.probe(video_file)
+                audio_tracks = [str(stream["index"]) for stream in probe["streams"] if stream["codec_type"] == "audio"]
+                self.audio_track_dropdown.configure(values=audio_tracks)
+                if audio_tracks:
+                    self.selected_audio_track.set(audio_tracks[0])
+            except ffmpeg.Error as e:
+                messagebox.showerror("FFmpeg Error", f"An error occurred while probing the video file: {str(e)}")
+
+    def select_dubbing_file(self):
+        dubbing_file = filedialog.askopenfilename(filetypes=[("Audio Files", "*.wav;*.mp3;*.opus")])
+        if dubbing_file:
+            self.selected_dubbing_file.set(dubbing_file)
+
+    def start_dubbing(self):
+        video_file = self.selected_video_file.get()
+        audio_track = self.selected_audio_track.get()
+        session_name = self.session_name.get()
+
+        print(f"Video file: {video_file}")
+        print(f"Audio track: {audio_track}")
+        print(f"Session name: {session_name}")
+
+        if video_file and audio_track and session_name:
+            session_dir = os.path.join("Outputs", session_name)
+            output_video = os.path.join(session_dir, f"{session_name}_dubbed.mp4")
+
+            # Create the session directory if it doesn't exist
+            os.makedirs(session_dir, exist_ok=True)
+
+            try:
+                # Define the full path for original_audio
+                original_audio = os.path.join(session_dir, "original_audio.wav")
+
+                # Check the number of audio tracks
+                probe_result = ffmpeg.probe(video_file)
+                audio_tracks = [stream for stream in probe_result['streams'] if stream['codec_type'] == 'audio']
+
+                if len(audio_tracks) == 1:
+                    # If there is only one audio track, use -map 0:a
+                    ffmpeg_command = f'ffmpeg -i "{video_file}" -map 0:a -c:a pcm_s16le -y "{original_audio}"'
+                else:
+                    # If there are multiple audio tracks, use -map 0:a:{audio_track}
+                    ffmpeg_command = f'ffmpeg -i "{video_file}" -map 0:a:{audio_track} -c:a pcm_s16le -y "{original_audio}"'
+
+                print(f"FFmpeg command for audio extraction: {ffmpeg_command}")
+                subprocess.run(ffmpeg_command, shell=True, check=True)
+
+                # Get the synchronized audio file from the session folder
+                synchronized_audio = os.path.join(session_dir, f"{session_name}_synchronized.{self.output_format.get()}")
+                if not os.path.exists(synchronized_audio):
+                    raise FileNotFoundError(f"Synchronized audio file not found: {synchronized_audio}")
+
+                # Create the FFmpeg filter_complex command
+                filter_complex_command = self.create_filter_complex_command(original_audio, synchronized_audio)
+                print(f"FFmpeg filter_complex command: {filter_complex_command}")
+
+                # Merge the original video with the processed audio
+                ffmpeg_merge_command = f'ffmpeg -i "{original_audio}" -i "{synchronized_audio}" -i "{video_file}" -filter_complex "{filter_complex_command}" -map 2:v -map "[mixed]" -c:v copy -c:a aac -b:a 192k -y "{output_video}"'
+                print(f"FFmpeg command for merging: {ffmpeg_merge_command}")
+                subprocess.run(ffmpeg_merge_command, shell=True, check=True)
+
+                messagebox.showinfo("Dubbing Complete", f"The dubbed video has been saved as {output_video}")
+
+            except subprocess.CalledProcessError as e:
+                print(f"FFmpeg command: {e.cmd}")
+                print(f"FFmpeg error output: {e.stderr}")
+                messagebox.showerror("FFmpeg Error", f"An error occurred during the audio extraction process: {str(e)}")
+
+            except FileNotFoundError as e:
+                print(f"File not found: {str(e)}")
+                messagebox.showerror("File Not Found", str(e))
+
+            except Exception as e:
+                print(f"Unexpected error: {str(e)}")
+                messagebox.showerror("Error", f"An unexpected error occurred: {str(e)}")
+
+        else:
+            messagebox.showwarning("Missing Information", "Please provide the required information for dubbing.")
+
+    def get_dubbing_timestamps(self, srt_file):
+        timestamps = []
+        with open(srt_file, "r") as file:
+            srt_data = file.read()
+            for subtitle in pysrt.from_string(srt_data):
+                start_time = subtitle.start.to_time().strftime("%H:%M:%S.%f")
+                end_time = subtitle.end.to_time().strftime("%H:%M:%S.%f")
+                timestamps.append((start_time, end_time))
+        return timestamps
+
+    def create_filter_complex_command(self, original_audio, synchronized_audio):
+        enable_volume_lowering = self.enable_volume_lowering.get()
+        volume_percentage = self.volume_percentage.get()
+        makeup_gain = 1 / volume_percentage
+
+        if enable_volume_lowering:
+            filter_complex_command = f"[1]silencedetect=n=-30dB:d=2[silence]; \
+                                        [silence]aformat=sample_fmts=u8:sample_rates=44100:channel_layouts=mono,\
+                                        aresample=async=1000,pan=1c|c0=c0,\
+                                        aformat=sample_fmts=s16:sample_rates=44100:channel_layouts=mono[silence_mono]; \
+                                        [0][silence_mono]sidechaincompress=threshold=0.02:ratio=10:attack=100:release=500:makeup={makeup_gain}[gated]; \
+                                        [gated][1]amix=inputs=2[mixed]"
+        else:
+            filter_complex_command = "[0][1]amix=inputs=2[mixed]"
+
+        return filter_complex_command
+    
+    def toggle_dubbing_frame(self):
+        if self.enable_dubbing.get():
+            self.dubbing_frame.grid()  # Show the dubbing frame
+        else:
+            self.dubbing_frame.grid_remove()  # Hide the dubbing frame
+    
     def select_file(self):
         # Modify filetypes to combine .txt and .srt into a single option
         self.pre_selected_source_file = filedialog.askopenfilename(filetypes=[("Text and SRT files", "*.txt;*.srt")])
@@ -433,30 +609,47 @@ class TTSOptimizerGUI:
 
                 shutil.copy(self.pre_selected_source_file, session_dir)
                 self.source_file = os.path.join(session_dir, file_name)
+
+            # Check if the selected file is an SRT file
+            if self.pre_selected_source_file.lower().endswith(".srt"):
+                self.dubbing_switch.grid()  # Show the dubbing switch
+            else:
+                self.dubbing_switch.grid_remove()  # Hide the dubbing switch
+                self.enable_dubbing.set(False)  # Disable the dubbing switch
+                self.dubbing_frame.grid_remove()  # Hide the dubbing frame
         else:
             self.pre_selected_source_file = None
             self.selected_file_label.configure(text="No file selected")
+            self.dubbing_switch.grid_remove()  # Hide the dubbing switch
+            self.enable_dubbing.set(False)  # Disable the dubbing switch
+            self.dubbing_frame.grid_remove()  # Hide the dubbing frame
 
     def set_speaker_folder(self):
-        speaker_folder_path = os.path.abspath(self.tts_voices_folder)
-        data = {"speaker_folder": speaker_folder_path}
-        try:
-            response = requests.post("http://localhost:8020/set_speaker_folder", json=data)
-            if response.status_code == 200:
-                print(f"Speaker folder set to: {speaker_folder_path}")
-                self.server_connected = True
-            else:
-                print(f"Error {response.status_code}: Failed to set speaker folder.")
+        if self.tts_service.get() == "XTTS":
+            speaker_folder_path = os.path.abspath(self.tts_voices_folder)
+            data = {"speaker_folder": speaker_folder_path}
+            try:
+                response = requests.post("http://localhost:8020/set_speaker_folder", json=data)
+                if response.status_code == 200:
+                    print(f"Speaker folder set to: {speaker_folder_path}")
+                    self.server_connected = True
+                else:
+                    print(f"Error {response.status_code}: Failed to set speaker folder.")
+                    self.server_connected = False
+            except requests.exceptions.ConnectionError:
+                print("XTTS server is offline. Retrying in 5 seconds...")
                 self.server_connected = False
-        except requests.exceptions.ConnectionError:
-            print("Server is offline. Retrying in 5 seconds...")
-            self.server_connected = False
-            self.master.after(10000, self.set_speaker_folder)
+                self.master.after(10000, self.set_speaker_folder)
 
     def populate_speaker_dropdown(self, event=None):
         if self.tts_service.get() == "XTTS":
             wav_files = [f for f in os.listdir(self.tts_voices_folder) if f.endswith(".wav")]
             speakers = [os.path.splitext(f)[0] for f in sorted(wav_files)]
+        elif self.tts_service.get() == "VoiceCraft":
+            voicecraft_voices_folder = os.path.join(self.tts_voices_folder, "VoiceCraft")
+            wav_files = [f for f in os.listdir(voicecraft_voices_folder) if f.endswith(".wav")]
+            txt_files = [f for f in os.listdir(voicecraft_voices_folder) if f.endswith(".txt")]
+            speakers = [os.path.splitext(f)[0] for f in sorted(wav_files) if os.path.splitext(f)[0] + ".txt" in txt_files]
         else:  # Silero
             try:
                 language_name = self.language_var.get()  # Use self.language_var.get() instead of self.language.get()
@@ -821,6 +1014,8 @@ class TTSOptimizerGUI:
         try:
             if self.tts_service.get() == "XTTS":
                 url = "http://localhost:8020/docs#"
+            elif self.tts_service.get() == "VoiceCraft":
+                url = "http://localhost:8245/docs#"
             else:  # Silero
                 url = "http://localhost:8001/docs#"
 
@@ -977,7 +1172,7 @@ class TTSOptimizerGUI:
                 start_time_obj = datetime.datetime.strptime(start_time, "%H:%M:%S.%f")
                 end_time_obj = datetime.datetime.strptime(end_time, "%H:%M:%S.%f")
 
-                # Calculate the duration of the generated audio
+                # Get the actual duration of the sped-up audio file
                 generated_audio_duration = len(audio_data) / 1000
 
                 # Check if the current time is ahead of the subtitle's start time
@@ -1257,6 +1452,10 @@ class TTSOptimizerGUI:
                         print(f"Error generating audio for sentence: {processed_sentence['original_sentence']}")
 
                 if best_audio is not None:
+                    # Apply playback speed change
+                    playback_speed = self.playback_speed.get()
+                    if playback_speed != 1.0:
+                        best_audio = best_audio.speedup(playback_speed=playback_speed, chunk_size=150, crossfade=25)                    
                     # Apply RVC if enabled
                     if self.enable_rvc.get():
                         best_audio = self.process_with_rvc(best_audio)
@@ -1342,6 +1541,10 @@ class TTSOptimizerGUI:
                 final_audio.export(output_filename, format=self.output_format.get(), bitrate=self.bitrate.get())
             else:
                 final_audio.export(output_filename, format=self.output_format.get())
+
+        # Check if dubbing is enabled and the source file is an SRT file
+        if self.enable_dubbing.get() and self.source_file.endswith(".srt"):
+            self.start_dubbing()
 
         # Calculate the average MOS score
         if mos_scores:
@@ -1601,17 +1804,31 @@ class TTSOptimizerGUI:
     def update_language_dropdown(self, event=None):
         if self.tts_service.get() == "XTTS":
             languages = ["en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko", "hi"]
-            self.language_dropdown.configure(values=languages)
-            self.language_var.set("en")  # Use self.language_var.set("en") instead of self.language.set("en")
+            self.language_dropdown.configure(values=languages, state="normal")  # Enable the language dropdown
+            self.language_var.set("en")
             self.upload_new_voices_button.configure(state=tk.NORMAL)  # Enable the button for XTTS
             self.populate_speaker_dropdown()  # Update the speaker dropdown with XTTS speakers
+            self.sample_length_dropdown.grid_remove()  # Hide the "Sample Length" dropdown
+
+            # Check the XTTS server connection only when the TTS service changes to XTTS
+            if self.previous_tts_service != "XTTS":
+                self.set_speaker_folder()
+
+        elif self.tts_service.get() == "VoiceCraft":
+            self.language_dropdown.configure(values=["English"], state="disabled")  # Disable the language dropdown
+            self.language_var.set("English")
+            self.upload_new_voices_button.configure(state=tk.NORMAL)  # Enable the button for VoiceCraft
+            self.populate_speaker_dropdown()  # Update the speaker dropdown with VoiceCraft speakers
+            self.sample_length_dropdown.grid()  # Show the "Sample Length" dropdown
+
         else:  # Silero
             language_names = [lang["name"] for lang in silero_languages]
-            self.language_dropdown.configure(values=language_names)
-            self.language_var.set("English (v3)")  # Use self.language_var.set("English (v3)") instead of self.language.set("English (v3)")
+            self.language_dropdown.configure(values=language_names, state="normal")  # Enable the language dropdown
+            self.language_var.set("English (v3)")
             self.upload_new_voices_button.configure(state=tk.DISABLED)  # Disable the button for Silero
+            self.sample_length_dropdown.grid_remove()  # Hide the "Sample Length" dropdown
 
-            selected_language_name = self.language_var.get()  # Use self.language_var.get() instead of self.language.get()
+            selected_language_name = self.language_var.get()
             selected_language_code = next((lang["code"] for lang in silero_languages if lang["name"] == selected_language_name), None)
 
             if selected_language_code:
@@ -1624,7 +1841,6 @@ class TTSOptimizerGUI:
                         messagebox.showerror("Error", "Failed to set Silero language.")
                 except requests.exceptions.ConnectionError:
                     messagebox.showerror("Error", "Failed to connect to the Silero API.")
-
     def tts_to_audio(self, text):
         best_audio = None
         best_mos = -1
@@ -1661,7 +1877,44 @@ class TTSOptimizerGUI:
                         print(f"Error {response.status_code}: Failed to convert text to audio.")
                 except Exception as e:
                     print(f"Error in tts_to_audio: {str(e)}")
+        elif self.tts_service.get() == "VoiceCraft":
+            speaker = self.selected_speaker.get()
+            wav_file = os.path.join(self.tts_voices_folder, "VoiceCraft", f"{speaker}.wav")
+            txt_file = os.path.join(self.tts_voices_folder, "VoiceCraft", f"{speaker}.txt")
 
+            for attempt in range(self.max_attempts.get()):
+                try:
+                    url = "http://localhost:8245/generate"
+                    files = {
+                        "audio": open(wav_file, "rb"),
+                        "transcript": open(txt_file, "rb")
+                    }
+                    data = {
+                        "target_text": text,
+                        "time": float(self.sample_length.get()),
+                        "save_to_file": False
+                    }
+                    response = requests.post(url, files=files, data=data)
+
+                    if response.status_code == 200:
+                        audio_bytes = response.content
+                        audio_data = io.BytesIO(audio_bytes)
+                        audio = AudioSegment.from_file(audio_data, format="wav")
+
+                        if self.enable_tts_evaluation.get():
+                            mos_score = self.evaluate_tts(text, audio)
+                            if mos_score > best_mos:
+                                best_audio = audio
+                                best_mos = mos_score
+
+                            if mos_score >= float(self.target_mos_value.get()):
+                                return best_audio
+                        else:
+                            return audio
+                    else:
+                        print(f"Error {response.status_code}: Failed to convert text to audio using VoiceCraft.")
+                except Exception as e:
+                    print(f"Error in tts_to_audio (VoiceCraft): {str(e)}")
         else:  # Silero
             speaker = self.selected_speaker.get()
             language = self.language_var.get()  # Replace self.language.get() with self.language_var.get()
