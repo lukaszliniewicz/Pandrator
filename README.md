@@ -49,7 +49,7 @@ I was able to run all functionalities on a laptop with a Ryzen 5600h and a 3050 
 #### Silero
 Silero runs on the CPU. It should perform well on almost all reasonably modern systems. 
 #### VoiceCraft
-You can run voice craft on a cpu, but generation will be very slow. To achieve meaningful acceleration with a GPU (Nvidia), you need one with at least 8GB of RAM. 
+You can run voice craft on a cpu, but generation will be very slow. To achieve meaningful acceleration with a GPU (Nvidia), you need one with at least 8GB of VRAM. 
 
 ### Dependencies
 This project relies on several APIs and services (running locally):
@@ -104,14 +104,18 @@ Please refer to the repositories linked under [Dependencies](#Dependencies) for 
 ![Demonstration GIF](demonstration.gif)
 
 ### Basic Usage
-If you don't want to use the additional functionalities, you have everything you need in the Session tab. 
+If you don't want to use the additional functionalities, you have everything you need in the **Session tab**. 
+
 1. Either create a new session or load an existing one (select a folder in `Outputs` to do that).
 2. Choose your `.txt` or `.srt` file.
-3. Select the TTS server you want to use - XTTS or Silero - and language from the dropdown.
-4. Choose the voice you want to use (for XTTS, voices are short, 8-12s `.wav` files in the `tts_voices` directory). The XTTS model uses the audio to clone the voice and use it for generation. You may use the example ones in the repository, which I borrowed from daswer123, or upload your own. Please make sure that the audio is between 8 and 12s, mono, and 22050khz. You may use a tool like Audacity to prepare the files. The less noise, the better. You may use a tool like [Resemble AI](https://github.com/resemble-ai/resemble-enhance) for denoising and/or enhancement of your samples on [Hugging Face](https://huggingface.co/spaces/ResembleAI/resemble-enhance). Silero offers a number of voices for each language it supports.
-5. Start the generation. You may stop and resume it later, or close the programme and load the session later.
-6. You can play back the generated sentences, also as a playlist, and regenerate or remove individual ones.
-7. "Save Output" concatenates the sentences generated so far an encodes them as one file (default is `.opus` at 64k bitrate; you may change it in the Audio tab to `.wav` or `.mp3`).
+3. Select the TTS server you want to use - XTTS, Silero or VoiceCraft - and the language from the dropdown (VoiceCraft currently supports only English).
+4. Choose the voice you want to use.
+   1. **For XTTS**, voices are short, 8-12s `.wav` files in the `tts_voices` directory. The XTTS model uses the audio to clone the voice. It doesn't matter what language the sample is in, you will be able to generate in all supported languages, but the quality will be best if you provide a sample in your target language. You may use the example one in the repository or upload your own. Please make sure that the audio is between 8 and 12s, mono, and 22050hz. You may use a tool like Audacity to prepare the files. The less noise, the better. You may use a tool like [Resemble AI](https://github.com/resemble-ai/resemble-enhance) for denoising and/or enhancement of your samples on [Hugging Face](https://huggingface.co/spaces/ResembleAI/resemble-enhance).
+   2. **Silero** offers a number of voices for each language it supports. It doesn't support voice cloning.
+   3. VoiceCraft works similarly to XTTS in that it clones the voice from a `.wav ` sample. However, it needs both a properly formatted `.wav` file (mono, 16000hz) and a `.txt` file with the transcription of what is said in the sample. The files must have the same name (apart from the extention, of course). You need to upload them to `tts_voices/VoiceCraft` and you will be able to select them in the GUI. Currently only English is supported. 
+6. Start the generation. You may stop and resume it later, or close the programme and load the session later.
+7. You can play back the generated sentences, also as a playlist, and regenerate or remove individual ones.
+8. "Save Output" concatenates the sentences generated so far an encodes them as one file (default is `.opus` at 64k bitrate; you may change it in the Audio tab to `.wav` or `.mp3`).
 
 ### General Audio Settings
 1. You can change the lenght of silence appended at the end of sentences and paragraphs.
@@ -144,7 +148,7 @@ If you don't want to use the additional functionalities, you have everything you
 Contributions, suggestions for improvements, and bug reports are most welcome!
 
 ## Tips
-- You can find a collection of voice sample for example [here](https://aiartes.com/voiceai). They are intended for use with ElevenLabs, so you will need to pick an 8-12s fragment and save it as 22050khz mono `.wav` usuing Audacity, for instance. 
+- You can find a collection of voice sample for example [here](https://aiartes.com/voiceai). They are intended for use with ElevenLabs, so you will need to pick an 8-12s fragment and save it as 22050khz mono `.wav` usuing Audacity, for instance.
 - You can find a collection of RVC models for example [here](https://voice-models.com/).
 
 ## To-do
