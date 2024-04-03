@@ -49,7 +49,7 @@ I was able to run all functionalities on a laptop with a Ryzen 5600h and a 3050 
 #### Silero
 Silero runs on the CPU. It should perform well on almost all reasonably modern systems. 
 #### VoiceCraft
-You can run voice craft on a cpu, but generation will be very slow. To achieve meaningful acceleration with a GPU (Nvidia), you need one with at least 8GB of VRAM. 
+You can run VoiceCraft on a cpu, but generation will be very slow. To achieve meaningful acceleration with a GPU (Nvidia), you need one with at least 8GB of VRAM. 
 
 ### Dependencies
 This project relies on several APIs and services (running locally):
