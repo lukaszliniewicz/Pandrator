@@ -112,13 +112,15 @@ If you don't want to use the additional functionalities, you have everything you
 4. Choose the voice you want to use.
    1. **For XTTS**, voices are short, 8-12s `.wav` files in the `tts_voices` directory. The XTTS model uses the audio to clone the voice. It doesn't matter what language the sample is in, you will be able to generate in all supported languages, but the quality will be best if you provide a sample in your target language. You may use the example one in the repository or upload your own. Please make sure that the audio is between 8 and 12s, mono, and 22050hz. You may use a tool like Audacity to prepare the files. The less noise, the better. You may use a tool like [Resemble AI](https://github.com/resemble-ai/resemble-enhance) for denoising and/or enhancement of your samples on [Hugging Face](https://huggingface.co/spaces/ResembleAI/resemble-enhance).
    2. **Silero** offers a number of voices for each language it supports. It doesn't support voice cloning.
-   3. VoiceCraft works similarly to XTTS in that it clones the voice from a `.wav ` sample. However, it needs both a properly formatted `.wav` file (mono, 16000hz) and a `.txt` file with the transcription of what is said in the sample. The files must have the same name (apart from the extention, of course). You need to upload them to `tts_voices/VoiceCraft` and you will be able to select them in the GUI. Currently only English is supported. 
-6. Start the generation. You may stop and resume it later, or close the programme and load the session later.
-7. You can play back the generated sentences, also as a playlist, and regenerate or remove individual ones.
-8. "Save Output" concatenates the sentences generated so far an encodes them as one file (default is `.opus` at 64k bitrate; you may change it in the Audio tab to `.wav` or `.mp3`).
+   3. **VoiceCraft** works similarly to XTTS in that it clones the voice from a `.wav ` sample. However, it needs both a properly formatted `.wav` file (mono, 16000hz) and a `.txt` file with the transcription of what is said in the sample. The files must have the same name (apart from the extention, of course). You need to upload them to `tts_voices/VoiceCraft` and you will be able to select them in the GUI. Currently only English is supported. If you generate with a new voice for the first time, the server will perform the alignment procedure, so the first sentence will be generated with a delay. This won't happen when you use that voice again.
+6. If you want, you can either slow down or speed up the generated audio (type in or choose a ratio, e.g. 1.1, which is 10% faster than generated; it may be especially useful for dubbing).
+7. If you chose an `.srt` file, you will be given the option to select a video file and one of its audio tracks to mix with the synchronized output, as well as weather you want to lower the volume of the original audio when subtitle audio is playing.
+8. Start the generation. You may stop and resume it later, or close the programme and load the session later.
+9. You can play back the generated sentences, also as a playlist, and edit (the text for regeneration), regenerate or remove individual ones.
+10. "Save Output" concatenates the sentences generated so far an encodes them as one file (default is `.opus` at 64k bitrate; you may change it in the Audio tab to `.wav` or `.mp3`).
 
 ### General Audio Settings
-1. You can change the lenght of silence appended at the end of sentences and paragraphs.
+1. You can change the lenght of silence appended to the end of sentences and paragraphs.
 2. You can enable a fade-in and -out effect and set the duration.
 3. You can choose the output format and bitrate.
 
