@@ -48,15 +48,16 @@ https://github.com/lukaszliniewicz/Pandrator/assets/75737665/bf9738ae-5510-49ec-
 I was able to run all functionalities on a laptop with a Ryzen 5600h and a 3050 laptop GPU (4GB of VRAM). It's likely that you will need at least 16GB of RAM, a reasonably modern CPU, and ideally an NVIDIA GPU with 4 GB+ of VRAM for usable performance. Consult the requirments of the services listed below.
 #### Silero
 Silero runs on the CPU. It should perform well on almost all reasonably modern systems. 
+#### VoiceCraft
+You can run voice craft on a cpu, but generation will be very slow. To achieve meaningful acceleration with a GPU (Nvidia), you need one with at least 8GB of RAM. 
 
 ### Dependencies
 This project relies on several APIs and services (running locally):
 
 #### Required
-- [XTTS API Server by daswer123](https://github.com/daswer123/xtts-api-server.git) for Text-to-Speech (TTS) generation using Coqui [XTTSv2](https://huggingface.co/coqui/XTTS-v2) OR [Silero API Server by ouoertheo](https://github.com/ouoertheo/silero-api-server) for TTS generaton using the [Silero models](https://github.com/snakers4/silero-models). XTTS uses the GPU (Nvidia), and Silero uses the CPU. Silero can be run on low-end systems.
+- [XTTS API Server by daswer123](https://github.com/daswer123/xtts-api-server.git) for Text-to-Speech (TTS) generation using Coqui [XTTSv2](https://huggingface.co/coqui/XTTS-v2) OR [Silero API Server by ouoertheo](https://github.com/ouoertheo/silero-api-server) for TTS generaton using the [Silero models](https://github.com/snakers4/silero-models) OR [VoiceCraft by jasonppy](https://github.com/jasonppy/VoiceCraft). XTTS and VoiceCraft use the GPU (Nvidia), and Silero uses the CPU. Silero can be run on low-end systems.
 - [FFmpeg](https://github.com/FFmpeg/FFmpeg) for audio encoding.
-- [Sentence Splitter by mediacloud](https://github.com/mediacloud/sentence-splitter) for splitting `.txt ` files into sentences.
-- [num2words by savoirfairelinux](https://github.com/savoirfairelinux/num2words) for converting numbers to words (Silero requirs this). 
+- [Sentence Splitter by mediacloud](https://github.com/mediacloud/sentence-splitter) for splitting `.txt ` files into sentences, [customtkinter by TomSchimansky](https://github.com/TomSchimansky/CustomTkinter), [num2words by savoirfairelinux](https://github.com/savoirfairelinux/num2words) for converting numbers to words (Silero requirs this), `pysrt`, `pydub` and others (see `requirments.txt`). 
 
 #### Optional
 - [Text Generation Webui API by oobabooga](https://github.com/oobabooga/text-generation-webui.git) for LLM-based text pre-processing.
@@ -66,21 +67,24 @@ This project relies on several APIs and services (running locally):
 ## Installation
 
 ### Minimal One-Click Installation Executables (Windows only):
-Run `pandrator_start_minimal_xtts.exe` or `pandrator_start_minimal_silero.exe` with administrator priviliges. The executables were created using [pyinstaller](https://github.com/pyinstaller/pyinstaller) from `pandrator_start_minimal_xtts.py` and `pandrator_start_minimal_silero.py` in the repository.
+Run `pandrator_start_minimal_xtts.exe`, `pandrator_start_minimal_silero.exe` or `pandrator_start_minimal_voicecraft.exe` with administrator priviliges. You will find them under [Releases](https://github.com/lukaszliniewicz/Pandrator/releases). The executables were created using [pyinstaller](https://github.com/pyinstaller/pyinstaller) from `pandrator_start_minimal_xtts.py`, `pandrator_start_minimal_silero.py` and `pandrator_start_minimal_voicecraft.py` in the repository.
 
 **The file may be flagged as a threat by antivirus software, so you may have to add it as an exception.**
 
-On first use it creates the Pandrator folder, installs `curl`, `git`, `ffmpeg` and `Miniconda`, clones the XTTS Api Server repository or the Silero Api Server and the Pandrator repository, creates conda environments, installs dependencies and launches them. You may use it to launch Pandrator later. If you want to perform the setup again, remove the Pandrator folder it created. Please allow at least a couple of minutes for the initial setup process to download models and install dependencies (it takes about 7 minutes for me).
+On first use the executable creates the Pandrator folder, installs `curl`, `git`, `ffmpeg` (using Chocolatey) and `Miniconda`, clones the XTTS Api Server respository, the Silero Api Server repository or the VoiceCraft API repository and the Pandrator repository, creates conda environments, installs dependencies and launches them. **You may use it to launch Pandrator later**. 
+
+If you want to perform the setup again, remove the Pandrator folder it created. Please allow at least a couple of minutes for the initial setup process to download models and install dependencies (it takes about 7-10 minutes for me).
 
 For additional functionality:
 - Install Text Generation Webui and remember to enable the API (add `--api` to `CMD_FLAGS.txt` in the main directory of the Webui before starting it).
 - Set up RVC_CLI for enhancing generations with RVC.
 - Set up NISQA API for automatic evaluation of generations.
-Please refer to the repositories linked above for detailed installation instructions. Remember that the APIs must be running to make use of the functionalities they offer.
+
+Please refer to the repositories linked under [Dependencies](#Dependencies) for detailed installation instructions. Remember that the APIs must be running to make use of the functionalities they offer.
 
 ### Manual Installation:
-1. Make sure that Python 3 and git are installed and in PATH.
-2. Install and run at least XTTS API Server or Silero API Server. 
+1. Make sure that Python 3, git and ffmpeg are installed and in PATH.
+2. Install and run at least XTTS API Server, Silero API Server or VoiceCraft API Server. 
 3. Clone this repository (`git clone https://github.com/lukaszliniewicz/Pandrator.git`).
 4. `cd` to the repository directory.
 5. Install requirements using `pip install -r requirements.txt`.
