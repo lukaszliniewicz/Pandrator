@@ -8,4 +8,4 @@ CTkMessagebox
 CTkToolTip
 pysrt
 num2words
-ffmpeg
+ffmpeg-python
