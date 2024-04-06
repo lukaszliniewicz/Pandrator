@@ -9,3 +9,4 @@ CTkToolTip
 pysrt
 num2words
 ffmpeg-python
+pdftextract
