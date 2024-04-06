@@ -27,6 +27,7 @@ from CTkToolTip import CTkToolTip
 import pysrt
 from num2words import num2words
 import ffmpeg
+from pdftextract import XPdf
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -53,6 +54,7 @@ class TTSOptimizerGUI:
         self.previous_tts_service = None
         self.enable_tts_evaluation = ctk.BooleanVar(value=False)
         self.stop_flag = False
+        self.pdf_preprocessed = False
         self.delete_session_flag = False
         self.pre_selected_source_file = None
         self.enable_dubbing = ctk.BooleanVar(value=False)
@@ -191,7 +193,7 @@ class TTSOptimizerGUI:
         self.playback_speed = ctk.DoubleVar(value=1.0)
 
         # Create a list of values for the dropdown menu
-        values = [str(value) for value in [0.8, 0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15, 1.2]]
+        values = [str(value) for value in [0.8, 0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15, 1.2, 1.25, 1.3, 1.35, 1.4, 1.45, 1.5]]
 
         self.playback_speed_dropdown = ctk.CTkComboBox(session_settings_frame, values=values, variable=self.playback_speed)
         self.playback_speed_dropdown.grid(row=5, column=1, columnspan=3, padx=10, pady=5, sticky=tk.EW)    
@@ -298,8 +300,6 @@ class TTSOptimizerGUI:
         ctk.CTkButton(generated_sentences_frame, text="Remove", command=self.remove_selected_sentences).grid(row=2, column=1, padx=10, pady=(5, 20), sticky=tk.EW)
         ctk.CTkButton(generated_sentences_frame, text="Save Output", command=self.save_output).grid(row=2, column=2, padx=10, pady=(5, 20), sticky=tk.EW)
 
-
-
         # Text Processing Tab
         self.text_processing_tab = self.tabview.add("Text Processing")
         self.text_processing_tab.grid_columnconfigure(0, weight=1)
@@ -318,7 +318,8 @@ class TTSOptimizerGUI:
         ctk.CTkEntry(general_settings_frame, textvariable=self.max_sentence_length).grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
         ctk.CTkSwitch(general_settings_frame, text="Append Short Sentences", variable=self.enable_sentence_appending).grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
         ctk.CTkSwitch(general_settings_frame, text="Remove Diacritics", variable=self.remove_diacritics).grid(row=3, column=0, padx=5, pady=5, sticky=tk.W)
-
+        self.disable_paragraph_detection = ctk.BooleanVar(value=False)
+        ctk.CTkSwitch(general_settings_frame, text="Disable Paragraph Detection", variable=self.disable_paragraph_detection).grid(row=4, column=0, padx=5, pady=5, sticky=tk.W)
         # LLM Processing
         ctk.CTkLabel(self.text_processing_tab, text="LLM Processing", font=ctk.CTkFont(size=14, weight="bold")).grid(row=2, column=0, columnspan=2, padx=10, pady=10, sticky=tk.W)
 
@@ -469,7 +470,7 @@ class TTSOptimizerGUI:
         self.set_speaker_folder()
 
     def select_video_file(self):
-        video_file = filedialog.askopenfilename(filetypes=[("Video Files", "*.mp4;*.mkv")])
+        video_file = filedialog.askopenfilename(filetypes=[("Video Files", "*.mp4;*.mkv;*.webm;*.avi")])
         if video_file:
             self.selected_video_file.set(video_file)
             self.refresh_audio_tracks()
@@ -578,7 +579,8 @@ class TTSOptimizerGUI:
                                         aresample=async=1000,pan=1c|c0=c0,\
                                         aformat=sample_fmts=s16:sample_rates=44100:channel_layouts=mono[silence_mono]; \
                                         [0][silence_mono]sidechaincompress=threshold=0.02:ratio=10:attack=100:release=500:makeup={makeup_gain}[gated]; \
-                                        [gated][1]amix=inputs=2[mixed]"
+                                        [1]volume=2[subtitles]; \
+                                        [gated][subtitles]amix=inputs=2[mixed]"
         else:
             filter_complex_command = "[0][1]amix=inputs=2[mixed]"
 
@@ -591,24 +593,36 @@ class TTSOptimizerGUI:
             self.dubbing_frame.grid_remove()  # Hide the dubbing frame
     
     def select_file(self):
-        # Modify filetypes to combine .txt and .srt into a single option
-        self.pre_selected_source_file = filedialog.askopenfilename(filetypes=[("Text and SRT files", "*.txt;*.srt")])
+        if not self.session_name.get():
+            CTkMessagebox(title="No Session", message="Please create or load a session before selecting a file.", icon="info")
+            return
+
+        # Modify filetypes to include PDF files
+        self.pre_selected_source_file = filedialog.askopenfilename(filetypes=[("Text, SRT, and PDF files", "*.txt;*.srt;*.pdf")])
         if self.pre_selected_source_file:
             file_name = os.path.basename(self.pre_selected_source_file)
             self.selected_file_label.configure(text=file_name)
 
-            if self.session_name.get():
-                session_name = self.session_name.get()
-                session_dir = os.path.join("Outputs", session_name)
-                os.makedirs(session_dir, exist_ok=True)
+            session_name = self.session_name.get()
+            session_dir = os.path.join("Outputs", session_name)
+            os.makedirs(session_dir, exist_ok=True)
 
-                # Remove the old text or srt file from the session directory
-                txt_files = [file for file in os.listdir(session_dir) if file.endswith(".txt") or file.endswith(".srt")]
-                for file in txt_files:
-                    os.remove(os.path.join(session_dir, file))
+            # Remove the old text, srt, or pdf file from the session directory
+            txt_files = [file for file in os.listdir(session_dir) if file.endswith(".txt") or file.endswith(".srt") or file.endswith(".pdf")]
+            for file in txt_files:
+                os.remove(os.path.join(session_dir, file))
 
+            if self.pre_selected_source_file.lower().endswith(".pdf"):
+                # Extract text from PDF file
+                pdf = XPdf(self.pre_selected_source_file)
+                extracted_text = pdf.to_text()
+                # Open a new window for the user to review the extracted text
+                self.master.after(0, self.review_extracted_text, extracted_text)  # Use after to schedule the call
+                self.pdf_preprocessed = True  # Set the flag to indicate that the text has been preprocessed
+            else:
                 shutil.copy(self.pre_selected_source_file, session_dir)
                 self.source_file = os.path.join(session_dir, file_name)
+                self.pdf_preprocessed = False  # Reset the flag for non-PDF files
 
             # Check if the selected file is an SRT file
             if self.pre_selected_source_file.lower().endswith(".srt"):
@@ -623,6 +637,75 @@ class TTSOptimizerGUI:
             self.dubbing_switch.grid_remove()  # Hide the dubbing switch
             self.enable_dubbing.set(False)  # Disable the dubbing switch
             self.dubbing_frame.grid_remove()  # Hide the dubbing frame
+            self.pdf_preprocessed = False  # Reset the flag if no file is selected
+
+    def review_extracted_text(self, extracted_text):
+
+        def preprocess_text_pdf(text, keep_paragraph_breaks):
+            # Normalize all CRLF to LF to simplify newline handling.
+            normalized_text = text.replace('\r\n', '\n').replace('\r', '\n')
+
+            if keep_paragraph_breaks:
+                # Replace sequences of 2 or more newlines with a placeholder.
+                text_with_placeholders = re.sub(r'\n{3,}', 'PARAGRAPH_BREAK_PLACEHOLDER', normalized_text)
+                
+                # Condense all other whitespace (excluding placeholders) to a single space.
+                condensed_text = re.sub(r'(?<!PARAGRAPH_BREAK_PLACEHOLDER)[ \t\n\f]+', ' ', text_with_placeholders)
+                
+                # Replace placeholders with a single newline to preserve paragraph breaks.
+                final_text = condensed_text.replace('PARAGRAPH_BREAK_PLACEHOLDER', '\n')
+            else:
+                # If not preserving paragraph breaks, condense all whitespace to a single space.
+                final_text = re.sub(r'[ \t\n\f]+', ' ', normalized_text)
+
+            # Clean the text of any non-standard characters, allowing additional characters.
+            clean_text = re.sub(r'[^0-9a-zA-Z\s\/\\.,!?;:"\'`\-—()[\]{}£$€¥₹%+‰\n]+', '', final_text)
+
+            # Replace multiple spaces with a single space, preserving newlines.
+            clean_text = re.sub(r'(?!\n) {2,}', ' ', clean_text)
+
+            return clean_text
+
+        review_window = ctk.CTkToplevel(self.master)
+        review_window.title("Review Extracted Text")
+
+        keep_paragraph_breaks = ctk.BooleanVar(value=True)
+
+        def toggle_paragraph_breaks():
+            preprocessed_text = preprocess_text_pdf(extracted_text, keep_paragraph_breaks.get())
+            text_widget.delete("1.0", tk.END)
+            text_widget.insert("1.0", preprocessed_text)
+
+        paragraph_breaks_frame = ctk.CTkFrame(review_window)
+        paragraph_breaks_frame.pack(padx=10, pady=(0, 10))
+        ctk.CTkLabel(paragraph_breaks_frame, text="Keep Paragraph Breaks").pack(side=tk.LEFT, padx=(0, 10))
+        ctk.CTkSwitch(paragraph_breaks_frame, variable=keep_paragraph_breaks, command=toggle_paragraph_breaks).pack(side=tk.LEFT)
+
+        text_widget = ctk.CTkTextbox(review_window, width=800, height=600)
+        preprocessed_text = preprocess_text_pdf(extracted_text, keep_paragraph_breaks.get())
+        text_widget.insert("1.0", preprocessed_text)
+        text_widget.pack(padx=10, pady=(0, 10))
+
+        def accept_text():
+            session_name = self.session_name.get()
+            session_dir = os.path.join("Outputs", session_name)
+            file_name = f"{session_name}.txt"
+            self.source_file = os.path.join(session_dir, file_name)
+            with open(self.source_file, "w", encoding="utf-8") as file:
+                file.write(text_widget.get("1.0", "end-1c"))  # Exclude the trailing newline character
+            review_window.destroy()
+            self.pdf_preprocessed = True  # Set the flag to indicate that the text has been preprocessed
+
+        def cancel_import():
+            self.pre_selected_source_file = None
+            self.selected_file_label.configure(text="No file selected")
+            review_window.destroy()
+
+        accept_button = ctk.CTkButton(review_window, text="Accept", command=accept_text)
+        accept_button.pack(side=tk.LEFT, padx=10, pady=10)
+
+        cancel_button = ctk.CTkButton(review_window, text="Cancel", command=cancel_import)
+        cancel_button.pack(side=tk.LEFT, padx=10, pady=10)
 
     def set_speaker_folder(self):
         if self.tts_service.get() == "XTTS":
@@ -689,13 +772,27 @@ class TTSOptimizerGUI:
                     messagebox.showerror("Error", "Failed to connect to the Silero API.")
 
     def upload_speaker_voice(self):
-        wav_file = filedialog.askopenfilename(filetypes=[("WAV files", "*.wav")])
-        if wav_file:
-            speaker_name = os.path.splitext(os.path.basename(wav_file))[0]
-            destination_path = os.path.join(self.tts_voices_folder, f"{speaker_name}.wav")
-            shutil.copy(wav_file, destination_path)
-            self.populate_speaker_dropdown()  # Refresh the speaker dropdown after uploading
-            CTkMessagebox(title="Speaker Voice Uploaded", message=f"The speaker voice '{speaker_name}' has been uploaded successfully.", icon="info")
+        if self.tts_service.get() == "VoiceCraft":
+            wav_file = filedialog.askopenfilename(filetypes=[("WAV files", "*.wav")])
+            txt_file = filedialog.askopenfilename(filetypes=[("Text files", "*.txt")])
+            if wav_file and txt_file:
+                speaker_name = os.path.splitext(os.path.basename(wav_file))[0]
+                voicecraft_folder = os.path.join(self.tts_voices_folder, "VoiceCraft")
+                os.makedirs(voicecraft_folder, exist_ok=True)
+                wav_destination_path = os.path.join(voicecraft_folder, f"{speaker_name}.wav")
+                txt_destination_path = os.path.join(voicecraft_folder, f"{speaker_name}.txt")
+                shutil.copy(wav_file, wav_destination_path)
+                shutil.copy(txt_file, txt_destination_path)
+                self.populate_speaker_dropdown()  # Refresh the speaker dropdown after uploading
+                CTkMessagebox(title="Speaker Voice Uploaded", message=f"The speaker voice '{speaker_name}' has been uploaded successfully.", icon="info")
+        else:
+            wav_file = filedialog.askopenfilename(filetypes=[("WAV files", "*.wav")])
+            if wav_file:
+                speaker_name = os.path.splitext(os.path.basename(wav_file))[0]
+                destination_path = os.path.join(self.tts_voices_folder, f"{speaker_name}.wav")
+                shutil.copy(wav_file, destination_path)
+                self.populate_speaker_dropdown()  # Refresh the speaker dropdown after uploading
+                CTkMessagebox(title="Speaker Voice Uploaded", message=f"The speaker voice '{speaker_name}' has been uploaded successfully.", icon="info")
 
     def new_session(self):
         new_session_name = ctk.CTkInputDialog(text="Enter a name for the new session:", title="New Session").get_input()
@@ -977,13 +1074,13 @@ class TTSOptimizerGUI:
         self.remaining_time_label.configure(text=f"{formatted_time}")
 
     def start_optimisation_thread(self):
-        if not self.source_file:
-            CTkMessagebox(title="Error", message="Please select a source file.", icon="cancel")
-            return
-
         session_name = self.session_name.get()
         if not session_name:
-            CTkMessagebox(title="Error", message="Please enter a session name.", icon="cancel")
+            CTkMessagebox(title="Error", message="Please create or load a session first.", icon="cancel")
+            return
+
+        if not self.source_file:
+            CTkMessagebox(title="Error", message="Please select a source file.", icon="cancel")
             return
 
         if not self.check_server_connection():
@@ -1044,11 +1141,19 @@ class TTSOptimizerGUI:
             pygame.mixer.music.unpause()
 
     def preprocess_text(self, text):
-        # Replace single newlines, carriage returns, and tabs with spaces
-        text = re.sub(r'(?<!\n)[\n\r\t](?!\n)', ' ', text)
-        
+        if not self.pdf_preprocessed and not self.source_file.endswith(".srt"):
+            # Replace single newlines, carriage returns, and tabs with spaces
+            text = re.sub(r'(?<!\n)[\n\r\t](?!\n)', ' ', text)
+
         # Find positions of paragraph breaks
-        paragraph_breaks = list(re.finditer(r'(?<=[^\n\r\t])[\n\r\t]{2,}', text))
+        if not self.disable_paragraph_detection.get() and not self.source_file.endswith(".srt"):
+            if self.pdf_preprocessed:
+                # For preprocessed PDFs, consider sentences followed by a single newline as paragraphs
+                paragraph_breaks = list(re.finditer(r'(?<=[^\n\r\t])[\n\r\t](?=[^\n\r\t])', text))
+            else:
+                paragraph_breaks = list(re.finditer(r'(?<=[^\n\r\t])[\n\r\t]{2,}', text))
+        else:
+            paragraph_breaks = []
         
         if self.remove_diacritics.get():
             text = ''.join(char for char in text if not unicodedata.combining(char))
@@ -1056,6 +1161,9 @@ class TTSOptimizerGUI:
         
         # Check if the source file is an srt file
         if self.source_file.endswith(".srt"):
+            # Remove <b></b>, <i></i>, and <> tags from subtitle text
+            text = re.sub(r'<[/]?[bi]>', '', text)
+            text = re.sub(r'<>', '', text)
             # Parse the srt file and extract subtitle information
             subtitles = pysrt.open(self.source_file)
             
@@ -1071,7 +1179,7 @@ class TTSOptimizerGUI:
                     "split_part": None,
                     "start": start_time,
                     "end": end_time,
-                    "tts_generated": "no"  # Add this line
+                    "tts_generated": "no"
                 }
                 
                 processed_sentences.append(sentence_dict)
@@ -1546,10 +1654,12 @@ class TTSOptimizerGUI:
         if self.enable_dubbing.get() and self.source_file.endswith(".srt"):
             self.start_dubbing()
 
-        # Calculate the average MOS score
-        if mos_scores:
-            average_mos_score = sum(mos_scores) / len(mos_scores)
-            print(f"Average MOS Score: {average_mos_score:.2f}")
+        # Calculate the total generation time
+        total_generation_time = sum(sentence_generation_times)
+        formatted_time = str(datetime.timedelta(seconds=int(total_generation_time)))
+
+        # Display the message box with generation information
+        CTkMessagebox(title="Generation Finished", message=f"Generation completed!\n\nTotal Generation Time: {formatted_time}", icon="info")
 
     def save_sentence_to_json(self, preprocessed_sentences, json_filename, sentence_index, sentence_dict):
         # Update the tts_generated flag for the current sentence
