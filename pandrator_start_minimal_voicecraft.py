@@ -206,7 +206,7 @@ def download_pretrained_models(repo_path):
     if not os.path.exists(gigaHalfLibri330M_TTSEnhanced_max16s_path):
         logging.info("Downloading gigaHalfLibri330M_TTSEnhanced_max16s.pth...")
         try:
-            run_command(['curl', '-L', gigaHalfLibri330M_TTSEnhanced_max16s_url, '-o', giga330m_path])
+            run_command(['curl', '-L', gigaHalfLibri330M_TTSEnhanced_max16s_url, '-o', gigaHalfLibri330M_TTSEnhanced_max16s_path])
         except subprocess.CalledProcessError as e:
             logging.error(f"Failed to download gigaHalfLibri330M_TTSEnhanced_max16s.pth")
             logging.error(f"Error message: {str(e)}")
