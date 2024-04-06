@@ -186,11 +186,11 @@ def download_pretrained_models(repo_path):
     pretrained_models_dir = os.path.join(repo_path, 'pretrained_models')
     os.makedirs(pretrained_models_dir, exist_ok=True)
 
-    encodec_url = 'https://huggingface.co/pyp1/VoiceCraft/resolve/main/encodec_4cb2048_giga.th?download=true'
-    giga330m_url = 'https://huggingface.co/pyp1/VoiceCraft/resolve/main/giga330M.pth?download=true'
+    encodec_url = 'https://huggingface.co/pyp1/VoiceCraft/resolve/main/encodec_4cb2048_giga.th'
+    gigaHalfLibri330M_TTSEnhanced_max16s_url = 'https://huggingface.co/pyp1/VoiceCraft/resolve/main/gigaHalfLibri330M_TTSEnhanced_max16s.pth'
 
     encodec_path = os.path.join(pretrained_models_dir, 'encodec_4cb2048_giga.th')
-    giga330m_path = os.path.join(pretrained_models_dir, 'giga330M.pth')
+    gigaHalfLibri330M_TTSEnhanced_max16s_path = os.path.join(pretrained_models_dir, 'gigaHalfLibri330M_TTSEnhanced_max16s.pth')
 
     if not os.path.exists(encodec_path):
         logging.info("Downloading encodec_4cb2048_giga.th...")
@@ -203,16 +203,16 @@ def download_pretrained_models(repo_path):
     else:
         logging.info("encodec_4cb2048_giga.th already exists. Skipping download.")
 
-    if not os.path.exists(giga330m_path):
-        logging.info("Downloading giga330M.pth...")
+    if not os.path.exists(gigaHalfLibri330M_TTSEnhanced_max16s_path):
+        logging.info("Downloading gigaHalfLibri330M_TTSEnhanced_max16s.pth...")
         try:
-            run_command(['curl', '-L', giga330m_url, '-o', giga330m_path])
+            run_command(['curl', '-L', gigaHalfLibri330M_TTSEnhanced_max16s_url, '-o', giga330m_path])
         except subprocess.CalledProcessError as e:
-            logging.error(f"Failed to download giga330M.pth")
+            logging.error(f"Failed to download gigaHalfLibri330M_TTSEnhanced_max16s.pth")
             logging.error(f"Error message: {str(e)}")
             raise
     else:
-        logging.info("giga330M.pth already exists. Skipping download.")
+        logging.info("gigaHalfLibri330M_TTSEnhanced_max16s.pth already exists. Skipping download.")
 
 def replace_files(repo_path, file_mappings):
     for src_file, dest_file in file_mappings.items():
