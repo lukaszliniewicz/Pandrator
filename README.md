@@ -157,7 +157,9 @@ Contributions, suggestions for improvements, and bug reports are most welcome!
 - [ ] Add the other API servers to the setup script.
 - [ ] Add importing/exporting settings.
 - [ ] Add support for proprietary APIs for text pre-processing and TTS generation.
-- [ ] Enhance file format support (e.g., HTML, XML, PDF, Epub) including direct PDF to TXT conversion with OCR.
+- [ ] Add support for HTML, XML, and Epub.
+- [x] Include support for PDF files.
+- [ ] Include OCR for PDFs.
 - [x] Integrate editing capabilities for processed sentences within the UI.
 - [ ] Add support for a higher quality local TTS model, Tortoise.
 - [x] Add support for a lower quality but faster local TTS model that can easily run on CPU, e.g. Silero or Piper.
