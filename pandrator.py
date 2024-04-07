@@ -2272,7 +2272,9 @@ class TTSOptimizerGUI:
         sentence_text = processed_sentence["processed_sentence"] if self.enable_llm_processing.get() and "processed_sentence" in processed_sentence else processed_sentence["original_sentence"]
         sentence_number = int(processed_sentence["sentence_number"])
         if sentence_text not in self.playlist_listbox.get(0, tk.END):
-            self.playlist_listbox.insert(sentence_number - 1, sentence_text)
+            # Add the sentence number to the displayed text
+            display_text = f"[{sentence_number}] {sentence_text}"
+            self.playlist_listbox.insert(sentence_number - 1, display_text)
 
     def play_selected_sentence(self):
         if pygame.mixer.get_init() is None:
@@ -2284,20 +2286,29 @@ class TTSOptimizerGUI:
         selected_index = self.playlist_listbox.curselection()
         if selected_index:
             selected_sentence = self.playlist_listbox.get(selected_index)
+            # Extract the sentence number and text using a regular expression
+            match = re.match(r'^\[(\d+)\]\s(.+)$', selected_sentence)
+            if match:
+                sentence_number = match.group(1)
+                sentence_text = match.group(2)
+            else:
+                sentence_number = None
+                sentence_text = selected_sentence
+            
             session_name = self.session_name.get()
             session_dir = os.path.join("Outputs", session_name)
             json_filename = os.path.join(session_dir, f"{session_name}_sentences.json")
             processed_sentences = self.load_json(json_filename)
-            sentence_dict = next((s for s in processed_sentences if s["original_sentence"] == selected_sentence or s.get("processed_sentence") == selected_sentence), None)
+            
+            sentence_dict = next((s for s in processed_sentences if str(s["sentence_number"]) == sentence_number), None)
 
             if sentence_dict:
-                sentence_number = int(sentence_dict["sentence_number"])
                 wav_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence{sentence_number}.wav")
 
                 if os.path.exists(wav_filename):
                     sound = pygame.mixer.Sound(wav_filename)
                     self.channel.play(sound)
-                    self.current_sentence = selected_sentence
+                    self.current_sentence = sentence_text
                     self.playing = True
                     self.master.after(10, self.update_play_button_text, "Pause")
                     self.master.after(math.ceil(sound.get_length() * 1000), self.stop_playback)
@@ -2332,8 +2343,7 @@ class TTSOptimizerGUI:
                 session_dir = os.path.join("Outputs", self.session_name.get())
                 json_filename = os.path.join(session_dir, f"{self.session_name.get()}_sentences.json")
                 processed_sentences = self.load_json(json_filename)
-                sentence_dict = next((s for s in processed_sentences if s["original_sentence"] == selected_sentence or s.get("processed_sentence") == selected_sentence), None)
-
+                sentence_dict = next((s for s in processed_sentences if s["original_sentence"] in selected_sentence or s.get("processed_sentence") in selected_sentence), None)
                 if sentence_dict:
                     original_sentence_index = processed_sentences.index(sentence_dict)
                     sentence_number = int(sentence_dict["sentence_number"])
@@ -2417,7 +2427,6 @@ class TTSOptimizerGUI:
         except Exception as e:
             logging.error(f"Error regenerating sentence: {str(e)}")
 
-
     def play_sentences_as_playlist(self):
         if pygame.mixer.get_init() is None:
             pygame.mixer.init()
@@ -2441,11 +2450,13 @@ class TTSOptimizerGUI:
     def play_next_sentence_in_playlist(self):
         if not self.playlist_stopped and 0 <= self.playlist_index < self.playlist_listbox.size():
             sentence = self.playlist_listbox.get(self.playlist_index)
+            # Extract the sentence text from the listbox entry
+            sentence_text = sentence.split("] ", 1)[1] if "] " in sentence else sentence
             session_name = self.session_name.get()
             session_dir = os.path.join("Outputs", session_name)
             json_filename = os.path.join(session_dir, f"{session_name}_sentences.json")
             processed_sentences = self.load_json(json_filename)
-            sentence_dict = next((s for s in processed_sentences if s["original_sentence"] == sentence or s.get("processed_sentence") == sentence), None)
+            sentence_dict = next((s for s in processed_sentences if s["original_sentence"] in sentence_text or s.get("processed_sentence") in sentence_text), None)
 
             if sentence_dict:
                 sentence_number = int(sentence_dict["sentence_number"])
@@ -2458,7 +2469,7 @@ class TTSOptimizerGUI:
                         self.channel = pygame.mixer.Channel(0)
                     sound = pygame.mixer.Sound(wav_filename)
                     self.channel.play(sound)
-                    self.current_sentence = sentence
+                    self.current_sentence = sentence_text
                     sound_length = sound.get_length()
                     self.master.after(math.ceil(sound_length * 1000), self.play_next_sentence_callback)
                 else:
@@ -2544,25 +2555,33 @@ class TTSOptimizerGUI:
             selected_index = self.playlist_listbox.curselection()
             if selected_index:
                 selected_sentence = self.playlist_listbox.get(selected_index)
+                # Extract the sentence number and text using a regular expression
+                match = re.match(r'^\[(\d+)\]\s(.+)$', selected_sentence)
+                if match:
+                    sentence_number = match.group(1)
+                    sentence_text = match.group(2)
+                else:
+                    sentence_number = None
+                    sentence_text = selected_sentence
+                
                 session_dir = os.path.join("Outputs", self.session_name.get())
                 json_filename = os.path.join(session_dir, f"{self.session_name.get()}_sentences.json")
                 processed_sentences = self.load_json(json_filename)
-                sentence_dict = next((s for s in processed_sentences if s["original_sentence"] == selected_sentence or s.get("processed_sentence") == selected_sentence), None)
+                sentence_dict = next((s for s in processed_sentences if s["original_sentence"] in sentence_text or s.get("processed_sentence") in sentence_text), None)
                 if sentence_dict:
-                    sentence_number = sentence_dict["sentence_number"]
-
                     edit_window = ctk.CTkToplevel(self.master)
                     edit_window.title("Edit Sentence")
 
                     sentence_entry = ctk.CTkEntry(edit_window, width=400)
-                    sentence_entry.insert(0, selected_sentence)
+                    sentence_entry.insert(0, sentence_text)  # Insert the extracted sentence text
                     sentence_entry.pack(padx=10, pady=10)
 
                     def save_edited_sentence():
                         edited_sentence = sentence_entry.get()
                         self.update_sentence_in_json(sentence_number, edited_sentence)
+                        # Update the listbox entry with the edited sentence
                         self.playlist_listbox.delete(selected_index)
-                        self.playlist_listbox.insert(int(sentence_number) - 1, edited_sentence)
+                        self.playlist_listbox.insert(selected_index, f"[{sentence_number}] {edited_sentence}")
                         edit_window.destroy()
                         logging.info(f"Edited sentence {sentence_number}: {edited_sentence}")
 
