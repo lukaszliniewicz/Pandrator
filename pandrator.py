@@ -1722,22 +1722,61 @@ class TTSOptimizerGUI:
                     final_audio.export(output_filename, format=self.output_format.get(), bitrate=self.bitrate.get())
                 else:
                     final_audio.export(output_filename, format=self.output_format.get())
-        # Save the final concatenated audio file only if the source file is not an srt file
+    # Save the final concatenated audio file only if the source file is not an srt file
         if not self.source_file.endswith(".srt"):
-            final_audio = AudioSegment.empty()
+            session_name = self.session_name.get()
+            output_format = self.output_format.get()
+            bitrate = self.bitrate.get()
+
+            session_dir = os.path.join("Outputs", session_name)
+            output_path = os.path.join(session_dir, f"{session_name}.{output_format}")
+
+            wav_files = []
             for sentence_dict in preprocessed_sentences:
                 sentence_number = int(sentence_dict["sentence_number"])
                 wav_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence{sentence_number}.wav")
                 if os.path.exists(wav_filename):
-                    audio_data = AudioSegment.from_file(wav_filename, format="wav")
-                    final_audio += audio_data
+                    wav_files.append(wav_filename)
 
-            output_filename = os.path.join(session_dir, f"{session_name}.{self.output_format.get()}")
-            if self.output_format.get() in ['mp3', 'opus']:
-                final_audio.export(output_filename, format=self.output_format.get(), bitrate=self.bitrate.get())
-            else:
-                final_audio.export(output_filename, format=self.output_format.get())
+            with tempfile.NamedTemporaryFile(mode="w", delete=False) as temp_file:
+                for wav_file in wav_files:
+                    temp_file.write(f"file '{os.path.abspath(wav_file)}'\n")
+                input_list_path = temp_file.name
 
+            ffmpeg_command = [
+                "ffmpeg",
+                "-f", "concat",
+                "-safe", "0",
+                "-i", input_list_path,
+                "-y"  # '-y' option to overwrite output files without asking
+            ]
+
+            # Adjust the codec and bitrate based on the output format
+            if output_format == "wav":
+                ffmpeg_command.extend(["-c:a", "pcm_s16le"])
+            elif output_format == "mp3":
+                ffmpeg_command.extend(["-c:a", "libmp3lame", "-b:a", bitrate])
+            elif output_format == "opus":
+                ffmpeg_command.extend(["-c:a", "libopus", "-b:a", bitrate])
+
+            # Append the output path without quotes
+            ffmpeg_command.append(output_path)
+
+            print("FFmpeg Command:")
+            print(" ".join(ffmpeg_command))
+
+            try:
+                subprocess.run(ffmpeg_command, check=True, stderr=subprocess.PIPE, universal_newlines=True)
+                logging.info(f"The output file has been saved as {output_path}")
+            except subprocess.CalledProcessError as e:
+                error_message = f"FFmpeg exited with a non-zero code: {e.returncode}\n\nError output:\n{e.stderr}"
+                logging.error(error_message)
+            except Exception as e:
+                error_message = f"An unexpected error occurred: {str(e)}"
+                logging.error(error_message)
+            finally:
+                if os.path.exists(input_list_path):
+                    os.remove(input_list_path)
         # Check if dubbing is enabled and the source file is an SRT file
         if self.enable_dubbing.get() and self.source_file.endswith(".srt"):
             self.start_dubbing()
@@ -2556,6 +2595,7 @@ class TTSOptimizerGUI:
     def save_output(self):
         session_name = self.session_name.get()
         output_format = self.output_format.get()
+        bitrate = self.bitrate.get()
 
         # Open a file dialog to choose the output directory and file name
         output_path = filedialog.asksaveasfilename(
@@ -2576,24 +2616,62 @@ class TTSOptimizerGUI:
             if self.source_file.endswith(".srt"):
                 # Synchronize the audio segments based on subtitle timings for srt files
                 final_audio = self.synchronize_audio(processed_sentences, session_name)
+                if output_format == "wav":
+                    final_audio.export(output_path, format="wav")
+                elif output_format == "mp3":
+                    final_audio.export(output_path, format="mp3", bitrate=bitrate)
+                elif output_format == "opus":
+                    final_audio.export(output_path, format="opus", bitrate=bitrate)
             else:
-                # Concatenate the audio segments for non-srt files
-                final_audio = AudioSegment.empty()
+                # Concatenate the audio segments using FFmpeg for non-srt files
+                wav_files = []
                 for sentence_dict in processed_sentences:
                     sentence_number = int(sentence_dict["sentence_number"])
                     wav_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence{sentence_number}.wav")
                     if os.path.exists(wav_filename):
-                        audio_data = AudioSegment.from_file(wav_filename, format="wav")
-                        final_audio += audio_data
+                        wav_files.append(wav_filename)
 
-            if output_format == "wav":
-                final_audio.export(output_path, format="wav")
-            elif output_format == "mp3":
-                final_audio.export(output_path, format="mp3", bitrate=self.bitrate.get())
-            elif output_format == "opus":
-                final_audio.export(output_path, format="opus", bitrate=self.bitrate.get())
+                with tempfile.NamedTemporaryFile(mode="w", delete=False) as temp_file:
+                    for wav_file in wav_files:
+                        temp_file.write(f"file '{os.path.abspath(wav_file)}'\n")
+                    input_list_path = temp_file.name
 
-            messagebox.showinfo("Output Saved", f"The output file has been saved as {output_filename}")
+                ffmpeg_command = [
+                    "ffmpeg",
+                    "-f", "concat",
+                    "-safe", "0",
+                    "-i", input_list_path,
+                    "-y"  # '-y' option to overwrite output files without asking
+                ]
+
+                # Adjust the codec and bitrate based on the output format
+                if output_format == "wav":
+                    ffmpeg_command.extend(["-c:a", "pcm_s16le"])
+                elif output_format == "mp3":
+                    ffmpeg_command.extend(["-c:a", "libmp3lame", "-b:a", bitrate])
+                elif output_format == "opus":
+                    ffmpeg_command.extend(["-c:a", "libopus", "-b:a", bitrate])
+
+                # Append the output path without quotes
+                ffmpeg_command.append(output_path)
+
+                print("FFmpeg Command:")
+                print(" ".join(ffmpeg_command))
+
+                try:
+                    subprocess.run(ffmpeg_command, check=True, stderr=subprocess.PIPE, universal_newlines=True)
+                    messagebox.showinfo("Output Saved", f"The output file has been saved as {output_filename}")
+                except subprocess.CalledProcessError as e:
+                    error_message = f"FFmpeg exited with a non-zero code: {e.returncode}\n\nError output:\n{e.stderr}"
+                    logging.error(error_message)
+                    messagebox.showerror("FFmpeg Error", error_message)
+                except Exception as e:
+                    error_message = f"An unexpected error occurred: {str(e)}"
+                    logging.error(error_message)
+                    messagebox.showerror("Error", error_message)
+                finally:
+                    if os.path.exists(input_list_path):
+                        os.remove(input_list_path)
 
 def main():
     root = ctk.CTk()
