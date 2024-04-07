@@ -57,6 +57,11 @@ class TTSOptimizerGUI:
         self.pdf_preprocessed = False
         self.delete_session_flag = False
         self.pre_selected_source_file = None
+        self.external_server_connected = False
+        self.external_server_url = ctk.StringVar()
+        self.use_external_server = ctk.BooleanVar(value=False)
+        self.external_server_address = ctk.StringVar()
+        self.external_server_address.trace_add("write", self.populate_speaker_dropdown)
         self.enable_dubbing = ctk.BooleanVar(value=False)
         self.server_connected = False
         self.tts_voices_folder = "tts_voices"
@@ -145,7 +150,7 @@ class TTSOptimizerGUI:
         ctk.CTkButton(session_frame, text="View Session Folder", command=self.view_session_folder).grid(row=0, column=2, padx=10, pady=(10, 10), sticky=tk.EW)
 
         # Session Settings Section
-        ctk.CTkLabel(self.session_tab, text="Session Settings", font=ctk.CTkFont(size=14, weight="bold")).grid(row=3, column=0, padx=10, pady=10, sticky=tk.W)
+        ctk.CTkLabel(self.session_tab, text="Session Settings", font=ctk.CTkFont(size=14, weight="bold")).grid(row=3, column=0, columnspan=4, padx=10, pady=10, sticky=tk.W)
 
         session_settings_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
         session_settings_frame.grid(row=4, column=0, columnspan=4, padx=10, pady=(0, 20), sticky=tk.EW)
@@ -164,39 +169,59 @@ class TTSOptimizerGUI:
         self.dubbing_switch.grid_remove()  # Hide the dubbing switch by default
 
         ctk.CTkLabel(session_settings_frame, text="TTS Service:").grid(row=2, column=0, padx=10, pady=5, sticky=tk.W)
-        self.tts_service_dropdown = ctk.CTkOptionMenu(session_settings_frame, variable=self.tts_service, values=["XTTS", "Silero", "VoiceCraft"], command=self.update_language_dropdown)
+        self.tts_service_dropdown = ctk.CTkOptionMenu(session_settings_frame, variable=self.tts_service, values=["XTTS", "Silero", "VoiceCraft"], command=self.update_tts_service)
         self.tts_service_dropdown.grid(row=2, column=1, padx=10, pady=5, sticky=tk.EW)
 
+        self.connect_to_server_button = ctk.CTkButton(session_settings_frame, text="Connect to Server", command=self.connect_to_server)
+        self.connect_to_server_button.grid(row=2, column=2, columnspan=2, padx=10, pady=5, sticky=tk.EW)
+
+        self.use_external_server = ctk.BooleanVar(value=False)
+        self.use_external_server_switch = ctk.CTkSwitch(session_settings_frame, text="Use an external server", variable=self.use_external_server, command=self.toggle_external_server)
+        self.use_external_server_switch.grid(row=3, column=0, padx=10, pady=5, sticky=tk.W)
+
+        self.external_server_url = ctk.StringVar()
+        self.external_server_url_entry = ctk.CTkEntry(session_settings_frame, textvariable=self.external_server_url)
+        self.external_server_url_entry.grid(row=3, column=1, columnspan=3, padx=10, pady=5, sticky=tk.EW)
+
+        # Add these lines here
+        self.connect_to_server_button.grid()
+        self.use_external_server_switch.grid()
+        if self.use_external_server.get():
+            self.external_server_url_entry.grid()
+        else:
+            self.external_server_url_entry.grid_remove()
+
         self.language_var = ctk.StringVar(value="en")
-        ctk.CTkLabel(session_settings_frame, text="Language:").grid(row=3, column=0, padx=10, pady=5, sticky=tk.W)
+        ctk.CTkLabel(session_settings_frame, text="Language:").grid(row=4, column=0, padx=10, pady=5, sticky=tk.W)
         self.language_dropdown = ctk.CTkComboBox(
             session_settings_frame,
             variable=self.language_var,
             values=["en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko", "hi"]
         )
-        self.language_dropdown.grid(row=3, column=1, padx=10, pady=5, sticky=tk.EW)
+        self.language_dropdown.grid(row=4, column=1, padx=10, pady=5, sticky=tk.EW)
 
         self.language_var.trace_add("write", self.on_language_selected)
 
         self.selected_speaker = ctk.StringVar(value="")
-        ctk.CTkLabel(session_settings_frame, text="Speaker Voice:").grid(row=4, column=0, padx=10, pady=5, sticky=tk.W)
+        ctk.CTkLabel(session_settings_frame, text="Speaker Voice:").grid(row=5, column=0, padx=10, pady=5, sticky=tk.W)
         self.speaker_dropdown = ctk.CTkOptionMenu(session_settings_frame, variable=self.selected_speaker, values=[])
-        self.speaker_dropdown.grid(row=4, column=1, padx=10, pady=5, sticky=tk.EW)
-        self.populate_speaker_dropdown()
+        self.speaker_dropdown.grid(row=5, column=1, padx=10, pady=5, sticky=tk.EW)
+
         self.upload_new_voices_button = ctk.CTkButton(session_settings_frame, text="Upload New Voices", command=self.upload_speaker_voice)
-        self.upload_new_voices_button.grid(row=4, column=2, padx=10, pady=(10, 10), sticky=tk.EW)
+        self.upload_new_voices_button.grid(row=5, column=2, padx=10, pady=(10, 10), sticky=tk.EW)
         self.sample_length = ctk.StringVar(value="3")
         self.sample_length_dropdown = ctk.CTkOptionMenu(session_settings_frame, variable=self.sample_length, values=[str(i) for i in range(3, 13)])
-        self.sample_length_dropdown.grid(row=4, column=3, padx=10, pady=5, sticky=tk.EW)
+        self.sample_length_dropdown.grid(row=5, column=3, padx=10, pady=5, sticky=tk.EW)
         self.sample_length_dropdown.grid_remove()  # Hide the dropdown initially
-        ctk.CTkLabel(session_settings_frame, text="Playback Speed:").grid(row=5, column=0, padx=10, pady=5, sticky=tk.W)
+        ctk.CTkLabel(session_settings_frame, text="Playback Speed:").grid(row=6, column=0, padx=10, pady=5, sticky=tk.W)
         self.playback_speed = ctk.DoubleVar(value=1.0)
 
         # Create a list of values for the dropdown menu
         values = [str(value) for value in [0.8, 0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15, 1.2, 1.25, 1.3, 1.35, 1.4, 1.45, 1.5]]
 
         self.playback_speed_dropdown = ctk.CTkComboBox(session_settings_frame, values=values, variable=self.playback_speed)
-        self.playback_speed_dropdown.grid(row=5, column=1, columnspan=3, padx=10, pady=5, sticky=tk.EW)    
+        self.playback_speed_dropdown.grid(row=6, column=1, columnspan=3, padx=10, pady=5, sticky=tk.EW)
+
         # Generation Section
         generation_label = ctk.CTkLabel(self.session_tab, text="Generation", font=ctk.CTkFont(size=14, weight="bold"))
         generation_label.grid(row=5, column=0, padx=10, pady=10, sticky=tk.W)
@@ -467,7 +492,6 @@ class TTSOptimizerGUI:
         self.sentence_audio_data = {}  # Dictionary to store sentence audio data
 
         self.populate_speaker_dropdown()
-        self.set_speaker_folder()
 
     def select_video_file(self):
         video_file = filedialog.askopenfilename(filetypes=[("Video Files", "*.mp4;*.mkv;*.webm;*.avi")])
@@ -707,32 +731,81 @@ class TTSOptimizerGUI:
         cancel_button = ctk.CTkButton(review_window, text="Cancel", command=cancel_import)
         cancel_button.pack(side=tk.LEFT, padx=10, pady=10)
 
-    def set_speaker_folder(self):
-        if self.tts_service.get() == "XTTS":
-            speaker_folder_path = os.path.abspath(self.tts_voices_folder)
-            data = {"speaker_folder": speaker_folder_path}
-            try:
-                response = requests.post("http://localhost:8020/set_speaker_folder", json=data)
-                if response.status_code == 200:
-                    print(f"Speaker folder set to: {speaker_folder_path}")
-                    self.server_connected = True
-                else:
-                    print(f"Error {response.status_code}: Failed to set speaker folder.")
-                    self.server_connected = False
-            except requests.exceptions.ConnectionError:
-                print("XTTS server is offline. Retrying in 5 seconds...")
-                self.server_connected = False
-                self.master.after(10000, self.set_speaker_folder)
+    def toggle_external_server(self):
+        if self.use_external_server.get():
+            self.external_server_url_entry.grid()
+        else:
+            self.external_server_url_entry.grid_remove()
+            self.external_server_connected = False
+            self.populate_speaker_dropdown()
 
-    def populate_speaker_dropdown(self, event=None):
+    def connect_to_server(self):
         if self.tts_service.get() == "XTTS":
-            wav_files = [f for f in os.listdir(self.tts_voices_folder) if f.endswith(".wav")]
-            speakers = [os.path.splitext(f)[0] for f in sorted(wav_files)]
+            if self.use_external_server.get():
+                external_server_url = self.external_server_url.get()
+                try:
+                    response = requests.get(f"{external_server_url}/docs")
+                    if response.status_code == 200:
+                        self.external_server_connected = True
+                        self.populate_speaker_dropdown()
+                        messagebox.showinfo("Connected", "Successfully connected to the external XTTS server.")
+                    else:
+                        messagebox.showerror("Error", f"Failed to connect to the external XTTS server. Status code: {response.status_code}")
+                except requests.exceptions.RequestException as e:
+                    messagebox.showerror("Error", f"Failed to connect to the external XTTS server: {str(e)}")
+            else:
+                try:
+                    speaker_folder_path = os.path.abspath(self.tts_voices_folder)
+                    data = {"speaker_folder": speaker_folder_path}
+                    response = requests.post("http://localhost:8020/set_speaker_folder", json=data)
+                    if response.status_code == 200:
+                        print(f"Speaker folder set to: {speaker_folder_path}")
+                        response = requests.get("http://localhost:8020/docs")
+                        if response.status_code == 200:
+                            self.populate_speaker_dropdown()
+                            messagebox.showinfo("Connected", "Successfully connected to the local XTTS server.")
+                        else:
+                            messagebox.showerror("Error", f"Failed to connect to the local XTTS server. Status code: {response.status_code}")
+                    else:
+                        messagebox.showerror("Error", f"Failed to set speaker folder. Status code: {response.status_code}")
+                except requests.exceptions.RequestException as e:
+                    messagebox.showerror("Error", f"Failed to connect to the local XTTS server: {str(e)}")
+
+    def populate_speaker_dropdown(self):
+        if self.tts_service.get() == "XTTS":
+            if self.use_external_server.get() and self.external_server_connected:
+                external_server_url = self.external_server_url.get()
+                try:
+                    response = requests.get(f"{external_server_url}/speakers_list")
+                    if response.status_code == 200:
+                        speakers = response.json()
+                        self.speaker_dropdown.configure(values=speakers)
+                        if speakers:
+                            self.selected_speaker.set(speakers[0])
+                    else:
+                        messagebox.showerror("Error", f"Failed to fetch speakers from the external server. Status code: {response.status_code}")
+                except requests.exceptions.RequestException as e:
+                    messagebox.showerror("Error", f"Failed to connect to the external server: {str(e)}")
+            else:
+                try:
+                    response = requests.get("http://localhost:8020/speakers_list")
+                    if response.status_code == 200:
+                        speakers = response.json()
+                        self.speaker_dropdown.configure(values=speakers)
+                        if speakers:
+                            self.selected_speaker.set(speakers[0])
+                    else:
+                        messagebox.showerror("Error", f"Failed to fetch speakers from the local server. Status code: {response.status_code}")
+                except requests.exceptions.RequestException as e:
+                    messagebox.showerror("Error", f"Failed to connect to the local server: {str(e)}")
         elif self.tts_service.get() == "VoiceCraft":
             voicecraft_voices_folder = os.path.join(self.tts_voices_folder, "VoiceCraft")
             wav_files = [f for f in os.listdir(voicecraft_voices_folder) if f.endswith(".wav")]
             txt_files = [f for f in os.listdir(voicecraft_voices_folder) if f.endswith(".txt")]
             speakers = [os.path.splitext(f)[0] for f in sorted(wav_files) if os.path.splitext(f)[0] + ".txt" in txt_files]
+            self.speaker_dropdown.configure(values=speakers)
+            if speakers:
+                self.selected_speaker.set(speakers[0])
         else:  # Silero
             try:
                 language_name = self.language_var.get()  # Use self.language_var.get() instead of self.language.get()
@@ -741,19 +814,15 @@ class TTSOptimizerGUI:
                     response = requests.get(f"http://localhost:8001/tts/speakers")
                     if response.status_code == 200:
                         speakers = [speaker["name"] for speaker in response.json()]
+                        self.speaker_dropdown.configure(values=speakers)
+                        if speakers:
+                            self.selected_speaker.set(speakers[0])
                     else:
-                        speakers = []
                         messagebox.showerror("Error", "Failed to fetch Silero speakers.")
                 else:
-                    speakers = []
                     messagebox.showerror("Error", "Invalid language selected.")
             except requests.exceptions.ConnectionError:
-                speakers = []
                 messagebox.showerror("Error", "Failed to connect to the Silero API.")
-
-        self.speaker_dropdown.configure(values=speakers)
-        if speakers:
-            self.selected_speaker.set(speakers[0])
 
     def on_language_selected(self, *args):
         print("on_language_selected method called")
@@ -976,6 +1045,22 @@ class TTSOptimizerGUI:
         except requests.exceptions.ConnectionError:
             CTkMessagebox(title="Error", message="Failed to connect to the LLM API.", icon="cancel")
 
+    def update_tts_service(self, event=None):
+        if self.tts_service.get() == "XTTS":
+            self.connect_to_server_button.grid()
+            self.use_external_server_switch.grid()
+            if self.use_external_server.get():
+                self.external_server_url_entry.grid()
+            else:
+                self.external_server_url_entry.grid_remove()
+        else:
+            self.connect_to_server_button.grid_remove()
+            self.use_external_server_switch.grid_remove()
+            self.external_server_url_entry.grid_remove()
+            self.external_server_connected = False
+
+        self.update_language_dropdown()
+
     def toggle_playback(self):
         if self.playing:
             if self.paused:
@@ -1110,11 +1195,14 @@ class TTSOptimizerGUI:
     def check_server_connection(self):
         try:
             if self.tts_service.get() == "XTTS":
-                url = "http://localhost:8020/docs#"
+                if self.use_external_server.get() and self.external_server_connected:
+                    url = f"{self.external_server_url.get()}/docs"
+                else:
+                    url = "http://localhost:8020/docs"
             elif self.tts_service.get() == "VoiceCraft":
-                url = "http://localhost:8245/docs#"
+                url = "http://localhost:8245/docs"
             else:  # Silero
-                url = "http://localhost:8001/docs#"
+                url = "http://localhost:8001/docs"
 
             response = requests.get(url)
 
@@ -1123,11 +1211,11 @@ class TTSOptimizerGUI:
             else:
                 messagebox.showerror("Error", f"{self.tts_service.get()} server returned status code {response.status_code}. Cannot start generation.")
                 return False
-        except requests.exceptions.ConnectionError as e:
-            messagebox.showerror("Error", f"Failed to connect to {self.tts_service.get()} server:\n{str(e)}")
-            return False
-        except Exception as e:
-            messagebox.showerror("Error", f"An error occurred while checking {self.tts_service.get()} server connection:\n{str(e)}")
+        except requests.exceptions.RequestException as e:
+            if self.tts_service.get() == "XTTS" and self.use_external_server.get():
+                messagebox.showerror("Error", f"Failed to connect to the external XTTS server:\n{str(e)}")
+            else:
+                messagebox.showerror("Error", f"Failed to connect to {self.tts_service.get()} server:\n{str(e)}")
             return False
 
     def session_name_exists(self, session_name):
@@ -1920,10 +2008,6 @@ class TTSOptimizerGUI:
             self.populate_speaker_dropdown()  # Update the speaker dropdown with XTTS speakers
             self.sample_length_dropdown.grid_remove()  # Hide the "Sample Length" dropdown
 
-            # Check the XTTS server connection only when the TTS service changes to XTTS
-            if self.previous_tts_service != "XTTS":
-                self.set_speaker_folder()
-
         elif self.tts_service.get() == "VoiceCraft":
             self.language_dropdown.configure(values=["English"], state="disabled")  # Disable the language dropdown
             self.language_var.set("English")
@@ -1967,7 +2051,11 @@ class TTSOptimizerGUI:
                         "language": language
                     }
                     print(f"Request data: {data}")  # Print the request data
-                    response = requests.post("http://localhost:8020/tts_to_audio/", json=data)
+                    if self.external_server_connected:
+                        external_server_url = self.external_server_url.get()
+                        response = requests.post(f"{external_server_url}/tts_to_audio/", json=data)
+                    else:
+                        response = requests.post("http://localhost:8020/tts_to_audio/", json=data)
                     print(f"Response status code: {response.status_code}")  # Print the response status code
                     if response.status_code == 200:
                         audio_data = io.BytesIO(response.content)
