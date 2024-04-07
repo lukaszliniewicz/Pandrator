@@ -52,7 +52,7 @@ Silero runs on the CPU. It should perform well on almost all reasonably modern s
 You can run VoiceCraft on a cpu, but generation will be very slow. To achieve meaningful acceleration with a GPU (Nvidia), you need one with at least 8GB of VRAM. 
 
 ### Dependencies
-This project relies on several APIs and services (running locally) and dependencies, notably:
+This project relies on several APIs and services (running locally) and libraries, notably:
 
 #### Required
 - [XTTS API Server by daswer123](https://github.com/daswer123/xtts-api-server.git) for Text-to-Speech (TTS) generation using Coqui [XTTSv2](https://huggingface.co/coqui/XTTS-v2) OR [Silero API Server by ouoertheo](https://github.com/ouoertheo/silero-api-server) for TTS generaton using the [Silero models](https://github.com/snakers4/silero-models) OR [VoiceCraft by jasonppy](https://github.com/jasonppy/VoiceCraft). XTTS and VoiceCraft use the GPU (Nvidia), and Silero uses the CPU. Silero can be run on low-end systems.
