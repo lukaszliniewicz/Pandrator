@@ -39,7 +39,9 @@ The samples were generated using the minimal settings - no LLM text processing, 
 
 https://github.com/lukaszliniewicz/Pandrator/assets/75737665/fe0f2f5c-d608-4378-96cb-f4c576b72eb8
 
-https://github.com/lukaszliniewicz/Pandrator/assets/75737665/bf9738ae-5510-49ec-ab3f-31438c8663e2
+https://github.com/lukaszliniewicz/Pandrator/assets/75737665/118f5b9c-641b-4edd-8ef6-178dd924a883
+
+
 
 ## Requirments
 
