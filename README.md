@@ -73,7 +73,7 @@ Run `pandrator_start_minimal_xtts.exe`, `pandrator_start_minimal_silero.exe` or 
 
 **The file may be flagged as a threat by antivirus software, so you may have to add it as an exception.**
 
-On first use the executable creates the Pandrator folder, installs `curl`, `git`, `ffmpeg` (using Chocolatey) and `Miniconda`, clones the XTTS Api Server respository, the Silero Api Server repository or the VoiceCraft API repository and the Pandrator repository, creates conda environments, installs dependencies and launches them. **You may use it to launch Pandrator later**. 
+On first use the EXE creates the Pandrator folder, installs `curl`, `git`, `ffmpeg` (using Chocolatey, if not already installed) and `Miniconda`, clones the XTTS Api Server respository, the Silero Api Server repository or the VoiceCraft API repository and the Pandrator repository, creates conda environments, installs dependencies and launches Pandrator and the server you chose. **You may use the EXE to launch Pandrator later**. 
 
 If you want to perform the setup again, remove the Pandrator folder it created. Please allow at least a couple of minutes for the initial setup process to download models and install dependencies (it takes about 7-10 minutes for me).
 
@@ -156,7 +156,7 @@ Contributions, suggestions for improvements, and bug reports are most welcome!
 - You can find a collection of RVC models for example [here](https://voice-models.com/).
 
 ## To-do
-- [ ] Add the other API servers to the setup script.
+- [ ] Add all API servers to the setup script.
 - [ ] Add importing/exporting settings.
 - [ ] Add support for proprietary APIs for text pre-processing and TTS generation.
 - [ ] Add support for HTML, XML, and Epub.
