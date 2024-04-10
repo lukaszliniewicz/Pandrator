@@ -28,6 +28,8 @@ import pysrt
 from num2words import num2words
 import ffmpeg
 from pdftextract import XPdf
+#import nltk
+#from nltk.tokenize import sent_tokenize
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -104,6 +106,7 @@ class TTSOptimizerGUI:
         self.playing = False
         self.session_name = ctk.StringVar()
         self.tts_service = ctk.StringVar(value="XTTS")
+        #nltk.download('punkt')
 
         # Layout
         ctk.set_appearance_mode("dark")
@@ -640,9 +643,16 @@ class TTSOptimizerGUI:
                 # Extract text from PDF file
                 pdf = XPdf(self.pre_selected_source_file)
                 extracted_text = pdf.to_text()
-                # Open a new window for the user to review the extracted text
-                self.master.after(0, self.review_extracted_text, extracted_text)  # Use after to schedule the call
-                self.pdf_preprocessed = True  # Set the flag to indicate that the text has been preprocessed
+
+                # Save the raw extracted text
+                raw_text_filename = os.path.splitext(file_name)[0] + "_raw_text.txt"
+                raw_text_path = os.path.join(session_dir, raw_text_filename)
+                with open(raw_text_path, "w", encoding="utf-8") as file:
+                    file.write(extracted_text)
+
+                # Open a new window with two buttons
+                self.master.after(0, self.show_pdf_options, extracted_text, session_dir, file_name)  # Use after to schedule the call
+
             else:
                 shutil.copy(self.pre_selected_source_file, session_dir)
                 self.source_file = os.path.join(session_dir, file_name)
@@ -663,60 +673,75 @@ class TTSOptimizerGUI:
             self.dubbing_frame.grid_remove()  # Hide the dubbing frame
             self.pdf_preprocessed = False  # Reset the flag if no file is selected
 
+    def show_pdf_options(self, extracted_text, session_dir, file_name):
+        options_window = ctk.CTkToplevel(self.master)
+        options_window.title("PDF Text Extraction Options")
+
+        def use_recommended_settings():
+            options_window.destroy()
+            preprocessed_text = self.preprocess_text_pdf(extracted_text, keep_paragraph_breaks=True, paragraph_punctuation=True)
+            preprocessed_filename = os.path.splitext(file_name)[0] + "_preprocessed.txt"
+            preprocessed_path = os.path.join(session_dir, preprocessed_filename)
+            with open(preprocessed_path, "w", encoding="utf-8") as file:
+                file.write(preprocessed_text)
+            self.source_file = preprocessed_path
+            self.pdf_preprocessed = True  # Set the flag to indicate that the text has been preprocessed
+
+        def preview_and_edit():
+            options_window.destroy()
+            self.master.after(0, self.review_extracted_text, extracted_text)  # Use after to schedule the call
+
+        recommended_settings_button = ctk.CTkButton(options_window, text="Use Recommended Settings", command=use_recommended_settings)
+        recommended_settings_button.pack(padx=10, pady=10, fill=tk.X, expand=True)
+
+        preview_button = ctk.CTkButton(options_window, text="Preview and Edit", command=preview_and_edit)
+        preview_button.pack(padx=10, pady=10, fill=tk.X, expand=True)
+
     def review_extracted_text(self, extracted_text):
-
-        def preprocess_text_pdf(text, keep_paragraph_breaks):
-            # Normalize all CRLF to LF to simplify newline handling.
-            normalized_text = text.replace('\r\n', '\n').replace('\r', '\n')
-
-            if keep_paragraph_breaks:
-                # Replace sequences of 2 or more newlines with a placeholder.
-                text_with_placeholders = re.sub(r'\n{3,}', 'PARAGRAPH_BREAK_PLACEHOLDER', normalized_text)
-                
-                # Condense all other whitespace (excluding placeholders) to a single space.
-                condensed_text = re.sub(r'(?<!PARAGRAPH_BREAK_PLACEHOLDER)[ \t\n\f]+', ' ', text_with_placeholders)
-                
-                # Replace placeholders with a single newline to preserve paragraph breaks.
-                final_text = condensed_text.replace('PARAGRAPH_BREAK_PLACEHOLDER', '\n')
-            else:
-                # If not preserving paragraph breaks, condense all whitespace to a single space.
-                final_text = re.sub(r'[ \t\n\f]+', ' ', normalized_text)
-
-            # Clean the text of any non-standard characters, allowing additional characters.
-            clean_text = re.sub(r'[^0-9a-zA-Z\s\/\\.,!?;:"\'`\-—()[\]{}£$€¥₹%+‰\n]+', '', final_text)
-
-            # Replace multiple spaces with a single space, preserving newlines.
-            clean_text = re.sub(r'(?!\n) {2,}', ' ', clean_text)
-
-            return clean_text
-
         review_window = ctk.CTkToplevel(self.master)
         review_window.title("Review Extracted Text")
 
-        keep_paragraph_breaks = ctk.BooleanVar(value=True)
+        self.keep_paragraph_breaks = ctk.BooleanVar(value=True)
+        self.paragraph_punctuation = ctk.BooleanVar(value=True)
 
         def toggle_paragraph_breaks():
-            preprocessed_text = preprocess_text_pdf(extracted_text, keep_paragraph_breaks.get())
-            text_widget.delete("1.0", tk.END)
-            text_widget.insert("1.0", preprocessed_text)
+            if self.keep_paragraph_breaks.get():
+                preprocessed_text = self.preprocess_text_pdf(extracted_text, keep_paragraph_breaks=True, paragraph_punctuation=self.paragraph_punctuation.get())
+                text_widget.delete("1.0", tk.END)
+                text_widget.insert("1.0", preprocessed_text)
+            else:
+                text_widget.delete("1.0", tk.END)
+                text_widget.insert("1.0", extracted_text)
 
         paragraph_breaks_frame = ctk.CTkFrame(review_window)
         paragraph_breaks_frame.pack(padx=10, pady=(0, 10))
         ctk.CTkLabel(paragraph_breaks_frame, text="Keep Paragraph Breaks").pack(side=tk.LEFT, padx=(0, 10))
-        ctk.CTkSwitch(paragraph_breaks_frame, variable=keep_paragraph_breaks, command=toggle_paragraph_breaks).pack(side=tk.LEFT)
+        ctk.CTkSwitch(paragraph_breaks_frame, variable=self.keep_paragraph_breaks, command=toggle_paragraph_breaks).pack(side=tk.LEFT)
+
+        paragraph_punctuation_frame = ctk.CTkFrame(review_window)
+        paragraph_punctuation_frame.pack(padx=10, pady=(0, 10))
+        ctk.CTkLabel(paragraph_punctuation_frame, text="Paragraph must end in a punctuation mark (. , : ! ?) or \") .) !) ?) ')\".").pack(side=tk.LEFT, padx=(0, 10))
+        ctk.CTkSwitch(paragraph_punctuation_frame, variable=self.paragraph_punctuation, command=toggle_paragraph_breaks).pack(side=tk.LEFT)
 
         text_widget = ctk.CTkTextbox(review_window, width=800, height=600)
-        preprocessed_text = preprocess_text_pdf(extracted_text, keep_paragraph_breaks.get())
-        text_widget.insert("1.0", preprocessed_text)
+        text_widget.insert("1.0", extracted_text)
         text_widget.pack(padx=10, pady=(0, 10))
 
         def accept_text():
             session_name = self.session_name.get()
             session_dir = os.path.join("Outputs", session_name)
-            file_name = f"{session_name}.txt"
-            self.source_file = os.path.join(session_dir, file_name)
-            with open(self.source_file, "w", encoding="utf-8") as file:
+            file_name = f"{session_name}_edited.txt"
+            edited_text_path = os.path.join(session_dir, file_name)
+            with open(edited_text_path, "w", encoding="utf-8") as file:
                 file.write(text_widget.get("1.0", "end-1c"))  # Exclude the trailing newline character
+
+            preprocessed_text = self.preprocess_text_pdf(text_widget.get("1.0", "end-1c"), self.keep_paragraph_breaks.get(), self.paragraph_punctuation.get())
+            preprocessed_filename = f"{session_name}_preprocessed.txt"
+            preprocessed_path = os.path.join(session_dir, preprocessed_filename)
+            with open(preprocessed_path, "w", encoding="utf-8") as file:
+                file.write(preprocessed_text)
+
+            self.source_file = preprocessed_path
             review_window.destroy()
             self.pdf_preprocessed = True  # Set the flag to indicate that the text has been preprocessed
 
@@ -730,6 +755,34 @@ class TTSOptimizerGUI:
 
         cancel_button = ctk.CTkButton(review_window, text="Cancel", command=cancel_import)
         cancel_button.pack(side=tk.LEFT, padx=10, pady=10)
+
+    def preprocess_text_pdf(self, text, keep_paragraph_breaks, paragraph_punctuation):
+        # Adjusted regex for better capturing of initials and common abbreviations
+        abbreviations_and_initials_regex = r'\b(?:[A-Z]\.\s+[A-Z]\.|\b(?:e\.g|i\.e|Mr|Mrs|Dr|Jr|Sr|Co)\.)(?=\s|$)'
+        text = re.sub(abbreviations_and_initials_regex, r'\g<0>NOT_PARAGRAPH', text)
+
+        # Initial text preprocessing steps as before
+        text = re.sub(r'[\x0c\u00ad\ufffd]', '', text)  # Remove specific characters
+        text = text.replace('\t', ' ').replace('\r\n', '\n').replace('\r', '\n')  # Replace tabs and normalize newlines
+        text = re.sub(r'^[ ]+', '', text, flags=re.MULTILINE)  # Remove leading spaces
+
+        # Process text based on paragraph breaks and punctuation preferences
+        if keep_paragraph_breaks:
+            if paragraph_punctuation:
+                text = re.sub(r'(?<![.:!?)"])(?<![.:!?)"] )\n', ' ', text)
+            else:
+                text = re.sub(r'\n{2,}', 'PARAGRAPH_BREAK_PLACEHOLDER', text)
+                text = re.sub(r'(?<!PARAGRAPH_BREAK_PLACEHOLDER)[ \n]+', ' ', text)
+                text = text.replace('PARAGRAPH_BREAK_PLACEHOLDER', '\n\n')
+        else:
+            text = re.sub(r'[ \n]+', ' ', text)
+
+        text = re.sub(r' {2,}', ' ', text)  # Condense multiple spaces to one
+
+        # Final cleanup step: Remove NOT_PARAGRAPH placeholders
+        final_text = text.replace('NOT_PARAGRAPH', '')
+        return final_text
+
 
     def toggle_external_server(self):
         if self.use_external_server.get():
@@ -1242,11 +1295,11 @@ class TTSOptimizerGUI:
                 paragraph_breaks = list(re.finditer(r'(?<=[^\n\r\t])[\n\r\t]{2,}', text))
         else:
             paragraph_breaks = []
-        
+
         if self.remove_diacritics.get():
             text = ''.join(char for char in text if not unicodedata.combining(char))
             text = unidecode(text)
-        
+
         # Check if the source file is an srt file
         if self.source_file.endswith(".srt"):
             # Remove <b></b>, <i></i>, and <> tags from subtitle text
@@ -1254,13 +1307,13 @@ class TTSOptimizerGUI:
             text = re.sub(r'<>', '', text)
             # Parse the srt file and extract subtitle information
             subtitles = pysrt.open(self.source_file)
-            
+
             processed_sentences = []
             for subtitle in subtitles:
                 start_time = subtitle.start.to_time().strftime("%H:%M:%S.%f")
                 end_time = subtitle.end.to_time().strftime("%H:%M:%S.%f")
                 text = subtitle.text.replace("\n", " ")
-                
+
                 sentence_dict = {
                     "original_sentence": text,
                     "paragraph": "no",
@@ -1269,53 +1322,78 @@ class TTSOptimizerGUI:
                     "end": end_time,
                     "tts_generated": "no"
                 }
-                
+
                 processed_sentences.append(sentence_dict)
-            
+
             return processed_sentences
-        
-        sentences = self.split_into_sentences(text)
-        processed_sentences = []
+        else:
+            # Additional preprocessing step to handle chapters, section titles, etc.
+            text = re.sub(r'(^|\n+)([^\n.!?]+)(?=\n+|$)', r'\1\2.', text)
 
-        for sentence in sentences:
-            if not sentence.strip():  # Skip empty sentences
-                continue
+            # Use SentenceSplitter for sentence splitting
+            if self.tts_service.get() == "XTTS":
+                language = self.language_var.get()
+            else:  # Silero
+                silero_language_name = self.language_var.get()
+                silero_to_simple_lang_codes = {
+                    "German (v3)": "de",
+                    "English (v3)": "en",
+                    "English Indic (v3)": "en",
+                    "Spanish (v3)": "es",
+                    "French (v3)": "fr",
+                    "Indic (v3)": "hi",
+                    "Russian (v3.1)": "ru",
+                    "Tatar (v3)": "tt",
+                    "Ukrainian (v3)": "uk",
+                    "Uzbek (v3)": "uz",
+                    "Kalmyk (v3)": "xal"
+                }
+                language = silero_to_simple_lang_codes.get(silero_language_name, "en")
 
-            is_paragraph = False
-            for match in paragraph_breaks:
-                preceding_text = text[match.start()-15:match.start()]
-                sentence_end = sentence[-15:]
-                if self.calculate_similarity(preceding_text, sentence_end) >= 0.8:
-                    is_paragraph = True
-                    break
+            splitter = SentenceSplitter(language=language)
+            sentences = splitter.split(text)
 
-            # Use num2words to convert digits to words for Silero
-            if self.tts_service.get() == "Silero":
-                sentence = self.convert_digits_to_words(sentence)
+            processed_sentences = []
 
-            sentence_dict = {
-                "original_sentence": sentence,
-                "paragraph": "yes" if is_paragraph else "no",
-                "split_part": None  # Initialize split_part as None
-            }
+            for sentence in sentences:
+                if not sentence.strip():  # Skip empty sentences
+                    continue
 
-            # Split long sentences
-            if self.enable_sentence_splitting.get():
-                split_sentences = self.split_long_sentences(sentence_dict)
-                processed_sentences.extend(split_sentences)
-            else:
-                processed_sentences.append(sentence_dict)
+                is_paragraph = False
+                for match in paragraph_breaks:
+                    preceding_text = text[match.start()-15:match.start()]
+                    sentence_end = sentence[-15:]
+                    if self.calculate_similarity(preceding_text, sentence_end) >= 0.8:
+                        is_paragraph = True
+                        break
 
-        # Append short sentences
-        if self.enable_sentence_appending.get():
-            processed_sentences = self.append_short_sentences(processed_sentences)
+                # Use num2words to convert digits to words for Silero
+                if self.tts_service.get() == "Silero":
+                    sentence = self.convert_digits_to_words(sentence)
 
-        # Split long sentences recursively
-        split_sentences = []
-        for sentence_dict in processed_sentences:
-            split_sentences.extend(self.split_long_sentences_2(sentence_dict))
+                sentence_dict = {
+                    "original_sentence": sentence,
+                    "paragraph": "yes" if is_paragraph else "no",
+                    "split_part": None  # Initialize split_part as None
+                }
 
-        return split_sentences
+                # Split long sentences
+                if self.enable_sentence_splitting.get():
+                    split_sentences = self.split_long_sentences(sentence_dict)
+                    processed_sentences.extend(split_sentences)
+                else:
+                    processed_sentences.append(sentence_dict)
+
+            # Append short sentences
+            if self.enable_sentence_appending.get():
+                processed_sentences = self.append_short_sentences(processed_sentences)
+
+            # Split long sentences recursively
+            split_sentences = []
+            for sentence_dict in processed_sentences:
+                split_sentences.extend(self.split_long_sentences_2(sentence_dict))
+
+            return split_sentences
 
     def convert_digits_to_words(self, sentence):
         import re
@@ -2080,13 +2158,18 @@ class TTSOptimizerGUI:
         if self.tts_service.get() == "XTTS":
             language = self.language_dropdown.get()  # Get the value directly from the language dropdown/combobox
             speaker = self.selected_speaker.get()
-            speaker_wav = f"{speaker}.wav"
+            
+            speaker_path = os.path.join(self.tts_voices_folder, speaker)
+            if os.path.isfile(speaker_path):
+                speaker_arg = speaker
+            else:
+                speaker_arg = speaker
 
             for attempt in range(self.max_attempts.get()):
                 try:
                     data = {
                         "text": text,
-                        "speaker_wav": speaker_wav,
+                        "speaker_wav": speaker_arg,
                         "language": language
                     }
                     print(f"Request data: {data}")  # Print the request data
