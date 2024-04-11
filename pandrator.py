@@ -99,6 +99,7 @@ class TTSOptimizerGUI:
         self.rvc_model_path = ctk.StringVar()
         self.rvc_index_path = ctk.StringVar()
         self.enable_llm_processing = ctk.BooleanVar(value=False)
+        self.enable_first_prompt = ctk.BooleanVar(value=self.enable_llm_processing.get())
         self.playlist_stopped = False
         self.target_mos_value = ctk.StringVar(value="2.9")
         self.max_attempts = ctk.IntVar(value=5)
@@ -628,7 +629,8 @@ class TTSOptimizerGUI:
         self.pre_selected_source_file = filedialog.askopenfilename(filetypes=[("Text, SRT, and PDF files", "*.txt;*.srt;*.pdf")])
         if self.pre_selected_source_file:
             file_name = os.path.basename(self.pre_selected_source_file)
-            self.selected_file_label.configure(text=file_name)
+            truncated_file_name = file_name[:70] + "..." if len(file_name) > 70 else file_name
+            self.selected_file_label.configure(text=truncated_file_name)
 
             session_name = self.session_name.get()
             session_dir = os.path.join("Outputs", session_name)
@@ -647,11 +649,11 @@ class TTSOptimizerGUI:
                 # Save the raw extracted text
                 raw_text_filename = os.path.splitext(file_name)[0] + "_raw_text.txt"
                 raw_text_path = os.path.join(session_dir, raw_text_filename)
-                with open(raw_text_path, "w", encoding="utf-8") as file:
+                with open(raw_text_path, "w", encoding="utf-8", newline='\n') as file:
                     file.write(extracted_text)
 
                 # Open a new window with two buttons
-                self.master.after(0, self.show_pdf_options, extracted_text, session_dir, file_name)  # Use after to schedule the call
+                self.master.after(0, self.show_pdf_options, raw_text_path, session_dir, file_name)  # Use after to schedule the call and pass the raw text file path
 
             else:
                 shutil.copy(self.pre_selected_source_file, session_dir)
@@ -673,23 +675,42 @@ class TTSOptimizerGUI:
             self.dubbing_frame.grid_remove()  # Hide the dubbing frame
             self.pdf_preprocessed = False  # Reset the flag if no file is selected
 
-    def show_pdf_options(self, extracted_text, session_dir, file_name):
+    def show_pdf_options(self, raw_text_path, session_dir, file_name):
         options_window = ctk.CTkToplevel(self.master)
         options_window.title("PDF Text Extraction Options")
+        options_window.transient(self.master)  # Set the main window as the parent
+
+        # Calculate the center coordinates of the screen
+        screen_width = options_window.winfo_screenwidth()
+        screen_height = options_window.winfo_screenheight()
+        window_width = 400
+        window_height = 200
+        x = (screen_width // 2) - (window_width // 2)
+        y = (screen_height // 2) - (window_height // 2)
+        options_window.geometry(f"{window_width}x{window_height}+{x}+{y}")  # Set the window size and position
 
         def use_recommended_settings():
             options_window.destroy()
-            preprocessed_text = self.preprocess_text_pdf(extracted_text, keep_paragraph_breaks=True, paragraph_punctuation=True)
+            with open(raw_text_path, "r", encoding="utf-8") as file:
+                raw_text = file.read()
+            preprocessed_text = self.preprocess_text_pdf(raw_text)
             preprocessed_filename = os.path.splitext(file_name)[0] + "_preprocessed.txt"
             preprocessed_path = os.path.join(session_dir, preprocessed_filename)
-            with open(preprocessed_path, "w", encoding="utf-8") as file:
+            with open(preprocessed_path, "w", encoding="utf-8", newline='\n') as file:
                 file.write(preprocessed_text)
             self.source_file = preprocessed_path
             self.pdf_preprocessed = True  # Set the flag to indicate that the text has been preprocessed
 
         def preview_and_edit():
             options_window.destroy()
-            self.master.after(0, self.review_extracted_text, extracted_text)  # Use after to schedule the call
+            with open(raw_text_path, "r", encoding="utf-8") as file:
+                raw_text = file.read()
+            preprocessed_text = self.preprocess_text_pdf(raw_text)
+            preprocessed_filename = os.path.splitext(file_name)[0] + "_preprocessed.txt"
+            preprocessed_path = os.path.join(session_dir, preprocessed_filename)
+            with open(preprocessed_path, "w", encoding="utf-8", newline='\n') as file:
+                file.write(preprocessed_text)
+            self.master.after(0, self.review_extracted_text, preprocessed_path)  # Use after to schedule the call and pass the preprocessed file path
 
         recommended_settings_button = ctk.CTkButton(options_window, text="Use Recommended Settings", command=use_recommended_settings)
         recommended_settings_button.pack(padx=10, pady=10, fill=tk.X, expand=True)
@@ -697,51 +718,38 @@ class TTSOptimizerGUI:
         preview_button = ctk.CTkButton(options_window, text="Preview and Edit", command=preview_and_edit)
         preview_button.pack(padx=10, pady=10, fill=tk.X, expand=True)
 
-    def review_extracted_text(self, extracted_text):
+    def review_extracted_text(self, preprocessed_path):
         review_window = ctk.CTkToplevel(self.master)
         review_window.title("Review Extracted Text")
+        review_window.transient(self.master)  # Set the main window as the parent
 
-        self.keep_paragraph_breaks = ctk.BooleanVar(value=True)
-        self.paragraph_punctuation = ctk.BooleanVar(value=True)
+        # Calculate the center coordinates of the screen
+        screen_width = review_window.winfo_screenwidth()
+        screen_height = review_window.winfo_screenheight()
+        window_width = 800
+        window_height = 600
+        x = (screen_width // 2) - (window_width // 2)
+        y = (screen_height // 2) - (window_height // 2)
+        review_window.geometry(f"{window_width}x{window_height}+{x}+{y}")  # Set the window size and position
 
-        def toggle_paragraph_breaks():
-            if self.keep_paragraph_breaks.get():
-                preprocessed_text = self.preprocess_text_pdf(extracted_text, keep_paragraph_breaks=True, paragraph_punctuation=self.paragraph_punctuation.get())
-                text_widget.delete("1.0", tk.END)
-                text_widget.insert("1.0", preprocessed_text)
-            else:
-                text_widget.delete("1.0", tk.END)
-                text_widget.insert("1.0", extracted_text)
-
-        paragraph_breaks_frame = ctk.CTkFrame(review_window)
-        paragraph_breaks_frame.pack(padx=10, pady=(0, 10))
-        ctk.CTkLabel(paragraph_breaks_frame, text="Keep Paragraph Breaks").pack(side=tk.LEFT, padx=(0, 10))
-        ctk.CTkSwitch(paragraph_breaks_frame, variable=self.keep_paragraph_breaks, command=toggle_paragraph_breaks).pack(side=tk.LEFT)
-
-        paragraph_punctuation_frame = ctk.CTkFrame(review_window)
-        paragraph_punctuation_frame.pack(padx=10, pady=(0, 10))
-        ctk.CTkLabel(paragraph_punctuation_frame, text="Paragraph must end in a punctuation mark (. , : ! ?) or \") .) !) ?) ')\".").pack(side=tk.LEFT, padx=(0, 10))
-        ctk.CTkSwitch(paragraph_punctuation_frame, variable=self.paragraph_punctuation, command=toggle_paragraph_breaks).pack(side=tk.LEFT)
-
-        text_widget = ctk.CTkTextbox(review_window, width=800, height=600)
-        text_widget.insert("1.0", extracted_text)
-        text_widget.pack(padx=10, pady=(0, 10))
+        text_widget = ctk.CTkTextbox(review_window, width=window_width-20, height=window_height-80)
+        
+        with open(preprocessed_path, "r", encoding="utf-8") as file:
+            preprocessed_text = file.read()
+        text_widget.delete("1.0", tk.END)
+        text_widget.insert("1.0", preprocessed_text)
+        
+        text_widget.pack(padx=10, pady=(10, 10))
 
         def accept_text():
             session_name = self.session_name.get()
             session_dir = os.path.join("Outputs", session_name)
             file_name = f"{session_name}_edited.txt"
             edited_text_path = os.path.join(session_dir, file_name)
-            with open(edited_text_path, "w", encoding="utf-8") as file:
+            with open(edited_text_path, "w", encoding="utf-8", newline='\n') as file:
                 file.write(text_widget.get("1.0", "end-1c"))  # Exclude the trailing newline character
 
-            preprocessed_text = self.preprocess_text_pdf(text_widget.get("1.0", "end-1c"), self.keep_paragraph_breaks.get(), self.paragraph_punctuation.get())
-            preprocessed_filename = f"{session_name}_preprocessed.txt"
-            preprocessed_path = os.path.join(session_dir, preprocessed_filename)
-            with open(preprocessed_path, "w", encoding="utf-8") as file:
-                file.write(preprocessed_text)
-
-            self.source_file = preprocessed_path
+            self.source_file = edited_text_path
             review_window.destroy()
             self.pdf_preprocessed = True  # Set the flag to indicate that the text has been preprocessed
 
@@ -750,39 +758,44 @@ class TTSOptimizerGUI:
             self.selected_file_label.configure(text="No file selected")
             review_window.destroy()
 
-        accept_button = ctk.CTkButton(review_window, text="Accept", command=accept_text)
-        accept_button.pack(side=tk.LEFT, padx=10, pady=10)
+        button_frame = ctk.CTkFrame(review_window)
+        button_frame.pack(padx=10, pady=(0, 10), fill=tk.X)
 
-        cancel_button = ctk.CTkButton(review_window, text="Cancel", command=cancel_import)
-        cancel_button.pack(side=tk.LEFT, padx=10, pady=10)
+        accept_button = ctk.CTkButton(button_frame, text="Accept", command=accept_text)
+        accept_button.pack(side=tk.LEFT, padx=(0, 10), pady=10, expand=True, fill=tk.X)
 
-    def preprocess_text_pdf(self, text, keep_paragraph_breaks, paragraph_punctuation):
+        cancel_button = ctk.CTkButton(button_frame, text="Cancel", command=cancel_import)
+        cancel_button.pack(side=tk.LEFT, padx=(10, 0), pady=10, expand=True, fill=tk.X)
+
+    def preprocess_text_pdf(self, text):
+        # Step 1: Remove specific characters as in the original function
+        text = re.sub(r'[\x0c\u00ad\ufffd]', '', text)  # Remove specific characters
+        
         # Adjusted regex for better capturing of initials and common abbreviations
         abbreviations_and_initials_regex = r'\b(?:[A-Z]\.\s+[A-Z]\.|\b(?:e\.g|i\.e|Mr|Mrs|Dr|Jr|Sr|Co)\.)(?=\s|$)'
         text = re.sub(abbreviations_and_initials_regex, r'\g<0>NOT_PARAGRAPH', text)
 
-        # Initial text preprocessing steps as before
-        text = re.sub(r'[\x0c\u00ad\ufffd]', '', text)  # Remove specific characters
-        text = text.replace('\t', ' ').replace('\r\n', '\n').replace('\r', '\n')  # Replace tabs and normalize newlines
-        text = re.sub(r'^[ ]+', '', text, flags=re.MULTILINE)  # Remove leading spaces
+        # Replace four or more newlines with a placeholder for a significant break
+        significant_break_placeholder = "SIGNIFICANT_BREAK_PLACEHOLDER"
+        text_with_significant_breaks = re.sub(r'\n{2,}', significant_break_placeholder, text)
+        
+        # Replace one, two, or three newlines with a single space
+        text_single_space_for_newlines = re.sub(r'\n{1,3}', ' ', text_with_significant_breaks)
+        
+        # Restore significant breaks with a single newline
+        text_restored_breaks = text_single_space_for_newlines.replace(significant_break_placeholder, '\n')
 
-        # Process text based on paragraph breaks and punctuation preferences
-        if keep_paragraph_breaks:
-            if paragraph_punctuation:
-                text = re.sub(r'(?<![.:!?)"])(?<![.:!?)"] )\n', ' ', text)
-            else:
-                text = re.sub(r'\n{2,}', 'PARAGRAPH_BREAK_PLACEHOLDER', text)
-                text = re.sub(r'(?<!PARAGRAPH_BREAK_PLACEHOLDER)[ \n]+', ' ', text)
-                text = text.replace('PARAGRAPH_BREAK_PLACEHOLDER', '\n\n')
-        else:
-            text = re.sub(r'[ \n]+', ' ', text)
+        # Remove a single newline that does not follow sentence-ending punctuation
+        final_text = re.sub(r'(?<![\.\?!])\n', ' ', text_restored_breaks)
 
-        text = re.sub(r' {2,}', ' ', text)  # Condense multiple spaces to one
+        # Condense multiple spaces to one
+        final_text = re.sub(r' {2,}', ' ', final_text)
 
-        # Final cleanup step: Remove NOT_PARAGRAPH placeholders
-        final_text = text.replace('NOT_PARAGRAPH', '')
+        # Final cleanup step: Remove NOT_PARAGRAPH placeholders and trim whitespaces at the beginning of each line
+        final_text = final_text.replace('NOT_PARAGRAPH', '')
+        final_text = re.sub(r'(?m)^\s+', '', final_text)
+
         return final_text
-
 
     def toggle_external_server(self):
         if self.use_external_server.get():
@@ -1290,7 +1303,7 @@ class TTSOptimizerGUI:
         if not self.disable_paragraph_detection.get() and not self.source_file.endswith(".srt"):
             if self.pdf_preprocessed:
                 # For preprocessed PDFs, consider sentences followed by a single newline as paragraphs
-                paragraph_breaks = list(re.finditer(r'(?<=[^\n\r\t])[\n\r\t](?=[^\n\r\t])', text))
+                paragraph_breaks = list(re.finditer(r'\n', text))
             else:
                 paragraph_breaks = list(re.finditer(r'(?<=[^\n\r\t])[\n\r\t]{2,}', text))
         else:
@@ -1363,7 +1376,7 @@ class TTSOptimizerGUI:
                 for match in paragraph_breaks:
                     preceding_text = text[match.start()-15:match.start()]
                     sentence_end = sentence[-15:]
-                    if self.calculate_similarity(preceding_text, sentence_end) >= 0.8:
+                    if self.calculate_similarity(preceding_text, sentence_end) >= 0.95:
                         is_paragraph = True
                         break
 
@@ -1394,7 +1407,7 @@ class TTSOptimizerGUI:
                 split_sentences.extend(self.split_long_sentences_2(sentence_dict))
 
             return split_sentences
-
+        
     def convert_digits_to_words(self, sentence):
         import re
 
@@ -1901,12 +1914,25 @@ class TTSOptimizerGUI:
             processed_sentences = []
 
         if self.enable_llm_processing.get():  # Check if LLM processing is enabled
+            if not self.enable_first_prompt.get() and not self.enable_second_prompt.get() and not self.enable_third_prompt.get():
+                # If no prompt is enabled, skip optimization and return the original sentence
+                processed_sentence = {
+                    "sentence_number": sentence_number,
+                    "original_sentence": original_sentence,
+                    "paragraph": paragraph,
+                    "split_part": split_part,
+                    "tts_generated": "no"
+                }
+                if "processed_sentence" in sentence_dict:
+                    processed_sentence["processed_sentence"] = sentence_dict["processed_sentence"]
+                return processed_sentence
+
             # Remove the paragraph placeholder before sending the text to the API
             original_sentence = original_sentence.replace('<PARAGRAPH_BREAK>', '')
 
-            prompts = [
-                (self.first_optimisation_prompt, self.enable_first_evaluation.get(), self.first_prompt_model.get(), 1)
-            ]
+            prompts = []
+            if self.enable_first_prompt.get():  # Only include first prompt if enabled
+                prompts.append((self.first_optimisation_prompt, self.enable_first_evaluation.get(), self.first_prompt_model.get(), 1))
             if self.enable_second_prompt.get():  # Only include second prompt if enabled
                 prompts.append((self.second_optimisation_prompt, self.enable_second_evaluation.get(), self.second_prompt_model.get(), 2))
             if self.enable_third_prompt.get():  # Only include third prompt if enabled
@@ -2611,7 +2637,8 @@ class TTSOptimizerGUI:
                 if txt_files:
                     self.source_file = os.path.join(session_folder, txt_files[0])
                     file_name = os.path.basename(self.source_file)
-                    self.selected_file_label.configure(text=file_name)
+                    truncated_file_name = file_name[:70] + "..." if len(file_name) > 70 else file_name
+                    self.selected_file_label.configure(text=truncated_file_name)
                 else:
                     self.source_file = ""
                     self.selected_file_label.configure(text="No file selected")
