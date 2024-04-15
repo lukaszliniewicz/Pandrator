@@ -46,7 +46,7 @@ def install_choco():
         raise
 
 def install_dependencies():
-    dependencies = ['git', 'curl', 'ffmpeg']
+    dependencies = ['git', 'curl', 'ffmpeg', 'calibre']
     for dependency in dependencies:
         if not check_program_installed(dependency):
             logging.info(f"Installing {dependency}...")
