@@ -85,7 +85,7 @@ For additional functionality:
 Please refer to the repositories linked under [Dependencies](#Dependencies) for detailed installation instructions. Remember that the APIs must be running to make use of the functionalities they offer.
 
 ### Manual Installation:
-1. Make sure that Python 3, git and ffmpeg are installed and in PATH.
+1. Make sure that Python 3, git, calibre and ffmpeg are installed and in PATH.
 2. Install and run at least XTTS API Server, Silero API Server or VoiceCraft API Server. 
 3. Clone this repository (`git clone https://github.com/lukaszliniewicz/Pandrator.git`).
 4. `cd` to the repository directory.
