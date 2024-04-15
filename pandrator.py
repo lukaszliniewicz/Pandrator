@@ -625,8 +625,8 @@ class TTSOptimizerGUI:
             CTkMessagebox(title="No Session", message="Please create or load a session before selecting a file.", icon="info")
             return
 
-        # Modify filetypes to include PDF files
-        self.pre_selected_source_file = filedialog.askopenfilename(filetypes=[("Text, SRT, and PDF files", "*.txt;*.srt;*.pdf")])
+        # Modify filetypes to include PDF and epub files
+        self.pre_selected_source_file = filedialog.askopenfilename(filetypes=[("Text, SRT, PDF, and epub files", "*.txt;*.srt;*.pdf;*.epub")])
         if self.pre_selected_source_file:
             file_name = os.path.basename(self.pre_selected_source_file)
             truncated_file_name = file_name[:70] + "..." if len(file_name) > 70 else file_name
@@ -636,12 +636,25 @@ class TTSOptimizerGUI:
             session_dir = os.path.join("Outputs", session_name)
             os.makedirs(session_dir, exist_ok=True)
 
-            # Remove the old text, srt, or pdf file from the session directory
-            txt_files = [file for file in os.listdir(session_dir) if file.endswith(".txt") or file.endswith(".srt") or file.endswith(".pdf")]
+            # Remove the old text, srt, pdf, or epub file from the session directory
+            txt_files = [file for file in os.listdir(session_dir) if file.endswith(".txt") or file.endswith(".srt") or file.endswith(".pdf") or file.endswith(".epub")]
             for file in txt_files:
                 os.remove(os.path.join(session_dir, file))
 
-            if self.pre_selected_source_file.lower().endswith(".pdf"):
+            if self.pre_selected_source_file.lower().endswith(".epub"):
+                # Convert the epub file to a txt file using ebook-convert
+                txt_filename = os.path.splitext(file_name)[0] + ".txt"
+                txt_path = os.path.join(session_dir, txt_filename)
+                try:
+                    subprocess.run(["ebook-convert", self.pre_selected_source_file, txt_path], check=True)
+                    # Open a new window to preview and edit the text
+                    self.master.after(0, self.review_extracted_text, txt_path)
+                except subprocess.CalledProcessError as e:
+                    messagebox.showerror("Error", f"Failed to convert epub to txt: {str(e)}")
+                    self.pre_selected_source_file = None
+                    self.selected_file_label.configure(text="No file selected")
+
+            elif self.pre_selected_source_file.lower().endswith(".pdf"):
                 # Extract text from PDF file
                 pdf = XPdf(self.pre_selected_source_file)
                 extracted_text = pdf.to_text()
@@ -718,7 +731,7 @@ class TTSOptimizerGUI:
         preview_button = ctk.CTkButton(options_window, text="Preview and Edit", command=preview_and_edit)
         preview_button.pack(padx=10, pady=10, fill=tk.X, expand=True)
 
-    def review_extracted_text(self, preprocessed_path):
+    def review_extracted_text(self, file_path):
         review_window = ctk.CTkToplevel(self.master)
         review_window.title("Review Extracted Text")
         review_window.transient(self.master)  # Set the main window as the parent
@@ -734,10 +747,10 @@ class TTSOptimizerGUI:
 
         text_widget = ctk.CTkTextbox(review_window, width=window_width-20, height=window_height-80)
         
-        with open(preprocessed_path, "r", encoding="utf-8") as file:
-            preprocessed_text = file.read()
+        with open(file_path, "r", encoding="utf-8") as file:
+            text = file.read()
         text_widget.delete("1.0", tk.END)
-        text_widget.insert("1.0", preprocessed_text)
+        text_widget.insert("1.0", text)
         
         text_widget.pack(padx=10, pady=(10, 10))
 
@@ -1230,30 +1243,36 @@ class TTSOptimizerGUI:
             CTkMessagebox(title="Error", message="Please create or load a session first.", icon="cancel")
             return
 
-        if not self.source_file:
-            CTkMessagebox(title="Error", message="Please select a source file.", icon="cancel")
-            return
+        session_dir = os.path.join("Outputs", session_name)
+        edited_file_path = os.path.join(session_dir, f"{session_name}_edited.txt")
+
+        if os.path.exists(edited_file_path):
+            # Use the contents of the "_edited" file if it exists
+            with open(edited_file_path, 'r', encoding='utf-8') as file:
+                text = file.read()
+        else:
+            if not self.source_file:
+                CTkMessagebox(title="Error", message="Please select a source file.", icon="cancel")
+                return
+
+            # Read the file content into 'text' variable
+            with open(self.source_file, 'r', encoding='utf-8') as file:
+                text = file.read()
 
         if not self.check_server_connection():
             return
 
-        # Read the file content into 'text' variable
-        with open(self.source_file, 'r', encoding='utf-8') as file:
-            text = file.read()
-        
         # Preprocess the text and split it into sentences
         preprocessed_sentences = self.preprocess_text(text)
-        
+
         # Save the preprocessed sentences as original sentences to the JSON file
-        session_dir = os.path.join("Outputs", self.session_name.get())
-        session_dir = f"Outputs/{session_name}"
         os.makedirs(session_dir, exist_ok=True)
         json_filename = os.path.join(session_dir, f"{self.session_name.get()}_sentences.json")
         self.save_json(preprocessed_sentences, json_filename)
-        
+
         # Calculate the total number of sentences
         total_sentences = len(preprocessed_sentences)
-        
+
         # Create a new thread for the optimization process
         self.optimization_thread = threading.Thread(target=self.start_optimisation, args=(total_sentences,))
         self.optimization_thread.start()
@@ -1296,8 +1315,10 @@ class TTSOptimizerGUI:
 
     def preprocess_text(self, text):
         if not self.pdf_preprocessed and not self.source_file.endswith(".srt"):
-            # Replace single newlines, carriage returns, and tabs with spaces
-            text = re.sub(r'(?<!\n)[\n\r\t](?!\n)', ' ', text)
+            # Normalize newlines to LF and replace carriage returns with LF
+            text = re.sub(r'\r\n?', '\n', text)
+            # Replace single newlines, and tabs with spaces
+            text = re.sub(r'(?<!\n)[\n\t](?!\n)', ' ', text)
 
         # Find positions of paragraph breaks
         if not self.disable_paragraph_detection.get() and not self.source_file.endswith(".srt"):
@@ -1305,7 +1326,7 @@ class TTSOptimizerGUI:
                 # For preprocessed PDFs, consider sentences followed by a single newline as paragraphs
                 paragraph_breaks = list(re.finditer(r'\n', text))
             else:
-                paragraph_breaks = list(re.finditer(r'(?<=[^\n\r\t])[\n\r\t]{2,}', text))
+                paragraph_breaks = list(re.finditer(r'(?<=[^\n])\n{2,}', text))
         else:
             paragraph_breaks = []
 
@@ -1486,6 +1507,7 @@ class TTSOptimizerGUI:
             return [{"original_sentence": sentence, "split_part": None, "paragraph": paragraph}]
 
         punctuation_marks = [',', ':', ';']
+        conjunction_marks = [' and ', ' or ', ' whose ']
         min_distance = 30
         best_split_index = None
         min_diff = float('inf')
@@ -1497,18 +1519,26 @@ class TTSOptimizerGUI:
                     diff = abs(index - len(sentence) // 2)
                     if diff < min_diff:
                         min_diff = diff
-                        best_split_index = index
+                        best_split_index = index + 1
+
+        if best_split_index is None:
+            for mark in conjunction_marks:
+                index = sentence.find(mark)
+                if min_distance <= index <= len(sentence) - min_distance:
+                    best_split_index = index
+                    break
 
         if best_split_index is None:
             return [{"original_sentence": sentence, "split_part": None, "paragraph": paragraph}]
 
-        first_part = sentence[:best_split_index + 1].strip()
-        second_part = sentence[best_split_index + 1:].strip()
+        first_part = sentence[:best_split_index].strip()
+        second_part = sentence[best_split_index:].strip()
 
         return [
             {"original_sentence": first_part, "split_part": 0, "paragraph": "no"},
             {"original_sentence": second_part, "split_part": 1, "paragraph": paragraph}
         ]
+
     def split_long_sentences_2(self, sentence_dict):
         sentence = sentence_dict["original_sentence"]
         paragraph = sentence_dict["paragraph"]
@@ -1518,6 +1548,7 @@ class TTSOptimizerGUI:
             return [sentence_dict]
 
         punctuation_marks = [',', ':', ';']
+        conjunction_marks = [' and ', ' or ']
         min_distance = 30
         best_split_index = None
         min_diff = float('inf')
@@ -1529,13 +1560,20 @@ class TTSOptimizerGUI:
                     diff = abs(index - len(sentence) // 2)
                     if diff < min_diff:
                         min_diff = diff
-                        best_split_index = index
+                        best_split_index = index + 1
+
+        if best_split_index is None:
+            for mark in conjunction_marks:
+                index = sentence.find(mark)
+                if min_distance <= index <= len(sentence) - min_distance:
+                    best_split_index = index
+                    break
 
         if best_split_index is None:
             return [sentence_dict]
 
-        first_part = sentence[:best_split_index + 1].strip()
-        second_part = sentence[best_split_index + 1:].strip()
+        first_part = sentence[:best_split_index].strip()
+        second_part = sentence[best_split_index:].strip()
 
         split_sentences = []
         if split_part is None:
@@ -1550,38 +1588,10 @@ class TTSOptimizerGUI:
         })
 
         if len(second_part) > self.max_sentence_length.get():
-            if isinstance(split_part_prefix, int):
-                if split_part_prefix == 0 and paragraph == "yes":
-                    split_sentences.append({
-                        "original_sentence": second_part,
-                        "split_part": "1",
-                        "paragraph": "yes"
-                    })
-                else:
-                    split_sentences.append({
-                        "original_sentence": second_part,
-                        "split_part": "1",
-                        "paragraph": "no"
-                    })
-            else:
-                if (split_part_prefix.endswith("b") or split_part_prefix == "1") and paragraph == "yes":
-                    split_sentences.append({
-                        "original_sentence": second_part,
-                        "split_part": f"{split_part_prefix}b",
-                        "paragraph": "yes"
-                    })
-                else:
-                    split_sentences.append({
-                        "original_sentence": second_part,
-                        "split_part": f"{split_part_prefix}b",
-                        "paragraph": "no"
-                    })
-
             split_sentences.extend(self.split_long_sentences_2({
                 "original_sentence": second_part,
                 "split_part": f"{split_part_prefix}b" if isinstance(split_part_prefix, str) else "1",
-                "paragraph": "yes" if (isinstance(split_part_prefix, int) and split_part_prefix == 0 and paragraph == "yes") or
-                                    (isinstance(split_part_prefix, str) and (split_part_prefix.endswith("b") or split_part_prefix == "1") and paragraph == "yes") else "no"
+                "paragraph": "yes" if (isinstance(split_part_prefix, int) and split_part_prefix == 0 and paragraph == "yes") or (isinstance(split_part_prefix, str) and (split_part_prefix.endswith("b") or split_part_prefix == "1") and paragraph == "yes") else "no"
             }))
         else:
             split_sentences.append({
@@ -2826,4 +2836,4 @@ def main():
 
 if __name__ == "main":
     logging.debug("Script started")
-main()  
+main()     
