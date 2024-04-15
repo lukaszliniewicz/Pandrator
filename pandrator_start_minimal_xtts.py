@@ -28,7 +28,7 @@ def install_choco():
     run_command(['powershell', '-Command', "Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))"])
 
 def install_dependencies():
-    dependencies = ['git', 'curl', 'ffmpeg']
+    dependencies = ['git', 'curl', 'ffmpeg', 'calibre']
     for dependency in dependencies:
         if not check_program_installed(dependency):
             logging.info(f"Installing {dependency}...")
