@@ -1507,7 +1507,7 @@ class TTSOptimizerGUI:
             return [{"original_sentence": sentence, "split_part": None, "paragraph": paragraph}]
 
         punctuation_marks = [',', ':', ';']
-        conjunction_marks = [' and ', ' or ', ' whose ']
+        conjunction_marks = [' and ', ' or ']
         min_distance = 30
         best_split_index = None
         min_diff = float('inf')
@@ -1577,31 +1577,37 @@ class TTSOptimizerGUI:
 
         split_sentences = []
         if split_part is None:
-            split_part_prefix = 0
+            split_part_prefix = "0"
         else:
-            split_part_prefix = split_part
+            split_part_prefix = str(split_part)
 
         split_sentences.append({
             "original_sentence": first_part,
-            "split_part": f"{split_part_prefix}a",
+            "split_part": split_part_prefix + "a",
             "paragraph": "no"
         })
 
         if len(second_part) > self.max_sentence_length.get():
-            split_sentences.extend(self.split_long_sentences_2({
-                "original_sentence": second_part,
-                "split_part": f"{split_part_prefix}b" if isinstance(split_part_prefix, str) else "1",
-                "paragraph": "yes" if (isinstance(split_part_prefix, int) and split_part_prefix == 0 and paragraph == "yes") or (isinstance(split_part_prefix, str) and (split_part_prefix.endswith("b") or split_part_prefix == "1") and paragraph == "yes") else "no"
-            }))
+            if split_part_prefix == "0" and paragraph == "yes":
+                split_sentences.extend(self.split_long_sentences_2({
+                    "original_sentence": second_part,
+                    "split_part": "1a",
+                    "paragraph": "yes"
+                }))
+            else:
+                split_sentences.extend(self.split_long_sentences_2({
+                    "original_sentence": second_part,
+                    "split_part": split_part_prefix + "b",
+                    "paragraph": "no" if split_part_prefix == "0" else paragraph
+                }))
         else:
             split_sentences.append({
                 "original_sentence": second_part,
-                "split_part": f"{split_part_prefix}b" if isinstance(split_part_prefix, str) else "1",
+                "split_part": split_part_prefix + "b",
                 "paragraph": paragraph
             })
 
         return split_sentences
-
     def append_short_sentences(self, sentence_dicts):
         appended_sentences = []
         i = 0
