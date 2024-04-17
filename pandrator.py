@@ -60,12 +60,16 @@ class TTSOptimizerGUI:
         self.delete_session_flag = False
         self.pre_selected_source_file = None
         self.external_server_connected = False
+        self.use_external_server_voicecraft = ctk.BooleanVar(value=False)
+        self.external_server_url_voicecraft = ctk.StringVar()
         self.external_server_url = ctk.StringVar()
         self.use_external_server = ctk.BooleanVar(value=False)
         self.external_server_address = ctk.StringVar()
         self.external_server_address.trace_add("write", self.populate_speaker_dropdown)
         self.enable_dubbing = ctk.BooleanVar(value=False)
         self.server_connected = False
+        self.external_server_connected_voicecraft = False
+
         self.tts_voices_folder = "tts_voices"
         if not os.path.exists(self.tts_voices_folder):
             os.makedirs(self.tts_voices_folder)
@@ -173,58 +177,56 @@ class TTSOptimizerGUI:
         self.dubbing_switch.grid_remove()  # Hide the dubbing switch by default
 
         ctk.CTkLabel(session_settings_frame, text="TTS Service:").grid(row=2, column=0, padx=10, pady=5, sticky=tk.W)
-        self.tts_service_dropdown = ctk.CTkOptionMenu(session_settings_frame, variable=self.tts_service, values=["XTTS", "Silero", "VoiceCraft"], command=self.update_tts_service)
+        self.tts_service_dropdown = ctk.CTkOptionMenu(session_settings_frame, variable=self.tts_service, values=["XTTS", "VoiceCraft", "Silero"], command=self.update_tts_service)
         self.tts_service_dropdown.grid(row=2, column=1, padx=10, pady=5, sticky=tk.EW)
 
         self.connect_to_server_button = ctk.CTkButton(session_settings_frame, text="Connect to Server", command=self.connect_to_server)
         self.connect_to_server_button.grid(row=2, column=2, columnspan=2, padx=10, pady=5, sticky=tk.EW)
 
-        self.use_external_server = ctk.BooleanVar(value=False)
         self.use_external_server_switch = ctk.CTkSwitch(session_settings_frame, text="Use an external server", variable=self.use_external_server, command=self.toggle_external_server)
         self.use_external_server_switch.grid(row=3, column=0, padx=10, pady=5, sticky=tk.W)
-
-        self.external_server_url = ctk.StringVar()
         self.external_server_url_entry = ctk.CTkEntry(session_settings_frame, textvariable=self.external_server_url)
         self.external_server_url_entry.grid(row=3, column=1, columnspan=3, padx=10, pady=5, sticky=tk.EW)
+        self.external_server_url_entry.grid_remove()  # Hide the entry field initially
 
-        # Add these lines here
-        self.connect_to_server_button.grid()
-        self.use_external_server_switch.grid()
-        if self.use_external_server.get():
-            self.external_server_url_entry.grid()
-        else:
-            self.external_server_url_entry.grid_remove()
+        self.use_external_server_voicecraft_switch = ctk.CTkSwitch(session_settings_frame, text="Use an external server", variable=self.use_external_server_voicecraft, command=self.toggle_external_server)
+        self.use_external_server_voicecraft_switch.grid(row=4, column=0, padx=10, pady=5, sticky=tk.W)
+        self.use_external_server_voicecraft_switch.grid_remove()  # Hide the switch initially
+        self.external_server_url_entry_voicecraft = ctk.CTkEntry(session_settings_frame, textvariable=self.external_server_url_voicecraft)
+        self.external_server_url_entry_voicecraft.grid(row=4, column=1, columnspan=3, padx=10, pady=5, sticky=tk.EW)
+        self.external_server_url_entry_voicecraft.grid_remove()  # Hide the entry field initially
 
         self.language_var = ctk.StringVar(value="en")
-        ctk.CTkLabel(session_settings_frame, text="Language:").grid(row=4, column=0, padx=10, pady=5, sticky=tk.W)
+        ctk.CTkLabel(session_settings_frame, text="Language:").grid(row=5, column=0, padx=10, pady=5, sticky=tk.W)
         self.language_dropdown = ctk.CTkComboBox(
             session_settings_frame,
             variable=self.language_var,
             values=["en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko", "hi"]
         )
-        self.language_dropdown.grid(row=4, column=1, padx=10, pady=5, sticky=tk.EW)
+        self.language_dropdown.grid(row=5, column=1, padx=10, pady=5, sticky=tk.EW)
 
         self.language_var.trace_add("write", self.on_language_selected)
 
         self.selected_speaker = ctk.StringVar(value="")
-        ctk.CTkLabel(session_settings_frame, text="Speaker Voice:").grid(row=5, column=0, padx=10, pady=5, sticky=tk.W)
+        ctk.CTkLabel(session_settings_frame, text="Speaker Voice:").grid(row=6, column=0, padx=10, pady=5, sticky=tk.W)
         self.speaker_dropdown = ctk.CTkOptionMenu(session_settings_frame, variable=self.selected_speaker, values=[])
-        self.speaker_dropdown.grid(row=5, column=1, padx=10, pady=5, sticky=tk.EW)
+        self.speaker_dropdown.grid(row=6, column=1, padx=10, pady=5, sticky=tk.EW)
 
         self.upload_new_voices_button = ctk.CTkButton(session_settings_frame, text="Upload New Voices", command=self.upload_speaker_voice)
-        self.upload_new_voices_button.grid(row=5, column=2, padx=10, pady=(10, 10), sticky=tk.EW)
+        self.upload_new_voices_button.grid(row=6, column=2, padx=10, pady=(10, 10), sticky=tk.EW)
         self.sample_length = ctk.StringVar(value="3")
         self.sample_length_dropdown = ctk.CTkOptionMenu(session_settings_frame, variable=self.sample_length, values=[str(i) for i in range(3, 13)])
-        self.sample_length_dropdown.grid(row=5, column=3, padx=10, pady=5, sticky=tk.EW)
+        self.sample_length_dropdown.grid(row=6, column=3, padx=10, pady=5, sticky=tk.EW)
         self.sample_length_dropdown.grid_remove()  # Hide the dropdown initially
-        ctk.CTkLabel(session_settings_frame, text="Playback Speed:").grid(row=6, column=0, padx=10, pady=5, sticky=tk.W)
+
+        ctk.CTkLabel(session_settings_frame, text="Playback Speed:").grid(row=7, column=0, padx=10, pady=5, sticky=tk.W)
         self.playback_speed = ctk.DoubleVar(value=1.0)
 
         # Create a list of values for the dropdown menu
         values = [str(value) for value in [0.8, 0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15, 1.2, 1.25, 1.3, 1.35, 1.4, 1.45, 1.5]]
 
         self.playback_speed_dropdown = ctk.CTkComboBox(session_settings_frame, values=values, variable=self.playback_speed)
-        self.playback_speed_dropdown.grid(row=6, column=1, columnspan=3, padx=10, pady=5, sticky=tk.EW)
+        self.playback_speed_dropdown.grid(row=7, column=1, columnspan=3, padx=10, pady=5, sticky=tk.EW)
 
         # Generation Section
         generation_label = ctk.CTkLabel(self.session_tab, text="Generation", font=ctk.CTkFont(size=14, weight="bold"))
@@ -816,7 +818,12 @@ class TTSOptimizerGUI:
         else:
             self.external_server_url_entry.grid_remove()
             self.external_server_connected = False
-            self.populate_speaker_dropdown()
+
+        if self.use_external_server_voicecraft.get():
+            self.external_server_url_entry_voicecraft.grid()
+        else:
+            self.external_server_url_entry_voicecraft.grid_remove()
+            self.external_server_connected_voicecraft = False
 
     def connect_to_server(self):
         if self.tts_service.get() == "XTTS":
@@ -849,6 +856,30 @@ class TTSOptimizerGUI:
                         messagebox.showerror("Error", f"Failed to set speaker folder. Status code: {response.status_code}")
                 except requests.exceptions.RequestException as e:
                     messagebox.showerror("Error", f"Failed to connect to the local XTTS server: {str(e)}")
+        elif self.tts_service.get() == "VoiceCraft":
+            if self.use_external_server_voicecraft.get():
+                external_server_url = self.external_server_url_voicecraft.get()
+                try:
+                    response = requests.get(f"{external_server_url}/docs")
+                    if response.status_code == 200:
+                        self.external_server_connected_voicecraft = True
+                        self.populate_speaker_dropdown()
+                        messagebox.showinfo("Connected", "Successfully connected to the external VoiceCraft server.")
+                    else:
+                        messagebox.showerror("Error", f"Failed to connect to the external VoiceCraft server. Status code: {response.status_code}")
+                except requests.exceptions.RequestException as e:
+                    messagebox.showerror("Error", f"Failed to connect to the external VoiceCraft server: {str(e)}")
+            else:
+                try:
+                    response = requests.get("http://localhost:8245/docs")
+                    if response.status_code == 200:
+                        self.external_server_connected_voicecraft = False
+                        self.populate_speaker_dropdown()
+                        messagebox.showinfo("Connected", "Successfully connected to the local VoiceCraft server.")
+                    else:
+                        messagebox.showerror("Error", f"Failed to connect to the local VoiceCraft server. Status code: {response.status_code}")
+                except requests.exceptions.RequestException as e:
+                    messagebox.showerror("Error", f"Failed to connect to the local VoiceCraft server: {str(e)}")
 
     def populate_speaker_dropdown(self):
         if self.tts_service.get() == "XTTS":
@@ -1132,11 +1163,25 @@ class TTSOptimizerGUI:
                 self.external_server_url_entry.grid()
             else:
                 self.external_server_url_entry.grid_remove()
+            self.use_external_server_voicecraft_switch.grid_remove()
+            self.external_server_url_entry_voicecraft.grid_remove()
+        elif self.tts_service.get() == "VoiceCraft":
+            self.connect_to_server_button.grid()
+            self.use_external_server_switch.grid_remove()
+            self.external_server_url_entry.grid_remove()
+            self.use_external_server_voicecraft_switch.grid()
+            if self.use_external_server_voicecraft.get():
+                self.external_server_url_entry_voicecraft.grid()
+            else:
+                self.external_server_url_entry_voicecraft.grid_remove()
         else:
             self.connect_to_server_button.grid_remove()
             self.use_external_server_switch.grid_remove()
             self.external_server_url_entry.grid_remove()
+            self.use_external_server_voicecraft_switch.grid_remove()
+            self.external_server_url_entry_voicecraft.grid_remove()
             self.external_server_connected = False
+            self.external_server_connected_voicecraft = False
 
         self.update_language_dropdown()
 
@@ -1285,7 +1330,10 @@ class TTSOptimizerGUI:
                 else:
                     url = "http://localhost:8020/docs"
             elif self.tts_service.get() == "VoiceCraft":
-                url = "http://localhost:8245/docs"
+                if self.use_external_server_voicecraft.get() and self.external_server_connected_voicecraft:
+                    url = f"{self.external_server_url_voicecraft.get()}/docs"
+                else:
+                    url = "http://localhost:8245/docs"
             else:  # Silero
                 url = "http://localhost:8001/docs"
 
@@ -1299,6 +1347,8 @@ class TTSOptimizerGUI:
         except requests.exceptions.RequestException as e:
             if self.tts_service.get() == "XTTS" and self.use_external_server.get():
                 messagebox.showerror("Error", f"Failed to connect to the external XTTS server:\n{str(e)}")
+            elif self.tts_service.get() == "VoiceCraft" and self.use_external_server_voicecraft.get():
+                messagebox.showerror("Error", f"Failed to connect to the external VoiceCraft server:\n{str(e)}")
             else:
                 messagebox.showerror("Error", f"Failed to connect to {self.tts_service.get()} server:\n{str(e)}")
             return False
@@ -1324,6 +1374,9 @@ class TTSOptimizerGUI:
         if not self.disable_paragraph_detection.get() and not self.source_file.endswith(".srt"):
             if self.pdf_preprocessed:
                 # For preprocessed PDFs, consider sentences followed by a single newline as paragraphs
+                paragraph_breaks = list(re.finditer(r'\n', text))
+            elif self.source_file.endswith("_edited.txt"):
+                # For manually edited text, consider a single newline as a paragraph break
                 paragraph_breaks = list(re.finditer(r'\n', text))
             else:
                 paragraph_breaks = list(re.finditer(r'(?<=[^\n])\n{2,}', text))
@@ -2164,16 +2217,12 @@ class TTSOptimizerGUI:
             self.language_dropdown.configure(values=languages, state="normal")  # Enable the language dropdown
             self.language_var.set("en")
             self.upload_new_voices_button.configure(state=tk.NORMAL)  # Enable the button for XTTS
-            self.populate_speaker_dropdown()  # Update the speaker dropdown with XTTS speakers
             self.sample_length_dropdown.grid_remove()  # Hide the "Sample Length" dropdown
-
         elif self.tts_service.get() == "VoiceCraft":
             self.language_dropdown.configure(values=["English"], state="disabled")  # Disable the language dropdown
             self.language_var.set("English")
             self.upload_new_voices_button.configure(state=tk.NORMAL)  # Enable the button for VoiceCraft
-            self.populate_speaker_dropdown()  # Update the speaker dropdown with VoiceCraft speakers
             self.sample_length_dropdown.grid()  # Show the "Sample Length" dropdown
-
         else:  # Silero
             language_names = [lang["name"] for lang in silero_languages]
             self.language_dropdown.configure(values=language_names, state="normal")  # Enable the language dropdown
@@ -2246,7 +2295,12 @@ class TTSOptimizerGUI:
 
             for attempt in range(self.max_attempts.get()):
                 try:
-                    url = "http://localhost:8245/generate"
+                    if self.use_external_server_voicecraft.get() and self.external_server_connected_voicecraft:
+                        external_server_url = self.external_server_url_voicecraft.get()
+                        url = f"{external_server_url}/generate"
+                    else:
+                        url = "http://localhost:8245/generate"
+
                     files = {
                         "audio": open(wav_file, "rb"),
                         "transcript": open(txt_file, "rb")
@@ -2836,10 +2890,14 @@ class TTSOptimizerGUI:
 
 def main():
     root = ctk.CTk()
-    root.iconbitmap("pandrator.ico")
+    try:
+        root.iconbitmap("pandrator.ico")
+    except tk.TclError as e:
+        print(f"Icon file 'pandrator.ico' not found. Proceeding without setting the window icon.")
+        print(f"Error details: {str(e)}")
     gui = TTSOptimizerGUI(root)
     root.mainloop()
 
 if __name__ == "main":
-    logging.debug("Script started")
+    logging.debug("Pandrator started")
 main()     
