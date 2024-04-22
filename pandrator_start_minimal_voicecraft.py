@@ -182,37 +182,6 @@ def check_voicecraft_server_online(url, max_attempts=30, wait_interval=10):
     logging.error("VoiceCraft server failed to come online within the specified attempts.")
     return False
 
-def download_pretrained_models(repo_path):
-    pretrained_models_dir = os.path.join(repo_path, 'pretrained_models')
-    os.makedirs(pretrained_models_dir, exist_ok=True)
-
-    encodec_url = 'https://huggingface.co/pyp1/VoiceCraft/resolve/main/encodec_4cb2048_giga.th'
-    gigaHalfLibri330M_TTSEnhanced_max16s_url = 'https://huggingface.co/pyp1/VoiceCraft/resolve/main/gigaHalfLibri330M_TTSEnhanced_max16s.pth'
-
-    encodec_path = os.path.join(pretrained_models_dir, 'encodec_4cb2048_giga.th')
-    gigaHalfLibri330M_TTSEnhanced_max16s_path = os.path.join(pretrained_models_dir, 'gigaHalfLibri330M_TTSEnhanced_max16s.pth')
-
-    if not os.path.exists(encodec_path):
-        logging.info("Downloading encodec_4cb2048_giga.th...")
-        try:
-            run_command(['curl', '-L', encodec_url, '-o', encodec_path])
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Failed to download encodec_4cb2048_giga.th")
-            logging.error(f"Error message: {str(e)}")
-            raise
-    else:
-        logging.info("encodec_4cb2048_giga.th already exists. Skipping download.")
-
-    if not os.path.exists(gigaHalfLibri330M_TTSEnhanced_max16s_path):
-        logging.info("Downloading gigaHalfLibri330M_TTSEnhanced_max16s.pth...")
-        try:
-            run_command(['curl', '-L', gigaHalfLibri330M_TTSEnhanced_max16s_url, '-o', gigaHalfLibri330M_TTSEnhanced_max16s_path])
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Failed to download gigaHalfLibri330M_TTSEnhanced_max16s.pth")
-            logging.error(f"Error message: {str(e)}")
-            raise
-    else:
-        logging.info("gigaHalfLibri330M_TTSEnhanced_max16s.pth already exists. Skipping download.")
 
 def replace_files(repo_path, file_mappings):
     for src_file, dest_file in file_mappings.items():
