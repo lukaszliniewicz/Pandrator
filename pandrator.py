@@ -60,16 +60,12 @@ class TTSOptimizerGUI:
         self.delete_session_flag = False
         self.pre_selected_source_file = None
         self.external_server_connected = False
-        self.use_external_server_voicecraft = ctk.BooleanVar(value=False)
-        self.external_server_url_voicecraft = ctk.StringVar()
         self.external_server_url = ctk.StringVar()
         self.use_external_server = ctk.BooleanVar(value=False)
         self.external_server_address = ctk.StringVar()
         self.external_server_address.trace_add("write", self.populate_speaker_dropdown)
         self.enable_dubbing = ctk.BooleanVar(value=False)
         self.server_connected = False
-        self.external_server_connected_voicecraft = False
-
         self.tts_voices_folder = "tts_voices"
         if not os.path.exists(self.tts_voices_folder):
             os.makedirs(self.tts_voices_folder)
@@ -177,63 +173,89 @@ class TTSOptimizerGUI:
         self.dubbing_switch.grid_remove()  # Hide the dubbing switch by default
 
         ctk.CTkLabel(session_settings_frame, text="TTS Service:").grid(row=2, column=0, padx=10, pady=5, sticky=tk.W)
-        self.tts_service_dropdown = ctk.CTkOptionMenu(session_settings_frame, variable=self.tts_service, values=["XTTS", "VoiceCraft", "Silero"], command=self.update_tts_service)
+        self.tts_service_dropdown = ctk.CTkOptionMenu(session_settings_frame, variable=self.tts_service, values=["XTTS", "Silero", "VoiceCraft"], command=self.update_tts_service)
         self.tts_service_dropdown.grid(row=2, column=1, padx=10, pady=5, sticky=tk.EW)
 
         self.connect_to_server_button = ctk.CTkButton(session_settings_frame, text="Connect to Server", command=self.connect_to_server)
         self.connect_to_server_button.grid(row=2, column=2, columnspan=2, padx=10, pady=5, sticky=tk.EW)
 
+        self.use_external_server = ctk.BooleanVar(value=False)
         self.use_external_server_switch = ctk.CTkSwitch(session_settings_frame, text="Use an external server", variable=self.use_external_server, command=self.toggle_external_server)
         self.use_external_server_switch.grid(row=3, column=0, padx=10, pady=5, sticky=tk.W)
+
+        self.external_server_url = ctk.StringVar()
         self.external_server_url_entry = ctk.CTkEntry(session_settings_frame, textvariable=self.external_server_url)
         self.external_server_url_entry.grid(row=3, column=1, columnspan=3, padx=10, pady=5, sticky=tk.EW)
-        self.external_server_url_entry.grid_remove()  # Hide the entry field initially
-
-        self.use_external_server_voicecraft_switch = ctk.CTkSwitch(session_settings_frame, text="Use an external server", variable=self.use_external_server_voicecraft, command=self.toggle_external_server)
-        self.use_external_server_voicecraft_switch.grid(row=4, column=0, padx=10, pady=5, sticky=tk.W)
-        self.use_external_server_voicecraft_switch.grid_remove()  # Hide the switch initially
-        self.external_server_url_entry_voicecraft = ctk.CTkEntry(session_settings_frame, textvariable=self.external_server_url_voicecraft)
-        self.external_server_url_entry_voicecraft.grid(row=4, column=1, columnspan=3, padx=10, pady=5, sticky=tk.EW)
-        self.external_server_url_entry_voicecraft.grid_remove()  # Hide the entry field initially
 
         self.language_var = ctk.StringVar(value="en")
-        ctk.CTkLabel(session_settings_frame, text="Language:").grid(row=5, column=0, padx=10, pady=5, sticky=tk.W)
+        ctk.CTkLabel(session_settings_frame, text="Language:").grid(row=4, column=0, padx=10, pady=5, sticky=tk.W)
         self.language_dropdown = ctk.CTkComboBox(
             session_settings_frame,
             variable=self.language_var,
             values=["en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko", "hi"]
         )
-        self.language_dropdown.grid(row=5, column=1, padx=10, pady=5, sticky=tk.EW)
-
-        self.language_var.trace_add("write", self.on_language_selected)
+        self.language_dropdown.grid(row=4, column=1, padx=10, pady=5, sticky=tk.EW)
 
         self.selected_speaker = ctk.StringVar(value="")
-        ctk.CTkLabel(session_settings_frame, text="Speaker Voice:").grid(row=6, column=0, padx=10, pady=5, sticky=tk.W)
+        ctk.CTkLabel(session_settings_frame, text="Speaker Voice:").grid(row=5, column=0, padx=10, pady=5, sticky=tk.W)
         self.speaker_dropdown = ctk.CTkOptionMenu(session_settings_frame, variable=self.selected_speaker, values=[])
-        self.speaker_dropdown.grid(row=6, column=1, padx=10, pady=5, sticky=tk.EW)
+        self.speaker_dropdown.grid(row=5, column=1, padx=10, pady=5, sticky=tk.EW)
 
         self.upload_new_voices_button = ctk.CTkButton(session_settings_frame, text="Upload New Voices", command=self.upload_speaker_voice)
-        self.upload_new_voices_button.grid(row=6, column=2, padx=10, pady=(10, 10), sticky=tk.EW)
+        self.upload_new_voices_button.grid(row=5, column=2, padx=10, pady=(10, 10), sticky=tk.EW)
         self.sample_length = ctk.StringVar(value="3")
         self.sample_length_dropdown = ctk.CTkOptionMenu(session_settings_frame, variable=self.sample_length, values=[str(i) for i in range(3, 13)])
-        self.sample_length_dropdown.grid(row=6, column=3, padx=10, pady=5, sticky=tk.EW)
+        self.sample_length_dropdown.grid(row=5, column=3, padx=10, pady=5, sticky=tk.EW)
         self.sample_length_dropdown.grid_remove()  # Hide the dropdown initially
-
-        ctk.CTkLabel(session_settings_frame, text="Playback Speed:").grid(row=7, column=0, padx=10, pady=5, sticky=tk.W)
+        ctk.CTkLabel(session_settings_frame, text="Playback Speed:").grid(row=6, column=0, padx=10, pady=5, sticky=tk.W)
         self.playback_speed = ctk.DoubleVar(value=1.0)
 
         # Create a list of values for the dropdown menu
         values = [str(value) for value in [0.8, 0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15, 1.2, 1.25, 1.3, 1.35, 1.4, 1.45, 1.5]]
 
         self.playback_speed_dropdown = ctk.CTkComboBox(session_settings_frame, values=values, variable=self.playback_speed)
-        self.playback_speed_dropdown.grid(row=7, column=1, columnspan=3, padx=10, pady=5, sticky=tk.EW)
+        self.playback_speed_dropdown.grid(row=6, column=1, columnspan=3, padx=10, pady=5, sticky=tk.EW)
+
+        self.show_advanced_tts_settings = ctk.BooleanVar(value=False)
+        ctk.CTkSwitch(session_settings_frame, text="Advanced TTS Settings", variable=self.show_advanced_tts_settings, command=self.toggle_advanced_tts_settings).grid(row=7, column=0, padx=5, pady=5, sticky=tk.W)
+
+        # Advanced TTS Settings Frame
+        self.advanced_tts_settings_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
+        self.advanced_tts_settings_frame.grid(row=5, column=0, columnspan=4, padx=10, pady=(0, 20), sticky=tk.EW)
+        self.advanced_tts_settings_frame.grid_columnconfigure(0, weight=1)
+        self.advanced_tts_settings_frame.grid_columnconfigure(1, weight=1)
+        self.advanced_tts_settings_frame.grid_remove()  # Hide the frame initially
+
+        ctk.CTkLabel(self.advanced_tts_settings_frame, text="Top K:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+        self.top_k = ctk.StringVar(value="0")
+        ctk.CTkEntry(self.advanced_tts_settings_frame, textvariable=self.top_k).grid(row=0, column=1, padx=5, pady=5, sticky=tk.W)
+
+        ctk.CTkLabel(self.advanced_tts_settings_frame, text="Top P:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
+        self.top_p = ctk.StringVar(value="0.9")
+        ctk.CTkEntry(self.advanced_tts_settings_frame, textvariable=self.top_p).grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
+
+        ctk.CTkLabel(self.advanced_tts_settings_frame, text="Temperature:").grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
+        self.temperature = ctk.StringVar(value="1.0")
+        ctk.CTkEntry(self.advanced_tts_settings_frame, textvariable=self.temperature).grid(row=2, column=1, padx=5, pady=5, sticky=tk.W)
+
+        ctk.CTkLabel(self.advanced_tts_settings_frame, text="Stop Repetition:").grid(row=3, column=0, padx=5, pady=5, sticky=tk.W)
+        self.stop_repetition = ctk.StringVar(value="3")
+        ctk.CTkEntry(self.advanced_tts_settings_frame, textvariable=self.stop_repetition).grid(row=3, column=1, padx=5, pady=5, sticky=tk.W)
+
+        ctk.CTkLabel(self.advanced_tts_settings_frame, text="KV Cache:").grid(row=4, column=0, padx=5, pady=5, sticky=tk.W)
+        self.kvcache = ctk.StringVar(value="1")
+        ctk.CTkEntry(self.advanced_tts_settings_frame, textvariable=self.kvcache).grid(row=4, column=1, padx=5, pady=5, sticky=tk.W)
+
+        ctk.CTkLabel(self.advanced_tts_settings_frame, text="Sample Batch Size:").grid(row=5, column=0, padx=5, pady=5, sticky=tk.W)
+        self.sample_batch_size = ctk.StringVar(value="1")
+        ctk.CTkEntry(self.advanced_tts_settings_frame, textvariable=self.sample_batch_size).grid(row=5, column=1, padx=5, pady=5, sticky=tk.W)
 
         # Generation Section
         generation_label = ctk.CTkLabel(self.session_tab, text="Generation", font=ctk.CTkFont(size=14, weight="bold"))
-        generation_label.grid(row=5, column=0, padx=10, pady=10, sticky=tk.W)
+        generation_label.grid(row=8, column=0, padx=10, pady=10, sticky=tk.W)
 
         generation_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
-        generation_frame.grid(row=6, column=0, columnspan=4, padx=10, pady=(0, 20), sticky=tk.EW)
+        generation_frame.grid(row=9, column=0, columnspan=4, padx=10, pady=(0, 20), sticky=tk.EW)
         generation_frame.grid_columnconfigure(0, weight=1)
         generation_frame.grid_columnconfigure(1, weight=1)
         generation_frame.grid_columnconfigure(2, weight=1)
@@ -627,8 +649,8 @@ class TTSOptimizerGUI:
             CTkMessagebox(title="No Session", message="Please create or load a session before selecting a file.", icon="info")
             return
 
-        # Modify filetypes to include PDF and epub files
-        self.pre_selected_source_file = filedialog.askopenfilename(filetypes=[("Text, SRT, PDF, and epub files", "*.txt;*.srt;*.pdf;*.epub")])
+        # Modify filetypes to include PDF files
+        self.pre_selected_source_file = filedialog.askopenfilename(filetypes=[("Text, SRT, and PDF files", "*.txt;*.srt;*.pdf")])
         if self.pre_selected_source_file:
             file_name = os.path.basename(self.pre_selected_source_file)
             truncated_file_name = file_name[:70] + "..." if len(file_name) > 70 else file_name
@@ -638,25 +660,12 @@ class TTSOptimizerGUI:
             session_dir = os.path.join("Outputs", session_name)
             os.makedirs(session_dir, exist_ok=True)
 
-            # Remove the old text, srt, pdf, or epub file from the session directory
-            txt_files = [file for file in os.listdir(session_dir) if file.endswith(".txt") or file.endswith(".srt") or file.endswith(".pdf") or file.endswith(".epub")]
+            # Remove the old text, srt, or pdf file from the session directory
+            txt_files = [file for file in os.listdir(session_dir) if file.endswith(".txt") or file.endswith(".srt") or file.endswith(".pdf")]
             for file in txt_files:
                 os.remove(os.path.join(session_dir, file))
 
-            if self.pre_selected_source_file.lower().endswith(".epub"):
-                # Convert the epub file to a txt file using ebook-convert
-                txt_filename = os.path.splitext(file_name)[0] + ".txt"
-                txt_path = os.path.join(session_dir, txt_filename)
-                try:
-                    subprocess.run(["ebook-convert", self.pre_selected_source_file, txt_path], check=True)
-                    # Open a new window to preview and edit the text
-                    self.master.after(0, self.review_extracted_text, txt_path)
-                except subprocess.CalledProcessError as e:
-                    messagebox.showerror("Error", f"Failed to convert epub to txt: {str(e)}")
-                    self.pre_selected_source_file = None
-                    self.selected_file_label.configure(text="No file selected")
-
-            elif self.pre_selected_source_file.lower().endswith(".pdf"):
+            if self.pre_selected_source_file.lower().endswith(".pdf"):
                 # Extract text from PDF file
                 pdf = XPdf(self.pre_selected_source_file)
                 extracted_text = pdf.to_text()
@@ -733,7 +742,7 @@ class TTSOptimizerGUI:
         preview_button = ctk.CTkButton(options_window, text="Preview and Edit", command=preview_and_edit)
         preview_button.pack(padx=10, pady=10, fill=tk.X, expand=True)
 
-    def review_extracted_text(self, file_path):
+    def review_extracted_text(self, preprocessed_path):
         review_window = ctk.CTkToplevel(self.master)
         review_window.title("Review Extracted Text")
         review_window.transient(self.master)  # Set the main window as the parent
@@ -749,10 +758,10 @@ class TTSOptimizerGUI:
 
         text_widget = ctk.CTkTextbox(review_window, width=window_width-20, height=window_height-80)
         
-        with open(file_path, "r", encoding="utf-8") as file:
-            text = file.read()
+        with open(preprocessed_path, "r", encoding="utf-8") as file:
+            preprocessed_text = file.read()
         text_widget.delete("1.0", tk.END)
-        text_widget.insert("1.0", text)
+        text_widget.insert("1.0", preprocessed_text)
         
         text_widget.pack(padx=10, pady=(10, 10))
 
@@ -818,12 +827,7 @@ class TTSOptimizerGUI:
         else:
             self.external_server_url_entry.grid_remove()
             self.external_server_connected = False
-
-        if self.use_external_server_voicecraft.get():
-            self.external_server_url_entry_voicecraft.grid()
-        else:
-            self.external_server_url_entry_voicecraft.grid_remove()
-            self.external_server_connected_voicecraft = False
+            self.populate_speaker_dropdown()
 
     def connect_to_server(self):
         if self.tts_service.get() == "XTTS":
@@ -856,30 +860,6 @@ class TTSOptimizerGUI:
                         messagebox.showerror("Error", f"Failed to set speaker folder. Status code: {response.status_code}")
                 except requests.exceptions.RequestException as e:
                     messagebox.showerror("Error", f"Failed to connect to the local XTTS server: {str(e)}")
-        elif self.tts_service.get() == "VoiceCraft":
-            if self.use_external_server_voicecraft.get():
-                external_server_url = self.external_server_url_voicecraft.get()
-                try:
-                    response = requests.get(f"{external_server_url}/docs")
-                    if response.status_code == 200:
-                        self.external_server_connected_voicecraft = True
-                        self.populate_speaker_dropdown()
-                        messagebox.showinfo("Connected", "Successfully connected to the external VoiceCraft server.")
-                    else:
-                        messagebox.showerror("Error", f"Failed to connect to the external VoiceCraft server. Status code: {response.status_code}")
-                except requests.exceptions.RequestException as e:
-                    messagebox.showerror("Error", f"Failed to connect to the external VoiceCraft server: {str(e)}")
-            else:
-                try:
-                    response = requests.get("http://localhost:8245/docs")
-                    if response.status_code == 200:
-                        self.external_server_connected_voicecraft = False
-                        self.populate_speaker_dropdown()
-                        messagebox.showinfo("Connected", "Successfully connected to the local VoiceCraft server.")
-                    else:
-                        messagebox.showerror("Error", f"Failed to connect to the local VoiceCraft server. Status code: {response.status_code}")
-                except requests.exceptions.RequestException as e:
-                    messagebox.showerror("Error", f"Failed to connect to the local VoiceCraft server: {str(e)}")
 
     def populate_speaker_dropdown(self):
         if self.tts_service.get() == "XTTS":
@@ -1163,25 +1143,11 @@ class TTSOptimizerGUI:
                 self.external_server_url_entry.grid()
             else:
                 self.external_server_url_entry.grid_remove()
-            self.use_external_server_voicecraft_switch.grid_remove()
-            self.external_server_url_entry_voicecraft.grid_remove()
-        elif self.tts_service.get() == "VoiceCraft":
-            self.connect_to_server_button.grid()
-            self.use_external_server_switch.grid_remove()
-            self.external_server_url_entry.grid_remove()
-            self.use_external_server_voicecraft_switch.grid()
-            if self.use_external_server_voicecraft.get():
-                self.external_server_url_entry_voicecraft.grid()
-            else:
-                self.external_server_url_entry_voicecraft.grid_remove()
         else:
             self.connect_to_server_button.grid_remove()
             self.use_external_server_switch.grid_remove()
             self.external_server_url_entry.grid_remove()
-            self.use_external_server_voicecraft_switch.grid_remove()
-            self.external_server_url_entry_voicecraft.grid_remove()
             self.external_server_connected = False
-            self.external_server_connected_voicecraft = False
 
         self.update_language_dropdown()
 
@@ -1288,36 +1254,30 @@ class TTSOptimizerGUI:
             CTkMessagebox(title="Error", message="Please create or load a session first.", icon="cancel")
             return
 
-        session_dir = os.path.join("Outputs", session_name)
-        edited_file_path = os.path.join(session_dir, f"{session_name}_edited.txt")
-
-        if os.path.exists(edited_file_path):
-            # Use the contents of the "_edited" file if it exists
-            with open(edited_file_path, 'r', encoding='utf-8') as file:
-                text = file.read()
-        else:
-            if not self.source_file:
-                CTkMessagebox(title="Error", message="Please select a source file.", icon="cancel")
-                return
-
-            # Read the file content into 'text' variable
-            with open(self.source_file, 'r', encoding='utf-8') as file:
-                text = file.read()
+        if not self.source_file:
+            CTkMessagebox(title="Error", message="Please select a source file.", icon="cancel")
+            return
 
         if not self.check_server_connection():
             return
 
+        # Read the file content into 'text' variable
+        with open(self.source_file, 'r', encoding='utf-8') as file:
+            text = file.read()
+        
         # Preprocess the text and split it into sentences
         preprocessed_sentences = self.preprocess_text(text)
-
+        
         # Save the preprocessed sentences as original sentences to the JSON file
+        session_dir = os.path.join("Outputs", self.session_name.get())
+        session_dir = f"Outputs/{session_name}"
         os.makedirs(session_dir, exist_ok=True)
         json_filename = os.path.join(session_dir, f"{self.session_name.get()}_sentences.json")
         self.save_json(preprocessed_sentences, json_filename)
-
+        
         # Calculate the total number of sentences
         total_sentences = len(preprocessed_sentences)
-
+        
         # Create a new thread for the optimization process
         self.optimization_thread = threading.Thread(target=self.start_optimisation, args=(total_sentences,))
         self.optimization_thread.start()
@@ -1330,10 +1290,7 @@ class TTSOptimizerGUI:
                 else:
                     url = "http://localhost:8020/docs"
             elif self.tts_service.get() == "VoiceCraft":
-                if self.use_external_server_voicecraft.get() and self.external_server_connected_voicecraft:
-                    url = f"{self.external_server_url_voicecraft.get()}/docs"
-                else:
-                    url = "http://localhost:8245/docs"
+                url = "http://localhost:8245/docs"
             else:  # Silero
                 url = "http://localhost:8001/docs"
 
@@ -1347,8 +1304,6 @@ class TTSOptimizerGUI:
         except requests.exceptions.RequestException as e:
             if self.tts_service.get() == "XTTS" and self.use_external_server.get():
                 messagebox.showerror("Error", f"Failed to connect to the external XTTS server:\n{str(e)}")
-            elif self.tts_service.get() == "VoiceCraft" and self.use_external_server_voicecraft.get():
-                messagebox.showerror("Error", f"Failed to connect to the external VoiceCraft server:\n{str(e)}")
             else:
                 messagebox.showerror("Error", f"Failed to connect to {self.tts_service.get()} server:\n{str(e)}")
             return False
@@ -1365,21 +1320,16 @@ class TTSOptimizerGUI:
 
     def preprocess_text(self, text):
         if not self.pdf_preprocessed and not self.source_file.endswith(".srt"):
-            # Normalize newlines to LF and replace carriage returns with LF
-            text = re.sub(r'\r\n?', '\n', text)
-            # Replace single newlines, and tabs with spaces
-            text = re.sub(r'(?<!\n)[\n\t](?!\n)', ' ', text)
+            # Replace single newlines, carriage returns, and tabs with spaces
+            text = re.sub(r'(?<!\n)[\n\r\t](?!\n)', ' ', text)
 
         # Find positions of paragraph breaks
         if not self.disable_paragraph_detection.get() and not self.source_file.endswith(".srt"):
             if self.pdf_preprocessed:
                 # For preprocessed PDFs, consider sentences followed by a single newline as paragraphs
                 paragraph_breaks = list(re.finditer(r'\n', text))
-            elif self.source_file.endswith("_edited.txt"):
-                # For manually edited text, consider a single newline as a paragraph break
-                paragraph_breaks = list(re.finditer(r'\n', text))
             else:
-                paragraph_breaks = list(re.finditer(r'(?<=[^\n])\n{2,}', text))
+                paragraph_breaks = list(re.finditer(r'(?<=[^\n\r\t])[\n\r\t]{2,}', text))
         else:
             paragraph_breaks = []
 
@@ -1560,7 +1510,6 @@ class TTSOptimizerGUI:
             return [{"original_sentence": sentence, "split_part": None, "paragraph": paragraph}]
 
         punctuation_marks = [',', ':', ';']
-        conjunction_marks = [' and ', ' or ']
         min_distance = 30
         best_split_index = None
         min_diff = float('inf')
@@ -1572,26 +1521,18 @@ class TTSOptimizerGUI:
                     diff = abs(index - len(sentence) // 2)
                     if diff < min_diff:
                         min_diff = diff
-                        best_split_index = index + 1
-
-        if best_split_index is None:
-            for mark in conjunction_marks:
-                index = sentence.find(mark)
-                if min_distance <= index <= len(sentence) - min_distance:
-                    best_split_index = index
-                    break
+                        best_split_index = index
 
         if best_split_index is None:
             return [{"original_sentence": sentence, "split_part": None, "paragraph": paragraph}]
 
-        first_part = sentence[:best_split_index].strip()
-        second_part = sentence[best_split_index:].strip()
+        first_part = sentence[:best_split_index + 1].strip()
+        second_part = sentence[best_split_index + 1:].strip()
 
         return [
             {"original_sentence": first_part, "split_part": 0, "paragraph": "no"},
             {"original_sentence": second_part, "split_part": 1, "paragraph": paragraph}
         ]
-
     def split_long_sentences_2(self, sentence_dict):
         sentence = sentence_dict["original_sentence"]
         paragraph = sentence_dict["paragraph"]
@@ -1601,7 +1542,6 @@ class TTSOptimizerGUI:
             return [sentence_dict]
 
         punctuation_marks = [',', ':', ';']
-        conjunction_marks = [' and ', ' or ']
         min_distance = 30
         best_split_index = None
         min_diff = float('inf')
@@ -1613,54 +1553,69 @@ class TTSOptimizerGUI:
                     diff = abs(index - len(sentence) // 2)
                     if diff < min_diff:
                         min_diff = diff
-                        best_split_index = index + 1
-
-        if best_split_index is None:
-            for mark in conjunction_marks:
-                index = sentence.find(mark)
-                if min_distance <= index <= len(sentence) - min_distance:
-                    best_split_index = index
-                    break
+                        best_split_index = index
 
         if best_split_index is None:
             return [sentence_dict]
 
-        first_part = sentence[:best_split_index].strip()
-        second_part = sentence[best_split_index:].strip()
+        first_part = sentence[:best_split_index + 1].strip()
+        second_part = sentence[best_split_index + 1:].strip()
 
         split_sentences = []
         if split_part is None:
-            split_part_prefix = "0"
+            split_part_prefix = 0
         else:
-            split_part_prefix = str(split_part)
+            split_part_prefix = split_part
 
         split_sentences.append({
             "original_sentence": first_part,
-            "split_part": split_part_prefix + "a",
+            "split_part": f"{split_part_prefix}a",
             "paragraph": "no"
         })
 
         if len(second_part) > self.max_sentence_length.get():
-            if split_part_prefix == "0" and paragraph == "yes":
-                split_sentences.extend(self.split_long_sentences_2({
-                    "original_sentence": second_part,
-                    "split_part": "1a",
-                    "paragraph": "yes"
-                }))
+            if isinstance(split_part_prefix, int):
+                if split_part_prefix == 0 and paragraph == "yes":
+                    split_sentences.append({
+                        "original_sentence": second_part,
+                        "split_part": "1",
+                        "paragraph": "yes"
+                    })
+                else:
+                    split_sentences.append({
+                        "original_sentence": second_part,
+                        "split_part": "1",
+                        "paragraph": "no"
+                    })
             else:
-                split_sentences.extend(self.split_long_sentences_2({
-                    "original_sentence": second_part,
-                    "split_part": split_part_prefix + "b",
-                    "paragraph": "no" if split_part_prefix == "0" else paragraph
-                }))
+                if (split_part_prefix.endswith("b") or split_part_prefix == "1") and paragraph == "yes":
+                    split_sentences.append({
+                        "original_sentence": second_part,
+                        "split_part": f"{split_part_prefix}b",
+                        "paragraph": "yes"
+                    })
+                else:
+                    split_sentences.append({
+                        "original_sentence": second_part,
+                        "split_part": f"{split_part_prefix}b",
+                        "paragraph": "no"
+                    })
+
+            split_sentences.extend(self.split_long_sentences_2({
+                "original_sentence": second_part,
+                "split_part": f"{split_part_prefix}b" if isinstance(split_part_prefix, str) else "1",
+                "paragraph": "yes" if (isinstance(split_part_prefix, int) and split_part_prefix == 0 and paragraph == "yes") or
+                                    (isinstance(split_part_prefix, str) and (split_part_prefix.endswith("b") or split_part_prefix == "1") and paragraph == "yes") else "no"
+            }))
         else:
             split_sentences.append({
                 "original_sentence": second_part,
-                "split_part": split_part_prefix + "b",
+                "split_part": f"{split_part_prefix}b" if isinstance(split_part_prefix, str) else "1",
                 "paragraph": paragraph
             })
 
         return split_sentences
+
     def append_short_sentences(self, sentence_dicts):
         appended_sentences = []
         i = 0
@@ -2217,12 +2172,16 @@ class TTSOptimizerGUI:
             self.language_dropdown.configure(values=languages, state="normal")  # Enable the language dropdown
             self.language_var.set("en")
             self.upload_new_voices_button.configure(state=tk.NORMAL)  # Enable the button for XTTS
+            self.populate_speaker_dropdown()  # Update the speaker dropdown with XTTS speakers
             self.sample_length_dropdown.grid_remove()  # Hide the "Sample Length" dropdown
+
         elif self.tts_service.get() == "VoiceCraft":
             self.language_dropdown.configure(values=["English"], state="disabled")  # Disable the language dropdown
             self.language_var.set("English")
             self.upload_new_voices_button.configure(state=tk.NORMAL)  # Enable the button for VoiceCraft
+            self.populate_speaker_dropdown()  # Update the speaker dropdown with VoiceCraft speakers
             self.sample_length_dropdown.grid()  # Show the "Sample Length" dropdown
+
         else:  # Silero
             language_names = [lang["name"] for lang in silero_languages]
             self.language_dropdown.configure(values=language_names, state="normal")  # Enable the language dropdown
@@ -2295,12 +2254,7 @@ class TTSOptimizerGUI:
 
             for attempt in range(self.max_attempts.get()):
                 try:
-                    if self.use_external_server_voicecraft.get() and self.external_server_connected_voicecraft:
-                        external_server_url = self.external_server_url_voicecraft.get()
-                        url = f"{external_server_url}/generate"
-                    else:
-                        url = "http://localhost:8245/generate"
-
+                    url = "http://localhost:8245/generate"
                     files = {
                         "audio": open(wav_file, "rb"),
                         "transcript": open(txt_file, "rb")
@@ -2310,6 +2264,15 @@ class TTSOptimizerGUI:
                         "time": float(self.sample_length.get()),
                         "save_to_file": False
                     }
+
+                    if self.show_advanced_tts_settings.get():
+                        data["top_k"] = int(self.top_k.get())
+                        data["top_p"] = float(self.top_p.get())
+                        data["temperature"] = float(self.temperature.get())
+                        data["stop_repetition"] = int(self.stop_repetition.get())
+                        data["kvcache"] = int(self.kvcache.get())
+                        data["sample_batch_size"] = int(self.sample_batch_size.get())
+
                     response = requests.post(url, files=files, data=data)
 
                     if response.status_code == 200:
@@ -2366,7 +2329,13 @@ class TTSOptimizerGUI:
                     print(f"Error in tts_to_audio (Silero): {str(e)}")
 
         return best_audio
-        
+
+    def toggle_advanced_tts_settings(self):
+        if self.show_advanced_tts_settings.get():
+            self.advanced_tts_settings_frame.grid()
+        else:
+            self.advanced_tts_settings_frame.grid_remove()
+
     def add_silence(self, audio_segment, silence_length_ms):
         silence = AudioSegment.silent(duration=silence_length_ms)
         return audio_segment + silence
@@ -2890,14 +2859,10 @@ class TTSOptimizerGUI:
 
 def main():
     root = ctk.CTk()
-    try:
-        root.iconbitmap("pandrator.ico")
-    except tk.TclError as e:
-        print(f"Icon file 'pandrator.ico' not found. Proceeding without setting the window icon.")
-        print(f"Error details: {str(e)}")
+    root.iconbitmap("pandrator.ico")
     gui = TTSOptimizerGUI(root)
     root.mainloop()
 
 if __name__ == "main":
-    logging.debug("Pandrator started")
-main()     
+    logging.debug("Script started")
+main()  
