@@ -36,6 +36,54 @@ def check_program_installed(program):
 def check_choco():
     return check_program_installed('choco')
 
+def download_pretrained_models(repo_path):
+    pretrained_models_dir = os.path.join(repo_path, 'pretrained_models')
+    os.makedirs(pretrained_models_dir, exist_ok=True)
+
+    encodec_url = 'https://huggingface.co/pyp1/VoiceCraft/resolve/main/encodec_4cb2048_giga.th'
+    voicecraft_model_dir = os.path.join(pretrained_models_dir, 'VoiceCraft_gigaHalfLibri330M_TTSEnhanced_max16s')
+    os.makedirs(voicecraft_model_dir, exist_ok=True)
+    
+    config_url = 'https://huggingface.co/pyp1/VoiceCraft_gigaHalfLibri330M_TTSEnhanced_max16s/resolve/main/config.json'
+    model_url = 'https://huggingface.co/pyp1/VoiceCraft_gigaHalfLibri330M_TTSEnhanced_max16s/resolve/main/model.safetensors'
+
+    encodec_path = os.path.join(pretrained_models_dir, 'encodec_4cb2048_giga.th')
+    config_path = os.path.join(voicecraft_model_dir, 'config.json')
+    model_path = os.path.join(voicecraft_model_dir, 'model.safetensors')
+
+    if not os.path.exists(encodec_path):
+        logging.info("Downloading encodec_4cb2048_giga.th...")
+        try:
+            run_command(['curl', '-L', encodec_url, '-o', encodec_path])
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Failed to download encodec_4cb2048_giga.th")
+            logging.error(f"Error message: {str(e)}")
+            raise
+    else:
+        logging.info("encodec_4cb2048_giga.th already exists. Skipping download.")
+
+    if not os.path.exists(config_path):
+        logging.info("Downloading config.json...")
+        try:
+            run_command(['curl', '-L', config_url, '-o', config_path])
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Failed to download config.json")
+            logging.error(f"Error message: {str(e)}")
+            raise
+    else:
+        logging.info("config.json already exists. Skipping download.")
+
+    if not os.path.exists(model_path):
+        logging.info("Downloading model.safetensors...")
+        try:
+            run_command(['curl', '-L', model_url, '-o', model_path])
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Failed to download model.safetensors")
+            logging.error(f"Error message: {str(e)}")
+            raise
+    else:
+        logging.info("model.safetensors already exists. Skipping download.")
+
 def install_choco():
     logging.info("Installing Chocolatey...")
     try:
