@@ -177,63 +177,89 @@ class TTSOptimizerGUI:
         self.dubbing_switch.grid_remove()  # Hide the dubbing switch by default
 
         ctk.CTkLabel(session_settings_frame, text="TTS Service:").grid(row=2, column=0, padx=10, pady=5, sticky=tk.W)
-        self.tts_service_dropdown = ctk.CTkOptionMenu(session_settings_frame, variable=self.tts_service, values=["XTTS", "VoiceCraft", "Silero"], command=self.update_tts_service)
+        self.tts_service_dropdown = ctk.CTkOptionMenu(session_settings_frame, variable=self.tts_service, values=["XTTS", "Silero", "VoiceCraft"], command=self.update_tts_service)
         self.tts_service_dropdown.grid(row=2, column=1, padx=10, pady=5, sticky=tk.EW)
 
         self.connect_to_server_button = ctk.CTkButton(session_settings_frame, text="Connect to Server", command=self.connect_to_server)
         self.connect_to_server_button.grid(row=2, column=2, columnspan=2, padx=10, pady=5, sticky=tk.EW)
 
+        self.use_external_server = ctk.BooleanVar(value=False)
         self.use_external_server_switch = ctk.CTkSwitch(session_settings_frame, text="Use an external server", variable=self.use_external_server, command=self.toggle_external_server)
         self.use_external_server_switch.grid(row=3, column=0, padx=10, pady=5, sticky=tk.W)
+
+        self.external_server_url = ctk.StringVar()
         self.external_server_url_entry = ctk.CTkEntry(session_settings_frame, textvariable=self.external_server_url)
         self.external_server_url_entry.grid(row=3, column=1, columnspan=3, padx=10, pady=5, sticky=tk.EW)
-        self.external_server_url_entry.grid_remove()  # Hide the entry field initially
-
-        self.use_external_server_voicecraft_switch = ctk.CTkSwitch(session_settings_frame, text="Use an external server", variable=self.use_external_server_voicecraft, command=self.toggle_external_server)
-        self.use_external_server_voicecraft_switch.grid(row=4, column=0, padx=10, pady=5, sticky=tk.W)
-        self.use_external_server_voicecraft_switch.grid_remove()  # Hide the switch initially
-        self.external_server_url_entry_voicecraft = ctk.CTkEntry(session_settings_frame, textvariable=self.external_server_url_voicecraft)
-        self.external_server_url_entry_voicecraft.grid(row=4, column=1, columnspan=3, padx=10, pady=5, sticky=tk.EW)
-        self.external_server_url_entry_voicecraft.grid_remove()  # Hide the entry field initially
 
         self.language_var = ctk.StringVar(value="en")
-        ctk.CTkLabel(session_settings_frame, text="Language:").grid(row=5, column=0, padx=10, pady=5, sticky=tk.W)
+        ctk.CTkLabel(session_settings_frame, text="Language:").grid(row=4, column=0, padx=10, pady=5, sticky=tk.W)
         self.language_dropdown = ctk.CTkComboBox(
             session_settings_frame,
             variable=self.language_var,
             values=["en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko", "hi"]
         )
-        self.language_dropdown.grid(row=5, column=1, padx=10, pady=5, sticky=tk.EW)
-
-        self.language_var.trace_add("write", self.on_language_selected)
+        self.language_dropdown.grid(row=4, column=1, padx=10, pady=5, sticky=tk.EW)
 
         self.selected_speaker = ctk.StringVar(value="")
-        ctk.CTkLabel(session_settings_frame, text="Speaker Voice:").grid(row=6, column=0, padx=10, pady=5, sticky=tk.W)
+        ctk.CTkLabel(session_settings_frame, text="Speaker Voice:").grid(row=5, column=0, padx=10, pady=5, sticky=tk.W)
         self.speaker_dropdown = ctk.CTkOptionMenu(session_settings_frame, variable=self.selected_speaker, values=[])
-        self.speaker_dropdown.grid(row=6, column=1, padx=10, pady=5, sticky=tk.EW)
+        self.speaker_dropdown.grid(row=5, column=1, padx=10, pady=5, sticky=tk.EW)
 
         self.upload_new_voices_button = ctk.CTkButton(session_settings_frame, text="Upload New Voices", command=self.upload_speaker_voice)
-        self.upload_new_voices_button.grid(row=6, column=2, padx=10, pady=(10, 10), sticky=tk.EW)
+        self.upload_new_voices_button.grid(row=5, column=2, padx=10, pady=(10, 10), sticky=tk.EW)
         self.sample_length = ctk.StringVar(value="3")
         self.sample_length_dropdown = ctk.CTkOptionMenu(session_settings_frame, variable=self.sample_length, values=[str(i) for i in range(3, 13)])
-        self.sample_length_dropdown.grid(row=6, column=3, padx=10, pady=5, sticky=tk.EW)
+        self.sample_length_dropdown.grid(row=5, column=3, padx=10, pady=5, sticky=tk.EW)
         self.sample_length_dropdown.grid_remove()  # Hide the dropdown initially
-
-        ctk.CTkLabel(session_settings_frame, text="Playback Speed:").grid(row=7, column=0, padx=10, pady=5, sticky=tk.W)
+        ctk.CTkLabel(session_settings_frame, text="Playback Speed:").grid(row=6, column=0, padx=10, pady=5, sticky=tk.W)
         self.playback_speed = ctk.DoubleVar(value=1.0)
 
         # Create a list of values for the dropdown menu
         values = [str(value) for value in [0.8, 0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15, 1.2, 1.25, 1.3, 1.35, 1.4, 1.45, 1.5]]
 
         self.playback_speed_dropdown = ctk.CTkComboBox(session_settings_frame, values=values, variable=self.playback_speed)
-        self.playback_speed_dropdown.grid(row=7, column=1, columnspan=3, padx=10, pady=5, sticky=tk.EW)
+        self.playback_speed_dropdown.grid(row=6, column=1, columnspan=3, padx=10, pady=5, sticky=tk.EW)
+
+        self.show_advanced_tts_settings = ctk.BooleanVar(value=False)
+        ctk.CTkSwitch(session_settings_frame, text="Advanced TTS Settings", variable=self.show_advanced_tts_settings, command=self.toggle_advanced_tts_settings).grid(row=7, column=0, padx=5, pady=5, sticky=tk.W)
+
+        # Advanced TTS Settings Frame
+        self.advanced_tts_settings_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
+        self.advanced_tts_settings_frame.grid(row=5, column=0, columnspan=4, padx=10, pady=(0, 20), sticky=tk.EW)
+        self.advanced_tts_settings_frame.grid_columnconfigure(0, weight=1)
+        self.advanced_tts_settings_frame.grid_columnconfigure(1, weight=1)
+        self.advanced_tts_settings_frame.grid_remove()  # Hide the frame initially
+
+        ctk.CTkLabel(self.advanced_tts_settings_frame, text="Top K:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+        self.top_k = ctk.StringVar(value="0")
+        ctk.CTkEntry(self.advanced_tts_settings_frame, textvariable=self.top_k).grid(row=0, column=1, padx=5, pady=5, sticky=tk.W)
+
+        ctk.CTkLabel(self.advanced_tts_settings_frame, text="Top P:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
+        self.top_p = ctk.StringVar(value="0.9")
+        ctk.CTkEntry(self.advanced_tts_settings_frame, textvariable=self.top_p).grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
+
+        ctk.CTkLabel(self.advanced_tts_settings_frame, text="Temperature:").grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
+        self.temperature = ctk.StringVar(value="1.0")
+        ctk.CTkEntry(self.advanced_tts_settings_frame, textvariable=self.temperature).grid(row=2, column=1, padx=5, pady=5, sticky=tk.W)
+
+        ctk.CTkLabel(self.advanced_tts_settings_frame, text="Stop Repetition:").grid(row=3, column=0, padx=5, pady=5, sticky=tk.W)
+        self.stop_repetition = ctk.StringVar(value="3")
+        ctk.CTkEntry(self.advanced_tts_settings_frame, textvariable=self.stop_repetition).grid(row=3, column=1, padx=5, pady=5, sticky=tk.W)
+
+        ctk.CTkLabel(self.advanced_tts_settings_frame, text="KV Cache:").grid(row=4, column=0, padx=5, pady=5, sticky=tk.W)
+        self.kvcache = ctk.StringVar(value="1")
+        ctk.CTkEntry(self.advanced_tts_settings_frame, textvariable=self.kvcache).grid(row=4, column=1, padx=5, pady=5, sticky=tk.W)
+
+        ctk.CTkLabel(self.advanced_tts_settings_frame, text="Sample Batch Size:").grid(row=5, column=0, padx=5, pady=5, sticky=tk.W)
+        self.sample_batch_size = ctk.StringVar(value="1")
+        ctk.CTkEntry(self.advanced_tts_settings_frame, textvariable=self.sample_batch_size).grid(row=5, column=1, padx=5, pady=5, sticky=tk.W)
 
         # Generation Section
         generation_label = ctk.CTkLabel(self.session_tab, text="Generation", font=ctk.CTkFont(size=14, weight="bold"))
-        generation_label.grid(row=5, column=0, padx=10, pady=10, sticky=tk.W)
+        generation_label.grid(row=8, column=0, padx=10, pady=10, sticky=tk.W)
 
         generation_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
-        generation_frame.grid(row=6, column=0, columnspan=4, padx=10, pady=(0, 20), sticky=tk.EW)
+        generation_frame.grid(row=9, column=0, columnspan=4, padx=10, pady=(0, 20), sticky=tk.EW)
         generation_frame.grid_columnconfigure(0, weight=1)
         generation_frame.grid_columnconfigure(1, weight=1)
         generation_frame.grid_columnconfigure(2, weight=1)
@@ -1481,7 +1507,13 @@ class TTSOptimizerGUI:
                 split_sentences.extend(self.split_long_sentences_2(sentence_dict))
 
             return split_sentences
-        
+
+    def toggle_advanced_tts_settings(self):
+        if self.show_advanced_tts_settings.get():
+            self.advanced_tts_settings_frame.grid()
+        else:
+            self.advanced_tts_settings_frame.grid_remove()
+
     def convert_digits_to_words(self, sentence):
         import re
 
@@ -2295,12 +2327,7 @@ class TTSOptimizerGUI:
 
             for attempt in range(self.max_attempts.get()):
                 try:
-                    if self.use_external_server_voicecraft.get() and self.external_server_connected_voicecraft:
-                        external_server_url = self.external_server_url_voicecraft.get()
-                        url = f"{external_server_url}/generate"
-                    else:
-                        url = "http://localhost:8245/generate"
-
+                    url = "http://localhost:8245/generate"
                     files = {
                         "audio": open(wav_file, "rb"),
                         "transcript": open(txt_file, "rb")
@@ -2310,6 +2337,15 @@ class TTSOptimizerGUI:
                         "time": float(self.sample_length.get()),
                         "save_to_file": False
                     }
+
+                    if self.show_advanced_tts_settings.get():
+                        data["top_k"] = int(self.top_k.get())
+                        data["top_p"] = float(self.top_p.get())
+                        data["temperature"] = float(self.temperature.get())
+                        data["stop_repetition"] = int(self.stop_repetition.get())
+                        data["kvcache"] = int(self.kvcache.get())
+                        data["sample_batch_size"] = int(self.sample_batch_size.get())
+
                     response = requests.post(url, files=files, data=data)
 
                     if response.status_code == 200:
