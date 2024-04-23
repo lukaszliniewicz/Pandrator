@@ -180,56 +180,64 @@ class TTSOptimizerGUI:
         self.tts_service_dropdown = ctk.CTkOptionMenu(session_settings_frame, variable=self.tts_service, values=["XTTS", "VoiceCraft", "Silero"], command=self.update_tts_service)
         self.tts_service_dropdown.grid(row=2, column=1, padx=10, pady=5, sticky=tk.EW)
 
+        self.voicecraft_model = ctk.StringVar(value="330M_TTSEnhanced")
+        self.voicecraft_model_label = ctk.CTkLabel(session_settings_frame, text="VoiceCraft Model:")
+        self.voicecraft_model_label.grid(row=3, column=0, padx=10, pady=5, sticky=tk.W)
+        self.voicecraft_model_dropdown = ctk.CTkOptionMenu(session_settings_frame, variable=self.voicecraft_model, values=["830M_TTSEnhanced", "330M_TTSEnhanced"])
+        self.voicecraft_model_dropdown.grid(row=3, column=1, padx=10, pady=5, sticky=tk.EW)
+        self.voicecraft_model_label.grid_remove()  # Hide the VoiceCraft model label initially
+        self.voicecraft_model_dropdown.grid_remove()  # Hide the VoiceCraft model dropdown initially
+
         self.connect_to_server_button = ctk.CTkButton(session_settings_frame, text="Connect to Server", command=self.connect_to_server)
         self.connect_to_server_button.grid(row=2, column=2, columnspan=2, padx=10, pady=5, sticky=tk.EW)
 
         self.use_external_server_switch = ctk.CTkSwitch(session_settings_frame, text="Use an external server", variable=self.use_external_server, command=self.toggle_external_server)
-        self.use_external_server_switch.grid(row=3, column=0, padx=10, pady=5, sticky=tk.W)
+        self.use_external_server_switch.grid(row=4, column=0, padx=10, pady=5, sticky=tk.W)
         self.external_server_url_entry = ctk.CTkEntry(session_settings_frame, textvariable=self.external_server_url)
-        self.external_server_url_entry.grid(row=3, column=1, columnspan=3, padx=10, pady=5, sticky=tk.EW)
+        self.external_server_url_entry.grid(row=4, column=1, columnspan=3, padx=10, pady=5, sticky=tk.EW)
         self.external_server_url_entry.grid_remove()  # Hide the entry field initially
 
         self.use_external_server_voicecraft_switch = ctk.CTkSwitch(session_settings_frame, text="Use an external server", variable=self.use_external_server_voicecraft, command=self.toggle_external_server)
-        self.use_external_server_voicecraft_switch.grid(row=4, column=0, padx=10, pady=5, sticky=tk.W)
+        self.use_external_server_voicecraft_switch.grid(row=5, column=0, padx=10, pady=5, sticky=tk.W)
         self.use_external_server_voicecraft_switch.grid_remove()  # Hide the switch initially
         self.external_server_url_entry_voicecraft = ctk.CTkEntry(session_settings_frame, textvariable=self.external_server_url_voicecraft)
-        self.external_server_url_entry_voicecraft.grid(row=4, column=1, columnspan=3, padx=10, pady=5, sticky=tk.EW)
+        self.external_server_url_entry_voicecraft.grid(row=5, column=1, columnspan=3, padx=10, pady=5, sticky=tk.EW)
         self.external_server_url_entry_voicecraft.grid_remove()  # Hide the entry field initially
 
         self.language_var = ctk.StringVar(value="en")
-        ctk.CTkLabel(session_settings_frame, text="Language:").grid(row=5, column=0, padx=10, pady=5, sticky=tk.W)
+        ctk.CTkLabel(session_settings_frame, text="Language:").grid(row=6, column=0, padx=10, pady=5, sticky=tk.W)
         self.language_dropdown = ctk.CTkComboBox(
             session_settings_frame,
             variable=self.language_var,
             values=["en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko", "hi"]
         )
-        self.language_dropdown.grid(row=5, column=1, padx=10, pady=5, sticky=tk.EW)
+        self.language_dropdown.grid(row=6, column=1, padx=10, pady=5, sticky=tk.EW)
 
         self.language_var.trace_add("write", self.on_language_selected)
 
         self.selected_speaker = ctk.StringVar(value="")
-        ctk.CTkLabel(session_settings_frame, text="Speaker Voice:").grid(row=6, column=0, padx=10, pady=5, sticky=tk.W)
+        ctk.CTkLabel(session_settings_frame, text="Speaker Voice:").grid(row=7, column=0, padx=10, pady=5, sticky=tk.W)
         self.speaker_dropdown = ctk.CTkOptionMenu(session_settings_frame, variable=self.selected_speaker, values=[])
-        self.speaker_dropdown.grid(row=6, column=1, padx=10, pady=5, sticky=tk.EW)
+        self.speaker_dropdown.grid(row=7, column=1, padx=10, pady=5, sticky=tk.EW)
 
         self.upload_new_voices_button = ctk.CTkButton(session_settings_frame, text="Upload New Voices", command=self.upload_speaker_voice)
-        self.upload_new_voices_button.grid(row=6, column=2, padx=10, pady=(10, 10), sticky=tk.EW)
+        self.upload_new_voices_button.grid(row=7, column=2, padx=10, pady=(10, 10), sticky=tk.EW)
         self.sample_length = ctk.StringVar(value="3")
         self.sample_length_dropdown = ctk.CTkOptionMenu(session_settings_frame, variable=self.sample_length, values=[str(i) for i in range(3, 13)])
-        self.sample_length_dropdown.grid(row=6, column=3, padx=10, pady=5, sticky=tk.EW)
+        self.sample_length_dropdown.grid(row=7, column=3, padx=10, pady=5, sticky=tk.EW)
         self.sample_length_dropdown.grid_remove()  # Hide the dropdown initially
 
-        ctk.CTkLabel(session_settings_frame, text="Playback Speed:").grid(row=7, column=0, padx=10, pady=5, sticky=tk.W)
+        ctk.CTkLabel(session_settings_frame, text="Playback Speed:").grid(row=8, column=0, padx=10, pady=5, sticky=tk.W)
         self.playback_speed = ctk.DoubleVar(value=1.0)
 
         # Create a list of values for the dropdown menu
         values = [str(value) for value in [0.8, 0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15, 1.2, 1.25, 1.3, 1.35, 1.4, 1.45, 1.5]]
 
         self.playback_speed_dropdown = ctk.CTkComboBox(session_settings_frame, values=values, variable=self.playback_speed)
-        self.playback_speed_dropdown.grid(row=7, column=1, columnspan=3, padx=10, pady=5, sticky=tk.EW)
+        self.playback_speed_dropdown.grid(row=8, column=1, columnspan=3, padx=10, pady=5, sticky=tk.EW)
 
         self.show_advanced_tts_settings = ctk.BooleanVar(value=False)
-        ctk.CTkSwitch(session_settings_frame, text="Advanced TTS Settings", variable=self.show_advanced_tts_settings, command=self.toggle_advanced_tts_settings).grid(row=7, column=0, padx=5, pady=5, sticky=tk.W)
+        ctk.CTkSwitch(session_settings_frame, text="Advanced TTS Settings", variable=self.show_advanced_tts_settings, command=self.toggle_advanced_tts_settings).grid(row=9, column=0, padx=5, pady=5, sticky=tk.W)
 
         # Advanced TTS Settings Frame
         self.advanced_tts_settings_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
@@ -1199,6 +1207,8 @@ class TTSOptimizerGUI:
                 self.external_server_url_entry.grid_remove()
             self.use_external_server_voicecraft_switch.grid_remove()
             self.external_server_url_entry_voicecraft.grid_remove()
+            self.voicecraft_model_dropdown.grid_remove()  # Hide the VoiceCraft model dropdown
+            self.voicecraft_model_label.grid_remove()  # Hide the VoiceCraft model label
         elif self.tts_service.get() == "VoiceCraft":
             self.connect_to_server_button.grid()
             self.use_external_server_switch.grid_remove()
@@ -1208,6 +1218,8 @@ class TTSOptimizerGUI:
                 self.external_server_url_entry_voicecraft.grid()
             else:
                 self.external_server_url_entry_voicecraft.grid_remove()
+            self.voicecraft_model_dropdown.grid()  # Show the VoiceCraft model dropdown
+            self.voicecraft_model_label.grid()  # Show the VoiceCraft model label
         else:
             self.connect_to_server_button.grid_remove()
             self.use_external_server_switch.grid_remove()
@@ -1216,6 +1228,8 @@ class TTSOptimizerGUI:
             self.external_server_url_entry_voicecraft.grid_remove()
             self.external_server_connected = False
             self.external_server_connected_voicecraft = False
+            self.voicecraft_model_dropdown.grid_remove()  # Hide the VoiceCraft model dropdown
+            self.voicecraft_model_label.grid_remove()  # Hide the VoiceCraft model label
 
         self.update_language_dropdown()
 
@@ -2341,6 +2355,12 @@ class TTSOptimizerGUI:
             wav_file = os.path.join(self.tts_voices_folder, "VoiceCraft", f"{speaker}.wav")
             txt_file = os.path.join(self.tts_voices_folder, "VoiceCraft", f"{speaker}.txt")
 
+            selected_model = self.voicecraft_model.get()
+            if selected_model == "330M_TTSEnhanced":
+                model_name = "VoiceCraft_gigaHalfLibri330M_TTSEnhanced_max16s"
+            else:
+                model_name = "VoiceCraft_830M_TTSEnhanced"
+            
             for attempt in range(self.max_attempts.get()):
                 try:
                     url = "http://localhost:8245/generate"
@@ -2351,7 +2371,8 @@ class TTSOptimizerGUI:
                     data = {
                         "target_text": text,
                         "time": float(self.sample_length.get()),
-                        "save_to_file": False
+                        "save_to_file": False,
+                        "model_name": model_name  # Pass the selected model name
                     }
 
                     if self.show_advanced_tts_settings.get():
