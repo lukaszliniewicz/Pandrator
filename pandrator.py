@@ -1419,6 +1419,8 @@ class TTSOptimizerGUI:
             # Normalize newlines to LF and replace carriage returns with LF
             text = re.sub(r'\r\n?', '\n', text)
             
+            paragraph_breaks = []  # Initialize paragraph_breaks as an empty list
+            
             if not self.disable_paragraph_detection.get() and not self.source_file.endswith(".srt"):
                 if self.pdf_preprocessed:
                     # For preprocessed PDFs, consider sentences followed by a single newline as paragraphs
@@ -1432,8 +1434,6 @@ class TTSOptimizerGUI:
                     
                     # Mark sentences followed by a single newline as paragraph sentences
                     paragraph_breaks = list(re.finditer(r'\n', text))
-            else:
-                paragraph_breaks = []
             
             # Replace tabs with spaces
             text = re.sub(r'\t', ' ', text)
