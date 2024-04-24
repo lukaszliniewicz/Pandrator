@@ -1415,7 +1415,7 @@ class TTSOptimizerGUI:
             pygame.mixer.music.unpause()
 
     def preprocess_text(self, text):
-        if not self.pdf_preprocessed and not self.source_file.endswith(".srt"):
+        if not self.source_file.endswith(".srt"):
             # Normalize newlines to LF and replace carriage returns with LF
             text = re.sub(r'\r\n?', '\n', text)
             
@@ -1425,6 +1425,9 @@ class TTSOptimizerGUI:
                 if self.pdf_preprocessed:
                     # For preprocessed PDFs, consider sentences followed by a single newline as paragraphs
                     paragraph_breaks = list(re.finditer(r'\n', text))
+                elif not self.pdf_preprocessed and self.source_file.endswith(".pdf"):
+                    # For raw PDF files, perform additional preprocessing
+                    text = self.preprocess_text_pdf(text)
                 elif self.source_file.endswith("_edited.txt"):
                     # For manually edited text, consider a single newline as a paragraph break
                     paragraph_breaks = list(re.finditer(r'\n', text))
