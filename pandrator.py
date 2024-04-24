@@ -669,8 +669,11 @@ class TTSOptimizerGUI:
             CTkMessagebox(title="No Session", message="Please create or load a session before selecting a file.", icon="info")
             return
 
-        # Modify filetypes to include PDF and epub files
-        self.pre_selected_source_file = filedialog.askopenfilename(filetypes=[("Text, SRT, PDF, and epub files", "*.txt;*.srt;*.pdf;*.epub")])
+        self.pre_selected_source_file = filedialog.askopenfilename(
+            title="Select Source File",  # Set a custom title for the file dialog
+            filetypes=[("Text, SRT, PDF, and EPUB files", "*.txt *.srt *.pdf *.epub"),
+                    ("All files", "*.*")]
+        )
         if self.pre_selected_source_file:
             file_name = os.path.basename(self.pre_selected_source_file)
             truncated_file_name = file_name[:70] + "..." if len(file_name) > 70 else file_name
@@ -2363,7 +2366,11 @@ class TTSOptimizerGUI:
             
             for attempt in range(self.max_attempts.get()):
                 try:
-                    url = "http://localhost:8245/generate"
+                    if self.use_external_server_voicecraft.get() and self.external_server_connected_voicecraft:
+                        url = f"{self.external_server_url_voicecraft.get()}/generate"
+                    else:
+                        url = "http://localhost:8245/generate"
+
                     files = {
                         "audio": open(wav_file, "rb"),
                         "transcript": open(txt_file, "rb")
