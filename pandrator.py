@@ -28,6 +28,7 @@ import pysrt
 from num2words import num2words
 import ffmpeg
 from pdftextract import XPdf
+import regex
 #import nltk
 #from nltk.tokenize import sent_tokenize
 
@@ -828,34 +829,25 @@ class TTSOptimizerGUI:
         cancel_button.pack(side=tk.LEFT, padx=(10, 0), pady=10, expand=True, fill=tk.X)
 
     def preprocess_text_pdf(self, text):
-        # Step 1: Remove specific characters as in the original function
-        text = re.sub(r'[\x0c\u00ad\ufffd]', '', text)  # Remove specific characters
+        # Normalize new lines to LF (\\n)
+        text = regex.sub(r'\r\n|\r', '\n', text)
         
-        # Adjusted regex for better capturing of initials and common abbreviations
-        abbreviations_and_initials_regex = r'\b(?:[A-Z]\.\s+[A-Z]\.|\b(?:e\.g|i\.e|Mr|Mrs|Dr|Jr|Sr|Co)\.)(?=\s|$)'
-        text = re.sub(abbreviations_and_initials_regex, r'\g<0>NOT_PARAGRAPH', text)
-
-        # Replace four or more newlines with a placeholder for a significant break
-        significant_break_placeholder = "SIGNIFICANT_BREAK_PLACEHOLDER"
-        text_with_significant_breaks = re.sub(r'\n{2,}', significant_break_placeholder, text)
+        # Step 1: Remove specific characters
+        text = regex.sub(r'[\x00-\x09\x0B-\x1F\x7F]', '', text)
         
-        # Replace one, two, or three newlines with a single space
-        text_single_space_for_newlines = re.sub(r'\n{1,3}', ' ', text_with_significant_breaks)
+        # Step 2: Remove all single new lines and replace them with spaces
+        text = regex.sub(r'\n$(?<!\n[ \t]*\n)|(?<!\n[ \t]*)\n(?![ \t]*\n)', ' ', text)
         
-        # Restore significant breaks with a single newline
-        text_restored_breaks = text_single_space_for_newlines.replace(significant_break_placeholder, '\n')
-
-        # Remove a single newline that does not follow sentence-ending punctuation
-        final_text = re.sub(r'(?<![\.\?!])\n', ' ', text_restored_breaks)
-
+        # Step 3: Replace all double, triple, and quadruple new lines with a single new line
+        text = regex.sub(r'[ \\t]*\\n[ \\t]*\\n[ \\t]*(?:\\n[ \\t]*){0,2}', '\\n', text)
+        
         # Condense multiple spaces to one
-        final_text = re.sub(r' {2,}', ' ', final_text)
-
-        # Final cleanup step: Remove NOT_PARAGRAPH placeholders and trim whitespaces at the beginning of each line
-        final_text = final_text.replace('NOT_PARAGRAPH', '')
-        final_text = re.sub(r'(?m)^\s+', '', final_text)
-
-        return final_text
+        text = regex.sub(r' {2,}', ' ', text)
+        
+        # Remove all spaces and tabs at the beginning of all lines
+        text = regex.sub(r'(?m)^[ \\t]+', '', text)
+        
+        return text
 
     def toggle_external_server(self):
         if self.use_external_server.get():
@@ -1047,6 +1039,9 @@ class TTSOptimizerGUI:
             self.selected_file_label.configure(text="No file selected")  # Reset the selected file label
             self.progress_bar.set(0)
             self.remaining_time_label.configure(text="N/A")
+            
+            # Reset the stop_flag when creating a new session
+            self.stop_flag = False
 
             # Copy the pre-selected source file to the new session folder
             if self.pre_selected_source_file:
