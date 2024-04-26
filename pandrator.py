@@ -70,6 +70,8 @@ class TTSOptimizerGUI:
         self.enable_dubbing = ctk.BooleanVar(value=False)
         self.server_connected = False
         self.external_server_connected_voicecraft = False
+        self.remove_double_newlines = ctk.BooleanVar(value=False)
+
 
         self.tts_voices_folder = "tts_voices"
         if not os.path.exists(self.tts_voices_folder):
@@ -784,22 +786,73 @@ class TTSOptimizerGUI:
         review_window.title("Review Extracted Text")
         review_window.transient(self.master)  # Set the main window as the parent
 
-        # Calculate the center coordinates of the screen
+        # Get the screen resolution
         screen_width = review_window.winfo_screenwidth()
         screen_height = review_window.winfo_screenheight()
         window_width = 800
-        window_height = 600
+        window_height = int(screen_height * 0.90)  # Set the window height to 90% of the screen height
         x = (screen_width // 2) - (window_width // 2)
         y = (screen_height // 2) - (window_height // 2)
         review_window.geometry(f"{window_width}x{window_height}+{x}+{y}")  # Set the window size and position
 
-        text_widget = ctk.CTkTextbox(review_window, width=window_width-20, height=window_height-80)
-        
-        with open(file_path, "r", encoding="utf-8") as file:
-            text = file.read()
-        text_widget.delete("1.0", tk.END)
-        text_widget.insert("1.0", text)
-        
+        switch_frame = ctk.CTkFrame(review_window)
+        switch_frame.pack(padx=10, pady=(10, 0))
+
+        def toggle_newline_handling():
+            if not self.remove_double_newlines.get():
+                # If the switch is turned off after being turned on, remove the processed file
+                session_name = self.session_name.get()
+                session_dir = os.path.join("Outputs", session_name)
+                file_name = os.path.basename(file_path)
+                preprocessed_filename = os.path.splitext(file_name)[0] + "_preprocessed.txt"
+                preprocessed_path = os.path.join(session_dir, preprocessed_filename)
+                if os.path.exists(preprocessed_path):
+                    os.remove(preprocessed_path)
+            update_text()
+
+        ctk.CTkSwitch(switch_frame, text="Remove Double Newlines (try if paragraphs are not rendered correctly)", variable=self.remove_double_newlines, command=toggle_newline_handling).pack(side=tk.LEFT)
+
+        text_widget = ctk.CTkTextbox(review_window, width=window_width-20, height=window_height-100)
+
+        def update_text():
+            text_widget.delete("1.0", tk.END)
+            text_widget.insert("1.0", "Processing text...")
+            text_widget.update()
+
+            with open(file_path, "r", encoding="utf-8") as file:
+                text = file.read()
+
+            session_name = self.session_name.get()
+            session_dir = os.path.join("Outputs", session_name)
+            os.makedirs(session_dir, exist_ok=True)  # Create the session directory if it doesn't exist
+
+            file_name = os.path.basename(file_path)
+            raw_text_filename = os.path.splitext(file_name)[0] + "_raw_text.txt"
+            raw_text_path = os.path.join(session_dir, raw_text_filename)
+
+            with open(raw_text_path, "w", encoding="utf-8", newline='\n') as file:
+                file.write(text)
+
+            if self.remove_double_newlines.get():
+                preprocessed_filename = os.path.splitext(file_name)[0] + "_preprocessed.txt"
+                preprocessed_path = os.path.join(session_dir, preprocessed_filename)
+                text = self.preprocess_text_pdf(text, remove_double_newlines=True)
+                with open(preprocessed_path, "w", encoding="utf-8", newline='\n') as file:
+                    file.write(text)
+                with open(preprocessed_path, "r", encoding="utf-8") as file:
+                    updated_text = file.read()
+            else:
+                text = self.preprocess_text_pdf(text, remove_double_newlines=False)
+                with open(raw_text_path, "w", encoding="utf-8", newline='\n') as file:
+                    file.write(text)
+                with open(raw_text_path, "r", encoding="utf-8") as file:
+                    updated_text = file.read()
+
+            text_widget.delete("1.0", tk.END)
+            text_widget.insert("1.0", updated_text)
+
+        update_text()  # Initial update of the text widget
+
         text_widget.pack(padx=10, pady=(10, 10))
 
         def accept_text():
@@ -827,16 +880,20 @@ class TTSOptimizerGUI:
 
         cancel_button = ctk.CTkButton(button_frame, text="Cancel", command=cancel_import)
         cancel_button.pack(side=tk.LEFT, padx=(10, 0), pady=10, expand=True, fill=tk.X)
-
-    def preprocess_text_pdf(self, text):
+        
+    def preprocess_text_pdf(self, text, remove_double_newlines=False):
         # Normalize new lines to LF (\\n)
         text = regex.sub(r'\r\n|\r', '\n', text)
         
         # Step 1: Remove specific characters
         text = regex.sub(r'[\x00-\x09\x0B-\x1F\x7F]', '', text)
         
-        # Step 2: Remove all single new lines and replace them with spaces
-        text = regex.sub(r'\n$(?<!\n[ \t]*\n)|(?<!\n[ \t]*)\n(?![ \t]*\n)', ' ', text)
+        if remove_double_newlines:
+            # Remove double newlines only if there is no sentence-ending punctuation before them
+            text = regex.sub(r'(?<![.!?])\n\n', ' ', text)
+        else:
+            # Remove all single newlines and replace them with spaces
+            text = regex.sub(r'\n$(?<!\n[ \t]*\n)|(?<!\n[ \t]*)\n(?![ \t]*\n)', ' ', text)
         
         # Step 3: Replace all double, triple, and quadruple new lines with a single new line
         text = regex.sub(r'[ \\t]*\\n[ \\t]*\\n[ \\t]*(?:\\n[ \\t]*){0,2}', '\\n', text)
