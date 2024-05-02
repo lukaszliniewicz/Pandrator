@@ -29,8 +29,10 @@ from num2words import num2words
 import ffmpeg
 from pdftextract import XPdf
 import regex
-#import nltk
-#from nltk.tokenize import sent_tokenize
+import nltk
+from nltk.tokenize import sent_tokenize
+nltk.download('punkt')
+import hasami
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -114,7 +116,6 @@ class TTSOptimizerGUI:
         self.playing = False
         self.session_name = ctk.StringVar()
         self.tts_service = ctk.StringVar(value="XTTS")
-        #nltk.download('punkt')
 
         # Layout
         ctk.set_appearance_mode("dark")
@@ -1470,9 +1471,9 @@ class TTSOptimizerGUI:
         if not self.source_file.endswith(".srt"):
             # Normalize newlines to LF and replace carriage returns with LF
             text = re.sub(r'\r\n?', '\n', text)
-            
+
             paragraph_breaks = []  # Initialize paragraph_breaks as an empty list
-            
+
             if not self.disable_paragraph_detection.get() and not self.source_file.endswith(".srt"):
                 if self.pdf_preprocessed:
                     # For preprocessed PDFs, consider sentences followed by a single newline as paragraphs
@@ -1486,10 +1487,10 @@ class TTSOptimizerGUI:
                 else:
                     # For regular text files, convert single newlines to spaces
                     text = re.sub(r'(?<!\n)\n(?!\n)', ' ', text)
-                    
+
                     # Mark sentences followed by a single newline as paragraph sentences
                     paragraph_breaks = list(re.finditer(r'\n', text))
-            
+
             # Replace tabs with spaces
             text = re.sub(r'\t', ' ', text)
 
@@ -1527,28 +1528,8 @@ class TTSOptimizerGUI:
             # Additional preprocessing step to handle chapters, section titles, etc.
             text = re.sub(r'(^|\n+)([^\n.!?]+)(?=\n+|$)', r'\1\2.', text)
 
-            # Use SentenceSplitter for sentence splitting
-            if self.tts_service.get() == "XTTS":
-                language = self.language_var.get()
-            else:  # Silero
-                silero_language_name = self.language_var.get()
-                silero_to_simple_lang_codes = {
-                    "German (v3)": "de",
-                    "English (v3)": "en",
-                    "English Indic (v3)": "en",
-                    "Spanish (v3)": "es",
-                    "French (v3)": "fr",
-                    "Indic (v3)": "hi",
-                    "Russian (v3.1)": "ru",
-                    "Tatar (v3)": "tt",
-                    "Ukrainian (v3)": "uk",
-                    "Uzbek (v3)": "uz",
-                    "Kalmyk (v3)": "xal"
-                }
-                language = silero_to_simple_lang_codes.get(silero_language_name, "en")
-
-            splitter = SentenceSplitter(language=language)
-            sentences = splitter.split(text)
+            # Use split_into_sentences method for sentence splitting
+            sentences = self.split_into_sentences(text)
 
             processed_sentences = []
 
@@ -2167,28 +2148,42 @@ class TTSOptimizerGUI:
         return processed_sentence
 
     def split_into_sentences(self, text):
-        silero_to_simple_lang_codes = {
-            "German (v3)": "de",
-            "English (v3)": "en",
-            "English Indic (v3)": "en",
-            "Spanish (v3)": "es",
-            "French (v3)": "fr",
-            "Indic (v3)": "hi",
-            "Russian (v3.1)": "ru",
-            "Tatar (v3)": "tt",
-            "Ukrainian (v3)": "uk",
-            "Uzbek (v3)": "uz",
-            "Kalmyk (v3)": "xal"
-        }
-
         if self.tts_service.get() == "XTTS":
-            language = self.language_var.get()  # Replace self.language.get() with self.language_var.get()
+            language = self.language_var.get()
+            if language == "zh-cn":
+                # Chinese sentence splitting using NLTK
+                sentences = sent_tokenize(text, language='chinese')
+            elif language == "ja":
+                # Japanese sentence splitting using Hasami
+                sentences = hasami.segment_sentences(text)
+            else:
+                splitter = SentenceSplitter(language=language)
+                sentences = splitter.split(text)
         else:  # Silero
-            silero_language_name = self.language_var.get()  # Replace self.language.get() with self.language_var.get()
+            silero_language_name = self.language_var.get()
+            silero_to_simple_lang_codes = {
+                "German (v3)": "de",
+                "English (v3)": "en",
+                "English Indic (v3)": "en",
+                "Spanish (v3)": "es",
+                "French (v3)": "fr",
+                "Indic (v3)": "hi",
+                "Russian (v3.1)": "ru",
+                "Tatar (v3)": "tt",
+                "Ukrainian (v3)": "uk",
+                "Uzbek (v3)": "uz",
+                "Kalmyk (v3)": "xal"
+            }
             language = silero_to_simple_lang_codes.get(silero_language_name, "en")
-
-        splitter = SentenceSplitter(language=language)
-        sentences = splitter.split(text)
+            if language == "zh":
+                # Chinese sentence splitting using NLTK
+                sentences = sent_tokenize(text, language='chinese')
+            elif language == "ja":
+                # Japanese sentence splitting using Hasami
+                sentences = hasami.segment_sentences(text)
+            else:
+                splitter = SentenceSplitter(language=language)
+                sentences = splitter.split(text)
         return sentences
 
     def calculate_similarity(self, str1, str2):
