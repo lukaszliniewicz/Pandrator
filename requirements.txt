@@ -10,3 +10,5 @@ pysrt
 num2words
 ffmpeg-python
 pdftextract
+hasami
+nltk
