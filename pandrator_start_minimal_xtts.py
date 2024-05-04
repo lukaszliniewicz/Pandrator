@@ -63,8 +63,39 @@ def install_requirements(conda_path, env_name, requirements_file):
 
 def install_pytorch_and_xtts_api_server(conda_path, env_name):
     logging.info(f"Installing PyTorch and xtts_api_server package in {env_name}...")
-    run_command([f'{conda_path}\\Scripts\\conda.exe', 'run', '-n', env_name, 'pip', 'install', 'torch==2.1.1+cu118', 'torchaudio==2.1.1+cu118', '--extra-index-url', 'https://download.pytorch.org/whl/cu118'])
-    run_command([f'{conda_path}\\Scripts\\conda.exe', 'run', '-n', env_name, 'pip', 'install', 'xtts_api_server'])
+    
+    try:
+        # Install PyTorch
+        pytorch_cmd = [f'{conda_path}\\Scripts\\conda.exe', 'run', '-n', env_name, 'pip', 'install', 'torch==2.1.1+cu118', 'torchaudio==2.1.1+cu118', '--extra-index-url', 'https://download.pytorch.org/whl/cu118']
+        pytorch_result = subprocess.run(pytorch_cmd, capture_output=True, text=True)
+        
+        logging.info("PyTorch installation output:")
+        logging.info(pytorch_result.stdout)
+        
+        if pytorch_result.returncode != 0:
+            logging.error("Error installing PyTorch:")
+            logging.error(pytorch_result.stderr)
+            raise subprocess.CalledProcessError(pytorch_result.returncode, pytorch_cmd, output=pytorch_result.stdout, stderr=pytorch_result.stderr)
+        
+        # Install xtts_api_server package
+        xtts_cmd = [f'{conda_path}\\Scripts\\conda.exe', 'run', '-n', env_name, 'pip', 'install', 'xtts_api_server']
+        xtts_result = subprocess.run(xtts_cmd, capture_output=True, text=True)
+        
+        logging.info("xtts_api_server installation output:")
+        logging.info(xtts_result.stdout)
+        
+        if xtts_result.returncode != 0:
+            logging.error("Error installing xtts_api_server package:")
+            logging.error(xtts_result.stderr)
+            raise subprocess.CalledProcessError(xtts_result.returncode, xtts_cmd, output=xtts_result.stdout, stderr=xtts_result.stderr)
+        
+        logging.info("PyTorch and xtts_api_server package installed successfully.")
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Error executing command: {e.cmd}")
+        logging.error(f"Error message: {str(e)}")
+        logging.error(f"Output: {e.output}")
+        logging.error(f"Error: {e.stderr}")
+        raise
 
 def run_script(conda_path, env_name, script_path):
     logging.info(f"Running script {script_path} in {env_name}...")
