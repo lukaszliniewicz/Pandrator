@@ -165,7 +165,7 @@ def main():
             return
 
         # Create conda environments
-        create_conda_env(conda_path, 'xtts_api_server_installer', '3.10')
+        create_conda_env(conda_path, 'xtts_api_server_installer', '3.9')
         create_conda_env(conda_path, 'pandrator_installer', '3.10')
 
         # Install PyTorch and xtts_api_server package
