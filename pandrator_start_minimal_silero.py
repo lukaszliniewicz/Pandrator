@@ -106,6 +106,35 @@ def check_silero_server_online(url, max_attempts=30, wait_interval=10):
     logging.error("Silero server failed to come online within the specified attempts.")
     return False
 
+def check_and_update_numpy(conda_path, env_name):
+    logging.info(f"Checking NumPy version in {env_name}...")
+    try:
+        # Check current NumPy version
+        numpy_version = subprocess.check_output([f'{conda_path}\\Scripts\\conda.exe', 'run', '-n', env_name, 'python', '-c', 'import numpy; print(numpy.__version__)'], universal_newlines=True).strip()
+        logging.info(f"Current NumPy version: {numpy_version}")
+        
+        # If NumPy version is 2.x, downgrade to 1.24.3
+        if numpy_version.startswith('2.'):
+            logging.info("Downgrading NumPy to version 1.24.3...")
+            run_command([f'{conda_path}\\Scripts\\conda.exe', 'run', '-n', env_name, 'pip', 'install', 'numpy==1.24.3'])
+            logging.info("NumPy downgraded successfully.")
+        else:
+            logging.info("NumPy version is compatible. No changes needed.")
+    except subprocess.CalledProcessError as e:
+        logging.error("Error checking or updating NumPy version.")
+        logging.error(f"Error message: {str(e)}")
+        raise
+
+def install_pytorch(conda_path, env_name):
+    logging.info(f"Installing PyTorch 1.13.1 in {env_name}...")
+    try:
+        run_command([f'{conda_path}\\Scripts\\conda.exe', 'run', '-n', env_name, 'pip', 'install', 'torch==1.13.1', 'torchvision==0.14.1', 'torchaudio==0.13.1'])
+        logging.info("PyTorch 1.13.1 installed successfully.")
+    except subprocess.CalledProcessError as e:
+        logging.error("Error installing PyTorch.")
+        logging.error(f"Error message: {str(e)}")
+        raise
+
 def main():
     # Create Pandrator folder
     pandrator_path = os.path.join(os.getcwd(), 'Pandrator')
@@ -150,6 +179,12 @@ def main():
         
     # Get the conda path
     conda_path = os.path.join(pandrator_path, 'conda')
+
+    # Check and update NumPy version
+    check_and_update_numpy(conda_path, 'silero_api_server_installer')
+
+    # Install PyTorch 1.13.1
+    install_pytorch(conda_path, 'silero_api_server_installer')
 
     # Run Silero API server
     run_silero_api_server(conda_path, 'silero_api_server_installer')
