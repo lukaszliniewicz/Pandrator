@@ -73,8 +73,7 @@ class TTSOptimizerGUI:
         self.server_connected = False
         self.external_server_connected_voicecraft = False
         self.remove_double_newlines = ctk.BooleanVar(value=False)
-
-
+        self.advanced_settings_switch = None
         self.tts_voices_folder = "tts_voices"
         if not os.path.exists(self.tts_voices_folder):
             os.makedirs(self.tts_voices_folder)
@@ -116,6 +115,8 @@ class TTSOptimizerGUI:
         self.playing = False
         self.session_name = ctk.StringVar()
         self.tts_service = ctk.StringVar(value="XTTS")
+        self.mark_paragraphs_multiple_newlines = ctk.BooleanVar(value=False)
+
 
         # Layout
         ctk.set_appearance_mode("dark")
@@ -175,6 +176,10 @@ class TTSOptimizerGUI:
         self.select_file_button = ctk.CTkButton(session_settings_frame, text="Select Source File", command=self.select_file)
         self.select_file_button.grid(row=0, column=0, padx=10, pady=(10, 5), sticky=tk.EW)
         self.selected_file_label.grid(row=0, column=1, columnspan=3, padx=10, pady=(10, 5), sticky=tk.W)
+
+        self.paste_text_button = ctk.CTkButton(session_settings_frame, text="Paste Text", command=self.paste_text)
+        self.paste_text_button.grid(row=0, column=1, padx=10, pady=(10, 5), sticky=tk.EW)
+        self.selected_file_label.grid(row=0, column=2, columnspan=2, padx=10, pady=(10, 5), sticky=tk.W)
 
         self.dubbing_switch = ctk.CTkSwitch(session_settings_frame, text="Add synchronized audio to video file (dubbing effect)", variable=self.enable_dubbing, command=self.toggle_dubbing_frame)
         self.dubbing_switch.grid(row=1, column=0, columnspan=4, padx=10, pady=(5, 10), sticky=tk.W)
@@ -241,7 +246,9 @@ class TTSOptimizerGUI:
         self.playback_speed_dropdown.grid(row=8, column=1, columnspan=3, padx=10, pady=5, sticky=tk.EW)
 
         self.show_advanced_tts_settings = ctk.BooleanVar(value=False)
-        ctk.CTkSwitch(session_settings_frame, text="Advanced TTS Settings", variable=self.show_advanced_tts_settings, command=self.toggle_advanced_tts_settings).grid(row=9, column=0, padx=5, pady=5, sticky=tk.W)
+        self.advanced_settings_switch = ctk.CTkSwitch(session_settings_frame, text="Advanced TTS Settings", variable=self.show_advanced_tts_settings, command=self.toggle_advanced_tts_settings)
+        self.advanced_settings_switch.grid(row=9, column=0, padx=5, pady=5, sticky=tk.W)
+        self.advanced_settings_switch.grid_remove()  # Hide the switch initially
 
         # Advanced TTS Settings Frame
         self.advanced_tts_settings_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
@@ -738,6 +745,55 @@ class TTSOptimizerGUI:
             self.enable_dubbing.set(False)  # Disable the dubbing switch
             self.dubbing_frame.grid_remove()  # Hide the dubbing frame
             self.pdf_preprocessed = False  # Reset the flag if no file is selected
+
+    def paste_text(self):
+        if not self.session_name.get():
+            CTkMessagebox(title="No Session", message="Please create or load a session before pasting text.", icon="info")
+            return
+
+        paste_window = ctk.CTkToplevel(self.master)
+        paste_window.title("Paste Text")
+        paste_window.geometry("600x450")
+
+        text_widget = ctk.CTkTextbox(paste_window, width=580, height=350)
+        text_widget.pack(padx=10, pady=10)
+
+        mark_paragraphs_multiple_newlines = ctk.BooleanVar(value=False)
+        paragraph_toggle = ctk.CTkSwitch(paste_window, text="Mark paragraphs only for multiple new lines", variable=mark_paragraphs_multiple_newlines)
+        paragraph_toggle.pack(padx=10, pady=(0, 10))
+
+        def save_pasted_text():
+            pasted_text = text_widget.get("1.0", tk.END).strip()
+            if pasted_text:
+                session_name = self.session_name.get()
+                session_dir = os.path.join("Outputs", session_name)
+                os.makedirs(session_dir, exist_ok=True)
+                
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"pasted_text_{timestamp}.txt"
+                file_path = os.path.join(session_dir, filename)
+                
+                if mark_paragraphs_multiple_newlines.get():
+                    # Preserve multiple newlines, replace single newlines with spaces
+                    processed_text = re.sub(r'(?<!\n)\n(?!\n)', ' ', pasted_text)
+                else:
+                    # Convert single newlines to double newlines
+                    processed_text = re.sub(r'(?<!\n)\n(?!\n)', '\n\n', pasted_text)
+                
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(processed_text)
+                
+                self.source_file = file_path
+                truncated_filename = filename[:70] + "..." if len(filename) > 70 else filename
+                self.selected_file_label.configure(text=truncated_filename)
+                
+                paste_window.destroy()
+                CTkMessagebox(title="Text Saved", message=f"The pasted text has been saved as '{filename}' in the session folder.", icon="info")
+            else:
+                CTkMessagebox(title="Empty Text", message="Please paste some text before saving.", icon="warning")
+
+        save_button = ctk.CTkButton(paste_window, text="Save", command=save_pasted_text)
+        save_button.pack(pady=10)
 
     def show_pdf_options(self, raw_text_path, session_dir, file_name):
         options_window = ctk.CTkToplevel(self.master)
@@ -1263,8 +1319,9 @@ class TTSOptimizerGUI:
                 self.external_server_url_entry.grid_remove()
             self.use_external_server_voicecraft_switch.grid_remove()
             self.external_server_url_entry_voicecraft.grid_remove()
-            self.voicecraft_model_dropdown.grid_remove()  # Hide the VoiceCraft model dropdown
-            self.voicecraft_model_label.grid_remove()  # Hide the VoiceCraft model label
+            self.voicecraft_model_dropdown.grid_remove()
+            self.voicecraft_model_label.grid_remove()
+            self.advanced_settings_switch.grid_remove()  # Hide advanced settings for XTTS
         elif self.tts_service.get() == "VoiceCraft":
             self.connect_to_server_button.grid()
             self.use_external_server_switch.grid_remove()
@@ -1274,9 +1331,10 @@ class TTSOptimizerGUI:
                 self.external_server_url_entry_voicecraft.grid()
             else:
                 self.external_server_url_entry_voicecraft.grid_remove()
-            self.voicecraft_model_dropdown.grid()  # Show the VoiceCraft model dropdown
-            self.voicecraft_model_label.grid()  # Show the VoiceCraft model label
-        else:
+            self.voicecraft_model_dropdown.grid()
+            self.voicecraft_model_label.grid()
+            self.advanced_settings_switch.grid()  # Show advanced settings for VoiceCraft
+        else:  # Silero
             self.connect_to_server_button.grid_remove()
             self.use_external_server_switch.grid_remove()
             self.external_server_url_entry.grid_remove()
@@ -1284,8 +1342,9 @@ class TTSOptimizerGUI:
             self.external_server_url_entry_voicecraft.grid_remove()
             self.external_server_connected = False
             self.external_server_connected_voicecraft = False
-            self.voicecraft_model_dropdown.grid_remove()  # Hide the VoiceCraft model dropdown
-            self.voicecraft_model_label.grid_remove()  # Hide the VoiceCraft model label
+            self.voicecraft_model_dropdown.grid_remove()
+            self.voicecraft_model_label.grid_remove()
+            self.advanced_settings_switch.grid_remove()  # Hide advanced settings for Silero
 
         self.update_language_dropdown()
 
@@ -1574,8 +1633,11 @@ class TTSOptimizerGUI:
             return split_sentences
 
     def toggle_advanced_tts_settings(self):
-        if self.show_advanced_tts_settings.get():
-            self.advanced_tts_settings_frame.grid()
+        if self.tts_service.get() == "VoiceCraft":
+            if self.show_advanced_tts_settings.get():
+                self.advanced_tts_settings_frame.grid()
+            else:
+                self.advanced_tts_settings_frame.grid_remove()
         else:
             self.advanced_tts_settings_frame.grid_remove()
 
