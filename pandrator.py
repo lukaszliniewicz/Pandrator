@@ -1728,10 +1728,13 @@ class TTSOptimizerGUI:
             indices = [i for i, c in enumerate(sentence) if c == mark]
             for index in indices:
                 if min_distance <= index <= len(sentence) - min_distance:
-                    diff = abs(index - len(sentence) // 2)
-                    if diff < min_diff:
-                        min_diff = diff
-                        best_split_index = index + 1
+                    # Check if the comma is not between two digits (avoiding splitting numbers like 28,000)
+                    if not (mark == ',' and index > 0 and index < len(sentence) - 1 and 
+                            sentence[index-1].isdigit() and sentence[index+1].isdigit()):
+                        diff = abs(index - len(sentence) // 2)
+                        if diff < min_diff:
+                            min_diff = diff
+                            best_split_index = index + 1
 
         if best_split_index is None:
             for mark in conjunction_marks:
@@ -1769,10 +1772,13 @@ class TTSOptimizerGUI:
             indices = [i for i, c in enumerate(sentence) if c == mark]
             for index in indices:
                 if min_distance <= index <= len(sentence) - min_distance:
-                    diff = abs(index - len(sentence) // 2)
-                    if diff < min_diff:
-                        min_diff = diff
-                        best_split_index = index + 1
+                    # Check if the comma is not between two digits (avoiding splitting numbers like 28,000)
+                    if not (mark == ',' and index > 0 and index < len(sentence) - 1 and 
+                            sentence[index-1].isdigit() and sentence[index+1].isdigit()):
+                        diff = abs(index - len(sentence) // 2)
+                        if diff < min_diff:
+                            min_diff = diff
+                            best_split_index = index + 1
 
         if best_split_index is None:
             for mark in conjunction_marks:
