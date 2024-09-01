@@ -11,6 +11,7 @@ import atexit
 import psutil
 import json
 import tkinter.messagebox as messagebox
+import winreg
 
 class PandratorInstaller(ctk.CTk):
     def __init__(self):
@@ -35,9 +36,10 @@ class PandratorInstaller(ctk.CTk):
         self.info_text.grid(row=1, column=0, sticky="ew", padx=20, pady=10)
         self.info_text.insert("1.0", "This tool will help you set up and run Pandrator and XTTS. "
                               "It will install Pandrator, XTTS, Miniconda, required Python packages, "
-                              "and dependencies (Git, Curl, FFmpeg, Calibre) using Chocolatey.\n\n"
+                              "and dependencies, if not installed already (Git, Curl, FFmpeg, Calibre, Visual Studio C++ Build Tools) using winget.\n\n"
                               "Note: To install dependencies automatically, run this installer as Administrator. "
                               "To uninstall Pandrator, simply delete the Pandrator folder.\n\n"
+                              "The installation will take about 6GB of disk space without CUDA support and about 9GB with CUDA support.\n\n"
                               "Select your options below and click the appropriate button to begin.")
         self.info_text.configure(state="disabled")
 
@@ -57,7 +59,7 @@ class PandratorInstaller(ctk.CTk):
         self.install_button.grid(row=0, column=0, padx=(0, 10))
 
         self.cuda_var = ctk.BooleanVar(value=True)
-        self.cuda_checkbox = ctk.CTkCheckBox(button_frame, text="Install CUDA PyTorch", variable=self.cuda_var, command=self.update_gpu_options)
+        self.cuda_checkbox = ctk.CTkCheckBox(button_frame, text="Install CUDA PyTorch (uncheck if you don't have an Nvidia GPU)", variable=self.cuda_var, command=self.update_gpu_options)
         self.cuda_checkbox.grid(row=0, column=1, padx=10)
 
         self.open_log_button = ctk.CTkButton(button_frame, text="Open Installation Log", 
@@ -248,24 +250,26 @@ class PandratorInstaller(ctk.CTk):
             raise
 
     def check_program_installed(self, program):
-        return shutil.which(program) is not None
-
-    def check_choco(self):
-        return self.check_program_installed('choco')
-
-    def install_choco(self):
-        logging.info("Installing Chocolatey...")
-        self.run_command(['powershell', '-Command', "Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))"])
+        if program == 'git':
+            return shutil.which('git') is not None
+        elif program == 'curl':
+            return shutil.which('curl') is not None
+        elif program == 'ffmpeg':
+            return shutil.which('ffmpeg') is not None
+        elif program == 'calibre':
+            return shutil.which('calibre') is not None
+        else:
+            return shutil.which(program) is not None
 
     def install_dependencies(self):
-        dependencies = ['git', 'curl', 'ffmpeg', 'calibre']
-        for dependency in dependencies:
-            if not self.check_program_installed(dependency):
-                logging.info(f"Installing {dependency}...")
+        dependencies = [('Git.Git', 'git'), ('cURL', 'curl'), ('Gyan.FFmpeg', 'ffmpeg'), ('calibre.calibre', 'calibre')]
+        for winget_id, program_name in dependencies:
+            if not self.check_program_installed(program_name):
+                logging.info(f"Installing {program_name}...")
                 try:
-                    self.run_command(['choco', 'install', dependency, '-y'])
+                    self.run_command(['winget', 'install', '--id', winget_id, '-e', '--accept-source-agreements', '--accept-package-agreements'])
                 except subprocess.CalledProcessError as e:
-                    logging.error(f"Failed to install {dependency}.")
+                    logging.error(f"Failed to install {program_name}.")
                     raise
 
     def install_conda(self, install_path):
@@ -274,6 +278,7 @@ class PandratorInstaller(ctk.CTk):
         self.run_command(['curl', '-O', f'https://repo.anaconda.com/miniconda/{conda_installer}'])
         self.run_command([conda_installer, '/InstallationType=JustMe', '/RegisterPython=0', '/S', f'/D={install_path}'])
         os.remove(conda_installer)
+
     def check_conda(self, conda_path):
         return os.path.exists(os.path.join(conda_path, 'Scripts', 'conda.exe'))
 
@@ -307,6 +312,38 @@ class PandratorInstaller(ctk.CTk):
             logging.info("PyTorch and xtts-api-server package installed successfully.")
         except subprocess.CalledProcessError as e:
             logging.error("Error installing PyTorch and xtts-api-server package.")
+            raise
+
+    def check_visual_cpp_build_tools_version(self):
+        try:
+            key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64")
+            version, _ = winreg.QueryValueEx(key, "Version")
+            winreg.CloseKey(key)
+            # Remove the 'v' prefix if it exists and get the major version number
+            version_number = version.lstrip('v').split('.')[0]
+            return int(version_number) >= 14
+        except WindowsError:
+            return False
+        except ValueError:
+            logging.error(f"Unexpected version format: {version}")
+            return False
+
+    def install_visual_cpp_build_tools(self):
+        if self.check_visual_cpp_build_tools_version():
+            logging.info("Visual C++ Build Tools 14.0 or later is already installed.")
+            return
+
+        logging.info("Installing Microsoft Visual C++ Build Tools...")
+        self.update_status("Installing Microsoft Visual C++ Build Tools...")
+        
+        try:
+            self.run_command([
+                'winget', 'install', 'Microsoft.VisualStudio.2022.BuildTools',
+                '--force', '--override', '"--passive --wait --add Microsoft.VisualStudio.Workload.VCTools;includeRecommended"'
+            ])
+            logging.info("Microsoft Visual C++ Build Tools installed successfully.")
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Failed to install Microsoft Visual C++ Build Tools: {str(e)}")
             raise
 
     def run_xtts_api_server(self, conda_path, env_name, xtts_server_path, use_cpu=False):
@@ -387,13 +424,12 @@ class PandratorInstaller(ctk.CTk):
         pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
         
         self.update_progress(0.1)
-        self.update_status("Installing Chocolatey...")
-        if not self.check_choco():
-            self.install_choco()
-        
-        self.update_progress(0.2)
         self.update_status("Installing dependencies...")
         self.install_dependencies()
+        
+        self.update_progress(0.2)
+        self.update_status("Installing Visual C++ Build Tools...")
+        self.install_visual_cpp_build_tools()
         
         self.update_progress(0.3)
         self.update_status("Cloning repositories...")
