@@ -1,14 +1,13 @@
 <p align="left">
   <img src="pandrator.png" alt="Icon" width="200" height="200"/>
 </p>
+> Please note that Pandrator is still in an alpha stage and I'm not an experienced developer (I'm a noob, in fact), so the code is far from perfect in terms of optimisation, features and reliability. Please keep this in mind and contribute, if you want to help me make it better.
 
 # Pandrator, a GUI audiobook and dubbing generator with voice cloning and AI text optimisation
 
 Pandrator is a tool designed to transform text, PDF, EPUB and SRT files into spoken audio in multiple languages based on open source software, including voice cloning, LLM-based text preprocessing and the ability to directly save generated subtitle audio to a video file by mixing the synchronized output with the original audio track of the video. It aspires to be easy to use and install - it has a one-click installer and a graphical user interface.
 
 It leverages the [XTTS](https://huggingface.co/coqui/XTTS-v2), [Silero](https://github.com/snakers4/silero-models) and [VoiceCraft](https://github.com/jasonppy/VoiceCraft) model(s) for text-to-speech conversion and voice cloning, enhanced by RVC_CLI for quality improvement and better voice cloning results, and NISQA for audio quality evaluation. Additionally, it incorporates Text Generation Webui's API for local LLM-based text pre-processing, enabling a wide range of text manipulations before audio generation.
-
-> It is still in alpha stage and I'm not an experienced developer (I'm a noob, in fact), so the code is far from perfect in terms of optimisation, features and reliability. Please keep this in mind and contribute, if you want to help me make it better.
 
 - [Pandrator, an audiobook generator](#pandrator-an-audiobook-generator)
   - [Samples](#samples)
