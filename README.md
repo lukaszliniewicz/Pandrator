@@ -47,7 +47,7 @@ https://github.com/lukaszliniewicz/Pandrator/assets/75737665/118f5b9c-641b-4edd-
 
 ### Hardware
 #### XTTS
-I was able to run all functionalities on a laptop with a Ryzen 5600h and a 3050 laptop GPU (4GB of VRAM). It's likely that you will need at least 16GB of RAM, a reasonably modern CPU, and ideally an NVIDIA GPU with 4 GB+ of VRAM for usable performance. Consult the requirments of the services listed below.
+It's likely that you will need at least 16GB of RAM, a reasonably modern CPU for CPU-only generation (which you can choose in the launcher), and ideally an NVIDIA GPU with 4 GB+ of VRAM for really good performance.
 #### Silero
 Silero runs on the CPU. It should perform well on almost all reasonably modern systems. 
 #### VoiceCraft
@@ -57,7 +57,7 @@ You can run VoiceCraft on a cpu, but generation will be very slow. To achieve me
 This project relies on several APIs and services (running locally) and libraries, notably:
 
 #### Required
-- [XTTS API Server by daswer123](https://github.com/daswer123/xtts-api-server.git) for Text-to-Speech (TTS) generation using Coqui [XTTSv2](https://huggingface.co/coqui/XTTS-v2) OR [Silero API Server by ouoertheo](https://github.com/ouoertheo/silero-api-server) for TTS generaton using the [Silero models](https://github.com/snakers4/silero-models) OR [VoiceCraft by jasonppy](https://github.com/jasonppy/VoiceCraft). XTTS and VoiceCraft use the GPU (Nvidia), and Silero uses the CPU. Silero can be run on low-end systems.
+- [XTTS API Server by daswer123](https://github.com/daswer123/xtts-api-server.git) for Text-to-Speech (TTS) generation using Coqui [XTTSv2](https://huggingface.co/coqui/XTTS-v2) OR [Silero API Server by ouoertheo](https://github.com/ouoertheo/silero-api-server) for TTS generaton using the [Silero models](https://github.com/snakers4/silero-models) OR [VoiceCraft by jasonppy](https://github.com/jasonppy/VoiceCraft). XTTS and VoiceCraft perform best on a GPU (Nvidia), though can work on a CPU (especially XTTS), and Silero uses only the CPU. Silero can be run on low-end systems.
 - [FFmpeg](https://github.com/FFmpeg/FFmpeg) for audio encoding.
 - [Sentence Splitter by mediacloud](https://github.com/mediacloud/sentence-splitter) for splitting `.txt ` files into sentences, [customtkinter by TomSchimansky](https://github.com/TomSchimansky/CustomTkinter), [num2words by savoirfairelinux](https://github.com/savoirfairelinux/num2words) for converting numbers to words (Silero requirs this), `pysrt`, `pydub` and others (see `requirements.txt`). 
 
