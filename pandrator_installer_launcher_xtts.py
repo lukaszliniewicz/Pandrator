@@ -11,6 +11,10 @@ import atexit
 import psutil
 import json
 import tkinter.messagebox as messagebox
+import traceback
+import tempfile
+import sys
+import ctypes
 import winreg
 
 class PandratorInstaller(ctk.CTk):
@@ -37,7 +41,7 @@ class PandratorInstaller(ctk.CTk):
         self.info_text.insert("1.0", "This tool will help you set up and run Pandrator and XTTS. "
                               "It will install Pandrator, XTTS, Miniconda, required Python packages, "
                               "and dependencies, if not installed already (Git, Curl, FFmpeg, Calibre, Visual Studio C++ Build Tools) using winget.\n\n"
-                              "Note: To install dependencies automatically, run this installer as Administrator. "
+                              "This installer will automatically install winget if it's not already installed on your system.\n\n"
                               "To uninstall Pandrator, simply delete the Pandrator folder.\n\n"
                               "The installation will take about 6GB of disk space without CUDA support and about 9GB with CUDA support.\n\n"
                               "Select your options below and click the appropriate button to begin.")
@@ -124,6 +128,19 @@ class PandratorInstaller(ctk.CTk):
         self.update_button_states()
         self.update_gpu_options()
 
+    def initialize_logging(self):
+        pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
+        os.makedirs(pandrator_path, exist_ok=True)
+        logs_path = os.path.join(pandrator_path, 'Logs')
+        os.makedirs(logs_path, exist_ok=True)
+
+        current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.log_filename = os.path.join(logs_path, f'pandrator_installation_log_{current_time}.log')
+        logging.basicConfig(filename=self.log_filename, level=logging.DEBUG,
+                            format='%(asctime)s - %(levelname)s - %(message)s')
+
+        self.open_log_button.configure(state="normal")
+
     def update_button_states(self):
         pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
         if os.path.exists(pandrator_path):
@@ -182,34 +199,29 @@ class PandratorInstaller(ctk.CTk):
         self.disable_buttons()
         self.progress_bar.set(0)
         self.status_label.configure(text="Installing...")
-        
-        os.makedirs(pandrator_path, exist_ok=True)
-        logs_path = os.path.join(pandrator_path, 'Logs')
-        os.makedirs(logs_path, exist_ok=True)
-        
-        # Configure logging
-        current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.log_filename = os.path.join(logs_path, f'pandrator_installation_log_{current_time}.log')
-        logging.basicConfig(filename=self.log_filename, level=logging.DEBUG,
-                            format='%(asctime)s - %(levelname)s - %(message)s')
-        
-        self.open_log_button.configure(state="normal")
-        
+
+        self.initialize_logging()
+
+        logging.info("Installation process started.")
+
         threading.Thread(target=self.install_process, daemon=True).start()
 
     def launch_pandrator_xtts_gpu(self):
         self.progress_bar.set(0)
         self.status_label.configure(text="Launching...")
+        logging.info("Launching Pandrator and XTTS with GPU.")
         threading.Thread(target=self.launch_process, args=(False,), daemon=True).start()
 
     def launch_pandrator_xtts_cpu(self):
         self.progress_bar.set(0)
         self.status_label.configure(text="Launching...")
+        logging.info("Launching Pandrator and XTTS with CPU.")
         threading.Thread(target=self.launch_process, args=(True,), daemon=True).start()
 
     def launch_pandrator_only(self):
         self.progress_bar.set(0)
         self.status_label.configure(text="Launching Pandrator...")
+        logging.info("Launching Pandrator only.")
         threading.Thread(target=self.launch_pandrator_process, daemon=True).start()
 
     def open_log_file(self):
@@ -235,42 +247,251 @@ class PandratorInstaller(ctk.CTk):
 
     def update_status(self, text):
         self.status_label.configure(text=text)
+        logging.info(text)
 
-    def run_command(self, command):
+    def run_command(self, command, use_shell=False, cwd=None):
         try:
-            result = subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            logging.info(f"Command executed: {' '.join(command)}")
-            logging.debug(f"STDOUT: {result.stdout}")
-            logging.debug(f"STDERR: {result.stderr}")
+            if use_shell:
+                process = subprocess.Popen(
+                    command if isinstance(command, str) else " ".join(command),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    shell=True,
+                    cwd=cwd
+                )
+            else:
+                process = subprocess.Popen(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    cwd=cwd
+                )
+            
+            stdout, stderr = process.communicate()
+            
+            if process.returncode != 0:
+                raise subprocess.CalledProcessError(process.returncode, command, stdout, stderr)
+            
+            logging.info(f"Command executed: {command if isinstance(command, str) else ' '.join(command)}")
+            logging.debug(f"STDOUT: {stdout.decode('utf-8')}")
+            logging.debug(f"STDERR: {stderr.decode('utf-8')}")
+            
+            return stdout.decode('utf-8'), stderr.decode('utf-8')
         except subprocess.CalledProcessError as e:
-            logging.error(f"Error executing command: {' '.join(command)}")
+            logging.error(f"Error executing command: {command if isinstance(command, str) else ' '.join(command)}")
             logging.error(f"Error message: {str(e)}")
-            logging.error(f"STDOUT: {e.stdout}")
-            logging.error(f"STDERR: {e.stderr}")
+            logging.error(f"STDOUT: {e.stdout.decode('utf-8')}")
+            logging.error(f"STDERR: {e.stderr.decode('utf-8')}")
             raise
 
     def check_program_installed(self, program):
-        if program == 'git':
-            return shutil.which('git') is not None
-        elif program == 'curl':
-            return shutil.which('curl') is not None
-        elif program == 'ffmpeg':
-            return shutil.which('ffmpeg') is not None
-        elif program == 'calibre':
-            return shutil.which('calibre') is not None
-        else:
-            return shutil.which(program) is not None
+        try:
+            self.run_command(['where', program])
+            return True
+        except subprocess.CalledProcessError:
+            return False
+    def refresh_environment_variables(self):
+        """Refresh the environment variables for the current session."""
+        try:
+            # Refresh environment variables for the current session
+            logging.info("Refreshing environment variables...")
+            HWND_BROADCAST = 0xFFFF
+            WM_SETTINGCHANGE = 0x001A
+            SMTO_ABORTIFHUNG = 0x0002
+            result = ctypes.windll.user32.SendMessageTimeoutW(
+                HWND_BROADCAST, WM_SETTINGCHANGE, 0, "Environment",
+                SMTO_ABORTIFHUNG, 5000, ctypes.byref(ctypes.c_long())
+            )
+            if result == 0:
+                logging.warning("Environment variables refresh timed out.")
+            else:
+                logging.info("Environment variables refreshed successfully.")
+        except Exception as e:
+            logging.error(f"Failed to refresh environment variables: {str(e)}")
+            logging.error(traceback.format_exc())
+            raise
+
+    def install_winget(self):
+        try:
+            logging.info("Checking if winget is installed...")
+            self.run_command(['where', 'winget'])
+            logging.info("winget is already installed.")
+            
+            # Verify winget version
+            version_output, _ = self.run_command(['winget', '--version'])
+            logging.info(f"Installed winget version: {version_output.strip()}")
+        except subprocess.CalledProcessError:
+            logging.info("winget is not installed. Proceeding with installation...")
+
+            try:
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    script_path = os.path.join(temp_dir, "winget-install.ps1")
+                    
+                    # Download the PowerShell script
+                    self.run_command([
+                        'powershell',
+                        '-Command',
+                        f'Invoke-WebRequest -Uri "https://github.com/asheroto/winget-install/releases/latest/download/winget-install.ps1" -OutFile "{script_path}"'
+                    ], use_shell=True)
+                    
+                    # Execute the PowerShell script
+                    self.run_command([
+                        'powershell',
+                        '-ExecutionPolicy',
+                        'Bypass',
+                        '-File',
+                        script_path
+                    ], use_shell=True)
+                
+                logging.info("winget has been installed.")
+                
+                # Refresh environment variables
+                self.refresh_environment_variables()
+                
+                # Verify installation
+                version_output, _ = self.run_command(['winget', '--version'])
+                logging.info(f"Installed winget version: {version_output.strip()}")
+            except Exception as e:
+                logging.error(f"Failed to install winget: {str(e)}")
+                logging.error(traceback.format_exc())
+                raise
+        except Exception as e:
+            logging.error(f"Unexpected error while checking or installing winget: {str(e)}")
+            logging.error(traceback.format_exc())
+            raise
+            
+    def get_system_architecture(self):
+        return 'x64' if sys.maxsize > 2**32 else 'x86'
+           
+    def get_program_path_from_registry(self, program_name):
+        try:
+            if program_name == 'git':
+                key_path = r"SOFTWARE\GitForWindows"
+                value_name = "InstallPath"
+            elif program_name == 'curl':
+                key_path = r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\curl.exe"
+                value_name = None  # Default value
+            else:
+                return None
+
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path) as key:
+                if value_name:
+                    return winreg.QueryValueEx(key, value_name)[0]
+                else:
+                    return winreg.QueryValueEx(key, "")[0]  # Default value
+        except WindowsError:
+            return None
 
     def install_dependencies(self):
+        logging.info("Starting install_dependencies method")
         dependencies = [('Git.Git', 'git'), ('cURL', 'curl'), ('Gyan.FFmpeg', 'ffmpeg'), ('calibre.calibre', 'calibre')]
         for winget_id, program_name in dependencies:
+            logging.info(f"Checking installation for {program_name}")
             if not self.check_program_installed(program_name):
                 logging.info(f"Installing {program_name}...")
                 try:
                     self.run_command(['winget', 'install', '--id', winget_id, '-e', '--accept-source-agreements', '--accept-package-agreements'])
+                    
+                    # Refresh environment variables in a new session
+                    self.refresh_env_in_new_session()
+                    
+                    # Only verify installation for git and curl
+                    if program_name in ['git', 'curl']:
+                        if not self.check_program_installed(program_name):
+                            logging.warning(f"{program_name} installation not detected. Attempting to use absolute path.")
+                            program_path = self.get_program_path_from_registry(program_name)
+                            if program_path:
+                                if program_name == 'git':
+                                    bin_path = os.path.join(program_path, 'bin')
+                                    os.environ['PATH'] = f"{bin_path};{os.environ['PATH']}"
+                                    logging.info(f"Added {program_name} to PATH: {bin_path}")
+                                else:
+                                    program_dir = os.path.dirname(program_path)
+                                    os.environ['PATH'] = f"{program_dir};{os.environ['PATH']}"
+                                    logging.info(f"Added {program_name} to PATH: {program_dir}")
+                            else:
+                                absolute_path = self.get_program_path(program_name)
+                                if absolute_path:
+                                    os.environ[program_name.upper()] = absolute_path
+                                    logging.info(f"Updated {program_name} path: {absolute_path}")
+                                else:
+                                    raise Exception(f"Failed to find {program_name} after installation.")
+                    else:
+                        logging.info(f"Skipping post-installation check for {program_name}")
+                    
                 except subprocess.CalledProcessError as e:
                     logging.error(f"Failed to install {program_name}.")
+                    logging.error(f"Error output: {e.stderr.decode('utf-8')}")
                     raise
+            else:
+                logging.info(f"{program_name} is already installed.")
+
+    def check_program_installed(self, program):
+        try:
+            self.run_command(['where', program])
+            return True
+        except subprocess.CalledProcessError:
+            return False
+
+    def get_program_path(self, program_name):
+        try:
+            output, _ = self.run_command(['where', program_name])
+            return output.strip().split('\n')[0]
+        except subprocess.CalledProcessError:
+            logging.error(f"Failed to find {program_name} path")
+            return None
+
+    def refresh_env_in_new_session(self):
+        refresh_cmd = 'powershell -Command "[System.Environment]::GetEnvironmentVariables([System.EnvironmentVariableTarget]::Machine)"'
+        output, _ = self.run_command(refresh_cmd, use_shell=True)
+        new_env = dict(line.split('=', 1) for line in output.strip().split('\n') if '=' in line)
+        os.environ.update(new_env)
+        logging.info("Refreshed environment variables in a new session")
+
+    def install_visual_cpp_build_tools(self):
+        logging.info("Installing/Updating Microsoft Visual C++ Build Tools...")
+        self.update_status("Installing/Updating Microsoft Visual C++ Build Tools...")
+        
+        winget_command = [
+            "winget", "install", 
+            "--id", "Microsoft.VisualStudio.2022.BuildTools",
+            "--override", "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+        ]
+        
+        try:
+            process = subprocess.Popen(winget_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            
+            output = []
+            while True:
+                line = process.stdout.readline()
+                if not line and process.poll() is not None:
+                    break
+                if line:
+                    output.append(line.strip())
+                    logging.info(line.strip())
+            
+            error_output = process.stderr.read().strip()
+            if error_output:
+                logging.debug(f"STDERR: {error_output}")
+            
+            returncode = process.poll()
+            
+            if returncode == 0 or any("No available upgrade found" in line for line in output):
+                logging.info("Microsoft Visual C++ Build Tools are up to date or successfully installed.")
+                self.update_status("Build Tools are ready.")
+                return True
+            else:
+                logging.error(f"Failed to install/update Microsoft Visual C++ Build Tools. Return code: {returncode}")
+                if error_output:
+                    logging.error(f"Error output: {error_output}")
+                self.update_status("Error during Build Tools installation/update. Check the log for details.")
+                return False
+            
+        except Exception as e:
+            logging.error(f"An error occurred during Visual C++ Build Tools installation: {str(e)}")
+            logging.error(traceback.format_exc())
+            self.update_status("Error during Build Tools installation/update. Check the log for details.")
+            return False
 
     def install_conda(self, install_path):
         logging.info("Installing Miniconda...")
@@ -288,6 +509,7 @@ class PandratorInstaller(ctk.CTk):
             self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'create', '-n', env_name, f'python={python_version}', '-y'])
         except subprocess.CalledProcessError as e:
             logging.error(f"Failed to create conda environment {env_name}")
+            logging.error(f"Error output: {e.stderr.decode('utf-8')}")
             raise
 
     def install_requirements(self, conda_path, env_name, requirements_file):
@@ -312,39 +534,71 @@ class PandratorInstaller(ctk.CTk):
             logging.info("PyTorch and xtts-api-server package installed successfully.")
         except subprocess.CalledProcessError as e:
             logging.error("Error installing PyTorch and xtts-api-server package.")
+            logging.error(f"Error output: {e.stderr.decode('utf-8')}")
             raise
 
-    def check_visual_cpp_build_tools_version(self):
-        try:
-            key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64")
-            version, _ = winreg.QueryValueEx(key, "Version")
-            winreg.CloseKey(key)
-            # Remove the 'v' prefix if it exists and get the major version number
-            version_number = version.lstrip('v').split('.')[0]
-            return int(version_number) >= 14
-        except WindowsError:
-            return False
-        except ValueError:
-            logging.error(f"Unexpected version format: {version}")
-            return False
-
-    def install_visual_cpp_build_tools(self):
-        if self.check_visual_cpp_build_tools_version():
-            logging.info("Visual C++ Build Tools 14.0 or later is already installed.")
-            return
-
-        logging.info("Installing Microsoft Visual C++ Build Tools...")
-        self.update_status("Installing Microsoft Visual C++ Build Tools...")
+    def install_process(self):
+        pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
         
         try:
-            self.run_command([
-                'winget', 'install', 'Microsoft.VisualStudio.2022.BuildTools',
-                '--force', '--override', '"--passive --wait --add Microsoft.VisualStudio.Workload.VCTools;includeRecommended"'
-            ])
-            logging.info("Microsoft Visual C++ Build Tools installed successfully.")
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Failed to install Microsoft Visual C++ Build Tools: {str(e)}")
-            raise
+            self.update_progress(0.1)
+            self.update_status("Installing winget...")
+            self.install_winget()
+
+            self.update_progress(0.2)
+            self.update_status("Installing dependencies...")
+            self.install_dependencies()
+            
+            self.update_progress(0.3)
+            self.update_status("Installing Visual C++ Build Tools...")
+            self.install_visual_cpp_build_tools()
+            
+            self.update_progress(0.4)
+            self.update_status("Cloning repositories...")
+            self.run_command(['git', 'clone', 'https://github.com/daswer123/xtts-api-server.git', os.path.join(pandrator_path, 'xtts-api-server')])
+            self.run_command(['git', 'clone', 'https://github.com/lukaszliniewicz/Pandrator.git', os.path.join(pandrator_path, 'Pandrator')])
+
+            self.update_progress(0.5)
+            self.update_status("Installing Miniconda...")
+            conda_path = os.path.join(pandrator_path, 'conda')
+            self.install_conda(conda_path)
+
+            if not self.check_conda(conda_path):
+                self.update_status("Conda installation failed")
+                logging.error("Conda installation failed")
+                self.enable_buttons()
+                return
+
+            self.update_progress(0.6)
+            self.update_status("Creating Conda environments...")
+            self.create_conda_env(conda_path, 'xtts_api_server_installer', '3.10')
+            self.create_conda_env(conda_path, 'pandrator_installer', '3.10')
+
+            self.update_progress(0.8)
+            self.update_status("Installing PyTorch and xtts-api-server...")
+            self.install_pytorch_and_xtts_api_server(conda_path, 'xtts_api_server_installer')
+
+            self.update_progress(0.9)
+            self.update_status("Installing Pandrator requirements...")
+            pandrator_repo_path = os.path.join(pandrator_path, 'Pandrator')
+            self.install_requirements(conda_path, 'pandrator_installer', os.path.join(pandrator_repo_path, 'requirements.txt'))
+
+            # Create config file
+            config = {
+                'cuda_support': self.cuda_var.get()
+            }
+            with open(os.path.join(pandrator_path, 'config.json'), 'w') as f:
+                json.dump(config, f)
+
+            self.update_progress(1.0)
+            self.update_status("Installation complete!")
+            logging.info("Installation completed successfully.")
+            self.enable_buttons()
+        except Exception as e:
+            logging.error(f"Installation failed: {str(e)}")
+            logging.error(traceback.format_exc())
+            self.update_status("Installation failed. Check the log for details.")
+            self.enable_buttons()
 
     def run_xtts_api_server(self, conda_path, env_name, xtts_server_path, use_cpu=False):
         logging.info(f"Attempting to run XTTS API server...")
@@ -419,57 +673,6 @@ class PandratorInstaller(ctk.CTk):
         
         logging.error("xtts server failed to come online within the specified attempts.")
         return False
-
-    def install_process(self):
-        pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
-        
-        self.update_progress(0.1)
-        self.update_status("Installing dependencies...")
-        self.install_dependencies()
-        
-        self.update_progress(0.2)
-        self.update_status("Installing Visual C++ Build Tools...")
-        self.install_visual_cpp_build_tools()
-        
-        self.update_progress(0.3)
-        self.update_status("Cloning repositories...")
-        self.run_command(['git', 'clone', 'https://github.com/daswer123/xtts-api-server.git', os.path.join(pandrator_path, 'xtts-api-server')])
-        self.run_command(['git', 'clone', 'https://github.com/lukaszliniewicz/Pandrator.git', os.path.join(pandrator_path, 'Pandrator')])
-
-        self.update_progress(0.4)
-        self.update_status("Installing Miniconda...")
-        conda_path = os.path.join(pandrator_path, 'conda')
-        self.install_conda(conda_path)
-
-        if not self.check_conda(conda_path):
-            self.update_status("Conda installation failed")
-            self.enable_buttons()
-            return
-
-        self.update_progress(0.5)
-        self.update_status("Creating Conda environments...")
-        self.create_conda_env(conda_path, 'xtts_api_server_installer', '3.10')
-        self.create_conda_env(conda_path, 'pandrator_installer', '3.10')
-
-        self.update_progress(0.6)
-        self.update_status("Installing PyTorch and xtts-api-server...")
-        self.install_pytorch_and_xtts_api_server(conda_path, 'xtts_api_server_installer')
-
-        self.update_progress(0.8)
-        self.update_status("Installing Pandrator requirements...")
-        pandrator_repo_path = os.path.join(pandrator_path, 'Pandrator')
-        self.install_requirements(conda_path, 'pandrator_installer', os.path.join(pandrator_repo_path, 'requirements.txt'))
-
-        # Create config file
-        config = {
-            'cuda_support': self.cuda_var.get()
-        }
-        with open(os.path.join(pandrator_path, 'config.json'), 'w') as f:
-            json.dump(config, f)
-
-        self.update_progress(1.0)
-        self.update_status("Installation complete!")
-        self.enable_buttons()
 
     def launch_process(self, use_cpu=False):
         base_path = os.path.abspath(self.initial_working_dir)
