@@ -16,6 +16,9 @@ import tempfile
 import sys
 import ctypes
 import winreg
+import queue
+import msvcrt
+
 
 class PandratorInstaller(ctk.CTk):
     def __init__(self):
@@ -53,7 +56,7 @@ class PandratorInstaller(ctk.CTk):
         self.install_frame.grid_columnconfigure(0, weight=1)
 
         self.install_label = ctk.CTkLabel(self.install_frame, text="Install", font=("Arial", 18, "bold"))
-        self.install_label.grid(row=0, column=0, columnspan=3, pady=(10, 5), sticky="w", padx=10)
+        self.install_label.grid(row=0, column=0, columnspan=4, pady=(10, 5), sticky="w", padx=10)
 
         button_frame = ctk.CTkFrame(self.install_frame)
         button_frame.grid(row=1, column=0, sticky="w", padx=10, pady=10)
@@ -62,14 +65,18 @@ class PandratorInstaller(ctk.CTk):
                                             command=self.install_pandrator_xtts, width=200, height=40)
         self.install_button.grid(row=0, column=0, padx=(0, 10))
 
-        self.cuda_var = ctk.BooleanVar(value=True)
-        self.cuda_checkbox = ctk.CTkCheckBox(button_frame, text="Install CUDA PyTorch (uncheck if you don't have an Nvidia GPU)", variable=self.cuda_var, command=self.update_gpu_options)
-        self.cuda_checkbox.grid(row=0, column=1, padx=10)
-
         self.open_log_button = ctk.CTkButton(button_frame, text="Open Installation Log", 
                                              command=self.open_log_file, width=200, height=40)
-        self.open_log_button.grid(row=0, column=2, padx=(10, 0))
+        self.open_log_button.grid(row=0, column=1, padx=10)
         self.open_log_button.configure(state="disabled")
+
+        self.install_rvc_button = ctk.CTkButton(button_frame, text="Install RVC_CLI", 
+                                                command=self.install_rvc_cli, width=200, height=40)
+        self.install_rvc_button.grid(row=0, column=2, padx=(10, 0))
+
+        self.cuda_var = ctk.BooleanVar(value=True)
+        self.cuda_checkbox = ctk.CTkCheckBox(self.install_frame, text="Install CUDA PyTorch (uncheck if you don't have an Nvidia GPU)", variable=self.cuda_var, command=self.update_gpu_options)
+        self.cuda_checkbox.grid(row=2, column=0, pady=(10, 0), sticky="w", padx=10)
 
         # Launch Section
         self.launch_frame = ctk.CTkFrame(self)
@@ -105,7 +112,7 @@ class PandratorInstaller(ctk.CTk):
         xtts_options_frame = ctk.CTkFrame(self.xtts_gpu_frame)
         xtts_options_frame.grid(row=1, column=0, sticky="w", padx=10, pady=10)
 
-        self.lowvram_var = ctk.BooleanVar(value=True)
+        self.lowvram_var = ctk.BooleanVar(value=False)
         self.lowvram_checkbox = ctk.CTkCheckBox(xtts_options_frame, text="Low VRAM mode", variable=self.lowvram_var)
         self.lowvram_checkbox.grid(row=0, column=0, padx=(0, 10))
 
@@ -146,6 +153,7 @@ class PandratorInstaller(ctk.CTk):
         if os.path.exists(pandrator_path):
             self.launch_cpu_button.configure(state="normal")
             self.launch_pandrator_button.configure(state="normal")
+            self.install_rvc_button.configure(state="normal")
             
             config_path = os.path.join(pandrator_path, 'config.json')
             if os.path.exists(config_path):
@@ -166,6 +174,7 @@ class PandratorInstaller(ctk.CTk):
             self.launch_gpu_button.configure(state="disabled")
             self.launch_cpu_button.configure(state="disabled")
             self.launch_pandrator_button.configure(state="disabled")
+            self.install_rvc_button.configure(state="disabled")
             self.xtts_gpu_frame.grid_remove()
 
     def update_gpu_options(self):
@@ -235,6 +244,7 @@ class PandratorInstaller(ctk.CTk):
         self.cuda_checkbox.configure(state="disabled")
         self.lowvram_checkbox.configure(state="disabled")
         self.deepspeed_checkbox.configure(state="disabled")
+        self.install_rvc_button.configure(state="disabled")
 
     def enable_buttons(self):
         self.install_button.configure(state="normal")
@@ -290,6 +300,7 @@ class PandratorInstaller(ctk.CTk):
             return True
         except subprocess.CalledProcessError:
             return False
+
     def refresh_environment_variables(self):
         """Refresh the environment variables for the current session."""
         try:
@@ -817,6 +828,122 @@ class PandratorInstaller(ctk.CTk):
         self.shutdown_xtts()
         super().destroy()
 
+    def install_rvc_cli(self):
+        pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
+        rvc_cli_path = os.path.join(pandrator_path, 'rvc-cli')
+
+        if not os.path.exists(pandrator_path):
+            messagebox.showerror("Error", "Pandrator folder does not exist. Please install Pandrator first.")
+            return
+
+        self.update_status("Installing RVC_CLI...")
+        logging.info("Starting RVC_CLI installation")
+
+        # Ensure logging is properly set up
+        if not hasattr(self, 'log_filename'):
+            self.initialize_logging()
+
+        # Create a queue for communication between threads
+        self.output_queue = queue.Queue()
+
+        # Start the installation process in a separate thread
+        threading.Thread(target=self._install_rvc_cli_thread, args=(rvc_cli_path,), daemon=True).start()
+
+        # Start checking the queue for updates
+        self.after(100, self._check_install_queue)
+
+    def _install_rvc_cli_thread(self, rvc_cli_path):
+        try:
+            # Clone RVC_CLI repository
+            self._log_and_update("Cloning RVC_CLI repository...")
+            clone_cmd = ['git', 'clone', 'https://github.com/blaisewf/rvc-cli.git', rvc_cli_path]
+            self._log_and_update(f"Running command: {' '.join(clone_cmd)}")
+            clone_result = subprocess.run(clone_cmd, capture_output=True, text=True, check=True)
+            self._log_and_update(clone_result.stdout)
+
+            # Run install.bat
+            install_bat_path = os.path.join(rvc_cli_path, 'install.bat')
+            self._log_and_update("Running install.bat for RVC_CLI...")
+            self._log_and_update(f"Running command: {install_bat_path}")
+            
+            install_process = subprocess.Popen(install_bat_path, cwd=rvc_cli_path, shell=True, 
+                                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            
+            installation_successful = False
+            for line in iter(install_process.stdout.readline, ''):
+                stripped_line = line.strip()
+                self._log_and_update(stripped_line)
+                if "RVC CLI has been installed successfully" in stripped_line:
+                    installation_successful = True
+                    break
+
+            if not installation_successful:
+                install_process.wait(timeout=900)  # 15 minutes timeout
+                if install_process.returncode != 0:
+                    raise Exception(f"Installation process exited with non-zero return code: {install_process.returncode}")
+            else:
+                install_process.terminate()
+                install_process.wait(timeout=30)  # Give it 30 seconds to terminate gracefully
+
+            # Run the prerequisites command
+            self._log_and_update("Running prerequisites...")
+            python_exe = os.path.join(rvc_cli_path, 'env', 'python.exe')
+            rvc_cli_script = os.path.join(rvc_cli_path, 'rvc_cli.py')
+            
+            if not os.path.exists(python_exe):
+                raise FileNotFoundError(f"Python executable not found at: {python_exe}")
+            if not os.path.exists(rvc_cli_script):
+                raise FileNotFoundError(f"RVC CLI script not found at: {rvc_cli_script}")
+
+            prerequisites_cmd = [python_exe, rvc_cli_script, 'prerequisites']
+            self._log_and_update(f"Running command: {' '.join(prerequisites_cmd)}")
+            
+            prereq_process = subprocess.Popen(prerequisites_cmd, cwd=rvc_cli_path, 
+                                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            
+            for line in iter(prereq_process.stdout.readline, ''):
+                self._log_and_update(line.strip())
+
+            prereq_process.wait(timeout=1800)  # 30 minutes timeout
+            if prereq_process.returncode != 0:
+                raise Exception(f"Prerequisites process exited with non-zero return code: {prereq_process.returncode}")
+
+            self._log_and_update("RVC_CLI installation and prerequisites download completed successfully.")
+            self.output_queue.put(("done", "RVC_CLI is now installed and ready to use."))
+
+        except Exception as e:
+            error_msg = f"An error occurred during RVC_CLI installation or prerequisites download: {str(e)}"
+            self._log_and_update(error_msg, level=logging.ERROR)
+            self.output_queue.put(("error", error_msg))
+
+    def _check_install_queue(self):
+        try:
+            message_type, message = self.output_queue.get_nowait()
+            if message_type == "status":
+                self.update_status(message)
+            elif message_type == "done":
+                self.update_status(message)
+                messagebox.showinfo("Installation Complete", message)
+            elif message_type == "error":
+                self.update_status(message)
+                messagebox.showerror("Installation Error", message)
+        except queue.Empty:
+            pass
+        finally:
+            # Schedule the next check
+            self.after(100, self._check_install_queue)
+
+    def _log_and_update(self, message, level=logging.INFO):
+        """Log the message to file and put it in the queue for GUI update"""
+        if hasattr(self, 'log_filename'):
+            with open(self.log_filename, 'a', encoding='utf-8') as log_file:
+                log_file.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - {message}\n")
+        logging.log(level, message)
+        self.output_queue.put(("status", message))
+
+    def update_status(self, message):
+        self.status_label.configure(text=message)
+        self.update()
 if __name__ == "__main__":
     app = PandratorInstaller()
     app.mainloop()
