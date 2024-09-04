@@ -2591,7 +2591,7 @@ class TTSOptimizerGUI:
             # Get the directory of RVC_CLI
             current_dir = os.path.dirname(os.path.abspath(__file__))
             parent_dir = os.path.dirname(current_dir)
-            rvc_cli_dir = os.path.join(parent_dir, "RVC_CLI")
+            rvc_cli_dir = os.path.join(parent_dir, "rvc-cli")
             rvc_cli_path = os.path.join(rvc_cli_dir, "rvc_cli.py")
 
             # Use the Python executable from the RVC_CLI's virtual environment
