@@ -37,7 +37,7 @@ It leverages the [XTTS](https://huggingface.co/coqui/XTTS-v2), [Silero](https://
 ## Samples
 The samples were generated using the minimal settings - no LLM text processing, RVC or TTS evaluation, and no sentences were regenerated. Both XTTS and Silero generations were faster than playback speed. 
 
-https://github.com/user-attachments/assets/d8524ab8-1bf7-4de4-b33d-936e21aea09f
+https://github.com/user-attachments/assets/1c763c94-c66b-4c22-a698-6c4bcf3e875d
 
 https://github.com/lukaszliniewicz/Pandrator/assets/75737665/bbb10512-79ed-43ea-bee3-e271b605580e
 
