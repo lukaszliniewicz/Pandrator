@@ -33,6 +33,7 @@ import nltk
 from nltk.tokenize import sent_tokenize
 nltk.download('punkt')
 import hasami
+import wave
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -2578,7 +2579,7 @@ class TTSOptimizerGUI:
     def process_with_rvc(self, audio_segment):
         try:
             rvc_model_path = self.rvc_model_path.get()
-            rvc_index_path = self.rvc_index_path.get() 
+            rvc_index_path = self.rvc_index_path.get()
 
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_input_file:
                 temp_input_path = temp_input_file.name
@@ -2587,23 +2588,44 @@ class TTSOptimizerGUI:
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_output_file:
                 temp_output_path = temp_output_file.name
 
-            api_url = "http://127.0.0.1:8000/infer"
-            payload = {
-                "input_path": temp_input_path,
-                "output_path": temp_output_path,
-                "pth_path": rvc_model_path,
-                "index_path": rvc_index_path,
-                "clean_audio": True,
-                "clean_strength": 0.3
-            }
-            response = requests.post(api_url, json=payload)
+            # Get the directory of RVC_CLI
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            parent_dir = os.path.dirname(current_dir)
+            rvc_cli_dir = os.path.join(parent_dir, "RVC_CLI")
+            rvc_cli_path = os.path.join(rvc_cli_dir, "rvc_cli.py")
 
-            if response.status_code == 200:
-                processed_audio_data = AudioSegment.from_file(temp_output_path, format="wav")
-                return processed_audio_data
-            else:
-                logging.error(f"RVC Processing Error: {response.status_code} - {response.text}")
-                return None
+            # Use the Python executable from the RVC_CLI's virtual environment
+            python_exe = os.path.join(rvc_cli_dir, "env", "python.exe")
+
+            # Construct the command to run rvc_cli.py
+            command = [
+                python_exe,
+                rvc_cli_path,
+                "infer",
+                "--input_path", temp_input_path,
+                "--output_path", temp_output_path,
+                "--pth_path", rvc_model_path,
+                "--index_path", rvc_index_path,
+                "--pitch", "0",
+                "--f0_method", "rmvpe",
+                "--clean_audio","True",
+                "--clean_strength", "0.7",
+                "--protect", "0.3"
+            ]
+
+            # Run the command from the RVC_CLI directory
+            result = subprocess.run(command, capture_output=True, text=True, cwd=rvc_cli_dir)
+
+            if result.returncode != 0:
+                print(f"RVC CLI Output: {result.stdout}")
+                raise Exception(f"RVC CLI Error: {result.stderr}")
+
+            # Check if the output file exists and is not empty
+            if not os.path.exists(temp_output_path) or os.path.getsize(temp_output_path) == 0:
+                raise Exception("RVC CLI did not produce an output file")
+
+            processed_audio_data = AudioSegment.from_wav(temp_output_path)
+            return processed_audio_data
 
         except Exception as e:
             logging.error(f"RVC Processing Error: {str(e)}")
