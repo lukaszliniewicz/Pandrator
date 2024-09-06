@@ -162,6 +162,7 @@ Contributions, suggestions for improvements, and bug reports are most welcome!
 - [ ] Include OCR for PDFs.
 - [ ] Add support for a higher quality local TTS model, Tortoise.
 - [ ] Add option to record a voice sample and use it for TTS to the GUI.
+- [x] Add support for custom XTTS models 
 - [x] Add workflow to create dubbing from `.srt` subtitle files.
 - [x] Include support for PDF files.
 - [x] Integrate editing capabilities for processed sentences within the UI.
