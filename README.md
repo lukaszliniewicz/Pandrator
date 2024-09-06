@@ -51,7 +51,7 @@ It's likely that you will need at least 16GB of RAM, a reasonably modern CPU for
 #### Silero
 Silero runs on the CPU. It should perform well on almost all reasonably modern systems. 
 #### VoiceCraft
-You can run VoiceCraft on a cpu, but generation will be very slow. To achieve meaningful acceleration with a GPU (Nvidia), you need one with at least 8GB of VRAM. 
+You can run VoiceCraft on a cpu, but generation will be very slow. To achieve meaningful acceleration with a GPU (Nvidia), you need one with at least 8GB of VRAM. If you have only 4GB, disable kv cache in advanced settings. 
 
 ### Dependencies
 This project relies on several APIs and services (running locally) and libraries, notably:
