@@ -83,10 +83,8 @@ class PandratorInstaller(ctk.CTk):
         self.info_text.insert("1.0", "This tool will help you set up and run Pandrator and other TTS engines and tools. "
                               "It will install Pandrator, Miniconda, required Python packages, "
                               "and dependencies (Git, Curl, FFmpeg, Calibre, Visual Studio C++ Build Tools) using winget if not installed already.\n\n"
-                              "This installer will automatically install winget if it's not already installed on your system.\n\n"
                               "To uninstall Pandrator, simply delete the Pandrator folder.\n\n"
-                              "The installation will take about 6-9GB of disk space depending on the selected options.\n\n"
-                              "Select your options below and click the appropriate button to begin.")
+                              "The installation will take about 6-9GB of disk space depending on the selected options.\n\n")
         self.info_text.configure(state="disabled")
 
         # Installation Frame
@@ -132,30 +130,22 @@ class PandratorInstaller(ctk.CTk):
         # Launch Frame
         self.launch_frame = ctk.CTkFrame(self.content_frame)
         self.launch_frame.pack(fill="x", padx=20, pady=10)
+        ctk.CTkLabel(self.launch_frame, text="Launch", font=("Arial", 18, "bold")).grid(row=0, column=0, columnspan=4, sticky="w", padx=10, pady=(10, 5))
+        ctk.CTkCheckBox(self.launch_frame, text="Pandrator", variable=self.launch_pandrator_var).grid(row=1, column=0, columnspan=4, sticky="w", padx=10, pady=5)
 
-        ctk.CTkLabel(self.launch_frame, text="Launch", font=("Arial", 18, "bold")).pack(anchor="w", padx=10, pady=(10, 5))
+        # XTTS options in one row
+        ctk.CTkCheckBox(self.launch_frame, text="XTTS", variable=self.launch_xtts_var).grid(row=2, column=0, sticky="w", padx=10, pady=5)
+        self.xtts_cpu_checkbox = ctk.CTkCheckBox(self.launch_frame, text="Use CPU", variable=self.xtts_cpu_launch_var, command=self.update_xtts_launch_options)
+        self.xtts_cpu_checkbox.grid(row=2, column=1, sticky="w", padx=10, pady=5)
+        self.lowvram_checkbox = ctk.CTkCheckBox(self.launch_frame, text="Low VRAM", variable=self.lowvram_var)
+        self.lowvram_checkbox.grid(row=2, column=2, sticky="w", padx=10, pady=5)
+        self.deepspeed_checkbox = ctk.CTkCheckBox(self.launch_frame, text="DeepSpeed", variable=self.deepspeed_var)
+        self.deepspeed_checkbox.grid(row=2, column=3, sticky="w", padx=10, pady=5)
 
-        ctk.CTkCheckBox(self.launch_frame, text="Pandrator", variable=self.launch_pandrator_var).pack(anchor="w", padx=10, pady=5)
-
-        xtts_frame = ctk.CTkFrame(self.launch_frame)
-        xtts_frame.pack(fill="x", padx=10, pady=5)
-
-        ctk.CTkCheckBox(xtts_frame, text="XTTS", variable=self.launch_xtts_var).pack(side="left", padx=(0, 20))
-        self.xtts_cpu_checkbox = ctk.CTkCheckBox(xtts_frame, text="Use CPU", variable=self.xtts_cpu_launch_var, command=self.update_xtts_launch_options)
-        self.xtts_cpu_checkbox.pack(side="left", padx=(0, 20))
-
-        self.lowvram_checkbox = ctk.CTkCheckBox(xtts_frame, text="Low VRAM", variable=self.lowvram_var)
-        self.lowvram_checkbox.pack(side="left", padx=(0, 20))
-
-        self.deepspeed_checkbox = ctk.CTkCheckBox(xtts_frame, text="DeepSpeed", variable=self.deepspeed_var)
-        self.deepspeed_checkbox.pack(side="left", padx=(0, 20))
-
-        ctk.CTkCheckBox(self.launch_frame, text="Silero", variable=self.launch_silero_var).pack(anchor="w", padx=10, pady=5)
-
-        ctk.CTkCheckBox(self.launch_frame, text="Voicecraft", variable=self.launch_voicecraft_var).pack(anchor="w", padx=10, pady=5)
-
+        ctk.CTkCheckBox(self.launch_frame, text="Silero", variable=self.launch_silero_var).grid(row=3, column=0, columnspan=4, sticky="w", padx=10, pady=5)
+        ctk.CTkCheckBox(self.launch_frame, text="Voicecraft", variable=self.launch_voicecraft_var).grid(row=4, column=0, columnspan=4, sticky="w", padx=10, pady=5)
         self.launch_button = ctk.CTkButton(self.launch_frame, text="Launch", command=self.launch_apps, width=200, height=40)
-        self.launch_button.pack(anchor="w", padx=10, pady=(20, 10))
+        self.launch_button.grid(row=5, column=0, columnspan=4, sticky="w", padx=10, pady=(20, 10))
 
         # Progress Bar and Status Label
         self.progress_bar = ctk.CTkProgressBar(self.content_frame)
@@ -219,6 +209,8 @@ class PandratorInstaller(ctk.CTk):
             self.voicecraft_checkbox.configure(state="disabled")
         if self.rvc_checkbox:
             self.rvc_checkbox.configure(state="disabled")
+        self.update_button_states()
+        self.update_gpu_options()            
 
     def enable_buttons(self):
         if self.install_button:
@@ -316,6 +308,36 @@ class PandratorInstaller(ctk.CTk):
                 if xtts_checkbox.get():
                     xtts_cpu_checkbox.configure(state="disabled")
         
+    def refresh_gui_state(self):
+        # Read the latest config
+        pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
+        config_path = os.path.join(pandrator_path, 'config.json')
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+            
+            # Update installation checkboxes
+            self.xtts_checkbox.configure(state="disabled" if config.get('xtts_support', False) else "normal")
+            self.xtts_cpu_checkbox.configure(state="disabled" if config.get('xtts_support', False) else "normal")
+            self.silero_checkbox.configure(state="disabled" if config.get('silero_support', False) else "normal")
+            self.voicecraft_checkbox.configure(state="disabled" if config.get('voicecraft_support', False) else "normal")
+            
+            # Update launch checkboxes
+            for widget in self.launch_frame.winfo_children():
+                if isinstance(widget, ctk.CTkCheckBox):
+                    if widget.cget("text") == "XTTS":
+                        widget.configure(state="normal" if config.get('xtts_support', False) else "disabled")
+                    elif widget.cget("text") == "Silero":
+                        widget.configure(state="normal" if config.get('silero_support', False) else "disabled")
+                    elif widget.cget("text") == "Voicecraft":
+                        widget.configure(state="normal" if config.get('voicecraft_support', False) else "disabled")
+                elif isinstance(widget, ctk.CTkFrame):
+                    for child in widget.winfo_children():
+                        if isinstance(child, ctk.CTkCheckBox):
+                            if child.cget("text") in ["Low VRAM", "DeepSpeed", "Use CPU"]:
+                                child.configure(state="normal" if config.get('xtts_support', False) else "disabled")
+        
+        
     def remove_directory(self, path):
         max_attempts = 5
         for attempt in range(max_attempts):
@@ -400,25 +422,6 @@ class PandratorInstaller(ctk.CTk):
             os.startfile(self.log_filename)
         else:
             self.status_label.configure(text="No log file available.")
-
-    def disable_buttons(self):
-        self.install_button.configure(state="disabled")
-        self.pandrator_checkbox.configure(state="disabled")
-        self.xtts_checkbox.configure(state="disabled")
-        self.xtts_cpu_checkbox.configure(state="disabled")
-        self.silero_checkbox.configure(state="disabled")
-        self.voicecraft_checkbox.configure(state="disabled")
-        self.rvc_checkbox.configure(state="disabled")
-
-    def enable_buttons(self):
-        self.install_button.configure(state="normal")
-        self.pandrator_checkbox.configure(state="normal")
-        self.xtts_checkbox.configure(state="normal")
-        self.silero_checkbox.configure(state="normal")
-        self.voicecraft_checkbox.configure(state="normal")
-        self.rvc_checkbox.configure(state="normal")
-        self.update_button_states()
-        self.update_gpu_options()
 
     def update_progress(self, value):
         self.progress_bar.set(value)
@@ -1020,23 +1023,19 @@ class PandratorInstaller(ctk.CTk):
             with open(config_path, 'w') as f:
                 json.dump(config, f)
 
-            # Update button states and GPU options
-            self.update_button_states()
-            self.update_gpu_options()
-
             self.update_progress(1.0)
             self.update_status("Installation complete!")
             logging.info("Installation completed successfully.")
-            self.enable_buttons()
-            self.check_existing_installations()
+
         except Exception as e:
             logging.error(f"Installation failed: {str(e)}")
             logging.error(traceback.format_exc())
             self.update_status("Installation failed. Check the log for details.")
         finally:
+            self.after(100, self.update_gpu_options)
+            self.after(100, self.update_button_states)
             self.check_existing_installations()
-            self.update_button_states()
-            self.update_gpu_options()
+
 
     def launch_apps(self):
         base_path = os.path.abspath(self.initial_working_dir)
