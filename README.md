@@ -8,7 +8,7 @@
 
 Pandrator is a tool designed to transform text, PDF, EPUB and SRT files into spoken audio in multiple languages based on open source software, including voice cloning, LLM-based text preprocessing and the ability to directly save generated subtitle audio to a video file by mixing the synchronized output with the original audio track of the video. It aspires to be easy to use and install - it has a one-click installer and a graphical user interface.
 
-It leverages the [XTTS](https://huggingface.co/coqui/XTTS-v2), [Silero](https://github.com/snakers4/silero-models) and [VoiceCraft](https://github.com/jasonppy/VoiceCraft) model(s) for text-to-speech conversion and voice cloning, enhanced by RVC_CLI for quality improvement and better voice cloning results, and NISQA for audio quality evaluation. Additionally, it incorporates Text Generation Webui's API for local LLM-based text pre-processing, enabling a wide range of text manipulations before audio generation.
+It leverages the [XTTS](https://huggingface.co/coqui/XTTS-v2), [Silero](https://github.com/snakers4/silero-models) and [VoiceCraft](https://github.com/jasonppy/VoiceCraft) model(s) for text-to-speech conversion and voice cloning, enhanced by [RVC_CLI](https://github.com/blaisewf/rvc-cli) for quality improvement and better voice cloning results, and NISQA for audio quality evaluation. Additionally, it incorporates [Text Generation Webui's](https://github.com/oobabooga/text-generation-webui) API for local LLM-based text pre-processing, enabling a wide range of text manipulations before audio generation.
 
 - [Pandrator, an audiobook generator](#pandrator-an-audiobook-generator)
   - [Samples](#samples)
@@ -18,7 +18,7 @@ It leverages the [XTTS](https://huggingface.co/coqui/XTTS-v2), [Silero](https://
       - [Required](#required)
       - [Optional](#optional)
   - [Installation](#installation)
-    - [Minimal One-Click Installation Executable (Windows with an Nvidia GPU only)](#minimal-one-click-installation-executable-windows-with-an-nvidia-gpu-only)
+    - [Minimal One-Click Installation Executable (Windows with an Nvidia GPU only)](#installer-and-launcher)
     - [Manual Installation](#manual-installation)
   - [Features](#features)
   - [Quick Start Guide](#quick-start-guide)
@@ -32,7 +32,7 @@ It leverages the [XTTS](https://huggingface.co/coqui/XTTS-v2), [Silero](https://
   - [Tips](#tips)
   - [To-do](#to-do)
 
-![UI Demonstration Image](ui_demonstration.png)
+![UI Demonstration Image](pandrator_demonstration.gif)
 
 ## Samples
 The samples were generated using the minimal settings - no LLM text processing, RVC or TTS evaluation, and no sentences were regenerated. Both XTTS and Silero generations were faster than playback speed. 
@@ -68,18 +68,17 @@ This project relies on several APIs and services (running locally) and libraries
 
 ## Installation
 
-### Minimal One-Click Installation Executables (Windows only):
-Run `pandrator_start_minimal_xtts.exe`, `pandrator_start_minimal_silero.exe` or `pandrator_start_minimal_voicecraft.exe` with administrator priviliges. You will find them under [Releases](https://github.com/lukaszliniewicz/Pandrator/releases). The executables were created using [pyinstaller](https://github.com/pyinstaller/pyinstaller) from `pandrator_start_minimal_xtts.py`, `pandrator_start_minimal_silero.py` and `pandrator_start_minimal_voicecraft.py` in the repository.
+### GUI Installer and Launcher (Windows)
+Run `pandrator_installer_launcher.exe` with administrator priviliges. You will find them under [Releases](https://github.com/lukaszliniewicz/Pandrator/releases). The executable was created using [pyinstaller](https://github.com/pyinstaller/pyinstaller) from `pandrator_installer_launcher.py` in the repository.
 
 **The file may be flagged as a threat by antivirus software, so you may have to add it as an exception.**
 
-On first use the EXE creates the Pandrator folder, installs `curl`, `git`, `ffmpeg` (using Chocolatey, if not already installed) and `Miniconda`, clones the XTTS Api Server respository, the Silero Api Server repository or the VoiceCraft API repository and the Pandrator repository, creates conda environments, installs dependencies and launches Pandrator and the server you chose. **You may use the EXE to launch Pandrator later**. 
+You can choose which TTS engines to install and whether to install the software that enabled RVC voice cloning (RVC_CLI). You may install new components later. The installer creates the Pandrator folder, installs `winget`, `git`, `ffmpeg`, `C++ Build Tools` and/or `Calibre` if not installed already and `Miniconda`, clones the XTTS Api Server respository, the Silero Api Server repository or the VoiceCraft API repository and the Pandrator repository, creates conda environments, installs dependencies and launches Pandrator and the server you chose. **You may use the the Installer/Launcher to launch Pandrator and all the tools later**. 
 
-If you want to perform the setup again, remove the Pandrator folder it created. Please allow at least a couple of minutes for the initial setup process to download models and install dependencies (it takes about 7-10 minutes for me).
+If you want to perform the setup again, remove the Pandrator folder it created. Please allow at least a couple of minutes for the initial setup process to download models and install dependencies. Depending on the options you've chosen, it may take up to 25 minutes.
 
-For additional functionality:
+For additional functionality not yet included in the installer:
 - Install Text Generation Webui and remember to enable the API (add `--api` to `CMD_FLAGS.txt` in the main directory of the Webui before starting it).
-- Set up RVC_CLI for enhancing generations with RVC.
 - Set up NISQA API for automatic evaluation of generations.
 
 Please refer to the repositories linked under [Dependencies](#Dependencies) for detailed installation instructions. Remember that the APIs must be running to make use of the functionalities they offer.
@@ -102,9 +101,6 @@ Please refer to the repositories linked under [Dependencies](#Dependencies) for 
 - **GUI:** Built with customtkinker for a user-friendly experience.
 
 ## Quick Start Guide
-
-![Demonstration GIF](demonstration.gif)
-
 ### Basic Usage
 If you don't want to use the additional functionalities, you have everything you need in the **Session tab**. 
 
