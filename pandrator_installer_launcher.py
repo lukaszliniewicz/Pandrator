@@ -82,7 +82,7 @@ class PandratorInstaller(ctk.CTk):
         self.info_text.pack(fill="x", padx=20, pady=10)
         self.info_text.insert("1.0", "This tool will help you set up and run Pandrator and other TTS engines and tools. "
                               "It will install Pandrator, Miniconda, required Python packages, "
-                              "and dependencies (Git, Curl, FFmpeg, Calibre, Visual Studio C++ Build Tools) using winget if not installed already.\n\n"
+                              "and dependencies (Git, FFmpeg, Calibre, Visual Studio C++ Build Tools) using winget if not installed already.\n\n"
                               "To uninstall Pandrator, simply delete the Pandrator folder.\n\n"
                               "The installation will take about 6-9GB of disk space depending on the selected options.\n\n")
         self.info_text.configure(state="disabled")
@@ -185,14 +185,27 @@ class PandratorInstaller(ctk.CTk):
         self.update_xtts_launch_options()
         
     def update_xtts_launch_options(self):
-        if self.xtts_cpu_launch_var.get():
-            self.lowvram_var.set(False)
-            self.deepspeed_var.set(False)
+        config_path = os.path.join(self.initial_working_dir, 'Pandrator', 'config.json')
+        cuda_support = False
+        
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+            cuda_support = config.get('cuda_support', False)
+
+        if cuda_support:
+            self.xtts_cpu_checkbox.configure(state="normal")
+            if self.xtts_cpu_launch_var.get():
+                self.lowvram_checkbox.configure(state="disabled")
+                self.deepspeed_checkbox.configure(state="disabled")
+            else:
+                self.lowvram_checkbox.configure(state="normal")
+                self.deepspeed_checkbox.configure(state="normal")
+        else:
+            self.xtts_cpu_checkbox.configure(state="normal")
+            self.xtts_cpu_launch_var.set(True)
             self.lowvram_checkbox.configure(state="disabled")
             self.deepspeed_checkbox.configure(state="disabled")
-        else:
-            self.lowvram_checkbox.configure(state="normal")
-            self.deepspeed_checkbox.configure(state="normal")
 
     def disable_buttons(self):
         if self.install_button:
@@ -512,14 +525,26 @@ class PandratorInstaller(ctk.CTk):
                         f'Invoke-WebRequest -Uri "https://github.com/asheroto/winget-install/releases/latest/download/winget-install.ps1" -OutFile "{script_path}"'
                     ], use_shell=True)
                     
-                    # Execute the PowerShell script
-                    self.run_command([
-                        'powershell',
-                        '-ExecutionPolicy',
-                        'Bypass',
-                        '-File',
-                        script_path
-                    ], use_shell=True)
+                    # Try to execute the PowerShell script
+                    try:
+                        self.run_command([
+                            'powershell',
+                            '-ExecutionPolicy',
+                            'Bypass',
+                            '-File',
+                            script_path
+                        ], use_shell=True)
+                    except subprocess.CalledProcessError:
+                        logging.warning("Failed to execute PowerShell script. Trying with explicit path...")
+                        # Fallback to explicit PowerShell path
+                        powershell_path = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+                        self.run_command([
+                            powershell_path,
+                            '-ExecutionPolicy',
+                            'Bypass',
+                            '-File',
+                            script_path
+                        ], use_shell=True)
                 
                 logging.info("winget has been installed.")
                 
@@ -546,9 +571,6 @@ class PandratorInstaller(ctk.CTk):
             if program_name == 'git':
                 key_path = r"SOFTWARE\GitForWindows"
                 value_name = "InstallPath"
-            elif program_name == 'curl':
-                key_path = r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\curl.exe"
-                value_name = None  # Default value
             else:
                 return None
 
@@ -562,7 +584,7 @@ class PandratorInstaller(ctk.CTk):
 
     def install_dependencies(self):
         logging.info("Starting install_dependencies method")
-        dependencies = [('Git.Git', 'git'), ('cURL', 'curl'), ('Gyan.FFmpeg', 'ffmpeg'), ('calibre.calibre', 'calibre')]
+        dependencies = [('Git.Git', 'git')]
         for winget_id, program_name in dependencies:
             logging.info(f"Checking installation for {program_name}")
             if not self.check_program_installed(program_name):
@@ -573,20 +595,15 @@ class PandratorInstaller(ctk.CTk):
                     # Refresh environment variables in a new session
                     self.refresh_env_in_new_session()
                     
-                    # Only verify installation for git and curl
-                    if program_name in ['git', 'curl']:
+                    # Only verify installation for git
+                    if program_name == 'git':
                         if not self.check_program_installed(program_name):
                             logging.warning(f"{program_name} installation not detected. Attempting to use absolute path.")
                             program_path = self.get_program_path_from_registry(program_name)
                             if program_path:
-                                if program_name == 'git':
-                                    bin_path = os.path.join(program_path, 'bin')
-                                    os.environ['PATH'] = f"{bin_path};{os.environ['PATH']}"
-                                    logging.info(f"Added {program_name} to PATH: {bin_path}")
-                                else:
-                                    program_dir = os.path.dirname(program_path)
-                                    os.environ['PATH'] = f"{program_dir};{os.environ['PATH']}"
-                                    logging.info(f"Added {program_name} to PATH: {program_dir}")
+                                bin_path = os.path.join(program_path, 'bin')
+                                os.environ['PATH'] = f"{bin_path};{os.environ['PATH']}"
+                                logging.info(f"Added {program_name} to PATH: {bin_path}")
                             else:
                                 absolute_path = self.get_program_path(program_name)
                                 if absolute_path:
@@ -594,8 +611,6 @@ class PandratorInstaller(ctk.CTk):
                                     logging.info(f"Updated {program_name} path: {absolute_path}")
                                 else:
                                     raise Exception(f"Failed to find {program_name} after installation.")
-                    else:
-                        logging.info(f"Skipping post-installation check for {program_name}")
                     
                 except subprocess.CalledProcessError as e:
                     logging.error(f"Failed to install {program_name}.")
@@ -603,6 +618,35 @@ class PandratorInstaller(ctk.CTk):
                     raise
             else:
                 logging.info(f"{program_name} is already installed.")
+
+        # Handle Calibre installation separately
+        return self.install_calibre()
+
+    def install_calibre(self):
+        logging.info("Checking installation for Calibre")
+        if not self.check_program_installed('calibre'):
+            logging.info("Installing Calibre...")
+            try:
+                self.run_command(['winget', 'install', '--id', 'calibre.calibre', '-e', '--accept-source-agreements', '--accept-package-agreements'])
+                self.refresh_env_in_new_session()
+                if self.check_program_installed('calibre'):
+                    logging.info("Calibre installed successfully.")
+                    return True
+                else:
+                    logging.warning("Calibre installation not detected after installation attempt.")
+                    return False
+            except subprocess.CalledProcessError as e:
+                logging.error("Failed to install Calibre.")
+                logging.error(f"Error output: {e.stderr.decode('utf-8')}")
+                return False
+        else:
+            logging.info("Calibre is already installed.")
+            return True
+            
+    def show_calibre_installation_message(self):
+        message = ("Calibre installation failed. Please install Calibre manually.\n"
+                   "You can download it from: https://calibre-ebook.com/download_windows")
+        messagebox.showwarning("Calibre Installation Required", message)
 
     def refresh_env_in_new_session(self):
         refresh_cmd = 'powershell -Command "[System.Environment]::GetEnvironmentVariables([System.EnvironmentVariableTarget]::Machine)"'
@@ -659,19 +703,57 @@ class PandratorInstaller(ctk.CTk):
     def install_conda(self, install_path):
         logging.info("Installing Miniconda...")
         conda_installer = 'Miniconda3-latest-Windows-x86_64.exe'
-        self.run_command(['curl', '-O', f'https://repo.anaconda.com/miniconda/{conda_installer}'])
+        url = f'https://repo.anaconda.com/miniconda/{conda_installer}'
+        
+        # Download the file
+        response = requests.get(url)
+        with open(conda_installer, 'wb') as f:
+            f.write(response.content)
+        
         self.run_command([conda_installer, '/InstallationType=JustMe', '/RegisterPython=0', '/S', f'/D={install_path}'])
         os.remove(conda_installer)
 
     def check_conda(self, conda_path):
         return os.path.exists(os.path.join(conda_path, 'Scripts', 'conda.exe'))
 
-    def create_conda_env(self, conda_path, env_name, python_version):
+    def create_conda_env(self, conda_path, env_name, python_version, additional_packages=None):
         logging.info(f"Creating conda environment {env_name}...")
         try:
-            self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'create', '-n', env_name, f'python={python_version}', '-y'])
+            # Create the environment with Python
+            create_command = [
+                os.path.join(conda_path, 'Scripts', 'conda.exe'),
+                'create',
+                '-n', env_name,
+                f'python={python_version}',
+                '-y'
+            ]
+            self.run_command(create_command)
+
+            # If it's the pandrator_installer environment, install ffmpeg from conda-forge
+            if env_name == 'pandrator_installer':
+                logging.info("Installing ffmpeg from conda-forge for pandrator_installer...")
+                ffmpeg_command = [
+                    os.path.join(conda_path, 'Scripts', 'conda.exe'),
+                    'install',
+                    '-n', env_name,
+                    'conda-forge::ffmpeg',
+                    '-y'
+                ]
+                self.run_command(ffmpeg_command)
+
+            # Install additional packages if specified
+            if additional_packages:
+                logging.info(f"Installing additional packages: {', '.join(additional_packages)}")
+                install_command = [
+                    os.path.join(conda_path, 'Scripts', 'conda.exe'),
+                    'install',
+                    '-n', env_name,
+                    '-y'
+                ] + additional_packages
+                self.run_command(install_command)
+
         except subprocess.CalledProcessError as e:
-            logging.error(f"Failed to create conda environment {env_name}")
+            logging.error(f"Failed to create or setup conda environment {env_name}")
             logging.error(f"Error output: {e.stderr.decode('utf-8')}")
             raise
 
@@ -686,50 +768,36 @@ class PandratorInstaller(ctk.CTk):
     def download_pretrained_models(self, repo_path):
         pretrained_models_dir = os.path.join(repo_path, 'pretrained_models')
         os.makedirs(pretrained_models_dir, exist_ok=True)
-
         encodec_url = 'https://huggingface.co/pyp1/VoiceCraft/resolve/main/encodec_4cb2048_giga.th'
         voicecraft_model_dir = os.path.join(pretrained_models_dir, 'VoiceCraft_gigaHalfLibri330M_TTSEnhanced_max16s')
         os.makedirs(voicecraft_model_dir, exist_ok=True)
         
         config_url = 'https://huggingface.co/pyp1/VoiceCraft_gigaHalfLibri330M_TTSEnhanced_max16s/resolve/main/config.json'
         model_url = 'https://huggingface.co/pyp1/VoiceCraft_gigaHalfLibri330M_TTSEnhanced_max16s/resolve/main/model.safetensors'
-
         encodec_path = os.path.join(pretrained_models_dir, 'encodec_4cb2048_giga.th')
         config_path = os.path.join(voicecraft_model_dir, 'config.json')
         model_path = os.path.join(voicecraft_model_dir, 'model.safetensors')
 
-        if not os.path.exists(encodec_path):
-            logging.info("Downloading encodec_4cb2048_giga.th...")
-            try:
-                self.run_command(['curl', '-L', encodec_url, '-o', encodec_path])
-            except subprocess.CalledProcessError as e:
-                logging.error(f"Failed to download encodec_4cb2048_giga.th")
-                logging.error(f"Error message: {str(e)}")
-                raise
-        else:
-            logging.info("encodec_4cb2048_giga.th already exists. Skipping download.")
+        def download_file(url, path):
+            if not os.path.exists(path):
+                logging.info(f"Downloading {os.path.basename(path)}...")
+                try:
+                    response = requests.get(url, stream=True)
+                    response.raise_for_status()
+                    with open(path, 'wb') as f:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                    logging.info(f"Successfully downloaded {os.path.basename(path)}")
+                except requests.RequestException as e:
+                    logging.error(f"Failed to download {os.path.basename(path)}")
+                    logging.error(f"Error message: {str(e)}")
+                    raise
+            else:
+                logging.info(f"{os.path.basename(path)} already exists. Skipping download.")
 
-        if not os.path.exists(config_path):
-            logging.info("Downloading config.json...")
-            try:
-                self.run_command(['curl', '-L', config_url, '-o', config_path])
-            except subprocess.CalledProcessError as e:
-                logging.error(f"Failed to download config.json")
-                logging.error(f"Error message: {str(e)}")
-                raise
-        else:
-            logging.info("config.json already exists. Skipping download.")
-
-        if not os.path.exists(model_path):
-            logging.info("Downloading model.safetensors...")
-            try:
-                self.run_command(['curl', '-L', model_url, '-o', model_path])
-            except subprocess.CalledProcessError as e:
-                logging.error(f"Failed to download model.safetensors")
-                logging.error(f"Error message: {str(e)}")
-                raise
-        else:
-            logging.info("model.safetensors already exists. Skipping download.")
+        download_file(encodec_url, encodec_path)
+        download_file(config_url, config_path)
+        download_file(model_url, model_path)
 
     def install_pytorch_and_xtts_api_server(self, conda_path, env_name):
         logging.info(f"Installing PyTorch and xtts-api-server package in {env_name}...")
@@ -919,8 +987,12 @@ class PandratorInstaller(ctk.CTk):
 
             self.update_progress(0.2)
             self.update_status("Installing dependencies...")
-            self.install_dependencies()
-            
+            try:
+                self.install_dependencies()
+            except Exception as e:
+                logging.error(f"Error during dependency installation: {str(e)}")
+                self.show_calibre_installation_message()
+
             self.update_progress(0.3)
             self.update_status("Installing Visual C++ Build Tools...")
             self.install_visual_cpp_build_tools()
