@@ -2754,12 +2754,15 @@ class TTSOptimizerGUI:
             rvc_cli_dir = os.path.join(parent_dir, "rvc-cli")
             rvc_cli_path = os.path.join(rvc_cli_dir, "rvc_cli.py")
 
-            # Use the Python executable from the RVC_CLI's virtual environment
-            python_exe = os.path.join(rvc_cli_dir, "env", "python.exe")
+            # Path to conda executable
+            conda_path = os.path.join(parent_dir, "conda", "Scripts", "conda.exe")
 
-            # Construct the command to run rvc_cli.py
+            # Construct the command to run rvc_cli.py using conda run
             command = [
-                python_exe,
+                conda_path,
+                "run",
+                "-n", "rvc_cli_installer",  # Make sure this matches your RVC CLI conda environment name
+                "python",
                 rvc_cli_path,
                 "infer",
                 "--input_path", temp_input_path,
@@ -2768,12 +2771,12 @@ class TTSOptimizerGUI:
                 "--index_path", rvc_index_path,
                 "--pitch", "0",
                 "--f0_method", "rmvpe",
-                "--clean_audio","True",
+                "--clean_audio", "True",
                 "--clean_strength", "0.7",
                 "--protect", "0.3"
             ]
 
-            # Run the command from the RVC_CLI directory
+            # Run the command
             result = subprocess.run(command, capture_output=True, text=True, cwd=rvc_cli_dir)
 
             if result.returncode != 0:
@@ -2792,9 +2795,9 @@ class TTSOptimizerGUI:
             return None
 
         finally:
-            if os.path.exists(temp_input_path):
+            if 'temp_input_path' in locals() and os.path.exists(temp_input_path):
                 os.unlink(temp_input_path)
-            if os.path.exists(temp_output_path):
+            if 'temp_output_path' in locals() and os.path.exists(temp_output_path):
                 os.unlink(temp_output_path)
 
 
