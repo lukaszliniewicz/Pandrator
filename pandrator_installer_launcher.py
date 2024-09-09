@@ -122,7 +122,8 @@ class PandratorInstaller(ctk.CTk):
 
         self.install_button = ctk.CTkButton(button_frame, text="Install", command=self.install_pandrator, width=200, height=40)
         self.install_button.pack(side="left", padx=(0, 10))
-
+        self.update_button = ctk.CTkButton(button_frame, text="Update Pandrator", command=self.update_pandrator, width=200, height=40)
+        self.update_button.pack(side="left", padx=10)
         self.open_log_button = ctk.CTkButton(button_frame, text="View Installation Log", command=self.open_log_file, width=200, height=40)
         self.open_log_button.pack(side="left", padx=10)
         self.open_log_button.configure(state="disabled")
@@ -666,16 +667,20 @@ class PandratorInstaller(ctk.CTk):
         ]
         
         try:
-            process = subprocess.Popen(winget_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            process = subprocess.Popen(winget_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors='replace')
             
             output = []
             while True:
-                line = process.stdout.readline()
-                if not line and process.poll() is not None:
-                    break
-                if line:
-                    output.append(line.strip())
-                    logging.info(line.strip())
+                try:
+                    line = process.stdout.readline()
+                    if not line and process.poll() is not None:
+                        break
+                    if line:
+                        output.append(line.strip())
+                        logging.info(line.strip())
+                except UnicodeDecodeError as ude:
+                    logging.warning(f"UnicodeDecodeError encountered: {ude}")
+                    continue
             
             error_output = process.stderr.read().strip()
             if error_output:
@@ -898,20 +903,74 @@ class PandratorInstaller(ctk.CTk):
             logging.error(f"Error message: {str(e)}")
             raise
 
-    def install_pytorch(self, conda_path, env_name):
-        logging.info(f"Installing PyTorch 1.13.1 in {env_name}...")
+    def update_pandrator(self):
+        pandrator_base_path = os.path.join(self.initial_working_dir, 'Pandrator')
+        pandrator_repo_path = os.path.join(pandrator_base_path, 'Pandrator')
+        
+        logging.info(f"Checking for Pandrator at: {pandrator_repo_path}")
+        
+        if not os.path.exists(pandrator_repo_path):
+            error_msg = f"Pandrator directory not found at: {pandrator_repo_path}"
+            logging.error(error_msg)
+            messagebox.showerror("Error", error_msg)
+            return
+
+        conda_path = os.path.join(pandrator_base_path, 'conda')
+        
+        self.update_status("Updating Pandrator...")
+        logging.info("Starting Pandrator update process")
+        
         try:
-            self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-n', env_name, 'pip', 'install', 'torch==1.13.1', 'torchvision==0.14.1', 'torchaudio==0.13.1'])
-            logging.info("PyTorch 1.13.1 installed successfully.")
+            # Git pull
+            logging.info(f"Executing git pull in: {pandrator_repo_path}")
+            result = subprocess.run(['git', 'pull'], cwd=pandrator_repo_path, capture_output=True, text=True, check=True)
+            logging.info(f"Git pull result: {result.stdout}")
+            
+            # Update requirements
+            self.update_status("Updating Pandrator dependencies...")
+            requirements_file = os.path.join(pandrator_repo_path, 'requirements.txt')
+            logging.info(f"Updating requirements from: {requirements_file}")
+            
+            if not os.path.exists(requirements_file):
+                logging.error(f"Requirements file not found at: {requirements_file}")
+                raise FileNotFoundError(f"Requirements file not found: {requirements_file}")
+            
+            update_cmd = [
+                os.path.join(conda_path, 'Scripts', 'conda.exe'),
+                'run',
+                '-n', 'pandrator_installer',
+                'pip', 'install', '-r', requirements_file
+            ]
+            logging.info(f"Executing update command: {' '.join(update_cmd)}")
+            self.run_command(update_cmd, cwd=pandrator_repo_path)
+
+            if "Already up to date." in result.stdout:
+                msg = "Pandrator code is already up to date. Dependencies have been checked and updated if necessary."
+                logging.info(msg)
+                messagebox.showinfo("Update", msg)
+            else:
+                msg = "Pandrator has been updated successfully, including its dependencies."
+                logging.info(msg)
+                messagebox.showinfo("Update", msg)
+            
+            self.update_status("Pandrator update completed.")
+            logging.info("Pandrator update process completed successfully")
+        
         except subprocess.CalledProcessError as e:
-            logging.error("Error installing PyTorch.")
-            logging.error(f"Error message: {str(e)}")
-            raise
+            error_msg = f"Failed to update Pandrator: {e.stderr}"
+            logging.error(error_msg)
+            messagebox.showerror("Error", error_msg)
+            self.update_status("Pandrator update failed.")
+        except Exception as e:
+            error_msg = f"An error occurred while updating Pandrator: {str(e)}"
+            logging.error(error_msg)
+            logging.error(traceback.format_exc())
+            messagebox.showerror("Error", error_msg)
+            self.update_status("Pandrator update failed.")
 
     def install_rvc_cli(self, conda_path, env_name):
         logging.info("Starting RVC_CLI installation")
-        rvc_cli_path = os.path.join(os.path.dirname(conda_path), 'rvc-cli')
-
+        rvc_cli_path = os.path.join(os.path.dirname(os.path.dirname(conda_path)), 'Pandrator', 'rvc-cli')
         try:
             # Clone RVC_CLI repository
             logging.info("Cloning RVC_CLI repository...")
@@ -920,45 +979,67 @@ class PandratorInstaller(ctk.CTk):
             clone_result = subprocess.run(clone_cmd, capture_output=True, text=True, check=True)
             logging.info(clone_result.stdout)
 
-            # Run install.bat
-            install_bat_path = os.path.join(rvc_cli_path, 'install.bat')
-            logging.info("Running install.bat for RVC_CLI...")
-            logging.info(f"Running command: {install_bat_path}")
-            
-            install_process = subprocess.Popen(install_bat_path, cwd=rvc_cli_path, shell=True, 
-                                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-            
-            installation_successful = False
-            for line in iter(install_process.stdout.readline, ''):
-                stripped_line = line.strip()
-                logging.info(stripped_line)
-                if "RVC CLI has been installed successfully" in stripped_line:
-                    installation_successful = True
-                    break
+            # Create conda environment
+            logging.info(f"Creating conda environment: {env_name}")
+            self.create_conda_env(conda_path, env_name, '3.9')
 
-            if not installation_successful:
-                install_process.wait(timeout=900)  # 15 minutes timeout
-                if install_process.returncode != 0:
-                    raise Exception(f"Installation process exited with non-zero return code: {install_process.returncode}")
-            else:
-                install_process.terminate()
-                install_process.wait(timeout=30)  # Give it 30 seconds to terminate gracefully
+            # Install specific pip version
+            logging.info("Installing specific pip version...")
+            self.run_command([
+                os.path.join(conda_path, 'Scripts', 'conda.exe'),
+                'run', '-n', env_name,
+                'python', '-m', 'pip', 'install', 'pip<24.1'
+            ])
+
+            # Install dependencies
+            logging.info("Installing dependencies...")
+            self.run_command([
+                os.path.join(conda_path, 'Scripts', 'conda.exe'),
+                'run', '-n', env_name,
+                'pip', 'install', '--upgrade', 'setuptools'
+            ])
+            self.install_requirements(conda_path, env_name, os.path.join(rvc_cli_path, 'requirements.txt'))
+
+            # Explicitly install bs4 (BeautifulSoup4)
+            logging.info("Installing BeautifulSoup4...")
+            self.run_command([
+                os.path.join(conda_path, 'Scripts', 'conda.exe'),
+                'run', '-n', env_name,
+                'pip', 'install', 'beautifulsoup4'
+            ])
+
+            # Uninstall and reinstall PyTorch
+            logging.info("Uninstalling PyTorch...")
+            self.run_command([
+                os.path.join(conda_path, 'Scripts', 'conda.exe'),
+                'run', '-n', env_name,
+                'pip', 'uninstall', 'torch', 'torchvision', 'torchaudio', '-y'
+            ])
+            
+            logging.info("Installing specific PyTorch version...")
+            self.run_command([
+                os.path.join(conda_path, 'Scripts', 'conda.exe'),
+                'run', '-n', env_name,
+                'pip', 'install', 'torch==2.1.1', 'torchvision==0.16.1', 'torchaudio==2.1.1',
+                '--index-url', 'https://download.pytorch.org/whl/cu121'
+            ])
 
             # Run the prerequisites command
             logging.info("Running prerequisites...")
-            python_exe = os.path.join(rvc_cli_path, 'env', 'python.exe')
             rvc_cli_script = os.path.join(rvc_cli_path, 'rvc_cli.py')
             
-            if not os.path.exists(python_exe):
-                raise FileNotFoundError(f"Python executable not found at: {python_exe}")
             if not os.path.exists(rvc_cli_script):
                 raise FileNotFoundError(f"RVC CLI script not found at: {rvc_cli_script}")
 
-            prerequisites_cmd = [python_exe, rvc_cli_script, 'prerequisites']
+            prerequisites_cmd = [
+                os.path.join(conda_path, 'Scripts', 'conda.exe'),
+                'run', '-n', env_name,
+                'python', rvc_cli_script, 'prerequisites'
+            ]
             logging.info(f"Running command: {' '.join(prerequisites_cmd)}")
             
             prereq_process = subprocess.Popen(prerequisites_cmd, cwd=rvc_cli_path, 
-                                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             
             for line in iter(prereq_process.stdout.readline, ''):
                 logging.info(line.strip())
