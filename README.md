@@ -152,12 +152,15 @@ Contributions, suggestions for improvements, and bug reports are most welcome!
 - You can find a collection of RVC models for example [here](https://voice-models.com/).
 
 ## To-do
-- [ ] Add all API servers to the setup script.
+- [ ] Add support for chapter segmentation
+- [ ] Add support for Surya for PDF OCR, layout and redeaing order detection, plus preprocessing of chapters, headers, footers, footnotes and tables. 
+- [ ] Add support for StyleTTS2
 - [ ] Add importing/exporting settings.
 - [ ] Add support for proprietary APIs for text pre-processing and TTS generation.
 - [ ] Include OCR for PDFs.
 - [ ] Add support for a higher quality local TTS model, Tortoise.
 - [ ] Add option to record a voice sample and use it for TTS to the GUI.
+- [x] Add all API servers to the setup script.
 - [x] Add support for custom XTTS models 
 - [x] Add workflow to create dubbing from `.srt` subtitle files.
 - [x] Include support for PDF files.
