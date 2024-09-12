@@ -69,7 +69,7 @@ This project relies on several APIs and services (running locally) and libraries
 ## Installation
 
 ### GUI Installer and Launcher (Windows)
-Run `pandrator_installer_launcher.exe` with administrator priviliges. You will find them under [Releases](https://github.com/lukaszliniewicz/Pandrator/releases). The executable was created using [pyinstaller](https://github.com/pyinstaller/pyinstaller) from `pandrator_installer_launcher.py` in the repository.
+Run `pandrator_installer_launcher.exe` with administrator priviliges. You will find it under [Releases](https://github.com/lukaszliniewicz/Pandrator/releases). The executable was created using [pyinstaller](https://github.com/pyinstaller/pyinstaller) from `pandrator_installer_launcher.py` in the repository.
 
 **The file may be flagged as a threat by antivirus software, so you may have to add it as an exception.**
 
