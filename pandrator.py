@@ -837,12 +837,10 @@ class TTSOptimizerGUI:
                 while time.time() - start_time < timeout:
                     time.sleep(1)
                     for file in os.listdir(session_dir):
-                        if file.lower().endswith(f"_{target_language.lower()}.srt"):
+                        if file.lower().endswith('.srt') and file != os.path.basename(srt_file):
                             translated_srt_path = os.path.join(session_dir, file)
                             logging.info(f"Translated SRT file found: {translated_srt_path}")
                             break
-                    if translated_srt_path:
-                        break
 
                 if not translated_srt_path:
                     logging.error("Timeout: Translated SRT file not found.")
@@ -1094,17 +1092,30 @@ class TTSOptimizerGUI:
                     if file.lower().endswith(ext):
                         os.remove(os.path.join(session_dir, file))
 
-            if self.pre_selected_source_file.lower().endswith(".epub"):
+            if self.pre_selected_source_file.lower().endswith((".epub", ".docx", ".mobi")):
                 # Convert epub to txt using ebook-convert
                 txt_filename = os.path.splitext(file_name)[0] + ".txt"
                 txt_path = os.path.join(session_dir, txt_filename)
-                try:
-                    subprocess.run(["ebook-convert", self.pre_selected_source_file, txt_path], check=True)
+                
+                def run_ebook_convert(command):
+                    try:
+                        subprocess.run(command, check=True)
+                        return True
+                    except subprocess.CalledProcessError:
+                        return False
+
+                # Try the default ebook-convert command
+                if run_ebook_convert(["ebook-convert", self.pre_selected_source_file, txt_path]):
                     self.master.after(0, self.review_extracted_text, txt_path)
-                except subprocess.CalledProcessError as e:
-                    messagebox.showerror("Error", f"Failed to convert epub to txt: {str(e)}")
-                    self.pre_selected_source_file = None
-                    self.selected_file_label.configure(text="No file selected")
+                else:
+                    # If failed, try with ebook-convert.exe from one folder up
+                    calibre_portable_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'Calibre Portable', 'Calibre', 'ebook-convert.exe'))
+                    if run_ebook_convert([calibre_portable_path, self.pre_selected_source_file, txt_path]):
+                        self.master.after(0, self.review_extracted_text, txt_path)
+                    else:
+                        messagebox.showerror("Error", "Failed to convert epub to txt using both default and Calibre Portable paths.")
+                        self.pre_selected_source_file = None
+                        self.selected_file_label.configure(text="No file selected")
 
             elif self.pre_selected_source_file.lower().endswith(".pdf"):
                 # Extract text from PDF file
