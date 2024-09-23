@@ -146,6 +146,7 @@ class TTSOptimizerGUI:
         self.translation_model = ctk.StringVar(value="sonnet")
         self.anthropic_api_key = ctk.StringVar()
         self.openai_api_key = ctk.StringVar()
+        self.deepl_api_key = ctk.StringVar()
         self.selected_video_file = ctk.StringVar()
         self.video_file_selection_label = None
 
@@ -382,9 +383,9 @@ class TTSOptimizerGUI:
         self.enable_glossary_switch.grid(row=6, column=2, columnspan=2, padx=10, pady=5, sticky=tk.W)
 
         ctk.CTkLabel(self.dubbing_frame, text="Translation Model:").grid(row=7, column=0, padx=10, pady=5, sticky=tk.W)
-        self.translation_model_dropdown = ctk.CTkOptionMenu(self.dubbing_frame, variable=self.translation_model, values=["haiku", "sonnet", "gpt-4o-mini", "gpt-4o"], width=150)
+        self.translation_model_dropdown = ctk.CTkOptionMenu(self.dubbing_frame, variable=self.translation_model, values=["haiku", "sonnet", "gpt-4o-mini", "gpt-4o", "deepl"], width=150)
         self.translation_model_dropdown.grid(row=7, column=1, padx=10, pady=5, sticky=tk.W)
-
+        self.translation_model.trace_add("write", self.on_translation_model_change)
         # Video File Selection
         self.video_file_selection_label = ctk.CTkLabel(self.dubbing_frame, text="Video File Selection:", font=ctk.CTkFont(size=14, weight="bold"))
         self.video_file_selection_label.grid(row=8, column=0, columnspan=4, padx=10, pady=(10, 5), sticky=tk.W)
@@ -607,20 +608,35 @@ class TTSOptimizerGUI:
         ctk.CTkLabel(output_frame, text="Bitrate:").grid(row=0, column=2, padx=5, pady=5, sticky=tk.W)
         ctk.CTkEntry(output_frame, textvariable=self.bitrate).grid(row=0, column=3, padx=5, pady=5, sticky=tk.EW)
 
+        # API Keys Tab
         self.api_keys_tab = self.tabview.add("API Keys")
         self.api_keys_tab.grid_columnconfigure(0, weight=1)
         self.api_keys_tab.grid_columnconfigure(1, weight=1)
 
-        # Create input fields and buttons in the API Keys tab
-        ctk.CTkLabel(self.api_keys_tab, text="Anthropic API Key:").grid(row=0, column=0, padx=10, pady=10, sticky=tk.W)
-        anthropic_entry = ctk.CTkEntry(self.api_keys_tab, textvariable=self.anthropic_api_key, width=300)
-        anthropic_entry.grid(row=0, column=1, padx=10, pady=10, sticky=tk.W)
-        ctk.CTkButton(self.api_keys_tab, text="Save", command=lambda: self.save_api_key("ANTHROPIC_API_KEY", self.anthropic_api_key.get())).grid(row=0, column=2, padx=10, pady=10)
+        # Add a note explaining the API key storage and potential need for restart
+        note_text = ("Note: API keys are saved as environment variables. "
+                    "If they don't work immediately, please close Pandrator and "
+                    "the launcher, then open them again.")
+        note_label = ctk.CTkLabel(self.api_keys_tab, text=note_text, wraplength=600, justify="left")
+        note_label.grid(row=0, column=0, columnspan=3, padx=10, pady=(10, 20), sticky="w")
 
-        ctk.CTkLabel(self.api_keys_tab, text="OpenAI API Key:").grid(row=1, column=0, padx=10, pady=10, sticky=tk.W)
+        # Anthropic API Key
+        ctk.CTkLabel(self.api_keys_tab, text="Anthropic API Key:").grid(row=1, column=0, padx=10, pady=10, sticky=tk.W)
+        anthropic_entry = ctk.CTkEntry(self.api_keys_tab, textvariable=self.anthropic_api_key, width=300)
+        anthropic_entry.grid(row=1, column=1, padx=10, pady=10, sticky=tk.W)
+        ctk.CTkButton(self.api_keys_tab, text="Save", command=lambda: self.save_api_key("ANTHROPIC_API_KEY", self.anthropic_api_key.get())).grid(row=1, column=2, padx=10, pady=10)
+
+        # OpenAI API Key
+        ctk.CTkLabel(self.api_keys_tab, text="OpenAI API Key:").grid(row=2, column=0, padx=10, pady=10, sticky=tk.W)
         openai_entry = ctk.CTkEntry(self.api_keys_tab, textvariable=self.openai_api_key, width=300)
-        openai_entry.grid(row=1, column=1, padx=10, pady=10, sticky=tk.W)
-        ctk.CTkButton(self.api_keys_tab, text="Save", command=lambda: self.save_api_key("OPENAI_API_KEY", self.openai_api_key.get())).grid(row=1, column=2, padx=10, pady=10)
+        openai_entry.grid(row=2, column=1, padx=10, pady=10, sticky=tk.W)
+        ctk.CTkButton(self.api_keys_tab, text="Save", command=lambda: self.save_api_key("OPENAI_API_KEY", self.openai_api_key.get())).grid(row=2, column=2, padx=10, pady=10)
+
+        # DeepL API Key
+        ctk.CTkLabel(self.api_keys_tab, text="DeepL API Key:").grid(row=3, column=0, padx=10, pady=10, sticky=tk.W)
+        deepl_entry = ctk.CTkEntry(self.api_keys_tab, textvariable=self.deepl_api_key, width=300)
+        deepl_entry.grid(row=3, column=1, padx=10, pady=10, sticky=tk.W)
+        ctk.CTkButton(self.api_keys_tab, text="Save", command=lambda: self.save_api_key("DEEPL_API_KEY", self.deepl_api_key.get())).grid(row=3, column=2, padx=10, pady=10)
 
         # Logs Tab
         self.logs_tab = self.tabview.add("Logs")
@@ -807,12 +823,14 @@ class TTSOptimizerGUI:
                     "-task", "translate"
                 ]
 
-                if enable_evaluation:
-                    subdub_command.append("-evaluate")
-                if enable_glossary:
-                    subdub_command.append("-glossary")
-
-                subdub_command.extend(["-llm-model", translation_model])
+                if translation_model == "deepl":
+                    subdub_command.extend(["-llmapi", "deepl"])
+                else:
+                    subdub_command.extend(["-llm-model", translation_model])
+                    if enable_evaluation:
+                        subdub_command.append("-evaluate")
+                    if enable_glossary:
+                        subdub_command.append("-glossary")
 
                 logging.info(f"Executing translation command: {' '.join(subdub_command)}")
 
@@ -1031,33 +1049,15 @@ class TTSOptimizerGUI:
         if hasattr(self, 'select_video_button'):
             self.select_video_button.grid_remove()
 
-    def get_dubbing_timestamps(self, srt_file):
-        timestamps = []
-        with open(srt_file, "r") as file:
-            srt_data = file.read()
-            for subtitle in pysrt.from_string(srt_data):
-                start_time = subtitle.start.to_time().strftime("%H:%M:%S.%f")
-                end_time = subtitle.end.to_time().strftime("%H:%M:%S.%f")
-                timestamps.append((start_time, end_time))
-        return timestamps
-
-    def create_filter_complex_command(self, original_audio, synchronized_audio):
-        enable_volume_lowering = self.enable_volume_lowering.get()
-        volume_percentage = self.volume_percentage.get()
-        makeup_gain = 1 / volume_percentage
-
-        if enable_volume_lowering:
-            filter_complex_command = f"[1]silencedetect=n=-30dB:d=2[silence]; \
-                                        [silence]aformat=sample_fmts=u8:sample_rates=44100:channel_layouts=mono,\
-                                        aresample=async=1000,pan=1c|c0=c0,\
-                                        aformat=sample_fmts=s16:sample_rates=44100:channel_layouts=mono[silence_mono]; \
-                                        [0][silence_mono]sidechaincompress=threshold=0.02:ratio=10:attack=100:release=500:makeup={makeup_gain}[gated]; \
-                                        [1]volume=2[subtitles]; \
-                                        [gated][subtitles]amix=inputs=2[mixed]"
+    def on_translation_model_change(self, *args):
+        if self.translation_model.get() == "deepl":
+            self.enable_translation_evaluation_switch.configure(state="disabled")
+            self.enable_glossary_switch.configure(state="disabled")
+            self.enable_translation_evaluation.set(False)
+            self.enable_glossary.set(False)
         else:
-            filter_complex_command = "[0][1]amix=inputs=2[mixed]"
-
-        return filter_complex_command
+            self.enable_translation_evaluation_switch.configure(state="normal")
+            self.enable_glossary_switch.configure(state="normal")
     
     def toggle_dubbing_frame(self):
         if self.enable_dubbing.get():
