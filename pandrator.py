@@ -31,11 +31,25 @@ from pdftextract import XPdf
 import regex
 import nltk
 from nltk.tokenize import sent_tokenize
-nltk.download('punkt')
+#nltk.download('punkt')
 import hasami
+import argparse
 
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+# Create a logs directory if it doesn't exist
+os.makedirs("logs", exist_ok=True)
 
+# Get the current timestamp
+timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+# Set up logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler(f"logs/pandrator_{timestamp}.log"),
+        logging.StreamHandler()
+    ]
+)
 silero_languages = [
     {"name": "German (v3)", "code": "v3_de.pt"},
     {"name": "English (v3)", "code": "v3_en.pt"},
@@ -124,6 +138,16 @@ class TTSOptimizerGUI:
         self.xtts_speed = ctk.DoubleVar(value=1.0)
         self.xtts_enable_text_splitting = ctk.BooleanVar(value=True)
         self.xtts_stream_chunk_size = ctk.IntVar(value=100)
+        self.enable_translation = ctk.BooleanVar(value=False)
+        self.original_language = ctk.StringVar(value="en")
+        self.target_language = ctk.StringVar(value="en")
+        self.enable_translation_evaluation = ctk.BooleanVar(value=False)
+        self.enable_glossary = ctk.BooleanVar(value=False)
+        self.translation_model = ctk.StringVar(value="sonnet")
+        self.anthropic_api_key = ctk.StringVar()
+        self.openai_api_key = ctk.StringVar()
+        self.selected_video_file = ctk.StringVar()
+        self.video_file_selection_label = None
 
         # Layout
         ctk.set_appearance_mode("dark")
@@ -188,10 +212,6 @@ class TTSOptimizerGUI:
         self.paste_text_button.grid(row=0, column=1, padx=10, pady=(10, 5), sticky=tk.EW)
         self.selected_file_label.grid(row=0, column=2, columnspan=2, padx=10, pady=(10, 5), sticky=tk.W)
 
-        self.dubbing_switch = ctk.CTkSwitch(session_settings_frame, text="Add synchronized audio to video file (dubbing effect)", variable=self.enable_dubbing, command=self.toggle_dubbing_frame)
-        self.dubbing_switch.grid(row=1, column=0, columnspan=4, padx=10, pady=(5, 10), sticky=tk.W)
-        self.dubbing_switch.grid_remove()  # Hide the dubbing switch by default
-
         ctk.CTkLabel(session_settings_frame, text="TTS Service:").grid(row=2, column=0, padx=10, pady=5, sticky=tk.W)
         self.tts_service_dropdown = ctk.CTkOptionMenu(session_settings_frame, variable=self.tts_service, values=["XTTS", "VoiceCraft", "Silero"], command=self.update_tts_service)
         self.tts_service_dropdown.grid(row=2, column=1, padx=10, pady=5, sticky=tk.EW)
@@ -249,14 +269,14 @@ class TTSOptimizerGUI:
         self.sample_length_dropdown.grid(row=7, column=3, padx=10, pady=5, sticky=tk.EW)
         self.sample_length_dropdown.grid_remove()  # Hide the dropdown initially
 
-        ctk.CTkLabel(session_settings_frame, text="Playback Speed:").grid(row=8, column=0, padx=10, pady=5, sticky=tk.W)
-        self.playback_speed = ctk.DoubleVar(value=1.0)
+        #ctk.CTkLabel(session_settings_frame, text="Playback Speed:").grid(row=8, column=0, padx=10, pady=5, sticky=tk.W)
+        #self.playback_speed = ctk.DoubleVar(value=1.0)
 
         # Create a list of values for the dropdown menu
-        values = [str(value) for value in [0.8, 0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15, 1.2, 1.25, 1.3, 1.35, 1.4, 1.45, 1.5]]
+        #values = [str(value) for value in [0.8, 0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15, 1.2, 1.25, 1.3, 1.35, 1.4, 1.45, 1.5]]
 
-        self.playback_speed_dropdown = ctk.CTkComboBox(session_settings_frame, values=values, variable=self.playback_speed)
-        self.playback_speed_dropdown.grid(row=8, column=1, columnspan=3, padx=10, pady=5, sticky=tk.EW)
+        #self.playback_speed_dropdown = ctk.CTkComboBox(session_settings_frame, values=values, variable=self.playback_speed)
+        #self.playback_speed_dropdown.grid(row=8, column=1, columnspan=3, padx=10, pady=5, sticky=tk.EW)
 
         self.show_advanced_tts_settings = ctk.BooleanVar(value=False)
         self.advanced_settings_switch = ctk.CTkSwitch(session_settings_frame, text="Advanced TTS Settings", variable=self.show_advanced_tts_settings, command=self.toggle_advanced_tts_settings)
@@ -321,31 +341,58 @@ class TTSOptimizerGUI:
         # Dubbing Frame
         self.dubbing_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
         self.dubbing_frame.grid(row=7, column=0, columnspan=4, padx=10, pady=(0, 20), sticky=tk.EW)
-        self.dubbing_frame.grid_columnconfigure(0, weight=1)
-        self.dubbing_frame.grid_columnconfigure(1, weight=1)
+        self.dubbing_frame.grid_columnconfigure((0, 1, 2, 3), weight=1)
         self.dubbing_frame.grid_remove()  # Hide the dubbing frame by default
 
+        # Transcription Options
+        ctk.CTkLabel(self.dubbing_frame, text="Transcription Options:", font=ctk.CTkFont(size=14, weight="bold")).grid(row=0, column=0, columnspan=4, padx=10, pady=(10, 5), sticky=tk.W)
+
+        ctk.CTkLabel(self.dubbing_frame, text="Language:").grid(row=1, column=0, padx=10, pady=5, sticky=tk.W)
+        self.whisperx_language = ctk.StringVar(value="en")
+        self.whisperx_language_dropdown = ctk.CTkOptionMenu(self.dubbing_frame, variable=self.whisperx_language, values=["en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko", "hi"])
+        self.whisperx_language_dropdown.grid(row=1, column=1, padx=10, pady=5, sticky=tk.W)
+
+        ctk.CTkLabel(self.dubbing_frame, text="Model:").grid(row=1, column=2, padx=10, pady=5, sticky=tk.W)
+        self.whisperx_model = ctk.StringVar(value="small")
+        self.whisperx_model_dropdown = ctk.CTkOptionMenu(self.dubbing_frame, variable=self.whisperx_model, values=["small", "small.en", "medium", "medium.en", "large-v2", "large-v3"])
+        self.whisperx_model_dropdown.grid(row=1, column=3, padx=10, pady=5, sticky=tk.W)
+
+        self.transcribe_button = ctk.CTkButton(self.dubbing_frame, text="Transcribe", command=self.start_dubbing, fg_color="#2e8b57", hover_color="#3cb371", width=150)
+        self.transcribe_button.grid(row=1, column=4, padx=10, pady=5, sticky=tk.W)
+        CTkToolTip(self.transcribe_button, message="Start the transcription process for the selected video")
+
+        # Translation Options
+        ctk.CTkLabel(self.dubbing_frame, text="Translation Options:", font=ctk.CTkFont(size=14, weight="bold")).grid(row=3, column=0, columnspan=4, padx=10, pady=(10, 5), sticky=tk.W)
+
+        self.enable_translation_switch = ctk.CTkSwitch(self.dubbing_frame, text="Translate subtitles", variable=self.enable_translation)
+        self.enable_translation_switch.grid(row=4, column=0, columnspan=2, padx=10, pady=5, sticky=tk.W)
+
+        ctk.CTkLabel(self.dubbing_frame, text="From:").grid(row=5, column=0, padx=10, pady=5, sticky=tk.W)
+        self.original_language_dropdown = ctk.CTkOptionMenu(self.dubbing_frame, variable=self.original_language, values=["en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko", "hi"])
+        self.original_language_dropdown.grid(row=5, column=1, padx=10, pady=5, sticky=tk.W)
+
+        ctk.CTkLabel(self.dubbing_frame, text="To:").grid(row=5, column=2, padx=10, pady=5, sticky=tk.W)
+        self.target_language_dropdown = ctk.CTkOptionMenu(self.dubbing_frame, variable=self.target_language, values=["en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko", "hi"])
+        self.target_language_dropdown.grid(row=5, column=3, padx=10, pady=5, sticky=tk.W)
+
+        self.enable_translation_evaluation_switch = ctk.CTkSwitch(self.dubbing_frame, text="Enable evaluation", variable=self.enable_translation_evaluation)
+        self.enable_translation_evaluation_switch.grid(row=6, column=0, columnspan=2, padx=10, pady=5, sticky=tk.W)
+
+        self.enable_glossary_switch = ctk.CTkSwitch(self.dubbing_frame, text="Enable glossary", variable=self.enable_glossary)
+        self.enable_glossary_switch.grid(row=6, column=2, columnspan=2, padx=10, pady=5, sticky=tk.W)
+
+        ctk.CTkLabel(self.dubbing_frame, text="Translation Model:").grid(row=7, column=0, padx=10, pady=5, sticky=tk.W)
+        self.translation_model_dropdown = ctk.CTkOptionMenu(self.dubbing_frame, variable=self.translation_model, values=["haiku", "sonnet", "gpt-4o-mini", "gpt-4o"], width=150)
+        self.translation_model_dropdown.grid(row=7, column=1, padx=10, pady=5, sticky=tk.W)
+
         # Video File Selection
-        ctk.CTkLabel(self.dubbing_frame, text="Video File", font=ctk.CTkFont(size=14, weight="bold")).grid(row=0, column=0, padx=10, pady=10, sticky=tk.W)
-        self.selected_video_file = ctk.StringVar()
-        ctk.CTkEntry(self.dubbing_frame, textvariable=self.selected_video_file, state="readonly").grid(row=1, column=0, padx=10, pady=(0, 10), sticky=tk.EW)
-        ctk.CTkButton(self.dubbing_frame, text="Select Video", command=self.select_video_file).grid(row=1, column=1, padx=10, pady=(0, 10), sticky=tk.EW)
-
-        # Audio Track Selection
-        ctk.CTkLabel(self.dubbing_frame, text="Audio Track", font=ctk.CTkFont(size=14, weight="bold")).grid(row=2, column=0, padx=10, pady=10, sticky=tk.W)
-        self.selected_audio_track = ctk.StringVar()
-        self.audio_track_dropdown = ctk.CTkOptionMenu(self.dubbing_frame, variable=self.selected_audio_track, values=[])
-        self.audio_track_dropdown.grid(row=3, column=0, padx=10, pady=(0, 10), sticky=tk.EW)
-        ctk.CTkButton(self.dubbing_frame, text="Refresh Tracks", command=self.refresh_audio_tracks).grid(row=3, column=1, padx=10, pady=(0, 10), sticky=tk.EW)
-
-        # Volume Lowering Options
-        ctk.CTkLabel(self.dubbing_frame, text="Volume Lowering", font=ctk.CTkFont(size=14, weight="bold")).grid(row=4, column=0, padx=10, pady=10, sticky=tk.W)
-        self.enable_volume_lowering = ctk.BooleanVar(value=True)
-        ctk.CTkCheckBox(self.dubbing_frame, text="Enable Volume Lowering", variable=self.enable_volume_lowering).grid(row=5, column=0, padx=10, pady=(0, 10), sticky=tk.W)
-        ctk.CTkLabel(self.dubbing_frame, text="Volume Percentage").grid(row=6, column=0, padx=10, pady=(0, 10), sticky=tk.W)
-        self.volume_percentage = ctk.DoubleVar(value=0.5)
-        ctk.CTkSlider(self.dubbing_frame, variable=self.volume_percentage, from_=0, to=1, number_of_steps=10).grid(row=6, column=1, padx=10, pady=(0, 10), sticky=tk.EW)
-
+        self.video_file_selection_label = ctk.CTkLabel(self.dubbing_frame, text="Video File Selection:", font=ctk.CTkFont(size=14, weight="bold"))
+        self.video_file_selection_label.grid(row=8, column=0, columnspan=4, padx=10, pady=(10, 5), sticky=tk.W)
+        # Synchronize and Save Button
+        self.synchronize_button = ctk.CTkButton(self.dubbing_frame, text="Synchronize and Save", command=self.synchronize_and_save, fg_color="#2e8b57", hover_color="#3cb371", width=150)
+        self.synchronize_button.grid(row=10, column=0, columnspan=2, padx=10, pady=(10, 10), sticky=tk.W)
+        CTkToolTip(self.synchronize_button, message="Please complete TTS generation first.")
+    
         # Generated Sentences Section
         ctk.CTkLabel(self.session_tab, text="Generated Sentences", font=ctk.CTkFont(size=14, weight="bold")).grid(row=14, column=0, padx=10, pady=10, sticky=tk.W)
 
@@ -560,16 +607,165 @@ class TTSOptimizerGUI:
         ctk.CTkLabel(output_frame, text="Bitrate:").grid(row=0, column=2, padx=5, pady=5, sticky=tk.W)
         ctk.CTkEntry(output_frame, textvariable=self.bitrate).grid(row=0, column=3, padx=5, pady=5, sticky=tk.EW)
 
+        self.api_keys_tab = self.tabview.add("API Keys")
+        self.api_keys_tab.grid_columnconfigure(0, weight=1)
+        self.api_keys_tab.grid_columnconfigure(1, weight=1)
+
+        # Create input fields and buttons in the API Keys tab
+        ctk.CTkLabel(self.api_keys_tab, text="Anthropic API Key:").grid(row=0, column=0, padx=10, pady=10, sticky=tk.W)
+        anthropic_entry = ctk.CTkEntry(self.api_keys_tab, textvariable=self.anthropic_api_key, width=300)
+        anthropic_entry.grid(row=0, column=1, padx=10, pady=10, sticky=tk.W)
+        ctk.CTkButton(self.api_keys_tab, text="Save", command=lambda: self.save_api_key("ANTHROPIC_API_KEY", self.anthropic_api_key.get())).grid(row=0, column=2, padx=10, pady=10)
+
+        ctk.CTkLabel(self.api_keys_tab, text="OpenAI API Key:").grid(row=1, column=0, padx=10, pady=10, sticky=tk.W)
+        openai_entry = ctk.CTkEntry(self.api_keys_tab, textvariable=self.openai_api_key, width=300)
+        openai_entry.grid(row=1, column=1, padx=10, pady=10, sticky=tk.W)
+        ctk.CTkButton(self.api_keys_tab, text="Save", command=lambda: self.save_api_key("OPENAI_API_KEY", self.openai_api_key.get())).grid(row=1, column=2, padx=10, pady=10)
+
+        # Logs Tab
+        self.logs_tab = self.tabview.add("Logs")
+        self.logs_tab.grid_columnconfigure(0, weight=1)
+        self.logs_tab.grid_rowconfigure(0, weight=1)
+
+        self.logs_text = ctk.CTkTextbox(self.logs_tab, width=200, height=500)
+        self.logs_text.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        self.update_logs_button = ctk.CTkButton(self.logs_tab, text="Update Logs", command=self.update_logs)
+        self.update_logs_button.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="w")
+        self.log_update_interval = 60000  # Update every 60 seconds
+        self.master.after(0, self.update_logs)
+
         self.sentence_audio_data = {}  # Dictionary to store sentence audio data
         self.create_xtts_advanced_settings_frame()
 
         #self.populate_speaker_dropdown()
 
+    def save_api_key(self, key_name, key_value):
+        system = platform.system()
+
+        if system == "Windows":
+            # For Windows
+            subprocess.run(['setx', key_name, key_value], check=True)
+        elif system in ["Linux", "Darwin"]:  # Darwin is for macOS
+            # For Linux and macOS
+            home = os.path.expanduser("~")
+            with open(f"{home}/.bashrc", "a") as bashrc:
+                bashrc.write(f'\nexport {key_name}="{key_value}"')
+        else:
+            messagebox.showerror("Error", "Unsupported operating system")
+            return
+
+        # Set the environment variable for the current session
+        os.environ[key_name] = key_value
+
+        messagebox.showinfo("Success", f"{key_name} has been saved and is now accessible.")
+
+    def update_logs(self):
+        with open(f"logs/pandrator_{timestamp}.log", "r") as log_file:
+            logs = log_file.read()
+            self.logs_text.delete("1.0", tk.END)
+            self.logs_text.insert(tk.END, logs)
+            self.logs_text.see(tk.END)
+        self.master.after(self.log_update_interval, self.update_logs)  # Schedule the next update
+
+    def show_video_selection_input(self):
+        if not self.video_file_selection_label:
+            self.video_file_selection_label = ctk.CTkLabel(self.dubbing_frame, text="Video File Selection:", font=ctk.CTkFont(size=14, weight="bold"))
+            self.video_file_selection_label.grid(row=8, column=0, columnspan=4, padx=10, pady=(10, 5), sticky=tk.W)
+        
+        if not hasattr(self, 'selected_video_file_entry'):
+            self.selected_video_file_entry = ctk.CTkEntry(self.dubbing_frame, textvariable=self.selected_video_file, state="readonly")
+            self.selected_video_file_entry.grid(row=9, column=0, columnspan=3, padx=10, pady=5, sticky=tk.EW)
+        if not hasattr(self, 'select_video_button'):
+            self.select_video_button = ctk.CTkButton(self.dubbing_frame, text="Select Video", command=self.select_video_file)
+            self.select_video_button.grid(row=9, column=3, padx=10, pady=5, sticky=tk.E)
+            CTkToolTip(self.select_video_button, message="Choose a video file for transcription and dubbing")
+
+    def remove_video_selection_input(self):
+        if hasattr(self, 'selected_video_file_entry'):
+            self.selected_video_file_entry.grid_remove()
+        if hasattr(self, 'select_video_button'):
+            self.select_video_button.grid_remove()
+        if self.video_file_selection_label:
+            self.video_file_selection_label.grid_remove()
+
+    def synchronize_and_save(self):
+        session_name = self.session_name.get()
+        session_dir = os.path.abspath(os.path.join("Outputs", session_name))
+        sentence_wavs_dir = os.path.join(session_dir, "Sentence_wavs")
+
+        if not os.path.exists(sentence_wavs_dir) or not os.listdir(sentence_wavs_dir):
+            CTkMessagebox(title="TTS Generation Required", message="Please perform TTS first (click 'Start Generation' below) before synchronizing and saving.")
+            return
+
+        # Check if the required elements are present in the session folder
+        video_files = [f for f in os.listdir(session_dir) if f.lower().endswith(('.mp4', '.mkv', '.webm', '.avi', '.mov'))]
+        speech_blocks_files = [f for f in os.listdir(session_dir) if f.lower().endswith('_speech_blocks.json')]
+        wav_files = [f for f in os.listdir(os.path.join(session_dir, "Sentence_wavs")) if f.lower().endswith('.wav')]
+
+        if not video_files or not speech_blocks_files or not wav_files:
+            CTkMessagebox(title="Missing Elements", message="Please check if all elements needed for synchronization are in the session folder.")
+            return
+
+        # Run Subdub with the sync task
+        subdub_command = [
+            "python",
+            os.path.abspath("../Subdub/subdub.py"),
+            "-session", session_dir,
+            "-task", "sync"
+        ]
+
+        logging.info(f"Executing synchronization command: {' '.join(subdub_command)}")
+
+        try:
+            process = subprocess.Popen(subdub_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+            for line in process.stdout:
+                print(line, end='')  # Print to console
+                logging.info(line.strip())  # Log the output
+            process.wait()
+            if process.returncode != 0:
+                raise subprocess.CalledProcessError(process.returncode, subdub_command)
+            logging.info("Synchronization process completed successfully.")
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Synchronization failed: {str(e)}")
+            CTkMessagebox(title="Error", message=f"Synchronization failed: {str(e)}")
+            return
+
+        # Monitor the session folder for a new video file
+        synced_video_path = None
+        timeout = 3600  # Timeout after 1 hour
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            time.sleep(1)
+            new_video_files = [f for f in os.listdir(session_dir) if f.lower().endswith(('.mp4', '.mkv', '.webm', '.avi', '.mov')) and f not in video_files]
+            if new_video_files:
+                synced_video_path = os.path.join(session_dir, new_video_files[0])
+                logging.info(f"Synchronized video file found: {synced_video_path}")
+                break
+
+        if synced_video_path:
+            CTkMessagebox(title="Synchronization Complete", message=f"Synchronization has been completed. The synchronized video is available in the session folder: {synced_video_path}")
+        else:
+            logging.warning("Timeout: Synchronized video file not found.")
+            CTkMessagebox(title="Timeout", message="Synchronized video file not found within the timeout period.")
+
     def select_video_file(self):
-        video_file = filedialog.askopenfilename(filetypes=[("Video Files", "*.mp4;*.mkv;*.webm;*.avi")])
+        video_file = filedialog.askopenfilename(filetypes=[("Video Files", "*.mp4;*.mkv;*.webm;*.avi;*.mov")])
         if video_file:
-            self.selected_video_file.set(video_file)
-            self.refresh_audio_tracks()
+            session_name = self.session_name.get()
+            session_dir = os.path.join("Outputs", session_name)
+            
+            # Ensure the session directory exists
+            os.makedirs(session_dir, exist_ok=True)
+            
+            # Get the filename of the selected video
+            video_filename = os.path.basename(video_file)
+            
+            # Copy the video file to the session directory
+            destination_path = os.path.join(session_dir, video_filename)
+            shutil.copy(video_file, destination_path)
+            
+            # Update the selected video file entry
+            self.selected_video_file.set(destination_path)
 
     def refresh_audio_tracks(self):
         video_file = self.selected_video_file.get()
@@ -583,76 +779,257 @@ class TTSOptimizerGUI:
             except ffmpeg.Error as e:
                 messagebox.showerror("FFmpeg Error", f"An error occurred while probing the video file: {str(e)}")
 
-    def select_dubbing_file(self):
-        dubbing_file = filedialog.askopenfilename(filetypes=[("Audio Files", "*.wav;*.mp3;*.opus")])
-        if dubbing_file:
-            self.selected_dubbing_file.set(dubbing_file)
-
-    def start_dubbing(self):
-        video_file = self.selected_video_file.get()
-        audio_track = self.selected_audio_track.get()
+    def start_dubbing(self, translate=False):
         session_name = self.session_name.get()
+        session_dir = os.path.abspath(os.path.join("Outputs", session_name))
 
-        print(f"Video file: {video_file}")
-        print(f"Audio track: {audio_track}")
-        print(f"Session name: {session_name}")
+        logging.info(f"Starting dubbing process for session: {session_name}")
+        logging.info(f"Session directory: {session_dir}")
 
-        if video_file and audio_track and session_name:
-            session_dir = os.path.join("Outputs", session_name)
-            output_video = os.path.join(session_dir, f"{session_name}_dubbed.mp4")
+        if self.pre_selected_source_file.lower().endswith(".srt"):
+            srt_file = self.pre_selected_source_file
 
-            # Create the session directory if it doesn't exist
-            os.makedirs(session_dir, exist_ok=True)
+            if translate:
+                logging.info("Translation enabled. Starting translation process.")
+                original_language = self.original_language.get()
+                target_language = self.target_language.get()
+                enable_evaluation = self.enable_translation_evaluation.get()
+                enable_glossary = self.enable_glossary.get()
+                translation_model = self.translation_model.get()
+
+                subdub_command = [
+                    "python",
+                    os.path.abspath("../Subdub/subdub.py"),
+                    "-i", srt_file,
+                    "-session", session_dir,
+                    "-sl", original_language,
+                    "-tl", target_language,
+                    "-task", "translate"
+                ]
+
+                if enable_evaluation:
+                    subdub_command.append("-evaluate")
+                if enable_glossary:
+                    subdub_command.append("-glossary")
+
+                subdub_command.extend(["-llm-model", translation_model])
+
+                logging.info(f"Executing translation command: {' '.join(subdub_command)}")
+
+                try:
+                    process = subprocess.Popen(subdub_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+                    for line in process.stdout:
+                        print(line, end='')  # Print to console
+                        logging.info(line.strip())  # Log the output
+                    process.wait()
+                    if process.returncode != 0:
+                        raise subprocess.CalledProcessError(process.returncode, subdub_command)
+                    logging.info("Translation process completed successfully.")
+                except subprocess.CalledProcessError as e:
+                    logging.error(f"Translation failed: {str(e)}")
+                    CTkMessagebox(title="Error", message=f"Translation failed: {str(e)}")
+                    return
+
+                # Wait for new translated SRT file to appear
+                translated_srt_path = None
+                timeout = 3600  # Timeout after 1 hour
+                start_time = time.time()
+                while time.time() - start_time < timeout:
+                    time.sleep(1)
+                    for file in os.listdir(session_dir):
+                        if file.lower().endswith(f"_{target_language.lower()}.srt"):
+                            translated_srt_path = os.path.join(session_dir, file)
+                            logging.info(f"Translated SRT file found: {translated_srt_path}")
+                            break
+                    if translated_srt_path:
+                        break
+
+                if not translated_srt_path:
+                    logging.error("Timeout: Translated SRT file not found.")
+                    CTkMessagebox(title="Error", message="Timeout: Translated SRT file not found.")
+                    return
+
+                CTkMessagebox(title="Translation Complete", message="Translation has been completed.")
+                most_recent_srt_path = translated_srt_path
+            else:
+                # If not translating, use the original SRT file
+                most_recent_srt_path = srt_file
+
+            # Generate speech blocks using Subdub
+            subdub_speech_blocks_command = [
+                "python",
+                os.path.abspath("../Subdub/subdub.py"),
+                "-session", session_dir,
+                "-i", most_recent_srt_path,
+                "-task", "speech_blocks"
+            ]
+
+            logging.info(f"Executing speech blocks generation command: {' '.join(subdub_speech_blocks_command)}")
 
             try:
-                # Define the full path for original_audio
-                original_audio = os.path.join(session_dir, "original_audio.wav")
+                process = subprocess.Popen(subdub_speech_blocks_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+                for line in process.stdout:
+                    print(line, end='')  # Print to console
+                    logging.info(line.strip())  # Log the output
+                process.wait()
+                if process.returncode != 0:
+                    raise subprocess.CalledProcessError(process.returncode, subdub_speech_blocks_command)
+                logging.info("Speech blocks generation completed successfully.")
+            except subprocess.CalledProcessError as e:
+                logging.error(f"Speech block generation failed: {str(e)}")
+                CTkMessagebox(title="Error", message=f"Speech block generation failed: {str(e)}")
+                return
 
-                # Check the number of audio tracks
-                probe_result = ffmpeg.probe(video_file)
-                audio_tracks = [stream for stream in probe_result['streams'] if stream['codec_type'] == 'audio']
+            speech_blocks_file = os.path.join(session_dir, f"{os.path.splitext(os.path.basename(most_recent_srt_path))[0]}_speech_blocks.json")
 
-                if len(audio_tracks) == 1:
-                    # If there is only one audio track, use -map 0:a
-                    ffmpeg_command = f'ffmpeg -i "{video_file}" -map 0:a -c:a pcm_s16le -y "{original_audio}"'
-                else:
-                    # If there are multiple audio tracks, use -map 0:a:{audio_track}
-                    ffmpeg_command = f'ffmpeg -i "{video_file}" -map 0:a:{audio_track} -c:a pcm_s16le -y "{original_audio}"'
+            # Wait for the speech blocks file to be generated
+            while not os.path.exists(speech_blocks_file):
+                time.sleep(1)  # Wait for 1 second before checking again
 
-                print(f"FFmpeg command for audio extraction: {ffmpeg_command}")
-                subprocess.run(ffmpeg_command, shell=True, check=True)
+            try:
+                with open(speech_blocks_file, 'r', encoding='utf-8') as f:
+                    speech_blocks = json.load(f)
+                logging.info(f"Successfully loaded speech blocks from {speech_blocks_file}")
+            except json.JSONDecodeError as e:
+                logging.error(f"Failed to parse speech blocks file: {str(e)}")
+                CTkMessagebox(title="Error", message=f"Failed to parse speech blocks file: {str(e)}")
+                return
 
-                # Get the synchronized audio file from the session folder
-                synchronized_audio = os.path.join(session_dir, f"{session_name}_synchronized.{self.output_format.get()}")
-                if not os.path.exists(synchronized_audio):
-                    raise FileNotFoundError(f"Synchronized audio file not found: {synchronized_audio}")
+            pandrator_sentences = []
+            for block in speech_blocks:
+                pandrator_sentences.append({
+                    "sentence_number": block["number"],
+                    "original_sentence": block["text"],
+                    "tts_generated": "no",
+                })
 
-                # Create the FFmpeg filter_complex command
-                filter_complex_command = self.create_filter_complex_command(original_audio, synchronized_audio)
-                print(f"FFmpeg filter_complex command: {filter_complex_command}")
+            json_filename = os.path.join(session_dir, f"{session_name}_sentences.json")
+            self.save_json(pandrator_sentences, json_filename)
+            logging.info(f"Saved Pandrator sentences to {json_filename}")
+            self.start_optimisation_thread()
 
-                # Merge the original video with the processed audio
-                ffmpeg_merge_command = f'ffmpeg -i "{original_audio}" -i "{synchronized_audio}" -i "{video_file}" -filter_complex "{filter_complex_command}" -map 2:v -map "[mixed]" -c:v copy -c:a aac -b:a 192k -y "{output_video}"'
-                print(f"FFmpeg command for merging: {ffmpeg_merge_command}")
-                subprocess.run(ffmpeg_merge_command, shell=True, check=True)
+        else:  # Video file
+            # Find the video file in the session directory
+            video_files = [f for f in os.listdir(session_dir) if f.lower().endswith(('.mp4', '.mkv', '.webm', '.avi', '.mov'))]
+            
+            if not video_files:
+                CTkMessagebox(title="Error", message="No video file found in the session folder.")
+                return
 
-                messagebox.showinfo("Dubbing Complete", f"The dubbed video has been saved as {output_video}")
+            video_file = os.path.join(session_dir, video_files[0])  # Use the first video file found
+            video_filename = os.path.splitext(os.path.basename(video_file))[0]  # Get the video filename without extension
+
+            logging.info(f"Starting dubbing process for video file: {video_file}")
+
+            # Create a WAV file in the session directory
+            wav_file = os.path.join(session_dir, f"{video_filename}.wav")
+
+            logging.info(f"WAV file will be created at: {wav_file}")
+
+            try:
+                # Convert video to WAV using FFmpeg
+                ffmpeg_command = [
+                    "ffmpeg",
+                    "-i", video_file,
+                    "-vn",  # Disable video
+                    "-acodec", "pcm_s16le",  # Audio codec
+                    "-ar", "16000",  # Audio sample rate
+                    "-ac", "1",  # Mono audio
+                    wav_file
+                ]
+
+                logging.info(f"Executing FFmpeg command: {' '.join(ffmpeg_command)}")
+
+                ffmpeg_process = subprocess.Popen(ffmpeg_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+                stdout, stderr = ffmpeg_process.communicate()
+
+                if ffmpeg_process.returncode != 0:
+                    logging.error(f"FFmpeg command failed. Return code: {ffmpeg_process.returncode}")
+                    logging.error(f"FFmpeg stderr: {stderr}")
+                    raise subprocess.CalledProcessError(ffmpeg_process.returncode, ffmpeg_command, stderr)
+
+                logging.info("Video successfully converted to WAV.")
+
+                # Check if the WAV file was created and has content
+                if not os.path.exists(wav_file) or os.path.getsize(wav_file) == 0:
+                    raise FileNotFoundError(f"WAV file is missing or empty: {wav_file}")
+
+                # Transcription using the WAV file
+                output_srt = os.path.join(session_dir, f"{video_filename}.srt")
+                whisperx_command = [
+                    "python",
+                    "-m", "whisperx",  # Use -m to run whisperx as a module
+                    wav_file,
+                    "--model", self.whisperx_model.get(),
+                    "--language", self.whisperx_language.get(),
+                    "--output_format", "srt",
+                    "--output_dir", session_dir
+                ]
+
+                logging.info(f"Executing transcription command: {' '.join(whisperx_command)}")
+
+                whisperx_process = subprocess.Popen(whisperx_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+                stdout, stderr = whisperx_process.communicate()
+
+                logging.info(f"Whisperx stdout: {stdout}")
+                if stderr:
+                    logging.error(f"Whisperx stderr: {stderr}")
+
+                if whisperx_process.returncode != 0:
+                    raise subprocess.CalledProcessError(whisperx_process.returncode, whisperx_command, stderr)
+
+                logging.info("Transcription completed successfully.")
+
+                # The output SRT file will have the same name as the WAV file
+                output_srt = os.path.join(session_dir, f"{video_filename}.srt")
+
+                # Verify that the SRT file was created
+                if not os.path.exists(output_srt):
+                    raise FileNotFoundError(f"Expected SRT file not found: {output_srt}")
+
+                logging.info(f"SRT file created: {output_srt}")
 
             except subprocess.CalledProcessError as e:
-                print(f"FFmpeg command: {e.cmd}")
-                print(f"FFmpeg error output: {e.stderr}")
-                messagebox.showerror("FFmpeg Error", f"An error occurred during the audio extraction process: {str(e)}")
-
+                logging.error(f"Command failed: {e.cmd}")
+                logging.error(f"Return code: {e.returncode}")
+                logging.error(f"Output: {e.output}")
+                CTkMessagebox(title="Error", message=f"FFmpeg or Transcription failed: {str(e)}")
+                return
             except FileNotFoundError as e:
-                print(f"File not found: {str(e)}")
-                messagebox.showerror("File Not Found", str(e))
-
+                logging.error(str(e))
+                CTkMessagebox(title="Error", message=str(e))
+                return
             except Exception as e:
-                print(f"Unexpected error: {str(e)}")
-                messagebox.showerror("Error", f"An unexpected error occurred: {str(e)}")
+                logging.error(f"An unexpected error occurred: {str(e)}")
+                CTkMessagebox(title="Error", message=f"An unexpected error occurred: {str(e)}")
+                return
+            finally:
+                # Optionally, remove the WAV file if you don't need it anymore
+                if os.path.exists(wav_file):
+                    os.unlink(wav_file)
+                    logging.info(f"WAV file removed: {wav_file}")
+                else:
+                    logging.warning(f"WAV file not found for removal: {wav_file}")
 
-        else:
-            messagebox.showwarning("Missing Information", "Please provide the required information for dubbing.")
+            # Update the source file to the generated SRT
+            self.source_file = output_srt
+            file_name = os.path.basename(self.source_file)
+            truncated_file_name = file_name[:70] + "..." if len(file_name) > 70 else file_name
+            self.selected_file_label.configure(text=truncated_file_name)
+
+            logging.info(f"Updated source file to: {self.source_file}")
+
+            CTkMessagebox(title="Transcription Complete", message="Transcription has been completed. You can now start the generation process.")
+
+        # This part is common for both SRT and video file workflows
+        self.pre_selected_source_file = self.source_file
+        logging.info(f"Updated pre_selected_source_file to: {self.pre_selected_source_file}")
+
+        # Remove the video selection input
+        if hasattr(self, 'selected_video_file_entry'):
+            self.selected_video_file_entry.grid_remove()
+        if hasattr(self, 'select_video_button'):
+            self.select_video_button.grid_remove()
 
     def get_dubbing_timestamps(self, srt_file):
         timestamps = []
@@ -685,6 +1062,10 @@ class TTSOptimizerGUI:
     def toggle_dubbing_frame(self):
         if self.enable_dubbing.get():
             self.dubbing_frame.grid()  # Show the dubbing frame
+            if not self.source_file.endswith(".srt"):
+                # Hide the video selection input if a video file is chosen
+                self.select_video_button.grid_remove()
+                self.selected_video_file_entry.grid_remove()
         else:
             self.dubbing_frame.grid_remove()  # Hide the dubbing frame
     
@@ -694,8 +1075,8 @@ class TTSOptimizerGUI:
             return
 
         self.pre_selected_source_file = filedialog.askopenfilename(
-            title="Select Source File",  # Set a custom title for the file dialog
-            filetypes=[("Text, SRT, PDF, and EPUB files", "*.txt *.srt *.pdf *.epub"),
+            title="Select Source File",
+            filetypes=[("Text, SRT, PDF, EPUB, and Video files", "*.txt *.srt *.pdf *.epub *.mp4 *.mkv *.webm *.avi *.mov"),
                     ("All files", "*.*")]
         )
         if self.pre_selected_source_file:
@@ -707,18 +1088,18 @@ class TTSOptimizerGUI:
             session_dir = os.path.join("Outputs", session_name)
             os.makedirs(session_dir, exist_ok=True)
 
-            # Remove the old text, srt, pdf, or epub file from the session directory
-            txt_files = [file for file in os.listdir(session_dir) if file.endswith(".txt") or file.endswith(".srt") or file.endswith(".pdf") or file.endswith(".epub")]
-            for file in txt_files:
-                os.remove(os.path.join(session_dir, file))
+            # Remove old text, srt, pdf, or epub files from the session directory
+            for ext in [".txt", ".srt", ".pdf", ".epub"]:
+                for file in os.listdir(session_dir):
+                    if file.lower().endswith(ext):
+                        os.remove(os.path.join(session_dir, file))
 
             if self.pre_selected_source_file.lower().endswith(".epub"):
-                # Convert the epub file to a txt file using ebook-convert
+                # Convert epub to txt using ebook-convert
                 txt_filename = os.path.splitext(file_name)[0] + ".txt"
                 txt_path = os.path.join(session_dir, txt_filename)
                 try:
                     subprocess.run(["ebook-convert", self.pre_selected_source_file, txt_path], check=True)
-                    # Open a new window to preview and edit the text
                     self.master.after(0, self.review_extracted_text, txt_path)
                 except subprocess.CalledProcessError as e:
                     messagebox.showerror("Error", f"Failed to convert epub to txt: {str(e)}")
@@ -736,28 +1117,30 @@ class TTSOptimizerGUI:
                 with open(raw_text_path, "w", encoding="utf-8", newline='\n') as file:
                     file.write(extracted_text)
 
-                # Open a new window with two buttons
-                self.master.after(0, self.show_pdf_options, raw_text_path, session_dir, file_name)  # Use after to schedule the call and pass the raw text file path
+                self.master.after(0, self.show_pdf_options, raw_text_path, session_dir, file_name)
 
             else:
                 shutil.copy(self.pre_selected_source_file, session_dir)
                 self.source_file = os.path.join(session_dir, file_name)
-                self.pdf_preprocessed = False  # Reset the flag for non-PDF files
 
-            # Check if the selected file is an SRT file
-            if self.pre_selected_source_file.lower().endswith(".srt"):
-                self.dubbing_switch.grid()  # Show the dubbing switch
+            # Handle dubbing-related UI elements
+            if self.pre_selected_source_file.lower().endswith((".mp4", ".mkv", ".webm", ".avi", ".mov")):
+                self.dubbing_frame.grid()  # Show the dubbing frame
+                self.remove_video_selection_input()  # Remove the video selection input
+            elif self.pre_selected_source_file.lower().endswith(".srt"):
+                self.dubbing_frame.grid()  # Show the dubbing frame
+                self.show_video_selection_input()  # Show the video selection input
             else:
-                self.dubbing_switch.grid_remove()  # Hide the dubbing switch
-                self.enable_dubbing.set(False)  # Disable the dubbing switch
                 self.dubbing_frame.grid_remove()  # Hide the dubbing frame
+                self.remove_video_selection_input()  # Remove the video selection input
+
         else:
             self.pre_selected_source_file = None
             self.selected_file_label.configure(text="No file selected")
-            self.dubbing_switch.grid_remove()  # Hide the dubbing switch
-            self.enable_dubbing.set(False)  # Disable the dubbing switch
             self.dubbing_frame.grid_remove()  # Hide the dubbing frame
-            self.pdf_preprocessed = False  # Reset the flag if no file is selected
+            self.remove_video_selection_input()  # Remove the video selection input
+
+        self.pdf_preprocessed = False  # Reset the flag
 
     def paste_text(self):
         if not self.session_name.get():
@@ -809,47 +1192,14 @@ class TTSOptimizerGUI:
         save_button.pack(pady=10)
 
     def show_pdf_options(self, raw_text_path, session_dir, file_name):
-        options_window = ctk.CTkToplevel(self.master)
-        options_window.title("PDF Text Extraction Options")
-        options_window.transient(self.master)  # Set the main window as the parent
-
-        # Calculate the center coordinates of the screen
-        screen_width = options_window.winfo_screenwidth()
-        screen_height = options_window.winfo_screenheight()
-        window_width = 400
-        window_height = 200
-        x = (screen_width // 2) - (window_width // 2)
-        y = (screen_height // 2) - (window_height // 2)
-        options_window.geometry(f"{window_width}x{window_height}+{x}+{y}")  # Set the window size and position
-
-        def use_recommended_settings():
-            options_window.destroy()
-            with open(raw_text_path, "r", encoding="utf-8") as file:
-                raw_text = file.read()
-            preprocessed_text = self.preprocess_text_pdf(raw_text)
-            preprocessed_filename = os.path.splitext(file_name)[0] + "_preprocessed.txt"
-            preprocessed_path = os.path.join(session_dir, preprocessed_filename)
-            with open(preprocessed_path, "w", encoding="utf-8", newline='\n') as file:
-                file.write(preprocessed_text)
-            self.source_file = preprocessed_path
-            self.pdf_preprocessed = True  # Set the flag to indicate that the text has been preprocessed
-
-        def preview_and_edit():
-            options_window.destroy()
-            with open(raw_text_path, "r", encoding="utf-8") as file:
-                raw_text = file.read()
-            preprocessed_text = self.preprocess_text_pdf(raw_text)
-            preprocessed_filename = os.path.splitext(file_name)[0] + "_preprocessed.txt"
-            preprocessed_path = os.path.join(session_dir, preprocessed_filename)
-            with open(preprocessed_path, "w", encoding="utf-8", newline='\n') as file:
-                file.write(preprocessed_text)
-            self.master.after(0, self.review_extracted_text, preprocessed_path)  # Use after to schedule the call and pass the preprocessed file path
-
-        recommended_settings_button = ctk.CTkButton(options_window, text="Use Recommended Settings", command=use_recommended_settings)
-        recommended_settings_button.pack(padx=10, pady=10, fill=tk.X, expand=True)
-
-        preview_button = ctk.CTkButton(options_window, text="Preview and Edit", command=preview_and_edit)
-        preview_button.pack(padx=10, pady=10, fill=tk.X, expand=True)
+        with open(raw_text_path, "r", encoding="utf-8") as file:
+            raw_text = file.read()
+        preprocessed_text = self.preprocess_text_pdf(raw_text)
+        preprocessed_filename = os.path.splitext(file_name)[0] + "_preprocessed.txt"
+        preprocessed_path = os.path.join(session_dir, preprocessed_filename)
+        with open(preprocessed_path, "w", encoding="utf-8", newline='\n') as file:
+            file.write(preprocessed_text)
+        self.master.after(0, self.review_extracted_text, preprocessed_path)
 
     def review_extracted_text(self, file_path):
         review_window = ctk.CTkToplevel(self.master)
@@ -865,8 +1215,8 @@ class TTSOptimizerGUI:
         y = (screen_height // 2) - (window_height // 2)
         review_window.geometry(f"{window_width}x{window_height}+{x}+{y}")  # Set the window size and position
 
-        switch_frame = ctk.CTkFrame(review_window)
-        switch_frame.pack(padx=10, pady=(10, 0))
+        top_frame = ctk.CTkFrame(review_window)
+        top_frame.pack(padx=10, pady=(10, 0), fill=tk.X)
 
         def toggle_newline_handling():
             if not self.remove_double_newlines.get():
@@ -880,7 +1230,8 @@ class TTSOptimizerGUI:
                     os.remove(preprocessed_path)
             update_text()
 
-        ctk.CTkSwitch(switch_frame, text="Remove Double Newlines (try if paragraphs are not rendered correctly)", variable=self.remove_double_newlines, command=toggle_newline_handling).pack(side=tk.LEFT)
+        ctk.CTkSwitch(top_frame, text="Remove Double Newlines (try if paragraphs are not rendered correctly)", 
+                    variable=self.remove_double_newlines, command=toggle_newline_handling).pack(side=tk.LEFT)
 
         text_widget = ctk.CTkTextbox(review_window, width=window_width-20, height=window_height-100)
 
@@ -942,14 +1293,14 @@ class TTSOptimizerGUI:
             self.selected_file_label.configure(text="No file selected")
             review_window.destroy()
 
-        button_frame = ctk.CTkFrame(review_window)
-        button_frame.pack(padx=10, pady=(0, 10), fill=tk.X)
-
-        accept_button = ctk.CTkButton(button_frame, text="Accept", command=accept_text)
-        accept_button.pack(side=tk.LEFT, padx=(0, 10), pady=10, expand=True, fill=tk.X)
+        button_frame = ctk.CTkFrame(top_frame)
+        button_frame.pack(side=tk.RIGHT)
 
         cancel_button = ctk.CTkButton(button_frame, text="Cancel", command=cancel_import)
-        cancel_button.pack(side=tk.LEFT, padx=(10, 0), pady=10, expand=True, fill=tk.X)
+        cancel_button.pack(side=tk.LEFT, padx=(0, 10))
+
+        accept_button = ctk.CTkButton(button_frame, text="Accept", command=accept_text)
+        accept_button.pack(side=tk.LEFT)
         
     def preprocess_text_pdf(self, text, remove_double_newlines=False):
         # Normalize new lines to LF (\\n)
@@ -999,11 +1350,10 @@ class TTSOptimizerGUI:
                         self.external_server_connected = True
                         self.populate_speaker_dropdown()
                         self.populate_xtts_models()
-                        messagebox.showinfo("Connected", "Successfully connected to the external XTTS server.")
                     else:
-                        messagebox.showerror("Error", f"Failed to connect to the external XTTS server. Status code: {response.status_code}")
+                        CTkMessagebox(title="Error", message=f"Failed to connect to the external XTTS server. Status code: {response.status_code}", icon="cancel")
                 except requests.exceptions.RequestException as e:
-                    messagebox.showerror("Error", f"Failed to connect to the external XTTS server: {str(e)}")
+                    CTkMessagebox(title="Error", message=f"Failed to connect to the external XTTS server: {str(e)}", icon="cancel")
             else:
                 try:
                     speaker_folder_path = os.path.abspath(self.tts_voices_folder)
@@ -1015,13 +1365,12 @@ class TTSOptimizerGUI:
                         if response.status_code == 200:
                             self.populate_speaker_dropdown()
                             self.populate_xtts_models()
-                            messagebox.showinfo("Connected", "Successfully connected to the local XTTS server.")
                         else:
-                            messagebox.showerror("Error", f"Failed to connect to the local XTTS server. Status code: {response.status_code}")
+                            CTkMessagebox(title="Error", message=f"Failed to connect to the local XTTS server. Status code: {response.status_code}", icon="cancel")
                     else:
-                        messagebox.showerror("Error", f"Failed to set speaker folder. Status code: {response.status_code}")
+                        CTkMessagebox(title="Error", message=f"Failed to set speaker folder. Status code: {response.status_code}", icon="cancel")
                 except requests.exceptions.RequestException as e:
-                    messagebox.showerror("Error", f"Failed to connect to the local XTTS server: {str(e)}")
+                    CTkMessagebox(title="Error", message=f"Failed to connect to the local XTTS server: {str(e)}", icon="cancel")
         elif self.tts_service.get() == "VoiceCraft":
             if self.use_external_server_voicecraft.get():
                 external_server_url = self.external_server_url_voicecraft.get()
@@ -1030,22 +1379,20 @@ class TTSOptimizerGUI:
                     if response.status_code == 200:
                         self.external_server_connected_voicecraft = True
                         self.populate_speaker_dropdown()
-                        messagebox.showinfo("Connected", "Successfully connected to the external VoiceCraft server.")
                     else:
-                        messagebox.showerror("Error", f"Failed to connect to the external VoiceCraft server. Status code: {response.status_code}")
+                        CTkMessagebox(title="Error", message=f"Failed to connect to the external VoiceCraft server. Status code: {response.status_code}", icon="cancel")
                 except requests.exceptions.RequestException as e:
-                    messagebox.showerror("Error", f"Failed to connect to the external VoiceCraft server: {str(e)}")
+                    CTkMessagebox(title="Error", message=f"Failed to connect to the external VoiceCraft server: {str(e)}", icon="cancel")
             else:
                 try:
                     response = requests.get("http://localhost:8245/docs")
                     if response.status_code == 200:
                         self.external_server_connected_voicecraft = False
                         self.populate_speaker_dropdown()
-                        messagebox.showinfo("Connected", "Successfully connected to the local VoiceCraft server.")
                     else:
-                        messagebox.showerror("Error", f"Failed to connect to the local VoiceCraft server. Status code: {response.status_code}")
+                        CTkMessagebox(title="Error", message=f"Failed to connect to the local VoiceCraft server. Status code: {response.status_code}", icon="cancel")
                 except requests.exceptions.RequestException as e:
-                    messagebox.showerror("Error", f"Failed to connect to the local VoiceCraft server: {str(e)}")
+                    CTkMessagebox(title="Error", message=f"Failed to connect to the local VoiceCraft server: {str(e)}", icon="cancel")
 
     def populate_speaker_dropdown(self):
         if self.tts_service.get() == "XTTS":
@@ -1475,7 +1822,7 @@ class TTSOptimizerGUI:
                 processed_sentences.remove(sentence_dict)
 
                 # Delete the corresponding WAV file
-                wav_filename = os.path.join(session_directory, "Sentence_wavs", f"{session_name}_sentence{sentence_index + 1}.wav")
+                wav_filename = os.path.join(session_directory, "Sentence_wavs", f"{session_name}_sentence_{sentence_index + 1}.wav")
                 if os.path.exists(wav_filename):
                     os.remove(wav_filename)
 
@@ -1531,38 +1878,39 @@ class TTSOptimizerGUI:
             return
 
         session_dir = os.path.join("Outputs", session_name)
-        edited_file_path = os.path.join(session_dir, f"{session_name}_edited.txt")
-
-        if os.path.exists(edited_file_path):
-            # Use the contents of the "_edited" file if it exists
-            with open(edited_file_path, 'r', encoding='utf-8') as file:
-                text = file.read()
-        else:
-            if not self.source_file:
-                CTkMessagebox(title="Error", message="Please select a source file.", icon="cancel")
-                return
-
-            # Read the file content into 'text' variable
-            with open(self.source_file, 'r', encoding='utf-8') as file:
-                text = file.read()
+        json_filename = os.path.join(session_dir, f"{session_name}_sentences.json")
 
         if not self.check_server_connection():
             return
 
-        # Preprocess the text and split it into sentences
-        preprocessed_sentences = self.preprocess_text(text)
-
-        # Save the preprocessed sentences as original sentences to the JSON file
-        os.makedirs(session_dir, exist_ok=True)
-        json_filename = os.path.join(session_dir, f"{self.session_name.get()}_sentences.json")
-        self.save_json(preprocessed_sentences, json_filename)
-
-        # Calculate the total number of sentences
-        total_sentences = len(preprocessed_sentences)
-
-        # Create a new thread for the optimization process
-        self.optimization_thread = threading.Thread(target=self.start_optimisation, args=(total_sentences,))
-        self.optimization_thread.start()
+        if os.path.exists(json_filename):
+            # If JSON exists, start directly from TTS generation
+            self.resume_generation()
+        else:
+            # If JSON doesn't exist, start from the beginning of the pipeline
+            if self.source_file.endswith((".srt", ".mp4", ".mkv", ".webm", ".avi", ".mov")):
+                # For video/srt files, start dubbing process
+                if self.source_file.endswith(".srt") and self.enable_translation.get():
+                    self.start_dubbing(translate=True)
+                else:
+                    self.start_dubbing(translate=False)
+            else:
+                # For other files, preprocess and create JSON
+                if not self.source_file:
+                    CTkMessagebox(title="Error", message="Please select a source file.", icon="cancel")
+                    return
+                
+                with open(self.source_file, 'r', encoding='utf-8') as file:
+                    text = file.read()
+                
+                preprocessed_sentences = self.preprocess_text(text)
+                os.makedirs(session_dir, exist_ok=True)
+                self.save_json(preprocessed_sentences, json_filename)
+                
+                # Start the optimization process from the beginning
+                total_sentences = len(preprocessed_sentences)
+                self.optimization_thread = threading.Thread(target=self.start_optimisation, args=(total_sentences, 0))
+                self.optimization_thread.start()
 
     def check_server_connection(self):
         try:
@@ -1839,7 +2187,7 @@ class TTSOptimizerGUI:
 
         for sentence_dict in processed_sentences:
             sentence_number = int(sentence_dict["sentence_number"])
-            wav_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence{sentence_number}.wav")
+            wav_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence_{sentence_number}.wav")
             if os.path.exists(wav_filename):
                 audio_data = AudioSegment.from_file(wav_filename, format="wav")
 
@@ -1869,121 +2217,277 @@ class TTSOptimizerGUI:
 
         return final_audio
 
+
     def split_long_sentences(self, sentence_dict):
+
         sentence = sentence_dict["original_sentence"]
+
         paragraph = sentence_dict["paragraph"]
 
+
+
         if len(sentence) <= self.max_sentence_length.get():
+
             return [{"original_sentence": sentence, "split_part": None, "paragraph": paragraph}]
 
-        punctuation_marks = [',', ':', ';']
-        conjunction_marks = [' and ', ' or ']
-        min_distance = 30
+
+
+        # Check if the language is set to Chinese
+
+        if self.language_var.get() == "zh-cn":
+
+            # Chinese full-width punctuation marks
+
+            punctuation_marks = ['，', '；', '：', '。', '！', '？']
+
+            min_distance = 10  # Adjusted for Chinese characters
+
+        else:
+
+            # Original punctuation for other languages
+
+            punctuation_marks = [',', ':', ';', '–']
+
+            conjunction_marks = [' and ', ' or ', 'which']
+
+            min_distance = 30
+
+
+
         best_split_index = None
+
         min_diff = float('inf')
 
+
+
         for mark in punctuation_marks:
+
             indices = [i for i, c in enumerate(sentence) if c == mark]
+
             for index in indices:
+
                 if min_distance <= index <= len(sentence) - min_distance:
+
                     # Check if the comma is not between two digits (avoiding splitting numbers like 28,000)
+
                     if not (mark == ',' and index > 0 and index < len(sentence) - 1 and 
+
                             sentence[index-1].isdigit() and sentence[index+1].isdigit()):
+
                         diff = abs(index - len(sentence) // 2)
+
                         if diff < min_diff:
+
                             min_diff = diff
+
                             best_split_index = index + 1
 
-        if best_split_index is None:
+        if best_split_index is None and self.language_var.get() != "zh-cn":
+
+            # Only check for conjunctions in non-Chinese text
+
             for mark in conjunction_marks:
+
                 index = sentence.find(mark)
+
                 if min_distance <= index <= len(sentence) - min_distance:
+
                     best_split_index = index
+
                     break
 
+
+
         if best_split_index is None:
+
             return [{"original_sentence": sentence, "split_part": None, "paragraph": paragraph}]
 
+
+
+
+
         first_part = sentence[:best_split_index].strip()
+
         second_part = sentence[best_split_index:].strip()
+
+
 
         return [
+
             {"original_sentence": first_part, "split_part": 0, "paragraph": "no"},
+
             {"original_sentence": second_part, "split_part": 1, "paragraph": paragraph}
+
         ]
 
+
+
     def split_long_sentences_2(self, sentence_dict):
+
         sentence = sentence_dict["original_sentence"]
+
         paragraph = sentence_dict["paragraph"]
+
         split_part = sentence_dict["split_part"]
 
+
+
         if len(sentence) <= self.max_sentence_length.get():
+
             return [sentence_dict]
 
-        punctuation_marks = [',', ':', ';']
-        conjunction_marks = [' and ', ' or ']
-        min_distance = 30
+
+
+        # Check if the language is set to Chinese
+
+        if self.language_var.get() == "zh-cn":
+
+            # Chinese full-width punctuation marks
+
+            punctuation_marks = ['，', '；', '：', '。', '！', '？']
+
+            min_distance = 10  # Adjusted for Chinese characters
+
+        else:
+
+            # Original punctuation for other languages
+
+            punctuation_marks = [',', ':', ';', '–']
+
+            conjunction_marks = [' and ', ' or ', 'which']
+
+            min_distance = 30
+
+
+
         best_split_index = None
+
         min_diff = float('inf')
 
-        for mark in punctuation_marks:
-            indices = [i for i, c in enumerate(sentence) if c == mark]
-            for index in indices:
-                if min_distance <= index <= len(sentence) - min_distance:
-                    # Check if the comma is not between two digits (avoiding splitting numbers like 28,000)
-                    if not (mark == ',' and index > 0 and index < len(sentence) - 1 and 
-                            sentence[index-1].isdigit() and sentence[index+1].isdigit()):
-                        diff = abs(index - len(sentence) // 2)
-                        if diff < min_diff:
-                            min_diff = diff
-                            best_split_index = index + 1
 
-        if best_split_index is None:
-            for mark in conjunction_marks:
-                index = sentence.find(mark)
+
+        for mark in punctuation_marks:
+
+            indices = [i for i, c in enumerate(sentence) if c == mark]
+
+            for index in indices:
+
                 if min_distance <= index <= len(sentence) - min_distance:
+
+                    # For non-Chinese, check if the comma is not between two digits
+
+                    if self.language_var.get() != "zh-cn" and mark == ',':
+
+                        if index > 0 and index < len(sentence) - 1 and sentence[index-1].isdigit() and sentence[index+1].isdigit():
+
+                            continue
+
+                    diff = abs(index - len(sentence) // 2)
+
+                    if diff < min_diff:
+
+                        min_diff = diff
+
+                        best_split_index = index + 1
+
+
+
+        if best_split_index is None and self.language_var.get() != "zh-cn":
+
+            # Only check for conjunctions in non-Chinese text
+
+            for mark in conjunction_marks:
+
+                index = sentence.find(mark)
+
+                if min_distance <= index <= len(sentence) - min_distance:
+
                     best_split_index = index
+
                     break
 
+
+
         if best_split_index is None:
+
             return [sentence_dict]
 
+
+
+
+
         first_part = sentence[:best_split_index].strip()
+
         second_part = sentence[best_split_index:].strip()
 
+
+
         split_sentences = []
+
         if split_part is None:
+
             split_part_prefix = "0"
+
         else:
+
             split_part_prefix = str(split_part)
 
+
+
         split_sentences.append({
+
             "original_sentence": first_part,
+
             "split_part": split_part_prefix + "a",
+
             "paragraph": "no"
+
         })
 
+
+
         if len(second_part) > self.max_sentence_length.get():
+
             if split_part_prefix == "0" and paragraph == "yes":
+
                 split_sentences.extend(self.split_long_sentences_2({
+
                     "original_sentence": second_part,
+
                     "split_part": "1a",
+
                     "paragraph": "yes"
+
                 }))
+
             else:
+
                 split_sentences.extend(self.split_long_sentences_2({
+
                     "original_sentence": second_part,
+
                     "split_part": split_part_prefix + "b",
+
                     "paragraph": "no" if split_part_prefix == "0" else paragraph
+
                 }))
+
         else:
+
             split_sentences.append({
+
                 "original_sentence": second_part,
+
                 "split_part": split_part_prefix + "b",
+
                 "paragraph": paragraph
+
             })
 
+
+
         return split_sentences
+
     def append_short_sentences(self, sentence_dicts):
         appended_sentences = []
         i = 0
@@ -2130,11 +2634,7 @@ class TTSOptimizerGUI:
                     else:
                         print(f"Error generating audio for sentence: {processed_sentence['original_sentence']}")
 
-                if best_audio is not None:
-                    # Apply playback speed change
-                    playback_speed = self.playback_speed.get()
-                    if playback_speed != 1.0:
-                        best_audio = best_audio.speedup(playback_speed=playback_speed, chunk_size=150, crossfade=25)                    
+                if best_audio is not None:                  
                     # Apply RVC if enabled
                     if self.enable_rvc.get():
                         best_audio = self.process_with_rvc(best_audio)
@@ -2167,7 +2667,7 @@ class TTSOptimizerGUI:
                     self.master.after(0, self.update_playlist, processed_sentence)
 
                     # Save the individual sentence WAV file
-                    sentence_output_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence{processed_sentence['sentence_number']}.wav")
+                    sentence_output_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence_{processed_sentence['sentence_number']}.wav")
                     best_audio.export(sentence_output_filename, format="wav")
 
                     # Update the tts_generated flag for the current sentence in the preprocessed_sentences list
@@ -2197,14 +2697,6 @@ class TTSOptimizerGUI:
 
             # Update the remaining time label
             self.master.after(0, self.update_remaining_time_label, estimated_remaining_time)
-            # Synchronize the audio segments based on subtitle timings if the source file is an srt file
-            if self.source_file.endswith(".srt"):
-                final_audio = self.synchronize_audio(preprocessed_sentences, session_name)
-                output_filename = os.path.join(session_dir, f"{session_name}_synchronized.{self.output_format.get()}")
-                if self.output_format.get() in ['mp3', 'opus']:
-                    final_audio.export(output_filename, format=self.output_format.get(), bitrate=self.bitrate.get())
-                else:
-                    final_audio.export(output_filename, format=self.output_format.get())
     # Save the final concatenated audio file only if the source file is not an srt file
         if not self.source_file.endswith(".srt"):
             session_name = self.session_name.get()
@@ -2217,7 +2709,7 @@ class TTSOptimizerGUI:
             wav_files = []
             for sentence_dict in preprocessed_sentences:
                 sentence_number = int(sentence_dict["sentence_number"])
-                wav_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence{sentence_number}.wav")
+                wav_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence_{sentence_number}.wav")
                 if os.path.exists(wav_filename):
                     wav_files.append(wav_filename)
 
@@ -2377,10 +2869,8 @@ class TTSOptimizerGUI:
         if self.tts_service.get() == "XTTS":
             language = self.language_var.get()
             if language == "zh-cn":
-                # Chinese sentence splitting using NLTK
-                sentences = sent_tokenize(text, language='chinese')
+                sentences = self.split_chinese_sentences(text)
             elif language == "ja":
-                # Japanese sentence splitting using Hasami
                 sentences = hasami.segment_sentences(text)
             else:
                 splitter = SentenceSplitter(language=language)
@@ -2401,17 +2891,21 @@ class TTSOptimizerGUI:
                 "Kalmyk (v3)": "xal"
             }
             language = silero_to_simple_lang_codes.get(silero_language_name, "en")
-            if language == "zh":
-                # Chinese sentence splitting using NLTK
-                sentences = sent_tokenize(text, language='chinese')
-            elif language == "ja":
-                # Japanese sentence splitting using Hasami
-                sentences = hasami.segment_sentences(text)
-            else:
-                splitter = SentenceSplitter(language=language)
-                sentences = splitter.split(text)
+            splitter = SentenceSplitter(language=language)
+            sentences = splitter.split(text)
         return sentences
 
+    def split_chinese_sentences(self, text):
+        # Define punctuation that ends a sentence
+        end_punctuation = '。！？…'
+        
+        # Split the text into segments ending with punctuation
+        segments = re.split(f'([{end_punctuation}])', text)
+        
+        # Combine segments and punctuation, and filter out empty strings
+        sentences = [''.join(segments[i:i+2]).strip() for i in range(0, len(segments), 2) if segments[i]]
+        
+        return sentences
     def calculate_similarity(self, str1, str2):
         return difflib.SequenceMatcher(None, str1, str2).ratio()
 
@@ -2866,7 +3360,7 @@ class TTSOptimizerGUI:
             sentence_dict = next((s for s in processed_sentences if str(s["sentence_number"]) == sentence_number), None)
 
             if sentence_dict:
-                wav_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence{sentence_number}.wav")
+                wav_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence_{sentence_number}.wav")
 
                 if os.path.exists(wav_filename):
                     sound = pygame.mixer.Sound(wav_filename)
@@ -2971,7 +3465,7 @@ class TTSOptimizerGUI:
                                 if silence_length > 0:
                                     audio_data += AudioSegment.silent(duration=silence_length)
 
-                            sentence_output_filename = os.path.join(session_dir, "Sentence_wavs", f"{self.session_name.get()}_sentence{sentence_number}.wav")
+                            sentence_output_filename = os.path.join(session_dir, "Sentence_wavs", f"{self.session_name.get()}_sentence_{sentence_number}.wav")
                             audio_data.export(sentence_output_filename, format="wav")
                             logging.info(f"Regenerated audio for sentence {sentence_number}: {sentence_output_filename}")
 
@@ -3038,7 +3532,7 @@ class TTSOptimizerGUI:
             sentence_dict = next((s for s in processed_sentences if str(s["sentence_number"]) == sentence_number), None)
 
             if sentence_dict:
-                wav_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence{sentence_number}.wav")
+                wav_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence_{sentence_number}.wav")
 
                 if os.path.exists(wav_filename):
                     if pygame.mixer.get_init() is None:
@@ -3225,7 +3719,7 @@ class TTSOptimizerGUI:
                 wav_files = []
                 for sentence_dict in processed_sentences:
                     sentence_number = int(sentence_dict["sentence_number"])
-                    wav_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence{sentence_number}.wav")
+                    wav_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence_{sentence_number}.wav")
                     if os.path.exists(wav_filename):
                         wav_files.append(wav_filename)
 
@@ -3272,15 +3766,34 @@ class TTSOptimizerGUI:
                         os.remove(input_list_path)
 
 def main():
+    parser = argparse.ArgumentParser(description="Pandrator TTS Optimizer")
+    parser.add_argument("-connect", action="store_true", help="Connect to a TTS service on launch")
+    parser.add_argument("-xtts", action="store_true", help="Connect to XTTS")
+    parser.add_argument("-voicecraft", action="store_true", help="Connect to VoiceCraft")
+    parser.add_argument("-silero", action="store_true", help="Connect to Silero")
+    args = parser.parse_args()
+
     root = ctk.CTk()
     try:
         root.iconbitmap("pandrator.ico")
     except tk.TclError as e:
         print(f"Icon file 'pandrator.ico' not found. Proceeding without setting the window icon.")
         print(f"Error details: {str(e)}")
+
     gui = TTSOptimizerGUI(root)
+
+    if args.connect:
+        if args.xtts:
+            gui.tts_service.set("XTTS")
+            gui.connect_to_server()
+        elif args.voicecraft:
+            gui.tts_service.set("VoiceCraft")
+            gui.connect_to_server()
+        elif args.silero:
+            gui.tts_service.set("Silero")
+            gui.connect_to_server()
+
     root.mainloop()
 
-if __name__ == "main":
-    logging.debug("Pandrator started")
-main()     
+if __name__ == "__main__":
+    main()
