@@ -836,11 +836,11 @@ class TTSOptimizerGUI:
                 start_time = time.time()
                 while time.time() - start_time < timeout:
                     time.sleep(1)
-                    for file in os.listdir(session_dir):
-                        if file.lower().endswith('.srt') and file != os.path.basename(srt_file):
-                            translated_srt_path = os.path.join(session_dir, file)
-                            logging.info(f"Translated SRT file found: {translated_srt_path}")
-                            break
+            for file in os.listdir(session_dir):
+                if file.lower().endswith('.srt') and file != os.path.basename(srt_file):
+                    translated_srt_path = os.path.join(session_dir, file)
+                    logging.info(f"Translated SRT file found: {translated_srt_path}")
+                    break
 
                 if not translated_srt_path:
                     logging.error("Timeout: Translated SRT file not found.")
