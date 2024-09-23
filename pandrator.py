@@ -830,23 +830,25 @@ class TTSOptimizerGUI:
                     CTkMessagebox(title="Error", message=f"Translation failed: {str(e)}")
                     return
 
-                # Wait for new translated SRT file to appear
                 translated_srt_path = None
                 timeout = 3600  # Timeout after 1 hour
                 start_time = time.time()
+                original_srt_filename = os.path.basename(srt_file)
+
                 while time.time() - start_time < timeout:
                     time.sleep(1)
-            for file in os.listdir(session_dir):
-                if file.lower().endswith('.srt') and file != os.path.basename(srt_file):
-                    translated_srt_path = os.path.join(session_dir, file)
-                    logging.info(f"Translated SRT file found: {translated_srt_path}")
-                    break
+                    for file in os.listdir(session_dir):
+                        if file.lower().endswith('.srt') and file != original_srt_filename:
+                            translated_srt_path = os.path.join(session_dir, file)
+                            logging.info(f"Translated SRT file found: {translated_srt_path}")
+                            break
+                    if translated_srt_path:
+                        break
 
                 if not translated_srt_path:
                     logging.error("Timeout: Translated SRT file not found.")
                     CTkMessagebox(title="Error", message="Timeout: Translated SRT file not found.")
                     return
-
                 CTkMessagebox(title="Translation Complete", message="Translation has been completed.")
                 most_recent_srt_path = translated_srt_path
             else:
