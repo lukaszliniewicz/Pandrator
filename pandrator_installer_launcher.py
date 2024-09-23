@@ -116,6 +116,9 @@ class PandratorInstaller(ctk.CTk):
 
         self.rvc_checkbox = ctk.CTkCheckBox(self.installation_frame, text="RVC Voice Cloning (RVC CLI)", variable=self.rvc_var)
         self.rvc_checkbox.pack(anchor="w", padx=10, pady=5)
+        self.whisperx_var = ctk.BooleanVar(value=False)
+        self.whisperx_checkbox = ctk.CTkCheckBox(self.installation_frame, text="WhisperX", variable=self.whisperx_var)
+        self.whisperx_checkbox.pack(anchor="w", padx=10, pady=5)
 
         button_frame = ctk.CTkFrame(self.installation_frame)
         button_frame.pack(anchor="w", padx=10, pady=(20, 10))
@@ -175,7 +178,32 @@ class PandratorInstaller(ctk.CTk):
                             format='%(asctime)s - %(levelname)s - %(message)s')
 
         self.open_log_button.configure(state="normal")
-        
+
+    def install_whisperx(self, conda_path, env_name):
+        logging.info(f"Installing WhisperX in {env_name}...")
+        try:
+            self.run_command([
+                os.path.join(conda_path, 'Scripts', 'conda.exe'),
+                'run', '-n', env_name,
+                'pip', 'install',
+                'torch==2.0.1', 'torchvision==0.15.2', 'torchaudio==2.0.2',
+                '--index-url', 'https://download.pytorch.org/whl/cu118'
+            ])
+            self.run_command([
+                os.path.join(conda_path, 'Scripts', 'conda.exe'),
+                'install', '-n', env_name,
+                'cudnn=8.9.7.29', '-c', 'conda-forge', '-y'
+            ])
+            self.run_command([
+                os.path.join(conda_path, 'Scripts', 'conda.exe'),
+                'run', '-n', env_name,
+                'pip', 'install', 'git+https://github.com/m-bain/whisperx.git'
+            ])
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Failed to install WhisperX in {env_name}")
+            logging.error(f"Error message: {str(e)}")
+            raise    
+
     def update_xtts_options(self):
         if self.xtts_var.get():
             self.xtts_cpu_var.set(False)
@@ -404,6 +432,15 @@ class PandratorInstaller(ctk.CTk):
                 else:
                     self.voicecraft_var.set(False)
                     self.voicecraft_checkbox.configure(state="normal")
+
+                whisperx_support = config.get('whisperx_support', False)
+        
+                if whisperx_support:
+                    self.whisperx_var.set(False)
+                    self.whisperx_checkbox.configure(state="disabled")
+                else:
+                    self.whisperx_var.set(False)
+                    self.whisperx_checkbox.configure(state="normal")
 
         self.update_button_states()
         self.update_gpu_options()
@@ -1083,6 +1120,8 @@ class PandratorInstaller(ctk.CTk):
             
             if self.pandrator_var.get() or not pandrator_already_installed:
                 self.run_command(['git', 'clone', 'https://github.com/lukaszliniewicz/Pandrator.git', os.path.join(pandrator_path, 'Pandrator')])
+                self.run_command(['git', 'clone', 'https://github.com/lukaszliniewicz/Subdub.git', os.path.join(pandrator_path, 'Subdub')])
+            
             
             if self.xtts_var.get() or self.xtts_cpu_var.get():
                 self.run_command(['git', 'clone', 'https://github.com/daswer123/xtts-api-server.git', os.path.join(pandrator_path, 'xtts-api-server')])
@@ -1107,9 +1146,12 @@ class PandratorInstaller(ctk.CTk):
                 self.create_conda_env(conda_path, 'pandrator_installer', '3.10')
 
                 self.update_progress(0.7)
-                self.update_status("Installing Pandrator requirements...")
+                self.update_status("Installing Pandrator and Subdub requirements...")
                 pandrator_repo_path = os.path.join(pandrator_path, 'Pandrator')
                 self.install_requirements(conda_path, 'pandrator_installer', os.path.join(pandrator_repo_path, 'requirements.txt'))
+                
+                subdub_repo_path = os.path.join(pandrator_path, 'Subdub')
+                self.install_subdub_requirements(conda_path, 'pandrator_installer', subdub_repo_path)
 
             if self.xtts_var.get() or self.xtts_cpu_var.get():
                 self.update_progress(0.8)
@@ -1127,8 +1169,6 @@ class PandratorInstaller(ctk.CTk):
                 self.update_progress(0.9)
                 self.update_status("Installing Silero API server...")
                 self.install_silero_api_server(conda_path, 'silero_api_server_installer')
-                self.check_and_update_numpy(conda_path, 'silero_api_server_installer')
-                self.install_pytorch(conda_path, 'silero_api_server_installer')
 
             if self.voicecraft_var.get():
                 self.update_progress(0.8)
@@ -1159,6 +1199,11 @@ class PandratorInstaller(ctk.CTk):
                 self.update_status("Installing RVC_CLI...")
                 self.install_rvc_cli(conda_path, 'rvc_cli_installer')
 
+            if self.whisperx_var.get():
+                self.update_progress(0.85)
+                self.update_status("Installing WhisperX...")
+                self.install_whisperx(conda_path, 'pandrator_installer')
+
             # Create or update config file
             config_path = os.path.join(pandrator_path, 'config.json')
             if os.path.exists(config_path):
@@ -1172,6 +1217,8 @@ class PandratorInstaller(ctk.CTk):
             config['xtts_support'] = config.get('xtts_support', False) or self.xtts_var.get() or self.xtts_cpu_var.get()
             config['silero_support'] = config.get('silero_support', False) or self.silero_var.get()
             config['voicecraft_support'] = config.get('voicecraft_support', False) or self.voicecraft_var.get()
+            config['whisperx_support'] = config.get('whisperx_support', False) or self.whisperx_var.get()
+
 
             with open(config_path, 'w') as f:
                 json.dump(config, f)
@@ -1189,6 +1236,15 @@ class PandratorInstaller(ctk.CTk):
             self.after(100, self.update_button_states)
             self.check_existing_installations()
 
+    def install_subdub_requirements(self, conda_path, env_name, subdub_repo_path):
+        logging.info(f"Installing Subdub requirements in {env_name}...")
+        try:
+            requirements_file = os.path.join(subdub_repo_path, 'requirements.txt')
+            self.install_requirements(conda_path, env_name, requirements_file)
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Failed to install Subdub requirements in {env_name}")
+            logging.error(f"Error message: {str(e)}")
+            raise
 
     def launch_apps(self):
         base_path = os.path.abspath(self.initial_working_dir)
@@ -1200,6 +1256,9 @@ class PandratorInstaller(ctk.CTk):
         logging.info(f"Launch process started. Base directory: {base_path}")
         logging.info(f"Pandrator path: {pandrator_path}")
         logging.info(f"Conda path: {conda_path}")
+
+        pandrator_args = []
+        tts_engine_launched = False
 
         if self.launch_xtts_var.get():
             self.update_progress(0.4)
@@ -1230,8 +1289,11 @@ class PandratorInstaller(ctk.CTk):
                 logging.error(error_msg)
                 self.shutdown_xtts()
                 return
+            
+            pandrator_args = ['-connect', '-xtts']
+            tts_engine_launched = True
 
-        if self.launch_silero_var.get():
+        if self.launch_silero_var.get() and not tts_engine_launched:
             self.update_progress(0.6)
             self.update_status("Starting Silero server...")
             
@@ -1251,8 +1313,11 @@ class PandratorInstaller(ctk.CTk):
                 logging.error(error_msg)
                 self.shutdown_silero()
                 return
+            
+            pandrator_args = ['-connect', '-silero']
+            tts_engine_launched = True
 
-        if self.launch_voicecraft_var.get():
+        if self.launch_voicecraft_var.get() and not tts_engine_launched:
             self.update_progress(0.8)
             self.update_status("Starting VoiceCraft server...")
             voicecraft_repo_path = os.path.join(pandrator_path, 'VoiceCraft_API')
@@ -1274,6 +1339,8 @@ class PandratorInstaller(ctk.CTk):
                 logging.error(error_msg)
                 self.shutdown_voicecraft()
                 return
+            
+            pandrator_args = ['-connect', '-voicecraft']
 
         if self.launch_pandrator_var.get():
             self.update_progress(0.9)
@@ -1288,7 +1355,7 @@ class PandratorInstaller(ctk.CTk):
                 return
 
             try:
-                self.pandrator_process = self.run_script(conda_path, 'pandrator_installer', pandrator_script_path)
+                self.pandrator_process = self.run_script(conda_path, 'pandrator_installer', pandrator_script_path, pandrator_args)
             except Exception as e:
                 error_msg = f"Failed to start Pandrator: {str(e)}"
                 self.update_status(error_msg)
@@ -1301,18 +1368,20 @@ class PandratorInstaller(ctk.CTk):
         self.update_button_states()
         self.after(5000, self.check_processes_status)
 
-    def run_script(self, conda_path, env_name, script_path):
-        logging.info(f"Running script {script_path} in {env_name}...")
+    def run_script(self, conda_path, env_name, script_path, additional_args=[]):
+        logging.info(f"Running script {script_path} in {env_name} with args: {additional_args}")
         
         script_dir = os.path.dirname(script_path)
         
-        process = subprocess.Popen([
+        command = [
             os.path.join(conda_path, 'Scripts', 'conda.exe'),
             'run',
             '-n', env_name,
             'python',
             script_path
-        ], cwd=script_dir, creationflags=subprocess.DETACHED_PROCESS)
+        ] + additional_args
+        
+        process = subprocess.Popen(command, cwd=script_dir, creationflags=subprocess.DETACHED_PROCESS)
         return process
 
     def run_xtts_api_server(self, conda_path, env_name, xtts_server_path, use_cpu=False):
