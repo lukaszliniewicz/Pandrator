@@ -16,6 +16,7 @@ import tempfile
 import sys
 import ctypes
 import winreg
+from git import Repo
 import queue
 import msvcrt
 
@@ -178,6 +179,7 @@ class PandratorInstaller(ctk.CTk):
                             format='%(asctime)s - %(levelname)s - %(message)s')
 
         self.open_log_button.configure(state="normal")
+
 
     def install_whisperx(self, conda_path, env_name):
         logging.info(f"Installing WhisperX in {env_name}...")
@@ -621,43 +623,6 @@ class PandratorInstaller(ctk.CTk):
             return None
 
     def install_dependencies(self):
-        logging.info("Starting install_dependencies method")
-        dependencies = [('Git.Git', 'git')]
-        for winget_id, program_name in dependencies:
-            logging.info(f"Checking installation for {program_name}")
-            if not self.check_program_installed(program_name):
-                logging.info(f"Installing {program_name}...")
-                try:
-                    self.run_command(['winget', 'install', '--id', winget_id, '-e', '--accept-source-agreements', '--accept-package-agreements'])
-                    
-                    # Refresh environment variables in a new session
-                    self.refresh_env_in_new_session()
-                    
-                    # Only verify installation for git
-                    if program_name == 'git':
-                        if not self.check_program_installed(program_name):
-                            logging.warning(f"{program_name} installation not detected. Attempting to use absolute path.")
-                            program_path = self.get_program_path_from_registry(program_name)
-                            if program_path:
-                                bin_path = os.path.join(program_path, 'bin')
-                                os.environ['PATH'] = f"{bin_path};{os.environ['PATH']}"
-                                logging.info(f"Added {program_name} to PATH: {bin_path}")
-                            else:
-                                absolute_path = self.get_program_path(program_name)
-                                if absolute_path:
-                                    os.environ[program_name.upper()] = absolute_path
-                                    logging.info(f"Updated {program_name} path: {absolute_path}")
-                                else:
-                                    raise Exception(f"Failed to find {program_name} after installation.")
-                    
-                except subprocess.CalledProcessError as e:
-                    logging.error(f"Failed to install {program_name}.")
-                    logging.error(f"Error output: {e.stderr.decode('utf-8')}")
-                    raise
-            else:
-                logging.info(f"{program_name} is already installed.")
-
-        # Handle Calibre installation separately
         return self.install_calibre()
 
     def install_calibre(self):
@@ -960,8 +925,7 @@ class PandratorInstaller(ctk.CTk):
         try:
             # Git pull
             logging.info(f"Executing git pull in: {pandrator_repo_path}")
-            result = subprocess.run(['git', 'pull'], cwd=pandrator_repo_path, capture_output=True, text=True, check=True)
-            logging.info(f"Git pull result: {result.stdout}")
+            self.pull_repo(pandrator_repo_path)
             
             # Update requirements
             self.update_status("Updating Pandrator dependencies...")
@@ -980,30 +944,41 @@ class PandratorInstaller(ctk.CTk):
             ]
             logging.info(f"Executing update command: {' '.join(update_cmd)}")
             self.run_command(update_cmd, cwd=pandrator_repo_path)
-
-            if "Already up to date." in result.stdout:
-                msg = "Pandrator code is already up to date. Dependencies have been checked and updated if necessary."
-                logging.info(msg)
-                messagebox.showinfo("Update", msg)
-            else:
-                msg = "Pandrator has been updated successfully, including its dependencies."
-                logging.info(msg)
-                messagebox.showinfo("Update", msg)
+            
+            msg = "Pandrator has been updated successfully, including its dependencies."
+            logging.info(msg)
+            messagebox.showinfo("Update", msg)
             
             self.update_status("Pandrator update completed.")
             logging.info("Pandrator update process completed successfully")
         
-        except subprocess.CalledProcessError as e:
-            error_msg = f"Failed to update Pandrator: {e.stderr}"
-            logging.error(error_msg)
-            messagebox.showerror("Error", error_msg)
-            self.update_status("Pandrator update failed.")
         except Exception as e:
-            error_msg = f"An error occurred while updating Pandrator: {str(e)}"
+            error_msg = f"Failed to update Pandrator: {str(e)}"
             logging.error(error_msg)
             logging.error(traceback.format_exc())
             messagebox.showerror("Error", error_msg)
             self.update_status("Pandrator update failed.")
+
+    def clone_repo(self, repo_url, target_dir):
+        logging.info(f"Cloning repository {repo_url} to {target_dir}...")
+        try:
+            Repo.clone_from(repo_url, target_dir)
+            logging.info("Repository cloned successfully.")
+        except Exception as e:
+            logging.error(f"Failed to clone repository: {str(e)}")
+            raise
+
+    def pull_repo(self, repo_path):
+        logging.info(f"Pulling updates for repository at {repo_path}...")
+        try:
+            repo = Repo(repo_path)
+            origin = repo.remote(name='origin')
+            origin.pull()
+            logging.info("Repository updated successfully.")
+        except Exception as e:
+            logging.error(f"Failed to update repository: {str(e)}")
+            raise
+
 
     def install_rvc_cli(self, conda_path, env_name):
         logging.info("Starting RVC_CLI installation")
@@ -1011,10 +986,7 @@ class PandratorInstaller(ctk.CTk):
         try:
             # Clone RVC_CLI repository
             logging.info("Cloning RVC_CLI repository...")
-            clone_cmd = ['git', 'clone', 'https://github.com/blaisewf/rvc-cli.git', rvc_cli_path]
-            logging.info(f"Running command: {' '.join(clone_cmd)}")
-            clone_result = subprocess.run(clone_cmd, capture_output=True, text=True, check=True)
-            logging.info(clone_result.stdout)
+            self.clone_repo('https://github.com/blaisewf/rvc-cli.git', rvc_cli_path)
 
             # Create conda environment
             logging.info(f"Creating conda environment: {env_name}")
@@ -1119,15 +1091,14 @@ class PandratorInstaller(ctk.CTk):
             self.update_status("Cloning repositories...")
             
             if self.pandrator_var.get() or not pandrator_already_installed:
-                self.run_command(['git', 'clone', 'https://github.com/lukaszliniewicz/Pandrator.git', os.path.join(pandrator_path, 'Pandrator')])
-                self.run_command(['git', 'clone', 'https://github.com/lukaszliniewicz/Subdub.git', os.path.join(pandrator_path, 'Subdub')])
-            
-            
+                self.clone_repo('https://github.com/lukaszliniewicz/Pandrator.git', os.path.join(pandrator_path, 'Pandrator'))
+                self.clone_repo('https://github.com/lukaszliniewicz/Subdub.git', os.path.join(pandrator_path, 'Subdub'))
+
             if self.xtts_var.get() or self.xtts_cpu_var.get():
-                self.run_command(['git', 'clone', 'https://github.com/daswer123/xtts-api-server.git', os.path.join(pandrator_path, 'xtts-api-server')])
-            
+                self.clone_repo('https://github.com/daswer123/xtts-api-server.git', os.path.join(pandrator_path, 'xtts-api-server'))
+
             if self.voicecraft_var.get():
-                self.run_command(['git', 'clone', 'https://github.com/lukaszliniewicz/VoiceCraft_API.git', os.path.join(pandrator_path, 'VoiceCraft_API')])
+                self.clone_repo('https://github.com/lukaszliniewicz/VoiceCraft_API.git', os.path.join(pandrator_path, 'VoiceCraft_API'))
 
             self.update_progress(0.5)
             self.update_status("Installing Miniconda...")
@@ -1239,6 +1210,10 @@ class PandratorInstaller(ctk.CTk):
     def install_subdub_requirements(self, conda_path, env_name, subdub_repo_path):
         logging.info(f"Installing Subdub requirements in {env_name}...")
         try:
+            # Clone the Subdub repository if it doesn't exist
+            if not os.path.exists(subdub_repo_path):
+                self.clone_repo('https://github.com/lukaszliniewicz/Subdub.git', subdub_repo_path)
+            
             requirements_file = os.path.join(subdub_repo_path, 'requirements.txt')
             self.install_requirements(conda_path, env_name, requirements_file)
         except subprocess.CalledProcessError as e:
