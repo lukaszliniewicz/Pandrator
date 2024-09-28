@@ -16,9 +16,7 @@ import tempfile
 import sys
 import ctypes
 import winreg
-from git import Repo
-import queue
-import msvcrt
+from dulwich import porcelain
 
 class ScrollableFrame(ctk.CTkScrollableFrame):
     def __init__(self, container, *args, **kwargs):
@@ -103,9 +101,9 @@ class PandratorInstaller(ctk.CTk):
         engine_frame = ctk.CTkFrame(self.installation_frame)
         engine_frame.pack(fill="x", padx=10, pady=(0, 10))
         
-        self.xtts_checkbox = ctk.CTkCheckBox(engine_frame, text="XTTS", variable=self.xtts_var, command=self.update_xtts_options)
+        self.xtts_checkbox = ctk.CTkCheckBox(engine_frame, text="XTTS", variable=self.xtts_var)
         self.xtts_checkbox.pack(side="left", padx=(0, 20), pady=5)
-        self.xtts_cpu_checkbox = ctk.CTkCheckBox(engine_frame, text="XTTS CPU only", variable=self.xtts_cpu_var, command=self.update_xtts_options)
+        self.xtts_cpu_checkbox = ctk.CTkCheckBox(engine_frame, text="XTTS CPU only", variable=self.xtts_cpu_var)
         self.xtts_cpu_checkbox.pack(side="left", padx=(0, 20), pady=5)
 
         self.silero_checkbox = ctk.CTkCheckBox(engine_frame, text="Silero", variable=self.silero_var)
@@ -115,7 +113,7 @@ class PandratorInstaller(ctk.CTk):
 
         ctk.CTkLabel(self.installation_frame, text="Other tools", font=("Arial", 14, "bold")).pack(anchor="w", padx=10, pady=(20, 5))
 
-        self.rvc_checkbox = ctk.CTkCheckBox(self.installation_frame, text="RVC Voice Cloning (RVC CLI)", variable=self.rvc_var)
+        self.rvc_checkbox = ctk.CTkCheckBox(self.installation_frame, text="RVC (rvc-python)", variable=self.rvc_var)
         self.rvc_checkbox.pack(anchor="w", padx=10, pady=5)
         self.whisperx_var = ctk.BooleanVar(value=False)
         self.whisperx_checkbox = ctk.CTkCheckBox(self.installation_frame, text="WhisperX", variable=self.whisperx_var)
@@ -140,7 +138,7 @@ class PandratorInstaller(ctk.CTk):
 
         # XTTS options in one row
         ctk.CTkCheckBox(self.launch_frame, text="XTTS", variable=self.launch_xtts_var).grid(row=2, column=0, sticky="w", padx=10, pady=5)
-        self.xtts_cpu_checkbox = ctk.CTkCheckBox(self.launch_frame, text="Use CPU", variable=self.xtts_cpu_launch_var, command=self.update_xtts_launch_options)
+        self.xtts_cpu_checkbox = ctk.CTkCheckBox(self.launch_frame, text="Use CPU", variable=self.xtts_cpu_launch_var)
         self.xtts_cpu_checkbox.grid(row=2, column=1, sticky="w", padx=10, pady=5)
         self.lowvram_checkbox = ctk.CTkCheckBox(self.launch_frame, text="Low VRAM", variable=self.lowvram_var)
         self.lowvram_checkbox.grid(row=2, column=2, sticky="w", padx=10, pady=5)
@@ -159,12 +157,7 @@ class PandratorInstaller(ctk.CTk):
 
         self.status_label = ctk.CTkLabel(self.content_frame, text="", font=("Arial", 14))
         self.status_label.pack(pady=(0, 10))
-
-        # Schedule update_gpu_options and update_button_states to run after a short delay
-        self.after(100, self.update_gpu_options)
-        self.after(100, self.update_button_states)
-        self.check_existing_installations()
-
+        self.refresh_ui_state()
         atexit.register(self.shutdown_apps)
 
     def initialize_logging(self):
@@ -179,6 +172,107 @@ class PandratorInstaller(ctk.CTk):
                             format='%(asctime)s - %(levelname)s - %(message)s')
 
         self.open_log_button.configure(state="normal")
+
+    def disable_buttons(self):
+        for widget in self.installation_frame.winfo_children():
+            if isinstance(widget, (ctk.CTkCheckBox, ctk.CTkButton)):
+                widget.configure(state="disabled")
+        self.launch_button.configure(state="disabled")
+
+    def enable_buttons(self):
+        self.refresh_ui_state()
+
+    def refresh_ui_state(self):
+        pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
+        config_path = os.path.join(pandrator_path, 'config.json')
+        
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+        else:
+            config = {}
+
+        # Helper function
+        def set_widget_state(widget, state, value=None):
+            widget.configure(state=state)
+            if isinstance(widget, ctk.CTkCheckBox) and value is not None:
+                if value:
+                    widget.select()
+                else:
+                    widget.deselect()
+
+        # Pandrator
+        pandrator_installed = os.path.exists(pandrator_path)
+        set_widget_state(self.pandrator_checkbox, "disabled" if pandrator_installed else "normal", False)
+        set_widget_state(self.launch_frame.winfo_children()[1], "normal" if pandrator_installed else "disabled", pandrator_installed)
+
+        # XTTS
+        xtts_support = config.get('xtts_support', False)
+        xtts_cuda_support = config.get('cuda_support', False)
+        
+        # Disable both XTTS and XTTS CPU checkboxes if XTTS is installed in any form
+        set_widget_state(self.xtts_checkbox, "disabled" if xtts_support else "normal", False)
+        set_widget_state(self.xtts_cpu_checkbox, "disabled" if xtts_support else "normal", False)
+        
+        xtts_launch_checkbox = next(widget for widget in self.launch_frame.winfo_children() if isinstance(widget, ctk.CTkCheckBox) and widget.cget("text") == "XTTS")
+        set_widget_state(xtts_launch_checkbox, "normal" if xtts_support else "disabled", False)
+        
+        cpu_checkbox = next(widget for widget in self.launch_frame.winfo_children() if isinstance(widget, ctk.CTkCheckBox) and widget.cget("text") == "Use CPU")
+        lowvram_checkbox = next(widget for widget in self.launch_frame.winfo_children() if isinstance(widget, ctk.CTkCheckBox) and widget.cget("text") == "Low VRAM")
+        deepspeed_checkbox = next(widget for widget in self.launch_frame.winfo_children() if isinstance(widget, ctk.CTkCheckBox) and widget.cget("text") == "DeepSpeed")
+        
+        if xtts_support:
+            if xtts_cuda_support:
+                set_widget_state(cpu_checkbox, "normal", False)
+                set_widget_state(lowvram_checkbox, "normal", False)
+                set_widget_state(deepspeed_checkbox, "normal", True)
+            else:
+                set_widget_state(cpu_checkbox, "normal", True)
+                set_widget_state(lowvram_checkbox, "disabled", False)
+                set_widget_state(deepspeed_checkbox, "disabled", False)
+        else:
+            set_widget_state(cpu_checkbox, "disabled", False)
+            set_widget_state(lowvram_checkbox, "disabled", False)
+            set_widget_state(deepspeed_checkbox, "disabled", False)
+        
+        if xtts_support:
+            if xtts_cuda_support:
+                set_widget_state(cpu_checkbox, "normal", False)
+                set_widget_state(lowvram_checkbox, "normal", False)
+                set_widget_state(deepspeed_checkbox, "normal", True)
+            else:
+                set_widget_state(cpu_checkbox, "normal", True)
+                set_widget_state(lowvram_checkbox, "disabled", False)
+                set_widget_state(deepspeed_checkbox, "disabled", False)
+        else:
+            set_widget_state(cpu_checkbox, "disabled", False)
+            set_widget_state(lowvram_checkbox, "disabled", False)
+            set_widget_state(deepspeed_checkbox, "disabled", False)
+
+        # Silero
+        silero_support = config.get('silero_support', False)
+        set_widget_state(self.silero_checkbox, "disabled" if silero_support else "normal", False)
+        silero_launch_checkbox = next(widget for widget in self.launch_frame.winfo_children() if isinstance(widget, ctk.CTkCheckBox) and widget.cget("text") == "Silero")
+        set_widget_state(silero_launch_checkbox, "normal" if silero_support else "disabled", False)
+
+        # VoiceCraft
+        voicecraft_support = config.get('voicecraft_support', False)
+        set_widget_state(self.voicecraft_checkbox, "disabled" if voicecraft_support else "normal", False)
+        voicecraft_launch_checkbox = next(widget for widget in self.launch_frame.winfo_children() if isinstance(widget, ctk.CTkCheckBox) and widget.cget("text") == "Voicecraft")
+        set_widget_state(voicecraft_launch_checkbox, "normal" if voicecraft_support else "disabled", False)
+
+        # RVC
+        rvc_support = config.get('rvc_support', False)
+        set_widget_state(self.rvc_checkbox, "disabled" if rvc_support else "normal", False)
+
+        # WhisperX
+        whisperx_support = config.get('whisperx_support', False)
+        set_widget_state(self.whisperx_checkbox, "disabled" if whisperx_support else "normal", False)
+
+        # Update launch and install buttons state
+        self.launch_button.configure(state="normal" if pandrator_installed else "disabled")
+        self.install_button.configure(state="normal")
+        self.update_button.configure(state="normal" if pandrator_installed else "disabled")
 
 
     def install_whisperx(self, conda_path, env_name):
@@ -206,182 +300,6 @@ class PandratorInstaller(ctk.CTk):
             logging.error(f"Error message: {str(e)}")
             raise    
 
-    def update_xtts_options(self):
-        if self.xtts_var.get():
-            self.xtts_cpu_var.set(False)
-        elif self.xtts_cpu_var.get():
-            self.xtts_var.set(False)
-        
-        # Update launch options based on CPU selection
-        self.update_xtts_launch_options()
-        
-    def update_xtts_launch_options(self):
-        config_path = os.path.join(self.initial_working_dir, 'Pandrator', 'config.json')
-        cuda_support = False
-        
-        if os.path.exists(config_path):
-            with open(config_path, 'r') as f:
-                config = json.load(f)
-            cuda_support = config.get('cuda_support', False)
-
-        if cuda_support:
-            self.xtts_cpu_checkbox.configure(state="normal")
-            if self.xtts_cpu_launch_var.get():
-                self.lowvram_checkbox.configure(state="disabled")
-                self.deepspeed_checkbox.configure(state="disabled")
-            else:
-                self.lowvram_checkbox.configure(state="normal")
-                self.deepspeed_checkbox.configure(state="normal")
-        else:
-            self.xtts_cpu_checkbox.configure(state="normal")
-            self.xtts_cpu_launch_var.set(True)
-            self.lowvram_checkbox.configure(state="disabled")
-            self.deepspeed_checkbox.configure(state="disabled")
-
-    def disable_buttons(self):
-        if self.install_button:
-            self.install_button.configure(state="disabled")
-        if self.pandrator_checkbox:
-            self.pandrator_checkbox.configure(state="disabled")
-        if self.xtts_checkbox:
-            self.xtts_checkbox.configure(state="disabled")
-        if self.xtts_cpu_checkbox:
-            self.xtts_cpu_checkbox.configure(state="disabled")
-        if self.silero_checkbox:
-            self.silero_checkbox.configure(state="disabled")
-        if self.voicecraft_checkbox:
-            self.voicecraft_checkbox.configure(state="disabled")
-        if self.rvc_checkbox:
-            self.rvc_checkbox.configure(state="disabled")
-        self.update_button_states()
-        self.update_gpu_options()            
-
-    def enable_buttons(self):
-        if self.install_button:
-            self.install_button.configure(state="normal")
-        if self.pandrator_checkbox:
-            self.pandrator_checkbox.configure(state="normal")
-        if self.xtts_checkbox:
-            self.xtts_checkbox.configure(state="normal")
-        if self.silero_checkbox:
-            self.silero_checkbox.configure(state="normal")
-        if self.voicecraft_checkbox:
-            self.voicecraft_checkbox.configure(state="normal")
-        if self.rvc_checkbox:
-            self.rvc_checkbox.configure(state="normal")
-        self.update_button_states()
-        self.update_gpu_options()
-
-    def update_button_states(self):
-        pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
-        if os.path.exists(pandrator_path):
-            if self.launch_button:
-                self.launch_button.configure(state="normal")
-            
-            config_path = os.path.join(pandrator_path, 'config.json')
-            if os.path.exists(config_path):
-                with open(config_path, 'r') as f:
-                    config = json.load(f)
-                
-                for widget in self.launch_frame.winfo_children():
-                    if isinstance(widget, ctk.CTkCheckBox):
-                        if widget.cget("text") == "XTTS":
-                            if config.get('xtts_support', False):
-                                widget.configure(state="normal")
-                                self.launch_xtts_var.set(False)  # Uncheck the checkbox
-                            else:
-                                widget.configure(state="disabled")
-                                self.launch_xtts_var.set(False)  # Uncheck the checkbox
-                        elif widget.cget("text") == "Silero":
-                            if config.get('silero_support', False):
-                                widget.configure(state="normal")
-                                self.launch_silero_var.set(False)  # Uncheck the checkbox
-                            else:
-                                widget.configure(state="disabled")
-                                self.launch_silero_var.set(False)  # Uncheck the checkbox
-                        elif widget.cget("text") == "Voicecraft":
-                            if config.get('voicecraft_support', False):
-                                widget.configure(state="normal")
-                                self.launch_voicecraft_var.set(False)  # Uncheck the checkbox
-                            else:
-                                widget.configure(state="disabled")
-                                self.launch_voicecraft_var.set(False)  # Uncheck the checkbox
-                    elif isinstance(widget, ctk.CTkFrame):
-                        for child in widget.winfo_children():
-                            if isinstance(child, ctk.CTkCheckBox):
-                                if child.cget("text") in ["Low VRAM", "DeepSpeed", "Use CPU"]:
-                                    if config.get('xtts_support', False):
-                                        child.configure(state="normal")
-                                    else:
-                                        child.configure(state="disabled")
-        else:
-            if self.launch_button:
-                self.launch_button.configure(state="disabled")
-            for widget in self.launch_frame.winfo_children():
-                if isinstance(widget, ctk.CTkCheckBox):
-                    widget.configure(state="disabled")
-                elif isinstance(widget, ctk.CTkFrame):
-                    for child in widget.winfo_children():
-                        if isinstance(child, ctk.CTkCheckBox):
-                            child.configure(state="disabled")
-        
-    def update_gpu_options(self):
-        xtts_checkbox = None
-        xtts_cpu_checkbox = None
-        for widget in self.installation_frame.winfo_children():
-            if isinstance(widget, ctk.CTkFrame):
-                for child in widget.winfo_children():
-                    if isinstance(child, ctk.CTkCheckBox):
-                        if child.cget("text") == "XTTS":
-                            xtts_checkbox = child
-                        elif child.cget("text") == "XTTS CPU only":
-                            xtts_cpu_checkbox = child
-        
-        if xtts_checkbox and xtts_cpu_checkbox:
-            pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
-            config_path = os.path.join(pandrator_path, 'config.json')
-            if os.path.exists(config_path):
-                with open(config_path, 'r') as f:
-                    config = json.load(f)
-                xtts_support = config.get('xtts_support', False)
-                if xtts_support:
-                    xtts_checkbox.configure(state="disabled")
-                    xtts_cpu_checkbox.configure(state="disabled")
-            else:
-                xtts_cpu_checkbox.configure(state="normal")
-                if xtts_checkbox.get():
-                    xtts_cpu_checkbox.configure(state="disabled")
-        
-    def refresh_gui_state(self):
-        # Read the latest config
-        pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
-        config_path = os.path.join(pandrator_path, 'config.json')
-        if os.path.exists(config_path):
-            with open(config_path, 'r') as f:
-                config = json.load(f)
-            
-            # Update installation checkboxes
-            self.xtts_checkbox.configure(state="disabled" if config.get('xtts_support', False) else "normal")
-            self.xtts_cpu_checkbox.configure(state="disabled" if config.get('xtts_support', False) else "normal")
-            self.silero_checkbox.configure(state="disabled" if config.get('silero_support', False) else "normal")
-            self.voicecraft_checkbox.configure(state="disabled" if config.get('voicecraft_support', False) else "normal")
-            
-            # Update launch checkboxes
-            for widget in self.launch_frame.winfo_children():
-                if isinstance(widget, ctk.CTkCheckBox):
-                    if widget.cget("text") == "XTTS":
-                        widget.configure(state="normal" if config.get('xtts_support', False) else "disabled")
-                    elif widget.cget("text") == "Silero":
-                        widget.configure(state="normal" if config.get('silero_support', False) else "disabled")
-                    elif widget.cget("text") == "Voicecraft":
-                        widget.configure(state="normal" if config.get('voicecraft_support', False) else "disabled")
-                elif isinstance(widget, ctk.CTkFrame):
-                    for child in widget.winfo_children():
-                        if isinstance(child, ctk.CTkCheckBox):
-                            if child.cget("text") in ["Low VRAM", "DeepSpeed", "Use CPU"]:
-                                child.configure(state="normal" if config.get('xtts_support', False) else "disabled")
-        
-        
     def remove_directory(self, path):
         max_attempts = 5
         for attempt in range(max_attempts):
@@ -391,69 +309,14 @@ class PandratorInstaller(ctk.CTk):
             except PermissionError:
                 time.sleep(1)  # Wait for a second before retrying
         return False
-
-    def check_existing_installations(self):
-        pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
-
-        if os.path.exists(pandrator_path):
-            self.pandrator_var.set(False)
-            self.pandrator_checkbox.configure(state="disabled")
-
-            config_path = os.path.join(pandrator_path, 'config.json')
-            if os.path.exists(config_path):
-                with open(config_path, 'r') as f:
-                    config = json.load(f)
-
-                xtts_support = config.get('xtts_support', False)
-
-                if xtts_support:
-                    self.xtts_var.set(False)
-                    self.xtts_cpu_var.set(False)
-                    self.xtts_checkbox.configure(state="disabled")
-                    self.xtts_cpu_checkbox.configure(state="disabled")
-                else:
-                    self.xtts_var.set(False)
-                    self.xtts_cpu_var.set(False)
-                    self.xtts_checkbox.configure(state="normal")
-                    self.xtts_cpu_checkbox.configure(state="normal")
-
-                silero_support = config.get('silero_support', False)
-
-                if silero_support:
-                    self.silero_var.set(False)
-                    self.silero_checkbox.configure(state="disabled")
-                else:
-                    self.silero_var.set(False)
-                    self.silero_checkbox.configure(state="normal")
-
-                voicecraft_support = config.get('voicecraft_support', False)
-
-                if voicecraft_support:
-                    self.voicecraft_var.set(False)
-                    self.voicecraft_checkbox.configure(state="disabled")
-                else:
-                    self.voicecraft_var.set(False)
-                    self.voicecraft_checkbox.configure(state="normal")
-
-                whisperx_support = config.get('whisperx_support', False)
-        
-                if whisperx_support:
-                    self.whisperx_var.set(False)
-                    self.whisperx_checkbox.configure(state="disabled")
-                else:
-                    self.whisperx_var.set(False)
-                    self.whisperx_checkbox.configure(state="normal")
-
-        self.update_button_states()
-        self.update_gpu_options()
-        self.update_xtts_launch_options() 
     
     def install_pandrator(self):
         pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
         pandrator_already_installed = os.path.exists(pandrator_path)
         
         if pandrator_already_installed and not self.pandrator_var.get():
-            if not any([self.xtts_var.get(), self.xtts_cpu_var.get(), self.silero_var.get(), self.voicecraft_var.get(), self.rvc_var.get()]):
+            if not any([self.xtts_var.get(), self.xtts_cpu_var.get(), self.silero_var.get(), 
+                        self.voicecraft_var.get(), self.rvc_var.get(), self.whisperx_var.get()]):
                 messagebox.showinfo("Info", "No new components selected for installation.")
                 return
         elif not pandrator_already_installed and not self.pandrator_var.get():
@@ -962,7 +825,7 @@ class PandratorInstaller(ctk.CTk):
     def clone_repo(self, repo_url, target_dir):
         logging.info(f"Cloning repository {repo_url} to {target_dir}...")
         try:
-            Repo.clone_from(repo_url, target_dir)
+            porcelain.clone(repo_url, target_dir)
             logging.info("Repository cloned successfully.")
         except Exception as e:
             logging.error(f"Failed to clone repository: {str(e)}")
@@ -971,101 +834,51 @@ class PandratorInstaller(ctk.CTk):
     def pull_repo(self, repo_path):
         logging.info(f"Pulling updates for repository at {repo_path}...")
         try:
-            repo = Repo(repo_path)
-            origin = repo.remote(name='origin')
-            origin.pull()
+            repo = porcelain.open_repo(repo_path)
+            porcelain.pull(repo)
             logging.info("Repository updated successfully.")
         except Exception as e:
             logging.error(f"Failed to update repository: {str(e)}")
             raise
 
-
-    def install_rvc_cli(self, conda_path, env_name):
-        logging.info("Starting RVC_CLI installation")
-        rvc_cli_path = os.path.join(os.path.dirname(os.path.dirname(conda_path)), 'Pandrator', 'rvc-cli')
+    def install_rvc_python(self, conda_path, env_name):
+        logging.info("Starting RVC Python installation")
         try:
-            # Clone RVC_CLI repository
-            logging.info("Cloning RVC_CLI repository...")
-            self.clone_repo('https://github.com/blaisewf/rvc-cli.git', rvc_cli_path)
-
-            # Create conda environment
-            logging.info(f"Creating conda environment: {env_name}")
-            self.create_conda_env(conda_path, env_name, '3.9')
-
             # Install specific pip version
             logging.info("Installing specific pip version...")
             self.run_command([
                 os.path.join(conda_path, 'Scripts', 'conda.exe'),
                 'run', '-n', env_name,
-                'python', '-m', 'pip', 'install', 'pip<24.1'
+                'python', '-m', 'pip', 'install', 'pip==24'
             ])
 
-            # Install dependencies
-            logging.info("Installing dependencies...")
+            # Install RVC Python
+            logging.info("Installing RVC Python...")
             self.run_command([
                 os.path.join(conda_path, 'Scripts', 'conda.exe'),
                 'run', '-n', env_name,
-                'pip', 'install', '--upgrade', 'setuptools'
-            ])
-            self.install_requirements(conda_path, env_name, os.path.join(rvc_cli_path, 'requirements.txt'))
-
-            # Explicitly install bs4 (BeautifulSoup4)
-            logging.info("Installing BeautifulSoup4...")
-            self.run_command([
-                os.path.join(conda_path, 'Scripts', 'conda.exe'),
-                'run', '-n', env_name,
-                'pip', 'install', 'beautifulsoup4'
+                'pip', 'install', 'rvc-python'
             ])
 
-            # Uninstall and reinstall PyTorch
-            logging.info("Uninstalling PyTorch...")
-            self.run_command([
-                os.path.join(conda_path, 'Scripts', 'conda.exe'),
-                'run', '-n', env_name,
-                'pip', 'uninstall', 'torch', 'torchvision', 'torchaudio', '-y'
-            ])
-            
+            # Install specific PyTorch version
             logging.info("Installing specific PyTorch version...")
             self.run_command([
                 os.path.join(conda_path, 'Scripts', 'conda.exe'),
                 'run', '-n', env_name,
-                'pip', 'install', 'torch==2.1.1', 'torchvision==0.16.1', 'torchaudio==2.1.1',
-                '--index-url', 'https://download.pytorch.org/whl/cu121'
+                'pip', 'install', 'torch==2.1.1+cu118', 'torchaudio==2.1.1+cu118',
+                '--index-url', 'https://download.pytorch.org/whl/cu118'
             ])
 
-            # Run the prerequisites command
-            logging.info("Running prerequisites...")
-            rvc_cli_script = os.path.join(rvc_cli_path, 'rvc_cli.py')
-            
-            if not os.path.exists(rvc_cli_script):
-                raise FileNotFoundError(f"RVC CLI script not found at: {rvc_cli_script}")
-
-            prerequisites_cmd = [
-                os.path.join(conda_path, 'Scripts', 'conda.exe'),
-                'run', '-n', env_name,
-                'python', rvc_cli_script, 'prerequisites'
-            ]
-            logging.info(f"Running command: {' '.join(prerequisites_cmd)}")
-            
-            prereq_process = subprocess.Popen(prerequisites_cmd, cwd=rvc_cli_path, 
-                                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-            
-            for line in iter(prereq_process.stdout.readline, ''):
-                logging.info(line.strip())
-
-            prereq_process.wait(timeout=1800)  # 30 minutes timeout
-            if prereq_process.returncode != 0:
-                raise Exception(f"Prerequisites process exited with non-zero return code: {prereq_process.returncode}")
-
-            logging.info("RVC_CLI installation and prerequisites download completed successfully.")
+            logging.info("RVC Python installation completed successfully.")
 
         except Exception as e:
-            error_msg = f"An error occurred during RVC_CLI installation or prerequisites download: {str(e)}"
+            error_msg = f"An error occurred during RVC Python installation: {str(e)}"
             logging.error(error_msg)
             logging.error(traceback.format_exc())
             raise
 
     def install_process(self):
+        self.disable_buttons()
         pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
         conda_path = os.path.join(pandrator_path, 'conda')
         pandrator_already_installed = os.path.exists(pandrator_path)
@@ -1167,13 +980,16 @@ class PandratorInstaller(ctk.CTk):
 
             if self.rvc_var.get():
                 self.update_progress(0.8)
-                self.update_status("Installing RVC_CLI...")
-                self.install_rvc_cli(conda_path, 'rvc_cli_installer')
+                self.update_status("Installing RVC Python...")
+                self.install_rvc_python(conda_path, 'pandrator_installer')
 
             if self.whisperx_var.get():
                 self.update_progress(0.85)
+                self.update_status("Creating WhisperX Conda environment...")
+                self.create_conda_env(conda_path, 'whisperx_installer', '3.10')
+                self.update_progress(0.90)
                 self.update_status("Installing WhisperX...")
-                self.install_whisperx(conda_path, 'pandrator_installer')
+                self.install_whisperx(conda_path, 'whisperx_installer')
 
             # Create or update config file
             config_path = os.path.join(pandrator_path, 'config.json')
@@ -1190,7 +1006,6 @@ class PandratorInstaller(ctk.CTk):
             config['voicecraft_support'] = config.get('voicecraft_support', False) or self.voicecraft_var.get()
             config['whisperx_support'] = config.get('whisperx_support', False) or self.whisperx_var.get()
 
-
             with open(config_path, 'w') as f:
                 json.dump(config, f)
 
@@ -1203,9 +1018,8 @@ class PandratorInstaller(ctk.CTk):
             logging.error(traceback.format_exc())
             self.update_status("Installation failed. Check the log for details.")
         finally:
-            self.after(100, self.update_gpu_options)
-            self.after(100, self.update_button_states)
-            self.check_existing_installations()
+            self.refresh_ui_state()
+
 
     def install_subdub_requirements(self, conda_path, env_name, subdub_repo_path):
         logging.info(f"Installing Subdub requirements in {env_name}...")
@@ -1340,8 +1154,9 @@ class PandratorInstaller(ctk.CTk):
 
         self.update_progress(1.0)
         self.update_status("Apps are running!")
-        self.update_button_states()
+        self.refresh_ui_state()
         self.after(5000, self.check_processes_status)
+
 
     def run_script(self, conda_path, env_name, script_path, additional_args=[]):
         logging.info(f"Running script {script_path} in {env_name} with args: {additional_args}")
@@ -1513,7 +1328,7 @@ class PandratorInstaller(ctk.CTk):
         
         if not self.pandrator_process and not self.xtts_process and not self.silero_process and not self.voicecraft_process:
             self.update_status("All processes have exited.")
-            self.update_button_states()
+            self.refresh_ui_state()
         else:
             self.after(5000, self.check_processes_status)  # Schedule next check
 
