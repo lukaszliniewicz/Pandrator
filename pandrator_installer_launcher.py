@@ -274,10 +274,35 @@ class PandratorInstaller(ctk.CTk):
         self.install_button.configure(state="normal")
         self.update_button.configure(state="normal" if pandrator_installed else "disabled")
 
+    def get_installed_components(self):
+        pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
+        config_path = os.path.join(pandrator_path, 'config.json')
+        
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+        else:
+            config = {}
+        
+        return {
+            'xtts': config.get('xtts_support', False),
+            'silero': config.get('silero_support', False),
+            'voicecraft': config.get('voicecraft_support', False),
+            'rvc': config.get('rvc_support', False),
+            'whisperx': config.get('whisperx_support', False)
+        }
 
     def install_whisperx(self, conda_path, env_name):
         logging.info(f"Installing WhisperX in {env_name}...")
         try:
+            # Install Git through Conda
+            self.run_command([
+                os.path.join(conda_path, 'Scripts', 'conda.exe'),
+                'install', '-n', env_name,
+                'git', '-c', 'conda-forge', '-y'
+            ])
+            
+            # Install PyTorch
             self.run_command([
                 os.path.join(conda_path, 'Scripts', 'conda.exe'),
                 'run', '-n', env_name,
@@ -285,20 +310,26 @@ class PandratorInstaller(ctk.CTk):
                 'torch==2.0.1', 'torchvision==0.15.2', 'torchaudio==2.0.2',
                 '--index-url', 'https://download.pytorch.org/whl/cu118'
             ])
+            
+            # Install cuDNN
             self.run_command([
                 os.path.join(conda_path, 'Scripts', 'conda.exe'),
                 'install', '-n', env_name,
                 'cudnn=8.9.7.29', '-c', 'conda-forge', '-y'
             ])
+            
+            # Install WhisperX
             self.run_command([
                 os.path.join(conda_path, 'Scripts', 'conda.exe'),
                 'run', '-n', env_name,
                 'pip', 'install', 'git+https://github.com/m-bain/whisperx.git'
             ])
+            
+            logging.info("WhisperX installation completed successfully.")
         except subprocess.CalledProcessError as e:
             logging.error(f"Failed to install WhisperX in {env_name}")
             logging.error(f"Error message: {str(e)}")
-            raise    
+            raise
 
     def remove_directory(self, path):
         max_attempts = 5
@@ -314,9 +345,18 @@ class PandratorInstaller(ctk.CTk):
         pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
         pandrator_already_installed = os.path.exists(pandrator_path)
         
+        installed_components = self.get_installed_components()
+        
+        new_components_selected = (
+            (self.xtts_var.get() or self.xtts_cpu_var.get()) and not installed_components['xtts'] or
+            self.silero_var.get() and not installed_components['silero'] or
+            self.voicecraft_var.get() and not installed_components['voicecraft'] or
+            self.rvc_var.get() and not installed_components['rvc'] or
+            self.whisperx_var.get() and not installed_components['whisperx']
+        )
+        
         if pandrator_already_installed and not self.pandrator_var.get():
-            if not any([self.xtts_var.get(), self.xtts_cpu_var.get(), self.silero_var.get(), 
-                        self.voicecraft_var.get(), self.rvc_var.get(), self.whisperx_var.get()]):
+            if not new_components_selected:
                 messagebox.showinfo("Info", "No new components selected for installation.")
                 return
         elif not pandrator_already_installed and not self.pandrator_var.get():
