@@ -45,7 +45,8 @@ https://github.com/lukaszliniewicz/Pandrator/assets/75737665/bbb10512-79ed-43ea-
 
 https://github.com/lukaszliniewicz/Pandrator/assets/75737665/118f5b9c-641b-4edd-8ef6-178dd924a883
 
-Dubbing sample, including translation ([video source](https://www.youtube.com/watch?v=_SwUpU0E2Eg&t=61s&pp=ygUn0LLRi9GB0YLRg9C_0LvQtdC90LjQtSDQu9C10LPQsNGB0L7QstCw):
+Dubbing sample, including translation ([video source](https://www.youtube.com/watch?v=_SwUpU0E2Eg&t=61s&pp=ygUn0LLRi9GB0YLRg9C_0LvQtdC90LjQtSDQu9C10LPQsNGB0L7QstCw)):
+
 https://github.com/user-attachments/assets/1ba8068d-986e-4dec-a162-3b7cc49052f4
 
 ## Requirements
