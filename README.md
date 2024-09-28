@@ -12,7 +12,7 @@ It leverages the [XTTS](https://huggingface.co/coqui/XTTS-v2), [Silero](https://
 
 - [Pandrator, an audiobook generator](#pandrator-an-audiobook-generator)
   - [Samples](#samples)
-  - [Requirments](#requirments)
+  - [Requirements](#requirements)
     - [Hardware](#hardware)
     - [Dependencies](#dependencies)
       - [Required](#required)
@@ -43,7 +43,7 @@ https://github.com/lukaszliniewicz/Pandrator/assets/75737665/bbb10512-79ed-43ea-
 
 https://github.com/lukaszliniewicz/Pandrator/assets/75737665/118f5b9c-641b-4edd-8ef6-178dd924a883
 
-## Requirments
+## Requirements
 
 ### Hardware
 #### XTTS
