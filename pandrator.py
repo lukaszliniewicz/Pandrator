@@ -1209,8 +1209,8 @@ class TTSOptimizerGUI:
             # Transcription using the WAV file
             output_srt = os.path.join(session_dir, f"{video_filename}.srt")
             whisperx_command = [
-                "python",
-                "-m", "whisperx",  # Use -m to run whisperx as a module
+                "../conda/Scripts/conda.exe", "run", "-n", "whisperx_installer",
+                "python", "-m", "whisperx",
                 wav_file,
                 "--model", self.whisperx_model.get(),
                 "--language", self.whisperx_language.get(),
