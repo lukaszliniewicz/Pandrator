@@ -17,6 +17,7 @@ import sys
 import ctypes
 import winreg
 from dulwich import porcelain
+import packaging.version
 
 class ScrollableFrame(ctk.CTkScrollableFrame):
     def __init__(self, container, *args, **kwargs):
@@ -452,12 +453,19 @@ class PandratorInstaller(ctk.CTk):
     def install_winget(self):
         try:
             logging.info("Checking if winget is installed...")
-            self.run_command(['winget', '--version'])
-            logging.info("winget is already installed.")
-        except FileNotFoundError:
-            logging.info("winget is not installed. Proceeding with installation...")
-
             try:
+                version_output, _ = self.run_command(['winget', '--version'])
+                current_version = version_output.strip()
+                if current_version.startswith("v"):
+                    current_version = current_version[1:]
+                logging.info(f"Current winget version: {current_version}")
+                needs_update = packaging.version.parse(current_version) < packaging.version.parse("1.7")
+            except FileNotFoundError:
+                logging.info("winget is not installed.")
+                needs_update = True
+
+            if needs_update:
+                logging.info("Installing/Updating winget...")
                 with tempfile.TemporaryDirectory() as temp_dir:
                     script_path = os.path.join(temp_dir, "winget-install.ps1")
                     
@@ -468,43 +476,66 @@ class PandratorInstaller(ctk.CTk):
                         f'Invoke-WebRequest -Uri "https://github.com/asheroto/winget-install/releases/latest/download/winget-install.ps1" -OutFile "{script_path}"'
                     ], use_shell=True)
                     
-                    # Try to execute the PowerShell script
+                    # Execute the PowerShell script with -Force parameter and wait for it to finish
                     try:
-                        self.run_command([
+                        process = subprocess.Popen([
                             'powershell',
-                            '-ExecutionPolicy',
-                            'Bypass',
-                            '-File',
-                            script_path
-                        ], use_shell=True)
-                    except subprocess.CalledProcessError:
-                        logging.warning("Failed to execute PowerShell script. Trying with explicit path...")
-                        # Fallback to explicit PowerShell path
-                        powershell_path = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
-                        self.run_command([
-                            powershell_path,
-                            '-ExecutionPolicy',
-                            'Bypass',
-                            '-File',
-                            script_path
-                        ], use_shell=True)
-                
-                logging.info("winget has been installed.")
-                
+                            '-ExecutionPolicy', 'Bypass',
+                            '-File', script_path,
+                            '-Force'  # Add this to force the update
+                        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                        
+                        # Real-time output processing
+                        while True:
+                            output = process.stdout.readline()
+                            if output == '' and process.poll() is not None:
+                                break
+                            if output:
+                                logging.info(output.strip())
+                        
+                        # Get the return code
+                        return_code = process.poll()
+                        
+                        # Check for any errors
+                        errors = process.stderr.read()
+                        if errors:
+                            logging.error(f"Errors during winget installation: {errors}")
+                        
+                        if return_code != 0:
+                            raise subprocess.CalledProcessError(return_code, 'PowerShell script')
+                        
+                        logging.info("Winget installation/update script completed.")
+                        
+                    except subprocess.CalledProcessError as e:
+                        logging.error(f"Failed to execute PowerShell script: {str(e)}")
+                        raise
+
                 # Refresh environment variables
                 self.refresh_environment_variables()
                 
-                # Verify installation
-                version_output, _ = self.run_command(['winget', '--version'])
-                logging.info(f"Installed winget version: {version_output.strip()}")
-            except Exception as e:
-                logging.error(f"Failed to install winget: {str(e)}")
-                logging.error(traceback.format_exc())
-                raise
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Error occurred while checking winget version: {str(e)}")
-            logging.error(f"Error output: {e.stderr.decode('utf-8')}")
-            raise
+                # Verify installation/update
+                try:
+                    new_version_output, _ = self.run_command(['winget', '--version'])
+                    new_version = new_version_output.strip()
+                    if new_version.startswith("v"):
+                        new_version = new_version[1:]
+                    logging.info(f"Installed/Updated winget version: {new_version}")
+                    
+                    if packaging.version.parse(new_version) >= packaging.version.parse("1.7"):
+                        logging.info("winget has been successfully installed/updated.")
+                    else:
+                        logging.warning(f"winget version is still below 1.7 after installation/update attempt.")
+                        messagebox.showwarning("Update Warning", "winget installation/update may not have succeeded. Please check and update manually if needed.")
+                except FileNotFoundError:
+                    logging.error("winget still not found after installation attempt.")
+                    messagebox.showerror("Error", "Failed to install winget. Please install it manually.")
+            else:
+                logging.info(f"Existing winget version {current_version} is adequate. No update needed.")
+
+        except Exception as e:
+            logging.error(f"An error occurred during winget installation/update: {str(e)}")
+            logging.error(traceback.format_exc())
+            messagebox.showerror("Error", f"Failed to install/update winget: {str(e)}")
             
     def get_system_architecture(self):
         return 'x64' if sys.maxsize > 2**32 else 'x86'
@@ -565,10 +596,25 @@ class PandratorInstaller(ctk.CTk):
         logging.info("Installing/Updating Microsoft Visual C++ Build Tools...")
         self.update_status("Installing/Updating Microsoft Visual C++ Build Tools...")
         
+        # First, accept source agreements
+        accept_agreements_command = [
+            "winget", "source", "update",
+            "--accept-source-agreements"
+        ]
+        
+        try:
+            self.run_command(accept_agreements_command)
+            logging.info("Source agreements accepted.")
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Failed to accept source agreements: {e}")
+            # Continue with the installation attempt even if this fails
+        
         winget_command = [
             "winget", "install", 
             "--id", "Microsoft.VisualStudio.2022.BuildTools",
-            "--override", "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+            "--override", "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended",
+            "--accept-package-agreements",
+            "--accept-source-agreements"
         ]
         
         try:
