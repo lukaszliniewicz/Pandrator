@@ -319,6 +319,13 @@ class PandratorInstaller(ctk.CTk):
                 'cudnn=8.9.7.29', '-c', 'conda-forge', '-y'
             ])
             
+            # Install ffmpeg
+            self.run_command([
+                os.path.join(conda_path, 'Scripts', 'conda.exe'),
+                'install', '-n', env_name,
+                'ffmpeg', '-c', 'conda-forge', '-y'
+            ])
+            
             # Install WhisperX
             self.run_command([
                 os.path.join(conda_path, 'Scripts', 'conda.exe'),
