@@ -57,10 +57,13 @@ class PandratorInstaller(ctk.CTk):
 
         self.title("Pandrator Installer & Launcher")
         
-        # Calculate 92% of screen height
+        # Calculate 92% of screen height and get full screen width
+        screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
         window_height = int(screen_height * 0.92)
-        self.geometry(f"900x{window_height}")
+
+        # Set the window geometry to full width and 92% height, positioned at the top
+        self.geometry(f"{screen_width}x{window_height}+0+0")
 
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
@@ -80,11 +83,11 @@ class PandratorInstaller(ctk.CTk):
         # Information Text Area
         self.info_text = ctk.CTkTextbox(self.content_frame, height=100, wrap="word", font=("Arial", 12))
         self.info_text.pack(fill="x", padx=20, pady=10)
-        self.info_text.insert("1.0", "This tool will help you set up and run Pandrator and other TTS engines and tools. "
+        self.info_text.insert("1.0", "This tool will help you set up and run Pandrator as well as TTS engines and tools. "
                               "It will install Pandrator, Miniconda, required Python packages, "
-                              "and dependencies (Git, FFmpeg, Calibre, Visual Studio C++ Build Tools) using winget if not installed already.\n\n"
+                              "and dependencies (Calibre, Visual Studio C++ Build Tools) using winget if not installed already.\n\n"
                               "To uninstall Pandrator, simply delete the Pandrator folder.\n\n"
-                              "The installation will take about 6-9GB of disk space depending on the selected options.\n\n")
+                              "The installation will take about 6-20GB of disk space depending on the number of selected options.")
         self.info_text.configure(state="disabled")
 
         # Installation Frame
@@ -699,7 +702,9 @@ class PandratorInstaller(ctk.CTk):
                     os.path.join(conda_path, 'Scripts', 'conda.exe'),
                     'install',
                     '-n', env_name,
-                    'conda-forge::ffmpeg',
+                    'ffmpeg',
+                    '-c',
+                    'conda-forge',
                     '-y'
                 ]
                 self.run_command(ffmpeg_command)
@@ -1057,6 +1062,11 @@ class PandratorInstaller(ctk.CTk):
                 voicecraft_repo_path = os.path.join(pandrator_path, 'VoiceCraft_API')
                 self.install_requirements(conda_path, 'voicecraft_api_installer', os.path.join(voicecraft_repo_path, 'requirements.txt'))
                 self.install_voicecraft_api_dependencies(conda_path, 'voicecraft_api_installer')
+                
+                # Install numpy 1.23.5 using conda run pip
+                self.update_status("Installing numpy 1.23.5...")
+                subprocess.run([conda_path, "run", "-n", "voicecraft_api_installer", "conda", "install", "numpy==1.23.5"], check=True)
+                
                 self.download_mfa_models(conda_path, 'voicecraft_api_installer')
                 self.install_audiocraft(conda_path, 'voicecraft_api_installer', voicecraft_repo_path)
 
