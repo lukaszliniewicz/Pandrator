@@ -3,14 +3,18 @@
 </p>
 
 # Pandrator, a GUI audiobook and dubbing generator with voice cloning and AI text optimisation
->[!NOTE]
-> Please note that Pandrator is still in an alpha stage and I'm not an experienced developer (I'm a noob, in fact), so the code is far from perfect in terms of optimisation, features and reliability. Please keep this in mind and contribute, if you want to help me make it better.
+
+>[!TIP]
+>**TL;DR:** With Pandrator you can create audiobooks as well as dubbed video, including transcription and translation. The easiest way to use it is to download one of the precompiled [archives](https://1drv.ms/u/s!AgSiDu9lV3iMncwGlqV048WEFVNJTw?e=HfPvSb) - when you unzip them, use the launcher. They come in two versions, one with just XTTS and one with XTTS, RVC and WhisperX (WhisperX is needed for dubbing). You can also use the launcher to install additional tools (like different TTS engines, RVC or WhisperX). For other installation options, look below.
 
 Pandrator aspires to be easy to use and install - it has a one-click installer and a graphical user interface. It is a tool designed to perform two tasks: 
 - transform text, PDF, EPUB and SRT files into spoken audio in multiple languages based on open source software, including preprocessing to make the generated speech sound as natural as possible by, among other things, splitting the text into paragraphs, sentences and smaller logical text blocks (clauses), which the TTS models can process with minimal artifacts. Each sentence can be regenerated if the first attempt is not satisfacory. Voice cloning is possible for models that support it, and text can be additionally preprocessed using LLMs (to remove OCR artifacts or spell out things that the TTS models struggle with, like Roman numerals and abbreviations, for example),
 - generate dubbing either directly from a video file, including transcription (using [WhisperX](https://github.com/m-bain/whisperX)), or from an .srt file. It includes a complete workflow from a video file to a dubbed video file with subtitles - including translation using a variety of APIs and techniques to improve the quality of translation. [Subdud](https://github.com/lukaszliniewicz/Subdub), a companion app developed for this purpose, can also be used on its own.  
 
 It leverages the [XTTS](https://huggingface.co/coqui/XTTS-v2), [Silero](https://github.com/snakers4/silero-models) and [VoiceCraft](https://github.com/jasonppy/VoiceCraft) model(s) for text-to-speech conversion and voice cloning, enhanced by [RVC_CLI](https://github.com/blaisewf/rvc-cli) for quality improvement and better voice cloning results, and NISQA for audio quality evaluation. Additionally, it incorporates [Text Generation Webui's](https://github.com/oobabooga/text-generation-webui) API for local LLM-based text pre-processing, enabling a wide range of text manipulations before audio generation.
+
+>[!NOTE]
+> Please note that Pandrator is still in an alpha stage and I'm not an experienced developer (I'm a noob, in fact), so the code is far from perfect in terms of optimisation, features and reliability. Please keep this in mind and contribute, if you want to help me make it better.
 
 - [Pandrator, an audiobook generator](#pandrator-an-audiobook-generator)
   - [Samples](#samples)
