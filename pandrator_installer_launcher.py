@@ -817,6 +817,7 @@ class PandratorInstaller(ctk.CTk):
     def download_mfa_models(self, conda_path, env_name):
         logging.info(f"Downloading MFA models in {env_name}...")
         try:
+            self.run_command([f'{conda_path}\\Scripts\\conda.exe', 'run', '-n', env_name, 'pip', 'install', 'numpy==1.23.5',])
             self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-n', env_name, 'mfa', 'model', 'download', 'dictionary', 'english_us_arpa'])
             self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-n', env_name, 'mfa', 'model', 'download', 'acoustic', 'english_us_arpa'])
         except subprocess.CalledProcessError as e:
@@ -975,6 +976,16 @@ class PandratorInstaller(ctk.CTk):
             logging.error(traceback.format_exc())
             raise
 
+    def install_espeak_ng(self):
+        logging.info("Installing eSpeak NG...")
+        try:
+            self.run_command(['winget', 'install', '--id', 'espeak-ng.espeak-ng', '-e', '--accept-source-agreements', '--accept-package-agreements'])
+            logging.info("eSpeak NG installed successfully.")
+        except subprocess.CalledProcessError as e:
+            logging.error("Failed to install eSpeak NG.")
+            logging.error(f"Error output: {e.stderr.decode('utf-8')}")
+            raise
+
     def install_process(self):
         self.disable_buttons()
         pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
@@ -1053,6 +1064,14 @@ class PandratorInstaller(ctk.CTk):
                 self.install_silero_api_server(conda_path, 'silero_api_server_installer')
 
             if self.voicecraft_var.get():
+                self.update_progress(0.75)
+                self.update_status("Installing eSpeak NG...")
+                try:
+                    self.install_espeak_ng()
+                except Exception as e:
+                    logging.error(f"Error during eSpeak NG installation: {str(e)}")
+                    messagebox.showwarning("Installation Warning", "Failed to install eSpeak NG. VoiceCraft may not function correctly.")
+
                 self.update_progress(0.8)
                 self.update_status("Creating VoiceCraft Conda environment...")
                 self.create_conda_env(conda_path, 'voicecraft_api_installer', '3.9.16')
@@ -1062,11 +1081,7 @@ class PandratorInstaller(ctk.CTk):
                 voicecraft_repo_path = os.path.join(pandrator_path, 'VoiceCraft_API')
                 self.install_requirements(conda_path, 'voicecraft_api_installer', os.path.join(voicecraft_repo_path, 'requirements.txt'))
                 self.install_voicecraft_api_dependencies(conda_path, 'voicecraft_api_installer')
-                
-                # Install numpy 1.23.5 using conda run pip
-                self.update_status("Installing numpy 1.23.5...")
-                subprocess.run([conda_path, "run", "-n", "voicecraft_api_installer", "conda", "install", "numpy==1.23.5"], check=True)
-                
+            
                 self.download_mfa_models(conda_path, 'voicecraft_api_installer')
                 self.install_audiocraft(conda_path, 'voicecraft_api_installer', voicecraft_repo_path)
 
