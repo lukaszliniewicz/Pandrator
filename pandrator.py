@@ -764,10 +764,182 @@ class TTSOptimizerGUI:
         self.log_update_interval = 60000  # Update every 60 seconds
         self.master.after(0, self.update_logs)
 
+        # Training Tab
+        self.train_xtts_tab = self.tabview.add("Train XTTS")
+        self.train_xtts_tab.grid_columnconfigure(0, weight=1)
+        self.train_xtts_tab.grid_columnconfigure(1, weight=1)
+
+        # Source audio path
+        ctk.CTkLabel(self.train_xtts_tab, text="Path to source audio:").grid(row=0, column=0, padx=10, pady=5, sticky="w")
+        self.source_audio_path = ctk.StringVar()
+        self.source_audio_entry = ctk.CTkEntry(self.train_xtts_tab, textvariable=self.source_audio_path, width=300)
+        self.source_audio_entry.grid(row=0, column=1, padx=10, pady=5, sticky="ew")
+        ctk.CTkButton(self.train_xtts_tab, text="Browse", command=self.browse_source_audio).grid(row=0, column=2, padx=10, pady=5)
+
+        # Model name
+        ctk.CTkLabel(self.train_xtts_tab, text="Model name:").grid(row=1, column=0, padx=10, pady=5, sticky="w")
+        self.model_name = ctk.StringVar()
+        ctk.CTkEntry(self.train_xtts_tab, textvariable=self.model_name, width=300).grid(row=1, column=1, padx=10, pady=5, sticky="ew")
+
+        # Model language
+        ctk.CTkLabel(self.train_xtts_tab, text="Model language:").grid(row=2, column=0, padx=10, pady=5, sticky="w")
+        self.model_language = ctk.StringVar(value="en")
+        ctk.CTkOptionMenu(self.train_xtts_tab, variable=self.model_language, 
+                          values=["en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko", "hi"]).grid(row=2, column=1, padx=10, pady=5, sticky="ew")
+
+        # Sample generation method
+        ctk.CTkLabel(self.train_xtts_tab, text="Sample generation method:").grid(row=3, column=0, padx=10, pady=5, sticky="w")
+        self.sample_method = ctk.StringVar(value="Mixed")
+        ctk.CTkOptionMenu(self.train_xtts_tab, variable=self.sample_method, 
+                          values=["Mixed", "Maximise Punctuation", "Punctuation"]).grid(row=3, column=1, padx=10, pady=5, sticky="ew")
+
+        # Epochs
+        ctk.CTkLabel(self.train_xtts_tab, text="Epochs:").grid(row=4, column=0, padx=10, pady=5, sticky="w")
+        self.epochs = ctk.IntVar(value=6)
+        ctk.CTkSlider(self.train_xtts_tab, from_=1, to=100, number_of_steps=99, variable=self.epochs).grid(row=4, column=1, padx=10, pady=5, sticky="ew")
+        ctk.CTkLabel(self.train_xtts_tab, textvariable=self.epochs).grid(row=4, column=2, padx=10, pady=5)
+
+        # Batches
+        ctk.CTkLabel(self.train_xtts_tab, text="Batches:").grid(row=5, column=0, padx=10, pady=5, sticky="w")
+        self.batches = ctk.IntVar(value=2)
+        ctk.CTkSlider(self.train_xtts_tab, from_=1, to=10, number_of_steps=9, variable=self.batches).grid(row=5, column=1, padx=10, pady=5, sticky="ew")
+        ctk.CTkLabel(self.train_xtts_tab, textvariable=self.batches).grid(row=5, column=2, padx=10, pady=5)
+
+        # Gradient Accumulation Levels
+        ctk.CTkLabel(self.train_xtts_tab, text="Gradient Accumulation Levels:").grid(row=6, column=0, padx=10, pady=5, sticky="w")
+        self.gradient = ctk.IntVar(value=1)
+        ctk.CTkSlider(self.train_xtts_tab, from_=1, to=20, number_of_steps=19, variable=self.gradient).grid(row=6, column=1, padx=10, pady=5, sticky="ew")
+        ctk.CTkLabel(self.train_xtts_tab, textvariable=self.gradient).grid(row=6, column=2, padx=10, pady=5)
+
+        # Train button
+        self.train_button = ctk.CTkButton(self.train_xtts_tab, text="Start Training", command=self.start_xtts_training)
+        self.train_button.grid(row=7, column=0, columnspan=3, padx=10, pady=20)
+
+        # Training status label
+        self.training_status = ctk.StringVar(value="")
+        ctk.CTkLabel(self.train_xtts_tab, textvariable=self.training_status).grid(row=8, column=0, columnspan=3, padx=10, pady=5)
+
         self.sentence_audio_data = {}  # Dictionary to store sentence audio data
         self.create_xtts_advanced_settings_frame()
 
         #self.populate_speaker_dropdown()
+
+    def browse_source_audio(self):
+        choice = messagebox.askquestion("Input Type", "Do you want to select a folder?", icon='question')
+        
+        if choice == 'yes':
+            # Folder selection
+            path = filedialog.askdirectory(title="Select Audio Folder")
+        else:
+            # File selection
+            filetypes = [
+                ("Audio Files", "*.wav *.mp3 *.ogg *.flac *.m4a *.aac *.wma *.aiff"),
+                ("All Files", "*.*")
+            ]
+            path = filedialog.askopenfilename(title="Select Audio File", filetypes=filetypes)
+        
+        if path:
+            self.source_audio_path.set(path)
+            self.source_audio_entry.delete(0, tk.END)
+            self.source_audio_entry.insert(0, path)
+            print(f"Selected path: {path}")
+
+    def start_xtts_training(self):
+        if not self.source_audio_path.get() or not self.model_name.get():
+            CTkMessagebox(title="Error", message="Please provide both source audio path and model name.", icon="cancel")
+            return
+
+        self.training_status.set("Training in progress...")
+        self.train_button.configure(state="disabled")
+
+        # Start the training process in a separate thread
+        threading.Thread(target=self.run_xtts_training, daemon=True).start()
+
+    def run_xtts_training(self):
+        try:
+            easy_xtts_trainer_dir = os.path.abspath("../easy_xtts_trainer")
+            source_path = self.source_audio_path.get()
+            
+            command = [
+                "../conda/Scripts/conda.exe", "run", "-n", "easy_xtts_trainer", "python", "easy_xtts_trainer.py",
+                "--session", self.model_name.get(),
+                "--whisper-model", "large-v3",
+                "--source-language", self.model_language.get(),
+                "--epochs", str(self.epochs.get()),
+                "--gradient", str(self.gradient.get()),
+                "--batch", str(self.batches.get()),
+                "--sample-method", self.sample_method.get().lower().replace(" ", "-"),
+                "-i", source_path
+            ]
+
+            # Change to the easy_xtts_trainer directory
+            os.chdir(easy_xtts_trainer_dir)
+
+            # Run the command and capture the output
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, universal_newlines=True)
+            
+            for line in process.stdout:
+                logging.info(f"XTTS Training: {line.strip()}")
+            
+            process.wait()
+
+            if process.returncode == 0:
+                self.copy_trained_model()
+                self.training_status.set("Training completed successfully.")
+            else:
+                self.training_status.set("Training failed. Check the log for details.")
+
+        except Exception as e:
+            logging.error(f"Error during XTTS training: {str(e)}")
+            self.training_status.set(f"Error during training: {str(e)}")
+
+        finally:
+            # Change back to the original directory
+            os.chdir(os.path.dirname(os.path.abspath(__file__)))
+            self.master.after(0, lambda: self.train_button.configure(state="normal"))
+
+    def copy_trained_model(self):
+        try:
+            model_name = self.model_name.get()
+            source_dir = os.path.abspath(f"../easy_xtts_trainer/{model_name}/models")
+            target_dir = os.path.abspath(f"../xtts-api-server/xtts_models/{model_name}")
+
+            # Create the target directory if it doesn't exist
+            os.makedirs(target_dir, exist_ok=True)
+
+            # Check for the existence of the XTTS model folder
+            xtts_folder = None
+            for attempt in range(10):  # Try 10 times
+                for folder in os.listdir(source_dir):
+                    if folder.startswith("xtts"):
+                        xtts_folder = folder
+                        break
+                if xtts_folder:
+                    break
+                time.sleep(5)  # Wait for 5 seconds before the next attempt
+                logging.info(f"Attempt {attempt + 1}: Waiting for XTTS model folder to appear...")
+
+            if not xtts_folder:
+                raise FileNotFoundError("XTTS model folder not found after multiple attempts")
+
+            # Copy all files and directories except the 'run' folder
+            source_xtts_dir = os.path.join(source_dir, xtts_folder)
+            for item in os.listdir(source_xtts_dir):
+                if item != 'run':
+                    s = os.path.join(source_xtts_dir, item)
+                    d = os.path.join(target_dir, item)
+                    if os.path.isdir(s):
+                        shutil.copytree(s, d, dirs_exist_ok=True)
+                    else:
+                        shutil.copy2(s, d)
+
+            logging.info(f"Trained model copied to {target_dir}")
+            self.training_status.set("Training completed and model copied successfully.")
+        except Exception as e:
+            error_msg = f"Error copying trained model: {str(e)}"
+            logging.error(error_msg)
+            self.training_status.set(error_msg)
+
 
     def save_api_key(self, key_name, key_value):
         system = platform.system()
