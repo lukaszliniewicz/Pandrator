@@ -165,7 +165,21 @@ class TTSOptimizerGUI:
         self.video_file_selection_label = None
         self.enable_rvc = ctk.BooleanVar(value=False)
         self.whisperx_language = ctk.StringVar(value="en")
-        self.whisperx_model = ctk.StringVar(value="small")
+        self.whisperx_model = ctk.StringVar(value="large-v3")
+        self.whisper_languages = [
+            'Afrikaans', 'Albanian', 'Amharic', 'Arabic', 'Armenian', 'Assamese', 'Azerbaijani', 'Bashkir', 'Basque', 
+            'Belarusian', 'Bengali', 'Bosnian', 'Breton', 'Bulgarian', 'Burmese', 'Cantonese', 'Castilian', 'Catalan', 
+            'Chinese', 'Croatian', 'Czech', 'Danish', 'Dutch', 'English', 'Estonian', 'Faroese', 'Finnish', 'Flemish', 
+            'French', 'Galician', 'Georgian', 'German', 'Greek', 'Gujarati', 'Haitian', 'Haitian Creole', 'Hausa', 
+            'Hawaiian', 'Hebrew', 'Hindi', 'Hungarian', 'Icelandic', 'Indonesian', 'Italian', 'Japanese', 'Javanese', 
+            'Kannada', 'Kazakh', 'Khmer', 'Korean', 'Lao', 'Latin', 'Latvian', 'Letzeburgesch', 'Lingala', 'Lithuanian', 
+            'Luxembourgish', 'Macedonian', 'Malagasy', 'Malay', 'Malayalam', 'Maltese', 'Maori', 'Marathi', 'Moldavian', 
+            'Moldovan', 'Mongolian', 'Myanmar', 'Nepali', 'Norwegian', 'Nynorsk', 'Occitan', 'Panjabi', 'Pashto', 
+            'Persian', 'Polish', 'Portuguese', 'Punjabi', 'Pushto', 'Romanian', 'Russian', 'Sanskrit', 'Serbian', 
+            'Shona', 'Sindhi', 'Sinhala', 'Sinhalese', 'Slovak', 'Slovenian', 'Somali', 'Spanish', 'Sundanese', 
+            'Swahili', 'Swedish', 'Tagalog', 'Tajik', 'Tamil', 'Tatar', 'Telugu', 'Thai', 'Tibetan', 'Turkish', 
+            'Turkmen', 'Ukrainian', 'Urdu', 'Uzbek', 'Valencian', 'Vietnamese', 'Welsh', 'Yiddish', 'Yoruba'
+        ]
         
         if rvc_functionality_available:
             self.rvc_inference = RVCInference(device="cuda:0" if torch.cuda.is_available() else "cpu")
@@ -414,7 +428,7 @@ class TTSOptimizerGUI:
         self.enable_translation_switch.grid(row=1, column=0, columnspan=2, padx=10, pady=5, sticky=tk.W)
 
         ctk.CTkLabel(self.translation_frame, text="From:").grid(row=2, column=0, padx=10, pady=5, sticky=tk.W)
-        self.original_language_dropdown = ctk.CTkOptionMenu(self.translation_frame, variable=self.original_language, values=["en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko", "hi"])
+        self.original_language_dropdown = ctk.CTkOptionMenu(self.translation_frame, variable=self.original_language, values=self.whisper_languages)
         self.original_language_dropdown.grid(row=2, column=1, padx=10, pady=5, sticky=tk.W)
 
         ctk.CTkLabel(self.translation_frame, text="To:").grid(row=2, column=2, padx=10, pady=5, sticky=tk.W)
