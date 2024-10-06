@@ -31,6 +31,8 @@ from pdftextract import XPdf
 import regex
 import hasami
 import argparse
+import concurrent.futures
+
 
 # Conditional imports for torch and RVC
 try:
@@ -61,11 +63,429 @@ silero_languages = [
     {"name": "Kalmyk (v3)", "code": "v3_xal.pt"}
 ]
 
+class TextPreprocessor:
+    def __init__(self, language_var, max_sentence_length, enable_sentence_splitting, 
+                 enable_sentence_appending, remove_diacritics, disable_paragraph_detection, tts_service):
+        self.language_var = language_var
+        self.max_sentence_length = max_sentence_length
+        self.enable_sentence_splitting = enable_sentence_splitting
+        self.enable_sentence_appending = enable_sentence_appending
+        self.remove_diacritics = remove_diacritics
+        self.disable_paragraph_detection = disable_paragraph_detection
+        self.tts_service = tts_service
+        self.chunk_size = 20000
+
+    def preprocess_text(self, text, pdf_preprocessed, source_file, disable_paragraph_detection):
+        if len(text) > self.chunk_size:
+            return self.parallel_preprocess_text(text, pdf_preprocessed, source_file, disable_paragraph_detection.get())
+        else:
+            return self.sequential_preprocess_text(text, pdf_preprocessed, source_file, disable_paragraph_detection.get())
+
+    def parallel_preprocess_text(self, text, pdf_preprocessed, source_file, disable_paragraph_detection):
+        chunks = self.split_text_into_chunks(text)
+        
+        args = (
+            self.language_var.get(),
+            self.max_sentence_length.get(),
+            self.enable_sentence_splitting.get(),
+            self.enable_sentence_appending.get(),
+            self.remove_diacritics.get(),
+            self.tts_service.get()
+        )
+
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            # Use enumerate to keep track of the original chunk order
+            future_to_index = {executor.submit(self.process_chunk, chunk, pdf_preprocessed, source_file, disable_paragraph_detection, *args): i 
+                            for i, chunk in enumerate(chunks)}
+            
+            # Create a list to store results in the correct order
+            processed_chunks = [None] * len(chunks)
+            
+            for future in concurrent.futures.as_completed(future_to_index):
+                index = future_to_index[future]
+                processed_chunks[index] = future.result()
+
+        # Flatten the list of processed sentences
+        all_processed_sentences = [sentence for chunk in processed_chunks for sentence in chunk]
+
+        # Renumber the sentences
+        for i, sentence in enumerate(all_processed_sentences, start=1):
+            sentence['sentence_number'] = str(i)
+
+        return all_processed_sentences
+
+    @staticmethod
+    def process_chunk(chunk, pdf_preprocessed, source_file, disable_paragraph_detection, language, max_sentence_length, 
+                      enable_sentence_splitting, enable_sentence_appending, remove_diacritics, tts_service):
+        # Normalize newlines to LF and replace carriage returns with LF
+        chunk = re.sub(r'\r\n?', '\n', chunk)
+
+        paragraph_breaks = []
+
+        if not disable_paragraph_detection:
+            if pdf_preprocessed:
+                paragraph_breaks = list(re.finditer(r'\n', chunk))
+            elif not pdf_preprocessed and source_file.endswith(".pdf"):
+                chunk = TextPreprocessor.preprocess_text_pdf(chunk)
+            elif source_file.endswith("_edited.txt"):
+                paragraph_breaks = list(re.finditer(r'\n', chunk))
+            else:
+                chunk = re.sub(r'(?<!\n)\n(?!\n)', ' ', chunk)
+                paragraph_breaks = list(re.finditer(r'\n', chunk))
+
+        # Replace tabs with spaces
+        chunk = re.sub(r'\t', ' ', chunk)
+
+        if remove_diacritics:
+            chunk = ''.join(char for char in chunk if not unicodedata.combining(char))
+            chunk = unidecode(chunk)
+
+        # Additional preprocessing step to handle chapters, section titles, etc.
+        chunk = re.sub(r'(^|\n+)([^\n.!?]+)(?=\n+|$)', r'\1\2.', chunk)
+
+        sentences = TextPreprocessor.split_into_sentences(chunk, language, tts_service)
+
+        processed_sentences = []
+
+        for sentence in sentences:
+            if not sentence.strip():  # Skip empty sentences
+                continue
+
+            is_paragraph = False
+            for match in paragraph_breaks:
+                preceding_text = chunk[match.start()-15:match.start()]
+                sentence_end = sentence[-15:]
+                if TextPreprocessor.calculate_similarity(preceding_text, sentence_end) >= 0.8:
+                    is_paragraph = True
+                    break
+
+            if tts_service == "Silero":
+                sentence = TextPreprocessor.convert_digits_to_words(sentence, language)
+
+            sentence_dict = {
+                "original_sentence": sentence,
+                "paragraph": "yes" if is_paragraph else "no",
+                "split_part": None
+            }
+
+            if enable_sentence_splitting:
+                split_sentences = TextPreprocessor.split_long_sentences(sentence_dict, max_sentence_length)
+                processed_sentences.extend(split_sentences)
+            else:
+                processed_sentences.append(sentence_dict)
+
+        if enable_sentence_appending:
+            processed_sentences = TextPreprocessor.append_short_sentences(processed_sentences, max_sentence_length)
+
+        split_sentences = []
+        for sentence_dict in processed_sentences:
+            split_sentences.extend(TextPreprocessor.split_long_sentences_2(sentence_dict, max_sentence_length))
+
+        return split_sentences
+
+    def split_text_into_chunks(self, text):
+        chunks = []
+        total_length = len(text)
+        target_chunk_size = total_length // 4
+        start = 0
+
+        while start < total_length:
+            # Find the next paragraph break after the target chunk size
+            end = start + target_chunk_size
+            next_para_break = text.find('\n\n', end)
+            
+            if next_para_break == -1:
+                # If no paragraph break is found, this is the last chunk
+                chunks.append(text[start:])
+                break
+            
+            # Find the last sentence end before the paragraph break
+            last_sentence_end = max(
+                text.rfind('. ', start, next_para_break),
+                text.rfind('! ', start, next_para_break),
+                text.rfind('? ', start, next_para_break)
+            )
+            
+            if last_sentence_end == -1 or last_sentence_end <= start:
+                # If no sentence end is found, use the paragraph break
+                end = next_para_break + 2
+            else:
+                # Use the last sentence end + 2 to include the period and space
+                end = last_sentence_end + 2
+            
+            chunks.append(text[start:end])
+            start = end
+
+        return chunks
+
+    def sequential_preprocess_text(self, text, pdf_preprocessed, source_file, disable_paragraph_detection):
+        return self.process_chunk(text, pdf_preprocessed, source_file, disable_paragraph_detection,
+                                  self.language_var.get(), self.max_sentence_length.get(),
+                                  self.enable_sentence_splitting.get(), self.enable_sentence_appending.get(),
+                                  self.remove_diacritics.get(), self.tts_service.get())
+
+    @staticmethod
+    def preprocess_text_pdf(text, remove_double_newlines=False):
+        text = regex.sub(r'\r\n|\r', '\n', text)
+        text = regex.sub(r'[\x00-\x09\x0B-\x1F\x7F]', '', text)
+        
+        if remove_double_newlines:
+            text = regex.sub(r'(?<![.!?])\n\n', ' ', text)
+        else:
+            text = regex.sub(r'\n$(?<!\n[ \t]*\n)|(?<!\n[ \t]*)\n(?![ \t]*\n)', ' ', text)
+        
+        text = regex.sub(r'[ \\t]*\\n[ \\t]*\\n[ \\t]*(?:\\n[ \\t]*){0,2}', '\\n', text)
+        text = regex.sub(r' {2,}', ' ', text)
+        text = regex.sub(r'(?m)^[ \\t]+', '', text)
+        
+        return text
+
+    @staticmethod
+    def split_into_sentences(text, language, tts_service):
+        if tts_service == "XTTS":
+            if language == "zh-cn":
+                return TextPreprocessor.split_chinese_sentences(text)
+            elif language == "ja":
+                return hasami.segment_sentences(text)
+            else:
+                splitter = SentenceSplitter(language=language)
+                return splitter.split(text)
+        else:  # Silero
+            silero_to_simple_lang_codes = {
+                "German (v3)": "de", "English (v3)": "en", "English Indic (v3)": "en",
+                "Spanish (v3)": "es", "French (v3)": "fr", "Indic (v3)": "hi",
+                "Russian (v3.1)": "ru", "Tatar (v3)": "tt", "Ukrainian (v3)": "uk",
+                "Uzbek (v3)": "uz", "Kalmyk (v3)": "xal"
+            }
+            language = silero_to_simple_lang_codes.get(language, "en")
+            splitter = SentenceSplitter(language=language)
+            return splitter.split(text)
+
+    @staticmethod
+    def split_chinese_sentences(text):
+        end_punctuation = '。！？…'
+        segments = re.split(f'([{end_punctuation}])', text)
+        sentences = [''.join(segments[i:i+2]).strip() for i in range(0, len(segments), 2) if segments[i]]
+        return sentences
+
+    @staticmethod
+    def calculate_similarity(str1, str2):
+        return difflib.SequenceMatcher(None, str1, str2).ratio()
+
+    @staticmethod
+    def split_long_sentences(sentence_dict, max_sentence_length):
+        sentence = sentence_dict["original_sentence"]
+        paragraph = sentence_dict["paragraph"]
+
+        if len(sentence) <= max_sentence_length:
+            return [{"original_sentence": sentence, "split_part": None, "paragraph": paragraph}]
+
+        punctuation_marks = ['，', '；', '：', '。', '！', '？'] if sentence_dict.get("language") == "zh-cn" else [',', ':', ';', '–']
+        conjunction_marks = [' and ', ' or ', 'which'] if sentence_dict.get("language") != "zh-cn" else []
+        min_distance = 10 if sentence_dict.get("language") == "zh-cn" else 30
+
+        best_split_index = TextPreprocessor.find_best_split_index(sentence, punctuation_marks, conjunction_marks, min_distance, max_sentence_length)
+
+        if best_split_index is None:
+            return [{"original_sentence": sentence, "split_part": None, "paragraph": paragraph}]
+
+        first_part = sentence[:best_split_index].strip()
+        second_part = sentence[best_split_index:].strip()
+
+        return [
+            {"original_sentence": first_part, "split_part": 0, "paragraph": "no"},
+            {"original_sentence": second_part, "split_part": 1, "paragraph": paragraph}
+        ]
+
+    @staticmethod
+    def find_best_split_index(sentence, punctuation_marks, conjunction_marks, min_distance, max_sentence_length):
+        best_split_index = None
+        min_diff = float('inf')
+
+        for mark in punctuation_marks:
+            indices = [i for i, c in enumerate(sentence) if c == mark]
+            for index in indices:
+                if min_distance <= index <= len(sentence) - min_distance:
+                    if not (mark == ',' and index > 0 and index < len(sentence) - 1 and 
+                            sentence[index-1].isdigit() and sentence[index+1].isdigit()):
+                        diff = abs(index - len(sentence) // 2)
+                        if diff < min_diff:
+                            min_diff = diff
+                            best_split_index = index + 1
+
+        if best_split_index is None:
+            for mark in conjunction_marks:
+                index = sentence.find(mark)
+                if min_distance <= index <= len(sentence) - min_distance:
+                    best_split_index = index
+                    break
+
+        return best_split_index
+
+    @staticmethod
+    def split_long_sentences_2(sentence_dict, max_sentence_length):
+        sentence = sentence_dict["original_sentence"]
+        paragraph = sentence_dict["paragraph"]
+        split_part = sentence_dict["split_part"]
+
+        if len(sentence) <= max_sentence_length:
+            return [sentence_dict]
+
+        punctuation_marks = ['，', '；', '：', '。', '！', '？'] if sentence_dict.get("language") == "zh-cn" else [',', ':', ';', '–']
+        conjunction_marks = [' and ', ' or ', 'which'] if sentence_dict.get("language") != "zh-cn" else []
+        min_distance = 10 if sentence_dict.get("language") == "zh-cn" else 30
+
+        best_split_index = TextPreprocessor.find_best_split_index(sentence, punctuation_marks, conjunction_marks, min_distance, max_sentence_length)
+
+        if best_split_index is None:
+            return [sentence_dict]
+
+        first_part = sentence[:best_split_index].strip()
+        second_part = sentence[best_split_index:].strip()
+
+        split_sentences = []
+
+        split_part_prefix = "0" if split_part is None else str(split_part)
+
+        split_sentences.append({
+            "original_sentence": first_part,
+            "split_part": split_part_prefix + "a",
+            "paragraph": "no"
+        })
+
+        if len(second_part) > max_sentence_length:
+            if split_part_prefix == "0" and paragraph == "yes":
+                split_sentences.extend(TextPreprocessor.split_long_sentences_2({
+                    "original_sentence": second_part,
+                    "split_part": "1a",
+                    "paragraph": "yes"
+                }, max_sentence_length))
+            else:
+                split_sentences.extend(TextPreprocessor.split_long_sentences_2({
+                    "original_sentence": second_part,
+                    "split_part": split_part_prefix + "b",
+                    "paragraph": "no" if split_part_prefix == "0" else paragraph
+                }, max_sentence_length))
+        else:
+            split_sentences.append({
+                "original_sentence": second_part,
+                "split_part": split_part_prefix + "b",
+                "paragraph": paragraph
+            })
+
+        return split_sentences
+
+    @staticmethod
+    def append_short_sentences(sentence_dicts, max_sentence_length):
+        appended_sentences = []
+        i = 0
+        while i < len(sentence_dicts):
+            current_sentence = sentence_dicts[i]
+
+            if current_sentence["paragraph"] == "no":
+                if i > 0:
+                    prev_sentence = appended_sentences[-1]
+                    if prev_sentence["paragraph"] == "no":
+                        combined_text = prev_sentence["original_sentence"] + ' ' + current_sentence["original_sentence"]
+                        if len(combined_text) <= max_sentence_length:
+                            prev_sentence["original_sentence"] = combined_text
+                            i += 1
+                            continue
+                if i < len(sentence_dicts) - 1:
+                    next_sentence = sentence_dicts[i + 1]
+                    combined_text = current_sentence["original_sentence"] + ' ' + next_sentence["original_sentence"]
+                    if len(combined_text) <= max_sentence_length:
+                        current_sentence["original_sentence"] = combined_text
+                        if next_sentence["paragraph"] == "yes":
+                            current_sentence["paragraph"] = "yes"
+                        i += 2
+                        appended_sentences.append(current_sentence)
+                        continue
+            else:  # current_sentence["paragraph"] == "yes"
+                if i > 0:
+                    prev_sentence = appended_sentences[-1]
+                    if prev_sentence["paragraph"] == "no":
+                        combined_text = prev_sentence["original_sentence"] + ' ' + current_sentence["original_sentence"]
+                        if len(combined_text) <= max_sentence_length:
+                            prev_sentence["original_sentence"] = combined_text
+                            prev_sentence["paragraph"] = "yes"
+                            i += 1
+                            continue
+
+            appended_sentences.append(current_sentence)
+            i += 1
+
+        return appended_sentences
+
+    @staticmethod
+    def convert_digits_to_words(sentence, language):
+        def replace_numbers(match):
+            number = match.group(0)
+            try:
+                silero_to_num2words_lang = {
+                    "German (v3)": "de",
+                    "English (v3)": "en",
+                    "English Indic (v3)": "en",
+                    "Spanish (v3)": "es",
+                    "French (v3)": "fr",
+                    "Indic (v3)": "hi",
+                    "Russian (v3.1)": "ru",
+                    "Tatar (v3)": "tt",
+                    "Ukrainian (v3)": "uk",
+                    "Uzbek (v3)": "uz",
+                    "Kalmyk (v3)": "xal"
+                }
+
+                num2words_lang = silero_to_num2words_lang.get(language, "en")
+                return num2words(int(number), lang=num2words_lang)
+            except ValueError:
+                return number
+
+        return re.sub(r'\d+', replace_numbers, sentence)
+
+    def convert_digits_to_words(self, sentence):
+
+        def replace_numbers(match):
+            number = match.group(0)
+            try:
+                # Get the selected Silero language
+                silero_language_name = self.language_var.get()
+                
+                # Map Silero language names to num2words language codes
+                silero_to_num2words_lang = {
+                    "German (v3)": "de",
+                    "English (v3)": "en",
+                    "English Indic (v3)": "en",
+                    "Spanish (v3)": "es",
+                    "French (v3)": "fr",
+                    "Indic (v3)": "hi",
+                    "Russian (v3.1)": "ru",
+                    "Tatar (v3)": "tt",
+                    "Ukrainian (v3)": "uk",
+                    "Uzbek (v3)": "uz",
+                    "Kalmyk (v3)": "xal"
+                }
+
+                # Get the corresponding num2words language code
+                num2words_lang = silero_to_num2words_lang.get(silero_language_name, "en")
+
+                return num2words(int(number), lang=num2words_lang)
+            except ValueError:
+                return number
+
+        return re.sub(r'\d+', replace_numbers, sentence)
+
 class TTSOptimizerGUI:
     def __init__(self, master):
         self.master = master
         master.title("Pandrator")
         self.timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        width = master.winfo_screenwidth()
+        height = master.winfo_screenheight()
+        geometry = str(width) + "x" + str(height)
+        master.geometry(geometry)
+        
         # Set up logging
         logs_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
         os.makedirs(logs_dir, exist_ok=True)
@@ -84,6 +504,7 @@ class TTSOptimizerGUI:
         logger.addHandler(stream_handler)
         # Log the absolute path of the log file
         logging.info(f"Log file created at: {self.log_file_path}")
+
         self.channel = None
         self.playlist_index = None
         self.previous_tts_service = None
@@ -166,66 +587,83 @@ class TTSOptimizerGUI:
         self.enable_rvc = ctk.BooleanVar(value=False)
         self.whisperx_language = ctk.StringVar(value="English")
         self.whisperx_model = ctk.StringVar(value="large-v3")
+        self.language_var = ctk.StringVar(value="en")
+        self.selected_speaker = ctk.StringVar(value="")
+        self.rvc_models_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rvc_models")
+        os.makedirs(self.rvc_models_dir, exist_ok=True)
+        self.rvc_models = self.get_rvc_models()
         self.whisper_languages = [
-            'Afrikaans', 'Albanian', 'Amharic', 'Arabic', 'Armenian', 'Assamese', 'Azerbaijani', 'Bashkir', 'Basque', 
-            'Belarusian', 'Bengali', 'Bosnian', 'Breton', 'Bulgarian', 'Burmese', 'Cantonese', 'Castilian', 'Catalan', 
-            'Chinese', 'Croatian', 'Czech', 'Danish', 'Dutch', 'English', 'Estonian', 'Faroese', 'Finnish', 'Flemish', 
-            'French', 'Galician', 'Georgian', 'German', 'Greek', 'Gujarati', 'Haitian', 'Haitian Creole', 'Hausa', 
-            'Hawaiian', 'Hebrew', 'Hindi', 'Hungarian', 'Icelandic', 'Indonesian', 'Italian', 'Japanese', 'Javanese', 
-            'Kannada', 'Kazakh', 'Khmer', 'Korean', 'Lao', 'Latin', 'Latvian', 'Letzeburgesch', 'Lingala', 'Lithuanian', 
-            'Luxembourgish', 'Macedonian', 'Malagasy', 'Malay', 'Malayalam', 'Maltese', 'Maori', 'Marathi', 'Moldavian', 
-            'Moldovan', 'Mongolian', 'Myanmar', 'Nepali', 'Norwegian', 'Nynorsk', 'Occitan', 'Panjabi', 'Pashto', 
-            'Persian', 'Polish', 'Portuguese', 'Punjabi', 'Pushto', 'Romanian', 'Russian', 'Sanskrit', 'Serbian', 
-            'Shona', 'Sindhi', 'Sinhala', 'Sinhalese', 'Slovak', 'Slovenian', 'Somali', 'Spanish', 'Sundanese', 
-            'Swahili', 'Swedish', 'Tagalog', 'Tajik', 'Tamil', 'Tatar', 'Telugu', 'Thai', 'Tibetan', 'Turkish', 
-            'Turkmen', 'Ukrainian', 'Urdu', 'Uzbek', 'Valencian', 'Vietnamese', 'Welsh', 'Yiddish', 'Yoruba'
-        ]
-        
-        if rvc_functionality_available:
-            self.rvc_inference = RVCInference(device="cuda:0" if torch.cuda.is_available() else "cpu")
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            self.rvc_models_dir = os.path.join(current_dir, "rvc_models")
-            os.makedirs(self.rvc_models_dir, exist_ok=True)
-            self.rvc_inference.set_models_dir(self.rvc_models_dir)
-            self.rvc_models = []  # Initialize as an empty list
-            self.refresh_rvc_models()  # This will populate self.rvc_models
-        else:
-            self.rvc_inference = None
-            self.rvc_models_dir = None
-            self.rvc_models = []
+        'Afrikaans', 'Albanian', 'Amharic', 'Arabic', 'Armenian', 'Assamese', 'Azerbaijani', 'Bashkir', 'Basque', 
+        'Belarusian', 'Bengali', 'Bosnian', 'Breton', 'Bulgarian', 'Burmese', 'Cantonese', 'Castilian', 'Catalan', 
+        'Chinese', 'Croatian', 'Czech', 'Danish', 'Dutch', 'English', 'Estonian', 'Faroese', 'Finnish', 'Flemish', 
+        'French', 'Galician', 'Georgian', 'German', 'Greek', 'Gujarati', 'Haitian', 'Haitian Creole', 'Hausa', 
+        'Hawaiian', 'Hebrew', 'Hindi', 'Hungarian', 'Icelandic', 'Indonesian', 'Italian', 'Japanese', 'Javanese', 
+        'Kannada', 'Kazakh', 'Khmer', 'Korean', 'Lao', 'Latin', 'Latvian', 'Letzeburgesch', 'Lingala', 'Lithuanian', 
+        'Luxembourgish', 'Macedonian', 'Malagasy', 'Malay', 'Malayalam', 'Maltese', 'Maori', 'Marathi', 'Moldavian', 
+        'Moldovan', 'Mongolian', 'Myanmar', 'Nepali', 'Norwegian', 'Nynorsk', 'Occitan', 'Panjabi', 'Pashto', 
+        'Persian', 'Polish', 'Portuguese', 'Punjabi', 'Pushto', 'Romanian', 'Russian', 'Sanskrit', 'Serbian', 
+        'Shona', 'Sindhi', 'Sinhala', 'Sinhalese', 'Slovak', 'Slovenian', 'Somali', 'Spanish', 'Sundanese', 
+        'Swahili', 'Swedish', 'Tagalog', 'Tajik', 'Tamil', 'Tatar', 'Telugu', 'Thai', 'Tibetan', 'Turkish', 
+        'Turkmen', 'Ukrainian', 'Urdu', 'Uzbek', 'Valencian', 'Vietnamese', 'Welsh', 'Yiddish', 'Yoruba'
+    ]
+        self.main_frame = ctk.CTkFrame(master)
+        self.main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Configure columns to have equal weight AND uniform width
+        self.main_frame.grid_columnconfigure(0, weight=1, uniform="group1") # Uniform group
+        self.main_frame.grid_columnconfigure(1, weight=1, uniform="group1") # Same uniform group
+
+        # Create left and right frames
+        self.left_frame = ctk.CTkFrame(self.main_frame)
+        self.right_frame = ctk.CTkFrame(self.main_frame)
+
+        self.left_frame.grid(row=0, column=0, sticky="nsew")
+        self.right_frame.grid(row=0, column=1, sticky="nsew")
+
+        # Make sure the main frame's row expands
+        self.main_frame.grid_rowconfigure(0, weight=1)
+
+        # Inside left_frame: Use grid for the scrollable frame
+        self.left_scrollable_frame = ctk.CTkScrollableFrame(self.left_frame)
+        self.left_scrollable_frame.grid(row=0, column=0, sticky="nsew")  # Use grid and sticky
+        self.left_frame.grid_rowconfigure(0, weight=1)  # Let the scrollable frame expand vertically
+        self.left_frame.grid_columnconfigure(0, weight=1)  # Let the scrollable frame expand horizontally
 
 
-        # Layout
-        ctk.set_appearance_mode("dark")
-        ctk.set_default_color_theme("dark-blue")
+        # Inside the scrollable frame, you can pack the tabview:
+        self.tabview = ctk.CTkTabview(self.left_scrollable_frame)
+        self.tabview.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        # Get the screen resolution
-        screen_width = self.master.winfo_screenwidth()
-        screen_height = self.master.winfo_screenheight()
-        frame_height = int(screen_height * 0.90)
+        # Create tabs
+        self.create_session_tab()
+        self.create_text_processing_tab()
+        self.create_audio_processing_tab()
+        self.create_api_keys_tab()
+        self.create_logs_tab()
+        self.create_train_xtts_tab()
 
-        # Create the main scrollable frame with the calculated height
-        self.main_scrollable_frame = ctk.CTkScrollableFrame(master, width=750, height=frame_height)
-        self.main_scrollable_frame.grid(row=0, column=0, padx=10, pady=10, sticky=tk.NSEW)
-        self.main_scrollable_frame.grid_columnconfigure(0, weight=1)
-        self.main_scrollable_frame.grid_rowconfigure(0, weight=1)
+        # Create Generated Sentences section in right frame
+        self.create_generated_sentences_section()
 
-        # Tabs
-        self.tabview = ctk.CTkTabview(self.main_scrollable_frame)
-        self.tabview.grid(row=0, column=0, padx=10, pady=10, sticky=tk.NSEW)
+        # Additional setup
+        self.update_tts_service()
+        self.toggle_advanced_tts_settings()
+        self.text_preprocessor = TextPreprocessor(self.language_var, self.max_sentence_length,
+                                                  self.enable_sentence_splitting, self.enable_sentence_appending,
+                                                  self.remove_diacritics, self.disable_paragraph_detection, self.tts_service)
 
-        # Session Tab
+    def create_session_tab(self):
         self.session_tab = self.tabview.add("Session")
         self.session_tab.grid_columnconfigure(0, weight=1, uniform="session_columns")
         self.session_tab.grid_columnconfigure(1, weight=1, uniform="session_columns")
         self.session_tab.grid_columnconfigure(2, weight=1, uniform="session_columns")
         self.session_tab.grid_columnconfigure(3, weight=1, uniform="session_columns")
+
         self.session_name_label = ctk.CTkLabel(self.session_tab, text="Untitled Session", font=ctk.CTkFont(size=20, weight="bold"))
         self.session_name_label.grid(row=0, column=0, columnspan=4, padx=5, pady=5, sticky=tk.W)
 
         # Session Section
-        self.session_label = ctk.CTkLabel(self.session_tab, text="Session", font=ctk.CTkFont(size=14, weight="bold"))
-        self.session_label.grid(row=1, column=0, columnspan=4, padx=10, pady=10, sticky=tk.W)
+        ctk.CTkLabel(self.session_tab, text="Session", font=ctk.CTkFont(size=14, weight="bold")).grid(row=1, column=0, columnspan=4, padx=10, pady=10, sticky=tk.W)
 
         session_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
         session_frame.grid(row=2, column=0, columnspan=4, padx=10, pady=(0, 20), sticky=tk.EW)
@@ -267,8 +705,8 @@ class TTSOptimizerGUI:
         self.voicecraft_model_label.grid(row=3, column=0, padx=10, pady=5, sticky=tk.W)
         self.voicecraft_model_dropdown = ctk.CTkOptionMenu(session_settings_frame, variable=self.voicecraft_model, values=["830M_TTSEnhanced", "330M_TTSEnhanced"])
         self.voicecraft_model_dropdown.grid(row=3, column=1, padx=10, pady=5, sticky=tk.EW)
-        self.voicecraft_model_label.grid_remove()  # Hide the VoiceCraft model label initially
-        self.voicecraft_model_dropdown.grid_remove()  # Hide the VoiceCraft model dropdown initially
+        self.voicecraft_model_label.grid_remove()
+        self.voicecraft_model_dropdown.grid_remove()
         
         self.xtts_model = ctk.StringVar(value="")
         self.xtts_model_label = ctk.CTkLabel(session_settings_frame, text="XTTS Model:")
@@ -283,16 +721,15 @@ class TTSOptimizerGUI:
         self.use_external_server_switch.grid(row=4, column=0, padx=10, pady=5, sticky=tk.W)
         self.external_server_url_entry = ctk.CTkEntry(session_settings_frame, textvariable=self.external_server_url)
         self.external_server_url_entry.grid(row=4, column=1, columnspan=3, padx=10, pady=5, sticky=tk.EW)
-        self.external_server_url_entry.grid_remove()  # Hide the entry field initially
+        self.external_server_url_entry.grid_remove()
 
         self.use_external_server_voicecraft_switch = ctk.CTkSwitch(session_settings_frame, text="Use an external server", variable=self.use_external_server_voicecraft, command=self.toggle_external_server)
         self.use_external_server_voicecraft_switch.grid(row=5, column=0, padx=10, pady=5, sticky=tk.W)
-        self.use_external_server_voicecraft_switch.grid_remove()  # Hide the switch initially
+        self.use_external_server_voicecraft_switch.grid_remove()
         self.external_server_url_entry_voicecraft = ctk.CTkEntry(session_settings_frame, textvariable=self.external_server_url_voicecraft)
         self.external_server_url_entry_voicecraft.grid(row=5, column=1, columnspan=3, padx=10, pady=5, sticky=tk.EW)
-        self.external_server_url_entry_voicecraft.grid_remove()  # Hide the entry field initially
+        self.external_server_url_entry_voicecraft.grid_remove()
 
-        self.language_var = ctk.StringVar(value="en")
         ctk.CTkLabel(session_settings_frame, text="Language:").grid(row=6, column=0, padx=10, pady=5, sticky=tk.W)
         self.language_dropdown = ctk.CTkComboBox(
             session_settings_frame,
@@ -303,7 +740,6 @@ class TTSOptimizerGUI:
 
         self.language_var.trace_add("write", self.on_language_selected)
 
-        self.selected_speaker = ctk.StringVar(value="")
         ctk.CTkLabel(session_settings_frame, text="Speaker Voice:").grid(row=7, column=0, padx=10, pady=5, sticky=tk.W)
         self.speaker_dropdown = ctk.CTkOptionMenu(session_settings_frame, variable=self.selected_speaker, values=[])
         self.speaker_dropdown.grid(row=7, column=1, padx=10, pady=5, sticky=tk.EW)
@@ -313,61 +749,21 @@ class TTSOptimizerGUI:
         self.sample_length = ctk.StringVar(value="3")
         self.sample_length_dropdown = ctk.CTkOptionMenu(session_settings_frame, variable=self.sample_length, values=[str(i) for i in range(3, 13)])
         self.sample_length_dropdown.grid(row=7, column=3, padx=10, pady=5, sticky=tk.EW)
-        self.sample_length_dropdown.grid_remove()  # Hide the dropdown initially
+        self.sample_length_dropdown.grid_remove()
 
-        #ctk.CTkLabel(session_settings_frame, text="Playback Speed:").grid(row=8, column=0, padx=10, pady=5, sticky=tk.W)
-        #self.playback_speed = ctk.DoubleVar(value=1.0)
-
-        # Create a list of values for the dropdown menu
-        #values = [str(value) for value in [0.8, 0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15, 1.2, 1.25, 1.3, 1.35, 1.4, 1.45, 1.5]]
-
-        #self.playback_speed_dropdown = ctk.CTkComboBox(session_settings_frame, values=values, variable=self.playback_speed)
-        #self.playback_speed_dropdown.grid(row=8, column=1, columnspan=3, padx=10, pady=5, sticky=tk.EW)
-        # Speed Slider
         ctk.CTkLabel(session_settings_frame, text="Speed:").grid(row=8, column=0, padx=10, pady=5, sticky=tk.W)
         speed_slider = ctk.CTkSlider(session_settings_frame, from_=0.2, to=2.0, number_of_steps=180, variable=self.xtts_speed)
         speed_slider.grid(row=8, column=1, columnspan=2, padx=10, pady=5, sticky=tk.EW)
 
-        # Add a label to display the current speed value
         self.speed_value_label = ctk.CTkLabel(session_settings_frame, text=f"Speed: {self.xtts_speed.get():.2f}")
         self.speed_value_label.grid(row=8, column=3, padx=10, pady=5, sticky=tk.W)
 
-        # Update the speed value label when the slider changes
         speed_slider.configure(command=self.update_speed_label)
         self.show_advanced_tts_settings = ctk.BooleanVar(value=False)
         self.advanced_settings_switch = ctk.CTkSwitch(session_settings_frame, text="Advanced TTS Settings", variable=self.show_advanced_tts_settings, command=self.toggle_advanced_tts_settings)
         self.advanced_settings_switch.grid(row=9, column=0, padx=5, pady=5, sticky=tk.W)
 
-        # Advanced TTS Settings Frame
-        self.advanced_tts_settings_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
-        self.advanced_tts_settings_frame.grid(row=5, column=0, columnspan=4, padx=10, pady=(0, 20), sticky=tk.EW)
-        self.advanced_tts_settings_frame.grid_columnconfigure(0, weight=1)
-        self.advanced_tts_settings_frame.grid_columnconfigure(1, weight=1)
-        self.advanced_tts_settings_frame.grid_remove()  # Hide the frame initially
-
-        ctk.CTkLabel(self.advanced_tts_settings_frame, text="Top K:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
-        self.top_k = ctk.StringVar(value="0")
-        ctk.CTkEntry(self.advanced_tts_settings_frame, textvariable=self.top_k).grid(row=0, column=1, padx=5, pady=5, sticky=tk.W)
-
-        ctk.CTkLabel(self.advanced_tts_settings_frame, text="Top P:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
-        self.top_p = ctk.StringVar(value="0.9")
-        ctk.CTkEntry(self.advanced_tts_settings_frame, textvariable=self.top_p).grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
-
-        ctk.CTkLabel(self.advanced_tts_settings_frame, text="Temperature:").grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
-        self.temperature = ctk.StringVar(value="1.0")
-        ctk.CTkEntry(self.advanced_tts_settings_frame, textvariable=self.temperature).grid(row=2, column=1, padx=5, pady=5, sticky=tk.W)
-
-        ctk.CTkLabel(self.advanced_tts_settings_frame, text="Stop Repetition:").grid(row=3, column=0, padx=5, pady=5, sticky=tk.W)
-        self.stop_repetition = ctk.StringVar(value="3")
-        ctk.CTkEntry(self.advanced_tts_settings_frame, textvariable=self.stop_repetition).grid(row=3, column=1, padx=5, pady=5, sticky=tk.W)
-
-        ctk.CTkLabel(self.advanced_tts_settings_frame, text="KV Cache:").grid(row=4, column=0, padx=5, pady=5, sticky=tk.W)
-        self.kvcache = ctk.StringVar(value="1")
-        ctk.CTkEntry(self.advanced_tts_settings_frame, textvariable=self.kvcache).grid(row=4, column=1, padx=5, pady=5, sticky=tk.W)
-
-        ctk.CTkLabel(self.advanced_tts_settings_frame, text="Sample Batch Size:").grid(row=5, column=0, padx=5, pady=5, sticky=tk.W)
-        self.sample_batch_size = ctk.StringVar(value="1")
-        ctk.CTkEntry(self.advanced_tts_settings_frame, textvariable=self.sample_batch_size).grid(row=5, column=1, padx=5, pady=5, sticky=tk.W)
+        self.create_xtts_advanced_settings_frame()
 
         # Generation Section
         generation_label = ctk.CTkLabel(self.session_tab, text="Generation", font=ctk.CTkFont(size=14, weight="bold"))
@@ -395,11 +791,11 @@ class TTSOptimizerGUI:
         self.remaining_time_label = ctk.CTkLabel(generation_frame, text="N/A")
         self.remaining_time_label.grid(row=2, column=3, padx=10, pady=(5), sticky=tk.W)
 
-        # Modify the dubbing frame creation
+        # Dubbing Section
         self.dubbing_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
         self.dubbing_frame.grid(row=7, column=0, columnspan=4, padx=10, pady=(0, 20), sticky=tk.EW)
         self.dubbing_frame.grid_columnconfigure((0, 1, 2, 3), weight=1)
-        self.dubbing_frame.grid_remove()  # Hide the dubbing frame by default
+        self.dubbing_frame.grid_remove()
         ctk.CTkLabel(self.dubbing_frame, text="Dubbing", font=ctk.CTkFont(size=14, weight="bold")).grid(row=0, column=0, columnspan=4, padx=10, pady=10, sticky=tk.W)
 
         # Transcription Options Frame
@@ -450,7 +846,7 @@ class TTSOptimizerGUI:
         self.video_file_selection_frame = ctk.CTkFrame(self.dubbing_frame, fg_color="gray20", corner_radius=10)
         self.video_file_selection_frame.grid(row=3, column=0, columnspan=5, padx=10, pady=(10, 5), sticky=tk.EW)
         self.video_file_selection_frame.grid_columnconfigure((0, 1, 2), weight=1)
-        self.video_file_selection_frame.grid_remove()  # Hide initially
+        self.video_file_selection_frame.grid_remove()
 
         ctk.CTkLabel(self.video_file_selection_frame, text="Video File:").grid(row=0, column=0, padx=10, pady=5, sticky=tk.W)
         self.selected_video_file_entry = ctk.CTkEntry(self.video_file_selection_frame, textvariable=self.selected_video_file, state="readonly")
@@ -475,63 +871,7 @@ class TTSOptimizerGUI:
         self.only_translate_button = ctk.CTkButton(self.dubbing_buttons_frame, text="Only Translate", command=self.only_translate)
         self.only_translate_button.grid(row=0, column=3, padx=5, pady=5, sticky=tk.EW)
 
-    
-        # Generated Sentences Section
-        ctk.CTkLabel(self.session_tab, text="Generated Sentences", font=ctk.CTkFont(size=14, weight="bold")).grid(row=14, column=0, columnspan=4, padx=10, pady=(20, 10), sticky=tk.W)
-
-        generated_sentences_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
-        generated_sentences_frame.grid(row=15, column=0, columnspan=4, padx=10, pady=(0, 20), sticky=tk.EW)
-        generated_sentences_frame.grid_columnconfigure((0, 1, 2), weight=1)
-
-        # Top buttons
-        self.play_button = ctk.CTkButton(generated_sentences_frame, text="Play", command=self.toggle_playback, fg_color="#2e8b57", hover_color="#3cb371")
-        self.play_button.grid(row=0, column=0, padx=(10, 5), pady=(10, 5), sticky=tk.EW)
-
-        ctk.CTkButton(generated_sentences_frame, text="Play as Playlist", command=self.play_sentences_as_playlist).grid(row=0, column=1, padx=5, pady=(10, 5), sticky=tk.EW)
-
-        ctk.CTkButton(generated_sentences_frame, text="Stop", command=self.stop_playback).grid(row=0, column=2, padx=(5, 10), pady=(10, 5), sticky=tk.EW)
-
-        # Create a frame to hold the Listbox and Scrollbar
-        listbox_frame = ctk.CTkFrame(generated_sentences_frame, fg_color="#444444")
-        listbox_frame.grid(row=1, column=0, columnspan=3, padx=10, pady=10, sticky=tk.NSEW)
-        listbox_frame.grid_columnconfigure(0, weight=1)
-        listbox_frame.grid_rowconfigure(0, weight=1)
-
-        # Create the Listbox
-        self.playlist_listbox = tk.Listbox(
-            listbox_frame,
-            bg="#444444",
-            fg="#FFFFFF",
-            font=("Helvetica", 9),
-            selectbackground="#555555",
-            selectforeground="#FFFFFF",
-            selectborderwidth=0,
-            activestyle="none",
-            highlightthickness=0,
-            bd=0,
-            relief=tk.FLAT,
-            height=10,
-        )
-        self.playlist_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        # Create the Scrollbar
-        scrollbar = ctk.CTkScrollbar(listbox_frame, orientation="vertical", command=self.playlist_listbox.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
-        # Configure the Listbox to use the Scrollbar
-        self.playlist_listbox.configure(yscrollcommand=scrollbar.set)
-
-        # Bottom buttons
-        button_frame = ctk.CTkFrame(generated_sentences_frame, fg_color="transparent")
-        button_frame.grid(row=2, column=0, columnspan=3, padx=10, pady=(5, 10), sticky=tk.EW)
-        button_frame.grid_columnconfigure((0, 1, 2, 3, 4), weight=1)
-
-        ctk.CTkButton(button_frame, text="Regenerate", command=self.regenerate_selected_sentence).grid(row=0, column=0, padx=(0, 5), pady=5, sticky=tk.EW)
-        ctk.CTkButton(button_frame, text="Regenerate All", command=self.regenerate_all_sentences).grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
-        ctk.CTkButton(button_frame, text="Remove", command=self.remove_selected_sentences).grid(row=0, column=2, padx=5, pady=5, sticky=tk.EW)
-        ctk.CTkButton(button_frame, text="Edit", command=self.edit_selected_sentence).grid(row=0, column=3, padx=5, pady=5, sticky=tk.EW)
-        ctk.CTkButton(button_frame, text="Save Output", command=self.save_output).grid(row=0, column=4, padx=(5, 0), pady=5, sticky=tk.EW)
-        # Text Processing Tab
+    def create_text_processing_tab(self):
         self.text_processing_tab = self.tabview.add("Text Processing")
         self.text_processing_tab.grid_columnconfigure(0, weight=1)
         self.text_processing_tab.grid_columnconfigure(1, weight=1)
@@ -551,6 +891,7 @@ class TTSOptimizerGUI:
         ctk.CTkSwitch(general_settings_frame, text="Remove Diacritics", variable=self.remove_diacritics).grid(row=3, column=0, padx=5, pady=5, sticky=tk.W)
         self.disable_paragraph_detection = ctk.BooleanVar(value=False)
         ctk.CTkSwitch(general_settings_frame, text="Disable Paragraph Detection", variable=self.disable_paragraph_detection).grid(row=4, column=0, padx=5, pady=5, sticky=tk.W)
+
         # LLM Processing
         ctk.CTkLabel(self.text_processing_tab, text="LLM Processing", font=ctk.CTkFont(size=14, weight="bold")).grid(row=2, column=0, columnspan=2, padx=10, pady=10, sticky=tk.W)
 
@@ -614,7 +955,7 @@ class TTSOptimizerGUI:
         self.third_prompt_model_dropdown = ctk.CTkOptionMenu(third_prompt_frame, variable=self.third_prompt_model, values=["default"])
         self.third_prompt_model_dropdown.grid(row=2, column=1, padx=5, pady=5, sticky=tk.EW)
 
-        # Audio Processing Tab
+    def create_audio_processing_tab(self):
         self.audio_processing_tab = self.tabview.add("Audio Processing")
         self.audio_processing_tab.grid_columnconfigure(0, weight=1)
         self.audio_processing_tab.grid_columnconfigure(1, weight=1)
@@ -736,7 +1077,7 @@ class TTSOptimizerGUI:
         ctk.CTkLabel(output_frame, text="Bitrate:").grid(row=0, column=2, padx=5, pady=5, sticky=tk.W)
         ctk.CTkEntry(output_frame, textvariable=self.bitrate).grid(row=0, column=3, padx=5, pady=5, sticky=tk.EW)
 
-        # API Keys Tab
+    def create_api_keys_tab(self):
         self.api_keys_tab = self.tabview.add("API Keys")
         self.api_keys_tab.grid_columnconfigure(0, weight=1)
         self.api_keys_tab.grid_columnconfigure(1, weight=1)
@@ -766,7 +1107,11 @@ class TTSOptimizerGUI:
         deepl_entry.grid(row=3, column=1, padx=10, pady=10, sticky=tk.W)
         ctk.CTkButton(self.api_keys_tab, text="Save", command=lambda: self.save_api_key("DEEPL_API_KEY", self.deepl_api_key.get())).grid(row=3, column=2, padx=10, pady=10)
 
-        # Logs Tab
+    def get_rvc_models(self):
+        return [folder for folder in os.listdir(self.rvc_models_dir) 
+                if os.path.isdir(os.path.join(self.rvc_models_dir, folder))]
+
+    def create_logs_tab(self):
         self.logs_tab = self.tabview.add("Logs")
         self.logs_tab.grid_columnconfigure(0, weight=1)
         self.logs_tab.grid_rowconfigure(0, weight=1)
@@ -778,7 +1123,7 @@ class TTSOptimizerGUI:
         self.log_update_interval = 60000  # Update every 60 seconds
         self.master.after(0, self.update_logs)
 
-        # Training Tab
+    def create_train_xtts_tab(self):
         self.train_xtts_tab = self.tabview.add("Train XTTS")
         self.train_xtts_tab.grid_columnconfigure(0, weight=1)
         self.train_xtts_tab.grid_columnconfigure(1, weight=1)
@@ -833,10 +1178,115 @@ class TTSOptimizerGUI:
         self.training_status = ctk.StringVar(value="")
         ctk.CTkLabel(self.train_xtts_tab, textvariable=self.training_status).grid(row=8, column=0, columnspan=3, padx=10, pady=5)
 
-        self.sentence_audio_data = {}  # Dictionary to store sentence audio data
-        self.create_xtts_advanced_settings_frame()
+    def create_generated_sentences_section(self):
+        generated_sentences_frame = ctk.CTkFrame(self.right_frame)
+        generated_sentences_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        #self.populate_speaker_dropdown()
+        ctk.CTkLabel(generated_sentences_frame, text="Generated Sentences", font=ctk.CTkFont(size=14, weight="bold")).pack(pady=(0, 10))
+
+        # Top buttons
+        button_frame = ctk.CTkFrame(generated_sentences_frame)
+        button_frame.pack(fill=tk.X, pady=(0, 10))
+
+        self.play_button = ctk.CTkButton(button_frame, text="Play", command=self.toggle_playback, fg_color="#2e8b57", hover_color="#3cb371")
+        self.play_button.pack(side=tk.LEFT, padx=(0, 5), expand=True, fill=tk.X)
+
+        ctk.CTkButton(button_frame, text="Play as Playlist", command=self.play_sentences_as_playlist).pack(side=tk.LEFT, padx=5, expand=True, fill=tk.X)
+
+        ctk.CTkButton(button_frame, text="Stop", command=self.stop_playback).pack(side=tk.LEFT, padx=(5, 0), expand=True, fill=tk.X)
+
+        # Create a frame to hold the Listbox and Scrollbar
+        listbox_frame = ctk.CTkFrame(generated_sentences_frame)
+        listbox_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+
+        # Create the Listbox
+        self.playlist_listbox = tk.Listbox(
+            listbox_frame,
+            bg="#444444",
+            fg="#FFFFFF",
+            font=("Helvetica", 9),
+            selectbackground="#555555",
+            selectforeground="#FFFFFF",
+            selectborderwidth=0,
+            activestyle="none",
+            highlightthickness=0,
+            bd=0,
+            relief=tk.FLAT
+        )
+        self.playlist_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Create the Scrollbar
+        scrollbar = ctk.CTkScrollbar(listbox_frame, orientation="vertical", command=self.playlist_listbox.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Configure the Listbox to use the Scrollbar
+        self.playlist_listbox.configure(yscrollcommand=scrollbar.set)
+
+        # Bottom buttons
+        bottom_button_frame = ctk.CTkFrame(generated_sentences_frame)
+        bottom_button_frame.pack(fill=tk.X, pady=(0, 10))
+
+        ctk.CTkButton(bottom_button_frame, text="Regenerate", command=self.regenerate_selected_sentence).pack(side=tk.LEFT, padx=(0, 5), expand=True, fill=tk.X)
+        ctk.CTkButton(bottom_button_frame, text="Regenerate All", command=self.regenerate_all_sentences).pack(side=tk.LEFT, padx=5, expand=True, fill=tk.X)
+        ctk.CTkButton(bottom_button_frame, text="Remove", command=self.remove_selected_sentences).pack(side=tk.LEFT, padx=5, expand=True, fill=tk.X)
+        ctk.CTkButton(bottom_button_frame, text="Edit", command=self.edit_selected_sentence).pack(side=tk.LEFT, padx=5, expand=True, fill=tk.X)
+        ctk.CTkButton(bottom_button_frame, text="Save Output", command=self.save_output).pack(side=tk.LEFT, padx=(5, 0), expand=True, fill=tk.X)
+
+    def create_xtts_advanced_settings_frame(self):
+        self.xtts_advanced_settings_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
+        self.xtts_advanced_settings_frame.grid(row=6, column=0, columnspan=4, padx=10, pady=(0, 20), sticky=tk.EW)
+        self.xtts_advanced_settings_frame.grid_columnconfigure(0, weight=1)
+        self.xtts_advanced_settings_frame.grid_columnconfigure(1, weight=1)
+
+        # Add Stream Chunk Size
+        ctk.CTkLabel(self.xtts_advanced_settings_frame, text="Stream Chunk Size:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+        ctk.CTkEntry(self.xtts_advanced_settings_frame, textvariable=self.xtts_stream_chunk_size).grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
+
+        ctk.CTkLabel(self.xtts_advanced_settings_frame, text="Temperature:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
+        ctk.CTkEntry(self.xtts_advanced_settings_frame, textvariable=self.xtts_temperature).grid(row=1, column=1, padx=5, pady=5, sticky=tk.EW)
+
+        ctk.CTkLabel(self.xtts_advanced_settings_frame, text="Length Penalty:").grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
+        ctk.CTkEntry(self.xtts_advanced_settings_frame, textvariable=self.xtts_length_penalty).grid(row=2, column=1, padx=5, pady=5, sticky=tk.EW)
+
+        ctk.CTkLabel(self.xtts_advanced_settings_frame, text="Repetition Penalty:").grid(row=3, column=0, padx=5, pady=5, sticky=tk.W)
+        ctk.CTkEntry(self.xtts_advanced_settings_frame, textvariable=self.xtts_repetition_penalty).grid(row=3, column=1, padx=5, pady=5, sticky=tk.EW)
+
+        ctk.CTkLabel(self.xtts_advanced_settings_frame, text="Top K:").grid(row=4, column=0, padx=5, pady=5, sticky=tk.W)
+        ctk.CTkEntry(self.xtts_advanced_settings_frame, textvariable=self.xtts_top_k).grid(row=4, column=1, padx=5, pady=5, sticky=tk.EW)
+
+        ctk.CTkLabel(self.xtts_advanced_settings_frame, text="Top P:").grid(row=5, column=0, padx=5, pady=5, sticky=tk.W)
+        ctk.CTkEntry(self.xtts_advanced_settings_frame, textvariable=self.xtts_top_p).grid(row=5, column=1, padx=5, pady=5, sticky=tk.EW)
+
+        ctk.CTkSwitch(self.xtts_advanced_settings_frame, text="Enable Text Splitting", variable=self.xtts_enable_text_splitting).grid(row=7, column=0, columnspan=2, padx=5, pady=5, sticky=tk.W)
+
+        # Add the Apply button
+        apply_button = ctk.CTkButton(self.xtts_advanced_settings_frame, text="Apply", command=self.apply_xtts_settings)
+        apply_button.grid(row=8, column=0, columnspan=2, padx=5, pady=10, sticky=tk.EW)
+
+        self.xtts_advanced_settings_frame.grid_remove()  # Hide the frame initially
+
+    def show_preprocessing_popup(self):
+        self.preprocessing_popup = ctk.CTkToplevel(self.master)
+        self.preprocessing_popup.title("Preprocessing")
+        self.preprocessing_popup.geometry("300x100")
+        self.preprocessing_popup.transient(self.master)
+        self.preprocessing_popup.grab_set()
+        
+        message = ctk.CTkLabel(self.preprocessing_popup, text="Preprocessing text.\nThis may take several minutes...")
+        message.pack(expand=True)
+
+        # Center the popup
+        self.preprocessing_popup.update_idletasks()
+        width = self.preprocessing_popup.winfo_width()
+        height = self.preprocessing_popup.winfo_height()
+        x = (self.preprocessing_popup.winfo_screenwidth() // 2) - (width // 2)
+        y = (self.preprocessing_popup.winfo_screenheight() // 2) - (height // 2)
+        self.preprocessing_popup.geometry('{}x{}+{}+{}'.format(width, height, x, y))
+
+    def close_preprocessing_popup(self):
+        if hasattr(self, 'preprocessing_popup'):
+            self.preprocessing_popup.grab_release()
+            self.preprocessing_popup.destroy()
 
     def browse_source_audio(self):
         choice = messagebox.askquestion("Input Type", "Do you want to select a folder?", icon='question')
@@ -1371,7 +1821,6 @@ class TTSOptimizerGUI:
                 "-i", video_file,
                 "-vn",  # Disable video
                 "-acodec", "pcm_s16le",  # Audio codec
-                "-ar", "16000",  # Audio sample rate
                 "-ac", "1",  # Mono audio
                 wav_file
             ]
@@ -1779,7 +2228,7 @@ class TTSOptimizerGUI:
     def show_pdf_options(self, raw_text_path, session_dir, file_name):
         with open(raw_text_path, "r", encoding="utf-8") as file:
             raw_text = file.read()
-        preprocessed_text = self.preprocess_text_pdf(raw_text)
+        preprocessed_text = self.text_preprocessor.preprocess_text_pdf(raw_text)
         preprocessed_filename = os.path.splitext(file_name)[0] + "_preprocessed.txt"
         preprocessed_path = os.path.join(session_dir, preprocessed_filename)
         with open(preprocessed_path, "w", encoding="utf-8", newline='\n') as file:
@@ -1830,7 +2279,7 @@ class TTSOptimizerGUI:
 
             session_name = self.session_name.get()
             session_dir = os.path.join("Outputs", session_name)
-            os.makedirs(session_dir, exist_ok=True)  # Create the session directory if it doesn't exist
+            os.makedirs(session_dir, exist_ok=True)
 
             file_name = os.path.basename(file_path)
             raw_text_filename = os.path.splitext(file_name)[0] + "_raw_text.txt"
@@ -1842,13 +2291,13 @@ class TTSOptimizerGUI:
             if self.remove_double_newlines.get():
                 preprocessed_filename = os.path.splitext(file_name)[0] + "_preprocessed.txt"
                 preprocessed_path = os.path.join(session_dir, preprocessed_filename)
-                text = self.preprocess_text_pdf(text, remove_double_newlines=True)
+                text = self.text_preprocessor.preprocess_text_pdf(text, remove_double_newlines=True)
                 with open(preprocessed_path, "w", encoding="utf-8", newline='\n') as file:
                     file.write(text)
                 with open(preprocessed_path, "r", encoding="utf-8") as file:
                     updated_text = file.read()
             else:
-                text = self.preprocess_text_pdf(text, remove_double_newlines=False)
+                text = self.text_preprocessor.preprocess_text_pdf(text, remove_double_newlines=False)
                 with open(raw_text_path, "w", encoding="utf-8", newline='\n') as file:
                     file.write(text)
                 with open(raw_text_path, "r", encoding="utf-8") as file:
@@ -1886,31 +2335,7 @@ class TTSOptimizerGUI:
 
         accept_button = ctk.CTkButton(button_frame, text="Accept", command=accept_text)
         accept_button.pack(side=tk.LEFT)
-        
-    def preprocess_text_pdf(self, text, remove_double_newlines=False):
-        # Normalize new lines to LF (\\n)
-        text = regex.sub(r'\r\n|\r', '\n', text)
-        
-        # Step 1: Remove specific characters
-        text = regex.sub(r'[\x00-\x09\x0B-\x1F\x7F]', '', text)
-        
-        if remove_double_newlines:
-            # Remove double newlines only if there is no sentence-ending punctuation before them
-            text = regex.sub(r'(?<![.!?])\n\n', ' ', text)
-        else:
-            # Remove all single newlines and replace them with spaces
-            text = regex.sub(r'\n$(?<!\n[ \t]*\n)|(?<!\n[ \t]*)\n(?![ \t]*\n)', ' ', text)
-        
-        # Step 3: Replace all double, triple, and quadruple new lines with a single new line
-        text = regex.sub(r'[ \\t]*\\n[ \\t]*\\n[ \\t]*(?:\\n[ \\t]*){0,2}', '\\n', text)
-        
-        # Condense multiple spaces to one
-        text = regex.sub(r' {2,}', ' ', text)
-        
-        # Remove all spaces and tabs at the beginning of all lines
-        text = regex.sub(r'(?m)^[ \\t]+', '', text)
-        
-        return text
+
 
     def toggle_external_server(self):
         if self.use_external_server.get():
@@ -2472,29 +2897,36 @@ class TTSOptimizerGUI:
             return
 
         if self.enable_dubbing.get():
-            # Call the new dubbing method
             self.generate_dubbing_audio()
         else:
             if os.path.exists(json_filename):
-                # If JSON exists, start directly from TTS generation
                 self.resume_generation()
             else:
-                # If JSON doesn't exist, start from the beginning of the pipeline
                 if not self.source_file:
                     CTkMessagebox(title="Error", message="Please select a source file.", icon="cancel")
                     return
                 
-                with open(self.source_file, 'r', encoding='utf-8') as file:
-                    text = file.read()
+                def preprocess_and_start():
+                    # Show preprocessing pop-up
+                    self.master.after(0, self.show_preprocessing_popup)
+                    
+                    with open(self.source_file, 'r', encoding='utf-8') as file:
+                        text = file.read()
+                    
+                    preprocessed_sentences = self.text_preprocessor.preprocess_text(text, self.pdf_preprocessed, self.source_file, self.disable_paragraph_detection)
+                    os.makedirs(session_dir, exist_ok=True)
+                    self.save_json(preprocessed_sentences, json_filename)
+                    
+                    # Close preprocessing pop-up
+                    self.master.after(0, self.close_preprocessing_popup)
+                    
+                    # Start the optimization process from the beginning
+                    total_sentences = len(preprocessed_sentences)
+                    self.optimization_thread = threading.Thread(target=self.start_optimisation, args=(total_sentences, 0))
+                    self.optimization_thread.start()
                 
-                preprocessed_sentences = self.preprocess_text(text)
-                os.makedirs(session_dir, exist_ok=True)
-                self.save_json(preprocessed_sentences, json_filename)
-                
-                # Start the optimization process from the beginning
-                total_sentences = len(preprocessed_sentences)
-                self.optimization_thread = threading.Thread(target=self.start_optimisation, args=(total_sentences, 0))
-                self.optimization_thread.start()
+                # Run preprocessing in a separate thread
+                threading.Thread(target=preprocess_and_start, daemon=True).start()
 
     def check_server_connection(self):
         try:
@@ -2537,112 +2969,6 @@ class TTSOptimizerGUI:
         else:
             pygame.mixer.music.unpause()
 
-    def preprocess_text(self, text):
-        if not self.source_file.endswith(".srt"):
-            # Normalize newlines to LF and replace carriage returns with LF
-            text = re.sub(r'\r\n?', '\n', text)
-
-            paragraph_breaks = []  # Initialize paragraph_breaks as an empty list
-
-            if not self.disable_paragraph_detection.get() and not self.source_file.endswith(".srt"):
-                if self.pdf_preprocessed:
-                    # For preprocessed PDFs, consider sentences followed by a single newline as paragraphs
-                    paragraph_breaks = list(re.finditer(r'\n', text))
-                elif not self.pdf_preprocessed and self.source_file.endswith(".pdf"):
-                    # For raw PDF files, perform additional preprocessing
-                    text = self.preprocess_text_pdf(text)
-                elif self.source_file.endswith("_edited.txt"):
-                    # For manually edited text, consider a single newline as a paragraph break
-                    paragraph_breaks = list(re.finditer(r'\n', text))
-                else:
-                    # For regular text files, convert single newlines to spaces
-                    text = re.sub(r'(?<!\n)\n(?!\n)', ' ', text)
-
-                    # Mark sentences followed by a single newline as paragraph sentences
-                    paragraph_breaks = list(re.finditer(r'\n', text))
-
-            # Replace tabs with spaces
-            text = re.sub(r'\t', ' ', text)
-
-        if self.remove_diacritics.get():
-            text = ''.join(char for char in text if not unicodedata.combining(char))
-            text = unidecode(text)
-
-        # Check if the source file is an srt file
-        if self.source_file.endswith(".srt"):
-            # Remove <b></b>, <i></i>, and <> tags from subtitle text
-            text = re.sub(r'<[/]?[bi]>', '', text)
-            text = re.sub(r'<>', '', text)
-            # Parse the srt file and extract subtitle information
-            subtitles = pysrt.open(self.source_file)
-
-            processed_sentences = []
-            for subtitle in subtitles:
-                start_time = subtitle.start.to_time().strftime("%H:%M:%S.%f")
-                end_time = subtitle.end.to_time().strftime("%H:%M:%S.%f")
-                text = subtitle.text.replace("\n", " ")
-
-                sentence_dict = {
-                    "original_sentence": text,
-                    "paragraph": "no",
-                    "split_part": None,
-                    "start": start_time,
-                    "end": end_time,
-                    "tts_generated": "no"
-                }
-
-                processed_sentences.append(sentence_dict)
-
-            return processed_sentences
-        else:
-            # Additional preprocessing step to handle chapters, section titles, etc.
-            text = re.sub(r'(^|\n+)([^\n.!?]+)(?=\n+|$)', r'\1\2.', text)
-
-            # Use split_into_sentences method for sentence splitting
-            sentences = self.split_into_sentences(text)
-
-            processed_sentences = []
-
-            for sentence in sentences:
-                if not sentence.strip():  # Skip empty sentences
-                    continue
-
-                is_paragraph = False
-                for match in paragraph_breaks:
-                    preceding_text = text[match.start()-15:match.start()]
-                    sentence_end = sentence[-15:]
-                    if self.calculate_similarity(preceding_text, sentence_end) >= 0.8:
-                        is_paragraph = True
-                        break
-
-                # Use num2words to convert digits to words for Silero
-                if self.tts_service.get() == "Silero":
-                    sentence = self.convert_digits_to_words(sentence)
-
-                sentence_dict = {
-                    "original_sentence": sentence,
-                    "paragraph": "yes" if is_paragraph else "no",
-                    "split_part": None  # Initialize split_part as None
-                }
-
-                # Split long sentences
-                if self.enable_sentence_splitting.get():
-                    split_sentences = self.split_long_sentences(sentence_dict)
-                    processed_sentences.extend(split_sentences)
-                else:
-                    processed_sentences.append(sentence_dict)
-
-            # Append short sentences
-            if self.enable_sentence_appending.get():
-                processed_sentences = self.append_short_sentences(processed_sentences)
-
-            # Split long sentences recursively
-            split_sentences = []
-            for sentence_dict in processed_sentences:
-                split_sentences.extend(self.split_long_sentences_2(sentence_dict))
-
-            return split_sentences
-
     def toggle_advanced_tts_settings(self):
         if self.tts_service.get() == "VoiceCraft":
             if self.show_advanced_tts_settings.get():
@@ -2657,39 +2983,6 @@ class TTSOptimizerGUI:
         else:
             self.advanced_tts_settings_frame.grid_remove()
             self.xtts_advanced_settings_frame.grid_remove()
-
-    def create_xtts_advanced_settings_frame(self):
-        self.xtts_advanced_settings_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
-        self.xtts_advanced_settings_frame.grid(row=6, column=0, columnspan=4, padx=10, pady=(0, 20), sticky=tk.EW)
-        self.xtts_advanced_settings_frame.grid_columnconfigure(0, weight=1)
-        self.xtts_advanced_settings_frame.grid_columnconfigure(1, weight=1)
-
-        # Add Stream Chunk Size
-        ctk.CTkLabel(self.xtts_advanced_settings_frame, text="Stream Chunk Size:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
-        ctk.CTkEntry(self.xtts_advanced_settings_frame, textvariable=self.xtts_stream_chunk_size).grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
-
-        ctk.CTkLabel(self.xtts_advanced_settings_frame, text="Temperature:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
-        ctk.CTkEntry(self.xtts_advanced_settings_frame, textvariable=self.xtts_temperature).grid(row=1, column=1, padx=5, pady=5, sticky=tk.EW)
-
-        ctk.CTkLabel(self.xtts_advanced_settings_frame, text="Length Penalty:").grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
-        ctk.CTkEntry(self.xtts_advanced_settings_frame, textvariable=self.xtts_length_penalty).grid(row=2, column=1, padx=5, pady=5, sticky=tk.EW)
-
-        ctk.CTkLabel(self.xtts_advanced_settings_frame, text="Repetition Penalty:").grid(row=3, column=0, padx=5, pady=5, sticky=tk.W)
-        ctk.CTkEntry(self.xtts_advanced_settings_frame, textvariable=self.xtts_repetition_penalty).grid(row=3, column=1, padx=5, pady=5, sticky=tk.EW)
-
-        ctk.CTkLabel(self.xtts_advanced_settings_frame, text="Top K:").grid(row=4, column=0, padx=5, pady=5, sticky=tk.W)
-        ctk.CTkEntry(self.xtts_advanced_settings_frame, textvariable=self.xtts_top_k).grid(row=4, column=1, padx=5, pady=5, sticky=tk.EW)
-
-        ctk.CTkLabel(self.xtts_advanced_settings_frame, text="Top P:").grid(row=5, column=0, padx=5, pady=5, sticky=tk.W)
-        ctk.CTkEntry(self.xtts_advanced_settings_frame, textvariable=self.xtts_top_p).grid(row=5, column=1, padx=5, pady=5, sticky=tk.EW)
-
-        ctk.CTkSwitch(self.xtts_advanced_settings_frame, text="Enable Text Splitting", variable=self.xtts_enable_text_splitting).grid(row=7, column=0, columnspan=2, padx=5, pady=5, sticky=tk.W)
-
-        # Add the Apply button
-        apply_button = ctk.CTkButton(self.xtts_advanced_settings_frame, text="Apply", command=self.apply_xtts_settings)
-        apply_button.grid(row=8, column=0, columnspan=2, padx=5, pady=10, sticky=tk.EW)
-
-        self.xtts_advanced_settings_frame.grid_remove()  # Hide the frame initially
 
     def apply_xtts_settings(self):
         settings = {
@@ -2744,38 +3037,6 @@ class TTSOptimizerGUI:
     def update_speed_label(self, value):
         self.speed_value_label.configure(text=f"Speed: {float(value):.2f}")
 
-    def convert_digits_to_words(self, sentence):
-
-        def replace_numbers(match):
-            number = match.group(0)
-            try:
-                # Get the selected Silero language
-                silero_language_name = self.language_var.get()
-                
-                # Map Silero language names to num2words language codes
-                silero_to_num2words_lang = {
-                    "German (v3)": "de",
-                    "English (v3)": "en",
-                    "English Indic (v3)": "en",
-                    "Spanish (v3)": "es",
-                    "French (v3)": "fr",
-                    "Indic (v3)": "hi",
-                    "Russian (v3.1)": "ru",
-                    "Tatar (v3)": "tt",
-                    "Ukrainian (v3)": "uk",
-                    "Uzbek (v3)": "uz",
-                    "Kalmyk (v3)": "xal"
-                }
-
-                # Get the corresponding num2words language code
-                num2words_lang = silero_to_num2words_lang.get(silero_language_name, "en")
-
-                return num2words(int(number), lang=num2words_lang)
-            except ValueError:
-                return number
-
-        return re.sub(r'\d+', replace_numbers, sentence)
-
     def synchronize_audio(self, processed_sentences, session_name):
         final_audio = AudioSegment.empty()
         current_time = datetime.datetime.strptime("00:00:00.000", "%H:%M:%S.%f")
@@ -2812,318 +3073,6 @@ class TTSOptimizerGUI:
                     current_time = start_time_obj + datetime.timedelta(seconds=generated_audio_duration)
 
         return final_audio
-
-
-    def split_long_sentences(self, sentence_dict):
-
-        sentence = sentence_dict["original_sentence"]
-
-        paragraph = sentence_dict["paragraph"]
-
-
-
-        if len(sentence) <= self.max_sentence_length.get():
-
-            return [{"original_sentence": sentence, "split_part": None, "paragraph": paragraph}]
-
-
-
-        # Check if the language is set to Chinese
-
-        if self.language_var.get() == "zh-cn":
-
-            # Chinese full-width punctuation marks
-
-            punctuation_marks = ['，', '；', '：', '。', '！', '？']
-
-            min_distance = 10  # Adjusted for Chinese characters
-
-        else:
-
-            # Original punctuation for other languages
-
-            punctuation_marks = [',', ':', ';', '–']
-
-            conjunction_marks = [' and ', ' or ', 'which']
-
-            min_distance = 30
-
-
-
-        best_split_index = None
-
-        min_diff = float('inf')
-
-
-
-        for mark in punctuation_marks:
-
-            indices = [i for i, c in enumerate(sentence) if c == mark]
-
-            for index in indices:
-
-                if min_distance <= index <= len(sentence) - min_distance:
-
-                    # Check if the comma is not between two digits (avoiding splitting numbers like 28,000)
-
-                    if not (mark == ',' and index > 0 and index < len(sentence) - 1 and 
-
-                            sentence[index-1].isdigit() and sentence[index+1].isdigit()):
-
-                        diff = abs(index - len(sentence) // 2)
-
-                        if diff < min_diff:
-
-                            min_diff = diff
-
-                            best_split_index = index + 1
-
-        if best_split_index is None and self.language_var.get() != "zh-cn":
-
-            # Only check for conjunctions in non-Chinese text
-
-            for mark in conjunction_marks:
-
-                index = sentence.find(mark)
-
-                if min_distance <= index <= len(sentence) - min_distance:
-
-                    best_split_index = index
-
-                    break
-
-
-
-        if best_split_index is None:
-
-            return [{"original_sentence": sentence, "split_part": None, "paragraph": paragraph}]
-
-
-
-
-
-        first_part = sentence[:best_split_index].strip()
-
-        second_part = sentence[best_split_index:].strip()
-
-
-
-        return [
-
-            {"original_sentence": first_part, "split_part": 0, "paragraph": "no"},
-
-            {"original_sentence": second_part, "split_part": 1, "paragraph": paragraph}
-
-        ]
-
-
-
-    def split_long_sentences_2(self, sentence_dict):
-
-        sentence = sentence_dict["original_sentence"]
-
-        paragraph = sentence_dict["paragraph"]
-
-        split_part = sentence_dict["split_part"]
-
-
-
-        if len(sentence) <= self.max_sentence_length.get():
-
-            return [sentence_dict]
-
-
-
-        # Check if the language is set to Chinese
-
-        if self.language_var.get() == "zh-cn":
-
-            # Chinese full-width punctuation marks
-
-            punctuation_marks = ['，', '；', '：', '。', '！', '？']
-
-            min_distance = 10  # Adjusted for Chinese characters
-
-        else:
-
-            # Original punctuation for other languages
-
-            punctuation_marks = [',', ':', ';', '–']
-
-            conjunction_marks = [' and ', ' or ', 'which']
-
-            min_distance = 30
-
-
-
-        best_split_index = None
-
-        min_diff = float('inf')
-
-
-
-        for mark in punctuation_marks:
-
-            indices = [i for i, c in enumerate(sentence) if c == mark]
-
-            for index in indices:
-
-                if min_distance <= index <= len(sentence) - min_distance:
-
-                    # For non-Chinese, check if the comma is not between two digits
-
-                    if self.language_var.get() != "zh-cn" and mark == ',':
-
-                        if index > 0 and index < len(sentence) - 1 and sentence[index-1].isdigit() and sentence[index+1].isdigit():
-
-                            continue
-
-                    diff = abs(index - len(sentence) // 2)
-
-                    if diff < min_diff:
-
-                        min_diff = diff
-
-                        best_split_index = index + 1
-
-
-
-        if best_split_index is None and self.language_var.get() != "zh-cn":
-
-            # Only check for conjunctions in non-Chinese text
-
-            for mark in conjunction_marks:
-
-                index = sentence.find(mark)
-
-                if min_distance <= index <= len(sentence) - min_distance:
-
-                    best_split_index = index
-
-                    break
-
-
-
-        if best_split_index is None:
-
-            return [sentence_dict]
-
-
-
-
-
-        first_part = sentence[:best_split_index].strip()
-
-        second_part = sentence[best_split_index:].strip()
-
-
-
-        split_sentences = []
-
-        if split_part is None:
-
-            split_part_prefix = "0"
-
-        else:
-
-            split_part_prefix = str(split_part)
-
-
-
-        split_sentences.append({
-
-            "original_sentence": first_part,
-
-            "split_part": split_part_prefix + "a",
-
-            "paragraph": "no"
-
-        })
-
-
-
-        if len(second_part) > self.max_sentence_length.get():
-
-            if split_part_prefix == "0" and paragraph == "yes":
-
-                split_sentences.extend(self.split_long_sentences_2({
-
-                    "original_sentence": second_part,
-
-                    "split_part": "1a",
-
-                    "paragraph": "yes"
-
-                }))
-
-            else:
-
-                split_sentences.extend(self.split_long_sentences_2({
-
-                    "original_sentence": second_part,
-
-                    "split_part": split_part_prefix + "b",
-
-                    "paragraph": "no" if split_part_prefix == "0" else paragraph
-
-                }))
-
-        else:
-
-            split_sentences.append({
-
-                "original_sentence": second_part,
-
-                "split_part": split_part_prefix + "b",
-
-                "paragraph": paragraph
-
-            })
-
-
-
-        return split_sentences
-
-    def append_short_sentences(self, sentence_dicts):
-        appended_sentences = []
-        i = 0
-        while i < len(sentence_dicts):
-            current_sentence = sentence_dicts[i]
-
-            if current_sentence["paragraph"] == "no":
-                if i > 0:
-                    prev_sentence = appended_sentences[-1]
-                    if prev_sentence["paragraph"] == "no":
-                        combined_text = prev_sentence["original_sentence"] + ' ' + current_sentence["original_sentence"]
-                        if len(combined_text) <= self.max_sentence_length.get():
-                            prev_sentence["original_sentence"] = combined_text
-                            i += 1
-                            continue
-                if i < len(sentence_dicts) - 1:
-                    next_sentence = sentence_dicts[i + 1]
-                    combined_text = current_sentence["original_sentence"] + ' ' + next_sentence["original_sentence"]
-                    if len(combined_text) <= self.max_sentence_length.get():
-                        current_sentence["original_sentence"] = combined_text
-                        if next_sentence["paragraph"] == "yes":
-                            current_sentence["paragraph"] = "yes"
-                        i += 2
-                        appended_sentences.append(current_sentence)
-                        continue
-            else:  # current_sentence["paragraph"] == "yes"
-                if i > 0:
-                    prev_sentence = appended_sentences[-1]
-                    if prev_sentence["paragraph"] == "no":
-                        combined_text = prev_sentence["original_sentence"] + ' ' + current_sentence["original_sentence"]
-                        if len(combined_text) <= self.max_sentence_length.get():
-                            prev_sentence["original_sentence"] = combined_text
-                            prev_sentence["paragraph"] = "yes"
-                            i += 1
-                            continue
-
-            appended_sentences.append(current_sentence)
-            i += 1
-
-        return appended_sentences
 
     def start_optimisation(self, total_sentences, current_sentence=0):
         if self.tts_service.get() == "XTTS":
