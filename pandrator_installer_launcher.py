@@ -18,6 +18,8 @@ import ctypes
 import winreg
 from dulwich import porcelain
 import packaging.version
+from CTkMessagebox import CTkMessagebox
+
 
 class ScrollableFrame(ctk.CTkScrollableFrame):
     def __init__(self, container, *args, **kwargs):
@@ -84,17 +86,23 @@ class PandratorInstaller(ctk.CTk):
         self.info_text = ctk.CTkTextbox(self.content_frame, height=100, wrap="word", font=("Arial", 12))
         self.info_text.pack(fill="x", padx=20, pady=10)
         self.info_text.insert("1.0", "This tool will help you set up and run Pandrator as well as TTS engines and tools. "
-                              "It will install Pandrator, Miniconda, required Python packages, "
-                              "and dependencies (Calibre, Visual Studio C++ Build Tools) using winget if not installed already.\n\n"
-                              "To uninstall Pandrator, simply delete the Pandrator folder.\n\n"
-                              "The installation will take about 6-20GB of disk space depending on the number of selected options.")
+                            "It will install Pandrator, Miniconda, required Python packages, "
+                            "and dependencies (Calibre, Visual Studio C++ Build Tools) using winget if not installed already."
+                            "To uninstall Pandrator, simply delete the Pandrator folder.\n\n"
+                            "The installation will take between 3 and 30GB of disk space depending on the number of selected options.")
         self.info_text.configure(state="disabled")
 
-        # Installation Frame
-        self.installation_frame = ctk.CTkFrame(self.content_frame)
-        self.installation_frame.pack(fill="x", padx=20, pady=10)
+        # New frame to contain installation and launch frames
+        self.main_options_frame = ctk.CTkFrame(self.content_frame)
+        self.main_options_frame.pack(fill="both", expand=True, padx=20, pady=10)
+        self.main_options_frame.grid_columnconfigure(0, weight=1)
+        self.main_options_frame.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkLabel(self.installation_frame, text="Installation", font=("Arial", 18, "bold")).pack(anchor="w", padx=10, pady=(10, 5))
+        # Installation Frame
+        self.installation_frame = ctk.CTkFrame(self.main_options_frame)
+        self.installation_frame.grid(row=0, column=0, padx=(0, 10), pady=10, sticky="nsew")
+
+        ctk.CTkLabel(self.installation_frame, text="Install", font=("Arial", 20, "bold")).pack(anchor="w", padx=10, pady=(10, 5))
 
         self.pandrator_checkbox = ctk.CTkCheckBox(self.installation_frame, text="Pandrator", variable=self.pandrator_var)
         self.pandrator_checkbox.pack(anchor="w", padx=10, pady=(5, 0))
@@ -102,7 +110,7 @@ class PandratorInstaller(ctk.CTk):
         ctk.CTkLabel(self.installation_frame, text="TTS Engines", font=("Arial", 14, "bold")).pack(anchor="w", padx=10, pady=(20, 0))
         ctk.CTkLabel(self.installation_frame, text="You can select and install new engines and tools after the initial installation.", font=("Arial", 10, "bold")).pack(anchor="w", padx=10, pady=(0, 10))
 
-        engine_frame = ctk.CTkFrame(self.installation_frame)
+        engine_frame = ctk.CTkFrame(self.installation_frame, fg_color="transparent")
         engine_frame.pack(fill="x", padx=10, pady=(0, 10))
         
         self.xtts_checkbox = ctk.CTkCheckBox(engine_frame, text="XTTS", variable=self.xtts_var)
@@ -120,10 +128,12 @@ class PandratorInstaller(ctk.CTk):
         self.rvc_checkbox = ctk.CTkCheckBox(self.installation_frame, text="RVC (rvc-python)", variable=self.rvc_var)
         self.rvc_checkbox.pack(anchor="w", padx=10, pady=5)
         self.whisperx_var = ctk.BooleanVar(value=False)
-        self.whisperx_checkbox = ctk.CTkCheckBox(self.installation_frame, text="WhisperX", variable=self.whisperx_var)
+        self.whisperx_checkbox = ctk.CTkCheckBox(self.installation_frame, text="WhisperX (needed for dubbing and XTTS training)", variable=self.whisperx_var)
         self.whisperx_checkbox.pack(anchor="w", padx=10, pady=5)
-
-        button_frame = ctk.CTkFrame(self.installation_frame)
+        self.xtts_finetuning_var = ctk.BooleanVar(value=False)
+        self.xtts_finetuning_checkbox = ctk.CTkCheckBox(self.installation_frame, text="XTTS Fine-tuning", variable=self.xtts_finetuning_var, command=self.update_whisperx_checkbox)
+        self.xtts_finetuning_checkbox.pack(anchor="w", padx=10, pady=5)
+        button_frame = ctk.CTkFrame(self.installation_frame, fg_color="transparent")
         button_frame.pack(anchor="w", padx=10, pady=(20, 10))
 
         self.install_button = ctk.CTkButton(button_frame, text="Install", command=self.install_pandrator, width=200, height=40)
@@ -134,10 +144,18 @@ class PandratorInstaller(ctk.CTk):
         self.open_log_button.pack(side="left", padx=10)
         self.open_log_button.configure(state="disabled")
 
+        # Progress Bar and Status Label (now inside installation frame)
+        self.progress_bar = ctk.CTkProgressBar(self.installation_frame)
+        self.progress_bar.pack(fill="x", padx=20, pady=(20, 10))
+        self.progress_bar.set(0)
+
+        self.status_label = ctk.CTkLabel(self.installation_frame, text="", font=("Arial", 14))
+        self.status_label.pack(pady=(0, 10))
+
         # Launch Frame
-        self.launch_frame = ctk.CTkFrame(self.content_frame)
-        self.launch_frame.pack(fill="x", padx=20, pady=10)
-        ctk.CTkLabel(self.launch_frame, text="Launch", font=("Arial", 18, "bold")).grid(row=0, column=0, columnspan=4, sticky="w", padx=10, pady=(10, 5))
+        self.launch_frame = ctk.CTkFrame(self.main_options_frame)
+        self.launch_frame.grid(row=0, column=1, padx=(10, 0), pady=10, sticky="nsew")
+        ctk.CTkLabel(self.launch_frame, text="Launch", font=("Arial", 20, "bold")).grid(row=0, column=0, columnspan=4, sticky="w", padx=10, pady=(10, 5))
         ctk.CTkCheckBox(self.launch_frame, text="Pandrator", variable=self.launch_pandrator_var).grid(row=1, column=0, columnspan=4, sticky="w", padx=10, pady=5)
 
         # XTTS options in one row
@@ -154,13 +172,6 @@ class PandratorInstaller(ctk.CTk):
         self.launch_button = ctk.CTkButton(self.launch_frame, text="Launch", command=self.launch_apps, width=200, height=40)
         self.launch_button.grid(row=5, column=0, columnspan=4, sticky="w", padx=10, pady=(20, 10))
 
-        # Progress Bar and Status Label
-        self.progress_bar = ctk.CTkProgressBar(self.content_frame)
-        self.progress_bar.pack(fill="x", padx=20, pady=(20, 10))
-        self.progress_bar.set(0)
-
-        self.status_label = ctk.CTkLabel(self.content_frame, text="", font=("Arial", 14))
-        self.status_label.pack(pady=(0, 10))
         self.refresh_ui_state()
         atexit.register(self.shutdown_apps)
 
@@ -176,6 +187,21 @@ class PandratorInstaller(ctk.CTk):
                             format='%(asctime)s - %(levelname)s - %(message)s')
 
         self.open_log_button.configure(state="normal")
+
+    def install_pytorch_for_xtts_finetuning(self, conda_path, env_name):
+        logging.info(f"Installing PyTorch for XTTS Fine-tuning in {env_name}...")
+        try:
+            self.run_command([
+                os.path.join(conda_path, 'Scripts', 'conda.exe'),
+                'run', '-n', env_name,
+                'pip', 'install', 'torch==2.1.1+cu118', 'torchaudio==2.1.1+cu118',
+                '--index-url', 'https://download.pytorch.org/whl/cu118'
+            ])
+            logging.info("PyTorch for XTTS Fine-tuning installed successfully.")
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Failed to install PyTorch for XTTS Fine-tuning in {env_name}")
+            logging.error(f"Error message: {str(e)}")
+            raise
 
     def disable_buttons(self):
         for widget in self.installation_frame.winfo_children():
@@ -238,20 +264,6 @@ class PandratorInstaller(ctk.CTk):
             set_widget_state(cpu_checkbox, "disabled", False)
             set_widget_state(lowvram_checkbox, "disabled", False)
             set_widget_state(deepspeed_checkbox, "disabled", False)
-        
-        if xtts_support:
-            if xtts_cuda_support:
-                set_widget_state(cpu_checkbox, "normal", False)
-                set_widget_state(lowvram_checkbox, "normal", False)
-                set_widget_state(deepspeed_checkbox, "normal", True)
-            else:
-                set_widget_state(cpu_checkbox, "normal", True)
-                set_widget_state(lowvram_checkbox, "disabled", False)
-                set_widget_state(deepspeed_checkbox, "disabled", False)
-        else:
-            set_widget_state(cpu_checkbox, "disabled", False)
-            set_widget_state(lowvram_checkbox, "disabled", False)
-            set_widget_state(deepspeed_checkbox, "disabled", False)
 
         # Silero
         silero_support = config.get('silero_support', False)
@@ -272,6 +284,17 @@ class PandratorInstaller(ctk.CTk):
         # WhisperX
         whisperx_support = config.get('whisperx_support', False)
         set_widget_state(self.whisperx_checkbox, "disabled" if whisperx_support else "normal", False)
+
+        # XTTS Fine-tuning
+        xtts_finetuning_support = config.get('xtts_finetuning_support', False)
+        set_widget_state(self.xtts_finetuning_checkbox, "disabled" if xtts_finetuning_support else "normal", False)
+
+        # Update WhisperX state based on XTTS Fine-tuning
+        if xtts_finetuning_support:
+            set_widget_state(self.whisperx_checkbox, "disabled", True)
+        else:
+            whisperx_support = config.get('whisperx_support', False)
+            set_widget_state(self.whisperx_checkbox, "disabled" if whisperx_support else "normal", False)
 
         # Update launch and install buttons state
         self.launch_button.configure(state="normal" if pandrator_installed else "disabled")
@@ -870,26 +893,29 @@ class PandratorInstaller(ctk.CTk):
     def update_pandrator(self):
         pandrator_base_path = os.path.join(self.initial_working_dir, 'Pandrator')
         pandrator_repo_path = os.path.join(pandrator_base_path, 'Pandrator')
+        subdub_repo_path = os.path.join(pandrator_base_path, 'Subdub')
+        easy_xtts_trainer_path = os.path.join(pandrator_base_path, 'easy_xtts_trainer')
         
         logging.info(f"Checking for Pandrator at: {pandrator_repo_path}")
         
         if not os.path.exists(pandrator_repo_path):
             error_msg = f"Pandrator directory not found at: {pandrator_repo_path}"
             logging.error(error_msg)
-            messagebox.showerror("Error", error_msg)
+            self.update_status(error_msg)
             return
 
         conda_path = os.path.join(pandrator_base_path, 'conda')
         
-        self.update_status("Updating Pandrator...")
-        logging.info("Starting Pandrator update process")
+        self.update_status("Updating Pandrator and components...")
+        logging.info("Starting update process")
         
         try:
-            # Git pull
-            logging.info(f"Executing git pull in: {pandrator_repo_path}")
+            # Update Pandrator
+            self.update_status("Updating Pandrator repository...")
+            logging.info(f"Updating Pandrator in: {pandrator_repo_path}")
             self.pull_repo(pandrator_repo_path)
             
-            # Update requirements
+            # Update Pandrator requirements
             self.update_status("Updating Pandrator dependencies...")
             requirements_file = os.path.join(pandrator_repo_path, 'requirements.txt')
             logging.info(f"Updating requirements from: {requirements_file}")
@@ -907,20 +933,34 @@ class PandratorInstaller(ctk.CTk):
             logging.info(f"Executing update command: {' '.join(update_cmd)}")
             self.run_command(update_cmd, cwd=pandrator_repo_path)
             
-            msg = "Pandrator has been updated successfully, including its dependencies."
-            logging.info(msg)
-            messagebox.showinfo("Update", msg)
+            # Update Subdub
+            if os.path.exists(subdub_repo_path):
+                self.update_status("Updating Subdub...")
+                logging.info(f"Updating Subdub in: {subdub_repo_path}")
+                self.pull_repo(subdub_repo_path)
+            else:
+                logging.warning(f"Subdub directory not found at: {subdub_repo_path}")
             
-            self.update_status("Pandrator update completed.")
-            logging.info("Pandrator update process completed successfully")
+            # Update easy XTTS trainer (repo only)
+            if os.path.exists(easy_xtts_trainer_path):
+                self.update_status("Updating easy XTTS trainer...")
+                logging.info(f"Updating easy XTTS trainer in: {easy_xtts_trainer_path}")
+                self.pull_repo(easy_xtts_trainer_path)
+            else:
+                logging.info("easy XTTS trainer not installed, skipping update.")
+            
+            self.update_status("Update completed successfully.")
+            logging.info("Update process completed successfully")
         
         except Exception as e:
-            error_msg = f"Failed to update Pandrator: {str(e)}"
+            error_msg = f"Failed to update: {str(e)}"
             logging.error(error_msg)
             logging.error(traceback.format_exc())
-            messagebox.showerror("Error", error_msg)
-            self.update_status("Pandrator update failed.")
-
+            self.update_status(f"Update failed: {error_msg}")
+        
+        finally:
+            self.refresh_ui_state()
+        
     def clone_repo(self, repo_url, target_dir):
         logging.info(f"Cloning repository {repo_url} to {target_dir}...")
         try:
@@ -1109,6 +1149,23 @@ class PandratorInstaller(ctk.CTk):
                 self.update_status("Installing WhisperX...")
                 self.install_whisperx(conda_path, 'whisperx_installer')
 
+            if self.xtts_finetuning_var.get():
+                self.update_progress(0.85)
+                self.update_status("Cloning XTTS Fine-tuning repository...")
+                self.clone_repo('https://github.com/lukaszliniewicz/easy_xtts_trainer.git', os.path.join(pandrator_path, 'easy_xtts_trainer'))
+
+                self.update_progress(0.90)
+                self.update_status("Creating XTTS Fine-tuning Conda environment...")
+                self.create_conda_env(conda_path, 'easy_xtts_trainer', '3.10')
+
+                self.update_progress(0.95)
+                self.update_status("Installing XTTS Fine-tuning requirements...")
+                easy_xtts_trainer_path = os.path.join(pandrator_path, 'easy_xtts_trainer')
+                self.install_requirements(conda_path, 'easy_xtts_trainer', os.path.join(easy_xtts_trainer_path, 'requirements.txt'))
+
+                self.update_status("Installing PyTorch for XTTS Fine-tuning...")
+                self.install_pytorch_for_xtts_finetuning(conda_path, 'easy_xtts_trainer')
+
             # Create or update config file
             config_path = os.path.join(pandrator_path, 'config.json')
             if os.path.exists(config_path):
@@ -1123,6 +1180,7 @@ class PandratorInstaller(ctk.CTk):
             config['silero_support'] = config.get('silero_support', False) or self.silero_var.get()
             config['voicecraft_support'] = config.get('voicecraft_support', False) or self.voicecraft_var.get()
             config['whisperx_support'] = config.get('whisperx_support', False) or self.whisperx_var.get()
+            config['xtts_finetuning_support'] = config.get('xtts_finetuning_support', False) or self.xtts_finetuning_var.get()
 
             with open(config_path, 'w') as f:
                 json.dump(config, f)
@@ -1138,6 +1196,12 @@ class PandratorInstaller(ctk.CTk):
         finally:
             self.refresh_ui_state()
 
+    def update_whisperx_checkbox(self):
+        if self.xtts_finetuning_var.get():
+            self.whisperx_var.set(True)
+            self.whisperx_checkbox.configure(state="disabled")
+        else:
+            self.whisperx_checkbox.configure(state="normal")
 
     def install_subdub_requirements(self, conda_path, env_name, subdub_repo_path):
         logging.info(f"Installing Subdub requirements in {env_name}...")
