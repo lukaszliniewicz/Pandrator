@@ -1205,7 +1205,7 @@ class TTSOptimizerGUI:
             bg="#444444",
             fg="#FFFFFF",
             font=("Helvetica", 9),
-            selectbackground="#555555",
+            selectbackground="#4B0082",  # Deep Purple
             selectforeground="#FFFFFF",
             selectborderwidth=0,
             activestyle="none",
@@ -4300,7 +4300,6 @@ class TTSOptimizerGUI:
             selected_index = self.playlist_listbox.curselection()
             if selected_index:
                 selected_sentence = self.playlist_listbox.get(selected_index)
-                # Extract the sentence number and text using a regular expression
                 match = re.match(r'^\[(\d+)\]\s(.+)$', selected_sentence)
                 if match:
                     sentence_number = match.group(1)
@@ -4316,15 +4315,15 @@ class TTSOptimizerGUI:
                 if sentence_dict:
                     edit_window = ctk.CTkToplevel(self.master)
                     edit_window.title("Edit Sentence")
+                    edit_window.attributes('-topmost', True)  # Make window stay on top
 
-                    sentence_entry = ctk.CTkEntry(edit_window, width=400)
-                    sentence_entry.insert(0, sentence_text)  # Insert the extracted sentence text
-                    sentence_entry.pack(padx=10, pady=10)
+                    sentence_textbox = ctk.CTkTextbox(edit_window, width=600, height=100, wrap="word")
+                    sentence_textbox.insert("1.0", sentence_text)
+                    sentence_textbox.pack(padx=10, pady=10)
 
                     def save_edited_sentence():
-                        edited_sentence = sentence_entry.get()
+                        edited_sentence = sentence_textbox.get("1.0", "end-1c")
                         self.update_sentence_in_json(sentence_number, edited_sentence)
-                        # Update the listbox entry with the edited sentence
                         self.playlist_listbox.delete(selected_index)
                         self.playlist_listbox.insert(selected_index, f"[{sentence_number}] {edited_sentence}")
                         edit_window.destroy()
@@ -4335,7 +4334,6 @@ class TTSOptimizerGUI:
                         logging.info(f"Discarded changes for sentence {sentence_number}")
 
                     if self.source_file.endswith(".srt"):
-                        # Disable sentence splitting, appending, and silence appending for srt files
                         self.enable_sentence_splitting.set(False)
                         self.enable_sentence_appending.set(False)
                         self.silence_length.set(0)
