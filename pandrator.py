@@ -1179,7 +1179,7 @@ class TTSOptimizerGUI:
         ctk.CTkLabel(self.train_xtts_tab, textvariable=self.training_status).grid(row=8, column=0, columnspan=3, padx=10, pady=5)
 
     def create_generated_sentences_section(self):
-        generated_sentences_frame = ctk.CTkFrame(self.right_frame)
+        generated_sentences_frame = ctk.CTkFrame(self.right_frame, fg_color="transparent")
         generated_sentences_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
         ctk.CTkLabel(generated_sentences_frame, text="Generated Sentences", font=ctk.CTkFont(size=14, weight="bold")).pack(pady=(0, 10))
