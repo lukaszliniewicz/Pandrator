@@ -3037,43 +3037,6 @@ class TTSOptimizerGUI:
     def update_speed_label(self, value):
         self.speed_value_label.configure(text=f"Speed: {float(value):.2f}")
 
-    def synchronize_audio(self, processed_sentences, session_name):
-        final_audio = AudioSegment.empty()
-        current_time = datetime.datetime.strptime("00:00:00.000", "%H:%M:%S.%f")
-        session_dir = os.path.join("Outputs", session_name)
-
-        for sentence_dict in processed_sentences:
-            sentence_number = int(sentence_dict["sentence_number"])
-            wav_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence_{sentence_number}.wav")
-            if os.path.exists(wav_filename):
-                audio_data = AudioSegment.from_file(wav_filename, format="wav")
-
-                start_time = sentence_dict["start"]
-                end_time = sentence_dict["end"]
-
-                # Parse the start and end times
-                start_time_obj = datetime.datetime.strptime(start_time, "%H:%M:%S.%f")
-                end_time_obj = datetime.datetime.strptime(end_time, "%H:%M:%S.%f")
-
-                # Get the actual duration of the sped-up audio file
-                generated_audio_duration = len(audio_data) / 1000
-
-                # Check if the current time is ahead of the subtitle's start time
-                if current_time > start_time_obj:
-                    # The audio should start immediately
-                    final_audio += audio_data
-                    current_time += datetime.timedelta(seconds=generated_audio_duration)
-                else:
-                    # Calculate the silence duration needed to match the subtitle's start time
-                    silence_duration = (start_time_obj - current_time).total_seconds() * 1000
-                    if silence_duration > 0:
-                        silence = AudioSegment.silent(duration=silence_duration)
-                        final_audio += silence
-                    final_audio += audio_data
-                    current_time = start_time_obj + datetime.timedelta(seconds=generated_audio_duration)
-
-        return final_audio
-
     def start_optimisation(self, total_sentences, current_sentence=0):
         if self.tts_service.get() == "XTTS":
             self.apply_xtts_settings_silently()
@@ -3568,9 +3531,6 @@ class TTSOptimizerGUI:
         for sentence_dict in data:
             split_part = sentence_dict.get("split_part")
             paragraph = sentence_dict.get("paragraph", "no")
-            start = sentence_dict.get("start")  # Add this line
-            end = sentence_dict.get("end")  # Add this line
-            
             sentence_number = str(sentence_counter)
             sentence_counter += 1
             
@@ -3581,8 +3541,6 @@ class TTSOptimizerGUI:
                 "original_sentence": sentence_dict.get("original_sentence"),
                 "processed_sentence": sentence_dict.get("processed_sentence"),
                 "tts_generated": sentence_dict.get("tts_generated", "no"),
-                "start": start,  # Add this line
-                "end": end  # Add this line
             }
             numbered_data.append(numbered_sentence)
         
@@ -3634,8 +3592,8 @@ class TTSOptimizerGUI:
             speaker = self.selected_speaker.get()
             
             # Remove the period at the end of the sentence if the language is not English
-            if language != "en":
-                text = text.rstrip('.')
+            #if language != "en":
+            #    text = text.rstrip('.')
             
             speaker_path = os.path.join(self.tts_voices_folder, speaker)
             if os.path.isfile(speaker_path):
@@ -4375,44 +4333,36 @@ class TTSOptimizerGUI:
             json_filename = os.path.join(session_dir, f"{session_name}_sentences.json")
             processed_sentences = self.load_json(json_filename)
 
-            if self.source_file.endswith(".srt"):
-                # Synchronize the audio segments based on subtitle timings for srt files
-                final_audio = self.synchronize_audio(processed_sentences, session_name)
-                if output_format == "wav":
-                    final_audio.export(output_path, format="wav")
-                elif output_format == "mp3":
-                    final_audio.export(output_path, format="mp3", bitrate=bitrate)
-                elif output_format == "opus":
-                    final_audio.export(output_path, format="opus", bitrate=bitrate)
-            else:
-                # Concatenate the audio segments using FFmpeg for non-srt files
-                wav_files = []
-                for sentence_dict in processed_sentences:
-                    sentence_number = int(sentence_dict["sentence_number"])
-                    wav_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence_{sentence_number}.wav")
-                    if os.path.exists(wav_filename):
-                        wav_files.append(wav_filename)
+            # Collect the audio segments for concatenation
+            wav_files = []
+            for sentence_dict in processed_sentences:
+                sentence_number = int(sentence_dict["sentence_number"])
+                wav_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence_{sentence_number}.wav")
+                if os.path.exists(wav_filename):
+                    wav_files.append(wav_filename)
 
-                with tempfile.NamedTemporaryFile(mode="w", delete=False) as temp_file:
-                    for wav_file in wav_files:
-                        temp_file.write(f"file '{os.path.abspath(wav_file)}'\n")
-                    input_list_path = temp_file.name
+            # Create a temporary file containing the list of wav files to concatenate
+            with tempfile.NamedTemporaryFile(mode="w", delete=False) as temp_file:
+                for wav_file in wav_files:
+                    temp_file.write(f"file '{os.path.abspath(wav_file)}'\n")
+                input_list_path = temp_file.name
 
-                ffmpeg_command = [
-                    "ffmpeg",
-                    "-f", "concat",
-                    "-safe", "0",
-                    "-i", input_list_path,
-                    "-y"  # '-y' option to overwrite output files without asking
-                ]
+            # Build FFmpeg command to concatenate the audio segments
+            ffmpeg_command = [
+                "ffmpeg",
+                "-f", "concat",
+                "-safe", "0",
+                "-i", input_list_path,
+                "-y"  
+            ]
 
-                # Adjust the codec and bitrate based on the output format
-                if output_format == "wav":
-                    ffmpeg_command.extend(["-c:a", "pcm_s16le"])
-                elif output_format == "mp3":
-                    ffmpeg_command.extend(["-c:a", "libmp3lame", "-b:a", bitrate])
-                elif output_format == "opus":
-                    ffmpeg_command.extend(["-c:a", "libopus", "-b:a", bitrate])
+            # Add output format and bitrate options
+            if output_format == "wav":
+                ffmpeg_command += [output_path, "-c:a", "pcm_s16le"]
+            elif output_format == "mp3":
+                ffmpeg_command += [output_path, "-b:a", bitrate]
+            elif output_format == "opus":
+                ffmpeg_command += [output_path, "-b:a", bitrate]
 
                 # Append the output path without quotes
                 ffmpeg_command.append(output_path)
