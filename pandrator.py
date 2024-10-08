@@ -526,8 +526,6 @@ class TTSOptimizerGUI:
         self.remove_double_newlines = ctk.BooleanVar(value=False)
         self.advanced_settings_switch = None
         self.tts_voices_folder = "tts_voices"
-        if not os.path.exists(self.tts_voices_folder):
-            os.makedirs(self.tts_voices_folder)
         self.unload_model_after_sentence = ctk.BooleanVar(value=False)
         self.source_file = ""
         self.first_optimisation_prompt = ctk.StringVar(value="Your task is to spell out abbreviations and titles and convert Roman numerals to English words in the sentence(s) you are given. For example: Prof. to Professor, Dr. to Doctor, et. al. to et alia, etc. to et cetera, Section III to Section Three, Chapter V to Chapter Five and so on. Don't change ANYTHING ELSE and output ONLY the complete processed text. If no adjustments are necessary, just output the sentence(s) without changing or appending ANYTHING. Include ABSOLUTELY NO comments, NO acknowledgments, NO explanations, NO notes and so on. This is your text: ")
@@ -584,11 +582,13 @@ class TTSOptimizerGUI:
         self.deepl_api_key = ctk.StringVar()
         self.selected_video_file = ctk.StringVar()
         self.video_file_selection_label = None
-        self.enable_rvc = ctk.BooleanVar(value=False)
         self.whisperx_language = ctk.StringVar(value="English")
         self.whisperx_model = ctk.StringVar(value="large-v3")
         self.language_var = ctk.StringVar(value="en")
         self.selected_speaker = ctk.StringVar(value="")
+        self.rvc_models_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rvc_models")
+        os.makedirs(self.rvc_models_dir, exist_ok=True)
+        self.rvc_models = self.get_rvc_models()
         self.rvc_models_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rvc_models")
         os.makedirs(self.rvc_models_dir, exist_ok=True)
         self.rvc_models = self.get_rvc_models()
@@ -651,6 +651,7 @@ class TTSOptimizerGUI:
         self.text_preprocessor = TextPreprocessor(self.language_var, self.max_sentence_length,
                                                   self.enable_sentence_splitting, self.enable_sentence_appending,
                                                   self.remove_diacritics, self.disable_paragraph_detection, self.tts_service)
+        self.initialize_rvc()
 
     def create_session_tab(self):
         self.session_tab = self.tabview.add("Session")
@@ -1108,8 +1109,10 @@ class TTSOptimizerGUI:
         ctk.CTkButton(self.api_keys_tab, text="Save", command=lambda: self.save_api_key("DEEPL_API_KEY", self.deepl_api_key.get())).grid(row=3, column=2, padx=10, pady=10)
 
     def get_rvc_models(self):
-        return [folder for folder in os.listdir(self.rvc_models_dir) 
-                if os.path.isdir(os.path.join(self.rvc_models_dir, folder))]
+        if os.path.exists(self.rvc_models_dir):
+            return [folder for folder in os.listdir(self.rvc_models_dir) 
+                    if os.path.isdir(os.path.join(self.rvc_models_dir, folder))]
+        return []
 
     def create_logs_tab(self):
         self.logs_tab = self.tabview.add("Logs")
@@ -3147,6 +3150,7 @@ class TTSOptimizerGUI:
                 if best_audio is not None:                  
                     # Apply RVC if enabled
                     if self.enable_rvc.get():
+                        logging.info("Applying RVC processing")
                         best_audio = self.process_with_rvc(best_audio)
 
                     # Apply fade in/out if enabled
@@ -3733,10 +3737,42 @@ class TTSOptimizerGUI:
         silence = AudioSegment.silent(duration=silence_length_ms)
         return audio_segment + silence
 
+    def initialize_rvc(self):
+        global rvc_functionality_available
+        if rvc_functionality_available:
+            try:
+                self.rvc_inference = RVCInference(
+                    models_dir=self.rvc_models_dir,
+                    device="cuda:0" if torch.cuda.is_available() else "cpu"
+                )
+                self.rvc_inference.set_models_dir(self.rvc_models_dir)
+                logging.info(f"RVC initialized successfully. Using device: {self.rvc_inference.device}")
+                logging.info(f"CUDA available: {torch.cuda.is_available()}")
+                if torch.cuda.is_available():
+                    logging.info(f"GPU: {torch.cuda.get_device_name(0)}")
+            except Exception as e:
+                logging.error(f"Failed to initialize RVC: {str(e)}")
+                rvc_functionality_available = False
+            
+            # Update UI based on RVC availability
+            if hasattr(self, 'enable_rvc_switch'):
+                if not rvc_functionality_available:
+                    self.enable_rvc.set(False)
+                    self.enable_rvc_switch.configure(state="disabled")
+                else:
+                    self.enable_rvc_switch.configure(state="normal")
+            
+            if hasattr(self, 'rvc_model_dropdown'):
+                if not rvc_functionality_available:
+                    self.rvc_model_dropdown.configure(state="disabled")
+                else:
+                    self.rvc_model_dropdown.configure(state="normal")
+
     def refresh_rvc_models(self):
-        self.rvc_inference.set_models_dir(self.rvc_models_dir)
-        self.rvc_models = [folder for folder in os.listdir(self.rvc_models_dir) 
-                        if os.path.isdir(os.path.join(self.rvc_models_dir, folder))]
+        global rvc_functionality_available
+        if rvc_functionality_available:
+            self.rvc_inference.set_models_dir(self.rvc_models_dir)
+        self.rvc_models = self.get_rvc_models()
         
         if hasattr(self, 'rvc_model_dropdown'):
             self.rvc_model_dropdown.configure(values=self.rvc_models)
@@ -3744,6 +3780,7 @@ class TTSOptimizerGUI:
                 self.rvc_model_dropdown.set(self.rvc_models[0])
             else:
                 self.rvc_model_dropdown.set("")
+        logging.info(f"RVC models refreshed, found {len(self.rvc_models)} models")
 
     def upload_rvc_model(self):
         pth_file = filedialog.askopenfilename(filetypes=[("Model files", "*.pth")])
