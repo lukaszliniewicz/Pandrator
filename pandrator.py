@@ -32,6 +32,17 @@ import regex
 import hasami
 import argparse
 import concurrent.futures
+import ebooklib
+from ebooklib import epub
+from bs4 import BeautifulSoup
+from mutagen.mp3 import MP3
+from mutagen.id3 import ID3, APIC, TIT2, TALB, TPE1, TCON
+from mutagen.mp4 import MP4, MP4Cover
+from mutagen.oggopus import OggOpus
+from mutagen.flac import Picture
+from mutagen.id3 import PictureType
+import base64
+from PIL import Image
 
 
 # Conditional imports for torch and RVC
@@ -77,9 +88,17 @@ class TextPreprocessor:
 
     def preprocess_text(self, text, pdf_preprocessed, source_file, disable_paragraph_detection):
         if len(text) > self.chunk_size:
-            return self.parallel_preprocess_text(text, pdf_preprocessed, source_file, disable_paragraph_detection.get())
+            processed_sentences = self.parallel_preprocess_text(text, pdf_preprocessed, source_file, disable_paragraph_detection.get())
         else:
-            return self.sequential_preprocess_text(text, pdf_preprocessed, source_file, disable_paragraph_detection.get())
+            processed_sentences = self.sequential_preprocess_text(text, pdf_preprocessed, source_file, disable_paragraph_detection.get())
+
+        # Add the merging of consecutive chapter sentences here
+        processed_sentences = self.merge_consecutive_chapters(processed_sentences)
+
+        return processed_sentences
+
+        
+        return processed_sentences
 
     def parallel_preprocess_text(self, text, pdf_preprocessed, source_file, disable_paragraph_detection):
         chunks = self.split_text_into_chunks(text)
@@ -159,12 +178,16 @@ class TextPreprocessor:
                     is_paragraph = True
                     break
 
-            if tts_service == "Silero":
-                sentence = TextPreprocessor.convert_digits_to_words(sentence, language)
+            is_chapter = False
+            if "[[Chapter]]" in sentence:
+                is_chapter = True
+                sentence = sentence.replace("[[Chapter]]", "").strip()
+                is_paragraph = True  # Mark chapter sentences as paragraphs
 
             sentence_dict = {
                 "original_sentence": sentence,
                 "paragraph": "yes" if is_paragraph else "no",
+                "chapter": "yes" if is_chapter else "no",
                 "split_part": None
             }
 
@@ -278,7 +301,8 @@ class TextPreprocessor:
         paragraph = sentence_dict["paragraph"]
 
         if len(sentence) <= max_sentence_length:
-            return [{"original_sentence": sentence, "split_part": None, "paragraph": paragraph}]
+            # Return a copy of the original dictionary preserving all values
+            return [sentence_dict.copy()]
 
         punctuation_marks = ['，', '；', '：', '。', '！', '？'] if sentence_dict.get("language") == "zh-cn" else [',', ':', ';', '–']
         conjunction_marks = [' and ', ' or ', 'which'] if sentence_dict.get("language") != "zh-cn" else []
@@ -287,15 +311,28 @@ class TextPreprocessor:
         best_split_index = TextPreprocessor.find_best_split_index(sentence, punctuation_marks, conjunction_marks, min_distance, max_sentence_length)
 
         if best_split_index is None:
-            return [{"original_sentence": sentence, "split_part": None, "paragraph": paragraph}]
+            return [sentence_dict.copy()]
 
         first_part = sentence[:best_split_index].strip()
         second_part = sentence[best_split_index:].strip()
 
-        return [
-            {"original_sentence": first_part, "split_part": 0, "paragraph": "no"},
-            {"original_sentence": second_part, "split_part": 1, "paragraph": paragraph}
-        ]
+        # Create copies of the original dictionary for each part and update only relevant fields
+        first_part_dict = sentence_dict.copy()
+        first_part_dict.update({
+            "original_sentence": first_part,
+            "split_part": 0,
+            "paragraph": "no"
+        })
+
+        second_part_dict = sentence_dict.copy()
+        second_part_dict.update({
+            "original_sentence": second_part,
+            "split_part": 1,
+            "paragraph": paragraph
+        })
+
+        return [first_part_dict, second_part_dict]
+
 
     @staticmethod
     def find_best_split_index(sentence, punctuation_marks, conjunction_marks, min_distance, max_sentence_length):
@@ -347,33 +384,42 @@ class TextPreprocessor:
 
         split_part_prefix = "0" if split_part is None else str(split_part)
 
-        split_sentences.append({
+        # Preserve other fields by making a copy of sentence_dict for both parts
+        first_part_dict = sentence_dict.copy()
+        first_part_dict.update({
             "original_sentence": first_part,
             "split_part": split_part_prefix + "a",
             "paragraph": "no"
         })
+        split_sentences.append(first_part_dict)
 
         if len(second_part) > max_sentence_length:
+            second_part_dict = sentence_dict.copy()
             if split_part_prefix == "0" and paragraph == "yes":
-                split_sentences.extend(TextPreprocessor.split_long_sentences_2({
+                second_part_dict.update({
                     "original_sentence": second_part,
                     "split_part": "1a",
                     "paragraph": "yes"
-                }, max_sentence_length))
+                })
+                split_sentences.extend(TextPreprocessor.split_long_sentences_2(second_part_dict, max_sentence_length))
             else:
-                split_sentences.extend(TextPreprocessor.split_long_sentences_2({
+                second_part_dict.update({
                     "original_sentence": second_part,
                     "split_part": split_part_prefix + "b",
                     "paragraph": "no" if split_part_prefix == "0" else paragraph
-                }, max_sentence_length))
+                })
+                split_sentences.extend(TextPreprocessor.split_long_sentences_2(second_part_dict, max_sentence_length))
         else:
-            split_sentences.append({
+            second_part_dict = sentence_dict.copy()
+            second_part_dict.update({
                 "original_sentence": second_part,
                 "split_part": split_part_prefix + "b",
                 "paragraph": paragraph
             })
+            split_sentences.append(second_part_dict)
 
         return split_sentences
+
 
     @staticmethod
     def append_short_sentences(sentence_dicts, max_sentence_length):
@@ -382,40 +428,58 @@ class TextPreprocessor:
         while i < len(sentence_dicts):
             current_sentence = sentence_dicts[i]
 
-            if current_sentence["paragraph"] == "no":
+            # Chapter sentences are never modified
+            if current_sentence.get("chapter") == "yes":
+                appended_sentences.append(current_sentence)
+                i += 1
+                continue
+
+            # Paragraph sentences: attempt to append to the previous sentence
+            if current_sentence.get("paragraph") == "yes":
                 if i > 0:
                     prev_sentence = appended_sentences[-1]
-                    if prev_sentence["paragraph"] == "no":
-                        combined_text = prev_sentence["original_sentence"] + ' ' + current_sentence["original_sentence"]
-                        if len(combined_text) <= max_sentence_length:
-                            prev_sentence["original_sentence"] = combined_text
-                            i += 1
-                            continue
-                if i < len(sentence_dicts) - 1:
-                    next_sentence = sentence_dicts[i + 1]
-                    combined_text = current_sentence["original_sentence"] + ' ' + next_sentence["original_sentence"]
-                    if len(combined_text) <= max_sentence_length:
-                        current_sentence["original_sentence"] = combined_text
-                        if next_sentence["paragraph"] == "yes":
-                            current_sentence["paragraph"] = "yes"
-                        i += 2
-                        appended_sentences.append(current_sentence)
-                        continue
-            else:  # current_sentence["paragraph"] == "yes"
-                if i > 0:
-                    prev_sentence = appended_sentences[-1]
-                    if prev_sentence["paragraph"] == "no":
+                    if prev_sentence.get("chapter") != "yes":
                         combined_text = prev_sentence["original_sentence"] + ' ' + current_sentence["original_sentence"]
                         if len(combined_text) <= max_sentence_length:
                             prev_sentence["original_sentence"] = combined_text
                             prev_sentence["paragraph"] = "yes"
                             i += 1
                             continue
+                # If we can't append to the previous sentence, add current sentence as is
+                appended_sentences.append(current_sentence)
+                i += 1
+                continue
 
+            # Try to append to the previous sentence
+            if i > 0:
+                prev_sentence = appended_sentences[-1]
+                if (prev_sentence.get("chapter") != "yes" and
+                    prev_sentence.get("paragraph") != "yes"):
+                    combined_text = prev_sentence["original_sentence"] + ' ' + current_sentence["original_sentence"]
+                    if len(combined_text) <= max_sentence_length:
+                        prev_sentence["original_sentence"] = combined_text
+                        i += 1
+                        continue
+
+            # Try to prepend to the next sentence
+            if i < len(sentence_dicts) - 1:
+                next_sentence = sentence_dicts[i + 1]
+                if (next_sentence.get("chapter") != "yes" and
+                    next_sentence.get("paragraph") != "yes"):
+                    combined_text = current_sentence["original_sentence"] + ' ' + next_sentence["original_sentence"]
+                    if len(combined_text) <= max_sentence_length:
+                        # Modify the next sentence and skip it
+                        next_sentence["original_sentence"] = combined_text
+                        i += 2
+                        appended_sentences.append(next_sentence)
+                        continue
+
+            # If no appending or prepending occurred, add the current sentence as is
             appended_sentences.append(current_sentence)
             i += 1
 
         return appended_sentences
+
 
     @staticmethod
     def convert_digits_to_words(sentence, language):
@@ -474,6 +538,45 @@ class TextPreprocessor:
                 return number
 
         return re.sub(r'\d+', replace_numbers, sentence)
+    
+    @staticmethod
+    def merge_consecutive_chapters(sentences):
+        merged_sentences = []
+        i = 0
+
+        while i < len(sentences):
+            current_sentence = sentences[i]
+            
+            # Check if the current sentence is marked as a chapter
+            if current_sentence.get("chapter") == "yes":
+                merged_sentence_text = current_sentence["original_sentence"].strip()
+                
+                # Look ahead to merge consecutive chapter sentences
+                i += 1
+                while i < len(sentences) and sentences[i].get("chapter") == "yes":
+                    next_sentence_text = sentences[i]["original_sentence"].strip()
+                    
+                    # Ensure each sentence ends with punctuation
+                    if not merged_sentence_text.endswith(('.', '!', '?')):
+                        merged_sentence_text += "."
+                    
+                    merged_sentence_text += " " + next_sentence_text
+                    i += 1
+
+                # After merging, mark the sentence as both a chapter and a paragraph
+                merged_sentences.append({
+                    "original_sentence": merged_sentence_text.strip(),
+                    "paragraph": "yes",  # Mark it as a paragraph
+                    "chapter": "yes",     # Retain chapter marking
+                    "split_part": None
+                })
+            else:
+                # If it's not a chapter, just add the sentence as-is
+                merged_sentences.append(current_sentence)
+                i += 1
+
+        return merged_sentences
+
 
 class TTSOptimizerGUI:
     def __init__(self, master):
@@ -629,10 +732,8 @@ class TTSOptimizerGUI:
         self.left_frame.grid_rowconfigure(0, weight=1)  # Let the scrollable frame expand vertically
         self.left_frame.grid_columnconfigure(0, weight=1)  # Let the scrollable frame expand horizontally
 
-
-        # Inside the scrollable frame, you can pack the tabview:
         self.tabview = ctk.CTkTabview(self.left_scrollable_frame)
-        self.tabview.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        self.tabview.pack(fill=tk.BOTH, expand=True, padx=3, pady=5)
 
         # Create tabs
         self.create_session_tab()
@@ -678,24 +779,33 @@ class TTSOptimizerGUI:
         ctk.CTkButton(session_frame, text="Delete Session", command=self.delete_session, fg_color="dark red", hover_color="red").grid(row=0, column=3, padx=10, pady=(10, 10), sticky=tk.EW)
         ctk.CTkButton(session_frame, text="View Session Folder", command=self.view_session_folder).grid(row=0, column=2, padx=10, pady=(10, 10), sticky=tk.EW)
 
-        # Session Settings Section
-        ctk.CTkLabel(self.session_tab, text="TTS Settings", font=ctk.CTkFont(size=14, weight="bold")).grid(row=3, column=0, columnspan=4, padx=10, pady=10, sticky=tk.W)
+        # Source File Section
+        ctk.CTkLabel(self.session_tab, text="Source File", font=ctk.CTkFont(size=14, weight="bold")).grid(row=3, column=0, columnspan=4, padx=10, pady=10, sticky=tk.W)
+
+        source_file_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
+        source_file_frame.grid(row=4, column=0, columnspan=4, padx=10, pady=(0, 20), sticky=tk.EW)
+        source_file_frame.grid_columnconfigure(0, weight=1)
+        source_file_frame.grid_columnconfigure(1, weight=1)
+        source_file_frame.grid_columnconfigure(2, weight=2)
+
+        self.select_file_button = ctk.CTkButton(source_file_frame, text="Select File", command=self.select_file)
+        self.select_file_button.grid(row=0, column=0, padx=10, pady=(10, 10), sticky=tk.EW)
+
+        self.paste_text_button = ctk.CTkButton(source_file_frame, text="Paste or Write", command=self.paste_text)
+        self.paste_text_button.grid(row=0, column=1, padx=10, pady=(10, 10), sticky=tk.EW)
+
+        self.selected_file_label = ctk.CTkLabel(source_file_frame, text="No file selected")
+        self.selected_file_label.grid(row=0, column=2, padx=10, pady=(10, 10), sticky=tk.W)
+
+        # TTS Settings Section
+        ctk.CTkLabel(self.session_tab, text="TTS Settings", font=ctk.CTkFont(size=14, weight="bold")).grid(row=5, column=0, columnspan=4, padx=10, pady=10, sticky=tk.W)
 
         session_settings_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
-        session_settings_frame.grid(row=4, column=0, columnspan=4, padx=10, pady=(0, 20), sticky=tk.EW)
+        session_settings_frame.grid(row=6, column=0, columnspan=4, padx=10, pady=(0, 20), sticky=tk.EW)
         session_settings_frame.grid_columnconfigure(0, weight=1)
         session_settings_frame.grid_columnconfigure(1, weight=1)
         session_settings_frame.grid_columnconfigure(2, weight=1)
         session_settings_frame.grid_columnconfigure(3, weight=1)
-
-        self.selected_file_label = ctk.CTkLabel(session_settings_frame, text="No file selected")
-        self.select_file_button = ctk.CTkButton(session_settings_frame, text="Select Source File", command=self.select_file)
-        self.select_file_button.grid(row=0, column=0, padx=10, pady=(10, 5), sticky=tk.EW)
-        self.selected_file_label.grid(row=0, column=1, columnspan=3, padx=10, pady=(10, 5), sticky=tk.W)
-
-        self.paste_text_button = ctk.CTkButton(session_settings_frame, text="Paste or Write Text", command=self.paste_text)
-        self.paste_text_button.grid(row=0, column=1, padx=10, pady=(10, 5), sticky=tk.EW)
-        self.selected_file_label.grid(row=0, column=2, columnspan=2, padx=10, pady=(10, 5), sticky=tk.W)
 
         ctk.CTkLabel(session_settings_frame, text="TTS Service:").grid(row=2, column=0, padx=10, pady=5, sticky=tk.W)
         self.tts_service_dropdown = ctk.CTkOptionMenu(session_settings_frame, variable=self.tts_service, values=["XTTS", "VoiceCraft", "Silero"], command=self.update_tts_service)
@@ -765,32 +875,6 @@ class TTSOptimizerGUI:
         self.advanced_settings_switch.grid(row=9, column=0, padx=5, pady=5, sticky=tk.W)
 
         self.create_xtts_advanced_settings_frame()
-
-        # Generation Section
-        generation_label = ctk.CTkLabel(self.session_tab, text="Generation", font=ctk.CTkFont(size=14, weight="bold"))
-        generation_label.grid(row=8, column=0, padx=10, pady=10, sticky=tk.W)
-
-        generation_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
-        generation_frame.grid(row=9, column=0, columnspan=4, padx=10, pady=(0, 20), sticky=tk.EW)
-        generation_frame.grid_columnconfigure(0, weight=1)
-        generation_frame.grid_columnconfigure(1, weight=1)
-        generation_frame.grid_columnconfigure(2, weight=1)
-        generation_frame.grid_columnconfigure(3, weight=1)
-
-        self.start_generation_button = ctk.CTkButton(generation_frame, text="Start Generation", command=self.start_optimisation_thread, fg_color="#2e8b57", hover_color="#3cb371")
-        self.start_generation_button.grid(row=0, column=0, padx=10, pady=(5, 20), sticky=tk.EW)
-        ctk.CTkButton(generation_frame, text="Stop Generation", command=self.stop_generation).grid(row=0, column=2, padx=10, pady=(5, 20), sticky=tk.EW)
-        ctk.CTkButton(generation_frame, text="Resume Generation", command=self.resume_generation).grid(row=0, column=1, padx=10, pady=(5, 20), sticky=tk.EW)
-        ctk.CTkButton(generation_frame, text="Cancel Generation", command=self.cancel_generation, fg_color="dark red", hover_color="red").grid(row=0, column=3, padx=10, pady=(5, 20), sticky=tk.EW)
-
-        ctk.CTkLabel(generation_frame, text="Progress:").grid(row=2, column=0, padx=10, pady=5, sticky=tk.W)
-        self.progress_label = ctk.CTkLabel(generation_frame, text="0.00%")
-        self.progress_label.grid(row=2, column=1, padx=10, pady=5, sticky=tk.W)
-        self.progress_bar = ctk.CTkProgressBar(generation_frame)
-        self.progress_bar.grid(row=1, column=0, columnspan=4, padx=10, pady=5, sticky=tk.EW)
-        ctk.CTkLabel(generation_frame, text="Estimated Remaining Time:").grid(row=2, column=2, padx=10, pady=(5), sticky=tk.W)
-        self.remaining_time_label = ctk.CTkLabel(generation_frame, text="N/A")
-        self.remaining_time_label.grid(row=2, column=3, padx=10, pady=(5), sticky=tk.W)
 
         # Dubbing Section
         self.dubbing_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
@@ -871,6 +955,69 @@ class TTSOptimizerGUI:
 
         self.only_translate_button = ctk.CTkButton(self.dubbing_buttons_frame, text="Only Translate", command=self.only_translate)
         self.only_translate_button.grid(row=0, column=3, padx=5, pady=5, sticky=tk.EW)
+
+
+        # Output Options Section
+        ctk.CTkLabel(self.session_tab, text="Output Options", font=ctk.CTkFont(size=14, weight="bold")).grid(row=8, column=0, columnspan=6, padx=10, pady=10, sticky=tk.W) #Columnspan to 6
+
+        output_options_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
+        output_options_frame.grid(row=9, column=0, columnspan=6, padx=3, pady=(0, 20), sticky=tk.EW)
+        for i in range(6):  # Configure all 6 columns
+            output_options_frame.grid_columnconfigure(i, weight=1)
+
+        ctk.CTkLabel(output_options_frame, width=70, text="Format:").grid(row=0, column=0, padx=3, pady=5, sticky=tk.EW)
+        self.output_format = ctk.StringVar(value="m4b")
+        self.format_dropdown = ctk.CTkOptionMenu(output_options_frame, variable=self.output_format, values=["m4b", "opus", "mp3", "wav"], width=70) #set width
+        self.format_dropdown.grid(row=0, column=1, padx=3, pady=5, sticky=tk.W) #sticky W
+
+        ctk.CTkLabel(output_options_frame, width=70, text="Bitrate:").grid(row=0, column=2, padx=3, pady=5, sticky=tk.W)
+        self.bitrate = ctk.StringVar(value="64k")
+        self.bitrate_dropdown = ctk.CTkOptionMenu(output_options_frame, variable=self.bitrate, values=["16k", "32k", "64k", "128k", "196k", "312k"], width=70) #Set width
+        self.bitrate_dropdown.grid(row=0, column=3, padx=3, pady=5, sticky=tk.W) # Sticky W
+
+        self.upload_cover_button = ctk.CTkButton(output_options_frame, text="Upload Cover", command=self.upload_cover)  # Fix: Connect command
+        self.upload_cover_button.grid(row=0, column=4, padx=3, pady=5, sticky=tk.EW)
+
+        ctk.CTkLabel(output_options_frame,width=70, text="Album:").grid(row=1, column=0, padx=3, pady=5, sticky=tk.W)
+        self.album_name = ctk.StringVar()
+        self.album_name_entry = ctk.CTkEntry(output_options_frame, textvariable=self.album_name)
+        self.album_name_entry.grid(row=1, column=1, padx=3, pady=5, sticky=tk.EW)
+
+        ctk.CTkLabel(output_options_frame, width=70, text="Artist:").grid(row=1, column=2, padx=3, pady=5, sticky=tk.W)
+        self.artist_name = ctk.StringVar()
+        self.artist_name_entry = ctk.CTkEntry(output_options_frame, textvariable=self.artist_name)
+        self.artist_name_entry.grid(row=1, column=3, padx=3, pady=5, sticky=tk.EW)  
+
+        ctk.CTkLabel(output_options_frame, width=70, text="Genre:").grid(row=1, column=4, padx=3, pady=5, sticky=tk.W)
+        self.genre = ctk.StringVar()
+        self.genre_entry = ctk.CTkEntry(output_options_frame, textvariable=self.genre)
+        self.genre_entry.grid(row=1, column=5, padx=3, pady=5, sticky=tk.EW)
+
+        # Generation Section
+        generation_label = ctk.CTkLabel(self.session_tab, text="Generation", font=ctk.CTkFont(size=14, weight="bold"))
+        generation_label.grid(row=10, column=0, padx=10, pady=10, sticky=tk.W)
+
+        generation_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
+        generation_frame.grid(row=11, column=0, columnspan=4, padx=10, pady=(0, 20), sticky=tk.EW)
+        generation_frame.grid_columnconfigure(0, weight=1)
+        generation_frame.grid_columnconfigure(1, weight=1)
+        generation_frame.grid_columnconfigure(2, weight=1)
+        generation_frame.grid_columnconfigure(3, weight=1)
+
+        self.start_generation_button = ctk.CTkButton(generation_frame, text="Start Generation", command=self.start_optimisation_thread, fg_color="#2e8b57", hover_color="#3cb371")
+        self.start_generation_button.grid(row=0, column=0, padx=10, pady=(5, 20), sticky=tk.EW)
+        ctk.CTkButton(generation_frame, text="Stop Generation", command=self.stop_generation).grid(row=0, column=2, padx=10, pady=(5, 20), sticky=tk.EW)
+        ctk.CTkButton(generation_frame, text="Resume Generation", command=self.resume_generation).grid(row=0, column=1, padx=10, pady=(5, 20), sticky=tk.EW)
+        ctk.CTkButton(generation_frame, text="Cancel Generation", command=self.cancel_generation, fg_color="dark red", hover_color="red").grid(row=0, column=3, padx=10, pady=(5, 20), sticky=tk.EW)
+
+        ctk.CTkLabel(generation_frame, text="Progress:").grid(row=2, column=0, padx=10, pady=5, sticky=tk.W)
+        self.progress_label = ctk.CTkLabel(generation_frame, text="0.00%")
+        self.progress_label.grid(row=2, column=1, padx=10, pady=5, sticky=tk.W)
+        self.progress_bar = ctk.CTkProgressBar(generation_frame)
+        self.progress_bar.grid(row=1, column=0, columnspan=4, padx=10, pady=5, sticky=tk.EW)
+        ctk.CTkLabel(generation_frame, text="Estimated Remaining Time:").grid(row=2, column=2, padx=10, pady=(5), sticky=tk.W)
+        self.remaining_time_label = ctk.CTkLabel(generation_frame, text="N/A")
+        self.remaining_time_label.grid(row=2, column=3, padx=10, pady=(5), sticky=tk.W)
 
     def create_text_processing_tab(self):
         self.text_processing_tab = self.tabview.add("Text Processing")
@@ -1237,7 +1384,7 @@ class TTSOptimizerGUI:
 
     def create_xtts_advanced_settings_frame(self):
         self.xtts_advanced_settings_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
-        self.xtts_advanced_settings_frame.grid(row=6, column=0, columnspan=4, padx=10, pady=(0, 20), sticky=tk.EW)
+        self.xtts_advanced_settings_frame.grid(row=7, column=0, columnspan=4, padx=10, pady=(0, 20), sticky=tk.EW)
         self.xtts_advanced_settings_frame.grid_columnconfigure(0, weight=1)
         self.xtts_advanced_settings_frame.grid_columnconfigure(1, weight=1)
 
@@ -2076,7 +2223,7 @@ class TTSOptimizerGUI:
 
         self.pre_selected_source_file = filedialog.askopenfilename(
             title="Select Source File",
-            filetypes=[("Text, SRT, PDF, EPUB, and Video files", "*.txt *.srt *.pdf *.epub *.mp4 *.mkv *.webm *.avi *.mov"),
+            filetypes=[("Supported Files", "*.txt *.srt *.pdf *.epub *.docx *.mobi *.mp4 *.mkv *.webm *.avi *.mov"),
                     ("All files", "*.*")]
         )
         if self.pre_selected_source_file:
@@ -2089,16 +2236,26 @@ class TTSOptimizerGUI:
             os.makedirs(session_dir, exist_ok=True)
 
             # Remove old text, srt, pdf, or epub files from the session directory
-            for ext in [".txt", ".srt", ".pdf", ".epub"]:
+            for ext in [".txt", ".srt", ".pdf", ".epub", ".docx", ".mobi"]:
                 for file in os.listdir(session_dir):
                     if file.lower().endswith(ext):
                         os.remove(os.path.join(session_dir, file))
+                        
+            if self.pre_selected_source_file.lower().endswith((".epub")):
+                self.process_epub_file(self.pre_selected_source_file)
+                # Check if an edited version exists
+                edited_filename = os.path.splitext(file_name)[0] + "_edited.txt"
+                edited_path = os.path.join(session_dir, edited_filename)
+                if os.path.exists(edited_path):
+                    self.source_file = edited_path
+                else:
+                    self.source_file = os.path.join(session_dir, os.path.splitext(file_name)[0] + ".txt")
 
-            if self.pre_selected_source_file.lower().endswith((".epub", ".docx", ".mobi")):
-                # Convert epub to txt using ebook-convert
+            elif self.pre_selected_source_file.lower().endswith((".docx", ".mobi")):
+                # Convert docx/mobi to txt using ebook-convert
                 txt_filename = os.path.splitext(file_name)[0] + ".txt"
                 txt_path = os.path.join(session_dir, txt_filename)
-                
+
                 def run_ebook_convert(command):
                     try:
                         subprocess.run(command, check=True)
@@ -2110,15 +2267,14 @@ class TTSOptimizerGUI:
                 if run_ebook_convert(["ebook-convert", self.pre_selected_source_file, txt_path]):
                     self.master.after(0, self.review_extracted_text, txt_path)
                 else:
-                    # If failed, try with ebook-convert.exe from one folder up
+                    # If failed, try with ebook-convert.exe from Calibre Portable
                     calibre_portable_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'Calibre Portable', 'Calibre', 'ebook-convert.exe'))
                     if run_ebook_convert([calibre_portable_path, self.pre_selected_source_file, txt_path]):
                         self.master.after(0, self.review_extracted_text, txt_path)
                     else:
-                        messagebox.showerror("Error", "Failed to convert epub to txt using both default and Calibre Portable paths.")
+                        messagebox.showerror("Error", "Failed to convert using both default and Calibre Portable ebook-convert.")
                         self.pre_selected_source_file = None
                         self.selected_file_label.configure(text="No file selected")
-
             elif self.pre_selected_source_file.lower().endswith(".pdf"):
                 # Extract text from PDF file
                 pdf = XPdf(self.pre_selected_source_file)
@@ -2135,7 +2291,7 @@ class TTSOptimizerGUI:
             else:
                 shutil.copy(self.pre_selected_source_file, session_dir)
                 self.source_file = os.path.join(session_dir, file_name)
- 
+    
             # Handle dubbing-related UI elements
             if self.pre_selected_source_file.lower().endswith((".mp4", ".mkv", ".webm", ".avi", ".mov")):
                 self.dubbing_frame.grid()
@@ -2157,6 +2313,8 @@ class TTSOptimizerGUI:
             # Disable the Start Generation button for video and SRT files
             if self.pre_selected_source_file.lower().endswith((".mp4", ".mkv", ".webm", ".avi", ".mov", ".srt")):
                 self.start_generation_button.configure(state=tk.DISABLED)
+            else:
+                self.start_generation_button.configure(state=tk.NORMAL)
 
         else:
             self.pre_selected_source_file = None
@@ -2166,6 +2324,144 @@ class TTSOptimizerGUI:
             self.start_generation_button.configure(state=tk.NORMAL)
 
         self.pdf_preprocessed = False  # Reset the flag
+
+    def process_epub_file(self, epub_path):
+        try:
+            book = epub.read_epub(epub_path)
+            chapters = []
+            all_html_content = ""
+            for item in book.get_items():
+                if item.get_type() == ebooklib.ITEM_DOCUMENT:
+                    filename = item.get_name()
+                    if "cover" not in filename.lower() and "toc" not in filename.lower():
+                        content = item.get_content().decode('utf-8')
+                        all_html_content += content
+                        chapters.append(self.extract_chapter_text(content, all_html_content))
+
+            combined_text = "\n\n".join(chapters)
+            session_name = self.session_name.get()
+            session_dir = os.path.join("Outputs", session_name)
+            os.makedirs(session_dir, exist_ok=True)
+            txt_filename = os.path.splitext(os.path.basename(epub_path))[0] + ".txt"
+            txt_path = os.path.join(session_dir, txt_filename)
+            with open(txt_path, "w", encoding="utf-8", newline="\n") as f:
+                f.write(combined_text)
+
+            self.source_file = txt_path
+            self.selected_file_label.configure(text=txt_filename)
+
+            # Display the converted text for review
+            self.master.after(0, self.review_extracted_text, txt_path)
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to process EPUB file: {str(e)}")
+
+    def extract_chapter_text(self, html_content, all_html_content=""):
+        chapter_text = ""
+        soup = BeautifulSoup(html_content, 'html.parser')
+        all_soup = BeautifulSoup(all_html_content, 'html.parser')
+
+        all_h1_tags = all_soup.find_all('h1')
+
+        def is_valid_heading(tag):
+            ignore_words = ['contents', 'illustrations', 'bibliography', 'toc', 'spis', 'table of contents']
+            text = tag.get_text().lower()
+            attrs = ' '.join([' '.join(tag.get('class', [])), tag.get('id', '')]).lower()
+            return not any(word in text or word in attrs for word in ignore_words)
+
+        def is_chapter_p_tag(tag):
+            chapter_markers = ["chapter", "section", "book", "part", "volume"]
+            attrs = ' '.join([' '.join(tag.get('class', [])), tag.get('id', '')]).lower()
+            return any(marker in attrs for marker in chapter_markers)
+
+        def is_chapter_blockquote(text):
+            chapter_markers = ["chapter", "volume", "preface", "prologue", "epilogue", "introduction", "acknowledgments"]
+            text_lower = text.lower().strip()
+            return any(text_lower.startswith(marker) for marker in chapter_markers) and len(text) <= 70
+
+        def clean_text(text):
+            return ' '.join(text.split())  # Remove extra spaces
+
+        def extract_text_from_tag(tag):
+            # Remove <br>, <i>, and <b> tags
+            for elem in tag(['br', 'i', 'b']):
+                elem.unwrap()
+            
+            if tag.name in ['blockquote', 'p']:
+                spans = tag.find_all('span', recursive=False)
+                if spans:
+                    return clean_text(' '.join(span.get_text().strip() for span in spans if span.get_text().strip()))
+                else:
+                    return clean_text(tag.get_text().strip())
+            elif tag.name == 'span':
+                return clean_text(tag.get_text().strip())
+            return ""
+
+        if not soup.find(['h1', 'h2', 'h3']):
+            # No header tags found, use the new extraction method
+            current_text = ""
+            last_processed_text = ""
+            for tag in soup.find_all(['blockquote', 'p', 'span']):
+                text = extract_text_from_tag(tag)
+                if not text:
+                    continue
+
+                if tag.name in ['blockquote', 'p']:
+                    if current_text:
+                        if current_text.strip() != last_processed_text:
+                            chapter_text += current_text.strip() + "\n\n"
+                            last_processed_text = current_text.strip()
+                        current_text = ""
+                    
+                    if text != last_processed_text:
+                        if tag.name == 'blockquote' and is_chapter_blockquote(text):
+                            chapter_text += "[[Chapter]]" + text + "\n\n"
+                        else:
+                            chapter_text += text + "\n\n"
+                        last_processed_text = text
+                elif tag.name == 'span':
+                    if text != last_processed_text:
+                        if current_text:
+                            current_text += " "
+                        current_text += text
+
+            # Add any remaining text
+            if current_text and current_text.strip() != last_processed_text:
+                chapter_text += current_text.strip() + "\n\n"
+
+        elif len(all_h1_tags) < 2:  # Less than two h1 tags in the entire EPUB
+            for tag in soup.find_all(['h2', 'h3', 'p']):
+                if tag.name == 'h2' and is_valid_heading(tag):
+                    chapter_title = clean_text(tag.get_text().strip())
+                    chapter_text += "[[Chapter]]" + chapter_title + "\n\n"
+                    next_sibling = tag.find_next_sibling()
+                    if next_sibling and next_sibling.name == 'h3' and is_valid_heading(next_sibling):
+                        subtitle = clean_text(next_sibling.get_text().strip())
+                        chapter_text += "[[Chapter]]" + subtitle + "\n\n"
+                elif tag.name == 'p':
+                    text = clean_text(tag.get_text().strip())
+                    if is_chapter_p_tag(tag):
+                        chapter_text += "[[Chapter]]" + text + "\n\n"
+                    else:
+                        chapter_text += text + "\n\n"
+
+        else:  # Two or more h1 tags
+            for tag in soup.find_all(['h1', 'h2', 'p']):
+                if tag.name == 'h1' and is_valid_heading(tag):
+                    chapter_title = clean_text(tag.get_text().strip())
+                    chapter_text += "[[Chapter]]" + chapter_title + "\n\n"
+                    next_sibling = tag.find_next_sibling()
+                    if next_sibling and next_sibling.name == 'h2' and is_valid_heading(next_sibling):
+                        subtitle = clean_text(next_sibling.get_text().strip())
+                        chapter_text += "[[Chapter]]" + subtitle + "\n\n"
+                elif tag.name == 'p':
+                    text = clean_text(tag.get_text().strip())
+                    if is_chapter_p_tag(tag):
+                        chapter_text += "[[Chapter]]" + text + "\n\n"
+                    else:
+                        chapter_text += text + "\n\n"
+
+        return chapter_text
 
     def toggle_transcription_widgets(self, show):
         if show:
@@ -2246,7 +2542,7 @@ class TTSOptimizerGUI:
         # Get the screen resolution
         screen_width = review_window.winfo_screenwidth()
         screen_height = review_window.winfo_screenheight()
-        window_width = 800
+        window_width = 1000  # Increased from 800 to 1000
         window_height = int(screen_height * 0.90)  # Set the window height to 90% of the screen height
         x = (screen_width // 2) - (window_width // 2)
         y = (screen_height // 2) - (window_height // 2)
@@ -2330,6 +2626,10 @@ class TTSOptimizerGUI:
             self.selected_file_label.configure(text="No file selected")
             review_window.destroy()
 
+        def add_chapter_marker():
+            current_position = text_widget.index(tk.INSERT)
+            text_widget.insert(current_position, "[[Chapter]]")
+
         button_frame = ctk.CTkFrame(top_frame)
         button_frame.pack(side=tk.RIGHT)
 
@@ -2337,7 +2637,10 @@ class TTSOptimizerGUI:
         cancel_button.pack(side=tk.LEFT, padx=(0, 10))
 
         accept_button = ctk.CTkButton(button_frame, text="Accept", command=accept_text)
-        accept_button.pack(side=tk.LEFT)
+        accept_button.pack(side=tk.LEFT, padx=(0, 10))
+
+        add_chapter_button = ctk.CTkButton(button_frame, text="Add Chapter Marker", command=add_chapter_marker)
+        add_chapter_button.pack(side=tk.LEFT)
 
 
     def toggle_external_server(self):
@@ -2973,19 +3276,38 @@ class TTSOptimizerGUI:
             pygame.mixer.music.unpause()
 
     def toggle_advanced_tts_settings(self):
-        if self.tts_service.get() == "VoiceCraft":
-            if self.show_advanced_tts_settings.get():
-                self.advanced_tts_settings_frame.grid()
-            else:
-                self.advanced_tts_settings_frame.grid_remove()
-        elif self.tts_service.get() == "XTTS":
-            if self.show_advanced_tts_settings.get():
+        if self.tts_service.get() == "XTTS":
+            advanced_visible = self.show_advanced_tts_settings.get()
+            row_offset = 1 if advanced_visible else -1  # Calculate offset only once
+
+            if advanced_visible:
                 self.xtts_advanced_settings_frame.grid()
             else:
                 self.xtts_advanced_settings_frame.grid_remove()
-        else:
-            self.advanced_tts_settings_frame.grid_remove()
-            self.xtts_advanced_settings_frame.grid_remove()
+
+        elif self.tts_service.get() == "VoiceCraft":
+            advanced_visible = self.show_advanced_tts_settings.get()
+            row_offset = 1 if advanced_visible else -1  # Calculate offset only once
+
+            if advanced_visible:
+                self.advanced_tts_settings_frame.grid()  # Make VoiceCraft advanced visible
+            else:
+                self.advanced_tts_settings_frame.grid_remove()  # Hide VoiceCraft advanced
+
+        else: # Silero, no advanced settings
+            return  # No action needed for Silero
+
+        # Common Row Shifting (for both XTTS and VoiceCraft)
+        if hasattr(self, 'dubbing_frame') and self.dubbing_frame.winfo_ismapped():
+            self.dubbing_frame.grid(row=self.dubbing_frame.grid_info()["row"] + row_offset)
+        if hasattr(self, 'output_options_label'):
+            self.output_options_label.grid(row=self.output_options_label.grid_info()["row"] + row_offset)
+        if hasattr(self, 'output_options_frame'):
+            self.output_options_frame.grid(row=self.output_options_frame.grid_info()["row"] + row_offset)
+        if hasattr(self, 'generation_label'):
+            self.generation_label.grid(row=self.generation_label.grid_info()["row"] + row_offset)
+        if hasattr(self, 'generation_frame'):
+            self.generation_frame.grid(row=self.generation_frame.grid_info()["row"] + row_offset)
 
     def apply_xtts_settings(self):
         settings = {
@@ -3212,69 +3534,25 @@ class TTSOptimizerGUI:
             # Update the remaining time label
             self.master.after(0, self.update_remaining_time_label, estimated_remaining_time)
     # Save the final concatenated audio file only if the source file is not an srt file
-        if not self.source_file.endswith(".srt"):
-            session_name = self.session_name.get()
-            output_format = self.output_format.get()
-            bitrate = self.bitrate.get()
-
-            session_dir = os.path.join("Outputs", session_name)
-            output_path = os.path.join(session_dir, f"{session_name}.{output_format}")
-
-            wav_files = []
-            for sentence_dict in preprocessed_sentences:
-                sentence_number = int(sentence_dict["sentence_number"])
-                wav_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence_{sentence_number}.wav")
-                if os.path.exists(wav_filename):
-                    wav_files.append(wav_filename)
-
-            with tempfile.NamedTemporaryFile(mode="w", delete=False) as temp_file:
-                for wav_file in wav_files:
-                    temp_file.write(f"file '{os.path.abspath(wav_file)}'\n")
-                input_list_path = temp_file.name
-
-            ffmpeg_command = [
-                "ffmpeg",
-                "-f", "concat",
-                "-safe", "0",
-                "-i", input_list_path,
-                "-y"  # '-y' option to overwrite output files without asking
-            ]
-
-            # Adjust the codec and bitrate based on the output format
-            if output_format == "wav":
-                ffmpeg_command.extend(["-c:a", "pcm_s16le"])
-            elif output_format == "mp3":
-                ffmpeg_command.extend(["-c:a", "libmp3lame", "-b:a", bitrate])
-            elif output_format == "opus":
-                ffmpeg_command.extend(["-c:a", "libopus", "-b:a", bitrate])
-
-            # Append the output path without quotes
-            ffmpeg_command.append(output_path)
-
-            print("FFmpeg Command:")
-            print(" ".join(ffmpeg_command))
-
-            try:
-                subprocess.run(ffmpeg_command, check=True, stderr=subprocess.PIPE, universal_newlines=True)
-                logging.info(f"The output file has been saved as {output_path}")
-            except subprocess.CalledProcessError as e:
-                error_message = f"FFmpeg exited with a non-zero code: {e.returncode}\n\nError output:\n{e.stderr}"
-                logging.error(error_message)
-            except Exception as e:
-                error_message = f"An unexpected error occurred: {str(e)}"
-                logging.error(error_message)
-            finally:
-                if os.path.exists(input_list_path):
-                    os.remove(input_list_path)
-        # Check if dubbing is enabled and the source file is an SRT file
         if self.enable_dubbing.get() and self.source_file.endswith(".srt"):
             self.start_dubbing()
+        else:
+            session_name = self.session_name.get()
+            output_format = self.output_format.get()
+            session_dir = os.path.join("Outputs", session_name)
+            default_output_path = os.path.join(session_dir, f"{session_name}.{output_format}")
+            
+            # Call save_output with a default path
+            final_output_path = self.save_output(auto_path=default_output_path)
+            
+            if final_output_path:
+                logging.info(f"The output file has been saved as {final_output_path}")
+            else:
+                logging.warning("Failed to save the output file")
 
-        # Calculate the total generation time
+        # Calculate and display the total generation time
         total_generation_time = sum(sentence_generation_times)
         formatted_time = str(datetime.timedelta(seconds=int(total_generation_time)))
-
-        # Display the message box with generation information
         CTkMessagebox(title="Generation Finished", message=f"Generation completed!\n\nTotal Generation Time: {formatted_time}", icon="info")
 
     def save_sentence_to_json(self, preprocessed_sentences, json_filename, sentence_index, sentence_dict):
@@ -3294,6 +3572,7 @@ class TTSOptimizerGUI:
         sentence_number = sentence_dict["sentence_number"]
         original_sentence = sentence_dict["original_sentence"]
         paragraph = sentence_dict.get("paragraph", "no")
+        chapter = sentence_dict.get("chapter", "no")  # Get the chapter marker
         split_part = sentence_dict.get("split_part")
 
         if not original_sentence:  # Skip processing if sentence is empty
@@ -3318,6 +3597,7 @@ class TTSOptimizerGUI:
                     "sentence_number": sentence_number,
                     "original_sentence": original_sentence,
                     "paragraph": paragraph,
+                    "chapter": chapter,
                     "split_part": split_part,
                     "tts_generated": "no"
                 }
@@ -3345,6 +3625,7 @@ class TTSOptimizerGUI:
                 processed_sentences_list.append({
                     "text": processed_sentence,
                     "paragraph": paragraph,
+                    "chapter": chapter,  # Preserve chapter information
                     "split_part": split_part
                 })
                 self.save_json(processed_sentences_list, f"{os.path.splitext(self.source_file)[0]}_prompt_{prompt_number}.json")
@@ -3356,19 +3637,21 @@ class TTSOptimizerGUI:
                 "sentence_number": sentence_number,
                 "original_sentence": original_sentence,
                 "paragraph": paragraph,
-                "processed_sentence": processed_sentences_list[-1]["text"],
+                "chapter": chapter,  # Include the chapter marker
+                "processed_sentence": processed_sentences_list[-1]["text"],  # Get the processed sentence from the last prompt
                 "split_part": split_part,
                 "tts_generated": "no"
             }
-        else:
+        else: #LLM processing NOT enabled
             processed_sentence = {
                 "sentence_number": sentence_number,
                 "original_sentence": original_sentence,
                 "paragraph": paragraph,
+                "chapter": chapter,
                 "split_part": split_part,
                 "tts_generated": "no"
             }
-            if "processed_sentence" in sentence_dict:
+            if "processed_sentence" in sentence_dict: #If there's already a processed sentence (from a loaded session, perhaps?)
                 processed_sentence["processed_sentence"] = sentence_dict["processed_sentence"]
 
         if current_sentence < len(processed_sentences):
@@ -3535,12 +3818,14 @@ class TTSOptimizerGUI:
         for sentence_dict in data:
             split_part = sentence_dict.get("split_part")
             paragraph = sentence_dict.get("paragraph", "no")
+            chapter = sentence_dict.get("chapter", "no") # Get chapter info
             sentence_number = str(sentence_counter)
             sentence_counter += 1
             
             numbered_sentence = {
                 "sentence_number": sentence_number,
                 "paragraph": paragraph,
+                "chapter": chapter, # Save chapter info to JSON
                 "split_part": split_part,
                 "original_sentence": sentence_dict.get("original_sentence"),
                 "processed_sentence": sentence_dict.get("processed_sentence"),
@@ -3550,6 +3835,7 @@ class TTSOptimizerGUI:
         
         with open(filename, 'w') as f:
             json.dump(numbered_data, f, indent=2)
+
 
     def update_language_dropdown(self, event=None):
         if self.tts_service.get() == "XTTS":
@@ -4349,78 +4635,270 @@ class TTSOptimizerGUI:
         except Exception as e:
             logging.error(f"Error editing sentence: {str(e)}")
 
-    def save_output(self):
+    def upload_cover(self):
+        file_path = filedialog.askopenfilename(filetypes=[("Image files", "*.jpg *.jpeg *.png")])
+        if file_path:
+            self.cover_image_path = file_path
+            messagebox.showinfo("Cover Image", "Cover image uploaded successfully.")
+            self.upload_cover_button.configure(text="Cover Uploaded")  # Provide feedback to user
+
+    def save_output(self, auto_path=None):
         session_name = self.session_name.get()
         output_format = self.output_format.get()
         bitrate = self.bitrate.get()
 
-        # Open a file dialog to choose the output directory and file name
-        output_path = filedialog.asksaveasfilename(
-            initialdir="Outputs",
-            initialfile=f"{session_name}.{output_format}",
-            filetypes=[(f"{output_format.upper()} Files", f"*.{output_format}")],
-            defaultextension=f".{output_format}"
-        )
+        if auto_path:
+            output_path = auto_path
+        else:
+            output_path = filedialog.asksaveasfilename(
+                initialdir="Outputs",
+                initialfile=f"{session_name}.{output_format}",
+                filetypes=[(f"{output_format.upper()} Files", f"*.{output_format}")],
+                defaultextension=f".{output_format}"
+            )
 
         if output_path:
-            output_directory = os.path.dirname(output_path)
-            output_filename = os.path.basename(output_path)
-
             session_dir = os.path.join("Outputs", session_name)
             json_filename = os.path.join(session_dir, f"{session_name}_sentences.json")
             processed_sentences = self.load_json(json_filename)
 
-            # Collect the audio segments for concatenation
             wav_files = []
+            chapters = []
+            current_time = 0
+
             for sentence_dict in processed_sentences:
                 sentence_number = int(sentence_dict["sentence_number"])
                 wav_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence_{sentence_number}.wav")
                 if os.path.exists(wav_filename):
                     wav_files.append(wav_filename)
+                    
+                    # Collect chapter information
+                    if sentence_dict.get("chapter") == "yes":
+                        audio = AudioSegment.from_wav(wav_filename)
+                        chapters.append((current_time / 1000, sentence_dict.get("original_sentence", "")))
+                    
+                    current_time += len(AudioSegment.from_wav(wav_filename))
 
-            # Create a temporary file containing the list of wav files to concatenate
-            with tempfile.NamedTemporaryFile(mode="w", delete=False) as temp_file:
+            with tempfile.NamedTemporaryFile(mode="w", delete=False, encoding='utf-8') as temp_file:
                 for wav_file in wav_files:
                     temp_file.write(f"file '{os.path.abspath(wav_file)}'\n")
                 input_list_path = temp_file.name
 
-            # Build FFmpeg command to concatenate the audio segments
             ffmpeg_command = [
                 "ffmpeg",
                 "-f", "concat",
                 "-safe", "0",
                 "-i", input_list_path,
-                "-y"  
+                "-y"
             ]
 
-            # Add output format and bitrate options
             if output_format == "wav":
-                ffmpeg_command += [output_path, "-c:a", "pcm_s16le"]
-            elif output_format == "mp3":
-                ffmpeg_command += [output_path, "-b:a", bitrate]
-            elif output_format == "opus":
-                ffmpeg_command += [output_path, "-b:a", bitrate]
+                ffmpeg_command += ["-c:a", "pcm_s16le"]
+            elif output_format in ["mp3", "m4b", "opus"]:
+                codec = "libmp3lame" if output_format == "mp3" else "aac" if output_format == "m4b" else "libopus"
+                ffmpeg_command += ["-c:a", codec, "-b:a", bitrate]
 
-                # Append the output path without quotes
-                ffmpeg_command.append(output_path)
+            ffmpeg_command.append(output_path)
 
-                print("FFmpeg Command:")
-                print(" ".join(ffmpeg_command))
+            try:
+                subprocess.run(ffmpeg_command, check=True, stderr=subprocess.PIPE, universal_newlines=True)
 
-                try:
-                    subprocess.run(ffmpeg_command, check=True, stderr=subprocess.PIPE, universal_newlines=True)
-                    messagebox.showinfo("Output Saved", f"The output file has been saved as {output_filename}")
-                except subprocess.CalledProcessError as e:
-                    error_message = f"FFmpeg exited with a non-zero code: {e.returncode}\n\nError output:\n{e.stderr}"
-                    logging.error(error_message)
+                # Apply Metadata and Cover Art
+                self.save_metadata_and_cover(output_path, output_format)
+
+                # Add chapters if the output format is m4b
+                if output_format == "m4b" and chapters:
+                    self.add_chapters_to_m4b(output_path, chapters)
+
+                if not auto_path:
+                    messagebox.showinfo("Output Saved", f"The output file has been saved as {output_path}")
+                return output_path
+
+            except subprocess.CalledProcessError as e:
+                error_message = f"FFmpeg exited with a non-zero code: {e.returncode}\n\nError output:\n{e.stderr}"
+                logging.error(error_message)
+                if not auto_path:
                     messagebox.showerror("FFmpeg Error", error_message)
-                except Exception as e:
-                    error_message = f"An unexpected error occurred: {str(e)}"
-                    logging.error(error_message)
+            except Exception as e:
+                error_message = f"An unexpected error occurred: {str(e)}"
+                logging.error(error_message)
+                if not auto_path:
                     messagebox.showerror("Error", error_message)
-                finally:
-                    if os.path.exists(input_list_path):
-                        os.remove(input_list_path)
+            finally:
+                if os.path.exists(input_list_path):
+                    os.remove(input_list_path)
+
+        return None
+
+    def save_metadata_and_cover(self, output_path, output_format):
+        def optimize_image(image_path, target_format='JPEG', max_size=(500, 500)):
+            with Image.open(image_path) as img:
+                if img.mode == 'RGBA':
+                    img = img.convert('RGB')
+                img.thumbnail(max_size)
+                bio = io.BytesIO()
+                img.save(bio, format=target_format)
+                return bio.getvalue()
+
+        if output_format == "wav":
+            return
+
+        metadata = {
+            "title": self.session_name.get(),
+            "album": self.album_name.get(),
+            "artist": self.artist_name.get(),
+            "genre": self.genre.get()
+        }
+
+        if output_format == "mp3":
+            audio = MP3(output_path, ID3=ID3)
+            
+            audio.tags = ID3()
+            if metadata["title"]:
+                audio.tags.add(TIT2(encoding=3, text=metadata["title"]))
+            if metadata["album"]:
+                audio.tags.add(TALB(encoding=3, text=metadata["album"]))
+            if metadata["artist"]:
+                audio.tags.add(TPE1(encoding=3, text=metadata["artist"]))
+            if metadata["genre"]:
+                audio.tags.add(TCON(encoding=3, text=metadata["genre"]))
+            
+            if hasattr(self, 'cover_image_path') and os.path.exists(self.cover_image_path):
+                cover_data = optimize_image(self.cover_image_path)
+                audio.tags.add(
+                    APIC(
+                        encoding=3,
+                        mime='image/jpeg',
+                        type=3,
+                        desc='Cover',
+                        data=cover_data
+                    )
+                )
+            audio.save()
+
+        elif output_format == "m4b":
+            audio = MP4(output_path)
+            for key, value in metadata.items():
+                if value:
+                    if key == "title":
+                        audio["\xa9nam"] = [value]
+                    elif key == "album":
+                        audio["\xa9alb"] = [value]
+                    elif key == "artist":
+                        audio["\xa9ART"] = [value]
+                    elif key == "genre":
+                        audio["\xa9gen"] = [value]
+            
+            if hasattr(self, 'cover_image_path') and os.path.exists(self.cover_image_path):
+                with open(self.cover_image_path, "rb") as f:
+                    cover_data = f.read()
+                audio["covr"] = [MP4Cover(cover_data, imageformat=MP4Cover.FORMAT_JPEG if self.cover_image_path.lower().endswith('.jpg') or self.cover_image_path.lower().endswith('.jpeg') else MP4Cover.FORMAT_PNG)]
+            audio.save()
+
+        elif output_format == "opus":
+            audio = OggOpus(output_path)
+            for key, value in metadata.items():
+                if value:
+                    audio[key] = value
+            
+            if hasattr(self, 'cover_image_path') and os.path.exists(self.cover_image_path):
+                cover_data = optimize_image(self.cover_image_path)
+                picture = Picture()
+                picture.data = cover_data
+                picture.type = PictureType.COVER_FRONT
+                picture.mime = "image/jpeg"
+                picture.width = 500
+                picture.height = 500
+                picture.depth = 24
+                encoded_data = base64.b64encode(picture.write())
+                audio["metadata_block_picture"] = [encoded_data.decode("ascii")]
+            audio.save()
+
+    def add_chapters_to_m4b(self, file_path, chapters):
+        logging.info(f"Starting to add chapters to {file_path}")
+        logging.info(f"Number of chapters to add: {len(chapters)}")
+
+        # Create a temporary file for chapter metadata
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt", encoding='utf-8') as temp_file:
+            temp_file.write(";FFMETADATA1\n")  # Add the required header
+            for i, (time, title) in enumerate(chapters):
+                start_time = int(time * 1000)
+                end_time = int(chapters[i+1][0] * 1000) if i < len(chapters) - 1 else 9223372036854775807
+                temp_file.write(f"\n[CHAPTER]\nTIMEBASE=1/1000\nSTART={start_time}\nEND={end_time}\ntitle={title}\n")
+            chapter_file = temp_file.name
+
+        logging.info(f"Chapter metadata file created: {chapter_file}")
+        
+        # Log the content of the chapter file for debugging
+        with open(chapter_file, 'r', encoding='utf-8') as f:
+            logging.debug(f"Chapter file contents:\n{f.read()}")
+
+        # Use FFmpeg to add chapters to the M4B file
+        ffmpeg_command = [
+            "ffmpeg",
+            "-i", file_path,
+            "-i", chapter_file,
+            "-map", "0",
+            "-map_chapters", "1",
+            "-c", "copy",
+            "-y",
+            f"{file_path}.temp.m4b"
+        ]
+
+        logging.info(f"FFmpeg command: {' '.join(ffmpeg_command)}")
+
+        try:
+            result = subprocess.run(ffmpeg_command, check=True, stderr=subprocess.PIPE, universal_newlines=True)
+            logging.info(f"FFmpeg output:\n{result.stderr}")
+            
+            os.replace(f"{file_path}.temp.m4b", file_path)
+            logging.info(f"Successfully added chapters to {file_path}")
+
+            # Re-apply metadata and cover art after adding chapters
+            self.save_metadata_and_cover(file_path, "m4b")
+            logging.info("Metadata and cover art re-applied")
+
+            # Verify that chapters were added
+            verify_command = ["ffprobe", "-i", file_path, "-show_chapters", "-v", "quiet", "-print_format", "json"]
+            verify_result = subprocess.run(verify_command, check=True, stdout=subprocess.PIPE, universal_newlines=True)
+            chapters_info = json.loads(verify_result.stdout)
+            logging.info(f"Chapters in the final file: {json.dumps(chapters_info, indent=2)}")
+
+            if len(chapters_info.get('chapters', [])) == len(chapters):
+                logging.info("All chapters were successfully added")
+            else:
+                logging.warning(f"Mismatch in chapter count. Expected: {len(chapters)}, Found: {len(chapters_info.get('chapters', []))}")
+
+        except subprocess.CalledProcessError as e:
+            error_message = f"FFmpeg exited with a non-zero code while adding chapters: {e.returncode}\n\nError output:\n{e.stderr}"
+            logging.error(error_message)
+            messagebox.showerror("FFmpeg Error", error_message)
+        except Exception as e:
+            error_message = f"An unexpected error occurred while adding chapters: {str(e)}"
+            logging.error(error_message)
+            messagebox.showerror("Error", error_message)
+        finally:
+            if os.path.exists(chapter_file):
+                os.remove(chapter_file)
+                logging.info(f"Temporary chapter file removed: {chapter_file}")
+
+    def update_output_options(self, *args):
+        output_format = self.output_format.get()
+        if output_format == "wav":
+            self.bitrate_dropdown.configure(state="disabled")
+            self.upload_cover_button.configure(state="disabled")
+            self.album_name_entry.configure(state="disabled")
+            self.artist_name_entry.configure(state="disabled")
+            self.genre_entry.configure(state="disabled")
+        else:
+            self.bitrate_dropdown.configure(state="normal")
+            self.upload_cover_button.configure(state="normal")
+            self.album_name_entry.configure(state="normal")
+            self.artist_name_entry.configure(state="normal")
+            self.genre_entry.configure(state="normal")
+
+        if output_format not in ["mp3", "m4b"]:
+            self.upload_cover_button.configure(state="disabled")
 
 def main():
     logging.info("Pandrator application starting")
