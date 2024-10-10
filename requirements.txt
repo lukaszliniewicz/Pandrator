@@ -1,8 +1,8 @@
+tkinter
 customtkinter
 requests
 pydub
 unidecode
-sentence-splitter
 pygame
 CTkMessagebox
 CTkToolTip
@@ -10,5 +10,10 @@ pysrt
 num2words
 ffmpeg-python
 pdftextract
-py-hasami
-nltk
+regex
+hasami
+ebooklib
+beautifulsoup4
+mutagen
+Pillow
+argparse
