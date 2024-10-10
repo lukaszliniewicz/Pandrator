@@ -281,20 +281,22 @@ class PandratorInstaller(ctk.CTk):
         rvc_support = config.get('rvc_support', False)
         set_widget_state(self.rvc_checkbox, "disabled" if rvc_support else "normal", False)
 
-        # WhisperX
-        whisperx_support = config.get('whisperx_support', False)
-        set_widget_state(self.whisperx_checkbox, "disabled" if whisperx_support else "normal", False)
-
         # XTTS Fine-tuning
         xtts_finetuning_support = config.get('xtts_finetuning_support', False)
         set_widget_state(self.xtts_finetuning_checkbox, "disabled" if xtts_finetuning_support else "normal", False)
 
-        # Update WhisperX state based on XTTS Fine-tuning
-        if xtts_finetuning_support:
+        # WhisperX
+        whisperx_support = config.get('whisperx_support', False)
+        if whisperx_support:
+            set_widget_state(self.whisperx_checkbox, "disabled", False)
+        elif xtts_finetuning_support:
+            # XTTS Fine-tuning is installed
+            set_widget_state(self.whisperx_checkbox, "disabled", False)
+        elif self.xtts_finetuning_var.get():
+            # XTTS Fine-tuning is not installed but selected
             set_widget_state(self.whisperx_checkbox, "disabled", True)
         else:
-            whisperx_support = config.get('whisperx_support', False)
-            set_widget_state(self.whisperx_checkbox, "disabled" if whisperx_support else "normal", False)
+            set_widget_state(self.whisperx_checkbox, "normal", False)
 
         # Update launch and install buttons state
         self.launch_button.configure(state="normal" if pandrator_installed else "disabled")
@@ -1019,7 +1021,7 @@ class PandratorInstaller(ctk.CTk):
     def install_espeak_ng(self):
         logging.info("Installing eSpeak NG...")
         try:
-            self.run_command(['winget', 'install', '--id', 'espeak-ng.espeak-ng', '-e', '--accept-source-agreements', '--accept-package-agreements'])
+            self.run_command(['winget', 'install', '--id', 'eSpeak-NG.eSpeak-NG', '-e', '--accept-package-agreements'])
             logging.info("eSpeak NG installed successfully.")
         except subprocess.CalledProcessError as e:
             logging.error("Failed to install eSpeak NG.")
@@ -1197,8 +1199,12 @@ class PandratorInstaller(ctk.CTk):
             self.refresh_ui_state()
 
     def update_whisperx_checkbox(self):
-        if self.xtts_finetuning_var.get():
+        xtts_finetuning_support = self.get_installed_components().get('xtts_finetuning', False)
+        if self.xtts_finetuning_var.get() and not xtts_finetuning_support:
             self.whisperx_var.set(True)
+            self.whisperx_checkbox.configure(state="disabled")
+        elif xtts_finetuning_support:
+            self.whisperx_var.set(False)
             self.whisperx_checkbox.configure(state="disabled")
         else:
             self.whisperx_checkbox.configure(state="normal")
