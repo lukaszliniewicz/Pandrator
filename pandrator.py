@@ -695,6 +695,12 @@ class TTSOptimizerGUI:
         self.rvc_models_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rvc_models")
         os.makedirs(self.rvc_models_dir, exist_ok=True)
         self.rvc_models = self.get_rvc_models()
+        self.top_k = ctk.StringVar(value="50")
+        self.top_p = ctk.StringVar(value="0.9")
+        self.temperature = ctk.StringVar(value="0.7")
+        self.stop_repetition = ctk.StringVar(value="10")
+        self.kvcache = ctk.StringVar(value="0")
+        self.sample_batch_size = ctk.StringVar(value="8")
         self.whisper_languages = [
         'Afrikaans', 'Albanian', 'Amharic', 'Arabic', 'Armenian', 'Assamese', 'Azerbaijani', 'Bashkir', 'Basque', 
         'Belarusian', 'Bengali', 'Bosnian', 'Breton', 'Bulgarian', 'Burmese', 'Cantonese', 'Castilian', 'Catalan', 
@@ -747,7 +753,7 @@ class TTSOptimizerGUI:
         self.create_generated_sentences_section()
 
         # Additional setup
-        self.update_tts_service()
+        #self.update_tts_service()
         self.toggle_advanced_tts_settings()
         self.text_preprocessor = TextPreprocessor(self.language_var, self.max_sentence_length,
                                                   self.enable_sentence_splitting, self.enable_sentence_appending,
@@ -875,6 +881,7 @@ class TTSOptimizerGUI:
         self.advanced_settings_switch.grid(row=9, column=0, padx=5, pady=5, sticky=tk.W)
 
         self.create_xtts_advanced_settings_frame()
+        self.create_voicecraft_advanced_settings_frame()
 
         # Dubbing Section
         self.dubbing_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
@@ -1018,6 +1025,34 @@ class TTSOptimizerGUI:
         ctk.CTkLabel(generation_frame, text="Estimated Remaining Time:").grid(row=2, column=2, padx=10, pady=(5), sticky=tk.W)
         self.remaining_time_label = ctk.CTkLabel(generation_frame, text="N/A")
         self.remaining_time_label.grid(row=2, column=3, padx=10, pady=(5), sticky=tk.W)
+
+    def create_voicecraft_advanced_settings_frame(self):
+        self.voicecraft_advanced_settings_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
+        self.voicecraft_advanced_settings_frame.grid(row=7, column=0, columnspan=4, padx=10, pady=(0, 20), sticky=tk.EW)
+        self.voicecraft_advanced_settings_frame.grid_columnconfigure(0, weight=1)
+        self.voicecraft_advanced_settings_frame.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(self.voicecraft_advanced_settings_frame, text="Top K:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+        ctk.CTkEntry(self.voicecraft_advanced_settings_frame, textvariable=self.top_k).grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
+
+        ctk.CTkLabel(self.voicecraft_advanced_settings_frame, text="Top P:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
+        ctk.CTkEntry(self.voicecraft_advanced_settings_frame, textvariable=self.top_p).grid(row=1, column=1, padx=5, pady=5, sticky=tk.EW)
+
+        ctk.CTkLabel(self.voicecraft_advanced_settings_frame, text="Temperature:").grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
+        ctk.CTkEntry(self.voicecraft_advanced_settings_frame, textvariable=self.temperature).grid(row=2, column=1, padx=5, pady=5, sticky=tk.EW)
+
+        ctk.CTkLabel(self.voicecraft_advanced_settings_frame, text="Stop Repetition:").grid(row=3, column=0, padx=5, pady=5, sticky=tk.W)
+        ctk.CTkEntry(self.voicecraft_advanced_settings_frame, textvariable=self.stop_repetition).grid(row=3, column=1, padx=5, pady=5, sticky=tk.EW)
+
+        ctk.CTkLabel(self.voicecraft_advanced_settings_frame, text="KV Cache:").grid(row=4, column=0, padx=5, pady=5, sticky=tk.W)
+        ctk.CTkEntry(self.voicecraft_advanced_settings_frame, textvariable=self.kvcache).grid(row=4, column=1, padx=5, pady=5, sticky=tk.EW)
+
+        ctk.CTkLabel(self.voicecraft_advanced_settings_frame, text="Sample Batch Size:").grid(row=5, column=0, padx=5, pady=5, sticky=tk.W)
+        ctk.CTkEntry(self.voicecraft_advanced_settings_frame, textvariable=self.sample_batch_size).grid(row=5, column=1, padx=5, pady=5, sticky=tk.EW)
+
+
+        self.voicecraft_advanced_settings_frame.grid_remove()  # Hide the frame initially
+
 
     def create_text_processing_tab(self):
         self.text_processing_tab = self.tabview.add("Text Processing")
@@ -3278,8 +3313,6 @@ class TTSOptimizerGUI:
     def toggle_advanced_tts_settings(self):
         if self.tts_service.get() == "XTTS":
             advanced_visible = self.show_advanced_tts_settings.get()
-            row_offset = 1 if advanced_visible else -1  # Calculate offset only once
-
             if advanced_visible:
                 self.xtts_advanced_settings_frame.grid()
             else:
@@ -3287,17 +3320,16 @@ class TTSOptimizerGUI:
 
         elif self.tts_service.get() == "VoiceCraft":
             advanced_visible = self.show_advanced_tts_settings.get()
-            row_offset = 1 if advanced_visible else -1  # Calculate offset only once
-
             if advanced_visible:
-                self.advanced_tts_settings_frame.grid()  # Make VoiceCraft advanced visible
+                self.voicecraft_advanced_settings_frame.grid()
             else:
-                self.advanced_tts_settings_frame.grid_remove()  # Hide VoiceCraft advanced
+                self.voicecraft_advanced_settings_frame.grid_remove()
 
         else: # Silero, no advanced settings
-            return  # No action needed for Silero
+            return
 
         # Common Row Shifting (for both XTTS and VoiceCraft)
+        row_offset = 1 if advanced_visible else -1
         if hasattr(self, 'dubbing_frame') and self.dubbing_frame.winfo_ismapped():
             self.dubbing_frame.grid(row=self.dubbing_frame.grid_info()["row"] + row_offset)
         if hasattr(self, 'output_options_label'):
@@ -3308,7 +3340,6 @@ class TTSOptimizerGUI:
             self.generation_label.grid(row=self.generation_label.grid_info()["row"] + row_offset)
         if hasattr(self, 'generation_frame'):
             self.generation_frame.grid(row=self.generation_frame.grid_info()["row"] + row_offset)
-
     def apply_xtts_settings(self):
         settings = {
             "stream_chunk_size": int(self.xtts_stream_chunk_size.get()),
@@ -4930,10 +4961,12 @@ def main():
             logging.info("Connecting to VoiceCraft")
             gui.tts_service.set("VoiceCraft")
             gui.connect_to_server()
+            gui.update_tts_service()
         elif args.silero:
             logging.info("Connecting to Silero")
             gui.tts_service.set("Silero")
             gui.connect_to_server()
+            gui.update_tts_service()
 
     logging.info("Starting main event loop")
     root.mainloop()
