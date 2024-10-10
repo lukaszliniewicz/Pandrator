@@ -1,4 +1,3 @@
-tkinter
 customtkinter
 requests
 pydub
@@ -17,3 +16,4 @@ beautifulsoup4
 mutagen
 Pillow
 argparse
+sentence-splitter
