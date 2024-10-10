@@ -7,6 +7,11 @@
 >[!TIP]
 >**TL;DR:** Pandrator is not an AI model itself, but a GUI framework for Text-to-Speech projects. It can generate audiobooks and dubbing by leveraging several AI tools and purpose-made workflows and algorithms. It works on Windows out of the box. It does work on Linux, but you have to perform a manual installation at the moment. The easiest way to use it is to download one of the precompiled [archives](https://1drv.ms/f/s!AgSiDu9lV3iMnPFKPO5BB_c72OLjtQ?e=3fRZMG) - when you unzip them, use the launcher. They come in three versions, one with just XTTS (the recommended TTS model), one with XTTS, RVC and WhisperX (WhisperX is needed for dubbing), and one with Silero (the smallest model that works even on older CPUs). You can also use the launcher to install additional tools. For other installation options, look below. XTTS works best on an Nvidia GPU (with as little as 4GB of VRAM), though it is usable on a CPU.
 
+## Quick Demonstration
+This video shows the process of launching Pandrator, selecting a source file, starting generation, stopping it and previewing the saved file. It has not been sped up as it's intended to illustrate the real performance (you may skip the first 35s when the XTTS server is launching, and please remember to turn on the sound). 
+
+https://github.com/user-attachments/assets/1f1b5698-b279-424d-872b-1cc52923421b
+
 Pandrator aspires to be easy to use and install - it has a one-click installer and a graphical user interface. It is a tool designed to perform two tasks: 
 - transform text, PDF, EPUB and SRT files into spoken audio in multiple languages based chiefly on open source software run locally, including preprocessing to make the generated speech sound as natural as possible by, among other things, splitting the text into paragraphs, sentences and smaller logical text blocks (clauses), which the TTS models can process with minimal artifacts. Each sentence can be regenerated if the first attempt is not satisfacory. Voice cloning is possible for models that support it, and text can be additionally preprocessed using LLMs (to remove OCR artifacts or spell out things that the TTS models struggle with, like Roman numerals and abbreviations, for example),
 - generate dubbing either directly from a video file, including transcription (using [WhisperX](https://github.com/m-bain/whisperX)), or from an .srt file. It includes a complete workflow from a video file to a dubbed video file with subtitles - including translation using a variety of APIs and techniques to improve the quality of translation. [Subdub](https://github.com/lukaszliniewicz/Subdub), a companion app developed for this purpose, can also be used on its own.  
@@ -37,8 +42,6 @@ It leverages the [XTTS](https://huggingface.co/coqui/XTTS-v2), [Silero](https://
   - [Contributing](#contributing)
   - [Tips](#tips)
   - [To-do](#to-do)
-
-![UI Demonstration Image](pandrator_demonstration.gif)
 
 ## Samples
 The samples were generated using the minimal settings - no LLM text processing, RVC or TTS evaluation, and no sentences were regenerated. Both XTTS and Silero generations were faster than playback speed. 
