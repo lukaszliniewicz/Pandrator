@@ -43,7 +43,7 @@ from mutagen.flac import Picture
 from mutagen.id3 import PictureType
 import base64
 from PIL import Image
-
+import yt_dlp
 
 # Conditional imports for torch and RVC
 try:
@@ -95,9 +95,6 @@ class TextPreprocessor:
         # Add the merging of consecutive chapter sentences here
         processed_sentences = self.merge_consecutive_chapters(processed_sentences)
 
-        return processed_sentences
-
-        
         return processed_sentences
 
     def parallel_preprocess_text(self, text, pdf_preprocessed, source_file, disable_paragraph_detection):
@@ -701,6 +698,13 @@ class TTSOptimizerGUI:
         self.stop_repetition = ctk.StringVar(value="10")
         self.kvcache = ctk.StringVar(value="0")
         self.sample_batch_size = ctk.StringVar(value="8")
+        self.metadata = {"title": "", "album": "", "artist": "", "genre": "", "language": ""}
+        self.metadata_title = ctk.StringVar()
+        self.metadata_album = ctk.StringVar()
+        self.metadata_artist = ctk.StringVar()
+        self.metadata_genre = ctk.StringVar()
+        self.metadata_language = ctk.StringVar()
+        self.load_metadata()  # Load metadata on startup
         self.whisper_languages = [
         'Afrikaans', 'Albanian', 'Amharic', 'Arabic', 'Armenian', 'Assamese', 'Azerbaijani', 'Bashkir', 'Basque', 
         'Belarusian', 'Bengali', 'Bosnian', 'Breton', 'Bulgarian', 'Burmese', 'Cantonese', 'Castilian', 'Catalan', 
@@ -800,8 +804,11 @@ class TTSOptimizerGUI:
         self.paste_text_button = ctk.CTkButton(source_file_frame, text="Paste or Write", command=self.paste_text)
         self.paste_text_button.grid(row=0, column=1, padx=10, pady=(10, 10), sticky=tk.EW)
 
+        self.download_from_url_button = ctk.CTkButton(source_file_frame, text="Download from URL", command=self.download_from_url)
+        self.download_from_url_button.grid(row=0, column=2, padx=5, pady=(10, 10), sticky=tk.EW)  # Added URL button
+
         self.selected_file_label = ctk.CTkLabel(source_file_frame, text="No file selected")
-        self.selected_file_label.grid(row=0, column=2, padx=10, pady=(10, 10), sticky=tk.W)
+        self.selected_file_label.grid(row=0, column=3, padx=10, pady=(10, 10), sticky=tk.W)
 
         # TTS Settings Section
         ctk.CTkLabel(self.session_tab, text="TTS Settings", font=ctk.CTkFont(size=14, weight="bold")).grid(row=5, column=0, columnspan=4, padx=10, pady=10, sticky=tk.W)
@@ -965,40 +972,29 @@ class TTSOptimizerGUI:
 
 
         # Output Options Section
-        ctk.CTkLabel(self.session_tab, text="Output Options", font=ctk.CTkFont(size=14, weight="bold")).grid(row=8, column=0, columnspan=6, padx=10, pady=10, sticky=tk.W) #Columnspan to 6
+        self.output_options_label = ctk.CTkLabel(self.session_tab, text="Output Options", font=ctk.CTkFont(size=14, weight="bold"))
+        self.output_options_label.grid(row=8, column=0, columnspan=6, padx=10, pady=10, sticky=tk.W)
 
-        output_options_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
-        output_options_frame.grid(row=9, column=0, columnspan=6, padx=3, pady=(0, 20), sticky=tk.EW)
-        for i in range(6):  # Configure all 6 columns
-            output_options_frame.grid_columnconfigure(i, weight=1)
+        self.output_options_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
+        self.output_options_frame.grid(row=9, column=0, columnspan=6, padx=3, pady=(0, 20), sticky=tk.EW)
+        for i in range(6):
+            self.output_options_frame.grid_columnconfigure(i, weight=1)
 
-        ctk.CTkLabel(output_options_frame, width=70, text="Format:").grid(row=0, column=0, padx=3, pady=5, sticky=tk.EW)
+        ctk.CTkLabel(self.output_options_frame, width=70, text="Format:").grid(row=0, column=0, padx=3, pady=5, sticky=tk.EW)
         self.output_format = ctk.StringVar(value="m4b")
-        self.format_dropdown = ctk.CTkOptionMenu(output_options_frame, variable=self.output_format, values=["m4b", "opus", "mp3", "wav"], width=70) #set width
-        self.format_dropdown.grid(row=0, column=1, padx=3, pady=5, sticky=tk.W) #sticky W
+        self.format_dropdown = ctk.CTkOptionMenu(self.output_options_frame, variable=self.output_format, values=["m4b", "opus", "mp3", "wav"], width=70)
+        self.format_dropdown.grid(row=0, column=1, padx=3, pady=5, sticky=tk.W)
 
-        ctk.CTkLabel(output_options_frame, width=70, text="Bitrate:").grid(row=0, column=2, padx=3, pady=5, sticky=tk.W)
+        ctk.CTkLabel(self.output_options_frame, width=70, text="Bitrate:").grid(row=0, column=2, padx=3, pady=5, sticky=tk.W)
         self.bitrate = ctk.StringVar(value="64k")
-        self.bitrate_dropdown = ctk.CTkOptionMenu(output_options_frame, variable=self.bitrate, values=["16k", "32k", "64k", "128k", "196k", "312k"], width=70) #Set width
-        self.bitrate_dropdown.grid(row=0, column=3, padx=3, pady=5, sticky=tk.W) # Sticky W
+        self.bitrate_dropdown = ctk.CTkOptionMenu(self.output_options_frame, variable=self.bitrate, values=["16k", "32k", "64k", "128k", "196k", "312k"], width=70)
+        self.bitrate_dropdown.grid(row=0, column=3, padx=3, pady=5, sticky=tk.W)
 
-        self.upload_cover_button = ctk.CTkButton(output_options_frame, text="Upload Cover", command=self.upload_cover)  # Fix: Connect command
+        self.upload_cover_button = ctk.CTkButton(self.output_options_frame, text="Upload Cover", command=self.upload_cover)
         self.upload_cover_button.grid(row=0, column=4, padx=3, pady=5, sticky=tk.EW)
 
-        ctk.CTkLabel(output_options_frame,width=70, text="Album:").grid(row=1, column=0, padx=3, pady=5, sticky=tk.W)
-        self.album_name = ctk.StringVar()
-        self.album_name_entry = ctk.CTkEntry(output_options_frame, textvariable=self.album_name)
-        self.album_name_entry.grid(row=1, column=1, padx=3, pady=5, sticky=tk.EW)
-
-        ctk.CTkLabel(output_options_frame, width=70, text="Artist:").grid(row=1, column=2, padx=3, pady=5, sticky=tk.W)
-        self.artist_name = ctk.StringVar()
-        self.artist_name_entry = ctk.CTkEntry(output_options_frame, textvariable=self.artist_name)
-        self.artist_name_entry.grid(row=1, column=3, padx=3, pady=5, sticky=tk.EW)  
-
-        ctk.CTkLabel(output_options_frame, width=70, text="Genre:").grid(row=1, column=4, padx=3, pady=5, sticky=tk.W)
-        self.genre = ctk.StringVar()
-        self.genre_entry = ctk.CTkEntry(output_options_frame, textvariable=self.genre)
-        self.genre_entry.grid(row=1, column=5, padx=3, pady=5, sticky=tk.EW)
+        self.metadata_button = ctk.CTkButton(self.output_options_frame, text="Metadata", command=self.open_metadata_window)
+        self.metadata_button.grid(row=0, column=5, padx=3, pady=5, sticky=tk.EW)
 
         # Generation Section
         generation_label = ctk.CTkLabel(self.session_tab, text="Generation", font=ctk.CTkFont(size=14, weight="bold"))
@@ -1025,6 +1021,77 @@ class TTSOptimizerGUI:
         ctk.CTkLabel(generation_frame, text="Estimated Remaining Time:").grid(row=2, column=2, padx=10, pady=(5), sticky=tk.W)
         self.remaining_time_label = ctk.CTkLabel(generation_frame, text="N/A")
         self.remaining_time_label.grid(row=2, column=3, padx=10, pady=(5), sticky=tk.W)
+
+    def open_metadata_window(self):
+        self.load_metadata()
+        metadata_window = ctk.CTkToplevel(self.master)
+        metadata_window.title("Metadata")
+        metadata_window.geometry("400x300")
+        metadata_window.grab_set()
+        metadata_window.transient(self.master)
+
+        self.metadata_title.set(self.metadata.get("title", ""))
+        self.metadata_album.set(self.metadata.get("album", ""))
+        self.metadata_artist.set(self.metadata.get("artist", ""))
+        self.metadata_genre.set(self.metadata.get("genre", ""))
+        self.metadata_language.set(self.metadata.get("language", ""))
+
+
+        ctk.CTkLabel(metadata_window, text="Title:").grid(row=0, column=0, padx=10, pady=5, sticky=tk.W)
+        ctk.CTkEntry(metadata_window, textvariable=self.metadata_title).grid(row=0, column=1, padx=10, pady=5, sticky=tk.EW)
+
+        ctk.CTkLabel(metadata_window, text="Album:").grid(row=1, column=0, padx=10, pady=5, sticky=tk.W)
+        self.metadata_album = ctk.StringVar(value=self.session_name.get())
+        ctk.CTkEntry(metadata_window, textvariable=self.metadata_album).grid(row=1, column=1, padx=10, pady=5, sticky=tk.EW)
+
+        ctk.CTkLabel(metadata_window, text="Artist:").grid(row=2, column=0, padx=10, pady=5, sticky=tk.W)
+        ctk.CTkEntry(metadata_window, textvariable=self.metadata_artist).grid(row=2, column=1, padx=10, pady=5, sticky=tk.EW)
+
+        ctk.CTkLabel(metadata_window, text="Genre:").grid(row=3, column=0, padx=10, pady=5, sticky=tk.W)
+        ctk.CTkEntry(metadata_window, textvariable=self.metadata_genre).grid(row=3, column=1, padx=10, pady=5, sticky=tk.EW)
+
+        ctk.CTkLabel(metadata_window, text="Language:").grid(row=4, column=0, padx=10, pady=5, sticky=tk.W)
+        ctk.CTkEntry(metadata_window, textvariable=self.metadata_language).grid(row=4, column=1, padx=10, pady=5, sticky=tk.EW)
+
+        def save_and_close():
+            # Save metadata to self.metadata before closing
+            self.metadata["title"] = self.metadata_title.get()
+            self.metadata["album"] = self.metadata_album.get()
+            self.metadata["artist"] = self.metadata_artist.get()
+            self.metadata["genre"] = self.metadata_genre.get()
+            self.metadata["language"] = self.metadata_language.get()
+            self.save_metadata()
+            metadata_window.grab_release()
+            metadata_window.destroy()
+
+        ctk.CTkButton(metadata_window, text="Save", command=save_and_close).grid(row=5, column=0, columnspan=2, pady=20)
+
+        metadata_window.grid_columnconfigure(1, weight=1)
+
+    def save_metadata(self):
+        session_dir = os.path.join("Outputs", self.session_name.get())
+        os.makedirs(session_dir, exist_ok=True)
+        metadata_file = os.path.join(session_dir, "metadata.json")
+        with open(metadata_file, "w") as f:
+            json.dump(self.metadata, f)
+
+    def load_metadata(self):
+        try:
+            session_dir = os.path.join("Outputs", self.session_name.get())
+            metadata_file = os.path.join(session_dir, "metadata.json")
+            with open(metadata_file, "r") as f:
+                self.metadata = json.load(f)
+
+                # Update the StringVars here if they exist
+                if hasattr(self, "metadata_title"):
+                    self.metadata_title.set(self.metadata.get("title", ""))
+                    self.metadata_album.set(self.metadata.get("album", ""))
+                    self.metadata_artist.set(self.metadata.get("artist", ""))
+                    self.metadata_genre.set(self.metadata.get("genre", ""))
+                    self.metadata_language.set(self.metadata.get("language", ""))
+
+        except FileNotFoundError:
+            pass
 
     def create_voicecraft_advanced_settings_frame(self):
         self.voicecraft_advanced_settings_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
@@ -1370,27 +1437,34 @@ class TTSOptimizerGUI:
         ctk.CTkLabel(generated_sentences_frame, text="Generated Sentences", font=ctk.CTkFont(size=14, weight="bold")).pack(pady=(0, 10))
 
         # Top buttons
-        button_frame = ctk.CTkFrame(generated_sentences_frame)
-        button_frame.pack(fill=tk.X, pady=(0, 10))
+        top_button_frame = ctk.CTkFrame(generated_sentences_frame)
+        top_button_frame.pack(fill=tk.X, pady=(0, 10))
 
-        self.play_button = ctk.CTkButton(button_frame, text="Play", command=self.toggle_playback, fg_color="#2e8b57", hover_color="#3cb371")
+        self.play_button = ctk.CTkButton(top_button_frame, text="Play", command=self.toggle_playback, fg_color="#2e8b57", hover_color="#3cb371")
         self.play_button.pack(side=tk.LEFT, padx=(0, 5), expand=True, fill=tk.X)
 
-        ctk.CTkButton(button_frame, text="Play as Playlist", command=self.play_sentences_as_playlist).pack(side=tk.LEFT, padx=5, expand=True, fill=tk.X)
+        ctk.CTkButton(top_button_frame, text="Play as Playlist", command=self.play_sentences_as_playlist).pack(side=tk.LEFT, padx=5, expand=True, fill=tk.X)
 
-        ctk.CTkButton(button_frame, text="Stop", command=self.stop_playback).pack(side=tk.LEFT, padx=(5, 0), expand=True, fill=tk.X)
+        ctk.CTkButton(top_button_frame, text="Stop", command=self.stop_playback).pack(side=tk.LEFT, padx=5, expand=True, fill=tk.X)
 
-        # Create a frame to hold the Listbox and Scrollbar
-        listbox_frame = ctk.CTkFrame(generated_sentences_frame)
-        listbox_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        ctk.CTkButton(top_button_frame, text="Save Output", command=self.save_output).pack(side=tk.LEFT, padx=(5, 0), expand=True, fill=tk.X)
 
-        # Create the Listbox
+        # Create a frame to hold both listboxes vertically
+        listboxes_frame = ctk.CTkFrame(generated_sentences_frame)
+        listboxes_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+
+        # Main listbox (Generated Sentences)
+        main_listbox_frame = ctk.CTkFrame(listboxes_frame)
+        main_listbox_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=(0, 5))
+
+        ctk.CTkLabel(main_listbox_frame, text="All Sentences", font=ctk.CTkFont(size=12, weight="bold")).pack(pady=(0, 5))
+
         self.playlist_listbox = tk.Listbox(
-            listbox_frame,
+            main_listbox_frame,
             bg="#444444",
             fg="#FFFFFF",
             font=("Helvetica", 9),
-            selectbackground="#4B0082",  # Deep Purple
+            selectbackground="#4B0082",
             selectforeground="#FFFFFF",
             selectborderwidth=0,
             activestyle="none",
@@ -1400,22 +1474,46 @@ class TTSOptimizerGUI:
         )
         self.playlist_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # Create the Scrollbar
-        scrollbar = ctk.CTkScrollbar(listbox_frame, orientation="vertical", command=self.playlist_listbox.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        main_scrollbar = ctk.CTkScrollbar(main_listbox_frame, orientation="vertical", command=self.playlist_listbox.yview)
+        main_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.playlist_listbox.configure(yscrollcommand=main_scrollbar.set)
 
-        # Configure the Listbox to use the Scrollbar
-        self.playlist_listbox.configure(yscrollcommand=scrollbar.set)
+        # Marked listbox (Marked for Regeneration)
+        marked_listbox_frame = ctk.CTkFrame(listboxes_frame)
+        marked_listbox_frame.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True, pady=(5, 0))
+
+        ctk.CTkLabel(marked_listbox_frame, text="Marked for Regeneration", font=ctk.CTkFont(size=12, weight="bold")).pack(pady=(0, 5))
+
+        self.marked_listbox = tk.Listbox(
+            marked_listbox_frame,
+            bg="#444444",
+            fg="#FFFFFF",
+            font=("Helvetica", 9),
+            selectbackground="#4B0082",
+            selectforeground="#FFFFFF",
+            selectborderwidth=0,
+            activestyle="none",
+            highlightthickness=0,
+            bd=0,
+            relief=tk.FLAT
+        )
+        self.marked_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        marked_scrollbar = ctk.CTkScrollbar(marked_listbox_frame, orientation="vertical", command=self.marked_listbox.yview)
+        marked_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.marked_listbox.configure(yscrollcommand=marked_scrollbar.set)
 
         # Bottom buttons
         bottom_button_frame = ctk.CTkFrame(generated_sentences_frame)
-        bottom_button_frame.pack(fill=tk.X, pady=(0, 10))
+        bottom_button_frame.pack(fill=tk.X, pady=(10, 0))
 
-        ctk.CTkButton(bottom_button_frame, text="Regenerate", command=self.regenerate_selected_sentence).pack(side=tk.LEFT, padx=(0, 5), expand=True, fill=tk.X)
+        ctk.CTkButton(bottom_button_frame, text="Mark", command=self.mark_for_regeneration).pack(side=tk.LEFT, padx=(0, 5), expand=True, fill=tk.X)
+        ctk.CTkButton(bottom_button_frame, text="Unmark", command=self.unmark_for_regeneration).pack(side=tk.LEFT, padx=5, expand=True, fill=tk.X)
+        ctk.CTkButton(bottom_button_frame, text="Regenerate", command=self.regenerate_selected_sentence).pack(side=tk.LEFT, padx=5, expand=True, fill=tk.X)
         ctk.CTkButton(bottom_button_frame, text="Regenerate All", command=self.regenerate_all_sentences).pack(side=tk.LEFT, padx=5, expand=True, fill=tk.X)
         ctk.CTkButton(bottom_button_frame, text="Remove", command=self.remove_selected_sentences).pack(side=tk.LEFT, padx=5, expand=True, fill=tk.X)
-        ctk.CTkButton(bottom_button_frame, text="Edit", command=self.edit_selected_sentence).pack(side=tk.LEFT, padx=5, expand=True, fill=tk.X)
-        ctk.CTkButton(bottom_button_frame, text="Save Output", command=self.save_output).pack(side=tk.LEFT, padx=(5, 0), expand=True, fill=tk.X)
+        ctk.CTkButton(bottom_button_frame, text="Edit", command=self.edit_selected_sentence).pack(side=tk.LEFT, padx=(5, 0), expand=True, fill=tk.X)
+
 
     def create_xtts_advanced_settings_frame(self):
         self.xtts_advanced_settings_frame = ctk.CTkFrame(self.session_tab, fg_color="gray20", corner_radius=10)
@@ -1588,6 +1686,23 @@ class TTSOptimizerGUI:
             error_msg = f"Error copying trained model: {str(e)}"
             logging.error(error_msg)
             self.training_status.set(error_msg)
+
+    def mark_for_regeneration(self):
+        selected_indices = self.playlist_listbox.curselection()
+        for index in selected_indices:
+            sentence = self.playlist_listbox.get(index)
+            if sentence not in self.marked_listbox.get(0, tk.END):
+                self.marked_listbox.insert(tk.END, sentence)
+                sentence_number = sentence.split(']')[0][1:]  # Extract sentence number
+                self.mark_sentence_in_json(sentence_number)
+
+    def unmark_for_regeneration(self):
+        selected_indices = self.marked_listbox.curselection()
+        for index in reversed(selected_indices):
+            sentence = self.marked_listbox.get(index)
+            self.marked_listbox.delete(index)
+            sentence_number = sentence.split(']')[0][1:]  # Extract sentence number
+            self.unmark_sentence_in_json(sentence_number)
 
 
     def save_api_key(self, key_name, key_value):
@@ -2261,9 +2376,17 @@ class TTSOptimizerGUI:
             filetypes=[("Supported Files", "*.txt *.srt *.pdf *.epub *.docx *.mobi *.mp4 *.mkv *.webm *.avi *.mov"),
                     ("All files", "*.*")]
         )
+        
+        if self.pre_selected_source_file.lower().endswith((".mp4", ".mkv", ".webm", ".avi", ".mov", ".srt")):
+            self.output_options_label.grid_remove()
+            self.output_options_frame.grid_remove()
+        else:
+            self.output_options_label.grid()
+            self.output_options_frame.grid()
+        
         if self.pre_selected_source_file:
             file_name = os.path.basename(self.pre_selected_source_file)
-            truncated_file_name = file_name[:70] + "..." if len(file_name) > 70 else file_name
+            truncated_file_name = file_name[:15] + "..." if len(file_name) > 15 else file_name
             self.selected_file_label.configure(text=truncated_file_name)
 
             session_name = self.session_name.get()
@@ -2359,6 +2482,106 @@ class TTSOptimizerGUI:
             self.start_generation_button.configure(state=tk.NORMAL)
 
         self.pdf_preprocessed = False  # Reset the flag
+
+
+    def download_from_url(self):
+        if not self.session_name.get():
+            CTkMessagebox(title="No Session", message="Please create or load a session before downloading from URL.", icon="info")
+            return
+
+        session_name = self.session_name.get()
+        self.session_dir = os.path.join("Outputs", session_name)
+        os.makedirs(self.session_dir, exist_ok=True)
+
+        def show_download_popup():
+            popup = ctk.CTkToplevel(self.master)
+            popup.title("Download from URL")
+            popup.geometry("400x150")
+            popup.transient(self.master)
+            popup.grab_set()
+
+            ctk.CTkLabel(popup, text="Enter YouTube URL:").pack(pady=(20, 5))
+            url_entry = ctk.CTkEntry(popup, width=300)
+            url_entry.pack(pady=5)
+
+            def start_download():
+                url = url_entry.get()
+                popup.destroy()  # Close the popup *before* starting the download
+                threading.Thread(target=self.download_video, args=(url,), daemon=True).start()
+
+            ctk.CTkButton(popup, text="Download", command=start_download).pack(pady=20)
+
+            # Center the popup
+            popup.update_idletasks()
+            width = popup.winfo_width()
+            height = popup.winfo_height()
+            x = (popup.winfo_screenwidth() // 2) - (width // 2)
+            y = (popup.winfo_screenheight() // 2) - (height // 2)
+            popup.geometry('{}x{}+{}+{}'.format(width, height, x, y))
+
+        show_download_popup()
+
+    def download_video(self, url):
+        try:
+            ydl_opts = {
+                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                'outtmpl': {
+                    'default': os.path.join(self.session_dir, '%(title)s.%(ext)s')
+                },
+                'quiet': True,
+            }
+
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                if not info:
+                    raise ValueError("Could not extract video info")
+
+                video_title = info['title']
+                sanitized_title = ''.join(e for e in video_title if e.isalnum() or e in ['-', '_', ' '])
+                ydl_opts['outtmpl']['default'] = os.path.join(self.session_dir, f'{sanitized_title}.%(ext)s')
+                
+                ydl.download([url])
+
+            downloaded_files = os.listdir(self.session_dir)
+            video_file = next((f for f in downloaded_files if f.startswith(sanitized_title)), None)
+
+            if not video_file:
+                raise FileNotFoundError("Downloaded video file not found in the session folder.")
+
+            destination_path = os.path.join(self.session_dir, video_file)
+            self.master.after(0, lambda: self.load_downloaded_video(destination_path))
+
+        except yt_dlp.utils.DownloadError as e:
+            if "requested format not available" in str(e).lower():
+                error_msg = "The selected video format is not available. Try a different format or video."
+            else:
+                error_msg = f"Download error: {e}"
+            print(error_msg)
+            self.master.after(0, lambda error=error_msg: self.show_error_message(error))
+        except Exception as e:
+            error_msg = f"An unexpected error occurred during download: {e}"
+            print(error_msg)
+            self.master.after(0, lambda error=error_msg: self.show_error_message(error))
+
+    def load_downloaded_video(self, destination_path):
+        self.pre_selected_source_file = destination_path
+        file_name = os.path.basename(self.pre_selected_source_file)
+        truncated_file_name = file_name[:15] + "..." if len(file_name) > 15 else file_name
+        self.selected_file_label.configure(text=truncated_file_name)
+
+        self.source_file = ""  # For video files, this isn't used, but prevents potential issues
+
+        self.dubbing_frame.grid()  # Show dubbing related UI elements
+        self.toggle_transcription_widgets(True)
+
+        self.selected_video_file.set(self.pre_selected_source_file)
+        self.video_file_selection_frame.grid_remove()
+
+        CTkMessagebox(title="Download Complete", message="Video downloaded successfully!", icon="info")
+
+    def show_error_message(self, error_message):
+        CTkMessagebox(title="Error", message=f"An error occurred: {error_message}", icon="cancel")
+
 
     def process_epub_file(self, epub_path):
         try:
@@ -2860,25 +3083,18 @@ class TTSOptimizerGUI:
                     self.remaining_time_label.configure(text="N/A")
 
             self.session_name.set(new_session_name)
-            self.session_name_label.configure(text=new_session_name)  # Update the session name label
+            self.session_name_label.configure(text=new_session_name)
             self.playlist_listbox.delete(0, tk.END)
-            self.source_file = ""
-            self.selected_file_label.configure(text="No file selected")  # Reset the selected file label
+            self.marked_listbox.delete(0, tk.END)
+            self.source_file = ""  # Clear the source_file
+            self.selected_file_label.configure(text="No file selected") # Reset the label
             self.progress_bar.set(0)
             self.remaining_time_label.configure(text="N/A")
-            
-            # Reset the stop_flag when creating a new session
             self.stop_flag = False
+            self.pre_selected_source_file = None # Clear the pre-selected file
+            self.metadata = {"title": "", "album": "", "artist": "", "genre": "", "language": ""} # Clear metadata for a new session
+            self.save_metadata()  # Save empty metadata
 
-            # Copy the pre-selected source file to the new session folder
-            if self.pre_selected_source_file:
-                session_dir = os.path.join("Outputs", new_session_name)
-                os.makedirs(session_dir, exist_ok=True)
-                file_name = os.path.basename(self.pre_selected_source_file)
-                destination_path = os.path.join(session_dir, file_name)
-                shutil.copy(self.pre_selected_source_file, destination_path)
-                self.source_file = destination_path
-                self.selected_file_label.configure(text=file_name)
 
     def stop_generation(self):
         self.stop_flag = True
@@ -3155,39 +3371,39 @@ class TTSOptimizerGUI:
             self.master.after(10, self.update_play_button_text, "Pause")
 
     def remove_selected_sentences(self):
+        for listbox in [self.playlist_listbox, self.marked_listbox]:
+            selected_indices = listbox.curselection()
+            for index in reversed(selected_indices):
+                sentence = listbox.get(index)
+                listbox.delete(index)
+                
+                # Remove from the other listbox if present
+                other_listbox = self.marked_listbox if listbox == self.playlist_listbox else self.playlist_listbox
+                for i in range(other_listbox.size()):
+                    if other_listbox.get(i) == sentence:
+                        other_listbox.delete(i)
+                        break
+
+        # Update the JSON file to reflect the changes
+        self.update_json_after_removal()
+
+    def update_json_after_removal(self):
         session_name = self.session_name.get()
         session_directory = os.path.join("Outputs", session_name)
         json_filename = os.path.join(session_directory, f"{session_name}_sentences.json")
 
-        selected_indices = self.playlist_listbox.curselection()
-        if not selected_indices:
-            messagebox.showerror("Error", "Please select at least one sentence to remove.")
-            return
-
         processed_sentences = self.load_json(json_filename)
+        remaining_sentences = list(self.playlist_listbox.get(0, tk.END))
 
-        for index in reversed(selected_indices):
-            sentence_text = self.playlist_listbox.get(index)
-            sentence_index = self.playlist_listbox.get(0, tk.END).index(sentence_text)
+        updated_sentences = [s for s in processed_sentences if f"[{s['sentence_number']}] {s.get('processed_sentence', s['original_sentence'])}" in remaining_sentences]
 
-            # Find the sentence in the processed_sentences list and remove it
-            sentence_dict = next((s for s in processed_sentences if s["sentence_number"] == str(sentence_index + 1)), None)
-            if sentence_dict:
-                processed_sentences.remove(sentence_dict)
+        # Renumber the sentences
+        for i, sentence in enumerate(updated_sentences, start=1):
+            sentence['sentence_number'] = str(i)
 
-                # Delete the corresponding WAV file
-                wav_filename = os.path.join(session_directory, "Sentence_wavs", f"{session_name}_sentence_{sentence_index + 1}.wav")
-                if os.path.exists(wav_filename):
-                    os.remove(wav_filename)
+        self.save_json(updated_sentences, json_filename)
 
-            self.playlist_listbox.delete(index)
 
-        # Update the sentence numbers in the processed_sentences list
-        for i, sentence_dict in enumerate(processed_sentences, start=1):
-            sentence_dict["sentence_number"] = str(i)
-
-        # Save the updated processed_sentences list to the JSON file
-        self.save_json(processed_sentences, json_filename)
 
     def fetch_speakers_list(self):
         try:
@@ -3845,27 +4061,30 @@ class TTSOptimizerGUI:
     def save_json(self, data, filename):
         numbered_data = []
         sentence_counter = 1
-        
+        marked_sentence_numbers = {int(self.marked_listbox.get(i).split(']')[0][1:]) for i in range(self.marked_listbox.size())}
+
         for sentence_dict in data:
             split_part = sentence_dict.get("split_part")
             paragraph = sentence_dict.get("paragraph", "no")
-            chapter = sentence_dict.get("chapter", "no") # Get chapter info
+            chapter = sentence_dict.get("chapter", "no")
             sentence_number = str(sentence_counter)
             sentence_counter += 1
             
             numbered_sentence = {
                 "sentence_number": sentence_number,
                 "paragraph": paragraph,
-                "chapter": chapter, # Save chapter info to JSON
+                "chapter": chapter,
                 "split_part": split_part,
                 "original_sentence": sentence_dict.get("original_sentence"),
                 "processed_sentence": sentence_dict.get("processed_sentence"),
                 "tts_generated": sentence_dict.get("tts_generated", "no"),
+                "marked": int(sentence_number) in marked_sentence_numbers
             }
             numbered_data.append(numbered_sentence)
         
         with open(filename, 'w') as f:
             json.dump(numbered_data, f, indent=2)
+
 
 
     def update_language_dropdown(self, event=None):
@@ -4205,11 +4424,17 @@ class TTSOptimizerGUI:
     def update_playlist(self, processed_sentence):
         sentence_text = processed_sentence["processed_sentence"] if self.enable_llm_processing.get() and "processed_sentence" in processed_sentence else processed_sentence["original_sentence"]
         sentence_number = int(processed_sentence["sentence_number"])
-        if sentence_text not in self.playlist_listbox.get(0, tk.END):
-            # Add the sentence number to the displayed text
-            display_text = f"[{sentence_number}] {sentence_text}"
         display_text = f"[{sentence_number}] {sentence_text}"
-        self.playlist_listbox.insert(int(sentence_number) - 1, display_text)
+        
+        # Check if the sentence is already in the playlist
+        for i in range(self.playlist_listbox.size()):
+            if self.playlist_listbox.get(i).startswith(f"[{sentence_number}]"):
+                self.playlist_listbox.delete(i)
+                self.playlist_listbox.insert(i, display_text)
+                return
+
+        # If not found, insert the new sentence
+        self.playlist_listbox.insert(tk.END, display_text)
 
     def play_selected_sentence(self):
         if pygame.mixer.get_init() is None:
@@ -4218,40 +4443,50 @@ class TTSOptimizerGUI:
         if self.channel is None:
             self.channel = pygame.mixer.Channel(0)
             
-        selected_index = self.playlist_listbox.curselection()
-        if selected_index:
-            selected_sentence = self.playlist_listbox.get(selected_index)
-            # Extract the sentence number and text using a regular expression
-            match = re.match(r'^\[(\d+)\]\s(.+)$', selected_sentence)
-            if match:
-                sentence_number = match.group(1)
-                sentence_text = match.group(2)
-            else:
-                sentence_number = None
-                sentence_text = selected_sentence
-            
-            session_name = self.session_name.get()
-            session_dir = os.path.join("Outputs", session_name)
-            json_filename = os.path.join(session_dir, f"{session_name}_sentences.json")
-            processed_sentences = self.load_json(json_filename)
-            
-            sentence_dict = next((s for s in processed_sentences if str(s["sentence_number"]) == sentence_number), None)
+        selected_index_main = self.playlist_listbox.curselection()
+        selected_index_marked = self.marked_listbox.curselection()
+        
+        if selected_index_main:
+            selected_sentence = self.playlist_listbox.get(selected_index_main[0])
+            source_listbox = self.playlist_listbox
+        elif selected_index_marked:
+            selected_sentence = self.marked_listbox.get(selected_index_marked[0])
+            source_listbox = self.marked_listbox
+        else:
+            messagebox.showinfo("No Selection", "Please select a sentence to play.")
+            return
 
-            if sentence_dict:
-                wav_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence_{sentence_number}.wav")
+        # Extract the sentence number and text using a regular expression
+        match = re.match(r'^\[(\d+)\]\s(.+)$', selected_sentence)
+        if match:
+            sentence_number = match.group(1)
+            sentence_text = match.group(2)
+        else:
+            sentence_number = None
+            sentence_text = selected_sentence
+        
+        session_name = self.session_name.get()
+        session_dir = os.path.join("Outputs", session_name)
+        json_filename = os.path.join(session_dir, f"{session_name}_sentences.json")
+        processed_sentences = self.load_json(json_filename)
+        
+        sentence_dict = next((s for s in processed_sentences if str(s["sentence_number"]) == sentence_number), None)
 
-                if os.path.exists(wav_filename):
-                    sound = pygame.mixer.Sound(wav_filename)
-                    self.channel.play(sound)
-                    self.current_sentence = sentence_text
-                    self.playing = True
-                    self.master.after(10, self.update_play_button_text, "Pause")
-                    self.master.after(math.ceil(sound.get_length() * 1000), self.stop_playback)
-                    self.master.after(math.ceil(sound.get_length() * 1000), sound.stop)  # Stop the sound after playback
-                else:
-                    messagebox.showinfo("Audio Not Available", "The audio for the selected sentence is not available.")
+        if sentence_dict:
+            wav_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence_{sentence_number}.wav")
+
+            if os.path.exists(wav_filename):
+                sound = pygame.mixer.Sound(wav_filename)
+                self.channel.play(sound)
+                self.current_sentence = sentence_text
+                self.playing = True
+                self.master.after(10, self.update_play_button_text, "Pause")
+                self.master.after(math.ceil(sound.get_length() * 1000), self.stop_playback)
+                self.master.after(math.ceil(sound.get_length() * 1000), sound.stop)  # Stop the sound after playback
             else:
-                messagebox.showinfo("Sentence Not Found", "The selected sentence was not found in the JSON file.")
+                messagebox.showinfo("Audio Not Available", "The audio for the selected sentence is not available.")
+        else:
+            messagebox.showinfo("Sentence Not Found", "The selected sentence was not found in the JSON file.")
 
 
     def view_session_folder(self):
@@ -4275,10 +4510,15 @@ class TTSOptimizerGUI:
             if self.tts_service.get() == "XTTS":
                 self.apply_xtts_settings_silently()
 
-            selected_index = self.playlist_listbox.curselection()
+            selected_index = self.marked_listbox.curselection()
+            if not selected_index:
+                selected_index = self.playlist_listbox.curselection()
+                source_listbox = self.playlist_listbox
+            else:
+                source_listbox = self.marked_listbox
+
             if selected_index:
-                selected_sentence = self.playlist_listbox.get(selected_index)
-                # Extract the sentence number and text using a regular expression
+                selected_sentence = source_listbox.get(selected_index[0])
                 match = re.match(r'^\[(\d+)\]\s(.+)$', selected_sentence)
                 if match:
                     sentence_number = match.group(1)
@@ -4295,7 +4535,6 @@ class TTSOptimizerGUI:
                     original_sentence_index = processed_sentences.index(sentence_dict)
                     sentence_number = int(sentence_dict["sentence_number"])
 
-                    # Update the sentence_dict with the original sentence text (without the number)
                     sentence_dict["original_sentence"] = sentence_text
                     sentence_dict["processed_sentence"] = sentence_text
 
@@ -4304,45 +4543,25 @@ class TTSOptimizerGUI:
                     logging.info(f"Updated sentence {sentence_number} in JSON file before regeneration: {json_filename}")
 
                     if self.source_file.endswith(".srt"):
-                        # Disable sentence splitting, appending, and silence appending for srt files
                         self.enable_sentence_splitting.set(False)
                         self.enable_sentence_appending.set(False)
                         self.silence_length.set(0)
                         self.paragraph_silence_length.set(0)
 
-                    # Optimize the sentence
                     processed_sentence = self.optimise_sentence(sentence_dict, original_sentence_index, session_dir)
 
                     if processed_sentence is not None:
-                        # Generate audio using the processed sentence
                         audio_data = self.tts_to_audio(processed_sentence["processed_sentence"] if "processed_sentence" in processed_sentence else processed_sentence["original_sentence"])
 
                         if audio_data is not None:
-                            # Apply RVC if enabled
                             if self.enable_rvc.get():
                                 audio_data = self.process_with_rvc(audio_data)
 
-                            # Apply fade in/out if enabled
                             if self.enable_fade.get():
                                 audio_data = self.apply_fade(audio_data, self.fade_in_duration.get(), self.fade_out_duration.get())
 
                             if not self.source_file.endswith(".srt"):
-                                if processed_sentence.get("paragraph", "no") == "yes":
-                                    silence_length = self.paragraph_silence_length.get()
-                                elif processed_sentence.get("split_part") is not None:
-                                    if isinstance(processed_sentence.get("split_part"), str):
-                                        if processed_sentence.get("split_part") in ["0a", "0b", "1a"]:
-                                            silence_length = self.silence_length.get() // 4
-                                        elif processed_sentence.get("split_part") == "1b":
-                                            silence_length = self.silence_length.get()
-                                    elif isinstance(processed_sentence.get("split_part"), int):
-                                        if processed_sentence.get("split_part") == 0:
-                                            silence_length = self.silence_length.get() // 4
-                                        elif processed_sentence.get("split_part") == 1:
-                                            silence_length = self.silence_length.get()
-                                else:
-                                    silence_length = self.silence_length.get()
-
+                                silence_length = self.get_silence_length(processed_sentence)
                                 if silence_length > 0:
                                     audio_data += AudioSegment.silent(duration=silence_length)
 
@@ -4350,11 +4569,9 @@ class TTSOptimizerGUI:
                             audio_data.export(sentence_output_filename, format="wav")
                             logging.info(f"Regenerated audio for sentence {sentence_number}: {sentence_output_filename}")
 
-                            # Update the listbox entry with the regenerated sentence (including the number)
-                            self.playlist_listbox.delete(selected_index)
-                            self.playlist_listbox.insert(selected_index, f"[{sentence_number}] {sentence_text}")
+                            new_sentence = f"[{sentence_number}] {processed_sentence['processed_sentence'] if 'processed_sentence' in processed_sentence else processed_sentence['original_sentence']}"
+                            self.update_listboxes_after_regeneration(selected_sentence, new_sentence)
 
-                            # Set the "tts_generated" flag to "yes" after successful regeneration
                             sentence_dict["tts_generated"] = "yes"
                             self.save_json(processed_sentences, json_filename)
 
@@ -4373,10 +4590,30 @@ class TTSOptimizerGUI:
         except Exception as e:
             logging.error(f"Error regenerating sentence: {str(e)}")
 
+    def update_listboxes_after_regeneration(self, old_sentence, new_sentence):
+        # Update the main playlist listbox
+        for i in range(self.playlist_listbox.size()):
+            if self.playlist_listbox.get(i) == old_sentence:
+                self.playlist_listbox.delete(i)
+                self.playlist_listbox.insert(i, new_sentence)
+                break
+
+        # Update the marked listbox
+        for i in range(self.marked_listbox.size()):
+            if self.marked_listbox.get(i) == old_sentence:
+                self.marked_listbox.delete(i)
+                self.marked_listbox.insert(i, new_sentence)
+                break
+
+
     def regenerate_all_sentences(self):
         try:
             if self.tts_service.get() == "XTTS":
                 self.apply_xtts_settings_silently()
+
+            marked_sentences = list(self.marked_listbox.get(0, tk.END))
+            if not marked_sentences:
+                marked_sentences = list(self.playlist_listbox.get(0, tk.END))
 
             session_name = self.session_name.get()
             session_dir = os.path.join("Outputs", session_name)
@@ -4395,73 +4632,56 @@ class TTSOptimizerGUI:
             progress_label = ctk.CTkLabel(progress_window, text="0%")
             progress_label.pack(pady=10)
 
-            total_sentences = len(processed_sentences)
+            total_sentences = len(marked_sentences)
 
-            for index, sentence_dict in enumerate(processed_sentences):
-                sentence_number = sentence_dict["sentence_number"]
-                original_sentence = sentence_dict["original_sentence"]
+            for index, sentence in enumerate(marked_sentences):
+                match = re.match(r'^\[(\d+)\]\s(.+)$', sentence)
+                if match:
+                    sentence_number = match.group(1)
+                    sentence_text = match.group(2)
 
-                # Update the sentence_dict with the original sentence text
-                sentence_dict["processed_sentence"] = original_sentence
+                    sentence_dict = next((s for s in processed_sentences if str(s["sentence_number"]) == sentence_number), None)
+                    if sentence_dict:
+                        sentence_dict["original_sentence"] = sentence_text
+                        sentence_dict["processed_sentence"] = sentence_text
 
-                if self.source_file.endswith(".srt"):
-                    self.enable_sentence_splitting.set(False)
-                    self.enable_sentence_appending.set(False)
-                    self.silence_length.set(0)
-                    self.paragraph_silence_length.set(0)
+                        if self.source_file.endswith(".srt"):
+                            self.enable_sentence_splitting.set(False)
+                            self.enable_sentence_appending.set(False)
+                            self.silence_length.set(0)
+                            self.paragraph_silence_length.set(0)
 
-                # Optimize the sentence
-                processed_sentence = self.optimise_sentence(sentence_dict, index, session_dir)
+                        processed_sentence = self.optimise_sentence(sentence_dict, int(sentence_number) - 1, session_dir)
 
-                if processed_sentence is not None:
-                    # Generate audio using the processed sentence
-                    audio_data = self.tts_to_audio(processed_sentence["processed_sentence"] if "processed_sentence" in processed_sentence else processed_sentence["original_sentence"])
+                        if processed_sentence is not None:
+                            audio_data = self.tts_to_audio(processed_sentence["processed_sentence"] if "processed_sentence" in processed_sentence else processed_sentence["original_sentence"])
 
-                    if audio_data is not None:
-                        # Apply RVC if enabled
-                        if self.enable_rvc.get():
-                            audio_data = self.process_with_rvc(audio_data)
+                            if audio_data is not None:
+                                if self.enable_rvc.get():
+                                    audio_data = self.process_with_rvc(audio_data)
 
-                        # Apply fade in/out if enabled
-                        if self.enable_fade.get():
-                            audio_data = self.apply_fade(audio_data, self.fade_in_duration.get(), self.fade_out_duration.get())
+                                if self.enable_fade.get():
+                                    audio_data = self.apply_fade(audio_data, self.fade_in_duration.get(), self.fade_out_duration.get())
 
-                        if not self.source_file.endswith(".srt"):
-                            if processed_sentence.get("paragraph", "no") == "yes":
-                                silence_length = self.paragraph_silence_length.get()
-                            elif processed_sentence.get("split_part") is not None:
-                                if isinstance(processed_sentence.get("split_part"), str):
-                                    if processed_sentence.get("split_part") in ["0a", "0b", "1a"]:
-                                        silence_length = self.silence_length.get() // 4
-                                    elif processed_sentence.get("split_part") == "1b":
-                                        silence_length = self.silence_length.get()
-                                elif isinstance(processed_sentence.get("split_part"), int):
-                                    if processed_sentence.get("split_part") == 0:
-                                        silence_length = self.silence_length.get() // 4
-                                    elif processed_sentence.get("split_part") == 1:
-                                        silence_length = self.silence_length.get()
+                                if not self.source_file.endswith(".srt"):
+                                    silence_length = self.get_silence_length(processed_sentence)
+                                    if silence_length > 0:
+                                        audio_data += AudioSegment.silent(duration=silence_length)
+
+                                sentence_output_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence_{sentence_number}.wav")
+                                audio_data.export(sentence_output_filename, format="wav")
+
+                                new_sentence = f"[{sentence_number}] {processed_sentence['processed_sentence'] if 'processed_sentence' in processed_sentence else processed_sentence['original_sentence']}"
+                                self.update_listboxes_after_regeneration(sentence, new_sentence)
+
+                                sentence_dict["tts_generated"] = "yes"
+                                self.save_json(processed_sentences, json_filename)
+
                             else:
-                                silence_length = self.silence_length.get()
+                                logging.error(f"Failed to generate audio for sentence {sentence_number}")
 
-                            if silence_length > 0:
-                                audio_data += AudioSegment.silent(duration=silence_length)
-
-                        sentence_output_filename = os.path.join(session_dir, "Sentence_wavs", f"{session_name}_sentence_{sentence_number}.wav")
-                        audio_data.export(sentence_output_filename, format="wav")
-
-                        # Update the listbox entry with the regenerated sentence
-                        self.playlist_listbox.delete(index)
-                        self.playlist_listbox.insert(index, f"[{sentence_number}] {processed_sentence['processed_sentence']}")
-
-                        # Set the "tts_generated" flag to "yes" after successful regeneration
-                        sentence_dict["tts_generated"] = "yes"
-                        self.save_json(processed_sentences, json_filename)
-
-                    else:
-                        logging.error(f"Failed to generate audio for sentence {sentence_number}")
-
-                else:
-                    logging.error(f"Failed to process sentence {sentence_number}")
+                        else:
+                            logging.error(f"Failed to process sentence {sentence_number}")
 
                 # Update progress
                 progress = (index + 1) / total_sentences
@@ -4470,7 +4690,8 @@ class TTSOptimizerGUI:
                 progress_window.update()
 
             progress_window.destroy()
-            CTkMessagebox(title="Regeneration Complete", message="All sentences have been regenerated.", icon="info")
+            self.marked_listbox.delete(0, tk.END)
+            CTkMessagebox(title="Regeneration Complete", message="All marked sentences have been regenerated.", icon="info")
 
         except Exception as e:
             logging.error(f"Error regenerating all sentences: {str(e)}")
@@ -4495,6 +4716,20 @@ class TTSOptimizerGUI:
             self.play_next_sentence_in_playlist()
         else:
             messagebox.showinfo("Playlist Empty", "There are no sentences in the playlist.")
+
+    def highlight_playing_sentence(self, sentence):
+        try:
+            # Highlight only in the playlist_listbox
+            listbox = self.playlist_listbox  # Directly target the playlist listbox
+            for i in range(listbox.size()):
+                if listbox.get(i) == sentence:
+                    listbox.selection_clear(0, tk.END)
+                    listbox.selection_set(i)
+                    listbox.see(i)
+                    return  # Stop searching after finding the sentence
+
+        except Exception as e:
+            logging.error(f"Error highlighting sentence: {str(e)}")
 
     def play_next_sentence_in_playlist(self):
         if not self.playlist_stopped and 0 <= self.playlist_index < self.playlist_listbox.size():
@@ -4526,6 +4761,8 @@ class TTSOptimizerGUI:
                     sound = pygame.mixer.Sound(wav_filename)
                     self.channel.play(sound)
                     self.current_sentence = sentence_text
+                    # Highlight the playing sentence
+                    self.highlight_playing_sentence(sentence) # NEW
                     sound_length = sound.get_length()
                     self.master.after(math.ceil(sound_length * 1000), self.play_next_sentence_callback)
                 else:
@@ -4546,6 +4783,24 @@ class TTSOptimizerGUI:
         if not self.paused and not self.playlist_stopped and self.channel.get_busy():
             self.master.after(100, self.check_playlist_playback)
  
+    def mark_sentence_in_json(self, sentence_number):
+        json_filename = os.path.join("Outputs", self.session_name.get(), f"{self.session_name.get()}_sentences.json")
+        data = self.load_json(json_filename)
+        for sentence in data:
+            if sentence["sentence_number"] == sentence_number:
+                sentence["marked"] = True
+                break
+        self.save_json(data, json_filename)
+
+    def unmark_sentence_in_json(self, sentence_number):
+        json_filename = os.path.join("Outputs", self.session_name.get(), f"{self.session_name.get()}_sentences.json")
+        data = self.load_json(json_filename)
+        for sentence in data:
+            if sentence["sentence_number"] == sentence_number:
+                sentence["marked"] = False
+                break
+        self.save_json(data, json_filename)
+
     def load_session(self):
         session_folder = filedialog.askdirectory(initialdir="Outputs")
         if session_folder:
@@ -4553,15 +4808,19 @@ class TTSOptimizerGUI:
             json_filename = os.path.join(session_folder, f"{session_name}_sentences.json")
             if os.path.exists(json_filename):
                 self.session_name.set(session_name)
-                self.session_name_label.configure(text=session_name)  # Update the session name label
+                self.session_name_label.configure(text=session_name)
                 processed_sentences = self.load_json(json_filename)
                 self.playlist_listbox.delete(0, tk.END)
+                self.marked_listbox.delete(0, tk.END)
+                self.load_metadata()
                 for sentence_dict in processed_sentences:
                     sentence_number = sentence_dict.get("sentence_number")
                     sentence_text = sentence_dict.get("processed_sentence") if sentence_dict.get("processed_sentence") else sentence_dict.get("original_sentence")
                     if sentence_text and sentence_dict.get("tts_generated") == "yes":
                         display_text = f"[{sentence_number}] {sentence_text}"
                         self.playlist_listbox.insert(tk.END, display_text)
+                        if sentence_dict.get("marked", False):  # Use the "marked" attribute directly
+                            self.marked_listbox.insert(tk.END, display_text)
 
                 # Load the text file from the session directory
                 txt_files = [file for file in os.listdir(session_folder) if file.endswith(".txt")]
@@ -4610,8 +4869,14 @@ class TTSOptimizerGUI:
     def edit_selected_sentence(self):
         try:
             selected_index = self.playlist_listbox.curselection()
+            source_listbox = self.playlist_listbox
+
+            if not selected_index:
+                selected_index = self.marked_listbox.curselection()
+                source_listbox = self.marked_listbox
+
             if selected_index:
-                selected_sentence = self.playlist_listbox.get(selected_index)
+                selected_sentence = source_listbox.get(selected_index[0])
                 match = re.match(r'^\[(\d+)\]\s(.+)$', selected_sentence)
                 if match:
                     sentence_number = match.group(1)
@@ -4627,7 +4892,7 @@ class TTSOptimizerGUI:
                 if sentence_dict:
                     edit_window = ctk.CTkToplevel(self.master)
                     edit_window.title("Edit Sentence")
-                    edit_window.attributes('-topmost', True)  # Make window stay on top
+                    edit_window.attributes('-topmost', True)
 
                     sentence_textbox = ctk.CTkTextbox(edit_window, width=600, height=100, wrap="word")
                     sentence_textbox.insert("1.0", sentence_text)
@@ -4636,20 +4901,14 @@ class TTSOptimizerGUI:
                     def save_edited_sentence():
                         edited_sentence = sentence_textbox.get("1.0", "end-1c")
                         self.update_sentence_in_json(sentence_number, edited_sentence)
-                        self.playlist_listbox.delete(selected_index)
-                        self.playlist_listbox.insert(selected_index, f"[{sentence_number}] {edited_sentence}")
+                        new_sentence = f"[{sentence_number}] {edited_sentence}"
+                        self.update_listboxes_after_edit(selected_sentence, new_sentence)
                         edit_window.destroy()
                         logging.info(f"Edited sentence {sentence_number}: {edited_sentence}")
 
                     def discard_changes():
                         edit_window.destroy()
                         logging.info(f"Discarded changes for sentence {sentence_number}")
-
-                    if self.source_file.endswith(".srt"):
-                        self.enable_sentence_splitting.set(False)
-                        self.enable_sentence_appending.set(False)
-                        self.silence_length.set(0)
-                        self.paragraph_silence_length.set(0)
 
                     save_button = ctk.CTkButton(edit_window, text="Save", command=save_edited_sentence)
                     save_button.pack(side=tk.LEFT, padx=10, pady=10)
@@ -4665,6 +4924,30 @@ class TTSOptimizerGUI:
 
         except Exception as e:
             logging.error(f"Error editing sentence: {str(e)}")
+
+    def update_listboxes_after_edit(self, old_sentence, new_sentence):
+        for listbox in [self.playlist_listbox, self.marked_listbox]:
+            for i in range(listbox.size()):
+                if listbox.get(i) == old_sentence:
+                    listbox.delete(i)
+                    listbox.insert(i, new_sentence)
+                    break
+
+    def get_silence_length(self, processed_sentence):
+        if processed_sentence.get("paragraph", "no") == "yes":
+            return self.paragraph_silence_length.get()
+        elif processed_sentence.get("split_part") is not None:
+            if isinstance(processed_sentence.get("split_part"), str):
+                if processed_sentence.get("split_part") in ["0a", "0b", "1a"]:
+                    return self.silence_length.get() // 4
+                elif processed_sentence.get("split_part") == "1b":
+                    return self.silence_length.get()
+            elif isinstance(processed_sentence.get("split_part"), int):
+                if processed_sentence.get("split_part") == 0:
+                    return self.silence_length.get() // 4
+                elif processed_sentence.get("split_part") == 1:
+                    return self.silence_length.get()
+        return self.silence_length.get()
 
     def upload_cover(self):
         file_path = filedialog.askopenfilename(filetypes=[("Image files", "*.jpg *.jpeg *.png")])
@@ -4774,12 +5057,8 @@ class TTSOptimizerGUI:
         if output_format == "wav":
             return
 
-        metadata = {
-            "title": self.session_name.get(),
-            "album": self.album_name.get(),
-            "artist": self.artist_name.get(),
-            "genre": self.genre.get()
-        }
+        metadata = self.metadata
+
 
         if output_format == "mp3":
             audio = MP3(output_path, ID3=ID3)
