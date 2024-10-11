@@ -704,7 +704,14 @@ class TTSOptimizerGUI:
         self.metadata_artist = ctk.StringVar()
         self.metadata_genre = ctk.StringVar()
         self.metadata_language = ctk.StringVar()
+        # Bind keyboard and mouse events
+        self.master.bind("<space>", self.handle_keyboard_event)
+        self.master.bind("<m>", self.mark_sentences_for_regeneration)
+        self.master.bind("<M>", self.mark_sentences_for_regeneration)
+        self.master.bind("<Button-3>", self.mark_sentences_for_regeneration)
         self.load_metadata()  # Load metadata on startup
+        self.current_sentence = None
+        self.previous_sentence = None
         self.whisper_languages = [
         'Afrikaans', 'Albanian', 'Amharic', 'Arabic', 'Armenian', 'Assamese', 'Azerbaijani', 'Bashkir', 'Basque', 
         'Belarusian', 'Bengali', 'Bosnian', 'Breton', 'Bulgarian', 'Burmese', 'Cantonese', 'Castilian', 'Catalan', 
@@ -3977,18 +3984,6 @@ class TTSOptimizerGUI:
             "mode": "instruct",
             "max_new_tokens": 1500,
             "temperature": 0.4,
-            "top_p": 0.9,
-            "min_p": 0,
-            "top_k": 20,
-            "repetition_penalty": 1.15,
-            "presence_penalty": 0,
-            "frequency_penalty": 0,
-            "typical_p": 1,
-            "tfs": 1,
-            "mirostat_mode": 0,
-            "mirostat_tau": 5,
-            "mirostat_eta": 0.1,
-            "seed": -1,
             "truncate": 2500,
             "messages": [
                 {"role": "user", "content": f"{user_prompt}{text}"}
@@ -4736,6 +4731,7 @@ class TTSOptimizerGUI:
             sentence = self.playlist_listbox.get(self.playlist_index)
             # Extract the sentence number and text from the listbox entry
             match = re.match(r'^\[(\d+)\]\s(.+)$', sentence)
+
             if match:
                 sentence_number = match.group(1)
                 sentence_text = match.group(2)
@@ -4760,9 +4756,10 @@ class TTSOptimizerGUI:
                         self.channel = pygame.mixer.Channel(0)
                     sound = pygame.mixer.Sound(wav_filename)
                     self.channel.play(sound)
-                    self.current_sentence = sentence_text
+                    self.previous_sentence = self.current_sentence  # Store the previous sentence
+                    self.current_sentence = sentence  # Store the current sentence
                     # Highlight the playing sentence
-                    self.highlight_playing_sentence(sentence) # NEW
+                    self.highlight_playing_sentence(sentence)
                     sound_length = sound.get_length()
                     self.master.after(math.ceil(sound_length * 1000), self.play_next_sentence_callback)
                 else:
@@ -4773,7 +4770,6 @@ class TTSOptimizerGUI:
                 self.play_next_sentence_in_playlist()
         else:
             self.stop_playback()
-
     def play_next_sentence_callback(self):
         if not self.playlist_stopped and not self.paused:
             self.playlist_index += 1
@@ -4782,7 +4778,50 @@ class TTSOptimizerGUI:
     def check_playlist_playback(self):
         if not self.paused and not self.playlist_stopped and self.channel.get_busy():
             self.master.after(100, self.check_playlist_playback)
- 
+
+    def handle_keyboard_event(self, event):
+        logging.info(f"Keyboard event received: {event.keysym}")
+        if event.keysym == "space":
+            logging.info("Space key pressed")
+            if self.playing:
+                self.stop_playback()
+            else:
+                self.play_sentences_as_playlist()
+        elif event.keysym.lower() == "m":
+            self.mark_sentences_for_regeneration(event)
+
+    def mark_sentences_for_regeneration(self, event=None):
+        logging.info("Attempting to mark sentence(s) for regeneration")
+
+        def mark_sentence(sentence):
+            if sentence and sentence not in self.marked_listbox.get(0, tk.END):
+                self.marked_listbox.insert(tk.END, sentence)
+                sentence_number = sentence.split(']')[0][1:]
+                self.mark_sentence_in_json(sentence_number)
+                logging.info(f"Marked sentence {sentence_number} for regeneration")
+
+        # Determine which sentences to mark based on the event
+        if event and event.type == '4':  # Right-click event
+            sentences_to_mark = [self.current_sentence, self.previous_sentence]
+            logging.info("Right-click detected, marking current and previous sentences")
+        elif event and event.keysym.lower() == 'm':  # 'M' key press event
+            sentences_to_mark = [self.current_sentence]
+            logging.info("'M' key pressed, marking current sentence")
+        else:  # Default behavior (e.g., when called without an event)
+            sentences_to_mark = [self.current_sentence]
+            logging.info("No specific event, marking current sentence")
+
+        # Mark the determined sentences
+        for sentence in sentences_to_mark:
+            if sentence:
+                mark_sentence(sentence)
+            else:
+                logging.info(f"No {'current' if sentence == self.current_sentence else 'previous'} sentence to mark")
+
+        # Update the GUI if any sentences were marked
+        if any(sentences_to_mark):
+            self.master.update_idletasks()
+
     def mark_sentence_in_json(self, sentence_number):
         json_filename = os.path.join("Outputs", self.session_name.get(), f"{self.session_name.get()}_sentences.json")
         data = self.load_json(json_filename)
