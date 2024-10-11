@@ -5,7 +5,6 @@ unidecode
 pygame
 CTkMessagebox
 CTkToolTip
-pysrt
 num2words
 ffmpeg-python
 pdftextract
@@ -17,3 +16,4 @@ mutagen
 Pillow
 argparse
 sentence-splitter
+yt_dlp
