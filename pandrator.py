@@ -24,7 +24,6 @@ import ctypes
 import math
 import platform
 from CTkToolTip import CTkToolTip
-import pysrt
 from num2words import num2words
 import ffmpeg
 from pdftextract import XPdf
