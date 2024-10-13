@@ -50,7 +50,7 @@ https://github.com/user-attachments/assets/1ba8068d-986e-4dec-a162-3b7cc49052f4
 This project relies on several APIs and services (running locally) and libraries, notably:
 
 #### Required (notable)
-- [XTTS API Server by daswer123](https://github.com/daswer123/xtts-api-server.git) for Text-to-Speech (TTS) generation using Coqui [XTTSv2](https://huggingface.co/coqui/XTTS-v2) OR [Silero API Server by ouoertheo](https://github.com/ouoertheo/silero-api-server) for TTS generaton using the [Silero models](https://github.com/snakers4/silero-models) OR [VoiceCraft by jasonppy](https://github.com/jasonppy/VoiceCraft). XTTS and VoiceCraft perform best on a GPU (Nvidia), though can work on a CPU (especially XTTS), and Silero uses only the CPU. Silero can be run on low-end systems.
+- [XTTS API Server by daswer123](https://github.com/daswer123/xtts-api-server.git) for Text-to-Speech (TTS) generation using Coqui [XTTSv2](https://huggingface.co/coqui/XTTS-v2) OR [Silero API Server by ouoertheo](https://github.com/ouoertheo/silero-api-server) for TTS generaton using the [Silero models](https://github.com/snakers4/silero-models) OR [VoiceCraft by jasonppy](https://github.com/jasonppy/VoiceCraft).
 - [FFmpeg](https://github.com/FFmpeg/FFmpeg) for audio encoding.
 - [Sentence Splitter by mediacloud](https://github.com/mediacloud/sentence-splitter) for splitting `.txt ` files into sentences, [customtkinter by TomSchimansky](https://github.com/TomSchimansky/CustomTkinter), [num2words by savoirfairelinux](https://github.com/savoirfairelinux/num2words), and many others. For a full list, see `requirements.txt`.
 
