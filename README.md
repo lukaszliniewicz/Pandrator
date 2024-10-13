@@ -5,7 +5,9 @@
 # Pandrator, a GUI audiobook and dubbing generator with voice cloning and AI text optimisation
 
 >[!TIP]
->**TL;DR:** Pandrator is not an AI model itself, but a GUI framework for Text-to-Speech projects. It can generate audiobooks and dubbing by leveraging several AI tools and purpose-made workflows and algorithms. It works on Windows out of the box. It does work on Linux, but you have to perform a manual installation at the moment. The easiest way to use it is to download one of the precompiled [archives](https://1drv.ms/f/s!AgSiDu9lV3iMnPFKPO5BB_c72OLjtQ?e=3fRZMG) - when you unzip them, use the launcher. They come in three versions, one with just XTTS (the recommended TTS model), one with XTTS, RVC, WhisperX (WhisperX is needed for dubbing) and Easy XTTS Trainer (for XTTS fine-tuning), and one with Silero (the smallest model that works even on older CPUs). You can also use the launcher to install additional tools. For other installation options, look below. XTTS works best on an Nvidia GPU (with as little as 4GB of VRAM), though it is usable on a CPU.
+>**TL;DR:**
+> - Pandrator is not an AI model itself, but a GUI framework for Text-to-Speech projects. It can generate audiobooks and dubbing by leveraging several AI tools and purpose-made workflows and algorithms. It works on Windows out of the box. It does work on Linux, but you have to perform a manual installation at the moment.
+> - The easiest way to use it is to download one of the precompiled **[archives](https://1drv.ms/f/s!AgSiDu9lV3iMnPFKPO5BB_c72OLjtQ?e=3fRZMG)** - when you unzip them, use the launcher. See **[this table](#self-contained-packages)** for their contents and sizes.
 
 ## Quick Demonstration
 This video shows the process of launching Pandrator, selecting a source file, starting generation, stopping it and previewing the saved file. It has not been sped up as it's intended to illustrate the real performance (you may skip the first 35s when the XTTS server is launching, and please remember to turn on the sound). 
