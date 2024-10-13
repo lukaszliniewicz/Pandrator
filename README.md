@@ -76,11 +76,33 @@ I've prepared packages (archives) that you can simply unpack - everything is pre
 | 3       | Pandrator, XTTS, RVC, WhisperX (for dubbing) and XTTS fine-tuning | 36GB          | [Download](#) |
 
 ### GUI Installer and Launcher (Windows)
+
+![pandrator_installer_launcher_KLoHrNDIps](https://github.com/user-attachments/assets/2be46b49-9e79-4281-89ed-5797bdfbe28b)
+
 Run `pandrator_installer_launcher.exe` with administrator priviliges. You will find it under [Releases](https://github.com/lukaszliniewicz/Pandrator/releases). The executable was created using [pyinstaller](https://github.com/pyinstaller/pyinstaller) from `pandrator_installer_launcher.py` in the repository.
 
 **The file may be flagged as a threat by antivirus software, so you may have to add it as an exception.**
 
-You can choose which TTS engines to install and whether to install the software that enables RVC voice cloning (RVC Python), dubbing (WhisperX) and XTTS fine-tuning (Easy XTTS Trainer). You may install more components later. The installer creates the Pandrator folder, installs `C++ Build Tools` and `Calibre` (and `winget`, if necessary) if not installed already and `Miniconda`, clones the XTTS Api Server respository, the Silero Api Server repository or the VoiceCraft API repository, the Pandrator repository, the Subdub repository creates conda environments, installs dependencies and launches Pandrator and the server you chose. **You may use the the Installer/Launcher to launch Pandrator and all the tools later**. 
+You can choose which TTS engines to install and whether to install the software that enables RVC voice cloning (RVC Python), dubbing (WhisperX) and XTTS fine-tuning (Easy XTTS Trainer). You may install more components later. 
+
+The Installer/Launcher performs the following tasks:
+
+1. Creates the Pandrator folder
+2. Installs necessary tools if not already present:
+   - C++ Build Tools
+   - Calibre
+   - winget (if necessary)
+3. Installs Miniconda
+4. Clones the following repositories:
+   - Pandrator
+   - Subdub
+   - XTTS API Server (if selected)
+   - Silero API Server (if selected)
+   - VoiceCraft API (if selected)
+5. Creates required conda environments
+6. Installs all necessary dependencies
+
+**Note:** You can use the Installer/Launcher to launch Pandrator and all the tools at any moment.
 
 If you want to perform the setup again, remove the Pandrator folder it created. Please allow at least a couple of minutes for the initial setup process to download models and install dependencies. Depending on the options you've chosen, it may take up to 30 minutes.
 
