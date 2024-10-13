@@ -71,9 +71,9 @@ I've prepared packages (archives) that you can simply unpack - everything is pre
 
 | Package | Contents                                                   | Unpacked Size | Link     |
 |---------|-------------------------------------------------------------|---------------|----------|
-| 1       | Pandrator and Silero                                        | 4GB           | [Download](#) |
-| 2       | Pandrator and XTTS                                          | 14GB          | [Download](#) |
-| 3       | Pandrator, XTTS, RVC, WhisperX (for dubbing) and XTTS fine-tuning | 36GB          | [Download](#) |
+| 1       | Pandrator and Silero                                        | 4GB           | [Download](https://1drv.ms/u/s!AgSiDu9lV3iMnoVipZuCpbxCWkfaCA?e=Xqbvsl) |
+| 2       | Pandrator and XTTS                                          | 14GB          | [Download](https://1drv.ms/u/s!AgSiDu9lV3iMnoVhVVsoSnT-HW6NrA?e=d4Pu89) |
+| 3       | Pandrator, XTTS, RVC, WhisperX (for dubbing) and XTTS fine-tuning | 36GB          | [Download](https://1drv.ms/u/s!AgSiDu9lV3iMnoVge9Y_zI_lfSvNMQ?e=pRdRt0) |
 
 ### GUI Installer and Launcher (Windows)
 
