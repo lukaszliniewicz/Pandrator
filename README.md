@@ -12,6 +12,8 @@ This video shows the process of launching Pandrator, selecting a source file, st
 
 https://github.com/user-attachments/assets/1f1b5698-b279-424d-872b-1cc52923421b
 
+## About Pandrator
+
 Pandrator aspires to be easy to use and install - it has a one-click installer and a graphical user interface. It is a tool designed to perform two tasks: 
 - transform text, PDF, EPUB and SRT files into spoken audio in multiple languages based chiefly on open source software run locally, including preprocessing to make the generated speech sound as natural as possible by, among other things, splitting the text into paragraphs, sentences and smaller logical text blocks (clauses), which the TTS models can process with minimal artifacts. Each sentence can be regenerated if the first attempt is not satisfacory. Voice cloning is possible for models that support it, and text can be additionally preprocessed using LLMs (to remove OCR artifacts or spell out things that the TTS models struggle with, like Roman numerals and abbreviations, for example),
 - generate dubbing either directly from a video file, including transcription (using [WhisperX](https://github.com/m-bain/whisperX)), or from an .srt file. It includes a complete workflow from a video file to a dubbed video file with subtitles - including translation using a variety of APIs and techniques to improve the quality of translation. [Subdub](https://github.com/lukaszliniewicz/Subdub), a companion app developed for this purpose, can also be used on its own.  
@@ -20,28 +22,6 @@ It leverages the [XTTS](https://huggingface.co/coqui/XTTS-v2), [Silero](https://
 
 >[!NOTE]
 > Please note that Pandrator is still in an alpha stage and I'm not an experienced developer (I'm a noob, in fact), so the code is far from perfect in terms of optimisation, features and reliability. Please keep this in mind and contribute, if you want to help me make it better.
-
-- [Pandrator, an audiobook generator](#pandrator-an-audiobook-generator)
-  - [Samples](#samples)
-  - [Requirements](#requirements)
-    - [Hardware](#hardware)
-    - [Dependencies](#dependencies)
-      - [Required](#required)
-      - [Optional](#optional)
-  - [Installation](#installation)
-    - [Minimal One-Click Installation Executable (Windows with an Nvidia GPU only)](#installer-and-launcher)
-    - [Manual Installation](#manual-installation)
-  - [Features](#features)
-  - [Quick Start Guide](#quick-start-guide)
-    - [Basic Usage](#basic-usage)
-    - [General Audio Settings](#general-audio-settings)
-    - [General Text Pre-Processing Settings](#general-text-pre-processing-settings)
-    - [LLM Pre-processing](#llm-preprocessing)
-    - [RVC Quality Enhancement and Voice Cloning](#rvc-quality-enhancement-and-voice-cloning)
-    - [NISQA TTS Evaluation](#nisqa-tts-evaluation)
-  - [Contributing](#contributing)
-  - [Tips](#tips)
-  - [To-do](#to-do)
 
 ## Samples
 The samples were generated using the minimal settings - no LLM text processing, RVC or TTS evaluation, and no sentences were regenerated. Both XTTS and Silero generations were faster than playback speed. 
@@ -58,37 +38,49 @@ https://github.com/user-attachments/assets/1ba8068d-986e-4dec-a162-3b7cc49052f4
 
 ## Requirements
 
-### Hardware
-#### XTTS
-It's likely that you will need at least 16GB of RAM, a reasonably modern CPU for CPU-only generation (which you can choose in the launcher), and ideally an NVIDIA GPU with 4 GB+ of VRAM for really good performance.
-#### Silero
-Silero runs on the CPU. It should perform well on almost all reasonably modern systems. 
-#### VoiceCraft
-You can run VoiceCraft on a cpu, but generation will be very slow. To achieve meaningful acceleration with a GPU (Nvidia), you need one with at least 8GB of VRAM. If you have only 4GB, disable kv cache in advanced settings. 
+### Hardware Requirements
+
+| Tool       | CPU Requirements                                              | GPU Requirements                                                       |
+|------------|---------------------------------------------------------------|-------------------------------------------------------------------------|
+| XTTS       | A reasonably modern CPU (for CPU-only generation)              | NVIDIA GPU with 4GB+ of VRAM for good performance                        |
+| Silero     | Performs well on most reasonably modern CPUs                   | N/A                                                                     |
+| VoiceCraft | Usable on CPU, but generation will be slow                     | NVIDIA GPU with 8GB+ of VRAM for acceleration (4GB VRAM requires kv cache disabled) |
 
 ### Dependencies
 This project relies on several APIs and services (running locally) and libraries, notably:
 
-#### Required
+#### Required (notable)
 - [XTTS API Server by daswer123](https://github.com/daswer123/xtts-api-server.git) for Text-to-Speech (TTS) generation using Coqui [XTTSv2](https://huggingface.co/coqui/XTTS-v2) OR [Silero API Server by ouoertheo](https://github.com/ouoertheo/silero-api-server) for TTS generaton using the [Silero models](https://github.com/snakers4/silero-models) OR [VoiceCraft by jasonppy](https://github.com/jasonppy/VoiceCraft). XTTS and VoiceCraft perform best on a GPU (Nvidia), though can work on a CPU (especially XTTS), and Silero uses only the CPU. Silero can be run on low-end systems.
 - [FFmpeg](https://github.com/FFmpeg/FFmpeg) for audio encoding.
-- [Sentence Splitter by mediacloud](https://github.com/mediacloud/sentence-splitter) for splitting `.txt ` files into sentences, [customtkinter by TomSchimansky](https://github.com/TomSchimansky/CustomTkinter), [num2words by savoirfairelinux](https://github.com/savoirfairelinux/num2words) for converting numbers to words (Silero requirs this), `pysrt`, `pydub` and others (see `requirements.txt`). 
+- [Sentence Splitter by mediacloud](https://github.com/mediacloud/sentence-splitter) for splitting `.txt ` files into sentences, [customtkinter by TomSchimansky](https://github.com/TomSchimansky/CustomTkinter), [num2words by savoirfairelinux](https://github.com/savoirfairelinux/num2words), and many others. For a full list, see `requirements.txt`.
 
 #### Optional
+- [Subdub](https://github.com/lukaszliniewicz/Subdub), a command line app that transcribes video files, translates subtitles and synchronises the generated speech with the video, made specially for Pandrator.
+- [WhisperX](https://github.com/m-bain/whisperX), an enhanced implementation of OpenAI's Whisper model with improved alignment, used for dubbing and XTTS training. 
+- [Easy XTTS Trainer](https://github.com/lukaszliniewicz/easy_xtts_trainer), a command line app that enables XTTS fine-tuning using one or more audio files, made specially for Pandrator.
+- [RVC Python by daswer123](https://github.com/daswer123/rvc-python) for enhancing voice quality and cloning results with [Retrieval Based Voice Conversion](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI).
 - [Text Generation Webui API by oobabooga](https://github.com/oobabooga/text-generation-webui.git) for LLM-based text pre-processing.
-- [RVC_CLI by blaise-tk](https://github.com/blaise-tk/RVC_CLI.git) for enhancing voice quality and cloning results with [Retrieval Based Voice Conversion](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI).
 - [NISQA by gabrielmittag](https://github.com/gabrielmittag/NISQA.git) for evaluating TTS generations (using the [FastAPI implementation](https://github.com/lukaszliniewicz/NISQA-API)).
 
 ## Installation
+
+### Self-contained packages
+I've prepared packages (archives) that you can simply unpack - everything is preinstalled in its own portable conda environment. You can use the launcher to start Pandrator, update it and install new features, depending on the version of the package you downloaded. 
+
+| Package | Contents                                                   | Unpacked Size | Link     |
+|---------|-------------------------------------------------------------|---------------|----------|
+| 1       | Pandrator and Silero                                        | 4GB           | [Download](#) |
+| 2       | Pandrator and XTTS                                          | 14GB          | [Download](#) |
+| 3       | Pandrator, XTTS, RVC, WhisperX (for dubbing) and XTTS fine-tuning | 36GB          | [Download](#) |
 
 ### GUI Installer and Launcher (Windows)
 Run `pandrator_installer_launcher.exe` with administrator priviliges. You will find it under [Releases](https://github.com/lukaszliniewicz/Pandrator/releases). The executable was created using [pyinstaller](https://github.com/pyinstaller/pyinstaller) from `pandrator_installer_launcher.py` in the repository.
 
 **The file may be flagged as a threat by antivirus software, so you may have to add it as an exception.**
 
-You can choose which TTS engines to install and whether to install the software that enabled RVC voice cloning (RVC_CLI). You may install new components later. The installer creates the Pandrator folder, installs `winget`, `git`, `ffmpeg`, `C++ Build Tools` and/or `Calibre` if not installed already and `Miniconda`, clones the XTTS Api Server respository, the Silero Api Server repository or the VoiceCraft API repository and the Pandrator repository, creates conda environments, installs dependencies and launches Pandrator and the server you chose. **You may use the the Installer/Launcher to launch Pandrator and all the tools later**. 
+You can choose which TTS engines to install and whether to install the software that enables RVC voice cloning (RVC Python), dubbing (WhisperX) and XTTS fine-tuning (Easy XTTS Trainer). You may install more components later. The installer creates the Pandrator folder, installs `C++ Build Tools` and `Calibre` (and `winget`, if necessary) if not installed already and `Miniconda`, clones the XTTS Api Server respository, the Silero Api Server repository or the VoiceCraft API repository, the Pandrator repository, the Subdub repository creates conda environments, installs dependencies and launches Pandrator and the server you chose. **You may use the the Installer/Launcher to launch Pandrator and all the tools later**. 
 
-If you want to perform the setup again, remove the Pandrator folder it created. Please allow at least a couple of minutes for the initial setup process to download models and install dependencies. Depending on the options you've chosen, it may take up to 25 minutes.
+If you want to perform the setup again, remove the Pandrator folder it created. Please allow at least a couple of minutes for the initial setup process to download models and install dependencies. Depending on the options you've chosen, it may take up to 30 minutes.
 
 For additional functionality not yet included in the installer:
 - Install Text Generation Webui and remember to enable the API (add `--api` to `CMD_FLAGS.txt` in the main directory of the Webui before starting it).
@@ -96,22 +88,131 @@ For additional functionality not yet included in the installer:
 
 Please refer to the repositories linked under [Dependencies](#Dependencies) for detailed installation instructions. Remember that the APIs must be running to make use of the functionalities they offer.
 
-### Manual Installation:
-1. Make sure that Python 3, git, calibre and ffmpeg are installed and in PATH.
-2. Install and run at least XTTS API Server, Silero API Server or VoiceCraft API Server. 
-3. Clone this repository (`git clone https://github.com/lukaszliniewicz/Pandrator.git`).
-4. `cd` to the repository directory.
-5. Install requirements using `pip install -r requirements.txt`.
-6. Run `python pandrator.py`.
+### Manual Installation
 
-## Features
-- **Text Pre-processing:** Splits text into sentences and (attempts to) preserve paragraphs. Profiles for multiple languages are available.
-- **LLM Text Pre-processing:** Utilizes a local LLM for text corrections and enhancements with up to three different prompts run sequentially, and an evaluation mechanism that asks the model to perform a task twice and then choose the better response. I've been using `openchat-3.5-0106.Q5_K_M.gguf` with good results, as well as for example `Mistral 7B Instruct 0.2`. Different models may perform different tasks well, so it's possible to choose a specific model for a specific prompt.
-- **Audio Generation:** Converts processed text into speech, with options for voice cloning and quality enhancement. It currently supports `.txt`,  `.srt` and `.pdf` files. 
-- **Audio Evaluation:** An experimental feature that predicts Mean Opinion Score (MOS) for generated sentences and sets a score threshold or chooses the best score from a set number of generations.
-- **Generating and adding dubbing to video files:** Speech generated from subtitle files is synchronized with the SRT timestamps and can be saved as a file or mixed with an audio track of a video file, effectively producing dubbing. It handles cases where generated speech exceeds the time alloted for a subtitle and self-corrects synchronisation. It's possible to speed up or slow down generated audio. 
-- **Session Management:** Supports creating, deleting, and loading sessions for organized workflow.
-- **GUI:** Built with customtkinker for a user-friendly experience.
+#### Prerequisites
+
+- Git
+- Miniconda or Anaconda (installed system-wide)
+- Microsoft Visual C++ Build Tools
+- Calibre
+
+#### Installation Steps
+
+1. Install dependencies:
+   - Calibre: Download and install from [https://calibre-ebook.com/download_windows](https://calibre-ebook.com/download_windows)
+   - Microsoft Visual C++ Build Tools: 
+     ```
+     winget install --id Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended" --accept-package-agreements --accept-source-agreements
+     ```
+
+2. Clone the repositories:
+   ```
+   mkdir Pandrator
+   cd Pandrator
+   git clone https://github.com/lukaszliniewicz/Pandrator.git
+   git clone https://github.com/lukaszliniewicz/Subdub.git
+   ```
+
+3. Create and activate a conda environment:
+   ```
+   conda create -n pandrator_installer python=3.10 -y
+   conda activate pandrator_installer
+   ```
+
+4. Install Pandrator and Subdub requirements:
+   ```
+   cd Pandrator
+   pip install -r requirements.txt
+   cd ../Subdub
+   pip install -r requirements.txt
+   cd ..
+   ```
+
+5. (Optional) Install XTTS:
+   ```
+   git clone https://github.com/daswer123/xtts-api-server.git
+   conda create -n xtts_api_server_installer python=3.10 -y
+   conda activate xtts_api_server_installer
+   pip install torch==2.1.1+cu118 torchaudio==2.1.1+cu118 --extra-index-url https://download.pytorch.org/whl/cu118
+   pip install xtts-api-server
+   ```
+
+6. (Optional) Install Silero:
+   ```
+   conda create -n silero_api_server_installer python=3.10 -y
+   conda activate silero_api_server_installer
+   pip install silero-api-server
+   ```
+
+7. (Optional) Install RVC (Retrieval-based Voice Conversion):
+   ```
+   conda activate pandrator_installer
+   pip install pip==24
+   pip install rvc-python
+   pip install torch==2.1.1+cu118 torchaudio==2.1.1+cu118 --index-url https://download.pytorch.org/whl/cu118
+   ```
+
+8. (Optional) Install WhisperX:
+   ```
+   conda create -n whisperx_installer python=3.10 -y
+   conda activate whisperx_installer
+   conda install git -c conda-forge -y
+   pip install torch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2 --index-url https://download.pytorch.org/whl/cu118
+   conda install cudnn=8.9.7.29 -c conda-forge -y
+   conda install ffmpeg -c conda-forge -y
+   pip install git+https://github.com/m-bain/whisperx.git
+   ```
+
+9. (Optional) Install XTTS Fine-tuning:
+   ```
+   git clone https://github.com/lukaszliniewicz/easy_xtts_trainer.git
+   conda create -n easy_xtts_trainer python=3.10 -y
+   conda activate easy_xtts_trainer
+   cd easy_xtts_trainer
+   pip install -r requirements.txt
+   pip install torch==2.1.1+cu118 torchaudio==2.1.1+cu118 --index-url https://download.pytorch.org/whl/cu118
+   cd ..
+   ```
+
+#### Running the Components
+
+1. Run Pandrator:
+   ```
+   conda activate pandrator_installer
+   cd Pandrator
+   python pandrator.py
+   ```
+
+2. Run XTTS API Server (if installed):
+   ```
+   conda activate xtts_api_server_installer
+   python -m xtts_api_server
+   ```
+   Additional options:
+   - For CPU only: Add `--device cpu`
+   - For low VRAM: Add `--lowvram`
+   - To use DeepSpeed: Add `--deepspeed`
+
+3. Run Silero API Server (if installed):
+   ```
+   conda activate silero_api_server_installer
+   python -m silero_api_server
+   ```
+
+#### Folder Structure
+
+After installation, your folder structure should look like this:
+
+```
+Pandrator/
+├── Pandrator/
+├── Subdub/
+├── xtts-api-server/ (if XTTS is installed)
+├── easy_xtts_trainer/ (if XTTS Fine-tuning is installed)
+```
+
+For more detailed information on using specific components or troubleshooting, please refer to the documentation of each individual repository.
 
 ## Quick Start Guide
 ### Basic Usage
