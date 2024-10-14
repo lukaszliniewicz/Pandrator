@@ -631,12 +631,6 @@ class PandratorInstaller(ctk.CTk):
         logging.info("Installing/Updating Microsoft Visual C++ Build Tools...")
         self.update_status("Installing/Updating Microsoft Visual C++ Build Tools...")
         
-        # First, accept source agreements
-        accept_agreements_command = [
-            "winget", "source", "update",
-            "--accept-source-agreements"
-        ]
-        
         try:
             self.run_command(accept_agreements_command)
             logging.info("Source agreements accepted.")
@@ -793,9 +787,13 @@ class PandratorInstaller(ctk.CTk):
         download_file(model_url, model_path)
 
     def install_pytorch_and_xtts_api_server(self, conda_path, env_name):
-        logging.info(f"Installing PyTorch and xtts-api-server package in {env_name}...")
+        logging.info(f"Installing xtts-api-server and PyTorch in {env_name}...")
         
         try:
+            # Install xtts-api-server package
+            xtts_cmd = [os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-n', env_name, 'pip', 'install', 'xtts-api-server']
+            self.run_command(xtts_cmd)
+            
             # Install PyTorch
             if self.xtts_cpu_var.get():
                 pytorch_cmd = [os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-n', env_name, 'pip', 'install', 'torch==2.1.1', 'torchaudio==2.1.1']
@@ -803,13 +801,9 @@ class PandratorInstaller(ctk.CTk):
                 pytorch_cmd = [os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-n', env_name, 'pip', 'install', 'torch==2.1.1+cu118', 'torchaudio==2.1.1+cu118', '--extra-index-url', 'https://download.pytorch.org/whl/cu118']
             self.run_command(pytorch_cmd)
             
-            # Install xtts-api-server package
-            xtts_cmd = [os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-n', env_name, 'pip', 'install', 'xtts-api-server']
-            self.run_command(xtts_cmd)
-            
-            logging.info("PyTorch and xtts-api-server package installed successfully.")
+            logging.info("xtts-api-server and PyTorch installed successfully.")
         except subprocess.CalledProcessError as e:
-            logging.error("Error installing PyTorch and xtts-api-server package.")
+            logging.error("Error installing xtts-api-server and PyTorch.")
             logging.error(f"Error output: {e.stderr.decode('utf-8')}")
             raise
 
