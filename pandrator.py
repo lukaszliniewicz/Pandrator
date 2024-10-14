@@ -578,6 +578,7 @@ class TTSOptimizerGUI:
     def __init__(self, master):
         self.master = master
         master.title("Pandrator")
+        ctk.set_appearance_mode("dark")  # Set the appearance mode to dark
         self.timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
         width = master.winfo_screenwidth()
