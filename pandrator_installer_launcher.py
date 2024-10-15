@@ -190,10 +190,11 @@ class PandratorInstaller(ctk.CTk):
 
     def install_pytorch_for_xtts_finetuning(self, conda_path, env_name):
         logging.info(f"Installing PyTorch for XTTS Fine-tuning in {env_name}...")
+        env_path = os.path.join(conda_path, 'envs', env_name)
         try:
             self.run_command([
                 os.path.join(conda_path, 'Scripts', 'conda.exe'),
-                'run', '-n', env_name,
+                'run', '-p', env_path,
                 'pip', 'install', 'torch==2.1.1+cu118', 'torchaudio==2.1.1+cu118',
                 '--index-url', 'https://download.pytorch.org/whl/cu118'
             ])
@@ -323,18 +324,19 @@ class PandratorInstaller(ctk.CTk):
 
     def install_whisperx(self, conda_path, env_name):
         logging.info(f"Installing WhisperX in {env_name}...")
+        env_path = os.path.join(conda_path, 'envs', env_name)
         try:
             # Install Git through Conda
             self.run_command([
                 os.path.join(conda_path, 'Scripts', 'conda.exe'),
-                'install', '-n', env_name,
+                'install', '-p', env_path,
                 'git', '-c', 'conda-forge', '-y'
             ])
             
             # Install PyTorch
             self.run_command([
                 os.path.join(conda_path, 'Scripts', 'conda.exe'),
-                'run', '-n', env_name,
+                'run', '-p', env_path,
                 'pip', 'install',
                 'torch==2.0.1', 'torchvision==0.15.2', 'torchaudio==2.0.2',
                 '--index-url', 'https://download.pytorch.org/whl/cu118'
@@ -343,21 +345,21 @@ class PandratorInstaller(ctk.CTk):
             # Install cuDNN
             self.run_command([
                 os.path.join(conda_path, 'Scripts', 'conda.exe'),
-                'install', '-n', env_name,
+                'install', '-p', env_path,
                 'cudnn=8.9.7.29', '-c', 'conda-forge', '-y'
             ])
             
             # Install ffmpeg
             self.run_command([
                 os.path.join(conda_path, 'Scripts', 'conda.exe'),
-                'install', '-n', env_name,
+                'install', '-p', env_path,
                 'ffmpeg', '-c', 'conda-forge', '-y'
             ])
             
             # Install WhisperX
             self.run_command([
                 os.path.join(conda_path, 'Scripts', 'conda.exe'),
-                'run', '-n', env_name,
+                'run', '-p', env_path,
                 'pip', 'install', 'git+https://github.com/m-bain/whisperx.git'
             ])
             
@@ -630,14 +632,7 @@ class PandratorInstaller(ctk.CTk):
     def install_visual_cpp_build_tools(self):
         logging.info("Installing/Updating Microsoft Visual C++ Build Tools...")
         self.update_status("Installing/Updating Microsoft Visual C++ Build Tools...")
-        
-        try:
-            self.run_command(accept_agreements_command)
-            logging.info("Source agreements accepted.")
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Failed to accept source agreements: {e}")
-            # Continue with the installation attempt even if this fails
-        
+  
         winget_command = [
             "winget", "install", 
             "--id", "Microsoft.VisualStudio.2022.BuildTools",
@@ -703,12 +698,13 @@ class PandratorInstaller(ctk.CTk):
 
     def create_conda_env(self, conda_path, env_name, python_version, additional_packages=None):
         logging.info(f"Creating conda environment {env_name}...")
+        env_path = os.path.join(conda_path, 'envs', env_name)
         try:
             # Create the environment with Python
             create_command = [
                 os.path.join(conda_path, 'Scripts', 'conda.exe'),
                 'create',
-                '-n', env_name,
+                '-p', env_path,
                 f'python={python_version}',
                 '-y'
             ]
@@ -720,7 +716,7 @@ class PandratorInstaller(ctk.CTk):
                 ffmpeg_command = [
                     os.path.join(conda_path, 'Scripts', 'conda.exe'),
                     'install',
-                    '-n', env_name,
+                    '-p', env_path,
                     'ffmpeg',
                     '-c',
                     'conda-forge',
@@ -734,7 +730,7 @@ class PandratorInstaller(ctk.CTk):
                 install_command = [
                     os.path.join(conda_path, 'Scripts', 'conda.exe'),
                     'install',
-                    '-n', env_name,
+                    '-p', env_path,
                     '-y'
                 ] + additional_packages
                 self.run_command(install_command)
@@ -746,11 +742,14 @@ class PandratorInstaller(ctk.CTk):
 
     def install_requirements(self, conda_path, env_name, requirements_file):
         logging.info(f"Installing requirements for {env_name}...")
-        self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-n', env_name, 'pip', 'install', '-r', requirements_file])
+        env_path = os.path.join(conda_path, 'envs', env_name)
+        self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'pip', 'install', '-r', requirements_file])
 
     def install_package(self, conda_path, env_name, package):
         logging.info(f"Installing {package} in {env_name}...")
-        self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-n', env_name, 'pip', 'install', package])
+        env_path = os.path.join(conda_path, 'envs', env_name)
+        self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'pip', 'install', package])
+
 
     def download_pretrained_models(self, repo_path):
         pretrained_models_dir = os.path.join(repo_path, 'pretrained_models')
@@ -788,17 +787,18 @@ class PandratorInstaller(ctk.CTk):
 
     def install_pytorch_and_xtts_api_server(self, conda_path, env_name):
         logging.info(f"Installing xtts-api-server and PyTorch in {env_name}...")
+        env_path = os.path.join(conda_path, 'envs', env_name)
         
         try:
             # Install xtts-api-server package
-            xtts_cmd = [os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-n', env_name, 'pip', 'install', 'xtts-api-server']
+            xtts_cmd = [os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'pip', 'install', 'xtts-api-server']
             self.run_command(xtts_cmd)
             
             # Install PyTorch
             if self.xtts_cpu_var.get():
-                pytorch_cmd = [os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-n', env_name, 'pip', 'install', 'torch==2.1.1', 'torchaudio==2.1.1']
+                pytorch_cmd = [os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'pip', 'install', 'torch==2.1.1', 'torchaudio==2.1.1']
             else:
-                pytorch_cmd = [os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-n', env_name, 'pip', 'install', 'torch==2.1.1+cu118', 'torchaudio==2.1.1+cu118', '--extra-index-url', 'https://download.pytorch.org/whl/cu118']
+                pytorch_cmd = [os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'pip', 'install', 'torch==2.1.1+cu118', 'torchaudio==2.1.1+cu118', '--extra-index-url', 'https://download.pytorch.org/whl/cu118']
             self.run_command(pytorch_cmd)
             
             logging.info("xtts-api-server and PyTorch installed successfully.")
@@ -825,9 +825,10 @@ class PandratorInstaller(ctk.CTk):
 
     def install_voicecraft_api_dependencies(self, conda_path, env_name):
         logging.info(f"Installing VoiceCraft API dependencies in {env_name}...")
+        env_path = os.path.join(conda_path, 'envs', env_name)
         try:
-            self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-n', env_name, 'conda', 'install', 'pytorch==2.0.1', 'torchvision==0.15.2', 'torchaudio==2.0.2', 'pytorch-cuda=11.7', '-c', 'pytorch', '-c', 'nvidia', '-y'])
-            self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-n', env_name, 'conda', 'install', '-c', 'conda-forge', 'montreal-forced-aligner=2.2.17', 'openfst=1.8.2', 'kaldi=5.5.1068', '-y'])
+            self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'conda', 'install', 'pytorch==2.0.1', 'torchvision==0.15.2', 'torchaudio==2.0.2', 'pytorch-cuda=11.7', '-c', 'pytorch', '-c', 'nvidia', '-y'])
+            self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'conda', 'install', '-c', 'conda-forge', 'montreal-forced-aligner=2.2.17', 'openfst=1.8.2', 'kaldi=5.5.1068', '-y'])
         except subprocess.CalledProcessError as e:
             logging.error(f"Failed to install VoiceCraft API dependencies in {env_name}")
             logging.error(f"Error message: {str(e)}")
@@ -835,10 +836,11 @@ class PandratorInstaller(ctk.CTk):
 
     def download_mfa_models(self, conda_path, env_name):
         logging.info(f"Downloading MFA models in {env_name}...")
+        env_path = os.path.join(conda_path, 'envs', env_name)
         try:
-            self.run_command([f'{conda_path}\\Scripts\\conda.exe', 'run', '-n', env_name, 'pip', 'install', 'numpy==1.23.5',])
-            self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-n', env_name, 'mfa', 'model', 'download', 'dictionary', 'english_us_arpa'])
-            self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-n', env_name, 'mfa', 'model', 'download', 'acoustic', 'english_us_arpa'])
+            self.run_command([f'{conda_path}\\Scripts\\conda.exe', 'run', '-p', env_path, 'pip', 'install', 'numpy==1.23.5',])
+            self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'mfa', 'model', 'download', 'dictionary', 'english_us_arpa'])
+            self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'mfa', 'model', 'download', 'acoustic', 'english_us_arpa'])
         except subprocess.CalledProcessError as e:
             logging.error(f"Failed to download MFA models in {env_name}")
             logging.error(f"Error message: {str(e)}")
@@ -869,15 +871,16 @@ class PandratorInstaller(ctk.CTk):
 
     def check_and_update_numpy(self, conda_path, env_name):
         logging.info(f"Checking NumPy version in {env_name}...")
+        env_path = os.path.join(conda_path, 'envs', env_name)
         try:
             # Check current NumPy version
-            numpy_version = subprocess.check_output([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-n', env_name, 'python', '-c', 'import numpy; print(numpy.__version__)'], universal_newlines=True).strip()
+            numpy_version = subprocess.check_output([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'python', '-c', 'import numpy; print(numpy.__version__)'], universal_newlines=True).strip()
             logging.info(f"Current NumPy version: {numpy_version}")
             
             # If NumPy version is 2.x, downgrade to 1.24.3
             if numpy_version.startswith('2.'):
                 logging.info("Downgrading NumPy to version 1.24.3...")
-                self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-n', env_name, 'pip', 'install', 'numpy==1.24.3'])
+                self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'pip', 'install', 'numpy==1.24.3'])
                 logging.info("NumPy downgraded successfully.")
             else:
                 logging.info("NumPy version is compatible. No changes needed.")
@@ -978,12 +981,13 @@ class PandratorInstaller(ctk.CTk):
 
     def install_rvc_python(self, conda_path, env_name):
         logging.info("Starting RVC Python installation")
+        env_path = os.path.join(conda_path, 'envs', env_name)
         try:
             # Install specific pip version
             logging.info("Installing specific pip version...")
             self.run_command([
                 os.path.join(conda_path, 'Scripts', 'conda.exe'),
-                'run', '-n', env_name,
+                'run', '-p', env_path,
                 'python', '-m', 'pip', 'install', 'pip==24'
             ])
 
@@ -991,7 +995,7 @@ class PandratorInstaller(ctk.CTk):
             logging.info("Installing RVC Python...")
             self.run_command([
                 os.path.join(conda_path, 'Scripts', 'conda.exe'),
-                'run', '-n', env_name,
+                'run', '-p', env_path,
                 'pip', 'install', 'rvc-python'
             ])
 
@@ -999,7 +1003,7 @@ class PandratorInstaller(ctk.CTk):
             logging.info("Installing specific PyTorch version...")
             self.run_command([
                 os.path.join(conda_path, 'Scripts', 'conda.exe'),
-                'run', '-n', env_name,
+                'run', '-p', env_path,
                 'pip', 'install', 'torch==2.1.1+cu118', 'torchaudio==2.1.1+cu118',
                 '--index-url', 'https://download.pytorch.org/whl/cu118'
             ])
@@ -1344,17 +1348,19 @@ class PandratorInstaller(ctk.CTk):
         logging.info(f"Running script {script_path} in {env_name} with args: {additional_args}")
         
         script_dir = os.path.dirname(script_path)
+        env_path = os.path.join(conda_path, 'envs', env_name)
         
         command = [
             os.path.join(conda_path, 'Scripts', 'conda.exe'),
             'run',
-            '-n', env_name,
+            '-p', env_path,
             'python',
             script_path
         ] + additional_args
         
         process = subprocess.Popen(command, cwd=script_dir, creationflags=subprocess.DETACHED_PROCESS)
         return process
+
 
     def run_xtts_api_server(self, conda_path, env_name, xtts_server_path, use_cpu=False):
         logging.info(f"Attempting to run XTTS API server...")
@@ -1367,11 +1373,12 @@ class PandratorInstaller(ctk.CTk):
             raise FileNotFoundError(f"XTTS server path not found: {xtts_server_path}")
 
         xtts_log_file = os.path.join(xtts_server_path, 'xtts_server.log')
+        env_path = os.path.join(conda_path, 'envs', env_name)
 
         xtts_server_command = [
             os.path.join(conda_path, 'Scripts', 'conda.exe'),
             'run',
-            '-n', env_name,
+            '-p', env_path,
             'python', '-m', 'xtts_api_server',
         ]
 
@@ -1432,15 +1439,17 @@ class PandratorInstaller(ctk.CTk):
 
     def run_silero_api_server(self, conda_path, env_name):
         logging.info(f"Running Silero API server in {env_name}...")
+        env_path = os.path.join(conda_path, 'envs', env_name)
 
         # Create log file for silero server output
         silero_log_file = os.path.join(os.getcwd(), 'silero_server.log')
 
         # Run silero server command with output redirection
-        silero_server_command = f'"{os.path.join(conda_path, "Scripts", "conda.exe")}" run -n {env_name} python -m silero_api_server > "{silero_log_file}" 2>&1'
+        silero_server_command = f'"{os.path.join(conda_path, "Scripts", "conda.exe")}" run -p "{env_path}" python -m silero_api_server > "{silero_log_file}" 2>&1'
         process = subprocess.Popen(silero_server_command, shell=True)
         self.silero_process = process
         return process
+
 
     def check_silero_server_online(self, url, max_attempts=30, wait_interval=10):
         attempt = 1
@@ -1464,8 +1473,9 @@ class PandratorInstaller(ctk.CTk):
         try:
             # Change to the VoiceCraft repository directory
             os.chdir(voicecraft_repo_path)
+            env_path = os.path.join(conda_path, 'envs', env_name)
             
-            voicecraft_server_command = [os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-n', env_name, 'python', api_script_path]
+            voicecraft_server_command = [os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'python', api_script_path]
             process = subprocess.Popen(voicecraft_server_command, creationflags=subprocess.CREATE_NEW_CONSOLE)
             self.voicecraft_process = process
             return process
@@ -1474,6 +1484,7 @@ class PandratorInstaller(ctk.CTk):
             logging.error(f"Error message: {str(e)}")
             logging.error(traceback.format_exc())
             raise
+
 
     def check_voicecraft_server_online(self, url, max_attempts=30, wait_interval=10):
         attempt = 1
