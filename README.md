@@ -6,7 +6,7 @@
 
 >[!TIP]
 >**TL;DR:**
-> - Pandrator is not an AI model itself, but a GUI framework for Text-to-Speech projects. It can generate audiobooks and dubbing by leveraging several AI tools and purpose-made workflows and algorithms. It works on Windows out of the box. It does work on Linux, but you have to perform a manual installation at the moment.
+> - Pandrator is not an AI model itself, but a GUI framework for Text-to-Speech projects. It can generate audiobooks and dubbing by leveraging several AI tools, custom workflows and algorithms. It works on Windows out of the box. It does work on Linux, but you have to perform a manual installation at the moment.
 > - The easiest way to use it is to download one of the precompiled **[archives](https://1drv.ms/f/s!AgSiDu9lV3iMnPFKPO5BB_c72OLjtQ?e=3fRZMG)** - simply unpack them and use the included launcher. See **[this table](#self-contained-packages)** for their contents and sizes.
 
 ## Quick Demonstration
