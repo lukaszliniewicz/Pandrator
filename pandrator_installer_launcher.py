@@ -241,6 +241,10 @@ class PandratorInstaller(ctk.CTk):
         xtts_support = config.get('xtts_support', False)
         xtts_cuda_support = config.get('cuda_support', False)
         
+        # RVC
+        rvc_support = config.get('rvc_support', False)
+        set_widget_state(self.rvc_checkbox, "disabled" if rvc_support else "normal", False)
+        
         # Disable both XTTS and XTTS CPU checkboxes if XTTS is installed in any form
         set_widget_state(self.xtts_checkbox, "disabled" if xtts_support else "normal", False)
         set_widget_state(self.xtts_cpu_checkbox, "disabled" if xtts_support else "normal", False)
@@ -319,7 +323,8 @@ class PandratorInstaller(ctk.CTk):
             'silero': config.get('silero_support', False),
             'voicecraft': config.get('voicecraft_support', False),
             'rvc': config.get('rvc_support', False),
-            'whisperx': config.get('whisperx_support', False)
+            'whisperx': config.get('whisperx_support', False),
+            'xtts_finetuning': config.get('xtts_finetuning_support', False)
         }
 
     def install_whisperx(self, conda_path, env_name):
@@ -1181,6 +1186,7 @@ class PandratorInstaller(ctk.CTk):
             config['voicecraft_support'] = config.get('voicecraft_support', False) or self.voicecraft_var.get()
             config['whisperx_support'] = config.get('whisperx_support', False) or self.whisperx_var.get()
             config['xtts_finetuning_support'] = config.get('xtts_finetuning_support', False) or self.xtts_finetuning_var.get()
+            config['rvc_support'] = config.get('rvc_support', False) or self.rvc_var.get()
 
             with open(config_path, 'w') as f:
                 json.dump(config, f)
