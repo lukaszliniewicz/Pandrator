@@ -12,7 +12,7 @@
 ## Quick Demonstration
 This video shows the process of launching Pandrator, selecting a source file, starting generation, stopping it and previewing the saved file. It has not been sped up as it's intended to illustrate the real performance (you may skip the first 35s when the XTTS server is launching, and please remember to turn on the sound). 
 
-https://github.com/user-attachments/assets/1f1b5698-b279-424d-872b-1cc52923421b
+https://github.com/user-attachments/assets/7cab141a-e043-4057-8166-72cb29281c50
 
 ## About Pandrator
 
