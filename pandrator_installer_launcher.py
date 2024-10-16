@@ -1349,6 +1349,10 @@ class PandratorInstaller(ctk.CTk):
         self.refresh_ui_state()
         self.after(5000, self.check_processes_status)
 
+    def is_port_in_use(self, port):
+        import socket
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            return s.connect_ex(('localhost', port)) == 0
 
     def run_script(self, conda_path, env_name, script_path, additional_args=[]):
         logging.info(f"Running script {script_path} in {env_name} with args: {additional_args}")
@@ -1360,6 +1364,7 @@ class PandratorInstaller(ctk.CTk):
             os.path.join(conda_path, 'Scripts', 'conda.exe'),
             'run',
             '-p', env_path,
+            '--no-capture-output',
             'python',
             script_path
         ] + additional_args
@@ -1378,6 +1383,13 @@ class PandratorInstaller(ctk.CTk):
         if not os.path.exists(xtts_server_path):
             raise FileNotFoundError(f"XTTS server path not found: {xtts_server_path}")
 
+        # Check if port 8020 is already in use
+        if self.is_port_in_use(8020):
+            error_msg = "XTTS server cannot be started because port 8020 is already in use."
+            logging.error(error_msg)
+            CTkMessagebox(title="Error", message=error_msg, icon="cancel")
+            return None
+
         xtts_log_file = os.path.join(xtts_server_path, 'xtts_server.log')
         env_path = os.path.join(conda_path, 'envs', env_name)
 
@@ -1385,6 +1397,7 @@ class PandratorInstaller(ctk.CTk):
             os.path.join(conda_path, 'Scripts', 'conda.exe'),
             'run',
             '-p', env_path,
+            '--no-capture-output',
             'python', '-m', 'xtts_api_server',
         ]
 
