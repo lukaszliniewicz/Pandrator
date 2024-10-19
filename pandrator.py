@@ -912,7 +912,6 @@ class TTSOptimizerGUI:
         ctk.CTkLabel(self.transcription_frame, text="Transcription Options:", font=ctk.CTkFont(size=12, weight="bold")).grid(row=0, column=0, columnspan=5, padx=10, pady=(5, 5), sticky=tk.W)
 
         ctk.CTkLabel(self.transcription_frame, text="Language:").grid(row=1, column=0, padx=10, pady=5, sticky=tk.W)
-        # Replace the existing Whisper language dropdown with this:
         self.whisperx_language_dropdown = ctk.CTkComboBox(self.transcription_frame, variable=self.whisperx_language, values=self.whisper_languages)
         self.whisperx_language_dropdown.grid(row=1, column=1, padx=10, pady=5, sticky=tk.W)
 
@@ -2467,7 +2466,7 @@ class TTSOptimizerGUI:
             else:
                 shutil.copy(self.pre_selected_source_file, session_dir)
                 self.source_file = os.path.join(session_dir, file_name)
-    
+
             # Handle dubbing-related UI elements
             if self.pre_selected_source_file.lower().endswith((".mp4", ".mkv", ".webm", ".avi", ".mov")):
                 self.dubbing_frame.grid()
@@ -2501,6 +2500,17 @@ class TTSOptimizerGUI:
 
         self.pdf_preprocessed = False  # Reset the flag
 
+    def hide_output_section(self):
+        if hasattr(self, 'output_options_label'):
+            self.output_options_label.grid_remove()
+        if hasattr(self, 'output_options_frame'):
+            self.output_options_frame.grid_remove()
+
+    def show_output_section(self):
+        if hasattr(self, 'output_options_label'):
+            self.output_options_label.grid()
+        if hasattr(self, 'output_options_frame'):
+            self.output_options_frame.grid()
 
     def download_from_url(self):
         if not self.session_name.get():
@@ -2589,7 +2599,8 @@ class TTSOptimizerGUI:
 
         self.source_file = ""  # For video files, this isn't used, but prevents potential issues
 
-        self.dubbing_frame.grid()  # Show dubbing related UI elements
+        self.hide_output_section()  # Hide output section for downloaded videos
+        self.dubbing_frame.grid()
         self.toggle_transcription_widgets(True)
 
         self.selected_video_file.set(self.pre_selected_source_file)
@@ -2788,6 +2799,19 @@ class TTSOptimizerGUI:
                 self.source_file = file_path
                 truncated_filename = filename[:70] + "..." if len(filename) > 70 else filename
                 self.selected_file_label.configure(text=truncated_filename)
+                
+                # Show output section for pasted text
+                if hasattr(self, 'output_options_label'):
+                    self.output_options_label.grid()
+                if hasattr(self, 'output_options_frame'):
+                    self.output_options_frame.grid()
+                
+                # Hide dubbing-related elements
+                self.dubbing_frame.grid_remove()
+                self.video_file_selection_frame.grid_remove()
+                
+                # Enable the Start Generation button
+                self.start_generation_button.configure(state=tk.NORMAL)
                 
                 paste_window.destroy()
                 CTkMessagebox(title="Text Saved", message=f"The pasted text has been saved as '{filename}' in the session folder.", icon="info")
