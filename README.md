@@ -70,13 +70,16 @@ This project relies on several APIs and services (running locally) and libraries
 ## Installation
 
 ### Self-contained packages
-I've prepared packages (archives) that you can simply unpack - everything is preinstalled in its own portable conda environment. You can use the launcher to start Pandrator, update it and install new features, depending on the version of the package you downloaded. 
+I've prepared packages (archives) that you can simply unpack - everything is preinstalled in its own portable conda environment. You can download them from **[here](https://1drv.ms/f/s!AgSiDu9lV3iMnPFKPO5BB_c72OLjtQ?e=sLidui)**.
 
-| Package | Contents                                                   | Unpacked Size | Link     |
-|---------|-------------------------------------------------------------|---------------|----------|
-| 1       | Pandrator and Silero                                        | 4GB           | [Download](https://1drv.ms/u/s!AgSiDu9lV3iMnoVipZuCpbxCWkfaCA?e=Xqbvsl) |
-| 2       | Pandrator and XTTS                                          | 14GB          | [Download](https://1drv.ms/u/s!AgSiDu9lV3iMnoVtKm77JrJYOrqEGw?e=sjcAMr) |
-| 3       | Pandrator, XTTS, RVC, WhisperX (for dubbing) and XTTS fine-tuning | 36GB          | [Download](https://1drv.ms/u/s!AgSiDu9lV3iMnoVuGyd8Q_thLlS1nQ?e=vfON94) |
+You can use the launcher to start Pandrator, update it and install new features. 
+
+| Package | Contents                                                   | Unpacked Size | 
+|---------|-------------------------------------------------------------|---------------|
+| 1       | Pandrator and Silero                                        | 4GB           | 
+| 2       | Pandrator and XTTS                                          | 14GB          | 
+| 3       | Pandrator, XTTS, RVC, WhisperX (for dubbing) and XTTS fine-tuning | 36GB          | 
+
 
 ### GUI Installer and Launcher (Windows)
 
