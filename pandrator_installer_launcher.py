@@ -471,6 +471,50 @@ class PandratorInstaller(ctk.CTk):
         except subprocess.CalledProcessError:
             return False
 
+    def install_chocolatey(self):
+        logging.info("Installing Chocolatey...")
+        try:
+            powershell_command = """
+            Set-ExecutionPolicy Bypass -Scope Process -Force; 
+            [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; 
+            iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+            """
+            
+            # Run the installation command
+            process = subprocess.Popen(
+                ["powershell", "-Command", powershell_command],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            
+            # Capture and log the output
+            for line in process.stdout:
+                logging.info(line.strip())
+            
+            process.wait()
+            
+            if process.returncode == 0:
+                logging.info("Chocolatey installed successfully.")
+                
+                # Enable global confirmation
+                subprocess.run(["powershell", "-Command", "choco feature enable -n=allowGlobalConfirmation"], 
+                               check=True, capture_output=True, text=True)
+                logging.info("Global confirmation enabled for Chocolatey.")
+                
+                # Refresh environment variables
+                self.refresh_environment_variables()
+                return True
+            else:
+                error_output = process.stderr.read()
+                logging.error(f"Failed to install Chocolatey: {error_output}")
+                return False
+        except Exception as e:
+            logging.error(f"An error occurred during Chocolatey installation: {str(e)}")
+            logging.error(traceback.format_exc())
+            return False
+
     def refresh_environment_variables(self):
         """Refresh the environment variables for the current session."""
         try:
@@ -492,135 +536,8 @@ class PandratorInstaller(ctk.CTk):
             logging.error(traceback.format_exc())
             raise
 
-    def install_winget(self):
-        try:
-            logging.info("Checking if winget is installed...")
-            try:
-                version_output, _ = self.run_command(['winget', '--version'])
-                current_version = version_output.strip()
-                if current_version.startswith("v"):
-                    current_version = current_version[1:]
-                logging.info(f"Current winget version: {current_version}")
-                needs_update = packaging.version.parse(current_version) < packaging.version.parse("1.7")
-            except FileNotFoundError:
-                logging.info("winget is not installed.")
-                needs_update = True
-
-            if needs_update:
-                logging.info("Installing/Updating winget...")
-                with tempfile.TemporaryDirectory() as temp_dir:
-                    script_path = os.path.join(temp_dir, "winget-install.ps1")
-                    
-                    # Download the PowerShell script
-                    self.run_command([
-                        'powershell',
-                        '-Command',
-                        f'Invoke-WebRequest -Uri "https://github.com/asheroto/winget-install/releases/latest/download/winget-install.ps1" -OutFile "{script_path}"'
-                    ], use_shell=True)
-                    
-                    # Execute the PowerShell script with -Force parameter and wait for it to finish
-                    try:
-                        process = subprocess.Popen([
-                            'powershell',
-                            '-ExecutionPolicy', 'Bypass',
-                            '-File', script_path,
-                            '-Force'  # Add this to force the update
-                        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
-                        
-                        # Real-time output processing
-                        while True:
-                            output = process.stdout.readline()
-                            if output == '' and process.poll() is not None:
-                                break
-                            if output:
-                                logging.info(output.strip())
-                        
-                        # Get the return code
-                        return_code = process.poll()
-                        
-                        # Check for any errors
-                        errors = process.stderr.read()
-                        if errors:
-                            logging.error(f"Errors during winget installation: {errors}")
-                        
-                        if return_code != 0:
-                            raise subprocess.CalledProcessError(return_code, 'PowerShell script')
-                        
-                        logging.info("Winget installation/update script completed.")
-                        
-                    except subprocess.CalledProcessError as e:
-                        logging.error(f"Failed to execute PowerShell script: {str(e)}")
-                        raise
-
-                # Refresh environment variables
-                self.refresh_environment_variables()
-                
-                # Verify installation/update
-                try:
-                    new_version_output, _ = self.run_command(['winget', '--version'])
-                    new_version = new_version_output.strip()
-                    if new_version.startswith("v"):
-                        new_version = new_version[1:]
-                    logging.info(f"Installed/Updated winget version: {new_version}")
-                    
-                    if packaging.version.parse(new_version) >= packaging.version.parse("1.7"):
-                        logging.info("winget has been successfully installed/updated.")
-                    else:
-                        logging.warning(f"winget version is still below 1.7 after installation/update attempt.")
-                        messagebox.showwarning("Update Warning", "winget installation/update may not have succeeded. Please check and update manually if needed.")
-                except FileNotFoundError:
-                    logging.error("winget still not found after installation attempt.")
-                    messagebox.showerror("Error", "Failed to install winget. Please install it manually.")
-            else:
-                logging.info(f"Existing winget version {current_version} is adequate. No update needed.")
-
-        except Exception as e:
-            logging.error(f"An error occurred during winget installation/update: {str(e)}")
-            logging.error(traceback.format_exc())
-            messagebox.showerror("Error", f"Failed to install/update winget: {str(e)}")
-            
-    def get_system_architecture(self):
-        return 'x64' if sys.maxsize > 2**32 else 'x86'
-           
-    def get_program_path_from_registry(self, program_name):
-        try:
-            if program_name == 'git':
-                key_path = r"SOFTWARE\GitForWindows"
-                value_name = "InstallPath"
-            else:
-                return None
-
-            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path) as key:
-                if value_name:
-                    return winreg.QueryValueEx(key, value_name)[0]
-                else:
-                    return winreg.QueryValueEx(key, "")[0]  # Default value
-        except WindowsError:
-            return None
-
     def install_dependencies(self):
         return self.install_calibre()
-
-    def install_calibre(self):
-        logging.info("Checking installation for Calibre")
-        if not self.check_program_installed('calibre'):
-            logging.info("Installing Calibre...")
-            try:
-                self.run_command(['winget', 'install', '--id', 'calibre.calibre', '-e', '--accept-source-agreements', '--accept-package-agreements'])
-                self.refresh_env_in_new_session()
-                if self.check_program_installed('calibre'):
-                    logging.info("Calibre installed successfully.")
-                    return True
-                else:
-                    logging.warning("Calibre installation not detected after installation attempt.")
-                    return False
-            except subprocess.CalledProcessError as e:
-                logging.error("Failed to install Calibre.")
-                logging.error(f"Error output: {e.stderr.decode('utf-8')}")
-                return False
-        else:
-            logging.info("Calibre is already installed.")
-            return True
             
     def show_calibre_installation_message(self):
         message = ("Calibre installation failed. Please install Calibre manually.\n"
@@ -634,55 +551,82 @@ class PandratorInstaller(ctk.CTk):
         os.environ.update(new_env)
         logging.info("Refreshed environment variables in a new session")
 
-    def install_visual_cpp_build_tools(self):
-        logging.info("Installing/Updating Microsoft Visual C++ Build Tools...")
-        self.update_status("Installing/Updating Microsoft Visual C++ Build Tools...")
-  
-        winget_command = [
-            "winget", "install", 
-            "--id", "Microsoft.VisualStudio.2022.BuildTools",
-            "--override", "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended",
-            "--accept-package-agreements",
-            "--accept-source-agreements"
-        ]
+    def install_with_chocolatey(self, package_name, args=""):
+        logging.info(f"Attempting to install {package_name} with Chocolatey...")
         
+        # First, try using 'choco' command
         try:
-            process = subprocess.Popen(winget_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors='replace')
+            process = subprocess.Popen(
+                f"choco install {package_name} -y {args}",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=True,
+                text=True
+            )
             
-            output = []
-            while True:
-                try:
-                    line = process.stdout.readline()
-                    if not line and process.poll() is not None:
-                        break
-                    if line:
-                        output.append(line.strip())
-                        logging.info(line.strip())
-                except UnicodeDecodeError as ude:
-                    logging.warning(f"UnicodeDecodeError encountered: {ude}")
-                    continue
+            stdout, stderr = process.communicate()
+            logging.info(stdout)
             
-            error_output = process.stderr.read().strip()
-            if error_output:
-                logging.debug(f"STDERR: {error_output}")
-            
-            returncode = process.poll()
-            
-            if returncode == 0 or any("No available upgrade found" in line for line in output):
-                logging.info("Microsoft Visual C++ Build Tools are up to date or successfully installed.")
-                self.update_status("Build Tools are ready.")
+            if process.returncode == 0:
+                logging.info(f"{package_name} installed successfully using 'choco' command.")
                 return True
-            else:
-                logging.error(f"Failed to install/update Microsoft Visual C++ Build Tools. Return code: {returncode}")
-                if error_output:
-                    logging.error(f"Error output: {error_output}")
-                self.update_status("Error during Build Tools installation/update. Check the log for details.")
-                return False
-            
         except Exception as e:
-            logging.error(f"An error occurred during Visual C++ Build Tools installation: {str(e)}")
-            logging.error(traceback.format_exc())
-            self.update_status("Error during Build Tools installation/update. Check the log for details.")
+            logging.error(f"Error using 'choco' command: {str(e)}")
+        
+        # If 'choco' command fails, try using the Chocolatey executable directly
+        try:
+            choco_exe = os.path.join(os.environ.get('ProgramData', ''), 'chocolatey', 'bin', 'choco.exe')
+            if os.path.exists(choco_exe):
+                process = subprocess.Popen(
+                    f'"{choco_exe}" install {package_name} -y {args}',
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    shell=True,
+                    text=True
+                )
+                
+                stdout, stderr = process.communicate()
+                logging.info(stdout)
+                
+                if process.returncode == 0:
+                    logging.info(f"{package_name} installed successfully using Chocolatey executable.")
+                    return True
+            else:
+                logging.error("Chocolatey executable not found.")
+        except Exception as e:
+            logging.error(f"Error using Chocolatey executable: {str(e)}")
+        
+        logging.error(f"Failed to install {package_name} using Chocolatey.")
+        return False
+
+    def install_calibre(self):
+        logging.info("Checking installation for Calibre")
+        if not self.check_program_installed('calibre'):
+            logging.info("Installing Calibre...")
+            if self.install_with_chocolatey('calibre'):
+                self.refresh_env_in_new_session()
+                if self.check_program_installed('calibre'):
+                    logging.info("Calibre installed successfully.")
+                    return True
+                else:
+                    logging.warning("Calibre installation not detected after installation attempt.")
+                    return False
+            else:
+                return False
+        else:
+            logging.info("Calibre is already installed.")
+            return True
+
+    def install_visual_cpp_build_tools(self):
+        logging.info("Installing Microsoft Visual C++ Build Tools...")
+        self.update_status("Installing Microsoft Visual C++ Build Tools...")
+
+        if self.install_with_chocolatey('visualstudio2022buildtools', '--package-parameters "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"'):
+            self.refresh_env_in_new_session()
+            self.update_status("Build Tools are ready.")
+            return True
+        else:
+            self.update_status("Error during Build Tools installation. Check the log for details.")
             return False
 
     def install_conda(self, install_path):
@@ -695,7 +639,15 @@ class PandratorInstaller(ctk.CTk):
         with open(conda_installer, 'wb') as f:
             f.write(response.content)
         
-        self.run_command([conda_installer, '/InstallationType=JustMe', '/RegisterPython=0', '/S', f'/D={install_path}'])
+        self.run_command([
+            conda_installer,
+            '/InstallationType=JustMe',
+            '/AddToPath=0',
+            '/RegisterPython=0',
+            '/NoRegistry=1',
+            '/S',
+            f'/D={install_path}'
+        ])
         os.remove(conda_installer)
 
     def check_conda(self, conda_path):
@@ -791,7 +743,7 @@ class PandratorInstaller(ctk.CTk):
         download_file(model_url, model_path)
 
     def install_pytorch_and_xtts_api_server(self, conda_path, env_name):
-        logging.info(f"Installing xtts-api-server and PyTorch in {env_name}...")
+        logging.info(f"Installing xtts-api-server, PyTorch, and FFmpeg in {env_name}...")
         env_path = os.path.join(conda_path, 'envs', env_name)
         
         try:
@@ -806,9 +758,13 @@ class PandratorInstaller(ctk.CTk):
                 pytorch_cmd = [os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'pip', 'install', 'torch==2.1.1+cu118', 'torchaudio==2.1.1+cu118', '--extra-index-url', 'https://download.pytorch.org/whl/cu118']
             self.run_command(pytorch_cmd)
             
-            logging.info("xtts-api-server and PyTorch installed successfully.")
+            # Install FFmpeg
+            ffmpeg_cmd = [os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'conda', 'install', '-c', 'conda-forge', 'ffmpeg', '-y']
+            self.run_command(ffmpeg_cmd)
+            
+            logging.info("xtts-api-server, PyTorch, and FFmpeg installed successfully.")
         except subprocess.CalledProcessError as e:
-            logging.error("Error installing xtts-api-server and PyTorch.")
+            logging.error("Error installing xtts-api-server, PyTorch, or FFmpeg.")
             logging.error(f"Error output: {e.stderr.decode('utf-8')}")
             raise
 
@@ -1039,8 +995,8 @@ class PandratorInstaller(ctk.CTk):
         
         try:
             self.update_progress(0.1)
-            self.update_status("Installing winget...")
-            self.install_winget()
+            self.update_status("Installing Chocolatey...")
+            self.install_chocolatey()
 
             self.update_progress(0.2)
             self.update_status("Installing dependencies...")
@@ -1411,20 +1367,25 @@ class PandratorInstaller(ctk.CTk):
 
         logging.info(f"XTTS command: {' '.join(xtts_server_command)}")
 
-        def log_output(pipe, logfile):
-            with open(logfile, 'a') as f:
+        def log_output(pipe, logfile, prefix):
+            with open(logfile, 'a', encoding='utf-8') as f:
                 for line in iter(pipe.readline, b''):
-                    decoded_line = line.decode('utf-8').strip()
-                    f.write(decoded_line + '\n')
+                    try:
+                        decoded_line = line.decode('utf-8').strip()
+                    except UnicodeDecodeError:
+                        decoded_line = line.decode('utf-8', errors='replace').strip()
+                    log_message = f"{prefix}: {decoded_line}"
+                    f.write(log_message + '\n')
                     f.flush()
-                    logging.info(f"XTTS: {decoded_line}")
+                    logging.info(log_message)
+                    print(log_message, flush=True)
 
         try:
             process = subprocess.Popen(xtts_server_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=xtts_server_path)
             self.xtts_process = process
             
-            stdout_thread = threading.Thread(target=log_output, args=(process.stdout, xtts_log_file), daemon=True)
-            stderr_thread = threading.Thread(target=log_output, args=(process.stderr, xtts_log_file), daemon=True)
+            stdout_thread = threading.Thread(target=log_output, args=(process.stdout, xtts_log_file, "XTTS stdout"), daemon=True)
+            stderr_thread = threading.Thread(target=log_output, args=(process.stderr, xtts_log_file, "XTTS stderr"), daemon=True)
             
             stdout_thread.start()
             stderr_thread.start()
@@ -1436,7 +1397,7 @@ class PandratorInstaller(ctk.CTk):
             logging.exception("Exception details:")
             raise
 
-    def check_xtts_server_online(self, url, max_attempts=60, wait_interval=10):
+    def check_xtts_server_online(self, url, max_attempts=200, wait_interval=5):
         print("Waiting for xtts server to come online...")
         attempt = 1
         while attempt <= max_attempts:
