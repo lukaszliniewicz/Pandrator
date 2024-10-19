@@ -887,7 +887,9 @@ class PandratorInstaller(ctk.CTk):
             update_cmd = [
                 os.path.join(conda_path, 'Scripts', 'conda.exe'),
                 'run',
-                '-n', 'pandrator_installer',
+                '-p', 
+                os.path.join(conda_path, 'envs', 'pandrator_installer'),
+                '--no-capture-output',
                 'pip', 'install', '-r', requirements_file
             ]
             logging.info(f"Executing update command: {' '.join(update_cmd)}")
