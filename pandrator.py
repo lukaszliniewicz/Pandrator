@@ -2148,6 +2148,12 @@ class TTSOptimizerGUI:
             if not os.path.exists(wav_file) or os.path.getsize(wav_file) == 0:
                 raise FileNotFoundError(f"WAV file is missing or empty: {wav_file}")
 
+            # Check if GPU is available and from Pascal generation
+            if torch.cuda.is_available():
+                gpu_name = torch.cuda.get_device_name(0).lower()
+                pascal_gpus = ['1060', '1070', '1080', '1660', '1650']
+                use_int8 = any(gpu in gpu_name for gpu in pascal_gpus)
+            
             # Transcription using the WAV file
             output_srt = os.path.join(session_dir, f"{video_filename}.srt")
             whisperx_command = [
@@ -2159,6 +2165,10 @@ class TTSOptimizerGUI:
                 "--output_format", "srt",
                 "--output_dir", session_dir
             ]
+            
+            # Add int8 compute type if GPU is from Pascal generation
+            if use_int8:
+                whisperx_command.extend(["--compute_type", "int8"])
 
             logging.info(f"Executing transcription command: {' '.join(whisperx_command)}")
 
