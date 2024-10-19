@@ -912,7 +912,8 @@ class TTSOptimizerGUI:
         ctk.CTkLabel(self.transcription_frame, text="Transcription Options:", font=ctk.CTkFont(size=12, weight="bold")).grid(row=0, column=0, columnspan=5, padx=10, pady=(5, 5), sticky=tk.W)
 
         ctk.CTkLabel(self.transcription_frame, text="Language:").grid(row=1, column=0, padx=10, pady=5, sticky=tk.W)
-        self.whisperx_language_dropdown = ctk.CTkOptionMenu(self.transcription_frame, variable=self.whisperx_language, values=self.whisper_languages)
+        # Replace the existing Whisper language dropdown with this:
+        self.whisperx_language_dropdown = ctk.CTkComboBox(self.transcription_frame, variable=self.whisperx_language, values=self.whisper_languages)
         self.whisperx_language_dropdown.grid(row=1, column=1, padx=10, pady=5, sticky=tk.W)
 
         ctk.CTkLabel(self.transcription_frame, text="Model:").grid(row=1, column=2, padx=10, pady=5, sticky=tk.W)
@@ -930,7 +931,7 @@ class TTSOptimizerGUI:
         self.enable_translation_switch.grid(row=1, column=0, columnspan=2, padx=10, pady=5, sticky=tk.W)
 
         ctk.CTkLabel(self.translation_frame, text="From:").grid(row=2, column=0, padx=10, pady=5, sticky=tk.W)
-        self.original_language_dropdown = ctk.CTkOptionMenu(self.translation_frame, variable=self.original_language, values=self.whisper_languages)
+        self.original_language_dropdown = ctk.CTkComboBox(self.translation_frame, variable=self.original_language, values=self.whisper_languages)
         self.original_language_dropdown.grid(row=2, column=1, padx=10, pady=5, sticky=tk.W)
 
         ctk.CTkLabel(self.translation_frame, text="To:").grid(row=2, column=2, padx=10, pady=5, sticky=tk.W)
