@@ -14,6 +14,10 @@ This video shows the process of launching Pandrator, selecting a source file, st
 
 https://github.com/user-attachments/assets/7cab141a-e043-4057-8166-72cb29281c50
 
+And here you can see the dubbing workflow - from a YT video, through transcription, translation, speech generation to synchronisation. 
+
+https://github.com/user-attachments/assets/dfd4b6e8-3eda-49e4-bff4-f1683ec4cf21
+
 ## About Pandrator
 
 Pandrator aspires to be easy to use and install - it has a one-click installer and a graphical user interface. It is a tool designed to perform two tasks: 
