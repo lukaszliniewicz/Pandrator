@@ -4137,9 +4137,8 @@ class TTSOptimizerGUI:
             language = self.language_dropdown.get()
             speaker = self.selected_speaker.get()
             
-            # Remove the period at the end of the sentence if the language is not English
             #if language != "en":
-            #    text = text.rstrip('.')
+            text = text.rstrip('.')
             
             speaker_path = os.path.join(self.tts_voices_folder, speaker)
             if os.path.isfile(speaker_path):
