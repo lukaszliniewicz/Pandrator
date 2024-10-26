@@ -249,19 +249,32 @@ Pandrator/
 For more detailed information on using specific components or troubleshooting, please refer to the documentation of each individual repository.
 
 ## Quick Start Guide
-### Basic Usage
-If you don't want to use the additional functionalities, you have everything you need in the **Session tab**. 
 
-1. Either create a new session or load an existing one (select a folder in `Outputs` to do that).
-2. Choose your `.txt`, `.srt`, `.pdf` or `epub` file. If you choose a PDF or EPUB file, a preview window will open with the extracted text. You may edit it (OCRed books often have poorly recognized text from the title page, for example). Files that contain a lot of text, regardless of format, can take a long time to finish preprocessing before generation begins. The GUI will freeze, but as long as there is processor activity, it's simply working. For whole books, expect 10m+ for preprocessing.
-3. Select the TTS server you want to use - XTTS, Silero or VoiceCraft - and the language from the dropdown (VoiceCraft currently supports only English).
-4. Choose the voice you want to use.
-   1. **XTTS**, voices are short, 6-12s `.wav` files (22050hz sample rate, mono) stored in the `tts_voices` directory. The XTTS model uses the audio to clone the voice. It doesn't matter what language the sample is in, you will be able to generate speech in all supported languages, but the quality will be best if you provide a sample in your target language. You may use the sample one in the repository or upload your own. Please make sure that the audio is between 6 and 12s, mono, and the sample rate is 22050hz. You may use a tool like Audacity to prepare the files. The less noise, the better. You may use a tool like [Resemble AI](https://github.com/resemble-ai/resemble-enhance) for denoising and/or enhancement of your samples on [Hugging Face](https://huggingface.co/spaces/ResembleAI/resemble-enhance).
+### Basic Usage: Audiobooks
+If you don't want to use the additional features like RVC, you have everything you need in the **Session tab**. 
+
+#### Session
+Either create a new session or load an existing one (select a folder in `Outputs` to do that).
+
+#### File selection and preprocessing
+Choose a `.txt`, `.srt`, `.pdf`, `.epub`, `.mobi` or `.docx` file. If you choose a PDF or EPUB file, a preview window will open with the extracted text. You may edit it (OCRed books often have poorly recognized text from the title page, for example) and check/add Chapter markers (they will be created automatically for EPUB files). For PDFs, you will have the option to crop the pages to remove headers/footers as well as to remove unneeded pages (like the title page or the table of contents). Files that contain a lot of text, regardless of format, can take a moment to finish preprocessing before generation begins. The GUI will freeze, but as long as there is processor activity, it's simply working.
+
+#### Selecting the TTS Engline and the voice
+1. Select the TTS server you want to use - XTTS, Silero or VoiceCraft - and the language from the dropdown (VoiceCraft currently supports only English). XTTS is the recommended option.
+2. Choose the voice you want to use.
+   1. **XTTS**, voices are short, 6-12s `.wav` files (22050hz sample rate, mono) stored in the `tts_voices` directory (`Pandrator/Pandrator/tts_voices`). You can upload and select them via the GUI. The XTTS model uses the audio to clone the voice. It doesn't matter what language the sample is in, you will be able to generate speech in all supported languages, but the quality will be best if you provide a sample in your target language. You may use the sample one in the repository or upload your own. Please make sure that the audio is between 6 and 12s, mono, and the sample rate is 22050hz. You may use a tool like Audacity to prepare the files. The less noise, the better. You may use a tool like [Resemble AI](https://github.com/resemble-ai/resemble-enhance) for denoising and/or enhancement of your samples on [Hugging Face](https://huggingface.co/spaces/ResembleAI/resemble-enhance).
    2. **Silero** offers a number of voices for each language it supports. It doesn't support voice cloning. Simply select a voice from the dropdown after choosing the language.
    3. **VoiceCraft** works similarly to XTTS in that it clones the voice from a `.wav ` sample. However, it needs both a properly formatted `.wav` file (mono, 16000hz) and a `.txt` file with the transcription of what is said in the sample. The files must have the same name (apart from the extension, of course). You need to upload them to `tts_voices/VoiceCraft` and you will be able to select them in the GUI. Currently only English is supported. If you generate with a new voice for the first time, the server will perform the alignment procedure, so the first sentence will be generated with a delay. This won't happen when you use that voice again.
-8. Start the generation. You may stop and resume it later, or close the programme and load the session later.
-9. You can play back the generated sentences, also as a playlist, edit them (the text for regeneration), regenerate or remove individual ones.
-10. "Save Output" concatenates the sentences generated so far an encodes them as one file (default is `.opus` at 64k bitrate; you may change it in the Audio tab to `.wav` or `.mp3`).
+
+#### Output options
+The default output format is .m4b. You can also select opus, mp3 or wav, choose a cover image and provide metadata.
+
+#### Generation 
+Click on "Start Generation" to begin. You may stop and resume it later, or close the programme and load the session later.
+
+#### Generated sentences
+You can play back the generated sentences, also as a playlist, edit them (the text that will be used for regeneration), regenerate or remove individual ones. You can also mark them for regeneration. This is useful when you don't want to stop listening but work on all problematic sentences later. You can use the "m" key to mark the sentence that is currently playing or the right mouse button to mark both the current and the previous sentence (this can be useful if you're listening to the output and not looking at the screen).
+"Save Output" concatenates the sentences generated so far an encodes them as one file.
 
 ### General Audio Settings
 1. You can change the lenght of silence appended to the end of sentences and paragraphs.
