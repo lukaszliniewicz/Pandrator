@@ -368,6 +368,14 @@ class PandratorInstaller(ctk.CTk):
                 'pip', 'install', 'git+https://github.com/m-bain/whisperx.git'
             ])
             
+            # Install CTranslate2
+            self.run_command([
+               os.path.join(conda_path, 'Scripts', 'conda.exe'),
+               'run', '-p', env_path, 
+               'pip', 'install',
+               'ctranslate2==4.4.0'
+            ])
+            
             logging.info("WhisperX installation completed successfully.")
         except subprocess.CalledProcessError as e:
             logging.error(f"Failed to install WhisperX in {env_name}")
@@ -967,8 +975,8 @@ class PandratorInstaller(ctk.CTk):
             self.run_command([
                 os.path.join(conda_path, 'Scripts', 'conda.exe'),
                 'run', '-p', env_path,
-                'pip', 'install', 'torch==2.1.1+cu118', 'torchaudio==2.1.1+cu118',
-                '--index-url', 'https://download.pytorch.org/whl/cu118'
+                'pip', 'install', 'torch==2.1.1+cu121', 'torchaudio==2.1.1+cu121',
+                '--index-url', 'https://download.pytorch.org/whl/cu121'
             ])
 
             logging.info("RVC Python installation completed successfully.")
