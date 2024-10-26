@@ -17,3 +17,4 @@ Pillow
 argparse
 sentence-splitter
 yt_dlp
+dulwich
