@@ -282,7 +282,7 @@ Pandrator offers a comprehensive workflow for generating dubbed videos from vide
 
 1. **Select a Video or SRT File:** 
     - **Video File:** Choose a video file. The audio will be extracted automatically, and transcription will be performed using WhisperX. 
-    - **SRT File:** Select an existing SRT subtitle file. In this case, you also need to specify the corresponding video file.
+    - **SRT File:** Select an existing SRT subtitle file. In this case, you also need to specify the corresponding video file (unless you only want to translate the subtitles).
 2. **Transcription (if using a video file):**
     - **Language:** Select the language spoken in the original video.
     - **Model:** Choose a WhisperX model for transcription. Smaller models are faster, while larger ones provide higher accuracy. The `large-v3` model provides the best results. 
@@ -292,7 +292,7 @@ Pandrator offers a comprehensive workflow for generating dubbed videos from vide
     - **Original and Target Languages:** Select the original language of the subtitles and the language you want to translate them into.
     - **Translation Model:** Choose a translation model (e.g., `haiku`, `sonnet`, `gpt-4o-mini`, `gpt-4o`, `deepl`, `local`). With the exception of the local option, you have to set an API key in the _API Keys_ tab. Sonnet provides the best results, but is the most expensive. You can translate 500,000 characters for free with DeepL. For local translation, you need to have Text Generation Webui set up and running with the model you want to use loaded.
     - **Evaluation (optional):** Enable this option to have the translation model evaluate and choose the better of two translation attempts for each subtitle (available only for LLMs, not DeepL).
-4. In order to generate speech, click on __Generate Dubbing Audio__. You will be able to edit/regenerate the sentences as in the Audiobook workflow. You can also choose to only transcribe the chosen video file or only translate chosen subtitles.
+4. In order to generate speech, click on __Generate Dubbing Audio__. You will be able to edit/regenerate the sentences as in the Audiobook workflow. You can also choose to only transcribe the chosen video file or only translate a subtitle file.
 6. **Synchronization:** When you're happy with the generated audio, click on __Add Dubbing to Video__. The dubbing will be synchronised with the video, producing a dubbed video file with embedded subtitles.
 
 ### General Audio Settings
