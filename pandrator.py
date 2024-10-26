@@ -2395,6 +2395,13 @@ class TTSOptimizerGUI:
                     ("All files", "*.*")]
         )
         
+        if self.pre_selected_source_file.lower().endswith((".mp4", ".mkv", ".webm", ".avi", ".mov", ".srt")):
+            self.output_options_label.grid_remove()
+            self.output_options_frame.grid_remove()
+        else:
+            self.output_options_label.grid()
+            self.output_options_frame.grid()
+
         if self.pre_selected_source_file.lower().endswith(".pdf"):
             response = CTkMessagebox(
                 title="PDF Preprocessing",
