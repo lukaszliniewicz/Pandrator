@@ -43,6 +43,7 @@ from mutagen.id3 import PictureType
 import base64
 from PIL import Image
 import yt_dlp
+from dulwich import porcelain
 
 # Conditional imports for torch and RVC
 try:
@@ -2394,13 +2395,75 @@ class TTSOptimizerGUI:
                     ("All files", "*.*")]
         )
         
-        if self.pre_selected_source_file.lower().endswith((".mp4", ".mkv", ".webm", ".avi", ".mov", ".srt")):
-            self.output_options_label.grid_remove()
-            self.output_options_frame.grid_remove()
-        else:
-            self.output_options_label.grid()
-            self.output_options_frame.grid()
-        
+        if self.pre_selected_source_file.lower().endswith(".pdf"):
+            response = CTkMessagebox(
+                title="PDF Preprocessing",
+                message="Would you like to manually crop the PDF (for example to remove headers and footers) or delete unneeded pages? Please click on Save PDF when you finish editing.",
+                icon="question",
+                option_1="Ok",
+                option_2="Skip"
+            ).get()
+            
+            if response == "Ok":
+                # Check if PyCropPDF exists
+                if not os.path.exists("PyCropPDF"):
+                    try:
+                        # Clone the repository
+                        from dulwich import porcelain
+                        porcelain.clone("https://github.com/lukaszliniewicz/PyCropPDF.git", "PyCropPDF")
+                        
+                        # Install requirements
+                        requirements_file = os.path.join("PyCropPDF", "requirements.txt")
+                        if os.path.exists(requirements_file):
+                            subprocess.run([
+                                "pip", "install", "-r", requirements_file
+                            ], check=True)
+                        else:
+                            subprocess.run([
+                                "pip", "install", "PyQt5", "PyMuPDF"
+                            ], check=True)
+                            
+                    except Exception as e:
+                        CTkMessagebox(title="Error", 
+                                    message=f"Failed to set up PyCropPDF: {str(e)}", 
+                                    icon="cancel")
+                        return
+                
+                source_dir = os.path.dirname(self.pre_selected_source_file)
+                source_filename = os.path.splitext(os.path.basename(self.pre_selected_source_file))[0]
+                cropped_filename = f"{source_filename}_cropped.pdf"
+                cropped_filepath = os.path.join(source_dir, cropped_filename)
+                
+                try:
+                    # Run PyCropPDF
+                    logging.info("Starting PyCropPDF GUI...")
+                    process = subprocess.Popen([
+                        "python", os.path.join("PyCropPDF", "pycroppdf.py"),
+                        "--input", os.path.abspath(self.pre_selected_source_file),
+                        "--save-to", source_dir,
+                        "--save-as", cropped_filename
+                    ])
+                    
+                    # Wait for the PyCropPDF process to complete
+                    process.wait()
+                    
+                    # Check if the cropped PDF file exists and has content
+                    if os.path.exists(cropped_filepath) and os.path.getsize(cropped_filepath) > 0:
+                        logging.info(f"Cropped PDF saved as: {cropped_filepath}")
+                        self.pre_selected_source_file = cropped_filepath
+                    else:
+                        logging.error(f"Cropped PDF file not found or empty: {cropped_filepath}")
+                        CTkMessagebox(title="Error", 
+                                    message="Cropped PDF file not found or empty. Using original PDF.", 
+                                    icon="warning")
+                    
+                except Exception as e:
+                    logging.error(f"Error running PyCropPDF: {str(e)}")
+                    CTkMessagebox(title="Error", 
+                                message=f"Error running PyCropPDF: {str(e)}", 
+                                icon="cancel")
+                    return
+        # Continue with the existing file processing logic
         if self.pre_selected_source_file:
             file_name = os.path.basename(self.pre_selected_source_file)
             truncated_file_name = file_name[:15] + "..." if len(file_name) > 15 else file_name
