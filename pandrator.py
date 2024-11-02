@@ -43,7 +43,6 @@ from mutagen.id3 import PictureType
 import base64
 from PIL import Image
 import yt_dlp
-from dulwich import porcelain
 
 # Conditional imports for torch and RVC
 try:
@@ -2289,7 +2288,7 @@ class TTSOptimizerGUI:
             # Transcription using the WAV file
             output_srt = os.path.join(session_dir, f"{video_filename}.srt")
             whisperx_command = [
-                "../conda/Scripts/conda.exe", "run", "-n", "whisperx_installer",
+                "../conda/Scripts/conda.exe", "run", "-p", "../conda/envs/whisperx_installer", "--no-capture-output",
                 "python", "-m", "whisperx",
                 wav_file,
                 "--model", self.whisperx_model.get(),
@@ -2543,30 +2542,7 @@ class TTSOptimizerGUI:
             ).get()
             
             if response == "Ok":
-                # Check if PyCropPDF exists
-                if not os.path.exists("PyCropPDF"):
-                    try:
-                        # Clone the repository
-                        from dulwich import porcelain
-                        porcelain.clone("https://github.com/lukaszliniewicz/PyCropPDF.git", "PyCropPDF")
-                        
-                        # Install requirements
-                        requirements_file = os.path.join("PyCropPDF", "requirements.txt")
-                        if os.path.exists(requirements_file):
-                            subprocess.run([
-                                "pip", "install", "-r", requirements_file
-                            ], check=True)
-                        else:
-                            subprocess.run([
-                                "pip", "install", "PyQt5", "PyMuPDF"
-                            ], check=True)
-                            
-                    except Exception as e:
-                        CTkMessagebox(title="Error", 
-                                    message=f"Failed to set up PyCropPDF: {str(e)}", 
-                                    icon="cancel")
-                        return
-                
+
                 source_dir = os.path.dirname(self.pre_selected_source_file)
                 source_filename = os.path.splitext(os.path.basename(self.pre_selected_source_file))[0]
                 cropped_filename = f"{source_filename}_cropped.pdf"
