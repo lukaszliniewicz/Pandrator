@@ -43,6 +43,7 @@ from mutagen.id3 import PictureType
 import base64
 from PIL import Image
 import yt_dlp
+from dulwich import porcelain
 
 # Conditional imports for torch and RVC
 try:
@@ -1388,54 +1389,159 @@ class TTSOptimizerGUI:
         self.train_xtts_tab.grid_columnconfigure(1, weight=1)
 
         # Source audio path
-        ctk.CTkLabel(self.train_xtts_tab, text="Path to source audio:").grid(row=0, column=0, padx=10, pady=5, sticky="w")
+        source_label = ctk.CTkLabel(self.train_xtts_tab, text="Path to source audio:")
+        source_label.grid(row=0, column=0, padx=10, pady=5, sticky="w")
+        CTkToolTip(source_label, message="Select a WAV file or folder containing WAV files for training")
+        
         self.source_audio_path = ctk.StringVar()
         self.source_audio_entry = ctk.CTkEntry(self.train_xtts_tab, textvariable=self.source_audio_path, width=300)
         self.source_audio_entry.grid(row=0, column=1, padx=10, pady=5, sticky="ew")
         ctk.CTkButton(self.train_xtts_tab, text="Browse", command=self.browse_source_audio).grid(row=0, column=2, padx=10, pady=5)
 
-        # Model name
-        ctk.CTkLabel(self.train_xtts_tab, text="Model name:").grid(row=1, column=0, padx=10, pady=5, sticky="w")
+        # Model Configuration
+        model_label = ctk.CTkLabel(self.train_xtts_tab, text="Model name:")
+        model_label.grid(row=1, column=0, padx=10, pady=5, sticky="w")
+        CTkToolTip(model_label, message="Name for your trained model. This will be used to identify the model in the models folder")
+        
         self.model_name = ctk.StringVar()
         ctk.CTkEntry(self.train_xtts_tab, textvariable=self.model_name, width=300).grid(row=1, column=1, padx=10, pady=5, sticky="ew")
 
-        # Model language
-        ctk.CTkLabel(self.train_xtts_tab, text="Model language:").grid(row=2, column=0, padx=10, pady=5, sticky="w")
+        # Language Selection
+        lang_label = ctk.CTkLabel(self.train_xtts_tab, text="Model language:")
+        lang_label.grid(row=2, column=0, padx=10, pady=5, sticky="w")
+        CTkToolTip(lang_label, message="The language of your training data. This will be used for transcription and synthesis")
+        
         self.model_language = ctk.StringVar(value="en")
         ctk.CTkOptionMenu(self.train_xtts_tab, variable=self.model_language, 
-                          values=["en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko", "hi"]).grid(row=2, column=1, padx=10, pady=5, sticky="ew")
+                         values=["en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko"]).grid(row=2, column=1, padx=10, pady=5, sticky="ew")
+
+        # Whisper Model Selection
+        whisper_label = ctk.CTkLabel(self.train_xtts_tab, text="Whisper Model:")
+        whisper_label.grid(row=3, column=0, padx=10, pady=5, sticky="w")
+        CTkToolTip(whisper_label, message="Model used for transcription. Larger models are more accurate but slower and use more memory")
+        
+        self.whisper_model = ctk.StringVar(value="large-v3")
+        ctk.CTkOptionMenu(self.train_xtts_tab, variable=self.whisper_model,
+                         values=["medium", "medium.en", "large-v2", "large-v3"]).grid(row=3, column=1, padx=10, pady=5, sticky="ew")
+
+        # Sample Rate Selection
+        sample_rate_label = ctk.CTkLabel(self.train_xtts_tab, text="Sample Rate:")
+        sample_rate_label.grid(row=4, column=0, padx=10, pady=5, sticky="w")
+        CTkToolTip(sample_rate_label, message="Audio sample rate. 22050 Hz is recommended for XTTS training")
+        
+        self.sample_rate = ctk.IntVar(value=22050)
+        ctk.CTkOptionMenu(self.train_xtts_tab, variable=self.sample_rate,
+                         values=["22050", "44100"]).grid(row=4, column=1, padx=10, pady=5, sticky="ew")
+
+        # Maximum Training Segment Duration
+        duration_label = ctk.CTkLabel(self.train_xtts_tab, text="Maximum training segment duration:")
+        duration_label.grid(row=5, column=0, padx=10, pady=5, sticky="w")
+        self.max_duration = ctk.StringVar(value="11")
+        ctk.CTkOptionMenu(self.train_xtts_tab, variable=self.max_duration,
+                         values=["9", "10", "11", "12", "13", "14"]).grid(row=5, column=1, padx=10, pady=5, sticky="ew")
+
+        # Maximum Text Length
+        text_length_label = ctk.CTkLabel(self.train_xtts_tab, text="Maximum training segment text length:")
+        text_length_label.grid(row=6, column=0, padx=10, pady=5, sticky="w")
+        self.max_text_length = ctk.StringVar(value="200")
+        ctk.CTkOptionMenu(self.train_xtts_tab, variable=self.max_text_length,
+                         values=["160", "200", "250"]).grid(row=6, column=1, padx=10, pady=5, sticky="ew")
+
+        # Training/Evaluation Split
+        split_label = ctk.CTkLabel(self.train_xtts_tab, text="Training/Evaluation split ratio:")
+        split_label.grid(row=7, column=0, padx=10, pady=5, sticky="w")
+        self.training_split = ctk.StringVar(value="9_1")
+        ctk.CTkOptionMenu(self.train_xtts_tab, variable=self.training_split,
+                         values=["6_4", "7_3", "8_2", "9_1"]).grid(row=7, column=1, padx=10, pady=5, sticky="ew")
+
+        # Method Proportion
+        method_label = ctk.CTkLabel(self.train_xtts_tab, text="Maximise/Punctuation methods ratio:")
+        method_label.grid(row=8, column=0, padx=10, pady=5, sticky="w")
+        self.method_proportion = ctk.StringVar(value="6_4")
+        ctk.CTkOptionMenu(self.train_xtts_tab, variable=self.method_proportion,
+                         values=["4_5", "5_5", "6_4", "7_3"]).grid(row=8, column=1, padx=10, pady=5, sticky="ew")
 
         # Sample generation method
-        ctk.CTkLabel(self.train_xtts_tab, text="Sample generation method:").grid(row=3, column=0, padx=10, pady=5, sticky="w")
+        sample_method_label = ctk.CTkLabel(self.train_xtts_tab, text="Sample generation method:")
+        sample_method_label.grid(row=9, column=0, padx=10, pady=5, sticky="w")
+        CTkToolTip(sample_method_label, message="Method for preparing training samples:\nMixed - Balanced approach\nMaximise Punctuation - Prioritizes sentences with varied punctuation\nPunctuation - Only uses sentences with punctuation")
+        
         self.sample_method = ctk.StringVar(value="Mixed")
         ctk.CTkOptionMenu(self.train_xtts_tab, variable=self.sample_method, 
-                          values=["Mixed", "Maximise Punctuation", "Punctuation"]).grid(row=3, column=1, padx=10, pady=5, sticky="ew")
+                         values=["Mixed", "Maximise Punctuation", "Punctuation"]).grid(row=9, column=1, padx=10, pady=5, sticky="ew")
 
+        # Training Parameters
+        params_frame = ctk.CTkFrame(self.train_xtts_tab)
+        params_frame.grid(row=10, column=0, columnspan=3, padx=10, pady=5, sticky="ew")
+        
         # Epochs
-        ctk.CTkLabel(self.train_xtts_tab, text="Epochs:").grid(row=4, column=0, padx=10, pady=5, sticky="w")
+        epochs_label = ctk.CTkLabel(params_frame, text="Epochs:")
+        epochs_label.grid(row=0, column=0, padx=10, pady=5, sticky="w")
+        CTkToolTip(epochs_label, message="Number of training cycles. More epochs can improve quality but may lead to overfitting")
+        
         self.epochs = ctk.IntVar(value=6)
-        ctk.CTkSlider(self.train_xtts_tab, from_=1, to=100, number_of_steps=99, variable=self.epochs).grid(row=4, column=1, padx=10, pady=5, sticky="ew")
-        ctk.CTkLabel(self.train_xtts_tab, textvariable=self.epochs).grid(row=4, column=2, padx=10, pady=5)
+        ctk.CTkSlider(params_frame, from_=1, to=100, number_of_steps=99, variable=self.epochs).grid(row=0, column=1, padx=10, pady=5, sticky="ew")
+        ctk.CTkLabel(params_frame, textvariable=self.epochs).grid(row=0, column=2, padx=10, pady=5)
 
         # Batches
-        ctk.CTkLabel(self.train_xtts_tab, text="Batches:").grid(row=5, column=0, padx=10, pady=5, sticky="w")
+        batches_label = ctk.CTkLabel(params_frame, text="Batches:")
+        batches_label.grid(row=1, column=0, padx=10, pady=5, sticky="w")
+        CTkToolTip(batches_label, message="Number of samples processed together. Larger batch sizes can speed up training but use more memory")
+        
         self.batches = ctk.IntVar(value=2)
-        ctk.CTkSlider(self.train_xtts_tab, from_=1, to=10, number_of_steps=9, variable=self.batches).grid(row=5, column=1, padx=10, pady=5, sticky="ew")
-        ctk.CTkLabel(self.train_xtts_tab, textvariable=self.batches).grid(row=5, column=2, padx=10, pady=5)
+        ctk.CTkSlider(params_frame, from_=1, to=10, number_of_steps=9, variable=self.batches).grid(row=1, column=1, padx=10, pady=5, sticky="ew")
+        ctk.CTkLabel(params_frame, textvariable=self.batches).grid(row=1, column=2, padx=10, pady=5)
 
-        # Gradient Accumulation Levels
-        ctk.CTkLabel(self.train_xtts_tab, text="Gradient Accumulation Levels:").grid(row=6, column=0, padx=10, pady=5, sticky="w")
+        # Gradient Accumulation
+        gradient_label = ctk.CTkLabel(params_frame, text="Gradient Accumulation Levels:")
+        gradient_label.grid(row=2, column=0, padx=10, pady=5, sticky="w")
+        CTkToolTip(gradient_label, message="Number of batches to accumulate before updating model weights. Higher values can simulate larger batch sizes with less memory")
+        
         self.gradient = ctk.IntVar(value=1)
-        ctk.CTkSlider(self.train_xtts_tab, from_=1, to=20, number_of_steps=19, variable=self.gradient).grid(row=6, column=1, padx=10, pady=5, sticky="ew")
-        ctk.CTkLabel(self.train_xtts_tab, textvariable=self.gradient).grid(row=6, column=2, padx=10, pady=5)
+        ctk.CTkSlider(params_frame, from_=1, to=100, number_of_steps=19, variable=self.gradient).grid(row=2, column=1, padx=10, pady=5, sticky="ew")
+        ctk.CTkLabel(params_frame, textvariable=self.gradient).grid(row=2, column=2, padx=10, pady=5)
+
+        # Audio Preprocessing Section
+        preprocess_label = ctk.CTkLabel(self.train_xtts_tab, text="Audio Preprocessing", font=ctk.CTkFont(size=14, weight="bold"))
+        preprocess_label.grid(row=11, column=0, columnspan=2, padx=10, pady=(20, 5), sticky="w")
+
+        preprocess_frame = ctk.CTkFrame(self.train_xtts_tab)
+        preprocess_frame.grid(row=12, column=0, columnspan=3, padx=10, pady=5, sticky="ew")
+
+        # Denoise
+        self.enable_denoise = ctk.BooleanVar(value=False)
+        ctk.CTkSwitch(preprocess_frame, text="Denoise (DeepFilterNet3)", variable=self.enable_denoise).grid(row=0, column=0, padx=10, pady=5, sticky="w")
+
+        # Normalize
+        self.enable_normalize = ctk.BooleanVar(value=False)
+        normalize_frame = ctk.CTkFrame(preprocess_frame)
+        normalize_frame.grid(row=1, column=0, columnspan=2, padx=10, pady=5, sticky="ew")
+        ctk.CTkSwitch(normalize_frame, text="Normalize", variable=self.enable_normalize).grid(row=0, column=0, padx=10, pady=5, sticky="w")
+        self.lufs_value = ctk.StringVar(value="-16")
+        ctk.CTkEntry(normalize_frame, textvariable=self.lufs_value, width=50).grid(row=0, column=1, padx=10, pady=5, sticky="w")
+        ctk.CTkLabel(normalize_frame, text="LUFS").grid(row=0, column=2, padx=5, pady=5, sticky="w")
+
+        # Compress
+        compress_frame = ctk.CTkFrame(preprocess_frame)
+        compress_frame.grid(row=2, column=0, columnspan=2, padx=10, pady=5, sticky="ew")
+        self.enable_compress = ctk.BooleanVar(value=False)
+        ctk.CTkSwitch(compress_frame, text="Compress", variable=self.enable_compress).grid(row=0, column=0, padx=10, pady=5, sticky="w")
+        self.compress_profile = ctk.StringVar(value="neutral")
+        ctk.CTkOptionMenu(compress_frame, variable=self.compress_profile, values=["male", "female", "neutral"]).grid(row=0, column=1, padx=10, pady=5, sticky="w")
+
+        # Dess
+        dess_frame = ctk.CTkFrame(preprocess_frame)
+        dess_frame.grid(row=3, column=0, columnspan=2, padx=10, pady=5, sticky="ew")
+        self.enable_dess = ctk.BooleanVar(value=False)
+        ctk.CTkSwitch(dess_frame, text="Dess", variable=self.enable_dess).grid(row=0, column=0, padx=10, pady=5, sticky="w")
 
         # Train button
         self.train_button = ctk.CTkButton(self.train_xtts_tab, text="Start Training", command=self.start_xtts_training)
-        self.train_button.grid(row=7, column=0, columnspan=3, padx=10, pady=20)
+        self.train_button.grid(row=13, column=0, columnspan=3, padx=10, pady=20)
 
         # Training status label
         self.training_status = ctk.StringVar(value="")
-        ctk.CTkLabel(self.train_xtts_tab, textvariable=self.training_status).grid(row=8, column=0, columnspan=3, padx=10, pady=5)
+        ctk.CTkLabel(self.train_xtts_tab, textvariable=self.training_status).grid(row=14, column=0, columnspan=3, padx=10, pady=5)
 
     def create_generated_sentences_section(self):
         generated_sentences_frame = ctk.CTkFrame(self.right_frame, fg_color="transparent")
@@ -1608,23 +1714,49 @@ class TTSOptimizerGUI:
 
         # Start the training process in a separate thread
         threading.Thread(target=self.run_xtts_training, daemon=True).start()
+              
 
     def run_xtts_training(self):
         try:
             easy_xtts_trainer_dir = os.path.abspath("../easy_xtts_trainer")
             source_path = self.source_audio_path.get()
             
+            # Verify we have a session name
+            if not self.model_name.get():
+                raise ValueError("Model name is required")
+                
             command = [
-                "../conda/Scripts/conda.exe", "run", "-n", "easy_xtts_trainer", "python", "easy_xtts_trainer.py",
-                "--session", self.model_name.get(),
-                "--whisper-model", "large-v3",
+                "../conda/Scripts/conda.exe", "run", "-p", "../conda/envs/easy_xtts_trainer", '--no-capture-output', "python", "easy_xtts_trainer.py",
+                "-i", source_path,  # Input path must be first
                 "--source-language", self.model_language.get(),
+                "--whisper-model", self.whisper_model.get(),
+                "--session", self.model_name.get(),  # Session name is required
                 "--epochs", str(self.epochs.get()),
                 "--gradient", str(self.gradient.get()),
                 "--batch", str(self.batches.get()),
                 "--sample-method", self.sample_method.get().lower().replace(" ", "-"),
-                "-i", source_path
+                "--sample-rate", str(self.sample_rate.get()),
+                "--max-audio-time", str(float(self.max_duration.get())),
+                "--max-text-length", str(int(self.max_text_length.get())),
+                "--method-proportion", self.method_proportion.get(),
+                "--training-proportion", self.training_split.get()
             ]
+
+            # Add optional preprocessing arguments
+            if self.enable_denoise.get():
+                command.append("--denoise")
+
+            if self.enable_normalize.get():
+                command.extend(["--normalize", self.lufs_value.get().strip('-')])  # Remove the minus sign
+
+            if self.enable_compress.get():
+                command.extend(["--compress", self.compress_profile.get()])
+
+            if self.enable_dess.get():
+                command.append("--dess")
+
+            # Log the full command for debugging
+            logging.info(f"Executing command: {' '.join(command)}")
 
             # Change to the easy_xtts_trainer directory
             os.chdir(easy_xtts_trainer_dir)
@@ -2157,7 +2289,7 @@ class TTSOptimizerGUI:
             # Transcription using the WAV file
             output_srt = os.path.join(session_dir, f"{video_filename}.srt")
             whisperx_command = [
-                "../conda/Scripts/conda.exe", "run", "-p", "../conda/envs/whisperx_installer", "--no-capture-output",
+                "../conda/Scripts/conda.exe", "run", "-n", "whisperx_installer",
                 "python", "-m", "whisperx",
                 wav_file,
                 "--model", self.whisperx_model.get(),
@@ -2411,6 +2543,29 @@ class TTSOptimizerGUI:
             ).get()
             
             if response == "Ok":
+                # Check if PyCropPDF exists
+                if not os.path.exists("PyCropPDF"):
+                    try:
+                        # Clone the repository
+                        from dulwich import porcelain
+                        porcelain.clone("https://github.com/lukaszliniewicz/PyCropPDF.git", "PyCropPDF")
+                        
+                        # Install requirements
+                        requirements_file = os.path.join("PyCropPDF", "requirements.txt")
+                        if os.path.exists(requirements_file):
+                            subprocess.run([
+                                "pip", "install", "-r", requirements_file
+                            ], check=True)
+                        else:
+                            subprocess.run([
+                                "pip", "install", "PyQt5", "PyMuPDF"
+                            ], check=True)
+                            
+                    except Exception as e:
+                        CTkMessagebox(title="Error", 
+                                    message=f"Failed to set up PyCropPDF: {str(e)}", 
+                                    icon="cancel")
+                        return
                 
                 source_dir = os.path.dirname(self.pre_selected_source_file)
                 source_filename = os.path.splitext(os.path.basename(self.pre_selected_source_file))[0]
@@ -4161,8 +4316,6 @@ class TTSOptimizerGUI:
         with open(filename, 'w') as f:
             json.dump(numbered_data, f, indent=2)
 
-
-
     def update_language_dropdown(self, event=None):
         if self.tts_service.get() == "XTTS":
             languages = ["en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko", "hi"]
@@ -4208,7 +4361,7 @@ class TTSOptimizerGUI:
             speaker = self.selected_speaker.get()
             
             #if language != "en":
-            text = text.rstrip('.')
+            #text = text.rstrip('.')
             
             speaker_path = os.path.join(self.tts_voices_folder, speaker)
             if os.path.isfile(speaker_path):
