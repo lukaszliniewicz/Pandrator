@@ -365,7 +365,7 @@ class PandratorInstaller(ctk.CTk):
             self.run_command([
                 os.path.join(conda_path, 'Scripts', 'conda.exe'),
                 'run', '-p', env_path,
-                'pip', 'install', 'git+https://github.com/m-bain/whisperx.git'
+                'pip', 'install', 'git+https://github.com/lukaszliniewicz/whisperX_silero.git'
             ])
             
             # Install CTranslate2
@@ -708,7 +708,36 @@ class PandratorInstaller(ctk.CTk):
     def install_requirements(self, conda_path, env_name, requirements_file):
         logging.info(f"Installing requirements for {env_name}...")
         env_path = os.path.join(conda_path, 'envs', env_name)
+        
+        # Log requirements file contents
+        with open(requirements_file, 'r') as f:
+            reqs = f.read()
+            logging.info(f"Requirements file contents:\n{reqs}")
+        
         self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'pip', 'install', '-r', requirements_file])
+        
+        # Only check for dulwich in pandrator_installer environment
+        if env_name == 'pandrator_installer':
+            logging.info("Checking if dulwich is installed in pandrator_installer environment...")
+            try:
+                self.run_command([
+                    os.path.join(conda_path, 'Scripts', 'conda.exe'),
+                    'run', '-p', env_path,
+                    'python', '-c', 'import dulwich; print(f"Dulwich version {dulwich.__version__} is installed")'
+                ])
+                logging.info("Dulwich check completed successfully")
+            except subprocess.CalledProcessError:
+                logging.warning("Dulwich not found in pandrator_installer environment, installing separately...")
+                try:
+                    self.run_command([
+                        os.path.join(conda_path, 'Scripts', 'conda.exe'),
+                        'run', '-p', env_path,
+                        'pip', 'install', 'dulwich'
+                    ])
+                    logging.info("Dulwich installed successfully in pandrator_installer environment")
+                except subprocess.CalledProcessError as e:
+                    logging.error(f"Failed to install dulwich in pandrator_installer environment: {str(e)}")
+                    raise
 
     def install_package(self, conda_path, env_name, package):
         logging.info(f"Installing {package} in {env_name}...")
@@ -863,6 +892,7 @@ class PandratorInstaller(ctk.CTk):
         pandrator_repo_path = os.path.join(pandrator_base_path, 'Pandrator')
         subdub_repo_path = os.path.join(pandrator_base_path, 'Subdub')
         easy_xtts_trainer_path = os.path.join(pandrator_base_path, 'easy_xtts_trainer')
+        conda_path = os.path.join(pandrator_base_path, 'conda')
         
         logging.info(f"Checking for Pandrator at: {pandrator_repo_path}")
         
@@ -911,14 +941,23 @@ class PandratorInstaller(ctk.CTk):
             else:
                 logging.warning(f"Subdub directory not found at: {subdub_repo_path}")
             
-            # Update easy XTTS trainer (repo only)
+            # Update easy XTTS trainer (repo and requirements)
             if os.path.exists(easy_xtts_trainer_path):
                 self.update_status("Updating easy XTTS trainer...")
                 logging.info(f"Updating easy XTTS trainer in: {easy_xtts_trainer_path}")
                 self.pull_repo(easy_xtts_trainer_path)
+                
+                # Update requirements
+                self.update_status("Updating easy XTTS trainer dependencies...")
+                xtts_requirements_file = os.path.join(easy_xtts_trainer_path, 'requirements.txt')
+                if os.path.exists(xtts_requirements_file):
+                    logging.info("Installing updated requirements for easy XTTS trainer...")
+                    self.install_requirements(conda_path, 'easy_xtts_trainer', xtts_requirements_file)
+                else:
+                    logging.warning(f"XTTS trainer requirements file not found at: {xtts_requirements_file}")
             else:
                 logging.info("easy XTTS trainer not installed, skipping update.")
-            
+
             self.update_status("Update completed successfully.")
             logging.info("Update process completed successfully")
         
@@ -936,6 +975,8 @@ class PandratorInstaller(ctk.CTk):
         try:
             porcelain.clone(repo_url, target_dir)
             logging.info("Repository cloned successfully.")
+            logging.info("Pulling latest changes...")
+            self.pull_repo(target_dir)  # Add pull after clone
         except Exception as e:
             logging.error(f"Failed to clone repository: {str(e)}")
             raise
@@ -948,6 +989,16 @@ class PandratorInstaller(ctk.CTk):
             logging.info("Repository updated successfully.")
         except Exception as e:
             logging.error(f"Failed to update repository: {str(e)}")
+            raise
+
+    def install_pycroppdf_requirements(self, conda_path, env_name, pycroppdf_repo_path):
+        logging.info(f"Installing PyCropPDF requirements in {env_name}...")
+        try:
+            requirements_file = os.path.join(pycroppdf_repo_path, 'requirements.txt')
+            self.install_requirements(conda_path, env_name, requirements_file)
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Failed to install PyCropPDF requirements in {env_name}")
+            logging.error(f"Error message: {str(e)}")
             raise
 
     def install_rvc_python(self, conda_path, env_name):
@@ -1050,9 +1101,14 @@ class PandratorInstaller(ctk.CTk):
                 self.create_conda_env(conda_path, 'pandrator_installer', '3.10')
 
                 self.update_progress(0.7)
-                self.update_status("Installing Pandrator and Subdub requirements...")
+                self.update_status("Installing Pandrator, Subdub, and PyCropPDF requirements...")
                 pandrator_repo_path = os.path.join(pandrator_path, 'Pandrator')
                 self.install_requirements(conda_path, 'pandrator_installer', os.path.join(pandrator_repo_path, 'requirements.txt'))
+                
+                # Clone and install PyCropPDF
+                pycroppdf_repo_path = os.path.join(pandrator_repo_path, 'PyCropPDF')
+                self.clone_repo('https://github.com/lukaszliniewicz/PyCropPDF.git', pycroppdf_repo_path)
+                self.install_pycroppdf_requirements(conda_path, 'pandrator_installer', pycroppdf_repo_path)
                 
                 subdub_repo_path = os.path.join(pandrator_path, 'Subdub')
                 self.install_subdub_requirements(conda_path, 'pandrator_installer', subdub_repo_path)
