@@ -55,8 +55,8 @@ https://github.com/user-attachments/assets/1ba8068d-986e-4dec-a162-3b7cc49052f4
 
 | Tool       | CPU Requirements                                              | GPU Requirements                                                       |
 |------------|---------------------------------------------------------------|-------------------------------------------------------------------------|
-| XTTS       | A reasonably modern CPU (for CPU-only generation)              | NVIDIA GPU with 4GB+ of VRAM for good performance                        |
-| Silero     | Performs well on most CPUs                   | N/A                                                                     |
+| XTTS       | A reasonably modern CPU with 4+ cores (for CPU-only generation)              | NVIDIA GPU with 4GB+ of VRAM for good performance                        |
+| Silero     | Performs well on most CPUs regardless of core count                   | N/A                                                                     |
 | VoiceCraft | Usable on CPU, but generation will be slow                     | NVIDIA GPU with 8GB+ of VRAM for acceleration (4GB VRAM requires kv cache disabled) |
 
 ### Dependencies
