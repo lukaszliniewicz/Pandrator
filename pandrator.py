@@ -2542,7 +2542,6 @@ class TTSOptimizerGUI:
             ).get()
             
             if response == "Ok":
-
                 source_dir = os.path.dirname(self.pre_selected_source_file)
                 source_filename = os.path.splitext(os.path.basename(self.pre_selected_source_file))[0]
                 cropped_filename = f"{source_filename}_cropped.pdf"
@@ -2577,6 +2576,7 @@ class TTSOptimizerGUI:
                                 message=f"Error running PyCropPDF: {str(e)}", 
                                 icon="cancel")
                     return
+
         # Continue with the existing file processing logic
         if self.pre_selected_source_file:
             file_name = os.path.basename(self.pre_selected_source_file)
@@ -2587,12 +2587,17 @@ class TTSOptimizerGUI:
             session_dir = os.path.join("Outputs", session_name)
             os.makedirs(session_dir, exist_ok=True)
 
-            # Remove old text, srt, pdf, or epub files from the session directory
-            for ext in [".txt", ".srt", ".pdf", ".epub", ".docx", ".mobi"]:
-                for file in os.listdir(session_dir):
-                    if file.lower().endswith(ext):
-                        os.remove(os.path.join(session_dir, file))
-                        
+            # Check if the selected file is from the current session directory
+            is_from_session = os.path.dirname(os.path.abspath(self.pre_selected_source_file)) == os.path.abspath(session_dir)
+
+            # Only remove old files if the selected file is from outside the session directory
+            if not is_from_session:
+                for ext in [".txt", ".srt", ".pdf", ".epub", ".docx", ".mobi"]:
+                    for file in os.listdir(session_dir):
+                        if file.lower().endswith(ext):
+                            os.remove(os.path.join(session_dir, file))
+                shutil.copy(self.pre_selected_source_file, session_dir)
+                            
             if self.pre_selected_source_file.lower().endswith((".epub")):
                 self.process_epub_file(self.pre_selected_source_file)
                 # Check if an edited version exists
@@ -2627,6 +2632,7 @@ class TTSOptimizerGUI:
                         messagebox.showerror("Error", "Failed to convert using both default and Calibre Portable ebook-convert.")
                         self.pre_selected_source_file = None
                         self.selected_file_label.configure(text="No file selected")
+
             elif self.pre_selected_source_file.lower().endswith(".pdf"):
                 # Extract text from PDF file
                 pdf = XPdf(self.pre_selected_source_file)
@@ -2641,7 +2647,6 @@ class TTSOptimizerGUI:
                 self.master.after(0, self.show_pdf_options, raw_text_path, session_dir, file_name)
 
             else:
-                shutil.copy(self.pre_selected_source_file, session_dir)
                 self.source_file = os.path.join(session_dir, file_name)
 
             # Handle dubbing-related UI elements
