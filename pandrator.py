@@ -2054,7 +2054,6 @@ class TTSOptimizerGUI:
             except ffmpeg.Error as e:
                 messagebox.showerror("FFmpeg Error", f"An error occurred while probing the video file: {str(e)}")
 
-
     def add_dubbing_to_video(self):
         if not self.session_name.get():
             CTkMessagebox(title="No Session", message="Please create or load a session before adding dubbing to video.", icon="info")
@@ -2062,6 +2061,28 @@ class TTSOptimizerGUI:
 
         session_name = self.session_name.get()
         session_dir = os.path.abspath(os.path.join("Outputs", session_name))
+
+        # Files to check for and remove (EXCLUDING Sentence_wavs)
+        files_to_remove = [
+            "final_output.mp4", "original_audio.wav", "aligned_audio.wav", 
+            "amplified_dubbed_audio.wav", "mixed_audio.wav"
+        ] + [f for f in os.listdir(session_dir) if f.endswith("_final.mp4") or f.endswith("_equalized.srt")]
+
+        files_not_removed = []
+        for file_pattern in files_to_remove:
+            filepath = os.path.join(session_dir, file_pattern)
+            if os.path.exists(filepath):
+                try:
+                    os.remove(filepath)
+                    logging.info(f"Removed file: {filepath}")
+                except OSError as e:
+                    files_not_removed.append(filepath)
+                    logging.error(f"Could not remove {filepath}: {e}")
+
+        if files_not_removed:
+            message = "Could not remove the following files. Please close any programs using them and try again:\n" + "\n".join(files_not_removed)
+            CTkMessagebox(title="File Removal Error", message=message, icon="warning")
+            return
 
         # Check if the required elements are present in the session folder
         video_files = [f for f in os.listdir(session_dir) if f.lower().endswith(('.mp4', '.mkv', '.webm', '.avi', '.mov'))]
@@ -2083,9 +2104,16 @@ class TTSOptimizerGUI:
         logging.info(f"Executing synchronization command: {' '.join(subdub_command)}")
 
         try:
-            process = subprocess.Popen(subdub_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, encoding='utf-8', errors='replace')
+            process = subprocess.Popen(
+                subdub_command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                universal_newlines=True,
+                encoding='utf-8',
+                errors='replace'
+            )
             for line in process.stdout:
-                print(line, end='')
+                print(line, end='')  # Optionally, integrate with your GUI's output
                 logging.info(line.strip())
             process.wait()
             if process.returncode != 0:
@@ -2125,9 +2153,16 @@ class TTSOptimizerGUI:
         logging.info(f"Executing equalization command: {' '.join(equalize_command)}")
 
         try:
-            process = subprocess.Popen(equalize_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, encoding='utf-8', errors='replace')
+            process = subprocess.Popen(
+                equalize_command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                universal_newlines=True,
+                encoding='utf-8',
+                errors='replace'
+            )
             for line in process.stdout:
-                print(line, end='')
+                print(line, end='')  # Optionally, integrate with your GUI's output
                 logging.info(line.strip())
             process.wait()
             if process.returncode != 0:
@@ -2149,29 +2184,51 @@ class TTSOptimizerGUI:
             return
         equalized_srt_path = os.path.join(session_dir, equalized_srt_files[0])
 
-        # Add the equalized subtitles to the synced video
+        # Add the equalized subtitles to the synced video using FFmpeg
         output_video_path = os.path.join(session_dir, f"{session_name}_final.mp4")
         ffmpeg_command = [
             "ffmpeg",
+            "-y",  # Overwrite output file if it exists
             "-i", synced_video_path,
             "-i", equalized_srt_path,
             "-c", "copy",
             "-c:s", "mov_text",
+            "-metadata:s:s:0", "language=eng",  # Optional: Set subtitle language
             output_video_path
         ]
 
         logging.info(f"Executing FFmpeg command to add subtitles: {' '.join(ffmpeg_command)}")
 
         try:
-            result = subprocess.run(ffmpeg_command, check=True, capture_output=True, text=True, encoding='utf-8', errors='replace')
-            logging.info("Subtitles added successfully.")
-            CTkMessagebox(title="Success", message=f"Dubbing and subtitles have been added. The final video is available at: {output_video_path}")
+            ffmpeg_process = subprocess.Popen(
+                ffmpeg_command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                universal_newlines=True,
+                encoding='utf-8',
+                errors='replace'
+            )
+            for line in ffmpeg_process.stdout:
+                print(line, end='')  # Optionally, integrate with your GUI's output
+                logging.info(line.strip())
+            ffmpeg_process.wait()
+            if ffmpeg_process.returncode != 0:
+                raise subprocess.CalledProcessError(ffmpeg_process.returncode, ffmpeg_command)
+            logging.info("Subtitles have been successfully embedded into the final video.")
+
+            # Notify the user of success
+            CTkMessagebox(
+                title="Success",
+                message=f"Dubbing and subtitles have been added. The final video is available at:\n{output_video_path}"
+            )
+
         except subprocess.CalledProcessError as e:
-            logging.error(f"Failed to add subtitles: {e.stderr}")
-            CTkMessagebox(title="Error", message=f"Failed to add subtitles: {e.stderr}")
+            logging.error(f"Failed to add subtitles: {e.output}")
+            CTkMessagebox(title="Error", message=f"Failed to add subtitles: {e.output}")
         except Exception as e:
             logging.error(f"An unexpected error occurred while adding subtitles: {str(e)}")
             CTkMessagebox(title="Error", message=f"An unexpected error occurred while adding subtitles: {str(e)}")
+
 
     def generate_dubbing_audio(self):
         if not self.session_name.get():
@@ -2284,9 +2341,27 @@ class TTSOptimizerGUI:
                 gpu_name = torch.cuda.get_device_name(0).lower()
                 pascal_gpus = ['1060', '1070', '1080', '1660', '1650']
                 use_int8 = any(gpu in gpu_name for gpu in pascal_gpus)
+
+            def run_whisperx_command(command):
+                try:
+                    whisperx_process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+                    stdout, stderr = whisperx_process.communicate()
+                    
+                    logging.info(f"Whisperx stdout: {stdout}")
+                    if stderr:
+                        logging.error(f"Whisperx stderr: {stderr}")
+                    
+                    if whisperx_process.returncode != 0:
+                        if "expects each tensor to be equal size" in stderr:
+                            return False
+                        raise subprocess.CalledProcessError(whisperx_process.returncode, command, stderr)
+                    return True
+                except subprocess.CalledProcessError as e:
+                    if "expects each tensor to be equal size" in str(e.stderr):
+                        return False
+                    raise e
             
-            # Transcription using the WAV file
-            output_srt = os.path.join(session_dir, f"{video_filename}.srt")
+            # Initial whisperx command
             whisperx_command = [
                 "../conda/Scripts/conda.exe", "run", "-p", "../conda/envs/whisperx_installer", "--no-capture-output",
                 "python", "-m", "whisperx",
@@ -2301,17 +2376,17 @@ class TTSOptimizerGUI:
             if use_int8:
                 whisperx_command.extend(["--compute_type", "int8"])
 
-            logging.info(f"Executing transcription command: {' '.join(whisperx_command)}")
+            logging.info(f"Executing initial transcription command: {' '.join(whisperx_command)}")
 
-            whisperx_process = subprocess.Popen(whisperx_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-            stdout, stderr = whisperx_process.communicate()
-
-            logging.info(f"Whisperx stdout: {stdout}")
-            if stderr:
-                logging.error(f"Whisperx stderr: {stderr}")
-
-            if whisperx_process.returncode != 0:
-                raise subprocess.CalledProcessError(whisperx_process.returncode, whisperx_command, stderr)
+            # Try initial transcription
+            if not run_whisperx_command(whisperx_command):
+                # If failed, retry with batch_size 1
+                logging.info("Initial transcription failed. Retrying with batch_size 1")
+                whisperx_command.extend(["--batch_size", "1"])
+                logging.info(f"Executing fallback transcription command: {' '.join(whisperx_command)}")
+                
+                if not run_whisperx_command(whisperx_command):
+                    raise Exception("Transcription failed even with batch_size 1")
 
             logging.info("Transcription completed successfully.")
 
@@ -2480,17 +2555,16 @@ class TTSOptimizerGUI:
             session_name = self.session_name.get()
             session_dir = os.path.join("Outputs", session_name)
             
-            # Ensure the session directory exists
-            os.makedirs(session_dir, exist_ok=True)
-            
-            # Get the filename of the selected video
+            # Get the target path in the session directory
             video_filename = os.path.basename(video_file)
-            
-            # Copy the video file to the session directory
             destination_path = os.path.join(session_dir, video_filename)
-            shutil.copy(video_file, destination_path)
             
-            # Update the selected video file entry
+            # Only copy if the file isn't already in the session directory
+            if os.path.dirname(os.path.abspath(video_file)) != os.path.abspath(session_dir):
+                os.makedirs(session_dir, exist_ok=True)
+                shutil.copy(video_file, destination_path)
+            
+            # Update the selected video file entry with the path
             self.selected_video_file.set(destination_path)
 
 
@@ -4004,27 +4078,44 @@ class TTSOptimizerGUI:
 
             # Update the remaining time label
             self.master.after(0, self.update_remaining_time_label, estimated_remaining_time)
-    # Save the final concatenated audio file only if the source file is not an srt file
-        if self.enable_dubbing.get() and self.source_file.endswith(".srt"):
-            self.start_dubbing()
+    
+        # Check if this is a dubbing workflow - check both source and pre_selected for srt and video files
+        is_dubbing_workflow = (self.pre_selected_source_file and 
+            self.pre_selected_source_file.lower().endswith(
+                (".srt", ".mp4", ".mkv", ".webm", ".avi", ".mov")
+            ))
+
+        # Calculate total generation time
+        total_generation_time = sum(sentence_generation_times)
+        formatted_time = str(datetime.timedelta(seconds=int(total_generation_time)))
+
+        if is_dubbing_workflow:
+            CTkMessagebox(
+                title="Generation Finished", 
+                message=(f"Speech generation completed!\n\n"
+                        f"Total Generation Time: {formatted_time}\n\n"
+                        "Click 'Add Dubbing to Video' to create the final dubbed video with subtitles "
+                        "once you reviewed the generated audio and are happy with the results."),
+                icon="info"
+            )
         else:
+            # Regular workflow - save concatenated audio
             session_name = self.session_name.get()
             output_format = self.output_format.get()
             session_dir = os.path.join("Outputs", session_name)
             default_output_path = os.path.join(session_dir, f"{session_name}.{output_format}")
             
-            # Call save_output with a default path
             final_output_path = self.save_output(auto_path=default_output_path)
             
             if final_output_path:
                 logging.info(f"The output file has been saved as {final_output_path}")
+                CTkMessagebox(
+                    title="Generation Finished", 
+                    message=f"Generation completed!\n\nTotal Generation Time: {formatted_time}",
+                    icon="info"
+                )
             else:
                 logging.warning("Failed to save the output file")
-
-        # Calculate and display the total generation time
-        total_generation_time = sum(sentence_generation_times)
-        formatted_time = str(datetime.timedelta(seconds=int(total_generation_time)))
-        CTkMessagebox(title="Generation Finished", message=f"Generation completed!\n\nTotal Generation Time: {formatted_time}", icon="info")
 
     def save_sentence_to_json(self, preprocessed_sentences, json_filename, sentence_index, sentence_dict):
         # Update the tts_generated flag for the current sentence
