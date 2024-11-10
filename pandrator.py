@@ -1469,9 +1469,18 @@ class TTSOptimizerGUI:
         ctk.CTkOptionMenu(self.train_xtts_tab, variable=self.sample_method, 
                          values=["Mixed", "Maximise Punctuation", "Punctuation"]).grid(row=9, column=1, padx=10, pady=5, sticky="ew")
 
+        # Alignment Model
+        alignment_label = ctk.CTkLabel(self.train_xtts_tab, text="Alignment Model:")
+        alignment_label.grid(row=10, column=0, padx=10, pady=5, sticky="w")
+        CTkToolTip(alignment_label, message="Optional: Path to a custom alignment model. Leave empty to use the default model")
+        
+        self.alignment_model = ctk.StringVar(value="")
+        alignment_entry = ctk.CTkEntry(self.train_xtts_tab, textvariable=self.alignment_model, width=300)
+        alignment_entry.grid(row=10, column=1, padx=10, pady=5, sticky="ew")
+
         # Training Parameters
         params_frame = ctk.CTkFrame(self.train_xtts_tab)
-        params_frame.grid(row=10, column=0, columnspan=3, padx=10, pady=5, sticky="ew")
+        params_frame.grid(row=11, column=0, columnspan=3, padx=10, pady=5, sticky="ew")
         
         # Epochs
         epochs_label = ctk.CTkLabel(params_frame, text="Epochs:")
@@ -1502,10 +1511,10 @@ class TTSOptimizerGUI:
 
         # Audio Preprocessing Section
         preprocess_label = ctk.CTkLabel(self.train_xtts_tab, text="Audio Preprocessing", font=ctk.CTkFont(size=14, weight="bold"))
-        preprocess_label.grid(row=11, column=0, columnspan=2, padx=10, pady=(20, 5), sticky="w")
+        preprocess_label.grid(row=12, column=0, columnspan=2, padx=10, pady=(20, 5), sticky="w")
 
         preprocess_frame = ctk.CTkFrame(self.train_xtts_tab)
-        preprocess_frame.grid(row=12, column=0, columnspan=3, padx=10, pady=5, sticky="ew")
+        preprocess_frame.grid(row=13, column=0, columnspan=3, padx=10, pady=5, sticky="ew")
 
         # Denoise
         self.enable_denoise = ctk.BooleanVar(value=False)
@@ -1536,11 +1545,11 @@ class TTSOptimizerGUI:
 
         # Train button
         self.train_button = ctk.CTkButton(self.train_xtts_tab, text="Start Training", command=self.start_xtts_training)
-        self.train_button.grid(row=13, column=0, columnspan=3, padx=10, pady=20)
+        self.train_button.grid(row=14, column=0, columnspan=3, padx=10, pady=20)
 
         # Training status label
         self.training_status = ctk.StringVar(value="")
-        ctk.CTkLabel(self.train_xtts_tab, textvariable=self.training_status).grid(row=14, column=0, columnspan=3, padx=10, pady=5)
+        ctk.CTkLabel(self.train_xtts_tab, textvariable=self.training_status).grid(row=15, column=0, columnspan=3, padx=10, pady=5)
 
     def create_generated_sentences_section(self):
         generated_sentences_frame = ctk.CTkFrame(self.right_frame, fg_color="transparent")
@@ -1740,6 +1749,10 @@ class TTSOptimizerGUI:
                 "--method-proportion", self.method_proportion.get(),
                 "--training-proportion", self.training_split.get()
             ]
+
+            # Add alignment model parameter if provided
+            if self.alignment_model.get().strip():
+                command.extend(["--align-model", self.alignment_model.get().strip()])
 
             # Add optional preprocessing arguments
             if self.enable_denoise.get():
