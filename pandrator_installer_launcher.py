@@ -195,7 +195,7 @@ class PandratorInstaller(ctk.CTk):
             self.run_command([
                 os.path.join(conda_path, 'Scripts', 'conda.exe'),
                 'run', '-p', env_path,
-                'pip', 'install', 'torch==2.1.1+cu118', 'torchaudio==2.1.1+cu118',
+                'pip', 'install', 'torch==2.2.0+cu118', 'torchaudio==2.2.0+cu118',
                 '--index-url', 'https://download.pytorch.org/whl/cu118'
             ])
             logging.info("PyTorch for XTTS Fine-tuning installed successfully.")
