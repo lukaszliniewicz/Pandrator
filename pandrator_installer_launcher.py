@@ -183,8 +183,15 @@ class PandratorInstaller(ctk.CTk):
 
         current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.log_filename = os.path.join(logs_path, f'pandrator_installation_log_{current_time}.log')
-        logging.basicConfig(filename=self.log_filename, level=logging.DEBUG,
-                            format='%(asctime)s - %(levelname)s - %(message)s')
+        
+        # Configure logging with explicit encoding handling
+        handler = logging.FileHandler(self.log_filename, encoding='utf-8')
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        handler.setFormatter(formatter)
+        
+        logger = logging.getLogger()
+        logger.addHandler(handler)
+        logger.setLevel(logging.DEBUG)
 
         self.open_log_button.configure(state="normal")
 
@@ -194,7 +201,7 @@ class PandratorInstaller(ctk.CTk):
         try:
             self.run_command([
                 os.path.join(conda_path, 'Scripts', 'conda.exe'),
-                'run', '-p', env_path,
+                'run', '-p', env_path, 'python', '-m',
                 'pip', 'install', 'torch==2.2.0+cu118', 'torchaudio==2.2.0+cu118',
                 '--index-url', 'https://download.pytorch.org/whl/cu118'
             ])
@@ -342,7 +349,7 @@ class PandratorInstaller(ctk.CTk):
             self.run_command([
                 os.path.join(conda_path, 'Scripts', 'conda.exe'),
                 'run', '-p', env_path,
-                'pip', 'install',
+                'python', '-m', 'pip', 'install',
                 'torch==2.0.1', 'torchvision==0.15.2', 'torchaudio==2.0.2',
                 '--index-url', 'https://download.pytorch.org/whl/cu118'
             ])
@@ -364,14 +371,14 @@ class PandratorInstaller(ctk.CTk):
             # Install WhisperX
             self.run_command([
                 os.path.join(conda_path, 'Scripts', 'conda.exe'),
-                'run', '-p', env_path,
+                'run', '-p', env_path, 'python', '-m',
                 'pip', 'install', 'git+https://github.com/lukaszliniewicz/whisperX_silero.git'
             ])
             
             # Install CTranslate2
             self.run_command([
                os.path.join(conda_path, 'Scripts', 'conda.exe'),
-               'run', '-p', env_path, 
+               'run', '-p', env_path, 'python', '-m', 
                'pip', 'install',
                'ctranslate2==4.4.0'
             ])
@@ -445,14 +452,18 @@ class PandratorInstaller(ctk.CTk):
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     shell=True,
-                    cwd=cwd
+                    cwd=cwd,
+                    encoding='utf-8',  # Add explicit encoding
+                    errors='replace'   # Replace invalid characters instead of failing
                 )
             else:
                 process = subprocess.Popen(
                     command,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
-                    cwd=cwd
+                    cwd=cwd,
+                    encoding='utf-8',  # Add explicit encoding
+                    errors='replace'   # Replace invalid characters instead of failing
                 )
             
             stdout, stderr = process.communicate()
@@ -461,15 +472,15 @@ class PandratorInstaller(ctk.CTk):
                 raise subprocess.CalledProcessError(process.returncode, command, stdout, stderr)
             
             logging.info(f"Command executed: {command if isinstance(command, str) else ' '.join(command)}")
-            logging.debug(f"STDOUT: {stdout.decode('utf-8')}")
-            logging.debug(f"STDERR: {stderr.decode('utf-8')}")
+            logging.debug(f"STDOUT: {stdout}")
+            logging.debug(f"STDERR: {stderr}")
             
-            return stdout.decode('utf-8'), stderr.decode('utf-8')
+            return stdout, stderr
         except subprocess.CalledProcessError as e:
             logging.error(f"Error executing command: {command if isinstance(command, str) else ' '.join(command)}")
             logging.error(f"Error message: {str(e)}")
-            logging.error(f"STDOUT: {e.stdout.decode('utf-8')}")
-            logging.error(f"STDERR: {e.stderr.decode('utf-8')}")
+            logging.error(f"STDOUT: {e.stdout}")
+            logging.error(f"STDERR: {e.stderr}")
             raise
 
     def check_program_installed(self, program):
@@ -714,7 +725,7 @@ class PandratorInstaller(ctk.CTk):
             reqs = f.read()
             logging.info(f"Requirements file contents:\n{reqs}")
         
-        self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'pip', 'install', '-r', requirements_file])
+        self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'python', '-m', 'pip', 'install', '-r', requirements_file])
         
         # Only check for dulwich in pandrator_installer environment
         if env_name == 'pandrator_installer':
@@ -731,7 +742,7 @@ class PandratorInstaller(ctk.CTk):
                 try:
                     self.run_command([
                         os.path.join(conda_path, 'Scripts', 'conda.exe'),
-                        'run', '-p', env_path,
+                        'run', '-p', env_path, 'python', '-m',
                         'pip', 'install', 'dulwich'
                     ])
                     logging.info("Dulwich installed successfully in pandrator_installer environment")
@@ -785,14 +796,14 @@ class PandratorInstaller(ctk.CTk):
         
         try:
             # Install xtts-api-server package
-            xtts_cmd = [os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'pip', 'install', 'xtts-api-server']
+            xtts_cmd = [os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'python', '-m', 'pip', 'install', 'xtts-api-server']
             self.run_command(xtts_cmd)
             
             # Install PyTorch
             if self.xtts_cpu_var.get():
-                pytorch_cmd = [os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'pip', 'install', 'torch==2.1.1', 'torchaudio==2.1.1']
+                pytorch_cmd = [os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'python', '-m', 'pip', 'install', 'torch==2.1.1', 'torchaudio==2.1.1']
             else:
-                pytorch_cmd = [os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'pip', 'install', 'torch==2.1.1+cu118', 'torchaudio==2.1.1+cu118', '--extra-index-url', 'https://download.pytorch.org/whl/cu118']
+                pytorch_cmd = [os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'python', '-m', 'pip', 'install', 'torch==2.1.1+cu118', 'torchaudio==2.1.1+cu118', '--extra-index-url', 'https://download.pytorch.org/whl/cu118']
             self.run_command(pytorch_cmd)
             
             # Install FFmpeg
@@ -815,7 +826,7 @@ class PandratorInstaller(ctk.CTk):
             os.chdir(voicecraft_repo_path)
             
             # Install audiocraft package
-            self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-n', env_name, 'pip', 'install', '-e', f'git+{audiocraft_repo}@{audiocraft_commit}#egg=audiocraft'])
+            self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-n', env_name, 'python', '-m', 'pip', 'install', '-e', f'git+{audiocraft_repo}@{audiocraft_commit}#egg=audiocraft'])
         except subprocess.CalledProcessError as e:
             logging.error(f"Failed to install audiocraft package in {env_name}")
             logging.error(f"Error message: {str(e)}")
@@ -836,7 +847,7 @@ class PandratorInstaller(ctk.CTk):
         logging.info(f"Downloading MFA models in {env_name}...")
         env_path = os.path.join(conda_path, 'envs', env_name)
         try:
-            self.run_command([f'{conda_path}\\Scripts\\conda.exe', 'run', '-p', env_path, 'pip', 'install', 'numpy==1.23.5',])
+            self.run_command([f'{conda_path}\\Scripts\\conda.exe', 'run', '-p', env_path, 'python', '-m', 'pip', 'install', 'numpy==1.23.5',])
             self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'mfa', 'model', 'download', 'dictionary', 'english_us_arpa'])
             self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'mfa', 'model', 'download', 'acoustic', 'english_us_arpa'])
         except subprocess.CalledProcessError as e:
@@ -878,7 +889,7 @@ class PandratorInstaller(ctk.CTk):
             # If NumPy version is 2.x, downgrade to 1.24.3
             if numpy_version.startswith('2.'):
                 logging.info("Downgrading NumPy to version 1.24.3...")
-                self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'pip', 'install', 'numpy==1.24.3'])
+                self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'python', '-m', 'pip', 'install', 'numpy==1.24.3'])
                 logging.info("NumPy downgraded successfully.")
             else:
                 logging.info("NumPy version is compatible. No changes needed.")
@@ -927,7 +938,7 @@ class PandratorInstaller(ctk.CTk):
                 'run',
                 '-p', 
                 os.path.join(conda_path, 'envs', 'pandrator_installer'),
-                '--no-capture-output',
+                '--no-capture-output', 'python', '-m',
                 'pip', 'install', '-r', requirements_file
             ]
             logging.info(f"Executing update command: {' '.join(update_cmd)}")
@@ -1017,7 +1028,7 @@ class PandratorInstaller(ctk.CTk):
             logging.info("Installing RVC Python...")
             self.run_command([
                 os.path.join(conda_path, 'Scripts', 'conda.exe'),
-                'run', '-p', env_path,
+                'run', '-p', env_path, 'python', '-m',
                 'pip', 'install', 'rvc-python'
             ])
 
@@ -1025,7 +1036,7 @@ class PandratorInstaller(ctk.CTk):
             logging.info("Installing specific PyTorch version...")
             self.run_command([
                 os.path.join(conda_path, 'Scripts', 'conda.exe'),
-                'run', '-p', env_path,
+                'run', '-p', env_path, 'python', '-m',
                 'pip', 'install', 'torch==2.1.1+cu121', 'torchaudio==2.1.1+cu121',
                 '--index-url', 'https://download.pytorch.org/whl/cu121'
             ])
