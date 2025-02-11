@@ -2,7 +2,7 @@
   <img src="pandrator.png" alt="Icon" width="200" height="200"/>
 </p>
 
-# Pandrator, a GUI audiobook and dubbing generator with voice cloning and AI text optimisation
+# Pandrator, a multilingual GUI audiobook, subtitle and dubbing generator and translator with voice cloning using AI models and custom algorithms
 >[!TIP]
 >**TL;DR:**
 > - Pandrator is not an AI model itself, but a GUI framework for Text-to-Speech, subtitle generation and translation projects. It can generate audiobooks and subtitles/dubbing by leveraging several AI tools, custom workflows and algorithms. It works on Windows out of the box. It does work on Linux, but you have to perform a manual installation at the moment.
