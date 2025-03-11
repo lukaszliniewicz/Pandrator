@@ -91,7 +91,6 @@ class TextPreprocessor:
         else:
             processed_sentences = self.sequential_preprocess_text(text, pdf_preprocessed, source_file, disable_paragraph_detection.get())
 
-        # Add the merging of consecutive chapter sentences here
         processed_sentences = self.merge_consecutive_chapters(processed_sentences)
 
         return processed_sentences
@@ -674,7 +673,7 @@ class TTSOptimizerGUI:
         self.enable_translation = ctk.BooleanVar(value=False)
         self.original_language = ctk.StringVar(value="English")
         self.target_language = ctk.StringVar(value="en")
-        self.enable_translation_evaluation = ctk.BooleanVar(value=False)
+        self.enable_chain_of_thought = ctk.BooleanVar(value=False)
         self.enable_glossary = ctk.BooleanVar(value=False)
         self.translation_model = ctk.StringVar(value="sonnet")
         self.anthropic_api_key = ctk.StringVar()
@@ -937,15 +936,25 @@ class TTSOptimizerGUI:
         self.target_language_dropdown = ctk.CTkOptionMenu(self.translation_frame, variable=self.target_language, values=["en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko", "hi"])
         self.target_language_dropdown.grid(row=2, column=3, padx=10, pady=5, sticky=tk.W)
 
-        self.enable_translation_evaluation_switch = ctk.CTkSwitch(self.translation_frame, text="Enable evaluation", variable=self.enable_translation_evaluation)
-        self.enable_translation_evaluation_switch.grid(row=3, column=0, columnspan=2, padx=10, pady=5, sticky=tk.W)
+        self.enable_chain_of_thought_switch = ctk.CTkSwitch(self.translation_frame, text="Enable chain-of-thought (more tokens)", variable=self.enable_chain_of_thought)
+        self.enable_chain_of_thought_switch.grid(row=3, column=0, columnspan=2, padx=10, pady=5, sticky=tk.W)
 
         self.enable_glossary_switch = ctk.CTkSwitch(self.translation_frame, text="Enable glossary", variable=self.enable_glossary)
         self.enable_glossary_switch.grid(row=3, column=2, columnspan=2, padx=10, pady=5, sticky=tk.W)
 
-        ctk.CTkLabel(self.translation_frame, text="Translation Model:").grid(row=4, column=0, padx=10, pady=5, sticky=tk.W)
+        self.enable_correction = ctk.BooleanVar(value=False)
+        self.enable_correction_switch = ctk.CTkSwitch(self.translation_frame, text="Correct transcription with LLM", variable=self.enable_correction)
+        self.enable_correction_switch.grid(row=4, column=0, columnspan=2, padx=10, pady=5, sticky=tk.W)
+
+        self.custom_prompt_button = ctk.CTkButton(self.translation_frame, text="Custom Prompt", command=self.open_custom_prompt_window)
+        self.custom_prompt_button.grid(row=4, column=2, columnspan=2, padx=10, pady=5, sticky=tk.W)
+
+        # Add a variable to store the custom prompt
+        self.custom_correction_prompt = ctk.StringVar(value="")
+
+        ctk.CTkLabel(self.translation_frame, text="Translation Model:").grid(row=5, column=0, padx=10, pady=5, sticky=tk.W)
         self.translation_model_dropdown = ctk.CTkOptionMenu(self.translation_frame, variable=self.translation_model, values=["haiku", "sonnet", "gpt-4o-mini", "gpt-4o", "deepl", "local"], width=150)
-        self.translation_model_dropdown.grid(row=4, column=1, padx=10, pady=5, sticky=tk.W)
+        self.translation_model_dropdown.grid(row=5, column=1, padx=10, pady=5, sticky=tk.W)
         self.translation_model.trace_add("write", self.on_translation_model_change)
 
         # Video File Selection (for SRT input)
@@ -971,10 +980,10 @@ class TTSOptimizerGUI:
         self.add_dubbing_to_video_button = ctk.CTkButton(self.dubbing_buttons_frame, text="Add Dubbing to Video", command=self.add_dubbing_to_video)
         self.add_dubbing_to_video_button.grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
 
-        self.only_transcribe_button = ctk.CTkButton(self.dubbing_buttons_frame, text="Only Transcribe", command=self.only_transcribe)
+        self.only_transcribe_button = ctk.CTkButton(self.dubbing_buttons_frame, text="Only Transcribe", command=lambda: self.only_transcribe(equalize_after=True))
         self.only_transcribe_button.grid(row=0, column=2, padx=5, pady=5, sticky=tk.EW)
 
-        self.only_translate_button = ctk.CTkButton(self.dubbing_buttons_frame, text="Only Translate", command=self.only_translate)
+        self.only_translate_button = ctk.CTkButton(self.dubbing_buttons_frame, text="Only Translate", command=lambda: self.only_translate(equalize_after=True))
         self.only_translate_button.grid(row=0, column=3, padx=5, pady=5, sticky=tk.EW)
 
 
@@ -1059,6 +1068,28 @@ class TTSOptimizerGUI:
 
         ctk.CTkLabel(metadata_window, text="Language:").grid(row=4, column=0, padx=10, pady=5, sticky=tk.W)
         ctk.CTkEntry(metadata_window, textvariable=self.metadata_language).grid(row=4, column=1, padx=10, pady=5, sticky=tk.EW)
+
+    def open_custom_prompt_window(self):
+        prompt_window = ctk.CTkToplevel(self.master)
+        prompt_window.title("Custom Correction Prompt")
+        prompt_window.geometry("600x400")
+        prompt_window.transient(self.master)
+        prompt_window.grab_set()
+
+        ctk.CTkLabel(prompt_window, text="Enter additional context for correction (e.g., proper names, terminology):", wraplength=550).pack(padx=10, pady=(10, 5))
+
+        prompt_text = ctk.CTkTextbox(prompt_window, width=580, height=300)
+        prompt_text.pack(padx=10, pady=5)
+        
+        # If there's an existing prompt, show it
+        if self.custom_correction_prompt.get():
+            prompt_text.insert("1.0", self.custom_correction_prompt.get())
+
+        def save_prompt():
+            self.custom_correction_prompt.set(prompt_text.get("1.0", "end-1c"))
+            prompt_window.destroy()
+
+        ctk.CTkButton(prompt_window, text="Save", command=save_prompt).pack(pady=10)
 
         def save_and_close():
             # Save metadata to self.metadata before closing
@@ -1735,7 +1766,7 @@ class TTSOptimizerGUI:
                 
             command = [
                 "../conda/Scripts/conda.exe", "run", "-p", "../conda/envs/easy_xtts_trainer", '--no-capture-output', "python", "easy_xtts_trainer.py",
-                "-i", source_path,  # Input path must be first
+                "--input", source_path,  # Input path must be first
                 "--source-language", self.model_language.get(),
                 "--whisper-model", self.whisper_model.get(),
                 "--session", self.model_name.get(),  # Session name is required
@@ -2278,7 +2309,7 @@ class TTSOptimizerGUI:
         # Step 3: Generate speech blocks
         pre_speech_blocks_files = set(os.listdir(session_dir))
         self.generate_speech_blocks()
-        if not self.wait_for_new_file(session_dir, pre_speech_blocks_files, "_sentences.json", "Speech block generation"):
+        if not self.wait_for_new_file(session_dir, pre_speech_blocks_files, "_speech_blocks.json", "Speech block generation"):
             return
 
         # Step 4: Perform TTS generation
@@ -2297,7 +2328,7 @@ class TTSOptimizerGUI:
         CTkMessagebox(title="Timeout", message=f"Timeout: No new {file_extension} file detected after {step_name}.")
         return False
 
-    def only_transcribe(self):
+    def only_transcribe(self, equalize_after=False):
         if not self.session_name.get():
             CTkMessagebox(title="No Session", message="Please create or load a session before transcribing.", icon="info")
             return
@@ -2312,8 +2343,8 @@ class TTSOptimizerGUI:
             CTkMessagebox(title="Error", message="No video file found in the session folder.")
             return
 
-        video_file = os.path.join(session_dir, video_files[0])  # Use the first video file found
-        video_filename = os.path.splitext(os.path.basename(video_file))[0]  # Get the video filename without extension
+        video_file = os.path.join(session_dir, video_files[0])
+        video_filename = os.path.splitext(os.path.basename(video_file))[0]
 
         logging.info(f"Starting transcription process for video file: {video_file}")
 
@@ -2327,9 +2358,9 @@ class TTSOptimizerGUI:
             ffmpeg_command = [
                 "ffmpeg",
                 "-i", video_file,
-                "-vn",  # Disable video
-                "-acodec", "pcm_s16le",  # Audio codec
-                "-ac", "1",  # Mono audio
+                "-vn",
+                "-acodec", "pcm_s16le",
+                "-ac", "1",
                 wav_file
             ]
 
@@ -2345,15 +2376,18 @@ class TTSOptimizerGUI:
 
             logging.info("Video successfully converted to WAV.")
 
-            # Check if the WAV file was created and has content
             if not os.path.exists(wav_file) or os.path.getsize(wav_file) == 0:
                 raise FileNotFoundError(f"WAV file is missing or empty: {wav_file}")
 
-            # Check if GPU is available and from Pascal generation
-            if torch.cuda.is_available():
-                gpu_name = torch.cuda.get_device_name(0).lower()
-                pascal_gpus = ['1060', '1070', '1080', '1660', '1650']
-                use_int8 = any(gpu in gpu_name for gpu in pascal_gpus)
+            use_int8 = False
+            try:
+                if torch_available and torch.cuda.is_available():
+                    gpu_name = torch.cuda.get_device_name(0).lower()
+                    pascal_gpus = ['1060', '1070', '1080', '1660', '1650']
+                    use_int8 = any(gpu in gpu_name for gpu in pascal_gpus)
+            except Exception as e:
+                logging.info(f"GPU check skipped: {str(e)}")
+                pass
 
             def run_whisperx_command(command):
                 try:
@@ -2373,8 +2407,7 @@ class TTSOptimizerGUI:
                     if "expects each tensor to be equal size" in str(e.stderr):
                         return False
                     raise e
-            
-            # Initial whisperx command
+
             whisperx_command = [
                 "../conda/Scripts/conda.exe", "run", "-p", "../conda/envs/whisperx_installer", "--no-capture-output",
                 "python", "-m", "whisperx",
@@ -2384,16 +2417,13 @@ class TTSOptimizerGUI:
                 "--output_format", "srt",
                 "--output_dir", session_dir
             ]
-            
-            # Add int8 compute type if GPU is from Pascal generation
+
             if use_int8:
                 whisperx_command.extend(["--compute_type", "int8"])
 
             logging.info(f"Executing initial transcription command: {' '.join(whisperx_command)}")
 
-            # Try initial transcription
             if not run_whisperx_command(whisperx_command):
-                # If failed, retry with batch_size 1
                 logging.info("Initial transcription failed. Retrying with batch_size 1")
                 whisperx_command.extend(["--batch_size", "1"])
                 logging.info(f"Executing fallback transcription command: {' '.join(whisperx_command)}")
@@ -2403,16 +2433,78 @@ class TTSOptimizerGUI:
 
             logging.info("Transcription completed successfully.")
 
-            # The output SRT file will have the same name as the WAV file
+            # The initial transcribed SRT file
             output_srt = os.path.join(session_dir, f"{video_filename}.srt")
 
-            # Verify that the SRT file was created
             if not os.path.exists(output_srt):
                 raise FileNotFoundError(f"Expected SRT file not found: {output_srt}")
 
             logging.info(f"SRT file created: {output_srt}")
+            current_srt = output_srt  # Keep track of the current SRT file to use
 
-            CTkMessagebox(title="Transcription Complete", message="Transcription has been completed successfully.")
+            # If correction is enabled, run it before equalization
+            if self.enable_correction.get():
+                correction_command = [
+                    "python",
+                    os.path.abspath("../Subdub/subdub.py"),
+                    "-i", output_srt,
+                    "-session", session_dir,
+                    "-task", "correct",
+                    "-context"
+                ]
+
+                if self.custom_correction_prompt.get().strip():
+                    correction_command.extend(["-correct_prompt", self.custom_correction_prompt.get().strip()])
+
+                try:
+                    process = subprocess.Popen(correction_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+                    for line in process.stdout:
+                        print(line, end='')
+                        logging.info(line.strip())
+                    process.wait()
+                    if process.returncode != 0:
+                        raise subprocess.CalledProcessError(process.returncode, correction_command)
+                    
+                    # Normalize filename by removing spaces
+                    normalized_filename = video_filename.replace(" ", "")
+                    corrected_srt = os.path.join(session_dir, f"{normalized_filename}_{self.whisperx_language.get()}_corrected.srt")
+                    if not os.path.exists(corrected_srt):
+                        raise FileNotFoundError(f"Corrected SRT file not found: {corrected_srt}")
+                    
+                    output_srt = corrected_srt  # Use the corrected file for subsequent steps
+                    logging.info("Correction completed successfully.")
+                    logging.info(f"Using corrected file for subsequent steps: {output_srt}")
+                except Exception as e:
+                    logging.error(f"Correction failed: {str(e)}")
+                    CTkMessagebox(title="Correction Failed", message=f"Transcription completed but correction failed: {str(e)}", icon="warning")
+                    # Keep using the uncorrected version if correction fails
+                    current_srt = output_srt
+
+            if equalize_after:
+                equalize_command = [
+                    "python",
+                    os.path.abspath("../Subdub/subdub.py"),
+                    "-i", current_srt,  # Use the most recent SRT file (corrected or original)
+                    "-task", "equalize"
+                ]
+
+                try:
+                    process = subprocess.Popen(equalize_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+                    for line in process.stdout:
+                        print(line, end='')
+                        logging.info(line.strip())
+                    process.wait()
+                    if process.returncode == 0:
+                        logging.info("Equalization completed successfully.")
+                        CTkMessagebox(title="Processing Complete", message="All processing steps completed successfully.", icon="info")
+                    else:
+                        logging.error("Equalization process failed.")
+                        CTkMessagebox(title="Processing Partial", message="Previous steps completed but equalization failed.", icon="warning")
+                except Exception as e:
+                    logging.error(f"Equalization failed: {str(e)}")
+                    CTkMessagebox(title="Processing Partial", message=f"Previous steps completed but equalization failed: {str(e)}", icon="warning")
+            else:
+                CTkMessagebox(title="Processing Complete", message="Processing completed successfully.", icon="info")
 
         except subprocess.CalledProcessError as e:
             logging.error(f"Command failed: {e.cmd}")
@@ -2426,14 +2518,13 @@ class TTSOptimizerGUI:
             logging.error(f"An unexpected error occurred: {str(e)}")
             CTkMessagebox(title="Error", message=f"An unexpected error occurred: {str(e)}")
         finally:
-            # Optionally, remove the WAV file if you don't need it anymore
             if os.path.exists(wav_file):
                 os.remove(wav_file)
                 logging.info(f"WAV file removed: {wav_file}")
             else:
                 logging.warning(f"WAV file not found for removal: {wav_file}")
 
-    def only_translate(self):
+    def only_translate(self, equalize_after=False):
         if not self.session_name.get():
             CTkMessagebox(title="No Session", message="Please create or load a session before translating.", icon="info")
             return
@@ -2451,7 +2542,7 @@ class TTSOptimizerGUI:
 
         original_language = self.original_language.get()
         target_language = self.target_language.get()
-        enable_evaluation = self.enable_translation_evaluation.get()
+        enable_chain_of_thought = self.enable_chain_of_thought.get()
         enable_glossary = self.enable_glossary.get()
         translation_model = self.translation_model.get()
 
@@ -2462,7 +2553,8 @@ class TTSOptimizerGUI:
             "-session", session_dir,
             "-sl", original_language,
             "-tl", target_language,
-            "-task", "translate"
+            "-task", "translate",
+            "-context" 
         ]
 
         if translation_model == "deepl":
@@ -2472,10 +2564,17 @@ class TTSOptimizerGUI:
         else:
             subdub_command.extend(["-llm-model", translation_model])
         
-        if enable_evaluation and translation_model != "deepl":
-            subdub_command.append("-evaluate")
+        if self.enable_chain_of_thought.get(): 
+            subdub_command.append("-cot")
         if enable_glossary and translation_model != "deepl":
             subdub_command.append("-glossary")
+
+        # Add correction if enabled
+        if self.enable_correction.get():
+            subdub_command.append("-correct")
+            # Add custom prompt if provided
+            if self.custom_correction_prompt.get().strip():
+                subdub_command.extend(["-correct_prompt", self.custom_correction_prompt.get().strip()])
 
         logging.info(f"Executing translation command: {' '.join(subdub_command)}")
 
@@ -2488,42 +2587,74 @@ class TTSOptimizerGUI:
             if process.returncode != 0:
                 raise subprocess.CalledProcessError(process.returncode, subdub_command)
             logging.info("Translation process completed successfully.")
-            CTkMessagebox(title="Translation Complete", message="Subtitles have been translated successfully.")
+
+            if equalize_after:
+                # Find the translated SRT file (it will have the target language code in its name)
+                translated_srt_files = [f for f in os.listdir(session_dir) if f.lower().endswith('.srt') and f != os.path.basename(most_recent_srt)]
+                if translated_srt_files:
+                    translated_srt = os.path.join(session_dir, translated_srt_files[-1])
+                    equalize_command = [
+                        "python",
+                        os.path.abspath("../Subdub/subdub.py"),
+                        "-i", translated_srt,
+                        "-task", "equalize"
+                    ]
+
+                    try:
+                        process = subprocess.Popen(equalize_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+                        for line in process.stdout:
+                            print(line, end='')
+                            logging.info(line.strip())
+                        process.wait()
+                        if process.returncode == 0:
+                            logging.info("Equalization completed successfully.")
+                            CTkMessagebox(title="Processing Complete", message="Translation and equalization completed successfully.", icon="info")
+                        else:
+                            logging.error("Equalization process failed.")
+                            CTkMessagebox(title="Processing Partial", message="Translation completed but equalization failed.", icon="warning")
+                    except Exception as e:
+                        logging.error(f"Equalization failed: {str(e)}")
+                        CTkMessagebox(title="Processing Partial", message=f"Translation completed but equalization failed: {str(e)}", icon="warning")
+            else:
+                CTkMessagebox(title="Translation Complete", message="Subtitles have been translated successfully.")
+
         except subprocess.CalledProcessError as e:
             logging.error(f"Translation failed: {str(e)}")
             CTkMessagebox(title="Error", message=f"Translation failed: {str(e)}")
+        except Exception as e:
+            logging.error(f"An unexpected error occurred: {str(e)}")
+            CTkMessagebox(title="Error", message=f"An unexpected error occurred: {str(e)}")
 
     def generate_speech_blocks(self):
         session_name = self.session_name.get()
         session_dir = os.path.abspath(os.path.join("Outputs", session_name))
 
-        # Find the most recent SRT file (original or translated)
+        # Find the most recent SRT file in the session directory
         srt_files = [f for f in os.listdir(session_dir) if f.lower().endswith('.srt')]
         if not srt_files:
-            CTkMessagebox(title="Error", message="No SRT file found in the session folder.")
+            CTkMessagebox(title="No SRT File", message="No SRT file found in the session folder. Please add an SRT file or perform transcription of a video first.", icon="warning")
             return
 
         most_recent_srt = max([os.path.join(session_dir, f) for f in srt_files], key=os.path.getmtime)
 
-        # Generate speech blocks using Subdub
-        subdub_speech_blocks_command = [
+        subdub_command = [
             "python",
             os.path.abspath("../Subdub/subdub.py"),
-            "-session", session_dir,
             "-i", most_recent_srt,
+            "-session", session_dir,
             "-task", "speech_blocks"
         ]
 
-        logging.info(f"Executing speech blocks generation command: {' '.join(subdub_speech_blocks_command)}")
+        logging.info(f"Executing speech blocks generation command: {' '.join(subdub_command)}")
 
         try:
-            process = subprocess.Popen(subdub_speech_blocks_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+            process = subprocess.Popen(subdub_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
             for line in process.stdout:
                 print(line, end='')  # Print to console
                 logging.info(line.strip())  # Log the output
             process.wait()
             if process.returncode != 0:
-                raise subprocess.CalledProcessError(process.returncode, subdub_speech_blocks_command)
+                raise subprocess.CalledProcessError(process.returncode, subdub_command)
             logging.info("Speech blocks generation completed successfully.")
         except subprocess.CalledProcessError as e:
             logging.error(f"Speech block generation failed: {str(e)}")
@@ -2583,12 +2714,12 @@ class TTSOptimizerGUI:
 
     def on_translation_model_change(self, *args):
         if self.translation_model.get() == "deepl":
-            self.enable_translation_evaluation_switch.configure(state="disabled")
+            self.enable_chain_of_thought_switch.configure(state="disabled")
             self.enable_glossary_switch.configure(state="disabled")
-            self.enable_translation_evaluation.set(False)
+            self.enable_chain_of_thought.set(False)
             self.enable_glossary.set(False)
         else:
-            self.enable_translation_evaluation_switch.configure(state="normal")
+            self.enable_chain_of_thought_switch.configure(state="normal")
             self.enable_glossary_switch.configure(state="normal")
     
     def toggle_dubbing_frame(self):
