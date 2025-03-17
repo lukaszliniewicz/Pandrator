@@ -679,6 +679,8 @@ class TTSOptimizerGUI:
         self.anthropic_api_key = ctk.StringVar()
         self.openai_api_key = ctk.StringVar()
         self.deepl_api_key = ctk.StringVar()
+        self.gemini_api_key = ctk.StringVar()
+        self.openrouter_api_key = ctk.StringVar()
         self.selected_video_file = ctk.StringVar()
         self.video_file_selection_label = None
         self.whisperx_language = ctk.StringVar(value="English")
@@ -952,8 +954,13 @@ class TTSOptimizerGUI:
         # Add a variable to store the custom prompt
         self.custom_correction_prompt = ctk.StringVar(value="")
 
-        ctk.CTkLabel(self.translation_frame, text="Translation Model:").grid(row=5, column=0, padx=10, pady=5, sticky=tk.W)
-        self.translation_model_dropdown = ctk.CTkOptionMenu(self.translation_frame, variable=self.translation_model, values=["haiku", "sonnet", "gpt-4o-mini", "gpt-4o", "deepl", "local"], width=150)
+        # In the create_train_xtts_tab method or wherever the translation model dropdown is initialized
+        ctk.CTkLabel(self.translation_frame, text="Translation/Correction Model:").grid(row=5, column=0, padx=10, pady=5, sticky=tk.W)
+        self.translation_model_dropdown = ctk.CTkOptionMenu(self.translation_frame, variable=self.translation_model, values=[
+            "haiku", "sonnet", "sonnet thinking", "gpt-4o-mini", "gpt-4o", 
+            "gemini-flash", "gemini-flash-thinking", "deepseek-r1", "qwq-32b",
+            "deepl", "local"
+        ], width=150)
         self.translation_model_dropdown.grid(row=5, column=1, padx=10, pady=5, sticky=tk.W)
         self.translation_model.trace_add("write", self.on_translation_model_change)
 
@@ -1365,6 +1372,7 @@ class TTSOptimizerGUI:
         ctk.CTkLabel(output_frame, text="Bitrate:").grid(row=0, column=2, padx=5, pady=5, sticky=tk.W)
         ctk.CTkEntry(output_frame, textvariable=self.bitrate).grid(row=0, column=3, padx=5, pady=5, sticky=tk.EW)
 
+
     def create_api_keys_tab(self):
         self.api_keys_tab = self.tabview.add("API Keys")
         self.api_keys_tab.grid_columnconfigure(0, weight=1)
@@ -1394,6 +1402,18 @@ class TTSOptimizerGUI:
         deepl_entry = ctk.CTkEntry(self.api_keys_tab, textvariable=self.deepl_api_key, width=300)
         deepl_entry.grid(row=3, column=1, padx=10, pady=10, sticky=tk.W)
         ctk.CTkButton(self.api_keys_tab, text="Save", command=lambda: self.save_api_key("DEEPL_API_KEY", self.deepl_api_key.get())).grid(row=3, column=2, padx=10, pady=10)
+        
+        # Gemini API Key (new)
+        ctk.CTkLabel(self.api_keys_tab, text="Gemini API Key:").grid(row=4, column=0, padx=10, pady=10, sticky=tk.W)
+        gemini_entry = ctk.CTkEntry(self.api_keys_tab, textvariable=self.gemini_api_key, width=300)
+        gemini_entry.grid(row=4, column=1, padx=10, pady=10, sticky=tk.W)
+        ctk.CTkButton(self.api_keys_tab, text="Save", command=lambda: self.save_api_key("GEMINI_API_KEY", self.gemini_api_key.get())).grid(row=4, column=2, padx=10, pady=10)
+        
+        # Openrouter API Key (new)
+        ctk.CTkLabel(self.api_keys_tab, text="Openrouter API Key:").grid(row=5, column=0, padx=10, pady=10, sticky=tk.W)
+        openrouter_entry = ctk.CTkEntry(self.api_keys_tab, textvariable=self.openrouter_api_key, width=300)
+        openrouter_entry.grid(row=5, column=1, padx=10, pady=10, sticky=tk.W)
+        ctk.CTkButton(self.api_keys_tab, text="Save", command=lambda: self.save_api_key("OPENROUTER_API_KEY", self.openrouter_api_key.get())).grid(row=5, column=2, padx=10, pady=10)
 
     def get_rvc_models(self):
         if os.path.exists(self.rvc_models_dir):
@@ -1417,170 +1437,368 @@ class TTSOptimizerGUI:
         self.train_xtts_tab = self.tabview.add("Train XTTS")
         self.train_xtts_tab.grid_columnconfigure(0, weight=1)
         self.train_xtts_tab.grid_columnconfigure(1, weight=1)
-
+        
+        # Let's use helper functions to organize the UI into logical sections
+        def create_section_header(parent, title, row, pady=(15, 5)):
+            """Helper to create consistent section headers"""
+            label = ctk.CTkLabel(parent, text=title, font=ctk.CTkFont(size=14, weight="bold"))
+            label.grid(row=row, column=0, columnspan=3, padx=10, pady=pady, sticky="w")
+            return label
+        
+        def create_tooltip(widget, message):
+            """Helper to create consistent tooltips"""
+            CTkToolTip(widget, message=message)
+        
+        current_row = 0
+        
+        # 1. Source Audio Section
+        create_section_header(self.train_xtts_tab, "Source Audio", current_row)
+        current_row += 1
+        
         # Source audio path
         source_label = ctk.CTkLabel(self.train_xtts_tab, text="Path to source audio:")
-        source_label.grid(row=0, column=0, padx=10, pady=5, sticky="w")
-        CTkToolTip(source_label, message="Select a WAV file or folder containing WAV files for training")
+        source_label.grid(row=current_row, column=0, padx=10, pady=5, sticky="w")
+        create_tooltip(source_label, "Select a WAV file or folder containing WAV files for training")
         
         self.source_audio_path = ctk.StringVar()
         self.source_audio_entry = ctk.CTkEntry(self.train_xtts_tab, textvariable=self.source_audio_path, width=300)
-        self.source_audio_entry.grid(row=0, column=1, padx=10, pady=5, sticky="ew")
-        ctk.CTkButton(self.train_xtts_tab, text="Browse", command=self.browse_source_audio).grid(row=0, column=2, padx=10, pady=5)
-
-        # Model Configuration
-        model_label = ctk.CTkLabel(self.train_xtts_tab, text="Model name:")
-        model_label.grid(row=1, column=0, padx=10, pady=5, sticky="w")
-        CTkToolTip(model_label, message="Name for your trained model. This will be used to identify the model in the models folder")
+        self.source_audio_entry.grid(row=current_row, column=1, padx=10, pady=5, sticky="ew")
+        ctk.CTkButton(self.train_xtts_tab, text="Browse", command=self.browse_source_audio).grid(row=current_row, column=2, padx=10, pady=5)
+        current_row += 1
+        
+        # 2. Model Configuration Section
+        create_section_header(self.train_xtts_tab, "Model Configuration", current_row)
+        current_row += 1
+        
+        # Create model config frame
+        model_frame = ctk.CTkFrame(self.train_xtts_tab)
+        model_frame.grid(row=current_row, column=0, columnspan=3, padx=10, pady=5, sticky="ew")
+        model_frame.grid_columnconfigure(1, weight=1)
+        current_row += 1
+        
+        model_row = 0
+        
+        # Model name
+        model_label = ctk.CTkLabel(model_frame, text="Model name:")
+        model_label.grid(row=model_row, column=0, padx=10, pady=5, sticky="w")
+        create_tooltip(model_label, "Name for your trained model. This will be used to identify the model in the models folder")
         
         self.model_name = ctk.StringVar()
-        ctk.CTkEntry(self.train_xtts_tab, textvariable=self.model_name, width=300).grid(row=1, column=1, padx=10, pady=5, sticky="ew")
-
+        ctk.CTkEntry(model_frame, textvariable=self.model_name, width=300).grid(row=model_row, column=1, padx=10, pady=5, sticky="ew")
+        model_row += 1
+        
         # Language Selection
-        lang_label = ctk.CTkLabel(self.train_xtts_tab, text="Model language:")
-        lang_label.grid(row=2, column=0, padx=10, pady=5, sticky="w")
-        CTkToolTip(lang_label, message="The language of your training data. This will be used for transcription and synthesis")
+        lang_label = ctk.CTkLabel(model_frame, text="Model language:")
+        lang_label.grid(row=model_row, column=0, padx=10, pady=5, sticky="w")
+        create_tooltip(lang_label, "The language of your training data. This will be used for transcription and synthesis")
         
         self.model_language = ctk.StringVar(value="en")
-        ctk.CTkOptionMenu(self.train_xtts_tab, variable=self.model_language, 
-                         values=["en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko"]).grid(row=2, column=1, padx=10, pady=5, sticky="ew")
-
+        languages = ["en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko"]
+        ctk.CTkOptionMenu(model_frame, variable=self.model_language, values=languages).grid(
+            row=model_row, column=1, padx=10, pady=5, sticky="ew")
+        model_row += 1
+        
         # Whisper Model Selection
-        whisper_label = ctk.CTkLabel(self.train_xtts_tab, text="Whisper Model:")
-        whisper_label.grid(row=3, column=0, padx=10, pady=5, sticky="w")
-        CTkToolTip(whisper_label, message="Model used for transcription. Larger models are more accurate but slower and use more memory")
+        whisper_label = ctk.CTkLabel(model_frame, text="Whisper Model:")
+        whisper_label.grid(row=model_row, column=0, padx=10, pady=5, sticky="w")
+        create_tooltip(whisper_label, "Model used for transcription. Larger models are more accurate but slower and use more memory")
         
         self.whisper_model = ctk.StringVar(value="large-v3")
-        ctk.CTkOptionMenu(self.train_xtts_tab, variable=self.whisper_model,
-                         values=["medium", "medium.en", "large-v2", "large-v3"]).grid(row=3, column=1, padx=10, pady=5, sticky="ew")
-
+        whisper_models = ["medium", "medium.en", "large-v2", "large-v3"]
+        ctk.CTkOptionMenu(model_frame, variable=self.whisper_model, values=whisper_models).grid(
+            row=model_row, column=1, padx=10, pady=5, sticky="ew")
+        model_row += 1
+        
         # Sample Rate Selection
-        sample_rate_label = ctk.CTkLabel(self.train_xtts_tab, text="Sample Rate:")
-        sample_rate_label.grid(row=4, column=0, padx=10, pady=5, sticky="w")
-        CTkToolTip(sample_rate_label, message="Audio sample rate. 22050 Hz is recommended for XTTS training")
+        sample_rate_label = ctk.CTkLabel(model_frame, text="Sample Rate:")
+        sample_rate_label.grid(row=model_row, column=0, padx=10, pady=5, sticky="w")
+        create_tooltip(sample_rate_label, "Audio sample rate. 22050 Hz is recommended for XTTS training")
         
         self.sample_rate = ctk.IntVar(value=22050)
-        ctk.CTkOptionMenu(self.train_xtts_tab, variable=self.sample_rate,
-                         values=["22050", "44100"]).grid(row=4, column=1, padx=10, pady=5, sticky="ew")
-
+        ctk.CTkOptionMenu(model_frame, variable=self.sample_rate, values=["22050", "44100"]).grid(
+            row=model_row, column=1, padx=10, pady=5, sticky="ew")
+        
+        # 3. Training Configuration Section
+        create_section_header(self.train_xtts_tab, "Training Configuration", current_row)
+        current_row += 1
+        
+        # Create training config frame
+        training_frame = ctk.CTkFrame(self.train_xtts_tab)
+        training_frame.grid(row=current_row, column=0, columnspan=3, padx=10, pady=5, sticky="ew")
+        training_frame.grid_columnconfigure(1, weight=1)
+        current_row += 1
+        
+        training_row = 0
+        
         # Maximum Training Segment Duration
-        duration_label = ctk.CTkLabel(self.train_xtts_tab, text="Maximum training segment duration:")
-        duration_label.grid(row=5, column=0, padx=10, pady=5, sticky="w")
+        duration_label = ctk.CTkLabel(training_frame, text="Maximum training segment duration:")
+        duration_label.grid(row=training_row, column=0, padx=10, pady=5, sticky="w")
+        create_tooltip(duration_label, "Maximum duration in seconds for each training segment")
+        
         self.max_duration = ctk.StringVar(value="11")
-        ctk.CTkOptionMenu(self.train_xtts_tab, variable=self.max_duration,
-                         values=["9", "10", "11", "12", "13", "14"]).grid(row=5, column=1, padx=10, pady=5, sticky="ew")
-
+        ctk.CTkOptionMenu(training_frame, variable=self.max_duration, values=["9", "10", "11", "12", "13", "14"]).grid(
+            row=training_row, column=1, padx=10, pady=5, sticky="ew")
+        training_row += 1
+        
         # Maximum Text Length
-        text_length_label = ctk.CTkLabel(self.train_xtts_tab, text="Maximum training segment text length:")
-        text_length_label.grid(row=6, column=0, padx=10, pady=5, sticky="w")
+        text_length_label = ctk.CTkLabel(training_frame, text="Maximum training segment text length:")
+        text_length_label.grid(row=training_row, column=0, padx=10, pady=5, sticky="w")
+        create_tooltip(text_length_label, "Maximum number of characters for each training segment")
+        
         self.max_text_length = ctk.StringVar(value="200")
-        ctk.CTkOptionMenu(self.train_xtts_tab, variable=self.max_text_length,
-                         values=["160", "200", "250"]).grid(row=6, column=1, padx=10, pady=5, sticky="ew")
-
+        ctk.CTkOptionMenu(training_frame, variable=self.max_text_length, values=["160", "200", "250"]).grid(
+            row=training_row, column=1, padx=10, pady=5, sticky="ew")
+        training_row += 1
+        
         # Training/Evaluation Split
-        split_label = ctk.CTkLabel(self.train_xtts_tab, text="Training/Evaluation split ratio:")
-        split_label.grid(row=7, column=0, padx=10, pady=5, sticky="w")
+        split_label = ctk.CTkLabel(training_frame, text="Training/Evaluation split ratio:")
+        split_label.grid(row=training_row, column=0, padx=10, pady=5, sticky="w")
+        create_tooltip(split_label, "Ratio of data used for training vs. evaluation (e.g., 9_1 means 90% training, 10% evaluation)")
+        
         self.training_split = ctk.StringVar(value="9_1")
-        ctk.CTkOptionMenu(self.train_xtts_tab, variable=self.training_split,
-                         values=["6_4", "7_3", "8_2", "9_1"]).grid(row=7, column=1, padx=10, pady=5, sticky="ew")
-
+        ctk.CTkOptionMenu(training_frame, variable=self.training_split, values=["6_4", "7_3", "8_2", "9_1"]).grid(
+            row=training_row, column=1, padx=10, pady=5, sticky="ew")
+        training_row += 1
+        
         # Method Proportion
-        method_label = ctk.CTkLabel(self.train_xtts_tab, text="Maximise/Punctuation methods ratio:")
-        method_label.grid(row=8, column=0, padx=10, pady=5, sticky="w")
+        method_label = ctk.CTkLabel(training_frame, text="Maximise/Punctuation methods ratio:")
+        method_label.grid(row=training_row, column=0, padx=10, pady=5, sticky="w")
+        create_tooltip(method_label, "Ratio between different text segmentation strategies")
+        
         self.method_proportion = ctk.StringVar(value="6_4")
-        ctk.CTkOptionMenu(self.train_xtts_tab, variable=self.method_proportion,
-                         values=["4_5", "5_5", "6_4", "7_3"]).grid(row=8, column=1, padx=10, pady=5, sticky="ew")
-
+        ctk.CTkOptionMenu(training_frame, variable=self.method_proportion, values=["4_5", "5_5", "6_4", "7_3"]).grid(
+            row=training_row, column=1, padx=10, pady=5, sticky="ew")
+        training_row += 1
+        
         # Sample generation method
-        sample_method_label = ctk.CTkLabel(self.train_xtts_tab, text="Sample generation method:")
-        sample_method_label.grid(row=9, column=0, padx=10, pady=5, sticky="w")
-        CTkToolTip(sample_method_label, message="Method for preparing training samples:\nMixed - Balanced approach\nMaximise Punctuation - Prioritizes sentences with varied punctuation\nPunctuation - Only uses sentences with punctuation")
+        sample_method_label = ctk.CTkLabel(training_frame, text="Sample generation method:")
+        sample_method_label.grid(row=training_row, column=0, padx=10, pady=5, sticky="w")
+        create_tooltip(sample_method_label, "Method for preparing training samples:\n"
+                    "Mixed - Balanced approach\n"
+                    "Maximise Punctuation - Prioritizes sentences with varied punctuation\n"
+                    "Punctuation - Only uses sentences with punctuation")
         
         self.sample_method = ctk.StringVar(value="Mixed")
-        ctk.CTkOptionMenu(self.train_xtts_tab, variable=self.sample_method, 
-                         values=["Mixed", "Maximise Punctuation", "Punctuation"]).grid(row=9, column=1, padx=10, pady=5, sticky="ew")
-
+        ctk.CTkOptionMenu(training_frame, variable=self.sample_method, 
+                        values=["Mixed", "Maximise Punctuation", "Punctuation"]).grid(
+            row=training_row, column=1, padx=10, pady=5, sticky="ew")
+        training_row += 1
+        
         # Alignment Model
-        alignment_label = ctk.CTkLabel(self.train_xtts_tab, text="Alignment Model:")
-        alignment_label.grid(row=10, column=0, padx=10, pady=5, sticky="w")
-        CTkToolTip(alignment_label, message="Optional: Path to a custom alignment model. Leave empty to use the default model")
+        alignment_label = ctk.CTkLabel(training_frame, text="Custom Alignment Model (Optional):")
+        alignment_label.grid(row=training_row, column=0, padx=10, pady=5, sticky="w")
+        create_tooltip(alignment_label, "Optional: Huggingface name of a custom alignment model. Leave empty to use the default model")
         
         self.alignment_model = ctk.StringVar(value="")
-        alignment_entry = ctk.CTkEntry(self.train_xtts_tab, textvariable=self.alignment_model, width=300)
-        alignment_entry.grid(row=10, column=1, padx=10, pady=5, sticky="ew")
-
-        # Training Parameters
+        ctk.CTkEntry(training_frame, textvariable=self.alignment_model, width=300).grid(
+            row=training_row, column=1, padx=10, pady=5, sticky="ew")
+        
+        # 4. Voice Sample Options Section
+        create_section_header(self.train_xtts_tab, "Voice Sample Options", current_row)
+        current_row += 1
+        
+        # Create voice sample frame
+        voice_sample_frame = ctk.CTkFrame(self.train_xtts_tab)
+        voice_sample_frame.grid(row=current_row, column=0, columnspan=3, padx=10, pady=5, sticky="ew")
+        voice_sample_frame.grid_columnconfigure(1, weight=1)
+        current_row += 1
+        
+        sample_row = 0
+        
+        # Voice Sample Mode
+        sample_mode_label = ctk.CTkLabel(voice_sample_frame, text="Voice Sample Mode:")
+        sample_mode_label.grid(row=sample_row, column=0, padx=10, pady=5, sticky="w")
+        create_tooltip(sample_mode_label, "Basic: 2 files in main directory\n"
+                    "Extended: specialized samples by characteristic\n"
+                    "Dynamic: samples with internal variation")
+        
+        self.voice_sample_mode = ctk.StringVar(value="basic")
+        sample_mode_dropdown = ctk.CTkOptionMenu(voice_sample_frame, variable=self.voice_sample_mode, 
+                                            values=["basic", "extended", "dynamic"],
+                                            command=self.update_voice_sample_options)
+        sample_mode_dropdown.grid(row=sample_row, column=1, padx=10, pady=5, sticky="ew")
+        sample_row += 1
+        
+        # Number of Voice Samples (only relevant for extended/dynamic modes)
+        self.voice_samples_label = ctk.CTkLabel(voice_sample_frame, text="Number of Voice Samples:")
+        self.voice_samples_label.grid(row=sample_row, column=0, padx=10, pady=5, sticky="w")
+        create_tooltip(self.voice_samples_label, "Number of reference voice samples to save (only for extended/dynamic modes)")
+        
+        self.voice_samples_count = ctk.StringVar(value="3")
+        self.voice_samples_dropdown = ctk.CTkOptionMenu(voice_sample_frame, variable=self.voice_samples_count, 
+                                                    values=["3", "4"])
+        self.voice_samples_dropdown.grid(row=sample_row, column=1, padx=10, pady=5, sticky="ew")
+        sample_row += 1
+        
+        # Only use complete sentences option
+        self.voice_sample_only_sentence = ctk.BooleanVar(value=False)
+        self.complete_sentences_switch = ctk.CTkSwitch(voice_sample_frame, 
+                                                text="Only use complete sentences for voice samples", 
+                                                variable=self.voice_sample_only_sentence)
+        self.complete_sentences_switch.grid(row=sample_row, column=0, columnspan=2, padx=10, pady=5, sticky="w")
+        create_tooltip(self.complete_sentences_switch, "Only select samples that start with capital letters and end with punctuation")
+        
+        # Initially hide options that are only relevant for extended/dynamic modes
+        if self.voice_sample_mode.get() == "basic":
+            self.voice_samples_label.grid_remove()
+            self.voice_samples_dropdown.grid_remove()
+        
+        # 5. Training Parameters Section
+        create_section_header(self.train_xtts_tab, "Training Parameters", current_row)
+        current_row += 1
+        
+        # Create params frame with sliders
         params_frame = ctk.CTkFrame(self.train_xtts_tab)
-        params_frame.grid(row=11, column=0, columnspan=3, padx=10, pady=5, sticky="ew")
+        params_frame.grid(row=current_row, column=0, columnspan=3, padx=10, pady=5, sticky="ew")
+        params_frame.grid_columnconfigure(1, weight=1)
+        current_row += 1
+        
+        params_row = 0
+        
+        def create_slider_with_label(parent, label_text, variable, from_val, to_val, steps, row, tooltip_text=None):
+            """Helper function to create a consistent slider with label and value display"""
+            label = ctk.CTkLabel(parent, text=label_text)
+            label.grid(row=row, column=0, padx=10, pady=5, sticky="w")
+            
+            if tooltip_text:
+                create_tooltip(label, tooltip_text)
+                
+            slider = ctk.CTkSlider(parent, from_=from_val, to=to_val, number_of_steps=steps, variable=variable)
+            slider.grid(row=row, column=1, padx=10, pady=5, sticky="ew")
+            
+            value_label = ctk.CTkLabel(parent, textvariable=variable)
+            value_label.grid(row=row, column=2, padx=10, pady=5)
+            
+            return label, slider, value_label
         
         # Epochs
-        epochs_label = ctk.CTkLabel(params_frame, text="Epochs:")
-        epochs_label.grid(row=0, column=0, padx=10, pady=5, sticky="w")
-        CTkToolTip(epochs_label, message="Number of training cycles. More epochs can improve quality but may lead to overfitting")
-        
         self.epochs = ctk.IntVar(value=6)
-        ctk.CTkSlider(params_frame, from_=1, to=100, number_of_steps=99, variable=self.epochs).grid(row=0, column=1, padx=10, pady=5, sticky="ew")
-        ctk.CTkLabel(params_frame, textvariable=self.epochs).grid(row=0, column=2, padx=10, pady=5)
-
+        create_slider_with_label(
+            params_frame, "Epochs:", self.epochs, 1, 100, 99, params_row,
+            "Number of training cycles. More epochs can improve quality but may lead to overfitting"
+        )
+        params_row += 1
+        
         # Batches
-        batches_label = ctk.CTkLabel(params_frame, text="Batches:")
-        batches_label.grid(row=1, column=0, padx=10, pady=5, sticky="w")
-        CTkToolTip(batches_label, message="Number of samples processed together. Larger batch sizes can speed up training but use more memory")
-        
         self.batches = ctk.IntVar(value=2)
-        ctk.CTkSlider(params_frame, from_=1, to=10, number_of_steps=9, variable=self.batches).grid(row=1, column=1, padx=10, pady=5, sticky="ew")
-        ctk.CTkLabel(params_frame, textvariable=self.batches).grid(row=1, column=2, padx=10, pady=5)
-
-        # Gradient Accumulation
-        gradient_label = ctk.CTkLabel(params_frame, text="Gradient Accumulation Levels:")
-        gradient_label.grid(row=2, column=0, padx=10, pady=5, sticky="w")
-        CTkToolTip(gradient_label, message="Number of batches to accumulate before updating model weights. Higher values can simulate larger batch sizes with less memory")
+        create_slider_with_label(
+            params_frame, "Batches:", self.batches, 1, 10, 9, params_row,
+            "Number of samples processed together. Larger batch sizes can speed up training but use more memory"
+        )
+        params_row += 1
         
+        # Gradient Accumulation
         self.gradient = ctk.IntVar(value=1)
-        ctk.CTkSlider(params_frame, from_=1, to=100, number_of_steps=19, variable=self.gradient).grid(row=2, column=1, padx=10, pady=5, sticky="ew")
-        ctk.CTkLabel(params_frame, textvariable=self.gradient).grid(row=2, column=2, padx=10, pady=5)
-
-        # Audio Preprocessing Section
-        preprocess_label = ctk.CTkLabel(self.train_xtts_tab, text="Audio Preprocessing", font=ctk.CTkFont(size=14, weight="bold"))
-        preprocess_label.grid(row=12, column=0, columnspan=2, padx=10, pady=(20, 5), sticky="w")
-
+        create_slider_with_label(
+            params_frame, "Gradient Accumulation Levels:", self.gradient, 1, 100, 19, params_row,
+            "Number of batches to accumulate before updating model weights. Higher values can simulate larger batch sizes with less memory"
+        )
+        
+        # 6. Audio Preprocessing Section
+        create_section_header(self.train_xtts_tab, "Audio Preprocessing", current_row)
+        current_row += 1
+        
+        # Create preprocessing frame with toggles
         preprocess_frame = ctk.CTkFrame(self.train_xtts_tab)
-        preprocess_frame.grid(row=13, column=0, columnspan=3, padx=10, pady=5, sticky="ew")
-
+        preprocess_frame.grid(row=current_row, column=0, columnspan=3, padx=10, pady=5, sticky="ew")
+        current_row += 1
+        
+        # Create two columns for better layout
+        preprocess_frame.grid_columnconfigure(0, weight=1)
+        preprocess_frame.grid_columnconfigure(1, weight=1)
+        
+        # Left column - first row
         # Denoise
         self.enable_denoise = ctk.BooleanVar(value=False)
-        ctk.CTkSwitch(preprocess_frame, text="Denoise (DeepFilterNet3)", variable=self.enable_denoise).grid(row=0, column=0, padx=10, pady=5, sticky="w")
-
-        # Normalize
-        self.enable_normalize = ctk.BooleanVar(value=False)
+        denoise_switch = ctk.CTkSwitch(preprocess_frame, text="Denoise (DeepFilterNet3)", variable=self.enable_denoise)
+        denoise_switch.grid(row=0, column=0, padx=10, pady=5, sticky="w")
+        create_tooltip(denoise_switch, "Apply AI-based noise removal to clean up audio")
+        
+        # Right column - first row
+        # Breath Removal
+        self.enable_breath_removal = ctk.BooleanVar(value=False)
+        breath_switch = ctk.CTkSwitch(preprocess_frame, text="Remove breath sounds", variable=self.enable_breath_removal)
+        breath_switch.grid(row=0, column=1, padx=10, pady=5, sticky="w")
+        create_tooltip(breath_switch, "Apply breath removal preprocessing to improve voice quality")
+        
+        # De-ess (second row, left)
+        self.enable_dess = ctk.BooleanVar(value=False)
+        dess_switch = ctk.CTkSwitch(preprocess_frame, text="De-ess", variable=self.enable_dess)
+        dess_switch.grid(row=1, column=0, padx=10, pady=5, sticky="w")
+        create_tooltip(dess_switch, "Reduce sibilance (harsh 's' sounds) in audio")
+        
+        # Normalize and Compress in separate frames
         normalize_frame = ctk.CTkFrame(preprocess_frame)
-        normalize_frame.grid(row=1, column=0, columnspan=2, padx=10, pady=5, sticky="ew")
-        ctk.CTkSwitch(normalize_frame, text="Normalize", variable=self.enable_normalize).grid(row=0, column=0, padx=10, pady=5, sticky="w")
+        normalize_frame.grid(row=2, column=0, columnspan=2, padx=10, pady=5, sticky="ew")
+        
+        self.enable_normalize = ctk.BooleanVar(value=False)
+        normalize_switch = ctk.CTkSwitch(normalize_frame, text="Normalize", variable=self.enable_normalize)
+        normalize_switch.grid(row=0, column=0, padx=10, pady=5, sticky="w")
+        create_tooltip(normalize_switch, "Normalize audio levels to a standard loudness")
+        
         self.lufs_value = ctk.StringVar(value="-16")
-        ctk.CTkEntry(normalize_frame, textvariable=self.lufs_value, width=50).grid(row=0, column=1, padx=10, pady=5, sticky="w")
+        lufs_entry = ctk.CTkEntry(normalize_frame, textvariable=self.lufs_value, width=50)
+        lufs_entry.grid(row=0, column=1, padx=10, pady=5, sticky="w")
+        create_tooltip(lufs_entry, "Target LUFS level (industry standard is -16 to -14)")
+        
         ctk.CTkLabel(normalize_frame, text="LUFS").grid(row=0, column=2, padx=5, pady=5, sticky="w")
-
+        
         # Compress
         compress_frame = ctk.CTkFrame(preprocess_frame)
-        compress_frame.grid(row=2, column=0, columnspan=2, padx=10, pady=5, sticky="ew")
+        compress_frame.grid(row=3, column=0, columnspan=2, padx=10, pady=5, sticky="ew")
+        
         self.enable_compress = ctk.BooleanVar(value=False)
-        ctk.CTkSwitch(compress_frame, text="Compress", variable=self.enable_compress).grid(row=0, column=0, padx=10, pady=5, sticky="w")
+        compress_switch = ctk.CTkSwitch(compress_frame, text="Compress", variable=self.enable_compress)
+        compress_switch.grid(row=0, column=0, padx=10, pady=5, sticky="w")
+        create_tooltip(compress_switch, "Apply dynamic range compression to even out volume levels")
+        
         self.compress_profile = ctk.StringVar(value="neutral")
-        ctk.CTkOptionMenu(compress_frame, variable=self.compress_profile, values=["male", "female", "neutral"]).grid(row=0, column=1, padx=10, pady=5, sticky="w")
-
-        # Dess
-        dess_frame = ctk.CTkFrame(preprocess_frame)
-        dess_frame.grid(row=3, column=0, columnspan=2, padx=10, pady=5, sticky="ew")
-        self.enable_dess = ctk.BooleanVar(value=False)
-        ctk.CTkSwitch(dess_frame, text="Dess", variable=self.enable_dess).grid(row=0, column=0, padx=10, pady=5, sticky="w")
-
-        # Train button
-        self.train_button = ctk.CTkButton(self.train_xtts_tab, text="Start Training", command=self.start_xtts_training)
-        self.train_button.grid(row=14, column=0, columnspan=3, padx=10, pady=20)
-
+        compress_menu = ctk.CTkOptionMenu(compress_frame, variable=self.compress_profile, values=["male", "female", "neutral"])
+        compress_menu.grid(row=0, column=1, padx=10, pady=5, sticky="w")
+        create_tooltip(compress_menu, "Compression profile optimized for different voice types")
+        
+        # 7. Training Control Section
+        create_section_header(self.train_xtts_tab, "Training Control", current_row, pady=(20, 10))
+        current_row += 1
+        
+        # Training button with status
+        self.train_button = ctk.CTkButton(
+            self.train_xtts_tab, 
+            text="Start Training", 
+            command=self.start_xtts_training,
+            height=40,
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        self.train_button.grid(row=current_row, column=0, columnspan=3, padx=20, pady=10, sticky="ew")
+        current_row += 1
+        
+        # Progress bar for training
+        self.training_progress = ctk.CTkProgressBar(self.train_xtts_tab)
+        self.training_progress.grid(row=current_row, column=0, columnspan=3, padx=20, pady=(0, 10), sticky="ew")
+        self.training_progress.set(0)  # Initially set to 0
+        current_row += 1
+        
         # Training status label
-        self.training_status = ctk.StringVar(value="")
-        ctk.CTkLabel(self.train_xtts_tab, textvariable=self.training_status).grid(row=15, column=0, columnspan=3, padx=10, pady=5)
+        self.training_status = ctk.StringVar(value="Ready to train")
+        status_label = ctk.CTkLabel(
+            self.train_xtts_tab, 
+            textvariable=self.training_status,
+            font=ctk.CTkFont(size=12)
+        )
+        status_label.grid(row=current_row, column=0, columnspan=3, padx=10, pady=(0, 10))
+        
+        # Update the update_voice_sample_options method if it doesn't exist
+        if not hasattr(self, 'update_voice_sample_options'):
+            def update_voice_sample_options(self, choice=None):
+                """Update visibility of voice sample options based on selected mode"""
+                if self.voice_sample_mode.get() == "basic":
+                    self.voice_samples_label.grid_remove()
+                    self.voice_samples_dropdown.grid_remove()
+                else:
+                    self.voice_samples_label.grid()
+                    self.voice_samples_dropdown.grid()
+            
+            self.update_voice_sample_options = update_voice_sample_options
 
     def create_generated_sentences_section(self):
         generated_sentences_frame = ctk.CTkFrame(self.right_frame, fg_color="transparent")
@@ -1754,6 +1972,14 @@ class TTSOptimizerGUI:
         # Start the training process in a separate thread
         threading.Thread(target=self.run_xtts_training, daemon=True).start()
               
+    def update_voice_sample_options(self, *args):
+        mode = self.voice_sample_mode.get()
+        if mode == "basic":
+            self.voice_samples_label.grid_remove()
+            self.voice_samples_dropdown.grid_remove()
+        else:  # extended or dynamic
+            self.voice_samples_label.grid()
+            self.voice_samples_dropdown.grid()
 
     def run_xtts_training(self):
         try:
@@ -1778,8 +2004,17 @@ class TTSOptimizerGUI:
                 "--max-audio-time", str(float(self.max_duration.get())),
                 "--max-text-length", str(int(self.max_text_length.get())),
                 "--method-proportion", self.method_proportion.get(),
-                "--training-proportion", self.training_split.get()
+                "--training-proportion", self.training_split.get(),
+                "--voice-sample-mode", self.voice_sample_mode.get()
             ]
+
+            # Add voice samples count if not in basic mode
+            if self.voice_sample_mode.get() != "basic":
+                command.extend(["--voice-samples", self.voice_samples_count.get()])
+            
+            # Add the sentence-only option if enabled
+            if self.voice_sample_only_sentence.get():
+                command.append("--voice-sample-only-sentence")
 
             # Add alignment model parameter if provided
             if self.alignment_model.get().strip():
@@ -1788,6 +2023,10 @@ class TTSOptimizerGUI:
             # Add optional preprocessing arguments
             if self.enable_denoise.get():
                 command.append("--denoise")
+                
+            # Add breath removal if enabled
+            if self.enable_breath_removal.get():
+                command.append("--breath")
 
             if self.enable_normalize.get():
                 command.extend(["--normalize", self.lufs_value.get().strip('-')])  # Remove the minus sign
@@ -2452,6 +2691,27 @@ class TTSOptimizerGUI:
                     "-task", "correct",
                     "-context"
                 ]
+                
+                # Add model selection for correction - use the same model as translation
+                translation_model = self.translation_model.get()
+                
+                if translation_model == "deepl":
+                    correction_command.extend(["-llmapi", "deepl"])
+                elif translation_model == "local":
+                    correction_command.extend(["-llmapi", "local"])
+                # Handle new model options
+                elif translation_model == "sonnet thinking":
+                    correction_command.extend(["-llm-model", "sonnet", "-thinking"])
+                elif translation_model == "gemini-flash":
+                    correction_command.extend(["-llm-model", "gemini-flash"])
+                elif translation_model == "gemini-flash-thinking":
+                    correction_command.extend(["-llm-model", "gemini-flash-thinking"])
+                elif translation_model == "deepseek-r1":
+                    correction_command.extend(["-llm-model", "deepseek-r1"])
+                elif translation_model == "qwq-32b":
+                    correction_command.extend(["-llm-model", "qwq-32b"])
+                else:
+                    correction_command.extend(["-llm-model", translation_model])
 
                 if self.custom_correction_prompt.get().strip():
                     correction_command.extend(["-correct_prompt", self.custom_correction_prompt.get().strip()])
@@ -2561,12 +2821,23 @@ class TTSOptimizerGUI:
             subdub_command.extend(["-llmapi", "deepl"])
         elif translation_model == "local":
             subdub_command.extend(["-llmapi", "local"])
+        # Handle new model options
+        elif translation_model == "sonnet thinking":
+            subdub_command.extend(["-llm-model", "sonnet", "-thinking"])
+        elif translation_model == "gemini-flash":
+            subdub_command.extend(["-llm-model", "gemini-flash"])
+        elif translation_model == "gemini-flash-thinking":
+            subdub_command.extend(["-llm-model", "gemini-flash-thinking"])
+        elif translation_model == "deepseek-r1":
+            subdub_command.extend(["-llm-model", "deepseek-r1"])
+        elif translation_model == "qwq-32b":
+            subdub_command.extend(["-llm-model", "qwq-32b"])
         else:
             subdub_command.extend(["-llm-model", translation_model])
         
         if self.enable_chain_of_thought.get(): 
             subdub_command.append("-cot")
-        if enable_glossary and translation_model != "deepl":
+        if enable_glossary and translation_model not in ["deepl"]:
             subdub_command.append("-glossary")
 
         # Add correction if enabled
@@ -2713,14 +2984,20 @@ class TTSOptimizerGUI:
 
 
     def on_translation_model_change(self, *args):
-        if self.translation_model.get() == "deepl":
+        model = self.translation_model.get()
+        if model == "deepl":
             self.enable_chain_of_thought_switch.configure(state="disabled")
             self.enable_glossary_switch.configure(state="disabled")
             self.enable_chain_of_thought.set(False)
             self.enable_glossary.set(False)
         else:
             self.enable_chain_of_thought_switch.configure(state="normal")
-            self.enable_glossary_switch.configure(state="normal")
+            # For Gemini and other non-LLM models, glossary might not be applicable
+            if model in ["gemini-flash", "gemini-flash-thinking"]:
+                self.enable_glossary_switch.configure(state="disabled")
+                self.enable_glossary.set(False)
+            else:
+                self.enable_glossary_switch.configure(state="normal")
     
     def toggle_dubbing_frame(self):
         if self.enable_dubbing.get():
@@ -2990,6 +3267,14 @@ class TTSOptimizerGUI:
             error_msg = f"An unexpected error occurred during download: {e}"
             print(error_msg)
             self.master.after(0, lambda error=error_msg: self.show_error_message(error))
+
+    def load_api_keys_from_env(self):
+        # Load API keys from environment variables if they exist
+        self.anthropic_api_key.set(os.environ.get('ANTHROPIC_API_KEY', ''))
+        self.openai_api_key.set(os.environ.get('OPENAI_API_KEY', ''))
+        self.deepl_api_key.set(os.environ.get('DEEPL_API_KEY', ''))
+        self.gemini_api_key.set(os.environ.get('GEMINI_API_KEY', ''))
+        self.openrouter_api_key.set(os.environ.get('OPENROUTER_API_KEY', ''))
 
     def load_downloaded_video(self, destination_path):
         self.pre_selected_source_file = destination_path
