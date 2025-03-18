@@ -34,12 +34,33 @@ class PandratorInstaller(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.initial_working_dir = os.getcwd()
+        
+        # Check for spaces in the working directory
+        if ' ' in self.initial_working_dir:
+            self.title("Warning: Path Contains Spaces")
+            warning_message = (
+                f"⚠️ WARNING: Your installation path contains spaces:\n\n"
+                f"{self.initial_working_dir}\n\n"
+                f"This will likely cause problems with Conda and may prevent Pandrator from installing correctly.\n\n"
+                f"It's strongly recommended to move this installer to a path without spaces, such as:\n"
+                f"C:\\Pandrator\n\n"
+                f"Would you like to exit the installer so you can move it to a better location?"
+            )
+            
+            result = messagebox.askyesno("Path Contains Spaces", warning_message, icon="warning")
+            if result:
+                sys.exit(0)
+            else:
+                messagebox.showinfo(
+                    "Continuing With Risk", 
+                    "Installation will continue, but you may encounter errors.\n"
+                    "If installation fails, please restart the installer from a path without spaces."
+                )
         # Define instance variables for checkboxes
         self.pandrator_var = ctk.BooleanVar(value=True)
         self.xtts_var = ctk.BooleanVar(value=False)
         self.xtts_cpu_var = ctk.BooleanVar(value=False)
         self.silero_var = ctk.BooleanVar(value=False)
-        self.voicecraft_var = ctk.BooleanVar(value=False)
         self.rvc_var = ctk.BooleanVar(value=False)
 
         # Define instance variables for launch options
@@ -49,13 +70,12 @@ class PandratorInstaller(ctk.CTk):
         self.deepspeed_var = ctk.BooleanVar(value=False)
         self.xtts_cpu_launch_var = ctk.BooleanVar(value=False)
         self.launch_silero_var = ctk.BooleanVar(value=False)
-        self.launch_voicecraft_var = ctk.BooleanVar(value=False)
+
 
         # Initialize process attributes
         self.xtts_process = None
         self.pandrator_process = None
         self.silero_process = None
-        self.voicecraft_process = None
 
         self.title("Pandrator Installer & Launcher")
         
@@ -87,7 +107,7 @@ class PandratorInstaller(ctk.CTk):
         self.info_text.pack(fill="x", padx=20, pady=10)
         self.info_text.insert("1.0", "This tool will help you set up and run Pandrator as well as TTS engines and tools. "
                             "It will install Pandrator, Miniconda, required Python packages, "
-                            "and dependencies (Calibre, Visual Studio C++ Build Tools) using winget if not installed already."
+                            "and dependencies (Calibre, Visual Studio C++ Build Tools)."
                             "To uninstall Pandrator, simply delete the Pandrator folder.\n\n"
                             "The installation will take between 3 and 30GB of disk space depending on the number of selected options.")
         self.info_text.configure(state="disabled")
@@ -103,7 +123,42 @@ class PandratorInstaller(ctk.CTk):
         self.installation_frame.grid(row=0, column=0, padx=(0, 10), pady=10, sticky="nsew")
 
         ctk.CTkLabel(self.installation_frame, text="Install", font=("Arial", 20, "bold")).pack(anchor="w", padx=10, pady=(10, 5))
+        # Build Tools notice and button section
+        build_tools_frame = ctk.CTkFrame(self.installation_frame, fg_color="#2C2C2C")
+        build_tools_frame.pack(fill="x", padx=10, pady=(5, 15))
 
+        admin_warning = ctk.CTkLabel(
+            build_tools_frame, 
+            text="⚠️ IMPORTANT: Pandrator Installer must be run as administrator to install Build Tools!",
+            font=("Arial", 11, "bold"),
+            text_color="#FF9900",
+            justify="left"
+        )
+        admin_warning.pack(anchor="w", padx=10, pady=(10, 5))
+
+        build_tools_label = ctk.CTkLabel(
+            build_tools_frame, 
+            text="Visual C++ Build Tools are required for installation.\nIf not already installed:",
+            font=("Arial", 11),
+            justify="left"
+        )
+        build_tools_label.pack(anchor="w", padx=10, pady=(0, 5))
+
+        build_tools_steps = ctk.CTkLabel(
+            build_tools_frame, 
+            text="1. Click the button below to install them\n2. After installation, close all command prompt/PowerShell windows\n3. Restart this installer",
+            font=("Arial", 10),
+            justify="left"
+        )
+        build_tools_steps.pack(anchor="w", padx=20, pady=(0, 5))
+
+        self.build_tools_button = ctk.CTkButton(
+            build_tools_frame, 
+            text="Install Visual C++ Build Tools", 
+            command=self.open_build_tools_installer,
+            width=200
+        )
+        self.build_tools_button.pack(anchor="w", padx=10, pady=(0, 10))
         self.pandrator_checkbox = ctk.CTkCheckBox(self.installation_frame, text="Pandrator", variable=self.pandrator_var)
         self.pandrator_checkbox.pack(anchor="w", padx=10, pady=(5, 0))
 
@@ -120,8 +175,6 @@ class PandratorInstaller(ctk.CTk):
 
         self.silero_checkbox = ctk.CTkCheckBox(engine_frame, text="Silero", variable=self.silero_var)
         self.silero_checkbox.pack(side="left", padx=(0, 20), pady=5)
-        self.voicecraft_checkbox = ctk.CTkCheckBox(engine_frame, text="Voicecraft", variable=self.voicecraft_var)
-        self.voicecraft_checkbox.pack(side="left", padx=(0, 20), pady=5)
 
         ctk.CTkLabel(self.installation_frame, text="Other tools", font=("Arial", 14, "bold")).pack(anchor="w", padx=10, pady=(20, 5))
 
@@ -168,7 +221,6 @@ class PandratorInstaller(ctk.CTk):
         self.deepspeed_checkbox.grid(row=2, column=3, sticky="w", padx=10, pady=5)
 
         ctk.CTkCheckBox(self.launch_frame, text="Silero", variable=self.launch_silero_var).grid(row=3, column=0, columnspan=4, sticky="w", padx=10, pady=5)
-        ctk.CTkCheckBox(self.launch_frame, text="Voicecraft", variable=self.launch_voicecraft_var).grid(row=4, column=0, columnspan=4, sticky="w", padx=10, pady=5)
         self.launch_button = ctk.CTkButton(self.launch_frame, text="Launch", command=self.launch_apps, width=200, height=40)
         self.launch_button.grid(row=5, column=0, columnspan=4, sticky="w", padx=10, pady=(20, 10))
 
@@ -194,6 +246,192 @@ class PandratorInstaller(ctk.CTk):
         logger.setLevel(logging.DEBUG)
 
         self.open_log_button.configure(state="normal")
+
+    def is_admin(self):
+        """Check if the current process has admin privileges."""
+        try:
+            return ctypes.windll.shell32.IsUserAnAdmin() != 0
+        except:
+            return False
+
+    def is_build_tools_installed(self):
+        """Check if Visual Studio Build Tools are installed."""
+        try:
+            # Method 1: Check common installation paths
+            vs_paths = [
+                r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools",
+                r"C:\Program Files\Microsoft Visual Studio\2022\BuildTools"
+            ]
+            
+            for path in vs_paths:
+                vc_tools_path = os.path.join(path, "VC", "Tools", "MSVC")
+                if os.path.exists(vc_tools_path) and os.listdir(vc_tools_path):
+                    logging.info(f"Found Build Tools at {vc_tools_path}")
+                    return True
+            
+            # Method 2: Check registry
+            try:
+                # Check if Visual C++ Build Tools registry key exists
+                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, 
+                                r"SOFTWARE\Microsoft\VisualStudio\SxS\VS7", 
+                                0, winreg.KEY_READ) as key:
+                    # Just checking if the key exists and has values
+                    if winreg.QueryValueEx(key, "17.0")[0]:
+                        logging.info("Found Build Tools in registry")
+                        return True
+            except FileNotFoundError:
+                # Registry key not found
+                pass
+            except Exception as reg_error:
+                logging.warning(f"Error checking registry for Build Tools: {str(reg_error)}")
+                
+            # Method 3: Try to use cl.exe (MSVC compiler)
+            try:
+                subprocess.run(["cl"], 
+                            stdout=subprocess.PIPE, 
+                            stderr=subprocess.PIPE, 
+                            shell=True)
+                logging.info("Found cl.exe in PATH, Build Tools appear to be installed")
+                return True
+            except:
+                # cl.exe not found in PATH
+                pass
+                
+            return False
+        except Exception as e:
+            logging.error(f"Error checking Build Tools installation: {str(e)}")
+            return False
+
+    def open_build_tools_installer(self):
+        """Check for and install Visual Studio Build Tools."""
+        # Check for admin privileges
+        if not self.is_admin():
+            message = ("Administrator privileges required!\n\n"
+                    "The Pandrator Installer must be run as administrator to install Visual C++ Build Tools.\n\n"
+                    "Please right-click on the Pandrator Installer and select 'Run as administrator'.")
+            messagebox.showerror("Admin Rights Required", message)
+            return
+        
+        # First check if Build Tools are already installed
+        if self.is_build_tools_installed():
+            # Build Tools are already installed, ask if user wants to force reinstall
+            result = messagebox.askyesno(
+                "Build Tools Already Installed", 
+                "Visual C++ Build Tools appear to be already installed on your system.\n\n"
+                "Do you want to force a reinstallation anyway?\n\n"
+                "• Select 'Yes' to reinstall\n"
+                "• Select 'No' to continue with Pandrator installation",
+                icon="info"
+            )
+            
+            if not result:
+                # User chose not to reinstall, update status and return
+                self.update_status("Using existing Visual C++ Build Tools installation.")
+                return
+            
+            # User chose to reinstall, continue with installation
+            logging.info("User chose to reinstall Build Tools despite existing installation")
+            
+        self.update_status("Preparing Visual C++ Build Tools installation...")
+        logging.info("Starting Visual C++ Build Tools installation process...")
+        
+        try:
+            # URL for VS Build Tools 2022
+            url = "https://aka.ms/vs/17/release/vs_buildtools.exe"
+            
+            # Download the installer
+            self.update_status("Downloading VS Build Tools installer...")
+            
+            response = requests.get(url, stream=True)
+            if response.status_code != 200:
+                raise Exception(f"Failed to download installer, status code: {response.status_code}")
+                
+            # Save the installer to a temporary file
+            installer_path = os.path.join(tempfile.gettempdir(), "vs_buildtools.exe")
+            with open(installer_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+            
+            # Run the installer silently with required components
+            self.update_status("Installing VS Build Tools (running silently)...")
+            
+            # Command arguments with quiet mode
+            install_cmd = [
+                installer_path,
+                "--quiet", "--norestart",
+                "--add", "Microsoft.VisualStudio.Workload.VCTools",
+                "--includeRecommended"
+            ]
+            
+            # Launch the installer
+            process = subprocess.Popen(install_cmd)
+            
+            # Start a background thread to monitor installation
+            threading.Thread(target=self.monitor_build_tools_installation, 
+                            args=(process,), daemon=True).start()
+            
+            message = ("Visual Studio Build Tools installation has started and is running silently in the background.\n\n"
+                    "⏱️ This may take 5-15 minutes to complete.\n\n"
+                    "The Pandrator Installer will notify you when the installation is complete or if it fails.\n\n"
+                    "AFTER INSTALLATION:\n"
+                    "1. Close all command prompt/PowerShell windows\n"
+                    "2. Restart the Pandrator Installer")
+            
+            messagebox.showinfo("Build Tools Installation", message)
+            
+        except Exception as e:
+            logging.error(f"Failed to run VS Build Tools installer: {str(e)}")
+            logging.error(traceback.format_exc())
+            
+            message = ("Failed to download or start the Visual Studio Build Tools installer.\n\n"
+                    "Please install it manually:\n"
+                    "1. Download from: https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022\n"
+                    "2. Run the installer and select 'Desktop development with C++'\n"
+                    "3. Complete the installation\n"
+                    "4. Close all terminal windows and restart Pandrator Installer")
+            
+            messagebox.showerror("Build Tools Installation Error", message)
+
+    def monitor_build_tools_installation(self, process):
+        """Monitor the Build Tools installation process in a background thread."""
+        try:
+            # Wait for the initial process to complete
+            return_code = process.wait()
+            
+            if return_code == 0:
+                # Initial process succeeded, now check for actual installation
+                # Wait for installation to complete (can take several minutes)
+                for attempt in range(30):  # Check for 5 minutes (30 x 10 seconds)
+                    if self.is_build_tools_installed():
+                        # Schedule UI updates on the main thread
+                        self.after(0, lambda: self.update_status("VS Build Tools installation completed successfully!"))
+                        self.after(0, lambda: messagebox.showinfo("Installation Complete", 
+                            "Visual Studio Build Tools installation completed successfully!\n\n"
+                            "Please:\n"
+                            "1. Close all command prompt/PowerShell windows\n"
+                            "2. Restart the Pandrator Installer"))
+                        return
+                    time.sleep(10)  # Wait 10 seconds between checks
+                
+                # If we get here, we couldn't confirm the installation
+                self.after(0, lambda: self.update_status("Could not confirm VS Build Tools installation"))
+                self.after(0, lambda: messagebox.showwarning("Installation Status Unknown", 
+                    "The Visual Studio Build Tools installer completed, but we couldn't confirm if all components were installed correctly.\n\n"
+                    "Please restart your computer and then run the Pandrator Installer again."))
+            else:
+                # Initial process failed
+                self.after(0, lambda: self.update_status(f"VS Build Tools installation failed with code {return_code}"))
+                self.after(0, lambda: messagebox.showerror("Installation Failed", 
+                    f"Visual Studio Build Tools installation failed with code {return_code}.\n\n"
+                    "Please try installing manually:\n"
+                    "1. Download from: https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022\n"
+                    "2. Run the installer and select 'Desktop development with C++'\n"
+                    "3. Complete the installation\n"
+                    "4. Close all terminal windows and restart Pandrator Installer"))
+        except Exception as e:
+            logging.error(f"Error monitoring Build Tools installation: {str(e)}")
+            self.after(0, lambda: self.update_status("Error monitoring VS Build Tools installation"))
 
     def install_pytorch_for_xtts_finetuning(self, conda_path, env_name):
         logging.info(f"Installing PyTorch for XTTS Fine-tuning in {env_name}...")
@@ -283,12 +521,6 @@ class PandratorInstaller(ctk.CTk):
         silero_launch_checkbox = next(widget for widget in self.launch_frame.winfo_children() if isinstance(widget, ctk.CTkCheckBox) and widget.cget("text") == "Silero")
         set_widget_state(silero_launch_checkbox, "normal" if silero_support else "disabled", False)
 
-        # VoiceCraft
-        voicecraft_support = config.get('voicecraft_support', False)
-        set_widget_state(self.voicecraft_checkbox, "disabled" if voicecraft_support else "normal", False)
-        voicecraft_launch_checkbox = next(widget for widget in self.launch_frame.winfo_children() if isinstance(widget, ctk.CTkCheckBox) and widget.cget("text") == "Voicecraft")
-        set_widget_state(voicecraft_launch_checkbox, "normal" if voicecraft_support else "disabled", False)
-
         # RVC
         rvc_support = config.get('rvc_support', False)
         set_widget_state(self.rvc_checkbox, "disabled" if rvc_support else "normal", False)
@@ -328,7 +560,6 @@ class PandratorInstaller(ctk.CTk):
         return {
             'xtts': config.get('xtts_support', False),
             'silero': config.get('silero_support', False),
-            'voicecraft': config.get('voicecraft_support', False),
             'rvc': config.get('rvc_support', False),
             'whisperx': config.get('whisperx_support', False),
             'xtts_finetuning': config.get('xtts_finetuning_support', False)
@@ -338,19 +569,19 @@ class PandratorInstaller(ctk.CTk):
         logging.info(f"Installing WhisperX in {env_name}...")
         env_path = os.path.join(conda_path, 'envs', env_name)
         try:
-            # Install Git through Conda
-            self.run_command([
-                os.path.join(conda_path, 'Scripts', 'conda.exe'),
-                'install', '-p', env_path,
-                'git', '-c', 'conda-forge', '-y'
-            ])
+            ## Install Git through Conda
+            #self.run_command([
+            #    os.path.join(conda_path, 'Scripts', 'conda.exe'),
+            #    'install', '-p', env_path,
+            #    'git', '-c', 'conda-forge', '-y'
+            #])
             
             # Install PyTorch
             self.run_command([
                 os.path.join(conda_path, 'Scripts', 'conda.exe'),
                 'run', '-p', env_path,
                 'python', '-m', 'pip', 'install',
-                'torch==2.0.1', 'torchvision==0.15.2', 'torchaudio==2.0.2',
+                'torch==2.5.1', 'torchvision==0.20.1', 'torchaudio==2.5.1',
                 '--index-url', 'https://download.pytorch.org/whl/cu118'
             ])
             
@@ -368,11 +599,19 @@ class PandratorInstaller(ctk.CTk):
                 'ffmpeg', '-c', 'conda-forge', '-y'
             ])
             
+            # Install CTranslate2
+            self.run_command([
+               os.path.join(conda_path, 'Scripts', 'conda.exe'),
+               'run', '-p', env_path, 'python', '-m', 
+               'pip', 'install',
+               'pip<24'
+            ])
+
             # Install WhisperX
             self.run_command([
                 os.path.join(conda_path, 'Scripts', 'conda.exe'),
                 'run', '-p', env_path, 'python', '-m',
-                'pip', 'install', 'git+https://github.com/lukaszliniewicz/whisperX_silero.git'
+                'pip', 'install', 'whisperx'
             ])
             
             # Install CTranslate2
@@ -408,7 +647,6 @@ class PandratorInstaller(ctk.CTk):
         new_components_selected = (
             (self.xtts_var.get() or self.xtts_cpu_var.get()) and not installed_components['xtts'] or
             self.silero_var.get() and not installed_components['silero'] or
-            self.voicecraft_var.get() and not installed_components['voicecraft'] or
             self.rvc_var.get() and not installed_components['rvc'] or
             self.whisperx_var.get() and not installed_components['whisperx']
         )
@@ -636,18 +874,6 @@ class PandratorInstaller(ctk.CTk):
             logging.info("Calibre is already installed.")
             return True
 
-    def install_visual_cpp_build_tools(self):
-        logging.info("Installing Microsoft Visual C++ Build Tools...")
-        self.update_status("Installing Microsoft Visual C++ Build Tools...")
-
-        if self.install_with_chocolatey('visualstudio2022buildtools', '--package-parameters "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"'):
-            self.refresh_env_in_new_session()
-            self.update_status("Build Tools are ready.")
-            return True
-        else:
-            self.update_status("Error during Build Tools installation. Check the log for details.")
-            return False
-
     def install_conda(self, install_path):
         logging.info("Installing Miniconda...")
         conda_installer = 'Miniconda3-latest-Windows-x86_64.exe'
@@ -755,41 +981,6 @@ class PandratorInstaller(ctk.CTk):
         env_path = os.path.join(conda_path, 'envs', env_name)
         self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'pip', 'install', package])
 
-
-    def download_pretrained_models(self, repo_path):
-        pretrained_models_dir = os.path.join(repo_path, 'pretrained_models')
-        os.makedirs(pretrained_models_dir, exist_ok=True)
-        encodec_url = 'https://huggingface.co/pyp1/VoiceCraft/resolve/main/encodec_4cb2048_giga.th'
-        voicecraft_model_dir = os.path.join(pretrained_models_dir, 'VoiceCraft_gigaHalfLibri330M_TTSEnhanced_max16s')
-        os.makedirs(voicecraft_model_dir, exist_ok=True)
-        
-        config_url = 'https://huggingface.co/pyp1/VoiceCraft_gigaHalfLibri330M_TTSEnhanced_max16s/resolve/main/config.json'
-        model_url = 'https://huggingface.co/pyp1/VoiceCraft_gigaHalfLibri330M_TTSEnhanced_max16s/resolve/main/model.safetensors'
-        encodec_path = os.path.join(pretrained_models_dir, 'encodec_4cb2048_giga.th')
-        config_path = os.path.join(voicecraft_model_dir, 'config.json')
-        model_path = os.path.join(voicecraft_model_dir, 'model.safetensors')
-
-        def download_file(url, path):
-            if not os.path.exists(path):
-                logging.info(f"Downloading {os.path.basename(path)}...")
-                try:
-                    response = requests.get(url, stream=True)
-                    response.raise_for_status()
-                    with open(path, 'wb') as f:
-                        for chunk in response.iter_content(chunk_size=8192):
-                            f.write(chunk)
-                    logging.info(f"Successfully downloaded {os.path.basename(path)}")
-                except requests.RequestException as e:
-                    logging.error(f"Failed to download {os.path.basename(path)}")
-                    logging.error(f"Error message: {str(e)}")
-                    raise
-            else:
-                logging.info(f"{os.path.basename(path)} already exists. Skipping download.")
-
-        download_file(encodec_url, encodec_path)
-        download_file(config_url, config_path)
-        download_file(model_url, model_path)
-
     def install_pytorch_and_xtts_api_server(self, conda_path, env_name):
         logging.info(f"Installing xtts-api-server, PyTorch, and FFmpeg in {env_name}...")
         env_path = os.path.join(conda_path, 'envs', env_name)
@@ -814,45 +1005,6 @@ class PandratorInstaller(ctk.CTk):
         except subprocess.CalledProcessError as e:
             logging.error("Error installing xtts-api-server, PyTorch, or FFmpeg.")
             logging.error(f"Error output: {e.stderr.decode('utf-8')}")
-            raise
-
-    def install_audiocraft(self, conda_path, env_name, voicecraft_repo_path):
-        logging.info(f"Installing audiocraft package in {env_name}...")
-        try:
-            audiocraft_repo = 'https://github.com/facebookresearch/audiocraft.git'
-            audiocraft_commit = 'c5157b5bf14bf83449c17ea1eeb66c19fb4bc7f0'
-            
-            # Change to the VoiceCraft repository directory
-            os.chdir(voicecraft_repo_path)
-            
-            # Install audiocraft package
-            self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-n', env_name, 'python', '-m', 'pip', 'install', '-e', f'git+{audiocraft_repo}@{audiocraft_commit}#egg=audiocraft'])
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Failed to install audiocraft package in {env_name}")
-            logging.error(f"Error message: {str(e)}")
-            raise
-
-    def install_voicecraft_api_dependencies(self, conda_path, env_name):
-        logging.info(f"Installing VoiceCraft API dependencies in {env_name}...")
-        env_path = os.path.join(conda_path, 'envs', env_name)
-        try:
-            self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'conda', 'install', 'pytorch==2.0.1', 'torchvision==0.15.2', 'torchaudio==2.0.2', 'pytorch-cuda=11.7', '-c', 'pytorch', '-c', 'nvidia', '-y'])
-            self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'conda', 'install', '-c', 'conda-forge', 'montreal-forced-aligner=2.2.17', 'openfst=1.8.2', 'kaldi=5.5.1068', '-y'])
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Failed to install VoiceCraft API dependencies in {env_name}")
-            logging.error(f"Error message: {str(e)}")
-            raise
-
-    def download_mfa_models(self, conda_path, env_name):
-        logging.info(f"Downloading MFA models in {env_name}...")
-        env_path = os.path.join(conda_path, 'envs', env_name)
-        try:
-            self.run_command([f'{conda_path}\\Scripts\\conda.exe', 'run', '-p', env_path, 'python', '-m', 'pip', 'install', 'numpy==1.23.5',])
-            self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'mfa', 'model', 'download', 'dictionary', 'english_us_arpa'])
-            self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'mfa', 'model', 'download', 'acoustic', 'english_us_arpa'])
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Failed to download MFA models in {env_name}")
-            logging.error(f"Error message: {str(e)}")
             raise
 
     def replace_files(self, repo_path, file_mappings):
@@ -897,89 +1049,6 @@ class PandratorInstaller(ctk.CTk):
             logging.error("Error checking or updating NumPy version.")
             logging.error(f"Error message: {str(e)}")
             raise
-
-    def update_pandrator(self):
-        pandrator_base_path = os.path.join(self.initial_working_dir, 'Pandrator')
-        pandrator_repo_path = os.path.join(pandrator_base_path, 'Pandrator')
-        subdub_repo_path = os.path.join(pandrator_base_path, 'Subdub')
-        easy_xtts_trainer_path = os.path.join(pandrator_base_path, 'easy_xtts_trainer')
-        conda_path = os.path.join(pandrator_base_path, 'conda')
-        
-        logging.info(f"Checking for Pandrator at: {pandrator_repo_path}")
-        
-        if not os.path.exists(pandrator_repo_path):
-            error_msg = f"Pandrator directory not found at: {pandrator_repo_path}"
-            logging.error(error_msg)
-            self.update_status(error_msg)
-            return
-
-        conda_path = os.path.join(pandrator_base_path, 'conda')
-        
-        self.update_status("Updating Pandrator and components...")
-        logging.info("Starting update process")
-        
-        try:
-            # Update Pandrator
-            self.update_status("Updating Pandrator repository...")
-            logging.info(f"Updating Pandrator in: {pandrator_repo_path}")
-            self.pull_repo(pandrator_repo_path)
-            
-            # Update Pandrator requirements
-            self.update_status("Updating Pandrator dependencies...")
-            requirements_file = os.path.join(pandrator_repo_path, 'requirements.txt')
-            logging.info(f"Updating requirements from: {requirements_file}")
-            
-            if not os.path.exists(requirements_file):
-                logging.error(f"Requirements file not found at: {requirements_file}")
-                raise FileNotFoundError(f"Requirements file not found: {requirements_file}")
-            
-            update_cmd = [
-                os.path.join(conda_path, 'Scripts', 'conda.exe'),
-                'run',
-                '-p', 
-                os.path.join(conda_path, 'envs', 'pandrator_installer'),
-                '--no-capture-output', 'python', '-m',
-                'pip', 'install', '-r', requirements_file
-            ]
-            logging.info(f"Executing update command: {' '.join(update_cmd)}")
-            self.run_command(update_cmd, cwd=pandrator_repo_path)
-            
-            # Update Subdub
-            if os.path.exists(subdub_repo_path):
-                self.update_status("Updating Subdub...")
-                logging.info(f"Updating Subdub in: {subdub_repo_path}")
-                self.pull_repo(subdub_repo_path)
-            else:
-                logging.warning(f"Subdub directory not found at: {subdub_repo_path}")
-            
-            # Update easy XTTS trainer (repo and requirements)
-            if os.path.exists(easy_xtts_trainer_path):
-                self.update_status("Updating easy XTTS trainer...")
-                logging.info(f"Updating easy XTTS trainer in: {easy_xtts_trainer_path}")
-                self.pull_repo(easy_xtts_trainer_path)
-                
-                # Update requirements
-                self.update_status("Updating easy XTTS trainer dependencies...")
-                xtts_requirements_file = os.path.join(easy_xtts_trainer_path, 'requirements.txt')
-                if os.path.exists(xtts_requirements_file):
-                    logging.info("Installing updated requirements for easy XTTS trainer...")
-                    self.install_requirements(conda_path, 'easy_xtts_trainer', xtts_requirements_file)
-                else:
-                    logging.warning(f"XTTS trainer requirements file not found at: {xtts_requirements_file}")
-            else:
-                logging.info("easy XTTS trainer not installed, skipping update.")
-
-            self.update_status("Update completed successfully.")
-            logging.info("Update process completed successfully")
-        
-        except Exception as e:
-            error_msg = f"Failed to update: {str(e)}"
-            logging.error(error_msg)
-            logging.error(traceback.format_exc())
-            self.update_status(f"Update failed: {error_msg}")
-        
-        finally:
-            self.refresh_ui_state()
         
     def clone_repo(self, repo_url, target_dir):
         logging.info(f"Cloning repository {repo_url} to {target_dir}...")
@@ -1049,15 +1118,27 @@ class PandratorInstaller(ctk.CTk):
             logging.error(traceback.format_exc())
             raise
 
-    def install_espeak_ng(self):
-        logging.info("Installing eSpeak NG...")
+    def set_permissive_permissions(self, path):
+        """Set permissive file permissions on installation directories"""
+        if not self.is_admin():
+            logging.info(f"Skipping permission setting on {path} (not running as admin)")
+            return False
+            
         try:
-            self.run_command(['winget', 'install', '--id', 'eSpeak-NG.eSpeak-NG', '-e', '--accept-package-agreements'])
-            logging.info("eSpeak NG installed successfully.")
+            self.update_status(f"Setting permissions on {os.path.basename(path)}...")
+            logging.info(f"Setting permissive permissions on: {path}")
+            
+            # Use icacls to give Users full control (F) with inheritance flags (OI)(CI)
+            # OI = Object Inherit, CI = Container Inherit, F = Full Control
+            command = f'icacls "{path}" /grant:r Users:(OI)(CI)F /T /Q'
+            subprocess.run(command, shell=True, check=True)
+            
+            logging.info(f"Successfully set permissions on: {path}")
+            return True
         except subprocess.CalledProcessError as e:
-            logging.error("Failed to install eSpeak NG.")
-            logging.error(f"Error output: {e.stderr.decode('utf-8')}")
-            raise
+            logging.error(f"Failed to set permissions on {path}: {str(e)}")
+            logging.error(traceback.format_exc())
+            return False
 
     def install_process(self):
         self.disable_buttons()
@@ -1065,22 +1146,54 @@ class PandratorInstaller(ctk.CTk):
         conda_path = os.path.join(pandrator_path, 'conda')
         pandrator_already_installed = os.path.exists(pandrator_path)
         
+        # Check admin status
+        is_admin = self.is_admin()
+        if not is_admin:
+            logging.warning("Running installer without admin privileges - some features may not work correctly")
+            user_choice = messagebox.askyesno(
+                "Non-Admin Installation", 
+                "You're running the installer without administrator privileges.\n\n"
+                "This will work for basic functionality but may cause issues with:\n"
+                "- Visual Studio Build Tools installation\n"
+                "- System-wide permissions\n\n"
+                "Would you like to continue with limited installation?\n"
+                "(Select 'No' to exit and restart as administrator)"
+            )
+            if not user_choice:
+                self.update_status("Installation cancelled - please restart as administrator")
+                self.enable_buttons()
+                return
+        
         try:
+            # Create Pandrator directory if it doesn't exist
+            if not pandrator_already_installed:
+                os.makedirs(pandrator_path, exist_ok=True)
+                if is_admin:
+                    self.set_permissive_permissions(pandrator_path)
+            
             self.update_progress(0.1)
             self.update_status("Installing Chocolatey...")
-            self.install_chocolatey()
+            if is_admin:
+                self.install_chocolatey()
+            else:
+                self.update_status("Skipping Chocolatey installation (requires admin)")
+                logging.warning("Skipping Chocolatey installation (requires admin)")
 
             self.update_progress(0.2)
             self.update_status("Installing dependencies...")
             try:
-                self.install_dependencies()
+                if is_admin:
+                    self.install_dependencies()
+                else:
+                    self.update_status("Checking for Calibre...")
+                    if not self.check_program_installed('calibre'):
+                        self.show_calibre_installation_message()
+                    else:
+                        logging.info("Calibre is already installed.")
             except Exception as e:
                 logging.error(f"Error during dependency installation: {str(e)}")
-                self.show_calibre_installation_message()
-
-            self.update_progress(0.3)
-            self.update_status("Installing Visual C++ Build Tools...")
-            self.install_visual_cpp_build_tools()
+                if is_admin:
+                    self.show_calibre_installation_message()
             
             self.update_progress(0.4)
             self.update_status("Cloning repositories...")
@@ -1092,13 +1205,12 @@ class PandratorInstaller(ctk.CTk):
             if self.xtts_var.get() or self.xtts_cpu_var.get():
                 self.clone_repo('https://github.com/daswer123/xtts-api-server.git', os.path.join(pandrator_path, 'xtts-api-server'))
 
-            if self.voicecraft_var.get():
-                self.clone_repo('https://github.com/lukaszliniewicz/VoiceCraft_API.git', os.path.join(pandrator_path, 'VoiceCraft_API'))
-
             self.update_progress(0.5)
             self.update_status("Installing Miniconda...")
             if not self.check_conda(conda_path):
                 self.install_conda(conda_path)
+                if is_admin:
+                    self.set_permissive_permissions(conda_path)
 
             if not self.check_conda(conda_path):
                 self.update_status("Conda installation failed")
@@ -1140,39 +1252,6 @@ class PandratorInstaller(ctk.CTk):
                 self.update_progress(0.9)
                 self.update_status("Installing Silero API server...")
                 self.install_silero_api_server(conda_path, 'silero_api_server_installer')
-
-            if self.voicecraft_var.get():
-                self.update_progress(0.75)
-                self.update_status("Installing eSpeak NG...")
-                try:
-                    self.install_espeak_ng()
-                except Exception as e:
-                    logging.error(f"Error during eSpeak NG installation: {str(e)}")
-                    messagebox.showwarning("Installation Warning", "Failed to install eSpeak NG. VoiceCraft may not function correctly.")
-
-                self.update_progress(0.8)
-                self.update_status("Creating VoiceCraft Conda environment...")
-                self.create_conda_env(conda_path, 'voicecraft_api_installer', '3.9.16')
-
-                self.update_progress(0.9)
-                self.update_status("Installing VoiceCraft API dependencies...")
-                voicecraft_repo_path = os.path.join(pandrator_path, 'VoiceCraft_API')
-                self.install_requirements(conda_path, 'voicecraft_api_installer', os.path.join(voicecraft_repo_path, 'requirements.txt'))
-                self.install_voicecraft_api_dependencies(conda_path, 'voicecraft_api_installer')
-            
-                self.download_mfa_models(conda_path, 'voicecraft_api_installer')
-                self.install_audiocraft(conda_path, 'voicecraft_api_installer', voicecraft_repo_path)
-
-                # Replace files in the VoiceCraft repo
-                file_mappings = {
-                    'audiocraft_windows/cluster.py': 'src/audiocraft/audiocraft/utils/cluster.py',
-                    'audiocraft_windows/environment.py': 'src/audiocraft/audiocraft/environment.py',
-                    'audiocraft_windows/checkpoint.py': 'src/audiocraft/audiocraft/utils/checkpoint.py'
-                }
-                self.replace_files(voicecraft_repo_path, file_mappings)
-
-                # Download pretrained models
-                self.download_pretrained_models(voicecraft_repo_path)
 
             if self.rvc_var.get():
                 self.update_progress(0.8)
@@ -1216,13 +1295,18 @@ class PandratorInstaller(ctk.CTk):
             config['cuda_support'] = config.get('cuda_support', False) or self.xtts_var.get()
             config['xtts_support'] = config.get('xtts_support', False) or self.xtts_var.get() or self.xtts_cpu_var.get()
             config['silero_support'] = config.get('silero_support', False) or self.silero_var.get()
-            config['voicecraft_support'] = config.get('voicecraft_support', False) or self.voicecraft_var.get()
             config['whisperx_support'] = config.get('whisperx_support', False) or self.whisperx_var.get()
             config['xtts_finetuning_support'] = config.get('xtts_finetuning_support', False) or self.xtts_finetuning_var.get()
             config['rvc_support'] = config.get('rvc_support', False) or self.rvc_var.get()
 
             with open(config_path, 'w') as f:
                 json.dump(config, f)
+
+            # Set final permissions if admin
+            if is_admin:
+                self.update_progress(0.98)
+                self.update_status("Finalizing permissions...")
+                self.set_permissive_permissions(pandrator_path)
 
             self.update_progress(1.0)
             self.update_status("Installation complete!")
@@ -1233,6 +1317,101 @@ class PandratorInstaller(ctk.CTk):
             logging.error(traceback.format_exc())
             self.update_status("Installation failed. Check the log for details.")
         finally:
+            self.refresh_ui_state()
+
+    def update_pandrator(self):
+        pandrator_base_path = os.path.join(self.initial_working_dir, 'Pandrator')
+        pandrator_repo_path = os.path.join(pandrator_base_path, 'Pandrator')
+        subdub_repo_path = os.path.join(pandrator_base_path, 'Subdub')
+        easy_xtts_trainer_path = os.path.join(pandrator_base_path, 'easy_xtts_trainer')
+        conda_path = os.path.join(pandrator_base_path, 'conda')
+        
+        # Check admin status - we'll proceed either way but handle differently
+        is_admin = self.is_admin()
+        if not is_admin:
+            logging.info("Running update without admin privileges - file permission changes won't be applied")
+        
+        logging.info(f"Checking for Pandrator at: {pandrator_repo_path}")
+        
+        if not os.path.exists(pandrator_repo_path):
+            error_msg = f"Pandrator directory not found at: {pandrator_repo_path}"
+            logging.error(error_msg)
+            self.update_status(error_msg)
+            return
+
+        self.disable_buttons()
+        self.initialize_logging()
+        
+        self.update_status("Updating Pandrator and components...")
+        logging.info("Starting update process")
+        
+        try:
+            # Update Pandrator
+            self.update_status("Updating Pandrator repository...")
+            logging.info(f"Updating Pandrator in: {pandrator_repo_path}")
+            self.pull_repo(pandrator_repo_path)
+            
+            # Update Pandrator requirements
+            self.update_status("Updating Pandrator dependencies...")
+            requirements_file = os.path.join(pandrator_repo_path, 'requirements.txt')
+            logging.info(f"Updating requirements from: {requirements_file}")
+            
+            if not os.path.exists(requirements_file):
+                logging.error(f"Requirements file not found at: {requirements_file}")
+                raise FileNotFoundError(f"Requirements file not found: {requirements_file}")
+            
+            update_cmd = [
+                os.path.join(conda_path, 'Scripts', 'conda.exe'),
+                'run',
+                '-p', 
+                os.path.join(conda_path, 'envs', 'pandrator_installer'),
+                '--no-capture-output', 'python', '-m',
+                'pip', 'install', '-r', requirements_file
+            ]
+            logging.info(f"Executing update command: {' '.join(update_cmd)}")
+            self.run_command(update_cmd, cwd=pandrator_repo_path)
+            
+            # Update Subdub
+            if os.path.exists(subdub_repo_path):
+                self.update_status("Updating Subdub...")
+                logging.info(f"Updating Subdub in: {subdub_repo_path}")
+                self.pull_repo(subdub_repo_path)
+            else:
+                logging.warning(f"Subdub directory not found at: {subdub_repo_path}")
+            
+            # Update easy XTTS trainer (repo and requirements)
+            if os.path.exists(easy_xtts_trainer_path):
+                self.update_status("Updating easy XTTS trainer...")
+                logging.info(f"Updating easy XTTS trainer in: {easy_xtts_trainer_path}")
+                self.pull_repo(easy_xtts_trainer_path)
+                
+                # Update requirements
+                self.update_status("Updating easy XTTS trainer dependencies...")
+                xtts_requirements_file = os.path.join(easy_xtts_trainer_path, 'requirements.txt')
+                if os.path.exists(xtts_requirements_file):
+                    logging.info("Installing updated requirements for easy XTTS trainer...")
+                    self.install_requirements(conda_path, 'easy_xtts_trainer', xtts_requirements_file)
+                else:
+                    logging.warning(f"XTTS trainer requirements file not found at: {xtts_requirements_file}")
+            else:
+                logging.info("easy XTTS trainer not installed, skipping update.")
+
+            # Set permissions if running as admin
+            if is_admin:
+                self.update_status("Setting permissions after update...")
+                self.set_permissive_permissions(pandrator_base_path)
+            
+            self.update_status("Update completed successfully!")
+            logging.info("Update process completed successfully")
+        
+        except Exception as e:
+            error_msg = f"Failed to update: {str(e)}"
+            logging.error(error_msg)
+            logging.error(traceback.format_exc())
+            self.update_status(f"Update failed: {error_msg}")
+        
+        finally:
+            self.enable_buttons()
             self.refresh_ui_state()
 
     def update_whisperx_checkbox(self):
@@ -1330,31 +1509,6 @@ class PandratorInstaller(ctk.CTk):
             
             pandrator_args = ['-connect', '-silero']
             tts_engine_launched = True
-
-        if self.launch_voicecraft_var.get() and not tts_engine_launched:
-            self.update_progress(0.8)
-            self.update_status("Starting VoiceCraft server...")
-            voicecraft_repo_path = os.path.join(pandrator_path, 'VoiceCraft_API')
-            api_script_path = os.path.join(voicecraft_repo_path, 'api.py')
-            
-            try:
-                self.voicecraft_process = self.run_voicecraft_api_server(conda_path, 'voicecraft_api_installer', api_script_path, voicecraft_repo_path)
-            except Exception as e:
-                error_msg = f"Failed to start VoiceCraft server: {str(e)}"
-                self.update_status(error_msg)
-                logging.error(error_msg)
-                logging.exception("Exception details:")
-                return
-            
-            voicecraft_server_url = 'http://127.0.0.1:8245/docs'
-            if not self.check_voicecraft_server_online(voicecraft_server_url):
-                error_msg = "VoiceCraft server failed to come online"
-                self.update_status(error_msg)
-                logging.error(error_msg)
-                self.shutdown_voicecraft()
-                return
-            
-            pandrator_args = ['-connect', '-voicecraft']
 
         if self.launch_pandrator_var.get():
             self.update_progress(0.9)
@@ -1525,42 +1679,6 @@ class PandratorInstaller(ctk.CTk):
         logging.error("Silero server failed to come online within the specified attempts.")
         return False
 
-    def run_voicecraft_api_server(self, conda_path, env_name, api_script_path, voicecraft_repo_path):
-        logging.info(f"Running VoiceCraft API server in {env_name}...")
-        try:
-            # Change to the VoiceCraft repository directory
-            os.chdir(voicecraft_repo_path)
-            env_path = os.path.join(conda_path, 'envs', env_name)
-            
-            voicecraft_server_command = [os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'python', api_script_path]
-            process = subprocess.Popen(voicecraft_server_command, creationflags=subprocess.CREATE_NEW_CONSOLE)
-            self.voicecraft_process = process
-            return process
-        except Exception as e:
-            logging.error(f"Failed to run VoiceCraft API server in {env_name}")
-            logging.error(f"Error message: {str(e)}")
-            logging.error(traceback.format_exc())
-            raise
-
-
-    def check_voicecraft_server_online(self, url, max_attempts=30, wait_interval=10):
-        attempt = 1
-        while attempt <= max_attempts:
-            try:
-                logging.info(f"Checking if VoiceCraft server is online at {url} (Attempt {attempt}/{max_attempts})...")
-                response = requests.get(url)
-                if response.status_code == 200:
-                    logging.info("VoiceCraft server is online.")
-                    return True
-            except requests.exceptions.RequestException as e:
-                logging.warning(f"VoiceCraft server is not online. Waiting... (Attempt {attempt}/{max_attempts})")
-            
-            time.sleep(wait_interval)
-            attempt += 1
-        
-        logging.error("VoiceCraft server failed to come online within the specified attempts.")
-        return False
-
     def check_processes_status(self):
         if self.pandrator_process and self.pandrator_process.poll() is not None:
             # Pandrator has exited
@@ -1572,11 +1690,8 @@ class PandratorInstaller(ctk.CTk):
         if self.silero_process and self.silero_process.poll() is not None:
             # Silero has exited
             self.silero_process = None
-        if self.voicecraft_process and self.voicecraft_process.poll() is not None:
-            # VoiceCraft has exited
-            self.voicecraft_process = None
         
-        if not self.pandrator_process and not self.xtts_process and not self.silero_process and not self.voicecraft_process:
+        if not self.pandrator_process and not self.xtts_process and not self.silero_process:
             self.update_status("All processes have exited.")
             self.refresh_ui_state()
         else:
@@ -1585,7 +1700,6 @@ class PandratorInstaller(ctk.CTk):
     def shutdown_apps(self):
         self.shutdown_xtts()
         self.shutdown_silero()
-        self.shutdown_voicecraft()
 
     def shutdown_xtts(self):
         if self.xtts_process:
@@ -1660,44 +1774,6 @@ class PandratorInstaller(ctk.CTk):
                         logging.info(f"Terminated process using port 8001: PID {conn.pid}")
                 except psutil.NoSuchProcess:
                     logging.info(f"Process using port 8001 (PID {conn.pid}) no longer exists")
-                except psutil.AccessDenied:
-                    logging.warning(f"Access denied when terminating process with PID: {conn.pid}")
-
-    def shutdown_voicecraft(self):
-        if self.voicecraft_process:
-            logging.info(f"Terminating VoiceCraft process with PID: {self.voicecraft_process.pid}")
-            try:
-                parent = psutil.Process(self.voicecraft_process.pid)
-                for child in parent.children(recursive=True):
-                    try:
-                        child.terminate()
-                    except psutil.AccessDenied:
-                        logging.warning(f"Access denied when terminating child process with PID: {child.pid}")
-                parent.terminate()
-                self.voicecraft_process.wait(timeout=10)
-            except psutil.NoSuchProcess:
-                logging.info("VoiceCraft process already terminated.")
-            except psutil.TimeoutExpired:
-                logging.warning("VoiceCraft process did not terminate, forcing kill")
-                parent = psutil.Process(self.voicecraft_process.pid)
-                for child in parent.children(recursive=True):
-                    try:
-                        child.kill()
-                    except psutil.AccessDenied:
-                        logging.warning(f"Access denied when killing child process with PID: {child.pid}")
-                parent.kill()
-            self.voicecraft_process = None
-
-        # Check if any process is using port 8245 and kill it
-        for conn in psutil.net_connections():
-            if conn.laddr.port == 8245:
-                try:
-                    process = psutil.Process(conn.pid)
-                    if process.pid != 0:  # Skip System Idle Process
-                        process.terminate()
-                        logging.info(f"Terminated process using port 8245: PID {conn.pid}")
-                except psutil.NoSuchProcess:
-                    logging.info(f"Process using port 8245 (PID {conn.pid}) no longer exists")
                 except psutil.AccessDenied:
                     logging.warning(f"Access denied when terminating process with PID: {conn.pid}")
 
