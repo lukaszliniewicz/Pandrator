@@ -28,7 +28,7 @@ Pandrator aspires to be easy to use and install - it has a one-click installer a
 - transform text, PDF (including see-through cropping), EPUB and SRT files into spoken audio in multiple languages based chiefly on open source software run locally, including preprocessing to make the generated speech sound as natural as possible by, among other things, splitting the text into paragraphs, sentences and smaller logical text blocks (clauses), which the TTS models can process with minimal artifacts. Each sentence can be regenerated if the first attempt is not satisfacory, including marking for regeneration using mouse or keyboard actions when listening back to the generation. Voice cloning is possible for models that support it, and text can be additionally preprocessed using LLMs (to remove OCR artifacts or spell out things that the TTS models struggle with, like Roman numerals and abbreviations, for example),
 - generate dubbing either directly from a video file, including transcription (using [WhisperX](https://github.com/m-bain/whisperX)), or from an .srt file. It includes a complete workflow from a video file to a dubbed video file with subtitles - including translation using a variety of APIs and techniques to improve the quality of translation. [Subdub](https://github.com/lukaszliniewicz/Subdub), a companion app developed for this purpose, can also be used on its own. You can also correct or translate subtitles without generating audio. 
 
-At the moment, it leverages the [XTTS](https://huggingface.co/coqui/XTTS-v2) for its exceptional multilingual capabilities and [Silero](https://github.com/snakers4/silero-models) model(s) for text-to-speech conversion and voice cloning, enhanced by [RVC_CLI](https://github.com/blaisewf/rvc-cli) for quality improvement and better voice cloning results, and NISQA for audio quality evaluation. Additionally, it incorporates [Text Generation Webui's](https://github.com/oobabooga/text-generation-webui) API for local LLM-based text pre-processing, enabling a wide range of text manipulations before audio generation.
+At the moment, it leverages [XTTS](https://huggingface.co/coqui/XTTS-v2) for its exceptional multilingual capabilities, good quality and easy fine-tuning, and [Silero](https://github.com/snakers4/silero-models) for text-to-speech conversion and voice cloning, enhanced by [RVC_CLI](https://github.com/blaisewf/rvc-cli) for quality improvement and better voice cloning results, and NISQA for audio quality evaluation. Additionally, it incorporates [Text Generation Webui's](https://github.com/oobabooga/text-generation-webui) API for local LLM-based text pre-processing, enabling a wide range of text manipulations before audio generation.
 
 ## Supported Languages
 - XTTS supports English (en), Spanish (es), French (fr), German (de), Italian (it), Portuguese (pt), Polish (pl), Turkish (tr), Russian (ru), Dutch (nl), Czech (cs), Arabic (ar), Chinese (zh-cn), Japanese (ja), Hungarian (hu) and Korean (ko). 
@@ -39,7 +39,7 @@ At the moment, it leverages the [XTTS](https://huggingface.co/coqui/XTTS-v2) for
 > Please note that Pandrator is still in an alpha stage and I'm not an experienced developer (I'm a noob, in fact), so the code is far from perfect in terms of optimisation, features and reliability. Please keep this in mind and contribute, if you want to help me make it better.
 
 ## Samples
-The samples were generated using the minimal settings - no LLM text processing, RVC or TTS evaluation, and no sentences were regenerated. Both XTTS and Silero generations were faster than playback speed. 
+The samples were generated using the minimal settings - no LLM text processing, RVC or TTS evaluation, and no sentences were regenerated. Both XTTS and Silero generations were faster than playback speed, and Silero used only one CPU core. 
 
 https://github.com/user-attachments/assets/1c763c94-c66b-4c22-a698-6c4bcf3e875d
 
@@ -55,17 +55,16 @@ https://github.com/user-attachments/assets/1ba8068d-986e-4dec-a162-3b7cc49052f4
 
 ### Hardware Requirements
 
-| Tool       | CPU Requirements                                              | GPU Requirements                                                       |
+| TTS Model       | CPU Requirements                                              | GPU Requirements                                                       |
 |------------|---------------------------------------------------------------|-------------------------------------------------------------------------|
 | XTTS       | A reasonably modern CPU with 4+ cores (for CPU-only generation)              | NVIDIA GPU with 4GB+ of VRAM for good performance                        |
 | Silero     | Performs well on most CPUs regardless of core count                   | N/A                                                                     |
-| VoiceCraft | Usable on CPU, but generation will be slow                     | NVIDIA GPU with 8GB+ of VRAM for acceleration (4GB VRAM requires kv cache disabled) |
 
 ### Dependencies
 This project relies on several APIs and services (running locally) and libraries, notably:
 
 #### Required
-- [XTTS API Server by daswer123](https://github.com/daswer123/xtts-api-server.git) for Text-to-Speech (TTS) generation using Coqui [XTTSv2](https://huggingface.co/coqui/XTTS-v2) OR [Silero API Server by ouoertheo](https://github.com/ouoertheo/silero-api-server) for TTS generaton using the [Silero models](https://github.com/snakers4/silero-models) OR [VoiceCraft by jasonppy](https://github.com/jasonppy/VoiceCraft).
+- [XTTS API Server by daswer123](https://github.com/daswer123/xtts-api-server.git) for Text-to-Speech (TTS) generation using Coqui [XTTSv2](https://huggingface.co/coqui/XTTS-v2) OR [Silero API Server by ouoertheo](https://github.com/ouoertheo/silero-api-server) for TTS generaton using the [Silero models](https://github.com/snakers4/silero-models).
 - [FFmpeg](https://github.com/FFmpeg/FFmpeg) for audio encoding.
 - [Sentence Splitter by mediacloud](https://github.com/mediacloud/sentence-splitter) for splitting `.txt ` files into sentences, [customtkinter by TomSchimansky](https://github.com/TomSchimansky/CustomTkinter), [num2words by savoirfairelinux](https://github.com/savoirfairelinux/num2words), and many others. For a full list, see `requirements.txt`.
 
@@ -97,7 +96,7 @@ You can use the launcher to start Pandrator, update it and install new features.
 
 Run `pandrator_installer_launcher.exe` with administrator priviliges. You will find it under [Releases](https://github.com/lukaszliniewicz/Pandrator/releases). The executable was created using [pyinstaller](https://github.com/pyinstaller/pyinstaller) from `pandrator_installer_launcher.py` in the repository.
 
-**The file may be flagged as a threat by antivirus software, so you may have to add it as an exception.**
+**The file may be flagged as a threat by antivirus software, so you may have to add it as an exception; if you're not comfortable doing that, install C++ Build Tools and Calibre manually or perform a fully manual installation**
 
 You can choose which TTS engines to install and whether to install the software that enables RVC voice cloning (RVC Python), dubbing (WhisperX) and XTTS fine-tuning (Easy XTTS Trainer). You may install more components later. 
 
@@ -107,16 +106,19 @@ The Installer/Launcher performs the following tasks:
 2. Installs necessary tools if not already present:
    - C++ Build Tools
    - Calibre
-   - winget (if necessary)
-3. Installs Miniconda
+3. Installs Miniconda (locally, not system-wide)
 4. Clones the following repositories:
    - Pandrator
    - Subdub
+   - PyPDFCropper
    - XTTS API Server (if selected)
    - Silero API Server (if selected)
-   - VoiceCraft API (if selected)
-5. Creates required conda environments
-6. Installs all necessary dependencies
+5. Creates conda environments (pandrator_installer, xtta_api_server_installer, whisperx_installer, easy_xtts_training_installer).
+If you want to perform some actions inside the environments, for example for debugging, troubleshooting or customization, please go the the Pandrator folder and run:
+```
+conda/Scripts/conda.exe -p conda/envs/env_name run no-capture-output python [command]
+```
+7. Installs all necessary dependencies
 
 **Note:** You can use the Installer/Launcher to launch Pandrator and all the tools at any moment.
 
@@ -126,7 +128,7 @@ For additional functionality not yet included in the installer:
 - Install Text Generation Webui and remember to enable the API (add `--api` to `CMD_FLAGS.txt` in the main directory of the Webui before starting it).
 - Set up NISQA API for automatic evaluation of generations.
 
-Please refer to the repositories linked under [Dependencies](#Dependencies) for detailed installation instructions. Remember that the APIs must be running to make use of the functionalities they offer.
+Please refer to the repositories linked under [Dependencies](#Dependencies) for detailed installation instructions. Remember that the API servers (XTTS, Silero) must be running to make use of the functionalities they offer.
 
 ### Manual Installation
 
@@ -231,7 +233,7 @@ Please refer to the repositories linked under [Dependencies](#Dependencies) for 
    ```
    Additional options:
    - For CPU only: Add `--device cpu`
-   - For low VRAM: Add `--lowvram`
+   - For low VRAM: Add `--lowvram` (for 4GB or less)
    - To use DeepSpeed: Add `--deepspeed`
 
 3. Run Silero API Server (if installed):
