@@ -1157,6 +1157,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         seen = set()
         import_aliases = {
             'google-genai': 'google.genai',
+            'pymupdf': 'fitz',
         }
 
         with open(requirements_file, 'r', encoding='utf-8-sig', errors='replace') as f:
@@ -2218,13 +2219,28 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         if self.launch_pandrator_var:
             self.worker.update_progress.emit(0.9)
             self.worker.update_status.emit("Starting Pandrator...")
-            pandrator_script_path = os.path.join(pandrator_path, 'Pandrator', 'pandrator.py')
-            logging.info(f"Pandrator script path: {pandrator_script_path}")
+            pandrator_repo_path = os.path.join(pandrator_path, 'Pandrator')
+            pandrator_script_candidates = [
+                os.path.join(pandrator_repo_path, 'main.py'),
+                os.path.join(pandrator_repo_path, 'pandrator.py'),
+            ]
+            pandrator_script_path = next(
+                (candidate for candidate in pandrator_script_candidates if os.path.exists(candidate)),
+                '',
+            )
 
-            if not os.path.exists(pandrator_script_path):
-                error_msg = f"Pandrator script not found: {pandrator_script_path}"
+            if pandrator_script_path:
+                logging.info(f"Pandrator script path: {pandrator_script_path}")
+            else:
+                logging.error(
+                    "Pandrator script not found. Checked candidates: %s",
+                    ", ".join(pandrator_script_candidates),
+                )
+                error_msg = (
+                    "Pandrator script not found. Checked: "
+                    + ", ".join(pandrator_script_candidates)
+                )
                 self.worker.update_status.emit(error_msg)
-                logging.error(error_msg)
                 raise FileNotFoundError(error_msg)
 
             try:
