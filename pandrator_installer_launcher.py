@@ -1630,15 +1630,32 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             raise
 
     def install_subdub_requirements(self, pandrator_path, env_name, subdub_repo_path):
-        logging.info(f"Installing Subdub requirements in {env_name}...")
+        logging.info(f"Installing Subdub package in {env_name}...")
         try:
             if not os.path.exists(subdub_repo_path):
                 self.clone_repo('https://github.com/lukaszliniewicz/Subdub.git', subdub_repo_path)
-            
+
+            pyproject_file = os.path.join(subdub_repo_path, 'pyproject.toml')
+            if os.path.exists(pyproject_file):
+                logging.info("Detected refactored Subdub package layout (pyproject.toml). Installing editable package...")
+                self.run_pixi_in_env(
+                    pandrator_path,
+                    env_name,
+                    ['python', '-m', 'pip', 'install', '-e', '.'],
+                    cwd=subdub_repo_path,
+                )
+                return
+
             requirements_file = os.path.join(subdub_repo_path, 'requirements.txt')
+            if not os.path.exists(requirements_file):
+                raise FileNotFoundError(
+                    f"Subdub dependency manifest not found. Expected either {pyproject_file} or {requirements_file}."
+                )
+
+            logging.info("Using legacy Subdub requirements.txt installation path.")
             self.install_requirements(pandrator_path, env_name, requirements_file)
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Failed to install Subdub requirements in {env_name}")
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            logging.error(f"Failed to install Subdub package in {env_name}")
             logging.error(f"Error message: {str(e)}")
             raise
 
@@ -1762,7 +1779,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 self.add_pixi_conda_package(pandrator_path, 'pandrator_installer', 'ffmpeg')
 
                 self.worker.update_progress.emit(0.7)
-                self.worker.update_status.emit("Installing Pandrator, Subdub, and PyCropPDF requirements...")
+                self.worker.update_status.emit("Installing Pandrator, Subdub, and PyCropPDF dependencies...")
                 self.install_requirements(pandrator_path, 'pandrator_installer', os.path.join(pandrator_repo_path, 'requirements.txt'))
                 
                 pycroppdf_repo_path = os.path.join(pandrator_repo_path, 'PyCropPDF')

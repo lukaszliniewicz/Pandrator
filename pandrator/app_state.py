@@ -146,7 +146,9 @@ class DubbingSettings:
     target_language: str = "en"
     chain_of_thought_enabled: bool = False
     glossary_enabled: bool = False
-    translation_model: str = "sonnet"
+    translation_model: str = "Sonnet 4.6"
+    custom_translation_model: str = ""
+    custom_api_base: str = ""
     video_file_path: str = ""
 
 @dataclass

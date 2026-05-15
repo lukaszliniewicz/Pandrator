@@ -1017,12 +1017,20 @@ class AppLogic(QObject):
             self.show_error.emit("Dubbing Error", "Audio synchronization failed.")
             return
         
-        # Find synced video. Subdub creates a file with `_synced` suffix.
+        # Find synchronized output video.
+        # Legacy Subdub used a `_synced` suffix, while the refactored pipeline writes `final_output*.mp4`.
         synced_video_path = None
+        candidate_videos = []
         for file in os.listdir(session_dir):
-            if "_synced" in file and file.lower().endswith(('.mp4', '.mkv', '.webm', '.avi', '.mov')):
-                synced_video_path = os.path.join(session_dir, file)
-                break
+            file_lower = file.lower()
+            if not file_lower.endswith((".mp4", ".mkv", ".webm", ".avi", ".mov")):
+                continue
+            if "_synced" in file_lower or file_lower.startswith("final_output"):
+                candidate_videos.append(os.path.join(session_dir, file))
+
+        if candidate_videos:
+            synced_video_path = max(candidate_videos, key=os.path.getmtime)
+
         if not synced_video_path:
              self.show_error.emit("Dubbing Error", "Synced video file not found after synchronization.")
              return

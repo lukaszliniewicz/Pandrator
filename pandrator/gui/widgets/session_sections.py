@@ -378,19 +378,26 @@ class DubbingSection(QFrame):
         transl_layout.addWidget(QLabel("Translation/Correction Model:"), 3, 0)
         self.dub_trans_model_combo = QComboBox()
         self.dub_trans_model_combo.addItems([
-            "haiku",
-            "sonnet",
-            "sonnet thinking",
-            "gpt-4o-mini",
-            "gpt-4o",
-            "gemini-flash",
-            "gemini-pro",
-            "deepseek-r1",
-            "qwq-32b",
-            "deepl",
-            "local",
+            "GPT 5.4",
+            "GPT 5.4-mini",
+            "Gemini 3.1 Pro",
+            "Gemini 3.0 Flash",
+            "Opus 4.7",
+            "Sonnet 4.6",
+            "DeepL",
+            "Custom (LiteLLM)",
         ])
         transl_layout.addWidget(self.dub_trans_model_combo, 3, 1, 1, 3)
+
+        transl_layout.addWidget(QLabel("Custom LiteLLM Model:"), 4, 0)
+        self.dub_custom_model_edit = QLineEdit()
+        self.dub_custom_model_edit.setPlaceholderText("provider/model (for example openai/gpt-5.4-mini)")
+        transl_layout.addWidget(self.dub_custom_model_edit, 4, 1, 1, 3)
+
+        transl_layout.addWidget(QLabel("Custom API Base:"), 5, 0)
+        self.dub_custom_api_base_edit = QLineEdit()
+        self.dub_custom_api_base_edit.setPlaceholderText("Optional for OpenAI-compatible models (for example http://localhost:1234/v1)")
+        transl_layout.addWidget(self.dub_custom_api_base_edit, 5, 1, 1, 3)
 
         self.video_file_frame = QFrame()
         self.video_file_frame.setObjectName("rowFrame")

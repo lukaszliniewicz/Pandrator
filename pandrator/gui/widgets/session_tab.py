@@ -21,6 +21,21 @@ from .session_sections import (
 )
 
 
+LEGACY_DUBBING_MODEL_UI_MAP = {
+    "haiku": "Custom (LiteLLM)",
+    "sonnet": "Sonnet 4.6",
+    "sonnet thinking": "Sonnet 4.6",
+    "gpt-4o-mini": "GPT 5.4-mini",
+    "gpt-4o": "GPT 5.4",
+    "gemini-flash": "Gemini 3.0 Flash",
+    "gemini-pro": "Gemini 3.1 Pro",
+    "deepl": "DeepL",
+    "local": "Custom (LiteLLM)",
+    "deepseek-r1": "Custom (LiteLLM)",
+    "qwq-32b": "Custom (LiteLLM)",
+}
+
+
 class SessionTab(QWidget):
     def __init__(self, logic, parent=None):
         super().__init__(parent)
@@ -155,6 +170,8 @@ class SessionTab(QWidget):
         self.dub_cot_check = self.dubbing_frame.dub_cot_check
         self.dub_glossary_check = self.dubbing_frame.dub_glossary_check
         self.dub_trans_model_combo = self.dubbing_frame.dub_trans_model_combo
+        self.dub_custom_model_edit = self.dubbing_frame.dub_custom_model_edit
+        self.dub_custom_api_base_edit = self.dubbing_frame.dub_custom_api_base_edit
         self.selected_video_file_label = self.dubbing_frame.selected_video_file_label
         self.select_video_file_button = self.dubbing_frame.select_video_file_button
         self.generate_dub_audio_button = self.dubbing_frame.generate_dub_audio_button
@@ -371,7 +388,13 @@ class SessionTab(QWidget):
             )
         )
         self.dub_trans_model_combo.currentTextChanged.connect(
-            lambda t: setattr(self.logic.state.dubbing, "translation_model", t)
+            self._on_dub_translation_model_changed
+        )
+        self.dub_custom_model_edit.textChanged.connect(
+            lambda t: setattr(self.logic.state.dubbing, "custom_translation_model", t)
+        )
+        self.dub_custom_api_base_edit.textChanged.connect(
+            lambda t: setattr(self.logic.state.dubbing, "custom_api_base", t)
         )
         self.select_video_file_button.clicked.connect(self._on_select_video_file)
         self.generate_dub_audio_button.clicked.connect(
@@ -389,6 +412,9 @@ class SessionTab(QWidget):
         self.only_translate_button.clicked.connect(
             lambda: self.logic.run_dubbing_task("translate")
         )
+
+    def _on_dub_translation_model_changed(self, model_name: str):
+        self.logic.state.dubbing.translation_model = model_name
 
     def _connect_generation_signals(self):
         self.start_button.clicked.connect(self.logic.start_generation)
@@ -565,7 +591,36 @@ class SessionTab(QWidget):
         self.dub_to_lang_combo.setCurrentText(dub_state.target_language)
         self.dub_cot_check.setChecked(dub_state.chain_of_thought_enabled)
         self.dub_glossary_check.setChecked(dub_state.glossary_enabled)
-        self.dub_trans_model_combo.setCurrentText(dub_state.translation_model)
+
+        combo_items = {
+            self.dub_trans_model_combo.itemText(i)
+            for i in range(self.dub_trans_model_combo.count())
+        }
+        selected_model = dub_state.translation_model
+        custom_model_text = dub_state.custom_translation_model
+        if selected_model not in combo_items:
+            mapped_model = LEGACY_DUBBING_MODEL_UI_MAP.get(str(selected_model).strip().lower())
+            if mapped_model:
+                selected_model = mapped_model
+                if mapped_model == "Custom (LiteLLM)" and not custom_model_text:
+                    custom_model_text = dub_state.translation_model
+            elif "/" in str(selected_model):
+                custom_model_text = custom_model_text or str(selected_model)
+                selected_model = "Custom (LiteLLM)"
+            else:
+                selected_model = "Sonnet 4.6"
+
+        self.dub_trans_model_combo.blockSignals(True)
+        self.dub_trans_model_combo.setCurrentText(selected_model)
+        self.dub_trans_model_combo.blockSignals(False)
+
+        self.dub_custom_model_edit.blockSignals(True)
+        self.dub_custom_model_edit.setText(custom_model_text)
+        self.dub_custom_model_edit.blockSignals(False)
+
+        self.dub_custom_api_base_edit.blockSignals(True)
+        self.dub_custom_api_base_edit.setText(dub_state.custom_api_base)
+        self.dub_custom_api_base_edit.blockSignals(False)
 
         if dub_state.video_file_path:
             filename = dub_state.video_file_path.split("/")[-1].split("\\")[-1]

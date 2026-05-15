@@ -174,7 +174,7 @@ Please refer to the repositories linked under [Dependencies](#dependencies) for 
 
    ```
    cd Subdub
-   python -m pip install -r requirements.txt
+   python -m pip install -e .
    cd ..
    ```
 
@@ -316,8 +316,10 @@ Pandrator offers a comprehensive workflow for generating dubbed videos from vide
 3. **Translation (optional):**
     - **Enable Translation:** Toggle this option to translate the subtitles.
     - **Original and Target Languages:** Select the original language of the subtitles and the language you want to translate them into.
-    - **Translation Model:** Choose a translation model (e.g., `haiku`, `sonnet`, `sonnet thinking`, `gemini-flash`, `gemini-flash-thinking`, `gpt-4o-mini`, `gpt-4o`, `deepl`, `local`). With the exception of the local option, you have to set an API key in the _API Keys_ tab. Sonnet provides the best results, but is the most expensive. Gemini-flash-thinking is decent and free (you need to obtain an API key from Google AI Studio). You can translate 500,000 characters for free with DeepL. For local translation, configure a local OpenAI-compatible endpoint (for example LM Studio or an Ollama-compatible endpoint).
-    - **Chain-of-thought (optional):** Enable this option to use chain-of-thought prompting, which may improve quality for non-thinking models - don't use with thinking models (available only for LLMs, not DeepL).
+    - **Translation Model:** Choose a translation model (for example `GPT 5.4`, `GPT 5.4-mini`, `Gemini 3.1 Pro`, `Gemini 3.0 Flash`, `Opus 4.7`, `Sonnet 4.6`, `DeepL`, or `Custom (LiteLLM)`).
+    - **Custom LiteLLM Model (optional):** If you select `Custom (LiteLLM)`, provide a model in `provider/model` format (for example `openai/gpt-5.4-mini` or `openrouter/meta-llama/llama-3.1-70b-instruct`).
+    - **Custom API Base (optional):** Set this when using OpenAI-compatible endpoints (for example LM Studio, vLLM, Ollama-compatible gateways, or custom proxy URLs).
+    - **Chain-of-thought (optional):** Enables additional reasoning effort for LLM-based translation/correction (not used with DeepL).
 4. In order to generate speech, click on __Generate Dubbing Audio__. You will be able to edit/regenerate the sentences as in the Audiobook workflow. You can also choose to only transcribe the chosen video file or only translate a subtitle file.
 5. **Synchronization:** When you're happy with the generated audio, click on __Add Dubbing to Video__. The dubbing will be synchronised with the video, producing a dubbed video file with embedded subtitles.
 
