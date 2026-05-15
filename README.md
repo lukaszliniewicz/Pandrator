@@ -25,13 +25,15 @@ https://github.com/user-attachments/assets/dfd4b6e8-3eda-49e4-bff4-f1683ec4cf21
 ## About Pandrator
 
 Pandrator aspires to be easy to use and install - it has a one-click installer and a graphical user interface. It is a tool designed to perform two tasks: 
-- transform text, PDF (including see-through cropping), EPUB and SRT files into spoken audio in multiple languages based chiefly on open source software run locally, including preprocessing to make the generated speech sound as natural as possible by, among other things, splitting the text into paragraphs, sentences and smaller logical text blocks (clauses), which the TTS models can process with minimal artifacts. Each sentence can be regenerated if the first attempt is not satisfacory, including marking for regeneration using mouse or keyboard actions when listening back to the generation. Voice cloning is possible for models that support it, and text can be additionally preprocessed using LLMs (to remove OCR artifacts or spell out things that the TTS models struggle with, like Roman numerals and abbreviations, for example),
+- transform text, PDF (including see-through cropping), EPUB and SRT files into spoken audio in multiple languages based chiefly on open source software run locally, including preprocessing to make the generated speech sound as natural as possible by, among other things, splitting the text into paragraphs, sentences and smaller logical text blocks (clauses), which the TTS models can process with minimal artifacts. Each sentence can be regenerated if the first attempt is not satisfactory, including marking for regeneration using mouse or keyboard actions when listening back to the generation. Voice cloning is possible for models that support it, and text can be additionally preprocessed using LLMs (to remove OCR artifacts or spell out things that the TTS models struggle with, like Roman numerals and abbreviations, for example),
 - generate dubbing either directly from a video file, including transcription (using [WhisperX](https://github.com/m-bain/whisperX)), or from an .srt file. It includes a complete workflow from a video file to a dubbed video file with subtitles - including translation using a variety of APIs and techniques to improve the quality of translation. [Subdub](https://github.com/lukaszliniewicz/Subdub), a companion app developed for this purpose, can also be used on its own. You can also correct or translate subtitles without generating audio. 
 
-At the moment, it leverages [XTTS](https://huggingface.co/coqui/XTTS-v2) for its exceptional multilingual capabilities, good quality and easy fine-tuning, and [Silero](https://github.com/snakers4/silero-models) for text-to-speech conversion and voice cloning, enhanced by [RVC_CLI](https://github.com/blaisewf/rvc-cli) for quality improvement and better voice cloning results, and NISQA for audio quality evaluation. Additionally, it incorporates [Text Generation Webui's](https://github.com/oobabooga/text-generation-webui) API for local LLM-based text pre-processing, enabling a wide range of text manipulations before audio generation.
+At the moment, Pandrator supports multiple TTS backends: [XTTS v2](https://huggingface.co/coqui/XTTS-v2) via the OpenAI-compatible [XTTS2 API server](https://github.com/lukaszliniewicz/xtts2_api), [Voxtral](https://huggingface.co/mistralai/Voxtral-4B-TTS-2603) via [voxtral-fastapi](https://github.com/lukaszliniewicz/voxtral-fastapi), and [Silero](https://github.com/snakers4/silero-models) via `silero-api-server`. It also supports commercial and custom OpenAI-compatible audio endpoints, optional [RVC Python](https://github.com/daswer123/rvc-python) post-processing, and optional NISQA quality evaluation. For local LLM text preprocessing, Pandrator works well with OpenAI-compatible local servers such as LM Studio and Ollama-compatible endpoints.
 
 ## Supported Languages
 - XTTS supports English (en), Spanish (es), French (fr), German (de), Italian (it), Portuguese (pt), Polish (pl), Turkish (tr), Russian (ru), Dutch (nl), Czech (cs), Arabic (ar), Chinese (zh-cn), Japanese (ja), Hungarian (hu) and Korean (ko). 
+
+- Voxtral supports multilingual generation through model/voice presets exposed by `voxtral-fastapi`.
 
 - Silero supports English, German, Russian, Spanish, French, Hindi, Russian, Tatar, Ukrainian, Uzbek and Kalmyk. 
 
@@ -56,28 +58,33 @@ https://github.com/user-attachments/assets/1ba8068d-986e-4dec-a162-3b7cc49052f4
 | TTS Model       | CPU Requirements                                              | GPU Requirements                                                       |
 |------------|---------------------------------------------------------------|-------------------------------------------------------------------------|
 | XTTS       | A reasonably modern CPU with 4+ cores (for CPU-only generation)              | NVIDIA GPU with 4GB+ of VRAM for good performance                        |
+| Voxtral    | N/A (GPU-only backend in current wrapper)                    | Dedicated GPU strongly recommended (4GB+ practical minimum)             |
 | Silero     | Performs well on most CPUs regardless of core count                   | N/A                                                                     |
 
 ### Dependencies
 This project relies on several APIs and services (running locally) and libraries, notably:
 
 #### Required
-- [XTTS API Server by daswer123](https://github.com/daswer123/xtts-api-server.git) for Text-to-Speech (TTS) generation using Coqui [XTTSv2](https://huggingface.co/coqui/XTTS-v2) OR [Silero API Server by ouoertheo](https://github.com/ouoertheo/silero-api-server) for TTS generaton using the [Silero models](https://github.com/snakers4/silero-models).
+- One or more local/remote TTS endpoints:
+  - [XTTS2 API](https://github.com/lukaszliniewicz/xtts2_api) (OpenAI-compatible XTTS v2 server)
+  - [voxtral-fastapi](https://github.com/lukaszliniewicz/voxtral-fastapi) (OpenAI-compatible Voxtral server)
+  - [silero-api-server](https://pypi.org/project/silero-api-server/) (Silero backend)
+  - Commercial/custom OpenAI-compatible audio endpoints
 - [FFmpeg](https://github.com/FFmpeg/FFmpeg) for audio encoding.
-- [Sentence Splitter by mediacloud](https://github.com/mediacloud/sentence-splitter) for splitting `.txt ` files into sentences, [customtkinter by TomSchimansky](https://github.com/TomSchimansky/CustomTkinter), [num2words by savoirfairelinux](https://github.com/savoirfairelinux/num2words), and many others. For a full list, see `requirements.txt`.
+- [Sentence Splitter by mediacloud](https://github.com/mediacloud/sentence-splitter), [PyQt6](https://pypi.org/project/PyQt6/), [num2words by savoirfairelinux](https://github.com/savoirfairelinux/num2words), and others listed in `requirements.txt`.
 
 #### Optional
 - [Subdub](https://github.com/lukaszliniewicz/Subdub), a command line app that transcribes video files, translates subtitles and synchronises the generated speech with the video, made specially for Pandrator.
 - [WhisperX by m-bain](https://github.com/m-bain/whisperX), an enhanced implementation of OpenAI's Whisper model with improved alignment, used for dubbing and XTTS training. 
 - [Easy XTTS Trainer](https://github.com/lukaszliniewicz/easy_xtts_trainer), a command line app that enables XTTS fine-tuning using one or more audio files, made specially for Pandrator.
 - [RVC Python by daswer123](https://github.com/daswer123/rvc-python) for enhancing voice quality and cloning results with [Retrieval Based Voice Conversion](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI).
-- [Text Generation Webui API by oobabooga](https://github.com/oobabooga/text-generation-webui.git) for LLM-based text pre-processing.
+- A local OpenAI-compatible LLM endpoint (for example LM Studio, Ollama-compatible endpoints, or other compatible providers) for LLM-based text pre-processing.
 - [NISQA by gabrielmittag](https://github.com/gabrielmittag/NISQA.git) for evaluating TTS generations (using the [FastAPI implementation](https://github.com/lukaszliniewicz/NISQA-API)).
 
 ## Installation
 
 ### Self-contained packages
-I've prepared packages (archives) that you can simply unpack - everything is preinstalled in its own portable conda environment. You can download them from **[here](https://1drv.ms/f/s!AgSiDu9lV3iMnPFKPO5BB_c72OLjtQ?e=sLidui)**.
+I've prepared packages (archives) that you can simply unpack - everything is preconfigured locally so you can launch quickly. You can download them from **[here](https://1drv.ms/f/s!AgSiDu9lV3iMnPFKPO5BB_c72OLjtQ?e=sLidui)**.
 
 You can use the launcher to start Pandrator, update it and install new features. 
 
@@ -92,61 +99,62 @@ You can use the launcher to start Pandrator, update it and install new features.
 
 ![pandrator_installer_launcher_KLoHrNDIps](https://github.com/user-attachments/assets/2be46b49-9e79-4281-89ed-5797bdfbe28b)
 
-Run `pandrator_installer_launcher.exe` with administrator priviliges. You will find it under [Releases](https://github.com/lukaszliniewicz/Pandrator/releases). The executable was created using [pyinstaller](https://github.com/pyinstaller/pyinstaller) from `pandrator_installer_launcher.py` in the repository.
+Run `pandrator_installer_launcher.exe` from [Releases](https://github.com/lukaszliniewicz/Pandrator/releases). The executable is built from `pandrator_installer_launcher.py`.
 
-**The file may be flagged as a threat by antivirus software, so you may have to add it as an exception; if you're not comfortable doing that, install C++ Build Tools and Calibre manually or perform a fully manual installation**
+> [!NOTE]
+> Some antivirus tools may flag standalone executables. If needed, add an exception or run from source.
 
-You can choose which TTS engines to install and whether to install the software that enables RVC voice cloning (RVC Python), dubbing (WhisperX) and XTTS fine-tuning (Easy XTTS Trainer). You may install more components later. 
+You can install components incrementally (during first setup or later):
 
-The Installer/Launcher performs the following tasks:
+- Pandrator core app
+- XTTS2 API (`XTTS` GPU or `XTTS CPU only`)
+- Voxtral API (`Voxtral`, GPU only)
+- Silero API
+- Optional tools: RVC Python, WhisperX, Easy XTTS Trainer
 
-1. Creates the Pandrator folder
-2. Installs necessary tools if not already present:
-   - C++ Build Tools
-   - Calibre
-3. Installs Miniconda (locally, not system-wide)
-4. Clones the following repositories:
-   - Pandrator
-   - Subdub
-   - PyPDFCropper
-   - XTTS API Server (if selected)
-   - Silero API Server (if selected)
-5. Creates conda environments (pandrator_installer, xtta_api_server_installer, whisperx_installer, easy_xtts_training_installer).
-If you want to perform some actions inside the environments, for example for debugging, troubleshooting or customization, please go the the Pandrator folder and run:
-```
-conda/Scripts/conda.exe -p conda/envs/env_name run no-capture-output python [command]
-```
-7. Installs all necessary dependencies
+Current installer flow:
 
-**Note:** You can use the Installer/Launcher to launch Pandrator and all the tools at any moment.
+1. Creates `Pandrator/` in the selected location.
+2. Installs/checks Calibre.
+3. Downloads shared Pixi runtime to `Pandrator/bin/pixi.exe`.
+4. Clones required repositories (`Pandrator`, `Subdub`) and selected server repos (`xtts2_api`, `voxtral-fastapi`).
+5. Sets up Pandrator dependencies and selected optional environments/tools.
+6. Bootstraps XTTS2 and Voxtral via their own launcher scripts.
 
-If you want to perform the setup again, remove the Pandrator folder it created. Please allow at least a couple of minutes for the initial setup process to download models and install dependencies. Depending on the options you've chosen, it may take up to 30 minutes.
+Launch tab options:
+
+- `Pandrator`
+- `XTTS` (+ `Use CPU`, `DeepSpeed`)
+- `Voxtral`
+- `Silero`
+
+If a local TTS server is launched from the launcher, Pandrator is auto-started with the matching connect flag (`-connect -xtts`, `-connect -voxtral`, `-connect -silero`).
+
+To re-run setup from scratch, remove the generated `Pandrator/` folder and start again.
 
 For additional functionality not yet included in the installer:
-- Install Text Generation Webui and remember to enable the API (add `--api` to `CMD_FLAGS.txt` in the main directory of the Webui before starting it).
+- Configure a local OpenAI-compatible LLM endpoint (for example LM Studio or an Ollama-compatible endpoint) if you want LLM text preprocessing and local translation.
 - Set up NISQA API for automatic evaluation of generations.
 
-Please refer to the repositories linked under [Dependencies](#Dependencies) for detailed installation instructions. Remember that the API servers (XTTS, Silero) must be running to make use of the functionalities they offer.
+Please refer to the repositories linked under [Dependencies](#dependencies) for detailed API-server options. The selected API server must be running for local TTS generation.
 
 ### Manual Installation
 
 #### Prerequisites
 
 - Git
-- Miniconda or Anaconda
-- Microsoft Visual C++ Build Tools
+- Python 3.10+
 - Calibre
+- FFmpeg on PATH (recommended)
 
 #### Installation Steps
 
-1. Install dependencies:
-   - Calibre: Download and install from [https://calibre-ebook.com/download_windows](https://calibre-ebook.com/download_windows)
-   - Microsoft Visual C++ Build Tools: 
-     ```
-     winget install --id Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended" --accept-package-agreements --accept-source-agreements
-     ```
+1. Install Calibre:
+
+   - [https://calibre-ebook.com/download_windows](https://calibre-ebook.com/download_windows)
 
 2. Clone the repositories:
+
    ```
    mkdir Pandrator
    cd Pandrator
@@ -154,89 +162,100 @@ Please refer to the repositories linked under [Dependencies](#Dependencies) for 
    git clone https://github.com/lukaszliniewicz/Subdub.git
    ```
 
-3. Create and activate a conda environment:
-   ```
-   conda create -n pandrator_installer python=3.10 -y
-   conda activate pandrator_installer
-   ```
+3. Install Pandrator dependencies:
 
-4. Install Pandrator and Subdub requirements:
    ```
    cd Pandrator
-   pip install -r requirements.txt
-   cd ../Subdub
-   pip install -r requirements.txt
+   python -m pip install -r requirements.txt
    cd ..
    ```
 
-5. (Optional) Install XTTS:
+4. Install Subdub dependencies:
+
    ```
-   git clone https://github.com/daswer123/xtts-api-server.git
-   conda create -n xtts_api_server_installer python=3.10 -y
-   conda activate xtts_api_server_installer
-   pip install torch==2.1.1+cu118 torchaudio==2.1.1+cu118 --extra-index-url https://download.pytorch.org/whl/cu118
-   pip install xtts-api-server
+   cd Subdub
+   python -m pip install -r requirements.txt
+   cd ..
    ```
 
-6. (Optional) Install Silero:
+5. (Optional) Install XTTS2 API:
+
    ```
-   conda create -n silero_api_server_installer python=3.10 -y
-   conda activate silero_api_server_installer
-   pip install silero-api-server
+   git clone https://github.com/lukaszliniewicz/xtts2_api.git
+   cd xtts2_api
+   run.bat --cpu
+   # or
+   run.bat --backend cuda
+   # Linux/macOS:
+   # bash run.sh --cpu
+   # bash run.sh --backend cuda
+   cd ..
    ```
 
-7. (Optional) Install RVC (Retrieval-based Voice Conversion):
+6. (Optional) Install Voxtral API:
+
    ```
-   conda activate pandrator_installer
-   pip install pip==24
-   pip install rvc-python
-   pip install torch==2.1.1+cu118 torchaudio==2.1.1+cu118 --index-url https://download.pytorch.org/whl/cu118
+   git clone https://github.com/lukaszliniewicz/voxtral-fastapi.git
+   cd voxtral-fastapi
+   run.bat
+   # Linux:
+   # bash run.sh
+   cd ..
    ```
 
-8. (Optional) Install WhisperX:
+7. (Optional) Install Silero API:
+
    ```
-   conda create -n whisperx_installer python=3.10 -y
-   conda activate whisperx_installer
-   conda install git -c conda-forge -y
-   pip install torch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2 --index-url https://download.pytorch.org/whl/cu118
-   conda install cudnn=8.9.7.29 -c conda-forge -y
-   conda install ffmpeg -c conda-forge -y
-   pip install git+https://github.com/m-bain/whisperx.git
+   python -m pip install silero-api-server
    ```
 
-9. (Optional) Install XTTS Fine-tuning:
+8. (Optional) Install Easy XTTS Trainer:
+
    ```
    git clone https://github.com/lukaszliniewicz/easy_xtts_trainer.git
-   conda create -n easy_xtts_trainer python=3.10 -y
-   conda activate easy_xtts_trainer
    cd easy_xtts_trainer
    pip install -r requirements.txt
-   pip install torch==2.1.1+cu118 torchaudio==2.1.1+cu118 --index-url https://download.pytorch.org/whl/cu118
    cd ..
    ```
 
 #### Running the Components
 
 1. Run Pandrator:
+
    ```
-   conda activate pandrator_installer
    cd Pandrator
-   python pandrator.py
+   python main.py
    ```
 
-2. Run XTTS API Server (if installed):
-   ```
-   conda activate xtts_api_server_installer
-   python -m xtts_api_server
-   ```
-   Additional options:
-   - For CPU only: Add `--device cpu`
-   - For low VRAM: Add `--lowvram` (for 4GB or less)
-   - To use DeepSpeed: Add `--deepspeed`
+2. Run Pandrator with auto-connect to a local TTS backend:
 
-3. Run Silero API Server (if installed):
    ```
-   conda activate silero_api_server_installer
+   cd Pandrator
+   python main.py -connect -xtts
+   # or
+   python main.py -connect -voxtral
+   # or
+   python main.py -connect -silero
+   ```
+
+3. Run XTTS2 API (if installed):
+
+   ```
+   cd xtts2_api
+   run.bat --cpu
+   # or run.bat --backend cuda
+   ```
+
+4. Run Voxtral API (if installed):
+
+   ```
+   cd voxtral-fastapi
+   run.bat
+   ```
+
+5. Run Silero API (if installed):
+
+   ```
    python -m silero_api_server
    ```
 
@@ -248,8 +267,9 @@ After installation, your folder structure should look like this:
 Pandrator/
 ├── Pandrator/
 ├── Subdub/
-├── xtts-api-server/ (if XTTS is installed)
-├── easy_xtts_trainer/ (if XTTS Fine-tuning is installed)
+├── xtts2_api/ (optional)
+├── voxtral-fastapi/ (optional)
+├── easy_xtts_trainer/ (optional)
 ```
 
 For more detailed information on using specific components or troubleshooting, please refer to the documentation of each individual repository.
@@ -263,13 +283,14 @@ If you don't want to use the additional features like RVC, you have everything y
 Either create a new session or load an existing one (select a folder in `Outputs` to do that).
 
 #### File selection and preprocessing
-Choose a `.txt`, `.srt`, `.pdf`, `.epub`, `.mobi` or `.docx` file. If you choose a PDF or EPUB file, a preview window will open with the extracted text. For PDFs, you will be able to crop the document (with translucent pages) ro remove headers and footers or selected pages. You may edit the extracted text (OCRed books often have poorly recognized text from the title page, for example) and check/add paragraphs and Chapter markers (they will be created automatically for EPUB files). Files that contain a lot of text, regardless of format, can take a moment to finish preprocessing before generation begins. The GUI will freeze, but as long as there is processor activity, it's simply working.
+Choose a `.txt`, `.srt`, `.pdf`, `.epub`, `.mobi` or `.docx` file. If you choose a PDF or EPUB file, a preview window will open with the extracted text. For PDFs, you will be able to crop the document (with translucent pages) to remove headers and footers or selected pages. You may edit the extracted text (OCRed books often have poorly recognized text from the title page, for example) and check/add paragraphs and Chapter markers (they will be created automatically for EPUB files). Files that contain a lot of text, regardless of format, can take a moment to finish preprocessing before generation begins. The GUI will freeze, but as long as there is processor activity, it's simply working.
 
-#### Selecting the TTS Engline and the voice
-1. Select the TTS server you want to use - XTTS or Silero - and the language from the dropdown. XTTS is the recommended option.
+#### Selecting the TTS Engine and the voice
+1. Select the TTS service you want to use (XTTS, Voxtral, Silero, or a configured cloud/OpenAI-compatible endpoint) and then choose the language.
 2. Choose the voice you want to use.
    1. **XTTS**, voices are short, 6-12s `.wav` files (22050hz sample rate, mono) stored in the `tts_voices` directory (`Pandrator/Pandrator/tts_voices`). You can upload and select them via the GUI. The XTTS model uses the audio to clone the voice. It doesn't matter what language the sample is in, you will be able to generate speech in all supported languages, but the quality will be best if you provide a sample in your target language. You may use the sample one in the repository or upload your own. Please make sure that the audio is between 6 and 12s, mono, and the sample rate is 22050hz. You may use a tool like Audacity to prepare the files. The less noise, the better. You may use a tool like [Resemble AI](https://github.com/resemble-ai/resemble-enhance) for denoising and/or enhancement of your samples on [Hugging Face](https://huggingface.co/spaces/ResembleAI/resemble-enhance). You may put several samples in a folder inside `tts_voices` and the model will use all of them at once (generally up to 4). It can improve the quality. 
-   2. **Silero** offers a number of voices for each language it supports. It doesn't support voice cloning. Simply select a voice from the dropdown after choosing the language.
+   2. **Voxtral** exposes preset voices and model choices from the local API server. It is GPU-only in the current local wrapper.
+   3. **Silero** offers a number of voices for each language it supports. It doesn't support voice cloning. Simply select a voice from the dropdown after choosing the language.
 
 #### Output options
 The default output format is .m4b. You can also select opus, mp3 or wav, choose a cover image and provide metadata.
@@ -279,7 +300,7 @@ Click on "Start Generation" to begin. You may stop and resume it later, or close
 
 #### Generated sentences
 You can play back the generated sentences, also as a playlist, edit them (the text that will be used for regeneration), regenerate or remove individual ones. You can also mark them for regeneration. This is useful when you don't want to stop listening but work on all problematic sentences later. You can use the "m" key to mark the sentence that is currently playing or the right mouse button to mark both the current and the previous sentence (this can be useful if you're listening to the output and not looking at the screen).
-"Save Output" concatenates the sentences generated so far an encodes them as one file.
+"Save Output" concatenates the sentences generated so far and encodes them as one file.
 
 ### Dubbing
 
@@ -295,23 +316,23 @@ Pandrator offers a comprehensive workflow for generating dubbed videos from vide
 3. **Translation (optional):**
     - **Enable Translation:** Toggle this option to translate the subtitles.
     - **Original and Target Languages:** Select the original language of the subtitles and the language you want to translate them into.
-    - **Translation Model:** Choose a translation model (e.g., `haiku`, `sonnet`, `sonnet thinking`, `gemini-flash`,  `gemini-flash-thinking`, `gpt-4o-mini`, `gpt-4o`, `deepl`, `local`). With the exception of the local option, you have to set an API key in the _API Keys_ tab. Sonnet provides the best results, but is the most expensive. Gemini-flash-thinking is decent and free (you need to obtain an API key from Google AI Studio). You can translate 500,000 characters for free with DeepL. For local translation, you need to have Text Generation Webui set up and running with the model you want to use loaded.
+    - **Translation Model:** Choose a translation model (e.g., `haiku`, `sonnet`, `sonnet thinking`, `gemini-flash`, `gemini-flash-thinking`, `gpt-4o-mini`, `gpt-4o`, `deepl`, `local`). With the exception of the local option, you have to set an API key in the _API Keys_ tab. Sonnet provides the best results, but is the most expensive. Gemini-flash-thinking is decent and free (you need to obtain an API key from Google AI Studio). You can translate 500,000 characters for free with DeepL. For local translation, configure a local OpenAI-compatible endpoint (for example LM Studio or an Ollama-compatible endpoint).
     - **Chain-of-thought (optional):** Enable this option to use chain-of-thought prompting, which may improve quality for non-thinking models - don't use with thinking models (available only for LLMs, not DeepL).
 4. In order to generate speech, click on __Generate Dubbing Audio__. You will be able to edit/regenerate the sentences as in the Audiobook workflow. You can also choose to only transcribe the chosen video file or only translate a subtitle file.
-6. **Synchronization:** When you're happy with the generated audio, click on __Add Dubbing to Video__. The dubbing will be synchronised with the video, producing a dubbed video file with embedded subtitles.
+5. **Synchronization:** When you're happy with the generated audio, click on __Add Dubbing to Video__. The dubbing will be synchronised with the video, producing a dubbed video file with embedded subtitles.
 
 ### General Audio Settings
-1. You can change the lenght of silence appended to the end of sentences and paragraphs.
+1. You can change the length of silence appended to the end of sentences and paragraphs.
 2. You can enable a fade-in and -out effect and set the duration.
-3. You can enable RVC. For this to work, you have to install RVC_Python. You can do this in the Installer/Launcher at any time. You need to select a model - an RVC model consists of two files. A `.pth ` and an `.index ` file. They need to have the same name (e.g. voicex.pth and voicex.index). For best results, use the same voice for XTTS. You can also fine tune the RVC options such as pitch.
+3. You can enable RVC. For this to work, you have to install RVC_Python. You can do this in the Installer/Launcher at any time. You need to select a model - an RVC model consists of two files. A `.pth ` and an `.index ` file. They need to have the same name (e.g. voicex.pth and voicex.index). For best results, use the same voice for XTTS. You can also fine-tune the RVC options such as pitch.
 
 ### General Text Pre-Processing Settings
-1. You can disable/enable splitting long sentences and set the max lenght a text fragment sent for TTS generation may have (enabled by default; it tries to split sentences whose lenght exceeds the max lenght value; it looks for punctuation marks (, ; : -) and chooses the one closest to the midpoint of the sentence; if there are no punctuation marks, it looks for conjunctions like "and"; it performs this operation twice as some sentence fragments may still be too long after just one split.
-2. You can disable/enable appending short sentences (to preceding or following sentences; disabled by default, may perhaps improve the flow as the lenght of text fragments sent to the model is more uniform).
-3. Remove diacritics (useful when generating a text that contains many foreign words or transliterations from foreign alphabets, e.g. Japanese). Do not enable this if you generate in a language that needs diacritics, like German or Polish! The pronounciation will be wrong then.
+1. You can disable/enable splitting long sentences and set the max length a text fragment sent for TTS generation may have (enabled by default; it tries to split sentences whose length exceeds the max length value; it looks for punctuation marks (, ; : -) and chooses the one closest to the midpoint of the sentence; if there are no punctuation marks, it looks for conjunctions like "and"; it performs this operation twice as some sentence fragments may still be too long after just one split).
+2. You can disable/enable appending short sentences (to preceding or following sentences; disabled by default, which may improve flow because the length of text fragments sent to the model is more uniform).
+3. Remove diacritics (useful when generating text that contains many foreign words or transliterations from foreign alphabets, e.g. Japanese). Do not enable this if you generate in a language that needs diacritics, like German or Polish. The pronunciation will be wrong then.
 
 ### LLM Pre-processing
-- Enable LLM processing to use language models for preprocessing the text before sending it to the TTS API. For example, you may ask the LLM to remove OCR artifacts, spell out abbreviations, correct punctuation etc.
+- Enable LLM processing to use language models for preprocessing text before sending it to the TTS API. For example, you may ask the LLM to remove OCR artifacts, spell out abbreviations, and correct punctuation.
 - You can define up to three prompts for text optimization. Each prompt is sent to the LLM API separately, and the output of the last prompt is used for TTS generation.
 - For each prompt, you can enable/disable it, set the prompt text, choose the LLM model to use, and enable/disable evaluation (if enabled, the LLM API will be called twice for each prompt, and then again for the model to choose the better result).
 - Load the available LLM models using the "Load LLM Models" button in the Session tab.
@@ -331,16 +352,12 @@ Pandrator offers a comprehensive workflow for generating dubbed videos from vide
 Contributions, suggestions for improvements, and bug reports are most welcome!
 
 ## Tips
-- You can find a collection of voice sample for example [here](https://aiartes.com/voiceai). They are intended for use with ElevenLabs, so you will need to pick an 8-12s fragment and save it as 22050khz mono `.wav` usuing Audacity, for instance.
-- You can find a collection of RVC models for example [here](https://voice-models.com/).
+- You can find a collection of voice samples, for example [here](https://aiartes.com/voiceai). They are intended for use with ElevenLabs, so you will need to pick an 8-12s fragment and save it as a 22050 Hz mono `.wav` using Audacity, for instance.
+- You can find a collection of RVC models, for example [here](https://voice-models.com/).
 
 ## To-do
-- [ ] Add support for Surya for PDF OCR, layout and redeaing order detection, plus preprocessing of chapters, headers, footers, footnotes and tables. 
-- [ ] Add support for StyleTTS2
 - [ ] Add importing/exporting settings.
-- [ ] Add support for proprietary APIs for text pre-processing and TTS generation.
-- [ ] Include OCR for PDFs.
-- [ ] Add support for a higher quality local TTS model, Tortoise.
+- [X] Add support for proprietary APIs for text pre-processing and TTS generation.
 - [ ] Add option to record a voice sample and use it for TTS to the GUI.
 - [x] Add support for chapter segmentation
 - [x] Add all API servers to the setup script.

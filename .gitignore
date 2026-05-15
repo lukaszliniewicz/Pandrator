@@ -1,0 +1,57 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+conda/
+
+# Build and packaging artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Test and tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.hypothesis/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+
+# Runtime data
+Outputs/
+rvc_models/
+logs/*
+!logs/.gitkeep
+*.log
+*.tmp
+pandrator_settings.json
+
+# User-provided voices (keep repository samples)
+tts_voices/**/*.wav
+!tts_voices/sample_male_new.wav
+!tts_voices/VoiceCraft/sample_male_16k.wav
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# IDE and OS files
+.vscode/
+.idea/
+*.code-workspace
+.DS_Store
+Thumbs.db
+desktop.ini

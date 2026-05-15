@@ -1,0 +1,115 @@
+QWidget {
+    background-color: #2b2f33;
+    color: #f1f1f1;
+}
+
+QFrame#groupFrame,
+QFrame#subGroupFrame {
+    background-color: #2b2f33;
+    border: 1px solid #4d5863;
+    border-radius: 8px;
+    margin-top: 0.2em;
+    padding: 0.5em;
+}
+
+QFrame#rowFrame {
+    background-color: #2b2f33;
+    border: none;
+    margin: 0;
+    padding: 0;
+}
+
+QLabel#sessionSectionLabel,
+QLabel#sessionNameLabel,
+QLabel#secondaryInfoLabel,
+QLabel#subSectionLabel {
+    color: #f1f1f1;
+}
+
+QLabel#sessionSectionLabel {
+    padding: 5px 0 1px 2px;
+}
+
+QLabel#sessionLifecycleLabel {
+    background-color: #4d5863;
+    border: 1px solid #4d5863;
+    border-radius: 10px;
+    color: #f1f1f1;
+    padding: 4px 10px;
+}
+
+QPushButton,
+QPushButton#primaryButton,
+QPushButton#dangerButton,
+QPushButton:hover,
+QPushButton:pressed,
+QPushButton:checked,
+QPushButton:disabled,
+QToolButton,
+QToolButton:hover,
+QToolButton:pressed,
+QToolButton:checked,
+QToolButton:disabled {
+    background-color: #4d5863;
+    border: 1px solid #4d5863;
+    border-radius: 6px;
+    color: #f1f1f1;
+    padding: 5px 10px;
+}
+
+QTextEdit,
+QPlainTextEdit,
+QLineEdit,
+QSpinBox,
+QDoubleSpinBox,
+QComboBox,
+QListWidget,
+QTableWidget,
+QTabWidget::pane,
+QScrollArea,
+QScrollArea > QWidget > QWidget,
+QMenu,
+QProgressBar,
+QStatusBar {
+    background-color: #2b2f33;
+    border: 1px solid #4d5863;
+    color: #f1f1f1;
+}
+
+QHeaderView::section,
+QTabBar::tab,
+QComboBox::drop-down,
+QProgressBar::chunk,
+QMenu::item:selected,
+QTableWidget::item:selected {
+    background-color: #4d5863;
+    border: 1px solid #4d5863;
+    color: #f1f1f1;
+}
+
+QCheckBox::indicator,
+QRadioButton::indicator {
+    background-color: #2b2f33;
+    border: 1px solid #4d5863;
+}
+
+QCheckBox::indicator:checked,
+QRadioButton::indicator:checked {
+    background-color: #4d5863;
+    border: 1px solid #4d5863;
+}
+
+QScrollBar:vertical,
+QScrollBar:horizontal,
+QScrollBar::add-line,
+QScrollBar::sub-line,
+QScrollBar::add-page,
+QScrollBar::sub-page {
+    background-color: #2b2f33;
+}
+
+QScrollBar::handle:vertical,
+QScrollBar::handle:horizontal {
+    background-color: #4d5863;
+    border-radius: 5px;
+}

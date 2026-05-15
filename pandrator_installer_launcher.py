@@ -4,460 +4,414 @@ import logging
 import time
 import shutil
 import requests
-import threading
-import customtkinter as ctk
-from datetime import datetime
+import sys
 import atexit
 import psutil
 import json
-import tkinter.messagebox as messagebox
 import traceback
 import tempfile
-import sys
 import ctypes
 import winreg
-from dulwich import porcelain
-import packaging.version
-from CTkMessagebox import CTkMessagebox
+from datetime import datetime
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QTabWidget, 
+                            QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
+                            QCheckBox, QTextEdit, QPlainTextEdit, QProgressBar, QScrollArea,
+                            QMessageBox, QGroupBox, QFrame, QSplitter,
+                            QDialog, QGridLayout)
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QCoreApplication, QSize, QEventLoop, QObject
+from PyQt6.QtGui import QIcon, QFont, QPixmap
+from PyQt6.QtGui import QColor
+from PyQt6.QtGui import QColor, QPalette
 
 
-class ScrollableFrame(ctk.CTkScrollableFrame):
-    def __init__(self, container, *args, **kwargs):
-        super().__init__(container, *args, **kwargs)
-        self.inner_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.inner_frame.pack(fill="both", expand=True)
+PIXI_BINARY_NAME = 'pixi.exe'
+PIXI_DOWNLOAD_URL = 'https://github.com/prefix-dev/pixi/releases/latest/download/pixi-x86_64-pc-windows-msvc.exe'
+PIXI_HOME_DIRNAME = '.pixi-home'
+PIXI_CACHE_DIRNAME = '.pixi-cache'
 
-    def get_inner_frame(self):
-        return self.inner_frame
+XTTS_API_REPO_URL = 'https://github.com/lukaszliniewicz/xtts2_api.git'
+XTTS_API_REPO_DIRNAME = 'xtts2_api'
+VOXTRAL_API_REPO_URL = 'https://github.com/lukaszliniewicz/voxtral-fastapi.git'
+VOXTRAL_API_REPO_DIRNAME = 'voxtral-fastapi'
 
-class PandratorInstaller(ctk.CTk):
+
+
+class Worker(QThread):
+    """Worker thread for running background processes"""
+    update_progress = pyqtSignal(float)
+    update_status = pyqtSignal(str)
+    finished = pyqtSignal()
+    error = pyqtSignal(str)
+
+    def __init__(self, function, *args, **kwargs):
+        super().__init__()
+        self.function = function
+        self.args = args
+        self.kwargs = kwargs
+        
+    def run(self):
+        try:
+            self.function(*self.args, **self.kwargs)
+            self.finished.emit()
+        except Exception as e:
+            self.error.emit(str(e))
+            logging.error(f"Error in worker thread: {str(e)}")
+            logging.error(traceback.format_exc())
+
+
+class QtLogEmitter(QObject):
+    message_logged = pyqtSignal(str)
+
+
+class QtLogHandler(logging.Handler):
+    def __init__(self, emitter):
+        super().__init__()
+        self.emitter = emitter
+
+    def emit(self, record):
+        try:
+            message = self.format(record)
+            self.emitter.message_logged.emit(message)
+        except Exception:
+            self.handleError(record)
+
+
+class InfoDialog(QDialog):
+    """Dialog for showing application information"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Pandrator Installer Information")
+        self.setMinimumSize(500, 300)
+        
+        layout = QVBoxLayout(self)
+        
+        info_text = QTextEdit()
+        info_text.setReadOnly(True)
+        info_text.setHtml("""
+        <h2>Pandrator Installer & Launcher</h2>
+        <p>This tool helps you set up and run Pandrator as well as TTS engines and tools.</p>
+        <p>It will install:</p>
+        <ul>
+            <li>Pandrator</li>
+            <li>Pixi</li>
+            <li>Required Python packages</li>
+            <li>Dependencies (Calibre)</li>
+        </ul>
+        <p>To uninstall Pandrator, simply delete the Pandrator folder.</p>
+        <p>The installation will take between 3 and 30GB of disk space depending on the number of selected options.</p>
+        """)
+        
+        layout.addWidget(info_text)
+        
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(self.accept)
+        layout.addWidget(close_button, alignment=Qt.AlignmentFlag.AlignRight)
+
+
+class PandratorInstaller(QMainWindow):
     def __init__(self):
         super().__init__()
         self.initial_working_dir = os.getcwd()
         
         # Check for spaces in the working directory
         if ' ' in self.initial_working_dir:
-            self.title("Warning: Path Contains Spaces")
-            warning_message = (
-                f"⚠️ WARNING: Your installation path contains spaces:\n\n"
-                f"{self.initial_working_dir}\n\n"
-                f"This will likely cause problems with Conda and may prevent Pandrator from installing correctly.\n\n"
-                f"It's strongly recommended to move this installer to a path without spaces, such as:\n"
-                f"C:\\Pandrator\n\n"
-                f"Would you like to exit the installer so you can move it to a better location?"
-            )
-            
-            result = messagebox.askyesno("Path Contains Spaces", warning_message, icon="warning")
-            if result:
-                sys.exit(0)
-            else:
-                messagebox.showinfo(
-                    "Continuing With Risk", 
-                    "Installation will continue, but you may encounter errors.\n"
-                    "If installation fails, please restart the installer from a path without spaces."
-                )
+            self.show_space_warning()
+        
         # Define instance variables for checkboxes
-        self.pandrator_var = ctk.BooleanVar(value=True)
-        self.xtts_var = ctk.BooleanVar(value=False)
-        self.xtts_cpu_var = ctk.BooleanVar(value=False)
-        self.silero_var = ctk.BooleanVar(value=False)
-        self.rvc_var = ctk.BooleanVar(value=False)
+        # Installation options
+        self.pandrator_var = False
+        self.xtts_var = False
+        self.xtts_cpu_var = False
+        self.silero_var = False
+        self.voxtral_var = False
+        self.rvc_var = False
+        self.whisperx_var = False
+        self.xtts_finetuning_var = False
 
-        # Define instance variables for launch options
-        self.launch_pandrator_var = ctk.BooleanVar(value=True)
-        self.launch_xtts_var = ctk.BooleanVar(value=False)
-        self.lowvram_var = ctk.BooleanVar(value=False)
-        self.deepspeed_var = ctk.BooleanVar(value=False)
-        self.xtts_cpu_launch_var = ctk.BooleanVar(value=False)
-        self.launch_silero_var = ctk.BooleanVar(value=False)
-
+        # Launch options
+        self.launch_pandrator_var = True
+        self.launch_xtts_var = False
+        self.deepspeed_var = False
+        self.xtts_cpu_launch_var = False
+        self.launch_voxtral_var = False
+        self.launch_silero_var = False
 
         # Initialize process attributes
         self.xtts_process = None
         self.pandrator_process = None
         self.silero_process = None
+        self.voxtral_process = None
 
-        self.title("Pandrator Installer & Launcher")
+        # Worker thread
+        self.worker = None
         
-        # Calculate 92% of screen height and get full screen width
-        screen_width = self.winfo_screenwidth()
-        screen_height = self.winfo_screenheight()
-        window_height = int(screen_height * 0.92)
-
-        # Set the window geometry to full width and 92% height, positioned at the top
-        self.geometry(f"{screen_width}x{window_height}+0+0")
-
-        ctk.set_appearance_mode("dark")
-        ctk.set_default_color_theme("blue")
-
-        # Create main scrollable frame
-        self.main_frame = ScrollableFrame(self)
-        self.main_frame.pack(fill="both", expand=True, padx=10, pady=10)
-
-        # Content Frame (to align content to the top)
-        self.content_frame = ctk.CTkFrame(self.main_frame.get_inner_frame(), fg_color="transparent")
-        self.content_frame.pack(fill="both", expand=True)
-
+        # Set up the main window
+        self.setWindowTitle("Pandrator Installer & Launcher")
+        
+        # Calculate window size
+        screen_size = QApplication.primaryScreen().size()
+        width = int(screen_size.width() * 0.5)
+        height = int(screen_size.height() * 0.6)
+        self.resize(width, height)
+        
+        # Create central widget and main layout
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
+        self.main_layout = QVBoxLayout(self.central_widget)
+        
+        # Create header with title and info button
+        header_layout = QHBoxLayout()
+        
         # Title
-        self.title_label = ctk.CTkLabel(self.content_frame, text="Pandrator Installer & Launcher", font=("Arial", 32, "bold"))
-        self.title_label.pack(pady=(20, 10))
-
-        # Information Text Area
-        self.info_text = ctk.CTkTextbox(self.content_frame, height=100, wrap="word", font=("Arial", 12))
-        self.info_text.pack(fill="x", padx=20, pady=10)
-        self.info_text.insert("1.0", "This tool will help you set up and run Pandrator as well as TTS engines and tools. "
-                            "It will install Pandrator, Miniconda, required Python packages, "
-                            "and dependencies (Calibre, Visual Studio C++ Build Tools)."
-                            "To uninstall Pandrator, simply delete the Pandrator folder.\n\n"
-                            "The installation will take between 3 and 30GB of disk space depending on the number of selected options.")
-        self.info_text.configure(state="disabled")
-
-        # New frame to contain installation and launch frames
-        self.main_options_frame = ctk.CTkFrame(self.content_frame)
-        self.main_options_frame.pack(fill="both", expand=True, padx=20, pady=10)
-        self.main_options_frame.grid_columnconfigure(0, weight=1)
-        self.main_options_frame.grid_columnconfigure(1, weight=1)
-
-        # Installation Frame
-        self.installation_frame = ctk.CTkFrame(self.main_options_frame)
-        self.installation_frame.grid(row=0, column=0, padx=(0, 10), pady=10, sticky="nsew")
-
-        ctk.CTkLabel(self.installation_frame, text="Install", font=("Arial", 20, "bold")).pack(anchor="w", padx=10, pady=(10, 5))
-        # Build Tools notice and button section
-        build_tools_frame = ctk.CTkFrame(self.installation_frame, fg_color="#2C2C2C")
-        build_tools_frame.pack(fill="x", padx=10, pady=(5, 15))
-
-        admin_warning = ctk.CTkLabel(
-            build_tools_frame, 
-            text="⚠️ IMPORTANT: Pandrator Installer must be run as administrator to install Build Tools!",
-            font=("Arial", 11, "bold"),
-            text_color="#FF9900",
-            justify="left"
-        )
-        admin_warning.pack(anchor="w", padx=10, pady=(10, 5))
-
-        build_tools_label = ctk.CTkLabel(
-            build_tools_frame, 
-            text="Visual C++ Build Tools are required for installation.\nIf not already installed:",
-            font=("Arial", 11),
-            justify="left"
-        )
-        build_tools_label.pack(anchor="w", padx=10, pady=(0, 5))
-
-        build_tools_steps = ctk.CTkLabel(
-            build_tools_frame, 
-            text="1. Click the button below to install them\n2. After installation, close all command prompt/PowerShell windows\n3. Restart this installer",
-            font=("Arial", 10),
-            justify="left"
-        )
-        build_tools_steps.pack(anchor="w", padx=20, pady=(0, 5))
-
-        self.build_tools_button = ctk.CTkButton(
-            build_tools_frame, 
-            text="Install Visual C++ Build Tools", 
-            command=self.open_build_tools_installer,
-            width=200
-        )
-        self.build_tools_button.pack(anchor="w", padx=10, pady=(0, 10))
-        self.pandrator_checkbox = ctk.CTkCheckBox(self.installation_frame, text="Pandrator", variable=self.pandrator_var)
-        self.pandrator_checkbox.pack(anchor="w", padx=10, pady=(5, 0))
-
-        ctk.CTkLabel(self.installation_frame, text="TTS Engines", font=("Arial", 14, "bold")).pack(anchor="w", padx=10, pady=(20, 0))
-        ctk.CTkLabel(self.installation_frame, text="You can select and install new engines and tools after the initial installation.", font=("Arial", 10, "bold")).pack(anchor="w", padx=10, pady=(0, 10))
-
-        engine_frame = ctk.CTkFrame(self.installation_frame, fg_color="transparent")
-        engine_frame.pack(fill="x", padx=10, pady=(0, 10))
+        self.title_label = QLabel("Pandrator Installer & Launcher")
+        title_font = QFont("Arial", 18, QFont.Weight.Bold)
+        self.title_label.setFont(title_font)
+        header_layout.addWidget(self.title_label)
         
-        self.xtts_checkbox = ctk.CTkCheckBox(engine_frame, text="XTTS", variable=self.xtts_var)
-        self.xtts_checkbox.pack(side="left", padx=(0, 20), pady=5)
-        self.xtts_cpu_checkbox = ctk.CTkCheckBox(engine_frame, text="XTTS CPU only", variable=self.xtts_cpu_var)
-        self.xtts_cpu_checkbox.pack(side="left", padx=(0, 20), pady=5)
-
-        self.silero_checkbox = ctk.CTkCheckBox(engine_frame, text="Silero", variable=self.silero_var)
-        self.silero_checkbox.pack(side="left", padx=(0, 20), pady=5)
-
-        ctk.CTkLabel(self.installation_frame, text="Other tools", font=("Arial", 14, "bold")).pack(anchor="w", padx=10, pady=(20, 5))
-
-        self.rvc_checkbox = ctk.CTkCheckBox(self.installation_frame, text="RVC (rvc-python)", variable=self.rvc_var)
-        self.rvc_checkbox.pack(anchor="w", padx=10, pady=5)
-        self.whisperx_var = ctk.BooleanVar(value=False)
-        self.whisperx_checkbox = ctk.CTkCheckBox(self.installation_frame, text="WhisperX (needed for dubbing and XTTS training)", variable=self.whisperx_var)
-        self.whisperx_checkbox.pack(anchor="w", padx=10, pady=5)
-        self.xtts_finetuning_var = ctk.BooleanVar(value=False)
-        self.xtts_finetuning_checkbox = ctk.CTkCheckBox(self.installation_frame, text="XTTS Fine-tuning", variable=self.xtts_finetuning_var, command=self.update_whisperx_checkbox)
-        self.xtts_finetuning_checkbox.pack(anchor="w", padx=10, pady=5)
-        button_frame = ctk.CTkFrame(self.installation_frame, fg_color="transparent")
-        button_frame.pack(anchor="w", padx=10, pady=(20, 10))
-
-        self.install_button = ctk.CTkButton(button_frame, text="Install", command=self.install_pandrator, width=200, height=40)
-        self.install_button.pack(side="left", padx=(0, 10))
-        self.update_button = ctk.CTkButton(button_frame, text="Update Pandrator", command=self.update_pandrator, width=200, height=40)
-        self.update_button.pack(side="left", padx=10)
-        self.open_log_button = ctk.CTkButton(button_frame, text="View Installation Log", command=self.open_log_file, width=200, height=40)
-        self.open_log_button.pack(side="left", padx=10)
-        self.open_log_button.configure(state="disabled")
-
-        # Progress Bar and Status Label (now inside installation frame)
-        self.progress_bar = ctk.CTkProgressBar(self.installation_frame)
-        self.progress_bar.pack(fill="x", padx=20, pady=(20, 10))
-        self.progress_bar.set(0)
-
-        self.status_label = ctk.CTkLabel(self.installation_frame, text="", font=("Arial", 14))
-        self.status_label.pack(pady=(0, 10))
-
-        # Launch Frame
-        self.launch_frame = ctk.CTkFrame(self.main_options_frame)
-        self.launch_frame.grid(row=0, column=1, padx=(10, 0), pady=10, sticky="nsew")
-        ctk.CTkLabel(self.launch_frame, text="Launch", font=("Arial", 20, "bold")).grid(row=0, column=0, columnspan=4, sticky="w", padx=10, pady=(10, 5))
-        ctk.CTkCheckBox(self.launch_frame, text="Pandrator", variable=self.launch_pandrator_var).grid(row=1, column=0, columnspan=4, sticky="w", padx=10, pady=5)
-
-        # XTTS options in one row
-        ctk.CTkCheckBox(self.launch_frame, text="XTTS", variable=self.launch_xtts_var).grid(row=2, column=0, sticky="w", padx=10, pady=5)
-        self.xtts_cpu_checkbox = ctk.CTkCheckBox(self.launch_frame, text="Use CPU", variable=self.xtts_cpu_launch_var)
-        self.xtts_cpu_checkbox.grid(row=2, column=1, sticky="w", padx=10, pady=5)
-        self.lowvram_checkbox = ctk.CTkCheckBox(self.launch_frame, text="Low VRAM", variable=self.lowvram_var)
-        self.lowvram_checkbox.grid(row=2, column=2, sticky="w", padx=10, pady=5)
-        self.deepspeed_checkbox = ctk.CTkCheckBox(self.launch_frame, text="DeepSpeed", variable=self.deepspeed_var)
-        self.deepspeed_checkbox.grid(row=2, column=3, sticky="w", padx=10, pady=5)
-
-        ctk.CTkCheckBox(self.launch_frame, text="Silero", variable=self.launch_silero_var).grid(row=3, column=0, columnspan=4, sticky="w", padx=10, pady=5)
-        self.launch_button = ctk.CTkButton(self.launch_frame, text="Launch", command=self.launch_apps, width=200, height=40)
-        self.launch_button.grid(row=5, column=0, columnspan=4, sticky="w", padx=10, pady=(20, 10))
-
+        # Info button
+        self.info_button = QPushButton("ℹ️ Info")
+        self.info_button.setFixedWidth(100)
+        self.info_button.clicked.connect(self.show_info)
+        header_layout.addWidget(self.info_button)
+        
+        self.main_layout.addLayout(header_layout)
+        
+        # Create tab widget
+        self.tabs = QTabWidget()
+        self.main_layout.addWidget(self.tabs)
+        
+        # Create Install and Launch tabs
+        self.install_tab = QWidget()
+        self.launch_tab = QWidget()
+        self.logs_tab = QWidget()
+        
+        self.tabs.addTab(self.install_tab, "Install")
+        self.tabs.addTab(self.launch_tab, "Launch")
+        self.tabs.addTab(self.logs_tab, "Logs")
+        
+        # Set up tabs
+        self.setup_install_tab()
+        self.setup_launch_tab()
+        self.setup_logs_tab()
+        
+        # Progress bar and status label at the bottom
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.main_layout.addWidget(self.progress_bar)
+        
+        self.status_label = QLabel("Ready")
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        status_font = QFont("Arial", 11)
+        self.status_label.setFont(status_font)
+        self.main_layout.addWidget(self.status_label)
+        
+        # Initialize log file path
+        self.log_filename = None
+        self.log_emitter = QtLogEmitter()
+        self.log_emitter.message_logged.connect(self.append_log_message)
+        self.tls_configured = False
+        self.ca_bundle_path = None
+        
+        # Initialize state
         self.refresh_ui_state()
         atexit.register(self.shutdown_apps)
 
-    def initialize_logging(self):
-        pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
-        os.makedirs(pandrator_path, exist_ok=True)
-        logs_path = os.path.join(pandrator_path, 'Logs')
-        os.makedirs(logs_path, exist_ok=True)
-
-        current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.log_filename = os.path.join(logs_path, f'pandrator_installation_log_{current_time}.log')
+    def show_space_warning(self):
+        """Show warning when path contains spaces"""
+        warning_message = (
+            f"⚠️ WARNING: Your installation path contains spaces:\n\n"
+            f"{self.initial_working_dir}\n\n"
+            f"Some third-party tools still have trouble when installed from paths with spaces.\n\n"
+            f"It's strongly recommended to move this installer to a path without spaces, such as:\n"
+            f"C:\\Pandrator\n\n"
+            f"Would you like to exit the installer so you can move it to a better location?"
+        )
         
-        # Configure logging with explicit encoding handling
-        handler = logging.FileHandler(self.log_filename, encoding='utf-8')
-        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-        handler.setFormatter(formatter)
+        reply = QMessageBox.warning(
+            self,
+            "Path Contains Spaces",
+            warning_message,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes
+        )
         
-        logger = logging.getLogger()
-        logger.addHandler(handler)
-        logger.setLevel(logging.DEBUG)
-
-        self.open_log_button.configure(state="normal")
-
-    def is_admin(self):
-        """Check if the current process has admin privileges."""
-        try:
-            return ctypes.windll.shell32.IsUserAnAdmin() != 0
-        except:
-            return False
-
-    def is_build_tools_installed(self):
-        """Check if Visual Studio Build Tools are installed."""
-        try:
-            # Method 1: Check common installation paths
-            vs_paths = [
-                r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools",
-                r"C:\Program Files\Microsoft Visual Studio\2022\BuildTools"
-            ]
-            
-            for path in vs_paths:
-                vc_tools_path = os.path.join(path, "VC", "Tools", "MSVC")
-                if os.path.exists(vc_tools_path) and os.listdir(vc_tools_path):
-                    logging.info(f"Found Build Tools at {vc_tools_path}")
-                    return True
-            
-            # Method 2: Check registry
-            try:
-                # Check if Visual C++ Build Tools registry key exists
-                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, 
-                                r"SOFTWARE\Microsoft\VisualStudio\SxS\VS7", 
-                                0, winreg.KEY_READ) as key:
-                    # Just checking if the key exists and has values
-                    if winreg.QueryValueEx(key, "17.0")[0]:
-                        logging.info("Found Build Tools in registry")
-                        return True
-            except FileNotFoundError:
-                # Registry key not found
-                pass
-            except Exception as reg_error:
-                logging.warning(f"Error checking registry for Build Tools: {str(reg_error)}")
-                
-            # Method 3: Try to use cl.exe (MSVC compiler)
-            try:
-                subprocess.run(["cl"], 
-                            stdout=subprocess.PIPE, 
-                            stderr=subprocess.PIPE, 
-                            shell=True)
-                logging.info("Found cl.exe in PATH, Build Tools appear to be installed")
-                return True
-            except:
-                # cl.exe not found in PATH
-                pass
-                
-            return False
-        except Exception as e:
-            logging.error(f"Error checking Build Tools installation: {str(e)}")
-            return False
-
-    def open_build_tools_installer(self):
-        """Check for and install Visual Studio Build Tools."""
-        # Check for admin privileges
-        if not self.is_admin():
-            message = ("Administrator privileges required!\n\n"
-                    "The Pandrator Installer must be run as administrator to install Visual C++ Build Tools.\n\n"
-                    "Please right-click on the Pandrator Installer and select 'Run as administrator'.")
-            messagebox.showerror("Admin Rights Required", message)
-            return
-        
-        # First check if Build Tools are already installed
-        if self.is_build_tools_installed():
-            # Build Tools are already installed, ask if user wants to force reinstall
-            result = messagebox.askyesno(
-                "Build Tools Already Installed", 
-                "Visual C++ Build Tools appear to be already installed on your system.\n\n"
-                "Do you want to force a reinstallation anyway?\n\n"
-                "• Select 'Yes' to reinstall\n"
-                "• Select 'No' to continue with Pandrator installation",
-                icon="info"
+        if reply == QMessageBox.StandardButton.Yes:
+            sys.exit(0)
+        else:
+            QMessageBox.information(
+                self,
+                "Continuing With Risk", 
+                "Installation will continue, but you may encounter errors.\n"
+                "If installation fails, please restart the installer from a path without spaces."
             )
-            
-            if not result:
-                # User chose not to reinstall, update status and return
-                self.update_status("Using existing Visual C++ Build Tools installation.")
-                return
-            
-            # User chose to reinstall, continue with installation
-            logging.info("User chose to reinstall Build Tools despite existing installation")
-            
-        self.update_status("Preparing Visual C++ Build Tools installation...")
-        logging.info("Starting Visual C++ Build Tools installation process...")
+
+    def show_info(self):
+        """Show the information dialog"""
+        dialog = InfoDialog(self)
+        dialog.exec()
+
+    def setup_install_tab(self):
+        """Set up the Install tab"""
+        layout = QVBoxLayout(self.install_tab)
         
-        try:
-            # URL for VS Build Tools 2022
-            url = "https://aka.ms/vs/17/release/vs_buildtools.exe"
-            
-            # Download the installer
-            self.update_status("Downloading VS Build Tools installer...")
-            
-            response = requests.get(url, stream=True)
-            if response.status_code != 200:
-                raise Exception(f"Failed to download installer, status code: {response.status_code}")
-                
-            # Save the installer to a temporary file
-            installer_path = os.path.join(tempfile.gettempdir(), "vs_buildtools.exe")
-            with open(installer_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-            
-            # Run the installer silently with required components
-            self.update_status("Installing VS Build Tools (running silently)...")
-            
-            # Command arguments with quiet mode
-            install_cmd = [
-                installer_path,
-                "--quiet", "--norestart",
-                "--add", "Microsoft.VisualStudio.Workload.VCTools",
-                "--includeRecommended"
-            ]
-            
-            # Launch the installer
-            process = subprocess.Popen(install_cmd)
-            
-            # Start a background thread to monitor installation
-            threading.Thread(target=self.monitor_build_tools_installation, 
-                            args=(process,), daemon=True).start()
-            
-            message = ("Visual Studio Build Tools installation has started and is running silently in the background.\n\n"
-                    "⏱️ This may take 5-15 minutes to complete.\n\n"
-                    "The Pandrator Installer will notify you when the installation is complete or if it fails.\n\n"
-                    "AFTER INSTALLATION:\n"
-                    "1. Close all command prompt/PowerShell windows\n"
-                    "2. Restart the Pandrator Installer")
-            
-            messagebox.showinfo("Build Tools Installation", message)
-            
-        except Exception as e:
-            logging.error(f"Failed to run VS Build Tools installer: {str(e)}")
-            logging.error(traceback.format_exc())
-            
-            message = ("Failed to download or start the Visual Studio Build Tools installer.\n\n"
-                    "Please install it manually:\n"
-                    "1. Download from: https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022\n"
-                    "2. Run the installer and select 'Desktop development with C++'\n"
-                    "3. Complete the installation\n"
-                    "4. Close all terminal windows and restart Pandrator Installer")
-            
-            messagebox.showerror("Build Tools Installation Error", message)
+        # Core components section
+        components_group = QGroupBox("Components")
+        components_layout = QVBoxLayout(components_group)
+        
+        # Pandrator checkbox
+        self.pandrator_checkbox = QCheckBox("Pandrator")
+        self.pandrator_checkbox.setChecked(True)
+        components_layout.addWidget(self.pandrator_checkbox)
+        
+        # TTS Engines section - with BOLD label
+        tts_engines_label = QLabel("TTS Engines")
+        tts_engines_label.setStyleSheet("font-weight: bold;")
+        components_layout.addWidget(tts_engines_label)
+        
+        components_layout.addWidget(QLabel("You can select and install new engines and tools after the initial installation."))
+        
+        engines_layout = QHBoxLayout()
+        
+        self.xtts_checkbox = QCheckBox("XTTS")
+        engines_layout.addWidget(self.xtts_checkbox)
+        
+        self.xtts_cpu_checkbox = QCheckBox("XTTS CPU only")
+        engines_layout.addWidget(self.xtts_cpu_checkbox)
+        
+        self.silero_checkbox = QCheckBox("Silero")
+        engines_layout.addWidget(self.silero_checkbox)
 
-    def monitor_build_tools_installation(self, process):
-        """Monitor the Build Tools installation process in a background thread."""
-        try:
-            # Wait for the initial process to complete
-            return_code = process.wait()
-            
-            if return_code == 0:
-                # Initial process succeeded, now check for actual installation
-                # Wait for installation to complete (can take several minutes)
-                for attempt in range(30):  # Check for 5 minutes (30 x 10 seconds)
-                    if self.is_build_tools_installed():
-                        # Schedule UI updates on the main thread
-                        self.after(0, lambda: self.update_status("VS Build Tools installation completed successfully!"))
-                        self.after(0, lambda: messagebox.showinfo("Installation Complete", 
-                            "Visual Studio Build Tools installation completed successfully!\n\n"
-                            "Please:\n"
-                            "1. Close all command prompt/PowerShell windows\n"
-                            "2. Restart the Pandrator Installer"))
-                        return
-                    time.sleep(10)  # Wait 10 seconds between checks
-                
-                # If we get here, we couldn't confirm the installation
-                self.after(0, lambda: self.update_status("Could not confirm VS Build Tools installation"))
-                self.after(0, lambda: messagebox.showwarning("Installation Status Unknown", 
-                    "The Visual Studio Build Tools installer completed, but we couldn't confirm if all components were installed correctly.\n\n"
-                    "Please restart your computer and then run the Pandrator Installer again."))
-            else:
-                # Initial process failed
-                self.after(0, lambda: self.update_status(f"VS Build Tools installation failed with code {return_code}"))
-                self.after(0, lambda: messagebox.showerror("Installation Failed", 
-                    f"Visual Studio Build Tools installation failed with code {return_code}.\n\n"
-                    "Please try installing manually:\n"
-                    "1. Download from: https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022\n"
-                    "2. Run the installer and select 'Desktop development with C++'\n"
-                    "3. Complete the installation\n"
-                    "4. Close all terminal windows and restart Pandrator Installer"))
-        except Exception as e:
-            logging.error(f"Error monitoring Build Tools installation: {str(e)}")
-            self.after(0, lambda: self.update_status("Error monitoring VS Build Tools installation"))
+        self.voxtral_checkbox = QCheckBox("Voxtral (GPU only)")
+        engines_layout.addWidget(self.voxtral_checkbox)
+        
+        components_layout.addLayout(engines_layout)
+        
+        # Other tools section - with BOLD label
+        other_tools_label = QLabel("Other tools")
+        other_tools_label.setStyleSheet("font-weight: bold;")
+        components_layout.addWidget(other_tools_label)
+        
+        self.rvc_checkbox = QCheckBox("RVC (rvc-python)")
+        components_layout.addWidget(self.rvc_checkbox)
+        
+        self.whisperx_checkbox = QCheckBox("WhisperX (needed for dubbing and XTTS training)")
+        components_layout.addWidget(self.whisperx_checkbox)
+        
+        self.xtts_finetuning_checkbox = QCheckBox("XTTS Fine-tuning")
+        self.xtts_finetuning_checkbox.stateChanged.connect(self.update_whisperx_checkbox)
+        components_layout.addWidget(self.xtts_finetuning_checkbox)
+        
+        layout.addWidget(components_group)
+        
+        # Buttons section
+        buttons_layout = QHBoxLayout()
+        
+        self.install_button = QPushButton("Install")
+        self.install_button.clicked.connect(self.install_pandrator)
+        buttons_layout.addWidget(self.install_button)
+        
+        self.update_button = QPushButton("Update Pandrator")
+        self.update_button.clicked.connect(self.update_pandrator)
+        buttons_layout.addWidget(self.update_button)
+        
+        self.open_log_button = QPushButton("View Installation Log")
+        self.open_log_button.clicked.connect(self.open_log_file)
+        self.open_log_button.setEnabled(False)
+        buttons_layout.addWidget(self.open_log_button)
+        
+        layout.addLayout(buttons_layout)
+        
+        # Add stretch to push everything to the top
+        layout.addStretch()
 
-    def install_pytorch_for_xtts_finetuning(self, conda_path, env_name):
-        logging.info(f"Installing PyTorch for XTTS Fine-tuning in {env_name}...")
-        env_path = os.path.join(conda_path, 'envs', env_name)
-        try:
-            self.run_command([
-                os.path.join(conda_path, 'Scripts', 'conda.exe'),
-                'run', '-p', env_path, 'python', '-m',
-                'pip', 'install', 'torch==2.2.0+cu118', 'torchaudio==2.2.0+cu118',
-                '--index-url', 'https://download.pytorch.org/whl/cu118'
-            ])
-            logging.info("PyTorch for XTTS Fine-tuning installed successfully.")
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Failed to install PyTorch for XTTS Fine-tuning in {env_name}")
-            logging.error(f"Error message: {str(e)}")
-            raise
+    def setup_launch_tab(self):
+        """Set up the Launch tab"""
+        layout = QVBoxLayout(self.launch_tab)
+        
+        # Launch options group
+        launch_group = QGroupBox("Launch Options")
+        launch_layout = QVBoxLayout(launch_group)
+        
+        # Pandrator checkbox
+        self.launch_pandrator_checkbox = QCheckBox("Pandrator")
+        self.launch_pandrator_checkbox.setChecked(True)
+        launch_layout.addWidget(self.launch_pandrator_checkbox)
+        
+        # XTTS options
+        xtts_frame = QWidget()
+        xtts_layout = QGridLayout(xtts_frame)
+        xtts_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.launch_xtts_checkbox = QCheckBox("XTTS")
+        xtts_layout.addWidget(self.launch_xtts_checkbox, 0, 0)
+        
+        self.xtts_cpu_launch_checkbox = QCheckBox("Use CPU")
+        xtts_layout.addWidget(self.xtts_cpu_launch_checkbox, 0, 1)
+        
+        self.deepspeed_checkbox = QCheckBox("DeepSpeed")
+        xtts_layout.addWidget(self.deepspeed_checkbox, 0, 2)
+        
+        launch_layout.addWidget(xtts_frame)
 
-    def disable_buttons(self):
-        for widget in self.installation_frame.winfo_children():
-            if isinstance(widget, (ctk.CTkCheckBox, ctk.CTkButton)):
-                widget.configure(state="disabled")
-        self.launch_button.configure(state="disabled")
+        # Voxtral checkbox
+        self.launch_voxtral_checkbox = QCheckBox("Voxtral")
+        launch_layout.addWidget(self.launch_voxtral_checkbox)
+        
+        # Silero checkbox
+        self.launch_silero_checkbox = QCheckBox("Silero")
+        launch_layout.addWidget(self.launch_silero_checkbox)
+        
+        layout.addWidget(launch_group)
+        
+        # Launch button
+        self.launch_button = QPushButton("Launch")
+        self.launch_button.clicked.connect(self.launch_apps)
+        self.launch_button.setMinimumHeight(40)
+        layout.addWidget(self.launch_button)
+        
+        # Add stretch to push everything to the top
+        layout.addStretch()
 
-    def enable_buttons(self):
-        self.refresh_ui_state()
+    def setup_logs_tab(self):
+        """Set up the Logs tab for realtime log viewing."""
+        layout = QVBoxLayout(self.logs_tab)
 
+        controls_layout = QHBoxLayout()
+
+        self.clear_log_view_button = QPushButton("Clear View")
+        self.clear_log_view_button.clicked.connect(self.clear_log_view)
+        controls_layout.addWidget(self.clear_log_view_button)
+
+        self.open_log_from_tab_button = QPushButton("Open Log File")
+        self.open_log_from_tab_button.clicked.connect(self.open_log_file)
+        self.open_log_from_tab_button.setEnabled(False)
+        controls_layout.addWidget(self.open_log_from_tab_button)
+
+        controls_layout.addStretch()
+        layout.addLayout(controls_layout)
+
+        self.log_view = QPlainTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self.log_view.setMaximumBlockCount(5000)
+        self.log_view.setPlaceholderText("Logs will appear here during install, update, and launch.")
+        self.log_view.setFont(QFont("Consolas", 10))
+        layout.addWidget(self.log_view)
+
+    def append_log_message(self, message):
+        if not hasattr(self, 'log_view'):
+            return
+
+        self.log_view.appendPlainText(message)
+        scrollbar = self.log_view.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    def clear_log_view(self):
+        if hasattr(self, 'log_view'):
+            self.log_view.clear()
+
+    # Utility functions
     def refresh_ui_state(self):
         pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
         config_path = os.path.join(pandrator_path, 'config.json')
@@ -468,84 +422,87 @@ class PandratorInstaller(ctk.CTk):
         else:
             config = {}
 
-        # Helper function
+        # Helper function to set widget state
         def set_widget_state(widget, state, value=None):
-            widget.configure(state=state)
-            if isinstance(widget, ctk.CTkCheckBox) and value is not None:
-                if value:
-                    widget.select()
-                else:
-                    widget.deselect()
-
+            widget.setEnabled(state)
+            if isinstance(widget, QCheckBox) and value is not None:
+                widget.setChecked(value)
+        
         # Pandrator
         pandrator_installed = os.path.exists(pandrator_path)
-        set_widget_state(self.pandrator_checkbox, "disabled" if pandrator_installed else "normal", False)
-        set_widget_state(self.launch_frame.winfo_children()[1], "normal" if pandrator_installed else "disabled", pandrator_installed)
+        set_widget_state(self.pandrator_checkbox, not pandrator_installed, False if pandrator_installed else True)
+        set_widget_state(self.launch_pandrator_checkbox, pandrator_installed, pandrator_installed)
 
         # XTTS
         xtts_support = config.get('xtts_support', False)
         xtts_cuda_support = config.get('cuda_support', False)
         
-        # RVC
-        rvc_support = config.get('rvc_support', False)
-        set_widget_state(self.rvc_checkbox, "disabled" if rvc_support else "normal", False)
+        # Disable XTTS checkboxes if XTTS is installed in any form
+        set_widget_state(self.xtts_checkbox, not xtts_support, False)
+        set_widget_state(self.xtts_cpu_checkbox, not xtts_support, False)
+        set_widget_state(self.launch_xtts_checkbox, xtts_support, False)
         
-        # Disable both XTTS and XTTS CPU checkboxes if XTTS is installed in any form
-        set_widget_state(self.xtts_checkbox, "disabled" if xtts_support else "normal", False)
-        set_widget_state(self.xtts_cpu_checkbox, "disabled" if xtts_support else "normal", False)
-        
-        xtts_launch_checkbox = next(widget for widget in self.launch_frame.winfo_children() if isinstance(widget, ctk.CTkCheckBox) and widget.cget("text") == "XTTS")
-        set_widget_state(xtts_launch_checkbox, "normal" if xtts_support else "disabled", False)
-        
-        cpu_checkbox = next(widget for widget in self.launch_frame.winfo_children() if isinstance(widget, ctk.CTkCheckBox) and widget.cget("text") == "Use CPU")
-        lowvram_checkbox = next(widget for widget in self.launch_frame.winfo_children() if isinstance(widget, ctk.CTkCheckBox) and widget.cget("text") == "Low VRAM")
-        deepspeed_checkbox = next(widget for widget in self.launch_frame.winfo_children() if isinstance(widget, ctk.CTkCheckBox) and widget.cget("text") == "DeepSpeed")
-        
+        # Set CPU/GPU options based on XTTS installation
         if xtts_support:
             if xtts_cuda_support:
-                set_widget_state(cpu_checkbox, "normal", False)
-                set_widget_state(lowvram_checkbox, "normal", False)
-                set_widget_state(deepspeed_checkbox, "normal", True)
+                set_widget_state(self.xtts_cpu_launch_checkbox, True, False)
+                set_widget_state(self.deepspeed_checkbox, True, True)
             else:
-                set_widget_state(cpu_checkbox, "normal", True)
-                set_widget_state(lowvram_checkbox, "disabled", False)
-                set_widget_state(deepspeed_checkbox, "disabled", False)
+                set_widget_state(self.xtts_cpu_launch_checkbox, True, True)
+                set_widget_state(self.deepspeed_checkbox, False, False)
         else:
-            set_widget_state(cpu_checkbox, "disabled", False)
-            set_widget_state(lowvram_checkbox, "disabled", False)
-            set_widget_state(deepspeed_checkbox, "disabled", False)
+            set_widget_state(self.xtts_cpu_launch_checkbox, False, False)
+            set_widget_state(self.deepspeed_checkbox, False, False)
+
+        # Voxtral
+        voxtral_support = config.get('voxtral_support', False)
+        set_widget_state(self.voxtral_checkbox, not voxtral_support, False)
+        set_widget_state(self.launch_voxtral_checkbox, voxtral_support, False)
 
         # Silero
         silero_support = config.get('silero_support', False)
-        set_widget_state(self.silero_checkbox, "disabled" if silero_support else "normal", False)
-        silero_launch_checkbox = next(widget for widget in self.launch_frame.winfo_children() if isinstance(widget, ctk.CTkCheckBox) and widget.cget("text") == "Silero")
-        set_widget_state(silero_launch_checkbox, "normal" if silero_support else "disabled", False)
+        set_widget_state(self.silero_checkbox, not silero_support, False)
+        set_widget_state(self.launch_silero_checkbox, silero_support, False)
 
         # RVC
         rvc_support = config.get('rvc_support', False)
-        set_widget_state(self.rvc_checkbox, "disabled" if rvc_support else "normal", False)
+        set_widget_state(self.rvc_checkbox, not rvc_support, False)
 
         # XTTS Fine-tuning
         xtts_finetuning_support = config.get('xtts_finetuning_support', False)
-        set_widget_state(self.xtts_finetuning_checkbox, "disabled" if xtts_finetuning_support else "normal", False)
+        set_widget_state(self.xtts_finetuning_checkbox, not xtts_finetuning_support, False)
 
         # WhisperX
         whisperx_support = config.get('whisperx_support', False)
         if whisperx_support:
-            set_widget_state(self.whisperx_checkbox, "disabled", False)
+            set_widget_state(self.whisperx_checkbox, False, False)
         elif xtts_finetuning_support:
             # XTTS Fine-tuning is installed
-            set_widget_state(self.whisperx_checkbox, "disabled", False)
-        elif self.xtts_finetuning_var.get():
+            set_widget_state(self.whisperx_checkbox, False, False)
+        elif self.xtts_finetuning_checkbox.isChecked():
             # XTTS Fine-tuning is not installed but selected
-            set_widget_state(self.whisperx_checkbox, "disabled", True)
+            set_widget_state(self.whisperx_checkbox, False, True)
         else:
-            set_widget_state(self.whisperx_checkbox, "normal", False)
+            set_widget_state(self.whisperx_checkbox, True, False)
 
         # Update launch and install buttons state
-        self.launch_button.configure(state="normal" if pandrator_installed else "disabled")
-        self.install_button.configure(state="normal")
-        self.update_button.configure(state="normal" if pandrator_installed else "disabled")
+        self.launch_button.setEnabled(pandrator_installed)
+        self.install_button.setEnabled(True)
+        self.update_button.setEnabled(pandrator_installed)
+
+    def update_whisperx_checkbox(self):
+        """Update WhisperX checkbox when XTTS Fine-tuning is toggled"""
+        installed_components = self.get_installed_components()
+        xtts_finetuning_support = installed_components.get('xtts_finetuning', False)
+        
+        if self.xtts_finetuning_checkbox.isChecked() and not xtts_finetuning_support:
+            self.whisperx_checkbox.setChecked(True)
+            self.whisperx_checkbox.setEnabled(False)
+        elif xtts_finetuning_support:
+            self.whisperx_checkbox.setChecked(False)
+            self.whisperx_checkbox.setEnabled(False)
+        else:
+            self.whisperx_checkbox.setEnabled(True)
 
     def get_installed_components(self):
         pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
@@ -559,130 +516,235 @@ class PandratorInstaller(ctk.CTk):
         
         return {
             'xtts': config.get('xtts_support', False),
+            'voxtral': config.get('voxtral_support', False),
             'silero': config.get('silero_support', False),
             'rvc': config.get('rvc_support', False),
             'whisperx': config.get('whisperx_support', False),
             'xtts_finetuning': config.get('xtts_finetuning_support', False)
         }
 
-    def install_whisperx(self, conda_path, env_name):
-        logging.info(f"Installing WhisperX in {env_name}...")
-        env_path = os.path.join(conda_path, 'envs', env_name)
-        try:
-            ## Install Git through Conda
-            #self.run_command([
-            #    os.path.join(conda_path, 'Scripts', 'conda.exe'),
-            #    'install', '-p', env_path,
-            #    'git', '-c', 'conda-forge', '-y'
-            #])
-            
-            # Install PyTorch
-            self.run_command([
-                os.path.join(conda_path, 'Scripts', 'conda.exe'),
-                'run', '-p', env_path,
-                'python', '-m', 'pip', 'install',
-                'torch==2.5.1', 'torchvision==0.20.1', 'torchaudio==2.5.1',
-                '--index-url', 'https://download.pytorch.org/whl/cu118'
-            ])
-            
-            # Install cuDNN
-            self.run_command([
-                os.path.join(conda_path, 'Scripts', 'conda.exe'),
-                'install', '-p', env_path,
-                'cudnn=8.9.7.29', '-c', 'conda-forge', '-y'
-            ])
-            
-            # Install ffmpeg
-            self.run_command([
-                os.path.join(conda_path, 'Scripts', 'conda.exe'),
-                'install', '-p', env_path,
-                'ffmpeg', '-c', 'conda-forge', '-y'
-            ])
-            
-            # Install CTranslate2
-            self.run_command([
-               os.path.join(conda_path, 'Scripts', 'conda.exe'),
-               'run', '-p', env_path, 'python', '-m', 
-               'pip', 'install',
-               'pip<24'
-            ])
+    def disable_buttons(self):
+        """Disable all buttons during processing"""
+        self.install_button.setEnabled(False)
+        self.update_button.setEnabled(False)
+        self.launch_button.setEnabled(False)
+        
+        # Disable checkboxes in install tab
+        for child in self.install_tab.findChildren(QCheckBox):
+            child.setEnabled(False)
+        
+        # Disable checkboxes in launch tab
+        for child in self.launch_tab.findChildren(QCheckBox):
+            child.setEnabled(False)
 
-            # Install WhisperX
-            self.run_command([
-                os.path.join(conda_path, 'Scripts', 'conda.exe'),
-                'run', '-p', env_path, 'python', '-m',
-                'pip', 'install', 'whisperx'
-            ])
-            
-            # Install CTranslate2
-            self.run_command([
-               os.path.join(conda_path, 'Scripts', 'conda.exe'),
-               'run', '-p', env_path, 'python', '-m', 
-               'pip', 'install',
-               'ctranslate2==4.4.0'
-            ])
-            
-            logging.info("WhisperX installation completed successfully.")
+    def enable_buttons(self):
+        """Re-enable buttons after processing"""
+        self.refresh_ui_state()
+
+    def update_progress(self, value):
+        """Update progress bar value (0.0 to 1.0)"""
+        self.progress_bar.setValue(int(value * 100))
+
+    def update_status(self, text):
+        """Update status label text"""
+        self.status_label.setText(text)
+        logging.info(text)
+
+    # Installation methods
+    def initialize_logging(self):
+        """Initialize robust file, console, and GUI logging."""
+        pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
+        os.makedirs(pandrator_path, exist_ok=True)
+        logs_path = os.path.join(pandrator_path, 'Logs')
+        os.makedirs(logs_path, exist_ok=True)
+
+        current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.log_filename = os.path.join(logs_path, f'pandrator_installation_log_{current_time}.log')
+
+        logger = logging.getLogger()
+        logger.setLevel(logging.DEBUG)
+
+        for handler in list(logger.handlers):
+            if getattr(handler, '_pandrator_managed_handler', False):
+                logger.removeHandler(handler)
+                try:
+                    handler.close()
+                except Exception:
+                    pass
+
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+
+        file_handler = logging.FileHandler(self.log_filename, encoding='utf-8')
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(formatter)
+        file_handler._pandrator_managed_handler = True
+
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(logging.INFO)
+        console_handler.setFormatter(formatter)
+        console_handler._pandrator_managed_handler = True
+
+        gui_handler = QtLogHandler(self.log_emitter)
+        gui_handler.setLevel(logging.INFO)
+        gui_handler.setFormatter(formatter)
+        gui_handler._pandrator_managed_handler = True
+
+        logger.addHandler(file_handler)
+        logger.addHandler(console_handler)
+        logger.addHandler(gui_handler)
+
+        self.open_log_button.setEnabled(True)
+        self.open_log_from_tab_button.setEnabled(True)
+
+        logging.info(f"Logging initialized. Writing to: {self.log_filename}")
+
+    def configure_tls_certificates(self, force=False):
+        if self.tls_configured and not force:
+            return
+
+        self.tls_configured = True
+
+        for env_name in ('SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE'):
+            value = os.environ.get(env_name)
+            if value and not os.path.exists(value):
+                logging.warning(f"Ignoring invalid {env_name} path: {value}")
+                os.environ.pop(env_name, None)
+
+        try:
+            import certifi
+
+            ca_bundle = certifi.where()
+            if ca_bundle and os.path.exists(ca_bundle):
+                os.environ['SSL_CERT_FILE'] = ca_bundle
+                os.environ['REQUESTS_CA_BUNDLE'] = ca_bundle
+                os.environ['CURL_CA_BUNDLE'] = ca_bundle
+                self.ca_bundle_path = ca_bundle
+                logging.info(f"Configured TLS certificate bundle: {ca_bundle}")
+            else:
+                logging.warning("certifi did not provide a usable certificate bundle path.")
+        except Exception as e:
+            logging.warning(f"Could not configure TLS certificate bundle via certifi: {str(e)}")
+
+    def is_certificate_error(self, error):
+        error_text = str(error).lower()
+        return (
+            'certificate verify failed' in error_text
+            or 'sslcertverificationerror' in error_text
+            or 'unable to get local issuer certificate' in error_text
+        )
+
+    def shutdown_logging(self):
+        logger = logging.getLogger()
+        for handler in list(logger.handlers):
+            if getattr(handler, '_pandrator_managed_handler', False):
+                logger.removeHandler(handler)
+                try:
+                    handler.close()
+                except Exception:
+                    pass
+
+    def get_network_subprocess_env(self):
+        env = os.environ.copy()
+        if self.ca_bundle_path and os.path.exists(self.ca_bundle_path):
+            env['SSL_CERT_FILE'] = self.ca_bundle_path
+            env['REQUESTS_CA_BUNDLE'] = self.ca_bundle_path
+            env['CURL_CA_BUNDLE'] = self.ca_bundle_path
+            env['GIT_SSL_CAINFO'] = self.ca_bundle_path
+        return env
+
+    def is_admin(self):
+        """Check if the current process has admin privileges."""
+        try:
+            return ctypes.windll.shell32.IsUserAnAdmin() != 0
+        except:
+            return False
+
+    def install_pytorch_for_xtts_finetuning(self, pandrator_path, env_name):
+        logging.info(f"Installing PyTorch for XTTS Fine-tuning in {env_name}...")
+        try:
+            self.run_pixi_in_env(
+                pandrator_path,
+                env_name,
+                [
+                    'python', '-m', 'pip', 'install',
+                    'torch==2.2.0+cu118', 'torchaudio==2.2.0+cu118',
+                    '--index-url', 'https://download.pytorch.org/whl/cu118'
+                ]
+            )
+            logging.info("PyTorch for XTTS Fine-tuning installed successfully.")
         except subprocess.CalledProcessError as e:
-            logging.error(f"Failed to install WhisperX in {env_name}")
+            logging.error(f"Failed to install PyTorch for XTTS Fine-tuning in {env_name}")
             logging.error(f"Error message: {str(e)}")
             raise
 
-    def remove_directory(self, path):
-        max_attempts = 5
-        for attempt in range(max_attempts):
-            try:
-                shutil.rmtree(path)
-                return True
-            except PermissionError:
-                time.sleep(1)  # Wait for a second before retrying
-        return False
-    
     def install_pandrator(self):
         pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
         pandrator_already_installed = os.path.exists(pandrator_path)
         
         installed_components = self.get_installed_components()
         
+        # Get checkbox states
+        self.pandrator_var = self.pandrator_checkbox.isChecked()
+        self.xtts_var = self.xtts_checkbox.isChecked()
+        self.xtts_cpu_var = self.xtts_cpu_checkbox.isChecked()
+        self.silero_var = self.silero_checkbox.isChecked()
+        self.voxtral_var = self.voxtral_checkbox.isChecked()
+        self.rvc_var = self.rvc_checkbox.isChecked()
+        self.whisperx_var = self.whisperx_checkbox.isChecked()
+        self.xtts_finetuning_var = self.xtts_finetuning_checkbox.isChecked()
+        
         new_components_selected = (
-            (self.xtts_var.get() or self.xtts_cpu_var.get()) and not installed_components['xtts'] or
-            self.silero_var.get() and not installed_components['silero'] or
-            self.rvc_var.get() and not installed_components['rvc'] or
-            self.whisperx_var.get() and not installed_components['whisperx']
+            (self.xtts_var or self.xtts_cpu_var) and not installed_components['xtts'] or
+            self.silero_var and not installed_components['silero'] or
+            self.voxtral_var and not installed_components['voxtral'] or
+            self.rvc_var and not installed_components['rvc'] or
+            self.whisperx_var and not installed_components['whisperx']
         )
         
-        if pandrator_already_installed and not self.pandrator_var.get():
+        if pandrator_already_installed and not self.pandrator_var:
             if not new_components_selected:
-                messagebox.showinfo("Info", "No new components selected for installation.")
+                QMessageBox.information(self, "Info", "No new components selected for installation.")
                 return
-        elif not pandrator_already_installed and not self.pandrator_var.get():
-            messagebox.showerror("Error", "Pandrator must be installed first before adding new components.")
+        elif not pandrator_already_installed and not self.pandrator_var:
+            QMessageBox.critical(self, "Error", "Pandrator must be installed first before adding new components.")
             return
 
         self.disable_buttons()
-        self.progress_bar.set(0)
-        self.status_label.configure(text="Installing...")
+        self.progress_bar.setValue(0)
+        self.status_label.setText("Installing...")
 
         self.initialize_logging()
 
         logging.info("Installation process started.")
 
-        threading.Thread(target=self.install_process, daemon=True).start()
+        # Create worker thread to run the installation
+        self.worker = Worker(self.install_process)
+        self.worker.update_progress.connect(self.update_progress)
+        self.worker.update_status.connect(self.update_status)
+        self.worker.finished.connect(self.on_installation_finished)
+        self.worker.error.connect(self.on_installation_error)
+        self.worker.start()
+
+    def on_installation_finished(self):
+        """Handle completion of installation process"""
+        self.update_status("Installation complete!")
+        self.enable_buttons()
+        QMessageBox.information(self, "Success", "Installation completed successfully!")
+
+    def on_installation_error(self, error_message):
+        """Handle installation errors"""
+        self.update_status(f"Installation failed: {error_message}")
+        self.enable_buttons()
+        QMessageBox.critical(self, "Installation Error", f"Installation failed:\n\n{error_message}\n\nCheck the log for more details.")
 
     def open_log_file(self):
-        if hasattr(self, 'log_filename') and os.path.exists(self.log_filename):
+        """Open the log file with the default system application"""
+        if hasattr(self, 'log_filename') and self.log_filename and os.path.exists(self.log_filename):
             os.startfile(self.log_filename)
         else:
-            self.status_label.configure(text="No log file available.")
+            QMessageBox.warning(self, "Log Not Available", "No log file is available yet.")
 
-    def update_progress(self, value):
-        self.progress_bar.set(value)
-
-    def update_status(self, text):
-        self.status_label.configure(text=text)
-        logging.info(text)
-
-    def run_command(self, command, use_shell=False, cwd=None):
+    def run_command(self, command, use_shell=False, cwd=None, env=None):
         try:
             if use_shell:
                 process = subprocess.Popen(
@@ -691,8 +753,9 @@ class PandratorInstaller(ctk.CTk):
                     stderr=subprocess.PIPE,
                     shell=True,
                     cwd=cwd,
-                    encoding='utf-8',  # Add explicit encoding
-                    errors='replace'   # Replace invalid characters instead of failing
+                    env=env,
+                    encoding='utf-8',
+                    errors='replace'
                 )
             else:
                 process = subprocess.Popen(
@@ -700,8 +763,9 @@ class PandratorInstaller(ctk.CTk):
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     cwd=cwd,
-                    encoding='utf-8',  # Add explicit encoding
-                    errors='replace'   # Replace invalid characters instead of failing
+                    env=env,
+                    encoding='utf-8',
+                    errors='replace'
                 )
             
             stdout, stderr = process.communicate()
@@ -729,43 +793,45 @@ class PandratorInstaller(ctk.CTk):
             return False
 
     def install_chocolatey(self):
+        """Install Chocolatey using PowerShell's Invoke-WebRequest (no deprecated WebClient).
+
+        Returns True on success, False otherwise.  Requires elevated process.
+        """
         logging.info("Installing Chocolatey...")
         try:
-            powershell_command = """
-            Set-ExecutionPolicy Bypass -Scope Process -Force; 
-            [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; 
-            iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-            """
-            
-            # Run the installation command
+            ps_script = """
+    $ProgressPreference = 'SilentlyContinue'
+    $ErrorActionPreference = 'Stop'
+    $installer = Join-Path $env:TEMP 'choco_install.ps1'
+Invoke-WebRequest -Uri 'https://community.chocolatey.org/install.ps1' -OutFile $installer
+powershell -ExecutionPolicy Bypass -File $installer
+Remove-Item $installer -Force -ErrorAction SilentlyContinue
+    """
             process = subprocess.Popen(
-                ["powershell", "-Command", powershell_command],
+                ["powershell", "-Command", ps_script],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                creationflags=subprocess.CREATE_NO_WINDOW
             )
-            
-            # Capture and log the output
-            for line in process.stdout:
-                logging.info(line.strip())
-            
-            process.wait()
-            
+            stdout, stderr = process.communicate()
+
             if process.returncode == 0:
                 logging.info("Chocolatey installed successfully.")
-                
                 # Enable global confirmation
-                subprocess.run(["powershell", "-Command", "choco feature enable -n=allowGlobalConfirmation"], 
-                               check=True, capture_output=True, text=True)
+                subprocess.run(
+                    ["powershell", "-Command", "choco feature enable -n=allowGlobalConfirmation"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
                 logging.info("Global confirmation enabled for Chocolatey.")
-                
-                # Refresh environment variables
+                # Refresh env vars so choco.exe is on PATH for subsequent calls
                 self.refresh_environment_variables()
                 return True
             else:
-                error_output = process.stderr.read()
-                logging.error(f"Failed to install Chocolatey: {error_output}")
+                logging.error(f"Failed to install Chocolatey. Exit code: {process.returncode}")
+                logging.error(f"STDOUT: {stdout}")
+                logging.error(f"STDERR: {stderr}")
                 return False
         except Exception as e:
             logging.error(f"An error occurred during Chocolatey installation: {str(e)}")
@@ -773,21 +839,51 @@ class PandratorInstaller(ctk.CTk):
             return False
 
     def refresh_environment_variables(self):
-        """Refresh the environment variables for the current session."""
+        """Refresh environment variables from the Windows registry for the current process.
+
+        Reads machine and user-level environment variables from the registry and injects
+        them into os.environ AND the current process environment block via
+        SetEnvironmentVariableW.  This ensures child processes spawned by subprocess
+        inherit the updated PATH/COMSPEC etc. without rebooting or broadcasting
+        WM_SETTINGCHANGE (which is unreliable from a non-elevated context).
+        """
         try:
-            # Refresh environment variables for the current session
-            logging.info("Refreshing environment variables...")
-            HWND_BROADCAST = 0xFFFF
-            WM_SETTINGCHANGE = 0x001A
-            SMTO_ABORTIFHUNG = 0x0002
-            result = ctypes.windll.user32.SendMessageTimeoutW(
-                HWND_BROADCAST, WM_SETTINGCHANGE, 0, "Environment",
-                SMTO_ABORTIFHUNG, 5000, ctypes.byref(ctypes.c_long())
+            logging.info("Refreshing environment variables from registry...")
+
+            def _read_registry_env(key_path, root=winreg.HKEY_LOCAL_MACHINE):
+                try:
+                    with winreg.OpenKey(
+                        root, key_path,
+                        0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY,
+                    ) as key:
+                        i = 0
+                        while True:
+                            try:
+                                name, value, value_type = winreg.EnumValue(key, i)
+                                if value_type in (
+                                    winreg.REG_SZ,
+                                    winreg.REG_EXPAND_SZ,
+                                ):
+                                    os.environ[name] = value
+                                    ctypes.windll.kernel32.SetEnvironmentVariableW(
+                                        name, value
+                                    )
+                                i += 1
+                            except OSError:
+                                break
+                except Exception as e:
+                    logging.warning(
+                        f"Could not read env vars from {key_path}: {e}"
+                    )
+
+            # Machine-level environment variables
+            _read_registry_env(
+                r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
             )
-            if result == 0:
-                logging.warning("Environment variables refresh timed out.")
-            else:
-                logging.info("Environment variables refreshed successfully.")
+            # User-level environment variables
+            _read_registry_env(r"Environment", root=winreg.HKEY_CURRENT_USER)
+
+            logging.info("Environment variables refreshed from registry.")
         except Exception as e:
             logging.error(f"Failed to refresh environment variables: {str(e)}")
             logging.error(traceback.format_exc())
@@ -799,14 +895,7 @@ class PandratorInstaller(ctk.CTk):
     def show_calibre_installation_message(self):
         message = ("Calibre installation failed. Please install Calibre manually.\n"
                    "You can download it from: https://calibre-ebook.com/download_windows")
-        messagebox.showwarning("Calibre Installation Required", message)
-
-    def refresh_env_in_new_session(self):
-        refresh_cmd = 'powershell -Command "[System.Environment]::GetEnvironmentVariables([System.EnvironmentVariableTarget]::Machine)"'
-        output, _ = self.run_command(refresh_cmd, use_shell=True)
-        new_env = dict(line.split('=', 1) for line in output.strip().split('\n') if '=' in line)
-        os.environ.update(new_env)
-        logging.info("Refreshed environment variables in a new session")
+        QMessageBox.warning(self, "Calibre Installation Required", message)
 
     def install_with_chocolatey(self, package_name, args=""):
         logging.info(f"Attempting to install {package_name} with Chocolatey...")
@@ -857,11 +946,43 @@ class PandratorInstaller(ctk.CTk):
         return False
 
     def install_calibre(self):
+        """Install Calibre.  Prefers winget, falls back to Chocolatey."""
         logging.info("Checking installation for Calibre")
         if not self.check_program_installed('calibre'):
             logging.info("Installing Calibre...")
+
+            # Try winget first (built-in on Windows 10+/11)
+            winget_exe = os.path.join(os.environ.get('LOCALAPPDATA', r'C:\Program Files\WindowsApps'),
+                                      'Microsoft.DesktopAppInstaller_8wekyb3d8bbwe', 'winget.exe')
+            winget_alt = r'C:\Program Files (x86)\Microsoft\WinGet\winget.exe'
+            winget_found = os.path.exists(winget_exe) or os.path.exists(winget_alt)
+
+            if winget_found:
+                try:
+                    self.update_status("Installing Calibre via winget...")
+                    process = subprocess.Popen(
+                        ["winget", "install", "--id", "calibre",
+                         "--accept-package-agreements", "--accept-source-agreements"],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    )
+                    stdout, stderr = process.communicate(timeout=300)
+                    if process.returncode == 0:
+                        logging.info("Calibre installed via winget.")
+                        self.refresh_environment_variables()
+                        if self.check_program_installed('calibre'):
+                            return True
+                        logging.warning("Calibre installed via winget but not detected on PATH yet.")
+                        return True
+                    else:
+                        logging.warning(f"winget calibre install returned {process.returncode}: {stderr}")
+                except subprocess.TimeoutExpired:
+                    logging.warning("winget calibre install timed out, falling back to Chocolatey.")
+                except Exception as e:
+                    logging.warning(f"winget calibre install failed: {e}, falling back to Chocolatey.")
+
+            # Fallback: Chocolatey
             if self.install_with_chocolatey('calibre'):
-                self.refresh_env_in_new_session()
+                self.refresh_environment_variables()
                 if self.check_program_installed('calibre'):
                     logging.info("Calibre installed successfully.")
                     return True
@@ -869,143 +990,435 @@ class PandratorInstaller(ctk.CTk):
                     logging.warning("Calibre installation not detected after installation attempt.")
                     return False
             else:
+                self.show_calibre_installation_message()
                 return False
         else:
             logging.info("Calibre is already installed.")
             return True
 
-    def install_conda(self, install_path):
-        logging.info("Installing Miniconda...")
-        conda_installer = 'Miniconda3-latest-Windows-x86_64.exe'
-        url = f'https://repo.anaconda.com/miniconda/{conda_installer}'
-        
-        # Download the file
-        response = requests.get(url)
-        with open(conda_installer, 'wb') as f:
-            f.write(response.content)
-        
-        self.run_command([
-            conda_installer,
-            '/InstallationType=JustMe',
-            '/AddToPath=0',
-            '/RegisterPython=0',
-            '/NoRegistry=1',
-            '/S',
-            f'/D={install_path}'
-        ])
-        os.remove(conda_installer)
+    def get_pixi_executable(self, pandrator_path):
+        return os.path.join(pandrator_path, 'bin', PIXI_BINARY_NAME)
 
-    def check_conda(self, conda_path):
-        return os.path.exists(os.path.join(conda_path, 'Scripts', 'conda.exe'))
+    def get_pixi_env_dir(self, pandrator_path, env_name):
+        return os.path.join(pandrator_path, 'envs', env_name)
 
-    def create_conda_env(self, conda_path, env_name, python_version, additional_packages=None):
-        logging.info(f"Creating conda environment {env_name}...")
-        env_path = os.path.join(conda_path, 'envs', env_name)
+    def get_pixi_manifest_path(self, pandrator_path, env_name):
+        return os.path.join(self.get_pixi_env_dir(pandrator_path, env_name), 'pixi.toml')
+
+    def get_pixi_subprocess_env(self, pandrator_path):
+        pixi_home = os.path.join(pandrator_path, PIXI_HOME_DIRNAME)
+        pixi_cache = os.path.join(pandrator_path, PIXI_CACHE_DIRNAME)
+        rattler_cache = os.path.join(pixi_cache, 'rattler')
+
+        os.makedirs(pixi_home, exist_ok=True)
+        os.makedirs(pixi_cache, exist_ok=True)
+        os.makedirs(rattler_cache, exist_ok=True)
+
+        env = os.environ.copy()
+        env['PIXI_HOME'] = pixi_home
+        env['PIXI_CACHE_DIR'] = pixi_cache
+        env['RATTLER_CACHE_DIR'] = rattler_cache
+        return env
+
+    def run_pixi_command(self, pandrator_path, arguments, cwd=None):
+        pixi_executable = self.get_pixi_executable(pandrator_path)
+        if not os.path.exists(pixi_executable):
+            raise FileNotFoundError(
+                f"Pixi executable not found at {pixi_executable}. Run Install or Update to set up Pixi."
+            )
+
+        return self.run_command(
+            [pixi_executable] + arguments,
+            cwd=cwd,
+            env=self.get_pixi_subprocess_env(pandrator_path)
+        )
+
+    def build_pixi_run_command(self, pandrator_path, env_name, command):
+        manifest_path = self.get_pixi_manifest_path(pandrator_path, env_name)
+        if not os.path.exists(manifest_path):
+            raise FileNotFoundError(
+                f"Pixi environment manifest not found for {env_name}: {manifest_path}. "
+                "Run Install or Update to migrate this installation."
+            )
+
+        return [
+            self.get_pixi_executable(pandrator_path),
+            'run',
+            '--manifest-path', manifest_path,
+            '--executable',
+        ] + command
+
+    def run_pixi_in_env(self, pandrator_path, env_name, command, cwd=None):
+        return self.run_command(
+            self.build_pixi_run_command(pandrator_path, env_name, command),
+            cwd=cwd,
+            env=self.get_pixi_subprocess_env(pandrator_path)
+        )
+
+    def check_pixi(self, pandrator_path):
+        return os.path.exists(self.get_pixi_executable(pandrator_path))
+
+    def install_pixi(self, pandrator_path):
+        logging.info("Installing Pixi...")
+        self.configure_tls_certificates()
+        bin_path = os.path.join(pandrator_path, 'bin')
+        os.makedirs(bin_path, exist_ok=True)
+
+        pixi_executable = self.get_pixi_executable(pandrator_path)
+        if os.path.exists(pixi_executable):
+            logging.info("Pixi is already installed.")
+            return
+
+        temp_pixi_path = os.path.join(tempfile.gettempdir(), 'pandrator_pixi.exe')
+
         try:
-            # Create the environment with Python
-            create_command = [
-                os.path.join(conda_path, 'Scripts', 'conda.exe'),
-                'create',
-                '-p', env_path,
-                f'python={python_version}',
-                '-y'
-            ]
-            self.run_command(create_command)
+            response = requests.get(
+                PIXI_DOWNLOAD_URL,
+                stream=True,
+                timeout=60,
+                verify=self.ca_bundle_path if self.ca_bundle_path else True,
+            )
+            response.raise_for_status()
 
-            # If it's the pandrator_installer environment, install ffmpeg from conda-forge
-            if env_name == 'pandrator_installer':
-                logging.info("Installing ffmpeg from conda-forge for pandrator_installer...")
-                ffmpeg_command = [
-                    os.path.join(conda_path, 'Scripts', 'conda.exe'),
-                    'install',
-                    '-p', env_path,
-                    'ffmpeg',
-                    '-c',
-                    'conda-forge',
-                    '-y'
-                ]
-                self.run_command(ffmpeg_command)
+            with open(temp_pixi_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
 
-            # Install additional packages if specified
-            if additional_packages:
-                logging.info(f"Installing additional packages: {', '.join(additional_packages)}")
-                install_command = [
-                    os.path.join(conda_path, 'Scripts', 'conda.exe'),
-                    'install',
-                    '-p', env_path,
-                    '-y'
-                ] + additional_packages
-                self.run_command(install_command)
+            shutil.move(temp_pixi_path, pixi_executable)
+            self.run_pixi_command(pandrator_path, ['--version'])
+            logging.info("Pixi installed successfully.")
+        finally:
+            if os.path.exists(temp_pixi_path):
+                os.remove(temp_pixi_path)
 
+    def ensure_pixi_manifest(self, pandrator_path, env_name, python_version):
+        env_dir = self.get_pixi_env_dir(pandrator_path, env_name)
+        manifest_path = self.get_pixi_manifest_path(pandrator_path, env_name)
+
+        os.makedirs(env_dir, exist_ok=True)
+
+        if not os.path.exists(manifest_path):
+            manifest_contents = (
+                "[workspace]\n"
+                f"name = \"{env_name}\"\n"
+                "channels = [\"conda-forge\"]\n"
+                "platforms = [\"win-64\"]\n\n"
+                "[dependencies]\n"
+                f"python = \"{python_version}.*\"\n"
+                "pip = \"*\"\n"
+            )
+
+            with open(manifest_path, 'w', encoding='utf-8') as f:
+                f.write(manifest_contents)
+
+        return manifest_path
+
+    def create_pixi_env(self, pandrator_path, env_name, python_version):
+        logging.info(f"Creating pixi environment {env_name}...")
+        manifest_path = self.ensure_pixi_manifest(pandrator_path, env_name, python_version)
+
+        try:
+            self.run_pixi_command(
+                pandrator_path,
+                ['install', '--manifest-path', manifest_path],
+                cwd=self.get_pixi_env_dir(pandrator_path, env_name)
+            )
         except subprocess.CalledProcessError as e:
-            logging.error(f"Failed to create or setup conda environment {env_name}")
-            logging.error(f"Error output: {e.stderr.decode('utf-8')}")
+            logging.error(f"Failed to create or set up pixi environment {env_name}")
+            logging.error(f"Error output: {e.stderr}")
             raise
 
-    def install_requirements(self, conda_path, env_name, requirements_file):
+    def add_pixi_conda_package(self, pandrator_path, env_name, package_spec):
+        logging.info(f"Adding {package_spec} to {env_name} via pixi...")
+        manifest_path = self.get_pixi_manifest_path(pandrator_path, env_name)
+        package_name, separator, package_version = package_spec.partition('=')
+        package_name = package_name.strip()
+        package_version = package_version.strip() if separator else None
+
+        if os.path.exists(manifest_path):
+            with open(manifest_path, 'r', encoding='utf-8', errors='replace') as f:
+                for line in f:
+                    if line.strip().startswith(f'{package_name} ='):
+                        if package_version is None or f'"{package_version}"' in line:
+                            logging.info(f"{package_name} is already present in {env_name}, skipping pixi add.")
+                            return
+                        logging.info(f"{package_name} is present with a different version in {env_name}, updating it.")
+                        break
+
+        self.run_pixi_command(
+            pandrator_path,
+            ['add', '--manifest-path', manifest_path, package_spec],
+            cwd=self.get_pixi_env_dir(pandrator_path, env_name)
+        )
+
+    def extract_import_candidates(self, requirements_file):
+        candidates = []
+        seen = set()
+        import_aliases = {
+            'google-genai': 'google.genai',
+        }
+
+        with open(requirements_file, 'r', encoding='utf-8-sig', errors='replace') as f:
+            for raw_line in f:
+                line = raw_line.split('#', 1)[0].strip()
+                if not line or line.startswith(('-', 'git+', 'http://', 'https://', '.', '/')):
+                    continue
+
+                requirement = line.split(';', 1)[0].strip()
+                requirement = requirement.split('@', 1)[0].strip()
+
+                package_name = requirement
+                for separator in ('[', '==', '>=', '<=', '~=', '!=', '>', '<', '='):
+                    package_name = package_name.split(separator, 1)[0].strip()
+
+                import_name = import_aliases.get(package_name.lower(), package_name.replace('-', '_'))
+                if import_name and import_name not in seen:
+                    seen.add(import_name)
+                    candidates.append(import_name)
+
+        return candidates
+
+    def load_pypi_requirements(self, requirements_file):
+        requirement_specs = []
+        unsupported_lines = []
+
+        with open(requirements_file, 'rb') as f:
+            requirements_text = f.read().decode('utf-8-sig', errors='replace')
+
+        for raw_line in requirements_text.splitlines():
+            line = raw_line.split('#', 1)[0].strip()
+            if not line:
+                continue
+
+            if line.startswith(('-', 'git+', 'http://', 'https://', 'file://', '.', '/')):
+                unsupported_lines.append(line)
+                continue
+
+            requirement_specs.append(line)
+
+        return requirements_text, requirement_specs, unsupported_lines
+
+    def try_import_requirements(self, pandrator_path, env_name, requirements_file):
+        logging.info(f"Running best-effort import checks for {requirements_file}...")
+
+        for import_name in self.extract_import_candidates(requirements_file):
+            try:
+                self.run_pixi_in_env(
+                    pandrator_path,
+                    env_name,
+                    ['python', '-c', f'import importlib; importlib.import_module("{import_name}")']
+                )
+            except subprocess.CalledProcessError as e:
+                logging.warning(
+                    f"Import check failed for {import_name} after installing {requirements_file}. "
+                    f"This is best-effort only and may be expected on Windows. STDERR: {e.stderr}"
+                )
+
+    def install_requirements(self, pandrator_path, env_name, requirements_file):
         logging.info(f"Installing requirements for {env_name}...")
-        env_path = os.path.join(conda_path, 'envs', env_name)
-        
-        # Log requirements file contents
-        with open(requirements_file, 'r') as f:
-            reqs = f.read()
-            logging.info(f"Requirements file contents:\n{reqs}")
-        
-        self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'python', '-m', 'pip', 'install', '-r', requirements_file])
-        
-        # Only check for dulwich in pandrator_installer environment
+
+        requirements_text, requirement_specs, unsupported_lines = self.load_pypi_requirements(requirements_file)
+        logging.info(f"Requirements file contents:\n{requirements_text}")
+
+        if requirement_specs:
+            manifest_path = self.get_pixi_manifest_path(pandrator_path, env_name)
+            self.run_pixi_command(
+                pandrator_path,
+                ['add', '--manifest-path', manifest_path, '--pypi'] + requirement_specs,
+                cwd=self.get_pixi_env_dir(pandrator_path, env_name)
+            )
+        else:
+            logging.info(f"No installable requirements found in {requirements_file}")
+
+        if unsupported_lines:
+            logging.warning(
+                "Unsupported requirement lines for pixi add detected; "
+                f"falling back to pip install -r for {requirements_file}: {unsupported_lines}"
+            )
+            self.run_pixi_in_env(
+                pandrator_path,
+                env_name,
+                ['python', '-m', 'pip', 'install', '-r', requirements_file]
+            )
+
+        self.try_import_requirements(pandrator_path, env_name, requirements_file)
+
         if env_name == 'pandrator_installer':
             logging.info("Checking if dulwich is installed in pandrator_installer environment...")
             try:
-                self.run_command([
-                    os.path.join(conda_path, 'Scripts', 'conda.exe'),
-                    'run', '-p', env_path,
-                    'python', '-c', 'import dulwich; print(f"Dulwich version {dulwich.__version__} is installed")'
-                ])
+                self.run_pixi_in_env(
+                    pandrator_path,
+                    env_name,
+                    ['python', '-c', 'import dulwich; print(f"Dulwich version {dulwich.__version__} is installed")']
+                )
                 logging.info("Dulwich check completed successfully")
             except subprocess.CalledProcessError:
                 logging.warning("Dulwich not found in pandrator_installer environment, installing separately...")
                 try:
-                    self.run_command([
-                        os.path.join(conda_path, 'Scripts', 'conda.exe'),
-                        'run', '-p', env_path, 'python', '-m',
-                        'pip', 'install', 'dulwich'
-                    ])
+                    self.run_pixi_in_env(
+                        pandrator_path,
+                        env_name,
+                        ['python', '-m', 'pip', 'install', 'dulwich']
+                    )
                     logging.info("Dulwich installed successfully in pandrator_installer environment")
                 except subprocess.CalledProcessError as e:
                     logging.error(f"Failed to install dulwich in pandrator_installer environment: {str(e)}")
                     raise
 
-    def install_package(self, conda_path, env_name, package):
+    def install_package(self, pandrator_path, env_name, package):
         logging.info(f"Installing {package} in {env_name}...")
-        env_path = os.path.join(conda_path, 'envs', env_name)
-        self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'pip', 'install', package])
+        self.run_pixi_in_env(
+            pandrator_path,
+            env_name,
+            ['python', '-m', 'pip', 'install', package]
+        )
 
-    def install_pytorch_and_xtts_api_server(self, conda_path, env_name):
-        logging.info(f"Installing xtts-api-server, PyTorch, and FFmpeg in {env_name}...")
-        env_path = os.path.join(conda_path, 'envs', env_name)
-        
+    def build_xtts_launcher_command(self, use_cpu=False, pixi_path=None):
+        command = ['cmd', '/c', 'run.bat']
+        if use_cpu:
+            command.append('--cpu')
+        else:
+            command.extend(['--backend', 'cuda'])
+
+        if pixi_path:
+            command.extend(['--pixi-path', pixi_path])
+
+        return command
+
+    def _read_text_if_exists(self, file_path):
+        if not os.path.exists(file_path):
+            return ""
         try:
-            # Install xtts-api-server package
-            xtts_cmd = [os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'python', '-m', 'pip', 'install', 'xtts-api-server']
-            self.run_command(xtts_cmd)
-            
-            # Install PyTorch
-            if self.xtts_cpu_var.get():
-                pytorch_cmd = [os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'python', '-m', 'pip', 'install', 'torch==2.1.1', 'torchaudio==2.1.1']
-            else:
-                pytorch_cmd = [os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'python', '-m', 'pip', 'install', 'torch==2.1.1+cu118', 'torchaudio==2.1.1+cu118', '--extra-index-url', 'https://download.pytorch.org/whl/cu118']
-            self.run_command(pytorch_cmd)
-            
-            # Install FFmpeg
-            ffmpeg_cmd = [os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'conda', 'install', '-c', 'conda-forge', 'ffmpeg', '-y']
-            self.run_command(ffmpeg_cmd)
-            
-            logging.info("xtts-api-server, PyTorch, and FFmpeg installed successfully.")
-        except subprocess.CalledProcessError as e:
-            logging.error("Error installing xtts-api-server, PyTorch, or FFmpeg.")
-            logging.error(f"Error output: {e.stderr.decode('utf-8')}")
-            raise
+            with open(file_path, 'r', encoding='utf-8', errors='replace') as handle:
+                return handle.read()
+        except OSError:
+            return ""
+
+    def get_xtts_pixi_argument(self, xtts_repo_path, pixi_path):
+        if not pixi_path:
+            return None
+
+        run_bat_contents = self._read_text_if_exists(os.path.join(xtts_repo_path, 'run.bat')).lower()
+        run_py_contents = self._read_text_if_exists(os.path.join(xtts_repo_path, 'run.py')).lower()
+        if '--pixi-path' in run_bat_contents or '--pixi-path' in run_py_contents:
+            return pixi_path
+
+        logging.info("XTTS launcher does not advertise --pixi-path, skipping shared Pixi argument.")
+        return None
+
+    def terminate_process_tree(self, process, timeout=10):
+        if process is None:
+            return
+
+        try:
+            parent = psutil.Process(process.pid)
+        except psutil.NoSuchProcess:
+            return
+
+        try:
+            for child in parent.children(recursive=True):
+                try:
+                    child.terminate()
+                except psutil.AccessDenied:
+                    logging.warning(f"Access denied when terminating child process with PID: {child.pid}")
+            parent.terminate()
+            process.wait(timeout=timeout)
+            return
+        except (psutil.TimeoutExpired, subprocess.TimeoutExpired):
+            logging.warning(f"Process tree did not terminate in {timeout}s, forcing kill")
+        except psutil.NoSuchProcess:
+            return
+
+        try:
+            for child in parent.children(recursive=True):
+                try:
+                    child.kill()
+                except psutil.AccessDenied:
+                    logging.warning(f"Access denied when killing child process with PID: {child.pid}")
+            parent.kill()
+        except psutil.NoSuchProcess:
+            return
+
+    def is_xtts_runtime_ready(self, xtts_repo_path):
+        run_bat_path = os.path.join(xtts_repo_path, 'run.bat')
+        env_python_path = os.path.join(xtts_repo_path, '.pixi', 'envs', 'default', 'python.exe')
+        return all(os.path.exists(path) for path in (run_bat_path, env_python_path))
+
+    def install_xtts_api_server(self, xtts_repo_path, use_cpu=False, pixi_path=None):
+        logging.info(f"Bootstrapping XTTS2 API server in {xtts_repo_path}...")
+
+        run_script_path = os.path.join(xtts_repo_path, 'run.bat')
+        if not os.path.exists(run_script_path):
+            raise FileNotFoundError(f"XTTS2 run script not found at: {run_script_path}")
+
+        if self.is_port_in_use(8020):
+            raise RuntimeError("XTTS server cannot be bootstrapped because port 8020 is already in use.")
+
+        xtts_install_log_file = os.path.join(xtts_repo_path, 'xtts_install.log')
+        command = self.build_xtts_launcher_command(
+            use_cpu=use_cpu,
+            pixi_path=self.get_xtts_pixi_argument(xtts_repo_path, pixi_path),
+        )
+
+        log_handle = open(xtts_install_log_file, 'a', encoding='utf-8')
+        process = None
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=xtts_repo_path,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+            )
+
+            if not self.check_xtts_server_online(
+                'http://127.0.0.1:8020',
+                max_attempts=360,
+                wait_interval=5,
+                process=process,
+            ):
+                return_code = process.poll()
+                if return_code is not None:
+                    raise RuntimeError(
+                        f"XTTS2 bootstrap process exited before server was ready (exit code {return_code}). "
+                        f"See log: {xtts_install_log_file}"
+                    )
+                raise RuntimeError(
+                    "XTTS2 bootstrap did not bring the server online in time. "
+                    f"See log: {xtts_install_log_file}"
+                )
+        finally:
+            if process is not None:
+                self.terminate_process_tree(process)
+            log_handle.close()
+
+    def is_voxtral_runtime_ready(self, voxtral_repo_path):
+        venv_python_path = os.path.join(voxtral_repo_path, '.runtime', 'venv', 'Scripts', 'python.exe')
+        return os.path.exists(venv_python_path)
+
+    def install_voxtral_api_server(self, voxtral_repo_path):
+        logging.info(f"Bootstrapping Voxtral API server in {voxtral_repo_path}...")
+        run_script_path = os.path.join(voxtral_repo_path, 'run.ps1')
+        if not os.path.exists(run_script_path):
+            raise FileNotFoundError(f"Voxtral run script not found at: {run_script_path}")
+
+        command = [
+            'powershell',
+            '-ExecutionPolicy',
+            'Bypass',
+            '-File',
+            run_script_path,
+            '-ProjectRoot',
+            voxtral_repo_path,
+            '-NoStart',
+            '-Model',
+            'gguf',
+        ]
+
+        self.run_command(
+            command,
+            cwd=voxtral_repo_path,
+        )
 
     def replace_files(self, repo_path, file_mappings):
         for src_file, dest_file in file_mappings.items():
@@ -1020,95 +1433,152 @@ class PandratorInstaller(ctk.CTk):
                 logging.error(traceback.format_exc())
                 raise
 
-    def install_silero_api_server(self, conda_path, env_name):
+    def install_silero_api_server(self, pandrator_path, env_name):
         logging.info(f"Installing Silero API server in {env_name}...")
         try:
-            self.install_package(conda_path, env_name, 'requests')
-            self.install_package(conda_path, env_name, 'silero-api-server')
+            self.install_package(pandrator_path, env_name, 'requests')
+            self.install_package(pandrator_path, env_name, 'silero-api-server')
         except subprocess.CalledProcessError as e:
             logging.error(f"Failed to install Silero API server in {env_name}")
             logging.error(f"Error message: {str(e)}")
             raise
 
-    def check_and_update_numpy(self, conda_path, env_name):
-        logging.info(f"Checking NumPy version in {env_name}...")
-        env_path = os.path.join(conda_path, 'envs', env_name)
+    def run_git_command(self, arguments, cwd=None):
+        self.configure_tls_certificates()
+        git_executable = shutil.which('git')
+        if not git_executable:
+            raise FileNotFoundError("git.exe was not found on PATH")
+
+        git_command = [git_executable]
+        if os.name == 'nt':
+            git_command.extend(['-c', 'http.sslBackend=schannel'])
+
+        return self.run_command(
+            git_command + arguments,
+            cwd=cwd,
+            env=self.get_network_subprocess_env()
+        )
+
+    def get_dulwich_porcelain(self):
         try:
-            # Check current NumPy version
-            numpy_version = subprocess.check_output([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'python', '-c', 'import numpy; print(numpy.__version__)'], universal_newlines=True).strip()
-            logging.info(f"Current NumPy version: {numpy_version}")
-            
-            # If NumPy version is 2.x, downgrade to 1.24.3
-            if numpy_version.startswith('2.'):
-                logging.info("Downgrading NumPy to version 1.24.3...")
-                self.run_command([os.path.join(conda_path, 'Scripts', 'conda.exe'), 'run', '-p', env_path, 'python', '-m', 'pip', 'install', 'numpy==1.24.3'])
-                logging.info("NumPy downgraded successfully.")
-            else:
-                logging.info("NumPy version is compatible. No changes needed.")
-        except subprocess.CalledProcessError as e:
-            logging.error("Error checking or updating NumPy version.")
-            logging.error(f"Error message: {str(e)}")
-            raise
-        
+            from dulwich import porcelain
+            return porcelain
+        except ImportError as e:
+            raise RuntimeError(
+                "Git failed and Dulwich is not available in the launcher runtime."
+            ) from e
+
     def clone_repo(self, repo_url, target_dir):
         logging.info(f"Cloning repository {repo_url} to {target_dir}...")
+        self.configure_tls_certificates()
         try:
-            porcelain.clone(repo_url, target_dir)
-            logging.info("Repository cloned successfully.")
-            logging.info("Pulling latest changes...")
-            self.pull_repo(target_dir)  # Add pull after clone
-        except Exception as e:
-            logging.error(f"Failed to clone repository: {str(e)}")
-            raise
+            self.run_git_command(['clone', repo_url, target_dir])
+            logging.info("Repository cloned successfully with git.")
+        except Exception as git_error:
+            logging.warning(f"git clone failed, falling back to Dulwich: {str(git_error)}")
+            try:
+                porcelain = self.get_dulwich_porcelain()
+                porcelain.clone(repo_url, target_dir)
+                logging.info("Repository cloned successfully with Dulwich.")
+            except Exception as dulwich_error:
+                if self.is_certificate_error(dulwich_error):
+                    logging.warning(
+                        "TLS certificate verification failed during Dulwich clone. "
+                        "Retrying after reloading certificate bundle..."
+                    )
+                    self.configure_tls_certificates(force=True)
+                    try:
+                        porcelain = self.get_dulwich_porcelain()
+                        porcelain.clone(repo_url, target_dir)
+                        logging.info("Repository cloned successfully with Dulwich after certificate refresh.")
+                        logging.info("Pulling latest changes...")
+                        self.pull_repo(target_dir)
+                        return
+                    except Exception as retry_error:
+                        logging.error(f"Failed to clone repository after certificate refresh: {str(retry_error)}")
+                        raise RuntimeError(
+                            "TLS certificate verification failed while downloading from GitHub. "
+                            "Check Windows certificates and proxy TLS settings."
+                        ) from retry_error
+                logging.error(f"Failed to clone repository: {str(dulwich_error)}")
+                raise
+
+        logging.info("Pulling latest changes...")
+        self.pull_repo(target_dir)
 
     def pull_repo(self, repo_path):
         logging.info(f"Pulling updates for repository at {repo_path}...")
+        self.configure_tls_certificates()
         try:
-            repo = porcelain.open_repo(repo_path)
-            porcelain.pull(repo)
-            logging.info("Repository updated successfully.")
-        except Exception as e:
-            logging.error(f"Failed to update repository: {str(e)}")
-            raise
+            self.run_git_command(['pull', '--ff-only'], cwd=repo_path)
+            logging.info("Repository updated successfully with git.")
+        except Exception as git_error:
+            logging.warning(f"git pull failed, falling back to Dulwich: {str(git_error)}")
+            try:
+                porcelain = self.get_dulwich_porcelain()
+                repo = porcelain.open_repo(repo_path)
+                porcelain.pull(repo)
+                logging.info("Repository updated successfully with Dulwich.")
+            except Exception as dulwich_error:
+                if self.is_certificate_error(dulwich_error):
+                    logging.warning(
+                        "TLS certificate verification failed during Dulwich pull. "
+                        "Retrying after reloading certificate bundle..."
+                    )
+                    self.configure_tls_certificates(force=True)
+                    try:
+                        porcelain = self.get_dulwich_porcelain()
+                        repo = porcelain.open_repo(repo_path)
+                        porcelain.pull(repo)
+                        logging.info("Repository updated successfully with Dulwich after certificate refresh.")
+                        return
+                    except Exception as retry_error:
+                        logging.error(f"Failed to update repository after certificate refresh: {str(retry_error)}")
+                        raise RuntimeError(
+                            "TLS certificate verification failed while downloading from GitHub. "
+                            "Check Windows certificates and proxy TLS settings."
+                        ) from retry_error
+                logging.error(f"Failed to update repository: {str(dulwich_error)}")
+                raise
 
-    def install_pycroppdf_requirements(self, conda_path, env_name, pycroppdf_repo_path):
+    def install_pycroppdf_requirements(self, pandrator_path, env_name, pycroppdf_repo_path):
         logging.info(f"Installing PyCropPDF requirements in {env_name}...")
         try:
             requirements_file = os.path.join(pycroppdf_repo_path, 'requirements.txt')
-            self.install_requirements(conda_path, env_name, requirements_file)
+            self.install_requirements(pandrator_path, env_name, requirements_file)
         except subprocess.CalledProcessError as e:
             logging.error(f"Failed to install PyCropPDF requirements in {env_name}")
             logging.error(f"Error message: {str(e)}")
             raise
 
-    def install_rvc_python(self, conda_path, env_name):
+    def install_rvc_python(self, pandrator_path, env_name):
         logging.info("Starting RVC Python installation")
-        env_path = os.path.join(conda_path, 'envs', env_name)
         try:
-            # Install specific pip version
             logging.info("Installing specific pip version...")
-            self.run_command([
-                os.path.join(conda_path, 'Scripts', 'conda.exe'),
-                'run', '-p', env_path,
-                'python', '-m', 'pip', 'install', 'pip==24'
-            ])
+            # Keep the older pip pin here because newer pip versions break this toolchain.
+            self.run_pixi_in_env(
+                pandrator_path,
+                env_name,
+                ['python', '-m', 'pip', 'install', 'pip==24']
+            )
 
-            # Install RVC Python
             logging.info("Installing RVC Python...")
-            self.run_command([
-                os.path.join(conda_path, 'Scripts', 'conda.exe'),
-                'run', '-p', env_path, 'python', '-m',
-                'pip', 'install', 'rvc-python'
-            ])
+            self.run_pixi_in_env(
+                pandrator_path,
+                env_name,
+                ['python', '-m', 'pip', 'install', 'rvc-python']
+            )
 
-            # Install specific PyTorch version
             logging.info("Installing specific PyTorch version...")
-            self.run_command([
-                os.path.join(conda_path, 'Scripts', 'conda.exe'),
-                'run', '-p', env_path, 'python', '-m',
-                'pip', 'install', 'torch==2.1.1+cu121', 'torchaudio==2.1.1+cu121',
-                '--index-url', 'https://download.pytorch.org/whl/cu121'
-            ])
+            self.run_pixi_in_env(
+                pandrator_path,
+                env_name,
+                [
+                    'python', '-m', 'pip', 'install',
+                    'torch==2.1.1+cu121', 'torchaudio==2.1.1+cu121',
+                    '--index-url', 'https://download.pytorch.org/whl/cu121'
+                ]
+            )
 
             logging.info("RVC Python installation completed successfully.")
 
@@ -1116,6 +1586,60 @@ class PandratorInstaller(ctk.CTk):
             error_msg = f"An error occurred during RVC Python installation: {str(e)}"
             logging.error(error_msg)
             logging.error(traceback.format_exc())
+            raise
+
+    def install_whisperx(self, pandrator_path, env_name):
+        logging.info(f"Installing WhisperX in {env_name}...")
+        try:
+            self.run_pixi_in_env(
+                pandrator_path,
+                env_name,
+                [
+                    'python', '-m', 'pip', 'install',
+                    'torch==2.5.1', 'torchvision==0.20.1', 'torchaudio==2.5.1',
+                    '--index-url', 'https://download.pytorch.org/whl/cu118'
+                ]
+            )
+
+            self.add_pixi_conda_package(pandrator_path, env_name, 'cudnn=8.9.7.29')
+            self.add_pixi_conda_package(pandrator_path, env_name, 'ffmpeg')
+
+            # Keep the older pip pin here because newer pip versions break WhisperX installs.
+            self.run_pixi_in_env(
+                pandrator_path,
+                env_name,
+                ['python', '-m', 'pip', 'install', 'pip<24']
+            )
+
+            self.run_pixi_in_env(
+                pandrator_path,
+                env_name,
+                ['python', '-m', 'pip', 'install', 'whisperx']
+            )
+
+            self.run_pixi_in_env(
+                pandrator_path,
+                env_name,
+                ['python', '-m', 'pip', 'install', 'ctranslate2==4.4.0']
+            )
+            
+            logging.info("WhisperX installation completed successfully.")
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Failed to install WhisperX in {env_name}")
+            logging.error(f"Error message: {str(e)}")
+            raise
+
+    def install_subdub_requirements(self, pandrator_path, env_name, subdub_repo_path):
+        logging.info(f"Installing Subdub requirements in {env_name}...")
+        try:
+            if not os.path.exists(subdub_repo_path):
+                self.clone_repo('https://github.com/lukaszliniewicz/Subdub.git', subdub_repo_path)
+            
+            requirements_file = os.path.join(subdub_repo_path, 'requirements.txt')
+            self.install_requirements(pandrator_path, env_name, requirements_file)
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Failed to install Subdub requirements in {env_name}")
+            logging.error(f"Error message: {str(e)}")
             raise
 
     def set_permissive_permissions(self, path):
@@ -1141,147 +1665,165 @@ class PandratorInstaller(ctk.CTk):
             return False
 
     def install_process(self):
-        self.disable_buttons()
+        """Main installation process - runs in a worker thread"""
+        # Get checkbox states to local variables for thread safety
+        pandrator_var = self.pandrator_checkbox.isChecked()
+        xtts_var = self.xtts_checkbox.isChecked()
+        xtts_cpu_var = self.xtts_cpu_checkbox.isChecked()
+        silero_var = self.silero_checkbox.isChecked()
+        voxtral_var = self.voxtral_checkbox.isChecked()
+        rvc_var = self.rvc_checkbox.isChecked()
+        whisperx_var = self.whisperx_checkbox.isChecked()
+        xtts_finetuning_var = self.xtts_finetuning_checkbox.isChecked()
+        
         pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
-        conda_path = os.path.join(pandrator_path, 'conda')
         pandrator_already_installed = os.path.exists(pandrator_path)
+        pandrator_repo_path = os.path.join(pandrator_path, 'Pandrator')
+        subdub_repo_path = os.path.join(pandrator_path, 'Subdub')
+        xtts_repo_path = os.path.join(pandrator_path, XTTS_API_REPO_DIRNAME)
+        voxtral_repo_path = os.path.join(pandrator_path, VOXTRAL_API_REPO_DIRNAME)
+        easy_xtts_trainer_path = os.path.join(pandrator_path, 'easy_xtts_trainer')
+
+        pandrator_repo_missing = not os.path.exists(pandrator_repo_path)
+        subdub_repo_missing = not os.path.exists(subdub_repo_path)
+        pandrator_env_missing = not os.path.exists(self.get_pixi_manifest_path(pandrator_path, 'pandrator_installer'))
+        needs_pandrator_environment = pandrator_var or not pandrator_already_installed or pandrator_env_missing
         
         # Check admin status
         is_admin = self.is_admin()
         if not is_admin:
             logging.warning("Running installer without admin privileges - some features may not work correctly")
-            user_choice = messagebox.askyesno(
-                "Non-Admin Installation", 
-                "You're running the installer without administrator privileges.\n\n"
-                "This will work for basic functionality but may cause issues with:\n"
-                "- Visual Studio Build Tools installation\n"
-                "- System-wide permissions\n\n"
-                "Would you like to continue with limited installation?\n"
-                "(Select 'No' to exit and restart as administrator)"
-            )
-            if not user_choice:
-                self.update_status("Installation cancelled - please restart as administrator")
-                self.enable_buttons()
-                return
-        
+            
         try:
+            self.configure_tls_certificates()
+
             # Create Pandrator directory if it doesn't exist
             if not pandrator_already_installed:
                 os.makedirs(pandrator_path, exist_ok=True)
                 if is_admin:
                     self.set_permissive_permissions(pandrator_path)
             
-            self.update_progress(0.1)
-            self.update_status("Installing Chocolatey...")
+            self.worker.update_progress.emit(0.1)
+            self.worker.update_status.emit("Installing Chocolatey...")
             if is_admin:
                 self.install_chocolatey()
             else:
-                self.update_status("Skipping Chocolatey installation (requires admin)")
+                self.worker.update_status.emit("Skipping Chocolatey installation (requires admin)")
                 logging.warning("Skipping Chocolatey installation (requires admin)")
 
-            self.update_progress(0.2)
-            self.update_status("Installing dependencies...")
+            self.worker.update_progress.emit(0.2)
+            self.worker.update_status.emit("Installing dependencies...")
             try:
                 if is_admin:
                     self.install_dependencies()
                 else:
-                    self.update_status("Checking for Calibre...")
+                    self.worker.update_status.emit("Checking for Calibre...")
                     if not self.check_program_installed('calibre'):
-                        self.show_calibre_installation_message()
+                        QTimer.singleShot(0, self.show_calibre_installation_message)
                     else:
                         logging.info("Calibre is already installed.")
             except Exception as e:
                 logging.error(f"Error during dependency installation: {str(e)}")
                 if is_admin:
-                    self.show_calibre_installation_message()
-            
-            self.update_progress(0.4)
-            self.update_status("Cloning repositories...")
-            
-            if self.pandrator_var.get() or not pandrator_already_installed:
-                self.clone_repo('https://github.com/lukaszliniewicz/Pandrator.git', os.path.join(pandrator_path, 'Pandrator'))
-                self.clone_repo('https://github.com/lukaszliniewicz/Subdub.git', os.path.join(pandrator_path, 'Subdub'))
+                    QTimer.singleShot(0, self.show_calibre_installation_message)
 
-            if self.xtts_var.get() or self.xtts_cpu_var.get():
-                self.clone_repo('https://github.com/daswer123/xtts-api-server.git', os.path.join(pandrator_path, 'xtts-api-server'))
-
-            self.update_progress(0.5)
-            self.update_status("Installing Miniconda...")
-            if not self.check_conda(conda_path):
-                self.install_conda(conda_path)
+            self.worker.update_progress.emit(0.35)
+            self.worker.update_status.emit("Installing Pixi...")
+            if not self.check_pixi(pandrator_path):
+                self.install_pixi(pandrator_path)
                 if is_admin:
-                    self.set_permissive_permissions(conda_path)
+                    self.set_permissive_permissions(os.path.join(pandrator_path, 'bin'))
 
-            if not self.check_conda(conda_path):
-                self.update_status("Conda installation failed")
-                logging.error("Conda installation failed")
-                self.enable_buttons()
+            if not self.check_pixi(pandrator_path):
+                self.worker.update_status.emit("Pixi installation failed")
+                logging.error("Pixi installation failed")
                 return
 
-            if self.pandrator_var.get() or not pandrator_already_installed:
-                self.update_progress(0.6)
-                self.update_status("Creating Pandrator Conda environment...")
-                self.create_conda_env(conda_path, 'pandrator_installer', '3.10')
+            shared_pixi_path = self.get_pixi_executable(pandrator_path)
+            
+            self.worker.update_progress.emit(0.45)
+            self.worker.update_status.emit("Cloning repositories...")
+            
+            if pandrator_var or not pandrator_already_installed or pandrator_repo_missing:
+                self.clone_repo('https://github.com/lukaszliniewicz/Pandrator.git', pandrator_repo_path)
+            if pandrator_var or not pandrator_already_installed or subdub_repo_missing:
+                self.clone_repo('https://github.com/lukaszliniewicz/Subdub.git', subdub_repo_path)
 
-                self.update_progress(0.7)
-                self.update_status("Installing Pandrator, Subdub, and PyCropPDF requirements...")
-                pandrator_repo_path = os.path.join(pandrator_path, 'Pandrator')
-                self.install_requirements(conda_path, 'pandrator_installer', os.path.join(pandrator_repo_path, 'requirements.txt'))
+            if (xtts_var or xtts_cpu_var) and not os.path.exists(xtts_repo_path):
+                self.clone_repo(XTTS_API_REPO_URL, xtts_repo_path)
+
+            if voxtral_var and not os.path.exists(voxtral_repo_path):
+                self.clone_repo(VOXTRAL_API_REPO_URL, voxtral_repo_path)
+
+            if needs_pandrator_environment:
+                self.worker.update_progress.emit(0.6)
+                self.worker.update_status.emit("Creating Pandrator Pixi environment...")
+                self.create_pixi_env(pandrator_path, 'pandrator_installer', '3.10')
+                self.add_pixi_conda_package(pandrator_path, 'pandrator_installer', 'ffmpeg')
+
+                self.worker.update_progress.emit(0.7)
+                self.worker.update_status.emit("Installing Pandrator, Subdub, and PyCropPDF requirements...")
+                self.install_requirements(pandrator_path, 'pandrator_installer', os.path.join(pandrator_repo_path, 'requirements.txt'))
                 
-                # Clone and install PyCropPDF
                 pycroppdf_repo_path = os.path.join(pandrator_repo_path, 'PyCropPDF')
-                self.clone_repo('https://github.com/lukaszliniewicz/PyCropPDF.git', pycroppdf_repo_path)
-                self.install_pycroppdf_requirements(conda_path, 'pandrator_installer', pycroppdf_repo_path)
+                if not os.path.exists(pycroppdf_repo_path):
+                    self.clone_repo('https://github.com/lukaszliniewicz/PyCropPDF.git', pycroppdf_repo_path)
+                self.install_pycroppdf_requirements(pandrator_path, 'pandrator_installer', pycroppdf_repo_path)
                 
-                subdub_repo_path = os.path.join(pandrator_path, 'Subdub')
-                self.install_subdub_requirements(conda_path, 'pandrator_installer', subdub_repo_path)
+                self.install_subdub_requirements(pandrator_path, 'pandrator_installer', subdub_repo_path)
 
-            if self.xtts_var.get() or self.xtts_cpu_var.get():
-                self.update_progress(0.8)
-                self.update_status("Creating XTTS Conda environment...")
-                self.create_conda_env(conda_path, 'xtts_api_server_installer', '3.10')
-                self.update_progress(0.9)
-                self.update_status("Installing PyTorch and xtts-api-server...")
-                self.install_pytorch_and_xtts_api_server(conda_path, 'xtts_api_server_installer')
+            if xtts_var or xtts_cpu_var:
+                self.worker.update_progress.emit(0.8)
+                self.worker.update_status.emit("Bootstrapping XTTS2 API server...")
+                self.worker.update_progress.emit(0.9)
+                self.install_xtts_api_server(
+                    xtts_repo_path,
+                    use_cpu=xtts_cpu_var,
+                    pixi_path=shared_pixi_path,
+                )
 
-            if self.silero_var.get():
-                self.update_progress(0.8)
-                self.update_status("Creating Silero Conda environment...")
-                self.create_conda_env(conda_path, 'silero_api_server_installer', '3.10')
+            if silero_var:
+                self.worker.update_progress.emit(0.8)
+                self.worker.update_status.emit("Creating Silero Pixi environment...")
+                self.create_pixi_env(pandrator_path, 'silero_api_server_installer', '3.10')
 
-                self.update_progress(0.9)
-                self.update_status("Installing Silero API server...")
-                self.install_silero_api_server(conda_path, 'silero_api_server_installer')
+                self.worker.update_progress.emit(0.9)
+                self.worker.update_status.emit("Installing Silero API server...")
+                self.install_silero_api_server(pandrator_path, 'silero_api_server_installer')
 
-            if self.rvc_var.get():
-                self.update_progress(0.8)
-                self.update_status("Installing RVC Python...")
-                self.install_rvc_python(conda_path, 'pandrator_installer')
+            if voxtral_var:
+                self.worker.update_progress.emit(0.9)
+                self.worker.update_status.emit("Bootstrapping Voxtral API server...")
+                self.install_voxtral_api_server(voxtral_repo_path)
 
-            if self.whisperx_var.get():
-                self.update_progress(0.85)
-                self.update_status("Creating WhisperX Conda environment...")
-                self.create_conda_env(conda_path, 'whisperx_installer', '3.10')
-                self.update_progress(0.90)
-                self.update_status("Installing WhisperX...")
-                self.install_whisperx(conda_path, 'whisperx_installer')
+            if rvc_var:
+                self.worker.update_progress.emit(0.8)
+                self.worker.update_status.emit("Installing RVC Python...")
+                self.install_rvc_python(pandrator_path, 'pandrator_installer')
 
-            if self.xtts_finetuning_var.get():
-                self.update_progress(0.85)
-                self.update_status("Cloning XTTS Fine-tuning repository...")
-                self.clone_repo('https://github.com/lukaszliniewicz/easy_xtts_trainer.git', os.path.join(pandrator_path, 'easy_xtts_trainer'))
+            if whisperx_var:
+                self.worker.update_progress.emit(0.85)
+                self.worker.update_status.emit("Creating WhisperX Pixi environment...")
+                self.create_pixi_env(pandrator_path, 'whisperx_installer', '3.10')
+                self.worker.update_progress.emit(0.90)
+                self.worker.update_status.emit("Installing WhisperX...")
+                self.install_whisperx(pandrator_path, 'whisperx_installer')
 
-                self.update_progress(0.90)
-                self.update_status("Creating XTTS Fine-tuning Conda environment...")
-                self.create_conda_env(conda_path, 'easy_xtts_trainer', '3.10')
+            if xtts_finetuning_var:
+                self.worker.update_progress.emit(0.85)
+                self.worker.update_status.emit("Cloning XTTS Fine-tuning repository...")
+                self.clone_repo('https://github.com/lukaszliniewicz/easy_xtts_trainer.git', easy_xtts_trainer_path)
 
-                self.update_progress(0.95)
-                self.update_status("Installing XTTS Fine-tuning requirements...")
-                easy_xtts_trainer_path = os.path.join(pandrator_path, 'easy_xtts_trainer')
-                self.install_requirements(conda_path, 'easy_xtts_trainer', os.path.join(easy_xtts_trainer_path, 'requirements.txt'))
+                self.worker.update_progress.emit(0.90)
+                self.worker.update_status.emit("Creating XTTS Fine-tuning Pixi environment...")
+                self.create_pixi_env(pandrator_path, 'easy_xtts_trainer', '3.10')
 
-                self.update_status("Installing PyTorch for XTTS Fine-tuning...")
-                self.install_pytorch_for_xtts_finetuning(conda_path, 'easy_xtts_trainer')
+                self.worker.update_progress.emit(0.95)
+                self.worker.update_status.emit("Installing XTTS Fine-tuning requirements...")
+                self.install_requirements(pandrator_path, 'easy_xtts_trainer', os.path.join(easy_xtts_trainer_path, 'requirements.txt'))
+
+                self.worker.update_status.emit("Installing PyTorch for XTTS Fine-tuning...")
+                self.install_pytorch_for_xtts_finetuning(pandrator_path, 'easy_xtts_trainer')
 
             # Create or update config file
             config_path = os.path.join(pandrator_path, 'config.json')
@@ -1292,41 +1834,39 @@ class PandratorInstaller(ctk.CTk):
                 config = {}
 
             # Update config based on what was installed or already exists
-            config['cuda_support'] = config.get('cuda_support', False) or self.xtts_var.get()
-            config['xtts_support'] = config.get('xtts_support', False) or self.xtts_var.get() or self.xtts_cpu_var.get()
-            config['silero_support'] = config.get('silero_support', False) or self.silero_var.get()
-            config['whisperx_support'] = config.get('whisperx_support', False) or self.whisperx_var.get()
-            config['xtts_finetuning_support'] = config.get('xtts_finetuning_support', False) or self.xtts_finetuning_var.get()
-            config['rvc_support'] = config.get('rvc_support', False) or self.rvc_var.get()
+            config['cuda_support'] = config.get('cuda_support', False) or xtts_var
+            config['xtts_support'] = config.get('xtts_support', False) or xtts_var or xtts_cpu_var
+            config['silero_support'] = config.get('silero_support', False) or silero_var
+            config['voxtral_support'] = config.get('voxtral_support', False) or voxtral_var
+            config['whisperx_support'] = config.get('whisperx_support', False) or whisperx_var
+            config['xtts_finetuning_support'] = config.get('xtts_finetuning_support', False) or xtts_finetuning_var
+            config['rvc_support'] = config.get('rvc_support', False) or rvc_var
 
             with open(config_path, 'w') as f:
                 json.dump(config, f)
 
             # Set final permissions if admin
             if is_admin:
-                self.update_progress(0.98)
-                self.update_status("Finalizing permissions...")
+                self.worker.update_progress.emit(0.98)
+                self.worker.update_status.emit("Finalizing permissions...")
                 self.set_permissive_permissions(pandrator_path)
 
-            self.update_progress(1.0)
-            self.update_status("Installation complete!")
+            self.worker.update_progress.emit(1.0)
+            self.worker.update_status.emit("Installation complete!")
             logging.info("Installation completed successfully.")
 
         except Exception as e:
             logging.error(f"Installation failed: {str(e)}")
             logging.error(traceback.format_exc())
-            self.update_status("Installation failed. Check the log for details.")
-        finally:
-            self.refresh_ui_state()
+            self.worker.update_status.emit("Installation failed. Check the log for details.")
+            raise
 
     def update_pandrator(self):
+        """Update Pandrator and components"""
         pandrator_base_path = os.path.join(self.initial_working_dir, 'Pandrator')
         pandrator_repo_path = os.path.join(pandrator_base_path, 'Pandrator')
-        subdub_repo_path = os.path.join(pandrator_base_path, 'Subdub')
-        easy_xtts_trainer_path = os.path.join(pandrator_base_path, 'easy_xtts_trainer')
-        conda_path = os.path.join(pandrator_base_path, 'conda')
         
-        # Check admin status - we'll proceed either way but handle differently
+        # Check admin status
         is_admin = self.is_admin()
         if not is_admin:
             logging.info("Running update without admin privileges - file permission changes won't be applied")
@@ -1337,6 +1877,7 @@ class PandratorInstaller(ctk.CTk):
             error_msg = f"Pandrator directory not found at: {pandrator_repo_path}"
             logging.error(error_msg)
             self.update_status(error_msg)
+            QMessageBox.critical(self, "Update Error", error_msg)
             return
 
         self.disable_buttons()
@@ -1345,324 +1886,549 @@ class PandratorInstaller(ctk.CTk):
         self.update_status("Updating Pandrator and components...")
         logging.info("Starting update process")
         
+        # Create worker thread to run the update
+        self.worker = Worker(self.update_process)
+        self.worker.update_progress.connect(self.update_progress)
+        self.worker.update_status.connect(self.update_status)
+        self.worker.finished.connect(self.on_update_finished)
+        self.worker.error.connect(self.on_update_error)
+        self.worker.start()
+
+    def update_process(self):
+        """Main update process - runs in a worker thread"""
+        pandrator_base_path = os.path.join(self.initial_working_dir, 'Pandrator')
+        pandrator_repo_path = os.path.join(pandrator_base_path, 'Pandrator')
+        subdub_repo_path = os.path.join(pandrator_base_path, 'Subdub')
+        xtts_repo_path = os.path.join(pandrator_base_path, XTTS_API_REPO_DIRNAME)
+        voxtral_repo_path = os.path.join(pandrator_base_path, VOXTRAL_API_REPO_DIRNAME)
+        easy_xtts_trainer_path = os.path.join(pandrator_base_path, 'easy_xtts_trainer')
+        config_path = os.path.join(pandrator_base_path, 'config.json')
+
+        if os.path.exists(config_path):
+            with open(config_path, 'r', encoding='utf-8', errors='replace') as f:
+                config = json.load(f)
+        else:
+            config = {}
+
+        pandrator_env_missing = not os.path.exists(self.get_pixi_manifest_path(pandrator_base_path, 'pandrator_installer'))
+        silero_env_missing = not os.path.exists(self.get_pixi_manifest_path(pandrator_base_path, 'silero_api_server_installer'))
+        whisperx_env_missing = not os.path.exists(self.get_pixi_manifest_path(pandrator_base_path, 'whisperx_installer'))
+        easy_xtts_env_missing = not os.path.exists(self.get_pixi_manifest_path(pandrator_base_path, 'easy_xtts_trainer'))
+        
+        # Check admin status
+        is_admin = self.is_admin()
+        
         try:
+            self.configure_tls_certificates()
+
+            self.worker.update_status.emit("Installing Pixi...")
+            if not self.check_pixi(pandrator_base_path):
+                self.install_pixi(pandrator_base_path)
+                if is_admin:
+                    self.set_permissive_permissions(os.path.join(pandrator_base_path, 'bin'))
+
+            if not self.check_pixi(pandrator_base_path):
+                raise FileNotFoundError("Pixi installation failed during update.")
+
+            shared_pixi_path = self.get_pixi_executable(pandrator_base_path)
+
             # Update Pandrator
-            self.update_status("Updating Pandrator repository...")
+            self.worker.update_status.emit("Updating Pandrator repository...")
             logging.info(f"Updating Pandrator in: {pandrator_repo_path}")
             self.pull_repo(pandrator_repo_path)
             
             # Update Pandrator requirements
-            self.update_status("Updating Pandrator dependencies...")
+            self.worker.update_status.emit("Updating Pandrator dependencies...")
             requirements_file = os.path.join(pandrator_repo_path, 'requirements.txt')
             logging.info(f"Updating requirements from: {requirements_file}")
             
             if not os.path.exists(requirements_file):
                 logging.error(f"Requirements file not found at: {requirements_file}")
                 raise FileNotFoundError(f"Requirements file not found: {requirements_file}")
-            
-            update_cmd = [
-                os.path.join(conda_path, 'Scripts', 'conda.exe'),
-                'run',
-                '-p', 
-                os.path.join(conda_path, 'envs', 'pandrator_installer'),
-                '--no-capture-output', 'python', '-m',
-                'pip', 'install', '-r', requirements_file
-            ]
-            logging.info(f"Executing update command: {' '.join(update_cmd)}")
-            self.run_command(update_cmd, cwd=pandrator_repo_path)
+
+            self.create_pixi_env(pandrator_base_path, 'pandrator_installer', '3.10')
+            self.add_pixi_conda_package(pandrator_base_path, 'pandrator_installer', 'ffmpeg')
+            self.install_requirements(pandrator_base_path, 'pandrator_installer', requirements_file)
+
+            pycroppdf_repo_path = os.path.join(pandrator_repo_path, 'PyCropPDF')
+            if not os.path.exists(pycroppdf_repo_path):
+                self.clone_repo('https://github.com/lukaszliniewicz/PyCropPDF.git', pycroppdf_repo_path)
+            self.install_pycroppdf_requirements(pandrator_base_path, 'pandrator_installer', pycroppdf_repo_path)
             
             # Update Subdub
             if os.path.exists(subdub_repo_path):
-                self.update_status("Updating Subdub...")
+                self.worker.update_status.emit("Updating Subdub...")
                 logging.info(f"Updating Subdub in: {subdub_repo_path}")
                 self.pull_repo(subdub_repo_path)
             else:
                 logging.warning(f"Subdub directory not found at: {subdub_repo_path}")
+
+            self.install_subdub_requirements(pandrator_base_path, 'pandrator_installer', subdub_repo_path)
+
+            if config.get('rvc_support', False) and pandrator_env_missing:
+                self.worker.update_status.emit("Migrating RVC into the Pixi environment...")
+                self.install_rvc_python(pandrator_base_path, 'pandrator_installer')
+
+            if config.get('xtts_support', False):
+                if os.path.exists(xtts_repo_path):
+                    self.worker.update_status.emit("Updating XTTS2 API server repository...")
+                    self.pull_repo(xtts_repo_path)
+                else:
+                    self.worker.update_status.emit("Cloning XTTS2 API server repository...")
+                    self.clone_repo(XTTS_API_REPO_URL, xtts_repo_path)
+
+                if not self.is_xtts_runtime_ready(xtts_repo_path):
+                    self.worker.update_status.emit("Bootstrapping XTTS2 API server...")
+                    self.install_xtts_api_server(
+                        xtts_repo_path,
+                        use_cpu=not config.get('cuda_support', False),
+                        pixi_path=shared_pixi_path,
+                    )
+
+            if config.get('silero_support', False) and silero_env_missing:
+                self.worker.update_status.emit("Migrating Silero to Pixi...")
+                self.create_pixi_env(pandrator_base_path, 'silero_api_server_installer', '3.10')
+                self.install_silero_api_server(pandrator_base_path, 'silero_api_server_installer')
+
+            if config.get('voxtral_support', False):
+                if os.path.exists(voxtral_repo_path):
+                    self.worker.update_status.emit("Updating Voxtral API server repository...")
+                    self.pull_repo(voxtral_repo_path)
+                else:
+                    self.worker.update_status.emit("Cloning Voxtral API server repository...")
+                    self.clone_repo(VOXTRAL_API_REPO_URL, voxtral_repo_path)
+
+                if not self.is_voxtral_runtime_ready(voxtral_repo_path):
+                    self.worker.update_status.emit("Bootstrapping Voxtral API server...")
+                    self.install_voxtral_api_server(voxtral_repo_path)
+
+            if config.get('whisperx_support', False) and whisperx_env_missing:
+                self.worker.update_status.emit("Migrating WhisperX to Pixi...")
+                self.create_pixi_env(pandrator_base_path, 'whisperx_installer', '3.10')
+                self.install_whisperx(pandrator_base_path, 'whisperx_installer')
             
             # Update easy XTTS trainer (repo and requirements)
             if os.path.exists(easy_xtts_trainer_path):
-                self.update_status("Updating easy XTTS trainer...")
+                self.worker.update_status.emit("Updating easy XTTS trainer...")
                 logging.info(f"Updating easy XTTS trainer in: {easy_xtts_trainer_path}")
                 self.pull_repo(easy_xtts_trainer_path)
                 
                 # Update requirements
-                self.update_status("Updating easy XTTS trainer dependencies...")
+                self.worker.update_status.emit("Updating easy XTTS trainer dependencies...")
                 xtts_requirements_file = os.path.join(easy_xtts_trainer_path, 'requirements.txt')
                 if os.path.exists(xtts_requirements_file):
                     logging.info("Installing updated requirements for easy XTTS trainer...")
-                    self.install_requirements(conda_path, 'easy_xtts_trainer', xtts_requirements_file)
+                    self.create_pixi_env(pandrator_base_path, 'easy_xtts_trainer', '3.10')
+                    self.install_requirements(pandrator_base_path, 'easy_xtts_trainer', xtts_requirements_file)
+                    if easy_xtts_env_missing:
+                        self.install_pytorch_for_xtts_finetuning(pandrator_base_path, 'easy_xtts_trainer')
                 else:
                     logging.warning(f"XTTS trainer requirements file not found at: {xtts_requirements_file}")
+            elif config.get('xtts_finetuning_support', False):
+                self.worker.update_status.emit("Migrating easy XTTS trainer to Pixi...")
+                self.clone_repo('https://github.com/lukaszliniewicz/easy_xtts_trainer.git', easy_xtts_trainer_path)
+                self.create_pixi_env(pandrator_base_path, 'easy_xtts_trainer', '3.10')
+                xtts_requirements_file = os.path.join(easy_xtts_trainer_path, 'requirements.txt')
+                self.install_requirements(pandrator_base_path, 'easy_xtts_trainer', xtts_requirements_file)
+                self.install_pytorch_for_xtts_finetuning(pandrator_base_path, 'easy_xtts_trainer')
             else:
                 logging.info("easy XTTS trainer not installed, skipping update.")
 
             # Set permissions if running as admin
             if is_admin:
-                self.update_status("Setting permissions after update...")
+                self.worker.update_status.emit("Setting permissions after update...")
                 self.set_permissive_permissions(pandrator_base_path)
             
-            self.update_status("Update completed successfully!")
+            self.worker.update_status.emit("Update completed successfully!")
             logging.info("Update process completed successfully")
         
         except Exception as e:
             error_msg = f"Failed to update: {str(e)}"
             logging.error(error_msg)
             logging.error(traceback.format_exc())
-            self.update_status(f"Update failed: {error_msg}")
-        
-        finally:
-            self.enable_buttons()
-            self.refresh_ui_state()
-
-    def update_whisperx_checkbox(self):
-        xtts_finetuning_support = self.get_installed_components().get('xtts_finetuning', False)
-        if self.xtts_finetuning_var.get() and not xtts_finetuning_support:
-            self.whisperx_var.set(True)
-            self.whisperx_checkbox.configure(state="disabled")
-        elif xtts_finetuning_support:
-            self.whisperx_var.set(False)
-            self.whisperx_checkbox.configure(state="disabled")
-        else:
-            self.whisperx_checkbox.configure(state="normal")
-
-    def install_subdub_requirements(self, conda_path, env_name, subdub_repo_path):
-        logging.info(f"Installing Subdub requirements in {env_name}...")
-        try:
-            # Clone the Subdub repository if it doesn't exist
-            if not os.path.exists(subdub_repo_path):
-                self.clone_repo('https://github.com/lukaszliniewicz/Subdub.git', subdub_repo_path)
-            
-            requirements_file = os.path.join(subdub_repo_path, 'requirements.txt')
-            self.install_requirements(conda_path, env_name, requirements_file)
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Failed to install Subdub requirements in {env_name}")
-            logging.error(f"Error message: {str(e)}")
+            self.worker.update_status.emit(f"Update failed: {error_msg}")
             raise
 
+    def on_update_finished(self):
+        """Handle completion of update process"""
+        self.update_status("Update complete!")
+        self.enable_buttons()
+        QMessageBox.information(self, "Success", "Update completed successfully!")
+
+    def on_update_error(self, error_message):
+        """Handle update errors"""
+        self.update_status(f"Update failed: {error_message}")
+        self.enable_buttons()
+        QMessageBox.critical(self, "Update Error", f"Update failed:\n\n{error_message}\n\nCheck the log for more details.")
+
+    # Launch methods
     def launch_apps(self):
+        """Launch the selected applications"""
+        self.initialize_logging()
+
+        # Get checkbox states
+        self.launch_pandrator_var = self.launch_pandrator_checkbox.isChecked()
+        self.launch_xtts_var = self.launch_xtts_checkbox.isChecked()
+        self.deepspeed_var = self.deepspeed_checkbox.isChecked()
+        self.xtts_cpu_launch_var = self.xtts_cpu_launch_checkbox.isChecked()
+        self.launch_voxtral_var = self.launch_voxtral_checkbox.isChecked()
+        self.launch_silero_var = self.launch_silero_checkbox.isChecked()
+        
+        # Create worker thread to run the launch process
+        self.worker = Worker(self.launch_process)
+        self.worker.update_progress.connect(self.update_progress)
+        self.worker.update_status.connect(self.update_status)
+        self.worker.finished.connect(self.on_launch_finished)
+        self.worker.error.connect(self.on_launch_error)
+        self.worker.start()
+
+    def launch_process(self):
+        """Main launch process - runs in a worker thread"""
         base_path = os.path.abspath(self.initial_working_dir)
         pandrator_path = os.path.join(base_path, 'Pandrator')
-        conda_path = os.path.join(pandrator_path, 'conda')
 
-        self.update_progress(0.3)
-        self.update_status("Preparing to launch...")
+        self.worker.update_progress.emit(0.3)
+        self.worker.update_status.emit("Preparing to launch...")
         logging.info(f"Launch process started. Base directory: {base_path}")
         logging.info(f"Pandrator path: {pandrator_path}")
-        logging.info(f"Conda path: {conda_path}")
+        logging.info(f"Pixi path: {self.get_pixi_executable(pandrator_path)}")
+
+        if not self.check_pixi(pandrator_path):
+            raise FileNotFoundError(
+                "Pixi runtime not found. Run Install or Update to migrate this installation."
+            )
+
+        shared_pixi_path = self.get_pixi_executable(pandrator_path)
 
         pandrator_args = []
         tts_engine_launched = False
 
-        if self.launch_xtts_var.get():
-            self.update_progress(0.4)
-            self.update_status("Starting XTTS server...")
-            xtts_server_path = os.path.join(pandrator_path, 'xtts-api-server')
+        if self.launch_xtts_var:
+            self.worker.update_progress.emit(0.4)
+            self.worker.update_status.emit("Starting XTTS server...")
+            xtts_server_path = os.path.join(pandrator_path, XTTS_API_REPO_DIRNAME)
             logging.info(f"XTTS server path: {xtts_server_path}")
             
             if not os.path.exists(xtts_server_path):
                 error_msg = f"XTTS server path not found: {xtts_server_path}"
-                self.update_status(error_msg)
+                self.worker.update_status.emit(error_msg)
                 logging.error(error_msg)
-                return
+                raise FileNotFoundError(error_msg)
             
             try:
-                use_cpu = self.xtts_cpu_launch_var.get()
-                xtts_process = self.run_xtts_api_server(conda_path, 'xtts_api_server_installer', xtts_server_path, use_cpu)
+                use_cpu = self.xtts_cpu_launch_var
+                xtts_process = self.run_xtts_api_server(
+                    xtts_server_path,
+                    use_cpu,
+                    pixi_path=shared_pixi_path,
+                )
             except Exception as e:
                 error_msg = f"Failed to start XTTS server: {str(e)}"
-                self.update_status(error_msg)
+                self.worker.update_status.emit(error_msg)
                 logging.error(error_msg)
                 logging.exception("Exception details:")
-                return
+                raise
+
+            self.xtts_process = xtts_process
             
-            xtts_server_url = 'http://127.0.0.1:8020/docs'
-            if not self.check_xtts_server_online(xtts_server_url):
+            xtts_server_url = 'http://127.0.0.1:8020'
+            if not self.check_xtts_server_online(xtts_server_url, process=xtts_process):
                 error_msg = "XTTS server failed to come online"
-                self.update_status(error_msg)
+                self.worker.update_status.emit(error_msg)
                 logging.error(error_msg)
                 self.shutdown_xtts()
-                return
+                raise RuntimeError(error_msg)
             
             pandrator_args = ['-connect', '-xtts']
             tts_engine_launched = True
 
-        if self.launch_silero_var.get() and not tts_engine_launched:
-            self.update_progress(0.6)
-            self.update_status("Starting Silero server...")
-            
+        if self.launch_voxtral_var and not tts_engine_launched:
+            self.worker.update_progress.emit(0.55)
+            self.worker.update_status.emit("Starting Voxtral server...")
+            voxtral_server_path = os.path.join(pandrator_path, VOXTRAL_API_REPO_DIRNAME)
+            logging.info(f"Voxtral server path: {voxtral_server_path}")
+
+            if not os.path.exists(voxtral_server_path):
+                error_msg = f"Voxtral server path not found: {voxtral_server_path}"
+                self.worker.update_status.emit(error_msg)
+                logging.error(error_msg)
+                raise FileNotFoundError(error_msg)
+
             try:
-                self.silero_process = self.run_silero_api_server(conda_path, 'silero_api_server_installer')
+                self.voxtral_process = self.run_voxtral_api_server(voxtral_server_path)
             except Exception as e:
-                error_msg = f"Failed to start Silero server: {str(e)}"
-                self.update_status(error_msg)
+                error_msg = f"Failed to start Voxtral server: {str(e)}"
+                self.worker.update_status.emit(error_msg)
                 logging.error(error_msg)
                 logging.exception("Exception details:")
-                return
+                raise
+
+            voxtral_server_url = 'http://127.0.0.1:8000/health'
+            if not self.check_voxtral_server_online(voxtral_server_url):
+                error_msg = "Voxtral server failed to come online"
+                self.worker.update_status.emit(error_msg)
+                logging.error(error_msg)
+                self.shutdown_voxtral()
+                raise RuntimeError(error_msg)
+
+            pandrator_args = ['-connect', '-voxtral']
+            tts_engine_launched = True
+
+        if self.launch_silero_var and not tts_engine_launched:
+            self.worker.update_progress.emit(0.6)
+            self.worker.update_status.emit("Starting Silero server...")
+            
+            try:
+                self.silero_process = self.run_silero_api_server(pandrator_path, 'silero_api_server_installer')
+            except Exception as e:
+                error_msg = f"Failed to start Silero server: {str(e)}"
+                self.worker.update_status.emit(error_msg)
+                logging.error(error_msg)
+                logging.exception("Exception details:")
+                raise
             
             silero_server_url = 'http://127.0.0.1:8001/docs'
             if not self.check_silero_server_online(silero_server_url):
                 error_msg = "Silero server failed to come online"
-                self.update_status(error_msg)
+                self.worker.update_status.emit(error_msg)
                 logging.error(error_msg)
                 self.shutdown_silero()
-                return
+                raise RuntimeError(error_msg)
             
             pandrator_args = ['-connect', '-silero']
             tts_engine_launched = True
 
-        if self.launch_pandrator_var.get():
-            self.update_progress(0.9)
-            self.update_status("Starting Pandrator...")
+        if self.launch_pandrator_var:
+            self.worker.update_progress.emit(0.9)
+            self.worker.update_status.emit("Starting Pandrator...")
             pandrator_script_path = os.path.join(pandrator_path, 'Pandrator', 'pandrator.py')
             logging.info(f"Pandrator script path: {pandrator_script_path}")
 
             if not os.path.exists(pandrator_script_path):
                 error_msg = f"Pandrator script not found: {pandrator_script_path}"
-                self.update_status(error_msg)
+                self.worker.update_status.emit(error_msg)
                 logging.error(error_msg)
-                return
+                raise FileNotFoundError(error_msg)
 
             try:
-                self.pandrator_process = self.run_script(conda_path, 'pandrator_installer', pandrator_script_path, pandrator_args)
+                self.pandrator_process = self.run_script(pandrator_path, 'pandrator_installer', pandrator_script_path, pandrator_args)
             except Exception as e:
                 error_msg = f"Failed to start Pandrator: {str(e)}"
-                self.update_status(error_msg)
+                self.worker.update_status.emit(error_msg)
                 logging.error(error_msg)
                 logging.exception("Exception details:")
-                return
+                raise
 
-        self.update_progress(1.0)
-        self.update_status("Apps are running!")
-        self.refresh_ui_state()
-        self.after(5000, self.check_processes_status)
+        self.worker.update_progress.emit(1.0)
+        self.worker.update_status.emit("Apps are running!")
+
+    def on_launch_finished(self):
+        """Handle successful launch"""
+        self.update_status("Applications launched successfully")
+        self.enable_buttons()
+        # Start process monitoring
+        QTimer.singleShot(5000, self.check_processes_status)
+
+    def on_launch_error(self, error_message):
+        """Handle launch errors"""
+        self.update_status(f"Launch failed: {error_message}")
+        self.enable_buttons()
+        QMessageBox.critical(self, "Launch Error", f"Failed to launch applications:\n\n{error_message}\n\nCheck the log for more details.")
 
     def is_port_in_use(self, port):
         import socket
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             return s.connect_ex(('localhost', port)) == 0
 
-    def run_script(self, conda_path, env_name, script_path, additional_args=[]):
+    def run_script(self, pandrator_path, env_name, script_path, additional_args=None):
+        if additional_args is None:
+            additional_args = []
+
         logging.info(f"Running script {script_path} in {env_name} with args: {additional_args}")
         
         script_dir = os.path.dirname(script_path)
-        env_path = os.path.join(conda_path, 'envs', env_name)
+        command = self.build_pixi_run_command(
+            pandrator_path,
+            env_name,
+            ['python', script_path] + additional_args
+        )
         
-        command = [
-            os.path.join(conda_path, 'Scripts', 'conda.exe'),
-            'run',
-            '-p', env_path,
-            '--no-capture-output',
-            'python',
-            script_path
-        ] + additional_args
-        
-        process = subprocess.Popen(command, cwd=script_dir, creationflags=subprocess.DETACHED_PROCESS)
+        process = subprocess.Popen(
+            command,
+            cwd=script_dir,
+            env=self.get_pixi_subprocess_env(pandrator_path),
+            creationflags=subprocess.DETACHED_PROCESS
+        )
         return process
 
-
-    def run_xtts_api_server(self, conda_path, env_name, xtts_server_path, use_cpu=False):
-        logging.info(f"Attempting to run XTTS API server...")
-        logging.info(f"Conda path: {conda_path}")
-        logging.info(f"Environment name: {env_name}")
+    def run_xtts_api_server(self, xtts_server_path, use_cpu=False, pixi_path=None):
+        """Run the XTTS2 API server via its upstream launcher script."""
+        logging.info("Attempting to run XTTS API server...")
         logging.info(f"XTTS server path: {xtts_server_path}")
         logging.info(f"Use CPU: {use_cpu}")
 
         if not os.path.exists(xtts_server_path):
             raise FileNotFoundError(f"XTTS server path not found: {xtts_server_path}")
 
-        # Check if port 8020 is already in use
         if self.is_port_in_use(8020):
             error_msg = "XTTS server cannot be started because port 8020 is already in use."
             logging.error(error_msg)
-            CTkMessagebox(title="Error", message=error_msg, icon="cancel")
+            QMessageBox.critical(self, "Error", error_msg)
             return None
 
+        run_script_path = os.path.join(xtts_server_path, 'run.bat')
+        if not os.path.exists(run_script_path):
+            raise FileNotFoundError(f"XTTS run script not found at: {run_script_path}")
+
         xtts_log_file = os.path.join(xtts_server_path, 'xtts_server.log')
-        env_path = os.path.join(conda_path, 'envs', env_name)
+        command = self.build_xtts_launcher_command(
+            use_cpu=use_cpu,
+            pixi_path=self.get_xtts_pixi_argument(xtts_server_path, pixi_path),
+        )
+        xtts_env = os.environ.copy()
+        xtts_env['XTTS_USE_DEEPSPEED'] = 'true' if (self.deepspeed_var and not use_cpu) else 'false'
 
-        xtts_server_command = [
-            os.path.join(conda_path, 'Scripts', 'conda.exe'),
-            'run',
-            '-p', env_path,
-            '--no-capture-output',
-            'python', '-m', 'xtts_api_server',
-        ]
-
-        if use_cpu:
-            xtts_server_command.extend(['--device', 'cpu'])
-        else:
-            if self.lowvram_var.get():
-                xtts_server_command.append('--lowvram')
-            if self.deepspeed_var.get():
-                xtts_server_command.append('--deepspeed')
-
-        logging.info(f"XTTS command: {' '.join(xtts_server_command)}")
-
-        def log_output(pipe, logfile, prefix):
-            with open(logfile, 'a', encoding='utf-8') as f:
-                for line in iter(pipe.readline, b''):
-                    try:
-                        decoded_line = line.decode('utf-8').strip()
-                    except UnicodeDecodeError:
-                        decoded_line = line.decode('utf-8', errors='replace').strip()
-                    log_message = f"{prefix}: {decoded_line}"
-                    f.write(log_message + '\n')
-                    f.flush()
-                    logging.info(log_message)
-                    print(log_message, flush=True)
-
+        log_handle = open(xtts_log_file, 'a', encoding='utf-8')
         try:
-            process = subprocess.Popen(xtts_server_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=xtts_server_path)
-            self.xtts_process = process
-            
-            stdout_thread = threading.Thread(target=log_output, args=(process.stdout, xtts_log_file, "XTTS stdout"), daemon=True)
-            stderr_thread = threading.Thread(target=log_output, args=(process.stderr, xtts_log_file, "XTTS stderr"), daemon=True)
-            
-            stdout_thread.start()
-            stderr_thread.start()
-
-            logging.info(f"XTTS API server process started with PID: {process.pid}")
-            return process
-        except Exception as e:
-            logging.error(f"Failed to start XTTS API server: {str(e)}")
-            logging.exception("Exception details:")
+            process = subprocess.Popen(
+                command,
+                cwd=xtts_server_path,
+                env=xtts_env,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+            )
+        except Exception:
+            log_handle.close()
             raise
 
-    def check_xtts_server_online(self, url, max_attempts=200, wait_interval=5):
-        print("Waiting for xtts server to come online...")
-        attempt = 1
-        while attempt <= max_attempts:
-            try:
-                response = requests.get(url)
-                if response.status_code == 200:
-                    print("xtts server is online.")
-                    logging.info("xtts server is online.")
-                    return True
-            except requests.exceptions.RequestException as e:
-                print(f"Attempt {attempt}/{max_attempts}: xtts server is not online yet. Waiting...")
-                logging.info(f"xtts server is not online. Waiting... (Attempt {attempt}/{max_attempts})")
-            
+        process.log_handle = log_handle
+        logging.info(f"XTTS API server process started with PID: {process.pid}")
+        return process
+
+    def check_xtts_server_online(self, base_url, max_attempts=120, wait_interval=5, process=None):
+        """Check if the XTTS server is online and responding."""
+        probe_paths = ['/health', '/v1/models', '/']
+        for attempt in range(1, max_attempts + 1):
+            if process is not None and process.poll() is not None:
+                logging.error("XTTS server process exited before coming online.")
+                return False
+
+            for probe_path in probe_paths:
+                try:
+                    response = requests.get(f"{base_url}{probe_path}", timeout=5)
+                    if response.status_code < 500 and response.status_code != 404:
+                        logging.info("XTTS server is online.")
+                        return True
+                except requests.exceptions.RequestException:
+                    continue
+
+            logging.info("XTTS server is not online yet. Waiting... (Attempt %s/%s)", attempt, max_attempts)
             time.sleep(wait_interval)
-            attempt += 1
-        
-        logging.error("xtts server failed to come online within the specified attempts.")
+
+        logging.error("XTTS server failed to come online within the specified attempts.")
         return False
 
-    def run_silero_api_server(self, conda_path, env_name):
+    def run_voxtral_api_server(self, voxtral_server_path):
+        """Run the Voxtral API server via its upstream launcher script."""
+        logging.info(f"Running Voxtral API server from {voxtral_server_path}...")
+
+        if self.is_port_in_use(8000):
+            error_msg = "Voxtral server cannot be started because port 8000 is already in use."
+            logging.error(error_msg)
+            QMessageBox.critical(self, "Error", error_msg)
+            return None
+
+        run_script_path = os.path.join(voxtral_server_path, 'run.ps1')
+        if not os.path.exists(run_script_path):
+            raise FileNotFoundError(f"Voxtral run script not found at: {run_script_path}")
+
+        voxtral_log_file = os.path.join(voxtral_server_path, 'voxtral_server.log')
+        log_handle = open(voxtral_log_file, 'a', encoding='utf-8')
+
+        command = [
+            'powershell',
+            '-ExecutionPolicy',
+            'Bypass',
+            '-File',
+            run_script_path,
+            '-ProjectRoot',
+            voxtral_server_path,
+            '-BindHost',
+            '127.0.0.1',
+            '-Port',
+            '8000',
+            '-Model',
+            'gguf',
+        ]
+
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=voxtral_server_path,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+            )
+        except Exception:
+            log_handle.close()
+            raise
+
+        process.log_handle = log_handle
+        self.voxtral_process = process
+        return process
+
+    def check_voxtral_server_online(self, url, max_attempts=60, wait_interval=5):
+        """Check if the Voxtral server is online and responding."""
+        for attempt in range(1, max_attempts + 1):
+            try:
+                response = requests.get(url, timeout=5)
+                if response.status_code == 200:
+                    logging.info("Voxtral server is online.")
+                    return True
+            except requests.exceptions.RequestException:
+                pass
+
+            logging.info("Voxtral server is not online. Waiting... (Attempt %s/%s)", attempt, max_attempts)
+            time.sleep(wait_interval)
+
+        logging.error("Voxtral server failed to come online within the specified attempts.")
+        return False
+
+    def run_silero_api_server(self, pandrator_path, env_name):
+        """Run the Silero API server"""
         logging.info(f"Running Silero API server in {env_name}...")
-        env_path = os.path.join(conda_path, 'envs', env_name)
 
-        # Create log file for silero server output
-        silero_log_file = os.path.join(os.getcwd(), 'silero_server.log')
+        if self.is_port_in_use(8001):
+            error_msg = "Silero server cannot be started because port 8001 is already in use."
+            logging.error(error_msg)
+            QMessageBox.critical(self, "Error", error_msg)
+            return None
 
-        # Run silero server command with output redirection
-        silero_server_command = f'"{os.path.join(conda_path, "Scripts", "conda.exe")}" run -p "{env_path}" python -m silero_api_server > "{silero_log_file}" 2>&1'
-        process = subprocess.Popen(silero_server_command, shell=True)
+        silero_log_file = os.path.join(pandrator_path, 'silero_server.log')
+        silero_server_command = self.build_pixi_run_command(
+            pandrator_path,
+            env_name,
+            ['python', '-m', 'silero_api_server']
+        )
+
+        log_handle = open(silero_log_file, 'a', encoding='utf-8')
+        try:
+            process = subprocess.Popen(
+                silero_server_command,
+                cwd=pandrator_path,
+                env=self.get_pixi_subprocess_env(pandrator_path),
+                stdout=log_handle,
+                stderr=subprocess.STDOUT
+            )
+        except Exception:
+            log_handle.close()
+            raise
+
+        process.log_handle = log_handle
         self.silero_process = process
         return process
 
-
     def check_silero_server_online(self, url, max_attempts=30, wait_interval=10):
+        """Check if the Silero server is online and responding"""
         attempt = 1
         while attempt <= max_attempts:
             try:
@@ -1680,28 +2446,56 @@ class PandratorInstaller(ctk.CTk):
         return False
 
     def check_processes_status(self):
+        """Check the status of running processes and update UI accordingly"""
+        any_process_running = False
+        
+        # Check Pandrator
         if self.pandrator_process and self.pandrator_process.poll() is not None:
             # Pandrator has exited
             self.pandrator_process = None
             self.shutdown_apps()  # Shut down other apps when Pandrator exits
+        elif self.pandrator_process:
+            any_process_running = True
+            
+        # Check XTTS
         if self.xtts_process and self.xtts_process.poll() is not None:
             # XTTS has exited
             self.xtts_process = None
+        elif self.xtts_process:
+            any_process_running = True
+
+        # Check Voxtral
+        if self.voxtral_process and self.voxtral_process.poll() is not None:
+            # Voxtral has exited
+            if hasattr(self.voxtral_process, 'log_handle') and self.voxtral_process.log_handle:
+                self.voxtral_process.log_handle.close()
+            self.voxtral_process = None
+        elif self.voxtral_process:
+            any_process_running = True
+            
+        # Check Silero
         if self.silero_process and self.silero_process.poll() is not None:
             # Silero has exited
+            if hasattr(self.silero_process, 'log_handle') and self.silero_process.log_handle:
+                self.silero_process.log_handle.close()
             self.silero_process = None
+        elif self.silero_process:
+            any_process_running = True
         
-        if not self.pandrator_process and not self.xtts_process and not self.silero_process:
+        if not any_process_running:
             self.update_status("All processes have exited.")
             self.refresh_ui_state()
         else:
-            self.after(5000, self.check_processes_status)  # Schedule next check
+            QTimer.singleShot(5000, self.check_processes_status)  # Schedule next check
 
     def shutdown_apps(self):
+        """Shut down all running applications"""
         self.shutdown_xtts()
+        self.shutdown_voxtral()
         self.shutdown_silero()
 
     def shutdown_xtts(self):
+        """Shut down the XTTS server"""
         if self.xtts_process:
             logging.info(f"Terminating XTTS process with PID: {self.xtts_process.pid}")
             try:
@@ -1724,11 +2518,13 @@ class PandratorInstaller(ctk.CTk):
                     except psutil.AccessDenied:
                         logging.warning(f"Access denied when killing child process with PID: {child.pid}")
                 parent.kill()
+            if hasattr(self.xtts_process, 'log_handle') and self.xtts_process.log_handle:
+                self.xtts_process.log_handle.close()
             self.xtts_process = None
 
         # Check if any process is using port 8020 and kill it
         for conn in psutil.net_connections():
-            if conn.laddr.port == 8020:
+            if hasattr(conn, 'laddr') and hasattr(conn.laddr, 'port') and conn.laddr.port == 8020:
                 try:
                     process = psutil.Process(conn.pid)
                     if process.pid != 0:  # Skip System Idle Process
@@ -1739,7 +2535,49 @@ class PandratorInstaller(ctk.CTk):
                 except psutil.AccessDenied:
                     logging.warning(f"Access denied when terminating process with PID: {conn.pid}")
 
+    def shutdown_voxtral(self):
+        """Shut down the Voxtral server"""
+        if self.voxtral_process:
+            logging.info(f"Terminating Voxtral process with PID: {self.voxtral_process.pid}")
+            try:
+                parent = psutil.Process(self.voxtral_process.pid)
+                for child in parent.children(recursive=True):
+                    try:
+                        child.terminate()
+                    except psutil.AccessDenied:
+                        logging.warning(f"Access denied when terminating child process with PID: {child.pid}")
+                parent.terminate()
+                self.voxtral_process.wait(timeout=10)
+            except psutil.NoSuchProcess:
+                logging.info("Voxtral process already terminated.")
+            except psutil.TimeoutExpired:
+                logging.warning("Voxtral process did not terminate, forcing kill")
+                parent = psutil.Process(self.voxtral_process.pid)
+                for child in parent.children(recursive=True):
+                    try:
+                        child.kill()
+                    except psutil.AccessDenied:
+                        logging.warning(f"Access denied when killing child process with PID: {child.pid}")
+                parent.kill()
+            if hasattr(self.voxtral_process, 'log_handle') and self.voxtral_process.log_handle:
+                self.voxtral_process.log_handle.close()
+            self.voxtral_process = None
+
+        # Check if any process is using port 8000 and kill it
+        for conn in psutil.net_connections():
+            if hasattr(conn, 'laddr') and hasattr(conn.laddr, 'port') and conn.laddr.port == 8000:
+                try:
+                    process = psutil.Process(conn.pid)
+                    if process.pid != 0:  # Skip System Idle Process
+                        process.terminate()
+                        logging.info(f"Terminated process using port 8000: PID {conn.pid}")
+                except psutil.NoSuchProcess:
+                    logging.info(f"Process using port 8000 (PID {conn.pid}) no longer exists")
+                except psutil.AccessDenied:
+                    logging.warning(f"Access denied when terminating process with PID: {conn.pid}")
+
     def shutdown_silero(self):
+        """Shut down the Silero server"""
         if self.silero_process:
             logging.info(f"Terminating Silero process with PID: {self.silero_process.pid}")
             try:
@@ -1762,11 +2600,13 @@ class PandratorInstaller(ctk.CTk):
                     except psutil.AccessDenied:
                         logging.warning(f"Access denied when killing child process with PID: {child.pid}")
                 parent.kill()
+            if hasattr(self.silero_process, 'log_handle') and self.silero_process.log_handle:
+                self.silero_process.log_handle.close()
             self.silero_process = None
 
         # Check if any process is using port 8001 and kill it
         for conn in psutil.net_connections():
-            if conn.laddr.port == 8001:
+            if hasattr(conn, 'laddr') and hasattr(conn.laddr, 'port') and conn.laddr.port == 8001:
                 try:
                     process = psutil.Process(conn.pid)
                     if process.pid != 0:  # Skip System Idle Process
@@ -1777,10 +2617,132 @@ class PandratorInstaller(ctk.CTk):
                 except psutil.AccessDenied:
                     logging.warning(f"Access denied when terminating process with PID: {conn.pid}")
 
-    def destroy(self):
+    def closeEvent(self, event):
+        """Handle window close event"""
         self.shutdown_apps()
-        super().destroy()
+        self.shutdown_logging()
+        event.accept()
+
 
 if __name__ == "__main__":
-    app = PandratorInstaller()
-    app.mainloop()
+    # Import needed modules
+    from PyQt6.QtGui import QColor, QPalette
+    
+    # Set up application style
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion")  # Use Fusion style for a modern look
+    
+    # Define pastel purple color
+    pastel_purple = QColor("#A589D9")  # Main button color
+    pastel_purple_hover = QColor("#B79AE6")  # Lighter for hover
+    pastel_purple_pressed = QColor("#8A6CC7")  # Darker for pressed state
+    
+    # Create dark palette
+    dark_palette = QPalette()
+    # Set colors using the QPalette.ColorRole enum
+    dark_palette.setColor(QPalette.ColorRole.Window, QColor(45, 45, 48))
+    dark_palette.setColor(QPalette.ColorRole.WindowText, QColor(255, 255, 255))
+    dark_palette.setColor(QPalette.ColorRole.Base, QColor(30, 30, 30))
+    dark_palette.setColor(QPalette.ColorRole.AlternateBase, QColor(45, 45, 48))
+    dark_palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(255, 255, 255))
+    dark_palette.setColor(QPalette.ColorRole.ToolTipText, QColor(255, 255, 255))
+    dark_palette.setColor(QPalette.ColorRole.Text, QColor(255, 255, 255))
+    dark_palette.setColor(QPalette.ColorRole.Button, QColor(45, 45, 48))
+    dark_palette.setColor(QPalette.ColorRole.ButtonText, QColor(255, 255, 255))
+    dark_palette.setColor(QPalette.ColorRole.BrightText, QColor(255, 0, 0))
+    dark_palette.setColor(QPalette.ColorRole.Link, QColor(0, 155, 255))
+    dark_palette.setColor(QPalette.ColorRole.Highlight, pastel_purple)  # Changed to match buttons
+    dark_palette.setColor(QPalette.ColorRole.HighlightedText, QColor(255, 255, 255))
+    app.setPalette(dark_palette)
+    
+    # Set stylesheet for custom styling with pastel purple buttons and white checkbox borders
+    app.setStyleSheet(f"""
+        QMainWindow {{
+            background-color: #2D2D30;
+        }}
+        QWidget {{
+            background-color: #2D2D30;
+            color: #FFFFFF;
+        }}
+        QPushButton {{
+            background-color: {pastel_purple.name()};
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+        }}
+        QPushButton:hover {{
+            background-color: {pastel_purple_hover.name()};
+        }}
+        QPushButton:pressed {{
+            background-color: {pastel_purple_pressed.name()};
+        }}
+        QPushButton:disabled {{
+            background-color: #555555;
+            color: #888888;
+        }}
+        QCheckBox {{
+            spacing: 8px;
+        }}
+        QCheckBox::indicator {{
+            width: 18px;
+            height: 18px;
+            border: 1px solid white;
+            border-radius: 3px;
+        }}
+        QCheckBox::indicator:checked {{
+            background-color: {pastel_purple.name()};
+            border: 1px solid white;
+        }}
+        QCheckBox::indicator:unchecked {{
+            background-color: transparent;
+            border: 1px solid white;
+        }}
+        QGroupBox {{
+            border: 1px solid #444444;
+            border-radius: 4px;
+            margin-top: 12px;
+            padding-top: 15px;
+        }}
+        QGroupBox::title {{
+            subcontrol-origin: margin;
+            subcontrol-position: top left;
+            padding: 0 5px;
+            color: {pastel_purple.name()};
+        }}
+        QTabWidget::pane {{
+            border: 1px solid #444444;
+            border-radius: 4px;
+        }}
+        QTabBar::tab {{
+            background-color: #2D2D30;
+            color: #FFFFFF;
+            border: 1px solid #444444;
+            border-bottom: none;
+            border-top-left-radius: 4px;
+            border-top-right-radius: 4px;
+            padding: 8px 16px;
+        }}
+        QTabBar::tab:selected {{
+            background-color: {pastel_purple.name()};
+        }}
+        QTabBar::tab:hover:!selected {{
+            background-color: #3D3D40;
+        }}
+        QProgressBar {{
+            border: 1px solid #444444;
+            border-radius: 3px;
+            text-align: center;
+            height: 20px;
+        }}
+        QProgressBar::chunk {{
+            background-color: {pastel_purple.name()};
+            width: 10px;
+        }}
+    """)
+    
+    # Create and show the main window
+    window = PandratorInstaller()
+    window.show()
+    
+    sys.exit(app.exec())
