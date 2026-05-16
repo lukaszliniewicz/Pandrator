@@ -744,7 +744,7 @@ class PandratorInstaller(QMainWindow):
         else:
             QMessageBox.warning(self, "Log Not Available", "No log file is available yet.")
 
-    def run_command(self, command, use_shell=False, cwd=None, env=None):
+    def run_command(self, command, use_shell=False, cwd=None, env=None, log_errors=True):
         try:
             if use_shell:
                 process = subprocess.Popen(
@@ -779,15 +779,16 @@ class PandratorInstaller(QMainWindow):
             
             return stdout, stderr
         except subprocess.CalledProcessError as e:
-            logging.error(f"Error executing command: {command if isinstance(command, str) else ' '.join(command)}")
-            logging.error(f"Error message: {str(e)}")
-            logging.error(f"STDOUT: {e.stdout}")
-            logging.error(f"STDERR: {e.stderr}")
+            log = logging.error if log_errors else logging.debug
+            log(f"Error executing command: {command if isinstance(command, str) else ' '.join(command)}")
+            log(f"Error message: {str(e)}")
+            log(f"STDOUT: {e.stdout}")
+            log(f"STDERR: {e.stderr}")
             raise
 
     def check_program_installed(self, program):
         try:
-            self.run_command(['where', program])
+            self.run_command(['where', program], log_errors=False)
             return True
         except subprocess.CalledProcessError:
             return False
@@ -1020,7 +1021,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         env['RATTLER_CACHE_DIR'] = rattler_cache
         return env
 
-    def run_pixi_command(self, pandrator_path, arguments, cwd=None):
+    def run_pixi_command(self, pandrator_path, arguments, cwd=None, log_errors=True):
         pixi_executable = self.get_pixi_executable(pandrator_path)
         if not os.path.exists(pixi_executable):
             raise FileNotFoundError(
@@ -1030,7 +1031,8 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         return self.run_command(
             [pixi_executable] + arguments,
             cwd=cwd,
-            env=self.get_pixi_subprocess_env(pandrator_path)
+            env=self.get_pixi_subprocess_env(pandrator_path),
+            log_errors=log_errors,
         )
 
     def build_pixi_run_command(self, pandrator_path, env_name, command):
@@ -1048,11 +1050,12 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             '--executable',
         ] + command
 
-    def run_pixi_in_env(self, pandrator_path, env_name, command, cwd=None):
+    def run_pixi_in_env(self, pandrator_path, env_name, command, cwd=None, log_errors=True):
         return self.run_command(
             self.build_pixi_run_command(pandrator_path, env_name, command),
             cwd=cwd,
-            env=self.get_pixi_subprocess_env(pandrator_path)
+            env=self.get_pixi_subprocess_env(pandrator_path),
+            log_errors=log_errors,
         )
 
     def check_pixi(self, pandrator_path):
@@ -1158,6 +1161,9 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         import_aliases = {
             'google-genai': 'google.genai',
             'pymupdf': 'fitz',
+            'ffmpeg-python': 'ffmpeg',
+            'beautifulsoup4': 'bs4',
+            'pillow': 'PIL',
         }
 
         with open(requirements_file, 'r', encoding='utf-8-sig', errors='replace') as f:
@@ -1173,7 +1179,8 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 for separator in ('[', '==', '>=', '<=', '~=', '!=', '>', '<', '='):
                     package_name = package_name.split(separator, 1)[0].strip()
 
-                import_name = import_aliases.get(package_name.lower(), package_name.replace('-', '_'))
+                normalized_package_name = package_name.lower().replace('_', '-').replace('.', '-')
+                import_name = import_aliases.get(normalized_package_name, package_name.replace('-', '_'))
                 if import_name and import_name not in seen:
                     seen.add(import_name)
                     candidates.append(import_name)
@@ -1200,6 +1207,53 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
         return requirements_text, requirement_specs, unsupported_lines
 
+    def add_pypi_requirements(self, pandrator_path, env_name, requirement_specs):
+        if not requirement_specs:
+            return []
+
+        manifest_path = self.get_pixi_manifest_path(pandrator_path, env_name)
+        env_dir = self.get_pixi_env_dir(pandrator_path, env_name)
+
+        try:
+            self.run_pixi_command(
+                pandrator_path,
+                ['add', '--manifest-path', manifest_path, '--pypi'] + requirement_specs,
+                cwd=env_dir,
+                log_errors=False,
+            )
+            return []
+        except subprocess.CalledProcessError as e:
+            logging.warning(
+                f"Bulk pixi add failed for {env_name}; retrying requirements one-by-one. STDERR: {e.stderr}"
+            )
+
+        failed_specs = []
+        for requirement_spec in requirement_specs:
+            try:
+                self.run_pixi_command(
+                    pandrator_path,
+                    ['add', '--manifest-path', manifest_path, '--pypi', requirement_spec],
+                    cwd=env_dir,
+                    log_errors=False,
+                )
+            except subprocess.CalledProcessError as e:
+                failed_specs.append(requirement_spec)
+                logging.warning(
+                    f"pixi add failed for '{requirement_spec}' in {env_name}. "
+                    f"Will try pip fallback for this requirement. STDERR: {e.stderr}"
+                )
+
+        return failed_specs
+
+    def install_requirement_specs_with_pip(self, pandrator_path, env_name, requirement_specs):
+        for requirement_spec in requirement_specs:
+            logging.info(f"Installing requirement via pip fallback in {env_name}: {requirement_spec}")
+            self.run_pixi_in_env(
+                pandrator_path,
+                env_name,
+                ['python', '-m', 'pip', 'install', requirement_spec]
+            )
+
     def try_import_requirements(self, pandrator_path, env_name, requirements_file):
         logging.info(f"Running best-effort import checks for {requirements_file}...")
 
@@ -1208,7 +1262,8 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 self.run_pixi_in_env(
                     pandrator_path,
                     env_name,
-                    ['python', '-c', f'import importlib; importlib.import_module("{import_name}")']
+                    ['python', '-c', f'import importlib; importlib.import_module("{import_name}")'],
+                    log_errors=False,
                 )
             except subprocess.CalledProcessError as e:
                 logging.warning(
@@ -1222,15 +1277,19 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         requirements_text, requirement_specs, unsupported_lines = self.load_pypi_requirements(requirements_file)
         logging.info(f"Requirements file contents:\n{requirements_text}")
 
+        failed_pixi_specs = []
+
         if requirement_specs:
-            manifest_path = self.get_pixi_manifest_path(pandrator_path, env_name)
-            self.run_pixi_command(
-                pandrator_path,
-                ['add', '--manifest-path', manifest_path, '--pypi'] + requirement_specs,
-                cwd=self.get_pixi_env_dir(pandrator_path, env_name)
-            )
+            failed_pixi_specs = self.add_pypi_requirements(pandrator_path, env_name, requirement_specs)
         else:
             logging.info(f"No installable requirements found in {requirements_file}")
+
+        if failed_pixi_specs:
+            logging.warning(
+                f"Falling back to pip install for requirements that pixi could not add in {env_name}: "
+                f"{failed_pixi_specs}"
+            )
+            self.install_requirement_specs_with_pip(pandrator_path, env_name, failed_pixi_specs)
 
         if unsupported_lines:
             logging.warning(
@@ -1251,7 +1310,8 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 self.run_pixi_in_env(
                     pandrator_path,
                     env_name,
-                    ['python', '-c', 'import dulwich; print(f"Dulwich version {dulwich.__version__} is installed")']
+                    ['python', '-c', 'import dulwich; print(f"Dulwich version {dulwich.__version__} is installed")'],
+                    log_errors=False,
                 )
                 logging.info("Dulwich check completed successfully")
             except subprocess.CalledProcessError:
