@@ -1973,7 +1973,7 @@ class AppLogic(QObject):
             self._persist_session_config(force=True)
 
         self.log_message.emit(
-            "Saved XTTS advanced settings. They are applied per request via instructions."
+            "Saved XTTS advanced defaults. Only parameters marked 'Send' are applied per request."
         )
 
     def apply_xtts_settings(self):

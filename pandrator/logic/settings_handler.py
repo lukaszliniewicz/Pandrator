@@ -34,6 +34,20 @@ TTS_GLOBAL_BOOL_FIELDS = (
     "do_sample",
     "enable_text_splitting",
     "sound_norm_refs",
+    "xtts_send_temperature",
+    "xtts_send_length_penalty",
+    "xtts_send_repetition_penalty",
+    "xtts_send_top_k",
+    "xtts_send_top_p",
+    "xtts_send_do_sample",
+    "xtts_send_num_beams",
+    "xtts_send_stream_chunk_size",
+    "xtts_send_enable_text_splitting",
+    "xtts_send_gpt_cond_len",
+    "xtts_send_gpt_cond_chunk_len",
+    "xtts_send_max_ref_len",
+    "xtts_send_sound_norm_refs",
+    "xtts_send_overlap_wav_len",
 )
 
 TTS_GLOBAL_FIELDS = (

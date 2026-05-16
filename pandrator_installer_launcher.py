@@ -132,7 +132,7 @@ class PandratorInstaller(QMainWindow):
         # Launch options
         self.launch_pandrator_var = True
         self.launch_xtts_var = False
-        self.deepspeed_var = False
+        self.disable_deepspeed_var = False
         self.xtts_cpu_launch_var = False
         self.launch_voxtral_var = False
         self.launch_silero_var = False
@@ -363,7 +363,7 @@ class PandratorInstaller(QMainWindow):
         self.xtts_cpu_launch_checkbox = QCheckBox("Use CPU")
         xtts_layout.addWidget(self.xtts_cpu_launch_checkbox, 0, 1)
         
-        self.deepspeed_checkbox = QCheckBox("DeepSpeed")
+        self.deepspeed_checkbox = QCheckBox("Turn off DeepSpeed")
         xtts_layout.addWidget(self.deepspeed_checkbox, 0, 2)
         
         launch_layout.addWidget(xtts_frame)
@@ -460,7 +460,7 @@ class PandratorInstaller(QMainWindow):
         if xtts_support:
             if xtts_cuda_support:
                 set_widget_state(self.xtts_cpu_launch_checkbox, True, False)
-                set_widget_state(self.deepspeed_checkbox, True, True)
+                set_widget_state(self.deepspeed_checkbox, True, False)
             else:
                 set_widget_state(self.xtts_cpu_launch_checkbox, True, True)
                 set_widget_state(self.deepspeed_checkbox, False, False)
@@ -2215,7 +2215,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         # Get checkbox states
         self.launch_pandrator_var = self.launch_pandrator_checkbox.isChecked()
         self.launch_xtts_var = self.launch_xtts_checkbox.isChecked()
-        self.deepspeed_var = self.deepspeed_checkbox.isChecked()
+        self.disable_deepspeed_var = self.deepspeed_checkbox.isChecked()
         self.xtts_cpu_launch_var = self.xtts_cpu_launch_checkbox.isChecked()
         self.launch_voxtral_var = self.launch_voxtral_checkbox.isChecked()
         self.launch_silero_var = self.launch_silero_checkbox.isChecked()
@@ -2493,7 +2493,13 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             pixi_path=self.get_xtts_pixi_argument(xtts_server_path, pixi_path),
         )
         xtts_env = os.environ.copy()
-        xtts_env['XTTS_USE_DEEPSPEED'] = 'true' if (self.deepspeed_var and not use_cpu) else 'false'
+        if use_cpu:
+            xtts_env['XTTS_DEVICE'] = 'cpu'
+            xtts_env['XTTS_USE_DEEPSPEED'] = 'false'
+        elif self.disable_deepspeed_var:
+            xtts_env['XTTS_USE_DEEPSPEED'] = 'false'
+        else:
+            xtts_env.pop('XTTS_USE_DEEPSPEED', None)
 
         log_handle = open(xtts_log_file, 'a', encoding='utf-8')
         try:

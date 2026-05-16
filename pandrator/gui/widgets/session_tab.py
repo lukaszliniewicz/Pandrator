@@ -133,19 +133,34 @@ class SessionTab(QWidget):
         # Advanced TTS controls
         self.xtts_advanced_settings_frame = self.advanced_tts_frame.xtts_advanced_settings_frame
         self.voxtral_advanced_settings_frame = self.advanced_tts_frame.voxtral_advanced_settings_frame
+        self.xtts_send_hint_label = self.advanced_tts_frame.xtts_send_hint_label
+        self.adv_tts_temp_send_checkbox = self.advanced_tts_frame.adv_tts_temp_send_checkbox
         self.adv_tts_temp_spinbox = self.advanced_tts_frame.adv_tts_temp_spinbox
+        self.adv_tts_len_penalty_send_checkbox = self.advanced_tts_frame.adv_tts_len_penalty_send_checkbox
         self.adv_tts_len_penalty_spinbox = self.advanced_tts_frame.adv_tts_len_penalty_spinbox
+        self.adv_tts_rep_penalty_send_checkbox = self.advanced_tts_frame.adv_tts_rep_penalty_send_checkbox
         self.adv_tts_rep_penalty_spinbox = self.advanced_tts_frame.adv_tts_rep_penalty_spinbox
+        self.adv_tts_top_k_send_checkbox = self.advanced_tts_frame.adv_tts_top_k_send_checkbox
         self.adv_tts_top_k_spinbox = self.advanced_tts_frame.adv_tts_top_k_spinbox
+        self.adv_tts_top_p_send_checkbox = self.advanced_tts_frame.adv_tts_top_p_send_checkbox
         self.adv_tts_top_p_spinbox = self.advanced_tts_frame.adv_tts_top_p_spinbox
+        self.adv_tts_do_sample_send_checkbox = self.advanced_tts_frame.adv_tts_do_sample_send_checkbox
         self.adv_tts_do_sample_checkbox = self.advanced_tts_frame.adv_tts_do_sample_checkbox
+        self.adv_tts_num_beams_send_checkbox = self.advanced_tts_frame.adv_tts_num_beams_send_checkbox
         self.adv_tts_num_beams_spinbox = self.advanced_tts_frame.adv_tts_num_beams_spinbox
+        self.adv_tts_chunk_size_send_checkbox = self.advanced_tts_frame.adv_tts_chunk_size_send_checkbox
         self.adv_tts_chunk_size_spinbox = self.advanced_tts_frame.adv_tts_chunk_size_spinbox
+        self.adv_tts_text_split_send_checkbox = self.advanced_tts_frame.adv_tts_text_split_send_checkbox
         self.adv_tts_text_split_checkbox = self.advanced_tts_frame.adv_tts_text_split_checkbox
+        self.adv_tts_gpt_cond_len_send_checkbox = self.advanced_tts_frame.adv_tts_gpt_cond_len_send_checkbox
         self.adv_tts_gpt_cond_len_spinbox = self.advanced_tts_frame.adv_tts_gpt_cond_len_spinbox
+        self.adv_tts_gpt_cond_chunk_len_send_checkbox = self.advanced_tts_frame.adv_tts_gpt_cond_chunk_len_send_checkbox
         self.adv_tts_gpt_cond_chunk_len_spinbox = self.advanced_tts_frame.adv_tts_gpt_cond_chunk_len_spinbox
+        self.adv_tts_max_ref_len_send_checkbox = self.advanced_tts_frame.adv_tts_max_ref_len_send_checkbox
         self.adv_tts_max_ref_len_spinbox = self.advanced_tts_frame.adv_tts_max_ref_len_spinbox
+        self.adv_tts_sound_norm_refs_send_checkbox = self.advanced_tts_frame.adv_tts_sound_norm_refs_send_checkbox
         self.adv_tts_sound_norm_refs_checkbox = self.advanced_tts_frame.adv_tts_sound_norm_refs_checkbox
+        self.adv_tts_overlap_wav_len_send_checkbox = self.advanced_tts_frame.adv_tts_overlap_wav_len_send_checkbox
         self.adv_tts_overlap_wav_len_spinbox = self.advanced_tts_frame.adv_tts_overlap_wav_len_spinbox
         self.adv_tts_apply_button = self.advanced_tts_frame.adv_tts_apply_button
         self.voxtral_max_frames_spinbox = self.advanced_tts_frame.voxtral_max_frames_spinbox
@@ -237,6 +252,105 @@ class SessionTab(QWidget):
         self.speed_slider.valueChanged.connect(self._on_speed_changed)
         self.advanced_tts_checkbox.toggled.connect(self.advanced_tts_frame.setVisible)
         self.upload_voice_button.clicked.connect(self._on_upload_voice)
+
+        self.adv_tts_temp_send_checkbox.stateChanged.connect(
+            lambda: setattr(
+                self.logic.state.tts,
+                "xtts_send_temperature",
+                self.adv_tts_temp_send_checkbox.isChecked(),
+            )
+        )
+        self.adv_tts_len_penalty_send_checkbox.stateChanged.connect(
+            lambda: setattr(
+                self.logic.state.tts,
+                "xtts_send_length_penalty",
+                self.adv_tts_len_penalty_send_checkbox.isChecked(),
+            )
+        )
+        self.adv_tts_rep_penalty_send_checkbox.stateChanged.connect(
+            lambda: setattr(
+                self.logic.state.tts,
+                "xtts_send_repetition_penalty",
+                self.adv_tts_rep_penalty_send_checkbox.isChecked(),
+            )
+        )
+        self.adv_tts_top_k_send_checkbox.stateChanged.connect(
+            lambda: setattr(
+                self.logic.state.tts,
+                "xtts_send_top_k",
+                self.adv_tts_top_k_send_checkbox.isChecked(),
+            )
+        )
+        self.adv_tts_top_p_send_checkbox.stateChanged.connect(
+            lambda: setattr(
+                self.logic.state.tts,
+                "xtts_send_top_p",
+                self.adv_tts_top_p_send_checkbox.isChecked(),
+            )
+        )
+        self.adv_tts_do_sample_send_checkbox.stateChanged.connect(
+            lambda: setattr(
+                self.logic.state.tts,
+                "xtts_send_do_sample",
+                self.adv_tts_do_sample_send_checkbox.isChecked(),
+            )
+        )
+        self.adv_tts_num_beams_send_checkbox.stateChanged.connect(
+            lambda: setattr(
+                self.logic.state.tts,
+                "xtts_send_num_beams",
+                self.adv_tts_num_beams_send_checkbox.isChecked(),
+            )
+        )
+        self.adv_tts_chunk_size_send_checkbox.stateChanged.connect(
+            lambda: setattr(
+                self.logic.state.tts,
+                "xtts_send_stream_chunk_size",
+                self.adv_tts_chunk_size_send_checkbox.isChecked(),
+            )
+        )
+        self.adv_tts_text_split_send_checkbox.stateChanged.connect(
+            lambda: setattr(
+                self.logic.state.tts,
+                "xtts_send_enable_text_splitting",
+                self.adv_tts_text_split_send_checkbox.isChecked(),
+            )
+        )
+        self.adv_tts_gpt_cond_len_send_checkbox.stateChanged.connect(
+            lambda: setattr(
+                self.logic.state.tts,
+                "xtts_send_gpt_cond_len",
+                self.adv_tts_gpt_cond_len_send_checkbox.isChecked(),
+            )
+        )
+        self.adv_tts_gpt_cond_chunk_len_send_checkbox.stateChanged.connect(
+            lambda: setattr(
+                self.logic.state.tts,
+                "xtts_send_gpt_cond_chunk_len",
+                self.adv_tts_gpt_cond_chunk_len_send_checkbox.isChecked(),
+            )
+        )
+        self.adv_tts_max_ref_len_send_checkbox.stateChanged.connect(
+            lambda: setattr(
+                self.logic.state.tts,
+                "xtts_send_max_ref_len",
+                self.adv_tts_max_ref_len_send_checkbox.isChecked(),
+            )
+        )
+        self.adv_tts_sound_norm_refs_send_checkbox.stateChanged.connect(
+            lambda: setattr(
+                self.logic.state.tts,
+                "xtts_send_sound_norm_refs",
+                self.adv_tts_sound_norm_refs_send_checkbox.isChecked(),
+            )
+        )
+        self.adv_tts_overlap_wav_len_send_checkbox.stateChanged.connect(
+            lambda: setattr(
+                self.logic.state.tts,
+                "xtts_send_overlap_wav_len",
+                self.adv_tts_overlap_wav_len_send_checkbox.isChecked(),
+            )
+        )
 
         self.adv_tts_temp_spinbox.valueChanged.connect(
             lambda v: setattr(self.logic.state.tts, "temperature", v)
@@ -551,6 +665,21 @@ class SessionTab(QWidget):
         self.speed_slider.setValue(int(tts_state.speed * 100))
         self.speed_label.setText(f"{tts_state.speed:.2f}")
 
+        self.adv_tts_temp_send_checkbox.setChecked(tts_state.xtts_send_temperature)
+        self.adv_tts_len_penalty_send_checkbox.setChecked(tts_state.xtts_send_length_penalty)
+        self.adv_tts_rep_penalty_send_checkbox.setChecked(tts_state.xtts_send_repetition_penalty)
+        self.adv_tts_top_k_send_checkbox.setChecked(tts_state.xtts_send_top_k)
+        self.adv_tts_top_p_send_checkbox.setChecked(tts_state.xtts_send_top_p)
+        self.adv_tts_do_sample_send_checkbox.setChecked(tts_state.xtts_send_do_sample)
+        self.adv_tts_num_beams_send_checkbox.setChecked(tts_state.xtts_send_num_beams)
+        self.adv_tts_chunk_size_send_checkbox.setChecked(tts_state.xtts_send_stream_chunk_size)
+        self.adv_tts_text_split_send_checkbox.setChecked(tts_state.xtts_send_enable_text_splitting)
+        self.adv_tts_gpt_cond_len_send_checkbox.setChecked(tts_state.xtts_send_gpt_cond_len)
+        self.adv_tts_gpt_cond_chunk_len_send_checkbox.setChecked(tts_state.xtts_send_gpt_cond_chunk_len)
+        self.adv_tts_max_ref_len_send_checkbox.setChecked(tts_state.xtts_send_max_ref_len)
+        self.adv_tts_sound_norm_refs_send_checkbox.setChecked(tts_state.xtts_send_sound_norm_refs)
+        self.adv_tts_overlap_wav_len_send_checkbox.setChecked(tts_state.xtts_send_overlap_wav_len)
+
         self.adv_tts_temp_spinbox.setValue(tts_state.temperature)
         self.adv_tts_len_penalty_spinbox.setValue(tts_state.length_penalty)
         self.adv_tts_rep_penalty_spinbox.setValue(tts_state.repetition_penalty)
@@ -728,19 +857,33 @@ class SessionTab(QWidget):
             self.openai_audio_instructions_edit,
             self.speed_slider,
             self.advanced_tts_checkbox,
+            self.adv_tts_temp_send_checkbox,
             self.adv_tts_temp_spinbox,
+            self.adv_tts_len_penalty_send_checkbox,
             self.adv_tts_len_penalty_spinbox,
+            self.adv_tts_rep_penalty_send_checkbox,
             self.adv_tts_rep_penalty_spinbox,
+            self.adv_tts_top_k_send_checkbox,
             self.adv_tts_top_k_spinbox,
+            self.adv_tts_top_p_send_checkbox,
             self.adv_tts_top_p_spinbox,
+            self.adv_tts_do_sample_send_checkbox,
             self.adv_tts_do_sample_checkbox,
+            self.adv_tts_num_beams_send_checkbox,
             self.adv_tts_num_beams_spinbox,
+            self.adv_tts_chunk_size_send_checkbox,
             self.adv_tts_chunk_size_spinbox,
+            self.adv_tts_text_split_send_checkbox,
             self.adv_tts_text_split_checkbox,
+            self.adv_tts_gpt_cond_len_send_checkbox,
             self.adv_tts_gpt_cond_len_spinbox,
+            self.adv_tts_gpt_cond_chunk_len_send_checkbox,
             self.adv_tts_gpt_cond_chunk_len_spinbox,
+            self.adv_tts_max_ref_len_send_checkbox,
             self.adv_tts_max_ref_len_spinbox,
+            self.adv_tts_sound_norm_refs_send_checkbox,
             self.adv_tts_sound_norm_refs_checkbox,
+            self.adv_tts_overlap_wav_len_send_checkbox,
             self.adv_tts_overlap_wav_len_spinbox,
             self.voxtral_max_frames_spinbox,
             self.voxtral_euler_steps_spinbox,

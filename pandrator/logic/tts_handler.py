@@ -160,23 +160,77 @@ def _coerce_float(value, default: float) -> float:
         return default
 
 
+XTTS_OVERRIDE_SPECS = (
+    ("temperature", "temperature", "xtts_send_temperature", _coerce_float, 0.75),
+    ("top_p", "top_p", "xtts_send_top_p", _coerce_float, 0.85),
+    ("top_k", "top_k", "xtts_send_top_k", _coerce_int, 50),
+    (
+        "repetition_penalty",
+        "repetition_penalty",
+        "xtts_send_repetition_penalty",
+        _coerce_float,
+        5.0,
+    ),
+    (
+        "length_penalty",
+        "length_penalty",
+        "xtts_send_length_penalty",
+        _coerce_float,
+        1.0,
+    ),
+    ("do_sample", "do_sample", "xtts_send_do_sample", _coerce_bool, True),
+    ("num_beams", "num_beams", "xtts_send_num_beams", _coerce_int, 1),
+    (
+        "enable_text_splitting",
+        "enable_text_splitting",
+        "xtts_send_enable_text_splitting",
+        _coerce_bool,
+        True,
+    ),
+    ("gpt_cond_len", "gpt_cond_len", "xtts_send_gpt_cond_len", _coerce_int, 12),
+    (
+        "gpt_cond_chunk_len",
+        "gpt_cond_chunk_len",
+        "xtts_send_gpt_cond_chunk_len",
+        _coerce_int,
+        4,
+    ),
+    ("max_ref_len", "max_ref_len", "xtts_send_max_ref_len", _coerce_int, 12),
+    (
+        "sound_norm_refs",
+        "sound_norm_refs",
+        "xtts_send_sound_norm_refs",
+        _coerce_bool,
+        False,
+    ),
+    (
+        "stream_chunk_size",
+        "stream_chunk_size",
+        "xtts_send_stream_chunk_size",
+        _coerce_int,
+        100,
+    ),
+    (
+        "overlap_wav_len",
+        "overlap_wav_len",
+        "xtts_send_overlap_wav_len",
+        _coerce_int,
+        1024,
+    ),
+)
+XTTS_OVERRIDE_KEYS = tuple(spec[0] for spec in XTTS_OVERRIDE_SPECS)
+XTTS_OVERRIDE_ALIASES = ("temp", "max_ref_length")
+
+
 def _build_xtts_overrides(tts_settings: dict) -> dict[str, object]:
-    return {
-        "temperature": _coerce_float(tts_settings.get("temperature"), 0.75),
-        "top_p": _coerce_float(tts_settings.get("top_p"), 0.85),
-        "top_k": _coerce_int(tts_settings.get("top_k"), 50),
-        "repetition_penalty": _coerce_float(tts_settings.get("repetition_penalty"), 5.0),
-        "length_penalty": _coerce_float(tts_settings.get("length_penalty"), 1.0),
-        "do_sample": _coerce_bool(tts_settings.get("do_sample"), True),
-        "num_beams": _coerce_int(tts_settings.get("num_beams"), 1),
-        "enable_text_splitting": _coerce_bool(tts_settings.get("enable_text_splitting"), True),
-        "gpt_cond_len": _coerce_int(tts_settings.get("gpt_cond_len"), 12),
-        "gpt_cond_chunk_len": _coerce_int(tts_settings.get("gpt_cond_chunk_len"), 4),
-        "max_ref_len": _coerce_int(tts_settings.get("max_ref_len"), 12),
-        "sound_norm_refs": _coerce_bool(tts_settings.get("sound_norm_refs"), False),
-        "stream_chunk_size": _coerce_int(tts_settings.get("stream_chunk_size"), 100),
-        "overlap_wav_len": _coerce_int(tts_settings.get("overlap_wav_len"), 1024),
-    }
+    overrides: dict[str, object] = {}
+
+    for output_name, setting_name, send_flag, coercer, fallback in XTTS_OVERRIDE_SPECS:
+        if not _coerce_bool(tts_settings.get(send_flag), False):
+            continue
+        overrides[output_name] = coercer(tts_settings.get(setting_name), fallback)
+
+    return overrides
 
 
 def _try_parse_json_object(raw_text: str) -> dict | None:
@@ -221,18 +275,24 @@ def _build_xtts_instructions_payload(tts_settings: dict, existing_instructions: 
     payload = _try_parse_json_object(existing_instructions) or {}
     xtts_overrides = _build_xtts_overrides(tts_settings)
 
-    for key in xtts_overrides:
+    for key in (*XTTS_OVERRIDE_KEYS, *XTTS_OVERRIDE_ALIASES):
         payload.pop(key, None)
-    payload.pop("temp", None)
 
     existing_xtts = payload.get("xtts")
     merged_xtts: dict[str, object] = {}
     if isinstance(existing_xtts, dict):
         merged_xtts.update(existing_xtts)
+
+    for key in (*XTTS_OVERRIDE_KEYS, *XTTS_OVERRIDE_ALIASES):
+        merged_xtts.pop(key, None)
+
     merged_xtts.update(xtts_overrides)
 
     payload["language"] = str(tts_settings.get("language") or "en").strip() or "en"
-    payload["xtts"] = merged_xtts
+    if merged_xtts:
+        payload["xtts"] = merged_xtts
+    else:
+        payload.pop("xtts", None)
 
     return json.dumps(payload, ensure_ascii=False)
 
