@@ -30,6 +30,13 @@ PIXI_DOWNLOAD_URL = 'https://github.com/prefix-dev/pixi/releases/latest/download
 PIXI_HOME_DIRNAME = '.pixi-home'
 PIXI_CACHE_DIRNAME = '.pixi-cache'
 PYQT6_RUNTIME_PIN = 'PyQt6==6.7.1'
+WHISPERX_PYTHON_VERSION = '3.13'
+WHISPERX_VERSION = '3.8.5'
+WHISPERX_CTRANSLATE2_VERSION = '4.7.1'
+WHISPERX_TORCH_VERSION = '2.8.0'
+WHISPERX_TORCHVISION_VERSION = '0.23.0'
+WHISPERX_TORCHAUDIO_VERSION = '2.8.0'
+WHISPERX_TORCH_INDEX_URL = 'https://download.pytorch.org/whl/cu128'
 
 XTTS_API_REPO_URL = 'https://github.com/lukaszliniewicz/xtts2_api.git'
 XTTS_API_REPO_DIRNAME = 'xtts2_api'
@@ -51,11 +58,11 @@ SILERO_REQUIRED_PACKAGE_SPECS = (
     'silero-api-server',
 )
 WHISPERX_REQUIRED_PACKAGE_SPECS = (
-    'whisperx',
-    'ctranslate2==4.4.0',
-    'torch==2.5.1',
-    'torchvision==0.20.1',
-    'torchaudio==2.5.1',
+    f'whisperx=={WHISPERX_VERSION}',
+    f'ctranslate2=={WHISPERX_CTRANSLATE2_VERSION}',
+    f'torch=={WHISPERX_TORCH_VERSION}',
+    f'torchvision=={WHISPERX_TORCHVISION_VERSION}',
+    f'torchaudio=={WHISPERX_TORCHAUDIO_VERSION}',
 )
 XTTS_FINETUNING_TORCH_PACKAGE_SPECS = (
     'torch==2.2.0+cu118',
@@ -1975,31 +1982,24 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 env_name,
                 [
                     'python', '-m', 'pip', 'install',
-                    'torch==2.5.1', 'torchvision==0.20.1', 'torchaudio==2.5.1',
-                    '--index-url', 'https://download.pytorch.org/whl/cu118'
+                    f'torch=={WHISPERX_TORCH_VERSION}',
+                    f'torchvision=={WHISPERX_TORCHVISION_VERSION}',
+                    f'torchaudio=={WHISPERX_TORCHAUDIO_VERSION}',
+                    '--index-url', WHISPERX_TORCH_INDEX_URL
                 ]
             )
 
             self.add_pixi_conda_package(pandrator_path, env_name, 'cudnn=8.9.7.29')
             self.add_pixi_conda_package(pandrator_path, env_name, 'ffmpeg')
 
-            # Keep the older pip pin here because newer pip versions break WhisperX installs.
             self.run_pixi_in_env(
                 pandrator_path,
                 env_name,
-                ['python', '-m', 'pip', 'install', 'pip<24']
-            )
-
-            self.run_pixi_in_env(
-                pandrator_path,
-                env_name,
-                ['python', '-m', 'pip', 'install', 'whisperx']
-            )
-
-            self.run_pixi_in_env(
-                pandrator_path,
-                env_name,
-                ['python', '-m', 'pip', 'install', 'ctranslate2==4.4.0']
+                [
+                    'python', '-m', 'pip', 'install',
+                    f'whisperx=={WHISPERX_VERSION}',
+                    f'ctranslate2=={WHISPERX_CTRANSLATE2_VERSION}'
+                ]
             )
             
             logging.info("WhisperX installation completed successfully.")
@@ -2200,7 +2200,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             if whisperx_var:
                 self.worker.update_progress.emit(0.85)
                 self.worker.update_status.emit("Creating WhisperX Pixi environment...")
-                self.create_pixi_env(pandrator_path, 'whisperx_installer', '3.10')
+                self.create_pixi_env(pandrator_path, 'whisperx_installer', WHISPERX_PYTHON_VERSION)
                 self.worker.update_progress.emit(0.90)
                 self.worker.update_status.emit("Installing WhisperX...")
                 self.install_whisperx(pandrator_path, 'whisperx_installer')
@@ -2474,7 +2474,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 if whisperx_needs_install:
                     self.worker.update_status.emit("Installing/upgrading WhisperX dependencies...")
                     logging.info(f"Installing WhisperX packages because {whisperx_reason}")
-                    self.create_pixi_env(pandrator_base_path, 'whisperx_installer', '3.10')
+                    self.create_pixi_env(pandrator_base_path, 'whisperx_installer', WHISPERX_PYTHON_VERSION)
                     self.install_whisperx(pandrator_base_path, 'whisperx_installer')
                 else:
                     logging.info(f"Skipping WhisperX reinstall: {whisperx_reason}")
