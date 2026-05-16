@@ -568,18 +568,26 @@ class SessionTab(QWidget):
 
     def _on_download_url(self):
         url, ok = QInputDialog.getText(self, "Download from URL", "Enter YouTube URL:")
-        if ok and url:
-            if (
-                not self.logic.state.session_name
-                or self.logic.state.session_name == "Untitled Session"
-            ):
-                QMessageBox.warning(
-                    self,
-                    "No Session",
-                    "Please create or load a session before downloading.",
-                )
-                return
-            self.logic.download_from_url(url)
+        normalized_url = url.strip() if ok and url else ""
+        if not normalized_url:
+            return
+
+        if (
+            not self.logic.state.session_name
+            or self.logic.state.session_name == "Untitled Session"
+        ):
+            QMessageBox.warning(
+                self,
+                "No Session",
+                "Please create or load a session before downloading.",
+            )
+            return
+
+        should_continue, reset_session = self._confirm_source_replacement()
+        if not should_continue:
+            return
+
+        self.logic.download_from_url(normalized_url, reset_session=reset_session)
 
     def _on_use_external_server_toggled(self, checked: bool):
         self.logic.state.tts.use_external_server = checked
@@ -598,6 +606,17 @@ class SessionTab(QWidget):
 
     def _on_tts_connection_running_changed(self, _running: bool):
         self.update_ui_from_state()
+
+    def _set_button_accent(self, button, accent_active: bool):
+        if bool(button.property("accentActive")) == accent_active:
+            return
+
+        button.setProperty("accentActive", accent_active)
+        style = button.style()
+        if style is not None:
+            style.unpolish(button)
+            style.polish(button)
+        button.update()
 
     def update_ui_from_state(self):
         state = self.logic.state
@@ -835,6 +854,8 @@ class SessionTab(QWidget):
         can_start_or_resume = (not generation_busy) and (not is_dubbing_source)
         self.start_button.setEnabled(can_start_or_resume)
         self.resume_button.setEnabled(can_start_or_resume)
+        self._set_button_accent(self.start_button, not is_dubbing_source)
+        self._set_button_accent(self.generate_dub_audio_button, is_dubbing_source)
         self.stop_button.setEnabled(
             generation_running and not stop_requested and not cancel_requested
         )
@@ -944,14 +965,51 @@ class SessionTab(QWidget):
 
         self.language_combo.blockSignals(False)
 
-    def _on_new_session(self):
+    def _prompt_for_new_session_name(self) -> str | None:
         text, ok = QInputDialog.getText(
             self,
             "New Session",
             "Enter a name for the new session:",
         )
-        if ok and text:
-            self.logic.new_session(text)
+        session_name = text.strip() if ok and text else ""
+        return session_name or None
+
+    def _confirm_source_replacement(self, selected_file_path: str | None = None) -> tuple[bool, bool]:
+        if not self.logic.should_warn_before_source_change(selected_file_path):
+            return True, False
+
+        chooser = QMessageBox(self)
+        chooser.setIcon(QMessageBox.Icon.Warning)
+        chooser.setWindowTitle("Replace Session Source")
+        chooser.setText(
+            "This session already has generated files. Switching source will remove everything from this session."
+        )
+        chooser.setInformativeText(
+            "Create a new session to keep existing files, or proceed to clear this one first."
+        )
+        new_session_button = chooser.addButton("Create New Session", QMessageBox.ButtonRole.AcceptRole)
+        proceed_button = chooser.addButton("Proceed", QMessageBox.ButtonRole.DestructiveRole)
+        chooser.addButton(QMessageBox.StandardButton.Cancel)
+        chooser.setDefaultButton(new_session_button)
+        chooser.exec()
+
+        clicked_button = chooser.clickedButton()
+        if clicked_button == new_session_button:
+            session_name = self._prompt_for_new_session_name()
+            if not session_name:
+                return False, False
+            self.logic.new_session(session_name)
+            return True, False
+
+        if clicked_button == proceed_button:
+            return True, True
+
+        return False, False
+
+    def _on_new_session(self):
+        session_name = self._prompt_for_new_session_name()
+        if session_name:
+            self.logic.new_session(session_name)
 
     def _on_load_session(self):
         dir_name = QFileDialog.getExistingDirectory(self, "Load Session", "Outputs")
@@ -975,7 +1033,14 @@ class SessionTab(QWidget):
         if dialog.exec():
             data = dialog.get_data()
             if data["text"]:
-                self.logic.save_pasted_text(data["text"], data["mark_paragraphs"])
+                should_continue, reset_session = self._confirm_source_replacement()
+                if not should_continue:
+                    return
+                self.logic.save_pasted_text(
+                    data["text"],
+                    data["mark_paragraphs"],
+                    reset_session=reset_session,
+                )
 
     def _on_select_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -985,6 +1050,10 @@ class SessionTab(QWidget):
             "Supported Files (*.txt *.srt *.pdf *.epub *.docx *.mobi *.mp4 *.mkv *.webm *.avi *.mov);;All files (*.*)",
         )
         if not file_path:
+            return
+
+        should_continue, reset_session = self._confirm_source_replacement(file_path)
+        if not should_continue:
             return
 
         selected_path = file_path
@@ -1005,7 +1074,7 @@ class SessionTab(QWidget):
             if crop_choice == QMessageBox.StandardButton.Yes:
                 selected_path = self.logic.run_pdf_crop_tool(file_path)
 
-        if not self.logic.select_source_file(selected_path):
+        if not self.logic.select_source_file(selected_path, reset_session=reset_session):
             return
 
         reviewable_extensions = {".pdf", ".epub", ".docx", ".mobi"}

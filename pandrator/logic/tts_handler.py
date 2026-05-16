@@ -308,7 +308,6 @@ def _normalize_voxtral_model(model_name: str, fallback: str = VOXTRAL_DEFAULT_MO
 
 def _build_voxtral_options(tts_settings: dict) -> dict[str, object]:
     return {
-        "language": str(tts_settings.get("language") or "en").strip() or "en",
         "max_frames": _coerce_int(tts_settings.get("voxtral_max_frames"), 1024),
         "euler_steps": _coerce_int(tts_settings.get("voxtral_euler_steps"), 8),
         "chunk": _coerce_bool(tts_settings.get("voxtral_chunk"), False),
@@ -344,7 +343,7 @@ def _build_voxtral_instructions_payload(tts_settings: dict, existing_instruction
     payload = _parse_voxtral_instructions_options(existing_instructions)
     options = _build_voxtral_options(tts_settings)
 
-    for key in options:
+    for key in (*options, "language"):
         payload.pop(key, None)
     payload.update(options)
 

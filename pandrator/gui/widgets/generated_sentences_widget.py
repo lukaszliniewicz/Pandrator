@@ -106,17 +106,20 @@ class GeneratedSentencesWidget(QWidget):
         layout = QHBoxLayout(frame)
         self.regenerate_selected_button = QPushButton("Regenerate Selected")
         self.regenerate_marked_button = QPushButton("Regenerate Marked")
+        self.regenerate_all_button = QPushButton("Regenerate All")
         self.remove_button = QPushButton("Remove Selected")
         self.edit_button = QPushButton("Edit Selected")
         
         self.regenerate_selected_button.clicked.connect(self._on_regenerate_selected)
         self.regenerate_marked_button.clicked.connect(self._on_regenerate_marked)
+        self.regenerate_all_button.clicked.connect(self._on_regenerate_all)
         self.remove_button.clicked.connect(self._on_remove)
         self.edit_button.clicked.connect(self._on_edit)
 
         layout.addStretch()
         layout.addWidget(self.regenerate_selected_button)
         layout.addWidget(self.regenerate_marked_button)
+        layout.addWidget(self.regenerate_all_button)
         layout.addWidget(self.remove_button)
         layout.addWidget(self.edit_button)
         return frame
@@ -392,6 +395,7 @@ class GeneratedSentencesWidget(QWidget):
 
         self.regenerate_selected_button.setEnabled(not generation_busy)
         self.regenerate_marked_button.setEnabled(not generation_busy)
+        self.regenerate_all_button.setEnabled(not generation_busy)
         self.remove_button.setEnabled(not generation_busy)
         self.edit_button.setEnabled(not generation_busy)
 
@@ -469,6 +473,23 @@ class GeneratedSentencesWidget(QWidget):
             return
 
         numbers_to_regenerate = [s.get('sentence_number') for s in marked_sentences]
+        self.logic.regenerate_sentences(numbers_to_regenerate)
+
+    def _on_regenerate_all(self):
+        sentences = self.logic.get_processed_sentences_snapshot()
+        if not sentences:
+            QMessageBox.information(self, "No Sentences", "There are no sentences to regenerate.")
+            return
+
+        numbers_to_regenerate = [
+            sentence.get("sentence_number")
+            for sentence in sentences
+            if sentence.get("sentence_number") is not None
+        ]
+        if not numbers_to_regenerate:
+            QMessageBox.information(self, "No Sentences", "There are no sentences to regenerate.")
+            return
+
         self.logic.regenerate_sentences(numbers_to_regenerate)
 
     def _on_save_output(self):

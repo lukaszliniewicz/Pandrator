@@ -31,9 +31,11 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(splitter)
 
         left_scroll_area = QScrollArea()
+        left_scroll_area.setObjectName("leftPaneScrollArea")
         left_scroll_area.setWidgetResizable(True)
 
         self.tab_widget = QTabWidget()
+        self.tab_widget.setObjectName("leftPaneTabWidget")
         left_scroll_area.setWidget(self.tab_widget)
 
         self.right_widget = GeneratedSentencesWidget(self.logic)

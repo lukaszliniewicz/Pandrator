@@ -452,6 +452,8 @@ class DubbingSection(QFrame):
         layout.addWidget(self.buttons_frame)
 
         self.generate_dub_audio_button = QPushButton("Generate Dubbing Audio")
+        self.generate_dub_audio_button.setObjectName("generateDubAudioButton")
+        self.generate_dub_audio_button.setProperty("accentActive", False)
         self.add_dub_to_video_button = QPushButton("Add Dubbing to Video")
         self.only_transcribe_button = QPushButton("Only Transcribe")
         self.only_correct_button = QPushButton("Only Correct")
@@ -499,7 +501,8 @@ class GenerationSection(QFrame):
         layout = QGridLayout(self)
 
         self.start_button = QPushButton("Start Generation")
-        self.start_button.setObjectName("primaryButton")
+        self.start_button.setObjectName("startGenerationButton")
+        self.start_button.setProperty("accentActive", True)
         self.resume_button = QPushButton("Resume Generation")
         self.stop_button = QPushButton("Stop Generation")
         self.cancel_button = QPushButton("Cancel Generation")

@@ -3,13 +3,20 @@ QWidget {
     color: #f1f1f1;
 }
 
-QFrame#groupFrame,
-QFrame#subGroupFrame {
+QFrame#groupFrame {
     background-color: #2b2f33;
     border: 1px solid #4d5863;
     border-radius: 8px;
     margin-top: 0.2em;
     padding: 0.5em;
+}
+
+QFrame#subGroupFrame {
+    background-color: #2f3439;
+    border: none;
+    border-radius: 8px;
+    margin-top: 0.2em;
+    padding: 0.45em;
 }
 
 QFrame#rowFrame {
@@ -65,15 +72,24 @@ QDoubleSpinBox,
 QComboBox,
 QListWidget,
 QTableWidget,
-QTabWidget::pane,
-QScrollArea,
-QScrollArea > QWidget > QWidget,
 QMenu,
 QProgressBar,
 QStatusBar {
     background-color: #2b2f33;
     border: 1px solid #4d5863;
     color: #f1f1f1;
+}
+
+QScrollArea#leftPaneScrollArea,
+QScrollArea#leftPaneScrollArea > QWidget > QWidget {
+    background-color: #2b2f33;
+    border: none;
+}
+
+QTabWidget#leftPaneTabWidget,
+QTabWidget#leftPaneTabWidget::pane {
+    background: transparent;
+    border: none;
 }
 
 QHeaderView::section,
@@ -88,7 +104,7 @@ QTableWidget::item:selected {
 
 QTabBar::tab {
     background-color: #495562;
-    border: 1px solid #4d5863;
+    border: 1px solid transparent;
     border-bottom: none;
     border-top-left-radius: 7px;
     border-top-right-radius: 7px;
@@ -105,6 +121,7 @@ QTabBar::tab:selected {
 
 QTabBar::tab:hover:!selected {
     background-color: #52606e;
+    border-color: #5a6878;
 }
 
 QTabBar QToolButton {
@@ -138,4 +155,31 @@ QScrollBar::handle:vertical,
 QScrollBar::handle:horizontal {
     background-color: #4d5863;
     border-radius: 5px;
+}
+
+QPushButton#startGenerationButton[accentActive="true"],
+QPushButton#generateDubAudioButton[accentActive="true"] {
+    background-color: #4f6d55;
+    border: 1px solid #5d7f63;
+    color: #f1f1f1;
+}
+
+QPushButton#startGenerationButton[accentActive="true"]:hover,
+QPushButton#generateDubAudioButton[accentActive="true"]:hover {
+    background-color: #5b7c62;
+    border: 1px solid #6a8f70;
+}
+
+QPushButton#startGenerationButton[accentActive="true"]:pressed,
+QPushButton#generateDubAudioButton[accentActive="true"]:pressed {
+    background-color: #456049;
+    border: 1px solid #537457;
+}
+
+QPushButton#startGenerationButton:disabled,
+QPushButton#startGenerationButton[accentActive="true"]:disabled,
+QPushButton#generateDubAudioButton[accentActive="true"]:disabled {
+    background-color: #3f454c;
+    border: 1px solid #3f454c;
+    color: #9aa1aa;
 }
