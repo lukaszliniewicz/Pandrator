@@ -70,8 +70,8 @@ class TTSSettings:
     top_p: float = 0.85
     do_sample: bool = True
     num_beams: int = 1
-    enable_text_splitting: bool = False
-    stream_chunk_size: int = 20
+    enable_text_splitting: bool = True
+    stream_chunk_size: int = 100
     gpt_cond_len: int = 12
     gpt_cond_chunk_len: int = 4
     max_ref_len: int = 12

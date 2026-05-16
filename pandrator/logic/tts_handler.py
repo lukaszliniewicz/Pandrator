@@ -169,12 +169,12 @@ def _build_xtts_overrides(tts_settings: dict) -> dict[str, object]:
         "length_penalty": _coerce_float(tts_settings.get("length_penalty"), 1.0),
         "do_sample": _coerce_bool(tts_settings.get("do_sample"), True),
         "num_beams": _coerce_int(tts_settings.get("num_beams"), 1),
-        "enable_text_splitting": _coerce_bool(tts_settings.get("enable_text_splitting"), False),
+        "enable_text_splitting": _coerce_bool(tts_settings.get("enable_text_splitting"), True),
         "gpt_cond_len": _coerce_int(tts_settings.get("gpt_cond_len"), 12),
         "gpt_cond_chunk_len": _coerce_int(tts_settings.get("gpt_cond_chunk_len"), 4),
         "max_ref_len": _coerce_int(tts_settings.get("max_ref_len"), 12),
         "sound_norm_refs": _coerce_bool(tts_settings.get("sound_norm_refs"), False),
-        "stream_chunk_size": _coerce_int(tts_settings.get("stream_chunk_size"), 20),
+        "stream_chunk_size": _coerce_int(tts_settings.get("stream_chunk_size"), 100),
         "overlap_wav_len": _coerce_int(tts_settings.get("overlap_wav_len"), 1024),
     }
 
