@@ -3,6 +3,7 @@ import subprocess
 import logging
 import time
 import shutil
+import hashlib
 import requests
 import sys
 import atexit
@@ -34,6 +35,32 @@ XTTS_API_REPO_URL = 'https://github.com/lukaszliniewicz/xtts2_api.git'
 XTTS_API_REPO_DIRNAME = 'xtts2_api'
 VOXTRAL_API_REPO_URL = 'https://github.com/lukaszliniewicz/voxtral-fastapi.git'
 VOXTRAL_API_REPO_DIRNAME = 'voxtral-fastapi'
+PANDRATOR_REPO_URL = 'https://github.com/lukaszliniewicz/Pandrator.git'
+SUBDUB_REPO_URL = 'https://github.com/lukaszliniewicz/Subdub.git'
+PYCROPPDF_REPO_URL = 'https://github.com/lukaszliniewicz/PyCropPDF.git'
+EASY_XTTS_TRAINER_REPO_URL = 'https://github.com/lukaszliniewicz/easy_xtts_trainer.git'
+
+INSTALLER_STATE_FILENAME = 'installer_state.json'
+RVC_REQUIRED_PACKAGE_SPECS = (
+    'rvc-python',
+    'torch==2.1.1+cu121',
+    'torchaudio==2.1.1+cu121',
+)
+SILERO_REQUIRED_PACKAGE_SPECS = (
+    'requests',
+    'silero-api-server',
+)
+WHISPERX_REQUIRED_PACKAGE_SPECS = (
+    'whisperx',
+    'ctranslate2==4.4.0',
+    'torch==2.5.1',
+    'torchvision==0.20.1',
+    'torchaudio==2.5.1',
+)
+XTTS_FINETUNING_TORCH_PACKAGE_SPECS = (
+    'torch==2.2.0+cu118',
+    'torchaudio==2.2.0+cu118',
+)
 
 
 
@@ -679,11 +706,9 @@ class PandratorInstaller(QMainWindow):
             self.run_pixi_in_env(
                 pandrator_path,
                 env_name,
-                [
-                    'python', '-m', 'pip', 'install',
-                    'torch==2.2.0+cu118', 'torchaudio==2.2.0+cu118',
-                    '--index-url', 'https://download.pytorch.org/whl/cu118'
-                ]
+                ['python', '-m', 'pip', 'install']
+                + list(XTTS_FINETUNING_TORCH_PACKAGE_SPECS)
+                + ['--index-url', 'https://download.pytorch.org/whl/cu118']
             )
             logging.info("PyTorch for XTTS Fine-tuning installed successfully.")
         except subprocess.CalledProcessError as e:
@@ -1170,6 +1195,224 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             cwd=self.get_pixi_env_dir(pandrator_path, env_name)
         )
 
+    def get_installer_state_path(self, pandrator_path):
+        return os.path.join(pandrator_path, INSTALLER_STATE_FILENAME)
+
+    def load_installer_state(self, pandrator_path):
+        state_path = self.get_installer_state_path(pandrator_path)
+        default_state = {'requirements_hashes': {}}
+
+        if not os.path.exists(state_path):
+            return default_state
+
+        try:
+            with open(state_path, 'r', encoding='utf-8', errors='replace') as f:
+                state = json.load(f)
+
+            if not isinstance(state, dict):
+                raise ValueError("installer state root must be a dictionary")
+        except Exception as e:
+            logging.warning(f"Failed to load installer state from {state_path}: {str(e)}")
+            return default_state
+
+        requirements_hashes = state.get('requirements_hashes')
+        if not isinstance(requirements_hashes, dict):
+            state['requirements_hashes'] = {}
+
+        return state
+
+    def save_installer_state(self, pandrator_path, state):
+        state_path = self.get_installer_state_path(pandrator_path)
+        os.makedirs(pandrator_path, exist_ok=True)
+
+        serializable_state = state if isinstance(state, dict) else {'requirements_hashes': {}}
+        if not isinstance(serializable_state.get('requirements_hashes'), dict):
+            serializable_state['requirements_hashes'] = {}
+
+        try:
+            with open(state_path, 'w', encoding='utf-8') as f:
+                json.dump(serializable_state, f, indent=2, sort_keys=True)
+        except Exception as e:
+            logging.warning(f"Failed to save installer state to {state_path}: {str(e)}")
+
+    def calculate_file_sha256(self, file_path):
+        digest = hashlib.sha256()
+        with open(file_path, 'rb') as f:
+            while True:
+                chunk = f.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def build_requirements_state_key(self, pandrator_path, env_name, requirements_file):
+        try:
+            relative_path = os.path.relpath(requirements_file, pandrator_path)
+        except ValueError:
+            relative_path = os.path.abspath(requirements_file)
+
+        normalized_relative_path = relative_path.replace('\\', '/')
+        return f"{env_name}:{normalized_relative_path}"
+
+    def record_requirements_hash(self, pandrator_path, env_name, requirements_file):
+        if not os.path.exists(requirements_file):
+            return
+
+        state = self.load_installer_state(pandrator_path)
+        requirements_hashes = state.setdefault('requirements_hashes', {})
+        state_key = self.build_requirements_state_key(pandrator_path, env_name, requirements_file)
+        requirements_hashes[state_key] = self.calculate_file_sha256(requirements_file)
+        self.save_installer_state(pandrator_path, state)
+
+    def normalize_package_name(self, package_name):
+        return package_name.strip().lower().replace('_', '-').replace('.', '-')
+
+    def parse_package_spec(self, package_spec):
+        spec = package_spec.split(';', 1)[0].strip()
+        if not spec:
+            return '', None, ''
+
+        if '@' in spec:
+            package_before_at = spec.split('@', 1)[0].strip()
+            if package_before_at:
+                spec = package_before_at
+
+        package_name = spec
+        comparator = None
+        version = ''
+
+        for candidate_comparator in ('===', '==', '>=', '<=', '~=', '!=', '>', '<', '='):
+            if candidate_comparator in spec:
+                package_name, version = spec.split(candidate_comparator, 1)
+                package_name = package_name.strip()
+                version = version.strip()
+                comparator = candidate_comparator
+                break
+
+        package_name = package_name.split('[', 1)[0].strip()
+        return package_name, comparator, version
+
+    def get_installed_pip_packages(self, pandrator_path, env_name):
+        try:
+            stdout, _ = self.run_pixi_in_env(
+                pandrator_path,
+                env_name,
+                ['python', '-m', 'pip', 'freeze'],
+                log_errors=False,
+            )
+        except subprocess.CalledProcessError as e:
+            logging.warning(
+                f"Failed to inspect pip packages in {env_name}; package checks will require reinstall. STDERR: {e.stderr}"
+            )
+            return None
+
+        installed_packages = {}
+        for raw_line in stdout.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith('#') or line.startswith('-e '):
+                continue
+
+            if ' @ ' in line:
+                package_name = line.split(' @ ', 1)[0].strip()
+                if package_name:
+                    installed_packages[self.normalize_package_name(package_name)] = None
+                continue
+
+            if '==' not in line:
+                continue
+
+            package_name, version = line.split('==', 1)
+            installed_packages[self.normalize_package_name(package_name)] = version.strip()
+
+        return installed_packages
+
+    def find_unsatisfied_package_specs(self, package_specs, installed_packages):
+        if installed_packages is None:
+            return list(package_specs)
+
+        unsatisfied_specs = []
+        for package_spec in package_specs:
+            package_name, comparator, expected_version = self.parse_package_spec(package_spec)
+            if not package_name:
+                continue
+
+            normalized_package_name = self.normalize_package_name(package_name)
+            if normalized_package_name not in installed_packages:
+                unsatisfied_specs.append(package_spec)
+                continue
+
+            installed_version = installed_packages.get(normalized_package_name)
+            if comparator in ('==', '===', '=') and expected_version:
+                if installed_version != expected_version:
+                    unsatisfied_specs.append(package_spec)
+
+        return unsatisfied_specs
+
+    def format_package_specs(self, package_specs, max_items=5):
+        if not package_specs:
+            return ''
+
+        preview = ', '.join(package_specs[:max_items])
+        if len(package_specs) > max_items:
+            preview += ', ...'
+        return preview
+
+    def should_install_requirements(self, pandrator_path, env_name, requirements_file):
+        if not os.path.exists(requirements_file):
+            raise FileNotFoundError(f"Requirements file not found: {requirements_file}")
+
+        manifest_path = self.get_pixi_manifest_path(pandrator_path, env_name)
+        if not os.path.exists(manifest_path):
+            return True, "Pixi manifest is missing"
+
+        state = self.load_installer_state(pandrator_path)
+        requirements_hashes = state.setdefault('requirements_hashes', {})
+        state_key = self.build_requirements_state_key(pandrator_path, env_name, requirements_file)
+        current_hash = self.calculate_file_sha256(requirements_file)
+        previous_hash = requirements_hashes.get(state_key)
+
+        _, requirement_specs, unsupported_lines = self.load_pypi_requirements(requirements_file)
+        has_non_exact_constraints = any(
+            self.parse_package_spec(requirement_spec)[1] not in (None, '==', '===', '=')
+            for requirement_spec in requirement_specs
+        )
+        installed_packages = self.get_installed_pip_packages(pandrator_path, env_name)
+        unsatisfied_specs = self.find_unsatisfied_package_specs(requirement_specs, installed_packages)
+
+        if unsatisfied_specs:
+            return True, (
+                "missing or mismatched packages "
+                f"({self.format_package_specs(unsatisfied_specs)})"
+            )
+
+        if previous_hash == current_hash:
+            return False, "requirements unchanged and package checks passed"
+
+        if unsupported_lines:
+            return True, "requirements changed and include entries that require pip -r"
+
+        if has_non_exact_constraints:
+            return True, "requirements changed and include non-exact version constraints"
+
+        requirements_hashes[state_key] = current_hash
+        self.save_installer_state(pandrator_path, state)
+        return False, "requirements changed but package checks passed"
+
+    def component_needs_package_sync(self, pandrator_path, env_name, package_specs):
+        manifest_path = self.get_pixi_manifest_path(pandrator_path, env_name)
+        if not os.path.exists(manifest_path):
+            return True, "Pixi manifest is missing"
+
+        installed_packages = self.get_installed_pip_packages(pandrator_path, env_name)
+        unsatisfied_specs = self.find_unsatisfied_package_specs(package_specs, installed_packages)
+        if unsatisfied_specs:
+            return True, (
+                "missing or mismatched packages "
+                f"({self.format_package_specs(unsatisfied_specs)})"
+            )
+
+        return False, "package checks passed"
+
     def extract_import_candidates(self, requirements_file):
         candidates = []
         seen = set()
@@ -1214,7 +1457,12 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             if not line:
                 continue
 
-            if line.startswith(('-', 'git+', 'http://', 'https://', 'file://', '.', '/')):
+            lower_line = line.lower()
+            has_direct_reference = ' @ ' in line and any(
+                marker in lower_line for marker in ('git+', 'http://', 'https://', 'file://')
+            )
+
+            if line.startswith(('-', 'git+', 'http://', 'https://', 'file://', '.', '/')) or has_direct_reference:
                 unsupported_lines.append(line)
                 continue
 
@@ -1379,6 +1627,8 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 except subprocess.CalledProcessError as e:
                     logging.error(f"Failed to install dulwich in pandrator_installer environment: {str(e)}")
                     raise
+
+        self.record_requirements_hash(pandrator_path, env_name, requirements_file)
 
     def install_package(self, pandrator_path, env_name, package):
         logging.info(f"Installing {package} in {env_name}...")
@@ -1762,7 +2012,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         logging.info(f"Installing Subdub package in {env_name}...")
         try:
             if not os.path.exists(subdub_repo_path):
-                self.clone_repo('https://github.com/lukaszliniewicz/Subdub.git', subdub_repo_path)
+                self.clone_repo(SUBDUB_REPO_URL, subdub_repo_path)
 
             pyproject_file = os.path.join(subdub_repo_path, 'pyproject.toml')
             if os.path.exists(pyproject_file):
@@ -1891,9 +2141,9 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             self.worker.update_status.emit("Cloning repositories...")
             
             if pandrator_var or not pandrator_already_installed or pandrator_repo_missing:
-                self.clone_repo('https://github.com/lukaszliniewicz/Pandrator.git', pandrator_repo_path)
+                self.clone_repo(PANDRATOR_REPO_URL, pandrator_repo_path)
             if pandrator_var or not pandrator_already_installed or subdub_repo_missing:
-                self.clone_repo('https://github.com/lukaszliniewicz/Subdub.git', subdub_repo_path)
+                self.clone_repo(SUBDUB_REPO_URL, subdub_repo_path)
 
             if (xtts_var or xtts_cpu_var) and not os.path.exists(xtts_repo_path):
                 self.clone_repo(XTTS_API_REPO_URL, xtts_repo_path)
@@ -1913,7 +2163,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 
                 pycroppdf_repo_path = os.path.join(pandrator_repo_path, 'PyCropPDF')
                 if not os.path.exists(pycroppdf_repo_path):
-                    self.clone_repo('https://github.com/lukaszliniewicz/PyCropPDF.git', pycroppdf_repo_path)
+                    self.clone_repo(PYCROPPDF_REPO_URL, pycroppdf_repo_path)
                 self.install_pycroppdf_requirements(pandrator_path, 'pandrator_installer', pycroppdf_repo_path)
                 
                 self.install_subdub_requirements(pandrator_path, 'pandrator_installer', subdub_repo_path)
@@ -1958,7 +2208,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             if xtts_finetuning_var:
                 self.worker.update_progress.emit(0.85)
                 self.worker.update_status.emit("Cloning XTTS Fine-tuning repository...")
-                self.clone_repo('https://github.com/lukaszliniewicz/easy_xtts_trainer.git', easy_xtts_trainer_path)
+                self.clone_repo(EASY_XTTS_TRAINER_REPO_URL, easy_xtts_trainer_path)
 
                 self.worker.update_progress.emit(0.90)
                 self.worker.update_status.emit("Creating XTTS Fine-tuning Pixi environment...")
@@ -2044,6 +2294,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         """Main update process - runs in a worker thread"""
         pandrator_base_path = os.path.join(self.initial_working_dir, 'Pandrator')
         pandrator_repo_path = os.path.join(pandrator_base_path, 'Pandrator')
+        pycroppdf_repo_path = os.path.join(pandrator_repo_path, 'PyCropPDF')
         subdub_repo_path = os.path.join(pandrator_base_path, 'Subdub')
         xtts_repo_path = os.path.join(pandrator_base_path, XTTS_API_REPO_DIRNAME)
         voxtral_repo_path = os.path.join(pandrator_base_path, VOXTRAL_API_REPO_DIRNAME)
@@ -2059,7 +2310,6 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         pandrator_env_missing = not os.path.exists(self.get_pixi_manifest_path(pandrator_base_path, 'pandrator_installer'))
         silero_env_missing = not os.path.exists(self.get_pixi_manifest_path(pandrator_base_path, 'silero_api_server_installer'))
         whisperx_env_missing = not os.path.exists(self.get_pixi_manifest_path(pandrator_base_path, 'whisperx_installer'))
-        easy_xtts_env_missing = not os.path.exists(self.get_pixi_manifest_path(pandrator_base_path, 'easy_xtts_trainer'))
         
         # Check admin status
         is_admin = self.is_admin()
@@ -2082,38 +2332,88 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             self.worker.update_status.emit("Updating Pandrator repository...")
             logging.info(f"Updating Pandrator in: {pandrator_repo_path}")
             self.pull_repo(pandrator_repo_path)
-            
-            # Update Pandrator requirements
-            self.worker.update_status.emit("Updating Pandrator dependencies...")
+
+            self.worker.update_status.emit("Checking Pandrator environment...")
+            self.create_pixi_env(pandrator_base_path, 'pandrator_installer', '3.10')
+            self.add_pixi_conda_package(pandrator_base_path, 'pandrator_installer', 'ffmpeg')
+
             requirements_file = os.path.join(pandrator_repo_path, 'requirements.txt')
-            logging.info(f"Updating requirements from: {requirements_file}")
-            
+            logging.info(f"Checking requirements from: {requirements_file}")
+
             if not os.path.exists(requirements_file):
                 logging.error(f"Requirements file not found at: {requirements_file}")
                 raise FileNotFoundError(f"Requirements file not found: {requirements_file}")
 
-            self.create_pixi_env(pandrator_base_path, 'pandrator_installer', '3.10')
-            self.add_pixi_conda_package(pandrator_base_path, 'pandrator_installer', 'ffmpeg')
-            self.install_requirements(pandrator_base_path, 'pandrator_installer', requirements_file)
+            self.worker.update_status.emit("Checking Pandrator dependencies...")
+            needs_pandrator_requirements, pandrator_requirements_reason = self.should_install_requirements(
+                pandrator_base_path,
+                'pandrator_installer',
+                requirements_file,
+            )
+            if needs_pandrator_requirements:
+                self.worker.update_status.emit("Updating Pandrator dependencies...")
+                logging.info(f"Installing Pandrator requirements because {pandrator_requirements_reason}")
+                self.install_requirements(pandrator_base_path, 'pandrator_installer', requirements_file)
+            else:
+                logging.info(f"Skipping Pandrator requirements install: {pandrator_requirements_reason}")
 
-            pycroppdf_repo_path = os.path.join(pandrator_repo_path, 'PyCropPDF')
-            if not os.path.exists(pycroppdf_repo_path):
-                self.clone_repo('https://github.com/lukaszliniewicz/PyCropPDF.git', pycroppdf_repo_path)
-            self.install_pycroppdf_requirements(pandrator_base_path, 'pandrator_installer', pycroppdf_repo_path)
-            
+            if os.path.exists(pycroppdf_repo_path):
+                self.worker.update_status.emit("Updating PyCropPDF repository...")
+                logging.info(f"Updating PyCropPDF in: {pycroppdf_repo_path}")
+                self.pull_repo(pycroppdf_repo_path)
+            else:
+                self.worker.update_status.emit("Cloning PyCropPDF repository...")
+                self.clone_repo(PYCROPPDF_REPO_URL, pycroppdf_repo_path)
+
+            pycroppdf_requirements_file = os.path.join(pycroppdf_repo_path, 'requirements.txt')
+            if os.path.exists(pycroppdf_requirements_file):
+                self.worker.update_status.emit("Checking PyCropPDF dependencies...")
+                needs_pycroppdf_requirements, pycroppdf_requirements_reason = self.should_install_requirements(
+                    pandrator_base_path,
+                    'pandrator_installer',
+                    pycroppdf_requirements_file,
+                )
+                if needs_pycroppdf_requirements:
+                    self.worker.update_status.emit("Updating PyCropPDF dependencies...")
+                    logging.info(f"Installing PyCropPDF requirements because {pycroppdf_requirements_reason}")
+                    self.install_pycroppdf_requirements(
+                        pandrator_base_path,
+                        'pandrator_installer',
+                        pycroppdf_repo_path,
+                    )
+                else:
+                    logging.info(f"Skipping PyCropPDF requirements install: {pycroppdf_requirements_reason}")
+            else:
+                logging.warning(f"PyCropPDF requirements file not found at: {pycroppdf_requirements_file}")
+
             # Update Subdub
             if os.path.exists(subdub_repo_path):
-                self.worker.update_status.emit("Updating Subdub...")
+                self.worker.update_status.emit("Updating Subdub repository...")
                 logging.info(f"Updating Subdub in: {subdub_repo_path}")
                 self.pull_repo(subdub_repo_path)
             else:
-                logging.warning(f"Subdub directory not found at: {subdub_repo_path}")
+                self.worker.update_status.emit("Cloning Subdub repository...")
+                self.clone_repo(SUBDUB_REPO_URL, subdub_repo_path)
 
+            self.worker.update_status.emit("Checking Subdub dependencies...")
             self.install_subdub_requirements(pandrator_base_path, 'pandrator_installer', subdub_repo_path)
 
-            if config.get('rvc_support', False) and pandrator_env_missing:
-                self.worker.update_status.emit("Migrating RVC into the Pixi environment...")
-                self.install_rvc_python(pandrator_base_path, 'pandrator_installer')
+            if config.get('rvc_support', False):
+                rvc_needs_install = pandrator_env_missing
+                rvc_reason = "Pixi manifest is missing"
+                if not rvc_needs_install:
+                    rvc_needs_install, rvc_reason = self.component_needs_package_sync(
+                        pandrator_base_path,
+                        'pandrator_installer',
+                        RVC_REQUIRED_PACKAGE_SPECS,
+                    )
+
+                if rvc_needs_install:
+                    self.worker.update_status.emit("Installing/upgrading RVC dependencies...")
+                    logging.info(f"Installing RVC packages because {rvc_reason}")
+                    self.install_rvc_python(pandrator_base_path, 'pandrator_installer')
+                else:
+                    logging.info(f"Skipping RVC reinstall: {rvc_reason}")
 
             if config.get('xtts_support', False):
                 if os.path.exists(xtts_repo_path):
@@ -2131,10 +2431,23 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                         pixi_path=shared_pixi_path,
                     )
 
-            if config.get('silero_support', False) and silero_env_missing:
-                self.worker.update_status.emit("Migrating Silero to Pixi...")
-                self.create_pixi_env(pandrator_base_path, 'silero_api_server_installer', '3.10')
-                self.install_silero_api_server(pandrator_base_path, 'silero_api_server_installer')
+            if config.get('silero_support', False):
+                silero_needs_install = silero_env_missing
+                silero_reason = "Pixi manifest is missing"
+                if not silero_needs_install:
+                    silero_needs_install, silero_reason = self.component_needs_package_sync(
+                        pandrator_base_path,
+                        'silero_api_server_installer',
+                        SILERO_REQUIRED_PACKAGE_SPECS,
+                    )
+
+                if silero_needs_install:
+                    self.worker.update_status.emit("Installing/upgrading Silero dependencies...")
+                    logging.info(f"Installing Silero packages because {silero_reason}")
+                    self.create_pixi_env(pandrator_base_path, 'silero_api_server_installer', '3.10')
+                    self.install_silero_api_server(pandrator_base_path, 'silero_api_server_installer')
+                else:
+                    logging.info(f"Skipping Silero reinstall: {silero_reason}")
 
             if config.get('voxtral_support', False):
                 if os.path.exists(voxtral_repo_path):
@@ -2148,31 +2461,73 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                     self.worker.update_status.emit("Bootstrapping Voxtral API server...")
                     self.install_voxtral_api_server(voxtral_repo_path)
 
-            if config.get('whisperx_support', False) and whisperx_env_missing:
-                self.worker.update_status.emit("Migrating WhisperX to Pixi...")
-                self.create_pixi_env(pandrator_base_path, 'whisperx_installer', '3.10')
-                self.install_whisperx(pandrator_base_path, 'whisperx_installer')
+            if config.get('whisperx_support', False):
+                whisperx_needs_install = whisperx_env_missing
+                whisperx_reason = "Pixi manifest is missing"
+                if not whisperx_needs_install:
+                    whisperx_needs_install, whisperx_reason = self.component_needs_package_sync(
+                        pandrator_base_path,
+                        'whisperx_installer',
+                        WHISPERX_REQUIRED_PACKAGE_SPECS,
+                    )
+
+                if whisperx_needs_install:
+                    self.worker.update_status.emit("Installing/upgrading WhisperX dependencies...")
+                    logging.info(f"Installing WhisperX packages because {whisperx_reason}")
+                    self.create_pixi_env(pandrator_base_path, 'whisperx_installer', '3.10')
+                    self.install_whisperx(pandrator_base_path, 'whisperx_installer')
+                else:
+                    logging.info(f"Skipping WhisperX reinstall: {whisperx_reason}")
             
             # Update easy XTTS trainer (repo and requirements)
             if os.path.exists(easy_xtts_trainer_path):
                 self.worker.update_status.emit("Updating easy XTTS trainer...")
                 logging.info(f"Updating easy XTTS trainer in: {easy_xtts_trainer_path}")
                 self.pull_repo(easy_xtts_trainer_path)
-                
-                # Update requirements
-                self.worker.update_status.emit("Updating easy XTTS trainer dependencies...")
+
                 xtts_requirements_file = os.path.join(easy_xtts_trainer_path, 'requirements.txt')
                 if os.path.exists(xtts_requirements_file):
-                    logging.info("Installing updated requirements for easy XTTS trainer...")
                     self.create_pixi_env(pandrator_base_path, 'easy_xtts_trainer', '3.10')
-                    self.install_requirements(pandrator_base_path, 'easy_xtts_trainer', xtts_requirements_file)
-                    if easy_xtts_env_missing:
+
+                    self.worker.update_status.emit("Checking easy XTTS trainer dependencies...")
+                    needs_easy_xtts_requirements, easy_xtts_requirements_reason = self.should_install_requirements(
+                        pandrator_base_path,
+                        'easy_xtts_trainer',
+                        xtts_requirements_file,
+                    )
+                    if needs_easy_xtts_requirements:
+                        self.worker.update_status.emit("Updating easy XTTS trainer dependencies...")
+                        logging.info(
+                            "Installing easy XTTS trainer requirements because %s",
+                            easy_xtts_requirements_reason,
+                        )
+                        self.install_requirements(
+                            pandrator_base_path,
+                            'easy_xtts_trainer',
+                            xtts_requirements_file,
+                        )
+                    else:
+                        logging.info(
+                            "Skipping easy XTTS trainer requirements install: %s",
+                            easy_xtts_requirements_reason,
+                        )
+
+                    needs_xtts_torch, xtts_torch_reason = self.component_needs_package_sync(
+                        pandrator_base_path,
+                        'easy_xtts_trainer',
+                        XTTS_FINETUNING_TORCH_PACKAGE_SPECS,
+                    )
+                    if needs_xtts_torch:
+                        self.worker.update_status.emit("Updating XTTS fine-tuning PyTorch packages...")
+                        logging.info(f"Installing XTTS fine-tuning torch packages because {xtts_torch_reason}")
                         self.install_pytorch_for_xtts_finetuning(pandrator_base_path, 'easy_xtts_trainer')
+                    else:
+                        logging.info(f"Skipping XTTS fine-tuning torch reinstall: {xtts_torch_reason}")
                 else:
                     logging.warning(f"XTTS trainer requirements file not found at: {xtts_requirements_file}")
             elif config.get('xtts_finetuning_support', False):
                 self.worker.update_status.emit("Migrating easy XTTS trainer to Pixi...")
-                self.clone_repo('https://github.com/lukaszliniewicz/easy_xtts_trainer.git', easy_xtts_trainer_path)
+                self.clone_repo(EASY_XTTS_TRAINER_REPO_URL, easy_xtts_trainer_path)
                 self.create_pixi_env(pandrator_base_path, 'easy_xtts_trainer', '3.10')
                 xtts_requirements_file = os.path.join(easy_xtts_trainer_path, 'requirements.txt')
                 self.install_requirements(pandrator_base_path, 'easy_xtts_trainer', xtts_requirements_file)
