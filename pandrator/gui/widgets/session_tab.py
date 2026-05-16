@@ -207,7 +207,6 @@ class SessionTab(QWidget):
         self.stop_button = self.generation_section.stop_button
         self.cancel_button = self.generation_section.cancel_button
         self.progress_bar = self.generation_section.progress_bar
-        self.progress_label = self.generation_section.progress_label
         self.remaining_time_label = self.generation_section.remaining_time_label
 
     def _connect_signals(self):
@@ -536,27 +535,35 @@ class SessionTab(QWidget):
         self.stop_button.clicked.connect(self.logic.stop_generation)
         self.cancel_button.clicked.connect(self.logic.cancel_generation)
 
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        safe_seconds = max(0, int(seconds))
+        hours, rem = divmod(safe_seconds, 3600)
+        minutes, secs = divmod(rem, 60)
+        return f"{hours:02}:{minutes:02}:{secs:02}"
+
     def _on_progress_updated(self, current: int, total: int, elapsed_time: float):
         if total > 0 and total >= current:
             progress_percent = (current / total) * 100
             self.progress_bar.setValue(int(progress_percent))
-            self.progress_label.setText(f"{progress_percent:.2f}%")
+            progress_text = f"{progress_percent:.2f}%"
+            if current == total and total > 0:
+                progress_text = f"{progress_text} ({self._format_duration(elapsed_time)})"
+            self.progress_bar.setFormat(progress_text)
 
-            if current > 0:
+            if 0 < current < total:
                 time_per_item = elapsed_time / current
                 remaining_items = total - current
                 remaining_time = remaining_items * time_per_item
 
-                hours, rem = divmod(remaining_time, 3600)
-                minutes, seconds = divmod(rem, 60)
-                self.remaining_time_label.setText(
-                    f"{int(hours):02}:{int(minutes):02}:{int(seconds):02}"
-                )
+                self.remaining_time_label.setText(self._format_duration(remaining_time))
+            elif current == total and total > 0:
+                self.remaining_time_label.setText("00:00:00")
             else:
                 self.remaining_time_label.setText("N/A")
         else:
             self.progress_bar.setValue(0)
-            self.progress_label.setText("0.00%")
+            self.progress_bar.setFormat("0.00%")
             self.remaining_time_label.setText("N/A")
 
     def _on_download_url(self):

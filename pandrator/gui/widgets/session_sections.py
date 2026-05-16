@@ -511,17 +511,21 @@ class GenerationSection(QFrame):
         layout.addWidget(self.cancel_button, 0, 3)
 
         self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.progress_bar.setFormat("0.00%")
         layout.addWidget(self.progress_bar, 1, 0, 1, 4)
 
-        self.progress_label = QLabel("0.00%")
         self.remaining_time_label = QLabel("N/A")
         self.remaining_time_label.setObjectName("secondaryInfoLabel")
-        layout.addWidget(QLabel("Progress:"), 2, 0)
-        layout.addWidget(self.progress_label, 2, 1)
         layout.addWidget(
             QLabel("Estimated Remaining Time:"),
             2,
-            2,
+            0,
+            1,
+            3,
             alignment=Qt.AlignmentFlag.AlignRight,
         )
         layout.addWidget(self.remaining_time_label, 2, 3)

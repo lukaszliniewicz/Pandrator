@@ -116,8 +116,8 @@ class RVCSettings:
 
 @dataclass
 class AudioProcessingSettings:
-    silence_between_sentences: int = 750
-    silence_for_paragraphs: int = 2000
+    silence_between_sentences: int = 300
+    silence_for_paragraphs: int = 1000
     enable_fade: bool = True
     fade_in_duration: int = 75
     fade_out_duration: int = 75
