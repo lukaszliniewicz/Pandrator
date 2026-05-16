@@ -1914,6 +1914,32 @@ class AppLogic(QObject):
             self.log_message.emit("No playable audio found in playlist.")
             self.stop_playback()
 
+    def _refresh_playlist_sentences(self, last_played_sentence_number: str | None = None):
+        """Rebuilds playlist from generated sentences and keeps playback position stable."""
+        all_sentences = self.get_processed_sentences_snapshot()
+        self.playlist_sentences = [
+            sentence for sentence in all_sentences if sentence.get('tts_generated') == 'yes'
+        ]
+
+        if last_played_sentence_number is None:
+            self.current_playlist_index = min(self.current_playlist_index, len(self.playlist_sentences))
+            return
+
+        last_played_str = str(last_played_sentence_number)
+        last_played_index = next(
+            (
+                idx
+                for idx, sentence in enumerate(self.playlist_sentences)
+                if str(sentence.get('sentence_number')) == last_played_str
+            ),
+            None,
+        )
+
+        if last_played_index is not None:
+            self.current_playlist_index = max(self.current_playlist_index, last_played_index + 1)
+
+        self.current_playlist_index = min(self.current_playlist_index, len(self.playlist_sentences))
+
     def _play_current_playlist_item(self) -> bool:
         """Plays the audio for the current sentence in the playlist."""
         while 0 <= self.current_playlist_index < len(self.playlist_sentences):
@@ -1930,20 +1956,31 @@ class AppLogic(QObject):
 
     def _check_playlist_status(self):
         """Called by a timer to check if current playback has finished."""
-        if not self.playback_handler.check_if_finished():
+        playback_finished = self.playback_handler.check_if_finished()
+
+        if not self.playlist_active:
+            if playback_finished:
+                self.playlist_timer.stop()
+                self._set_current_playing_sentence(None)
             return
 
-        if self.playlist_active:
+        if playback_finished:
             self.current_playlist_index += 1
-            if self.current_playlist_index < len(self.playlist_sentences) and self._play_current_playlist_item():
+            self._refresh_playlist_sentences(self.current_playing_sentence_number)
+            if self._play_current_playlist_item():
+                return
+        elif self.playback_handler.get_busy():
+            return
+        else:
+            self._refresh_playlist_sentences(self.current_playing_sentence_number)
+            if self._play_current_playlist_item():
                 return
 
-            self.log_message.emit("Playlist finished.")
-            self.stop_playback()
+        if self._is_generation_or_regeneration_running():
             return
 
-        self.playlist_timer.stop()
-        self._set_current_playing_sentence(None)
+        self.log_message.emit("Playlist finished.")
+        self.stop_playback()
 
     # --- Output Generation ---
     def save_output(self, output_path: str):

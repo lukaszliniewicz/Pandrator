@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
 )
 
 
-DEFAULT_LITELLM_MODEL = "openai/gpt-4o-mini"
+DEFAULT_LITELLM_MODEL = "openai/gpt-5.4-mini"
 
 
 class TextProcessingTab(QWidget):

@@ -12,7 +12,7 @@ def default_llm_provider_configs() -> List[Dict[str, Any]]:
             "api_key_env": "OPENAI_API_KEY",
             "api_key": "",
             "is_custom": False,
-            "models": ["gpt-4o-mini"],
+            "models": ["gpt-5.4", "gpt-5.4-mini"],
         },
         {
             "id": "gemini",
@@ -22,7 +22,7 @@ def default_llm_provider_configs() -> List[Dict[str, Any]]:
             "api_key_env": "GEMINI_API_KEY",
             "api_key": "",
             "is_custom": False,
-            "models": ["gemini-2.5-flash"],
+            "models": ["gemini-3.1-pro-preview", "gemini-3-flash-preview"],
         },
         {
             "id": "anthropic",
@@ -32,7 +32,7 @@ def default_llm_provider_configs() -> List[Dict[str, Any]]:
             "api_key_env": "ANTHROPIC_API_KEY",
             "api_key": "",
             "is_custom": False,
-            "models": ["claude-3-5-sonnet-latest"],
+            "models": ["claude-opus-4-7", "claude-sonnet-4-6"],
         },
     ]
 
@@ -134,7 +134,7 @@ class PromptSettings:
 @dataclass
 class LLMSettings:
     processing_enabled: bool = False
-    default_model: str = "openai/gpt-4o-mini"
+    default_model: str = "openai/gpt-5.4-mini"
     provider_configs: List[Dict[str, Any]] = field(default_factory=default_llm_provider_configs)
     request_timeout_seconds: int = 180
     first_prompt: PromptSettings = field(default_factory=lambda: PromptSettings(
