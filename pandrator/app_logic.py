@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import copy
@@ -104,6 +105,59 @@ class AppLogic(QObject):
     def _is_named_session_active(self) -> bool:
         session_name = self.state.session_name
         return bool(session_name and session_name != "Untitled Session")
+
+    @staticmethod
+    def _is_dubbing_source_extension(extension: str) -> bool:
+        return extension in {".mp4", ".mkv", ".webm", ".avi", ".mov", ".srt"}
+
+    def _is_dubbing_source_selected(self) -> bool:
+        source_path = self.state.source_file_path or ""
+        source_ext = os.path.splitext(source_path)[1].lower()
+        return self._is_dubbing_source_extension(source_ext)
+
+    def _get_dubbing_work_dir(self, ensure_exists: bool = False) -> str:
+        staging_dir = session_handler.get_dubbing_staging_path(self.state.session_name)
+        if ensure_exists:
+            os.makedirs(staging_dir, exist_ok=True)
+        return staging_dir
+
+    def _get_primary_sentence_wavs_dir(self, ensure_exists: bool = False) -> str:
+        session_dir = session_handler.get_session_path(self.state.session_name)
+        if self._is_dubbing_source_selected():
+            wavs_dir = os.path.join(self._get_dubbing_work_dir(ensure_exists=ensure_exists), "Sentence_wavs")
+        else:
+            wavs_dir = os.path.join(session_dir, "Sentence_wavs")
+
+        if ensure_exists:
+            os.makedirs(wavs_dir, exist_ok=True)
+        return wavs_dir
+
+    def _get_candidate_sentence_wavs_dirs(self) -> list[str]:
+        session_dir = session_handler.get_session_path(self.state.session_name)
+        root_wavs_dir = os.path.join(session_dir, "Sentence_wavs")
+        if not self._is_dubbing_source_selected():
+            return [root_wavs_dir]
+
+        staging_wavs_dir = os.path.join(self._get_dubbing_work_dir(ensure_exists=False), "Sentence_wavs")
+        candidates: list[str] = []
+        for path in (staging_wavs_dir, root_wavs_dir):
+            if path not in candidates:
+                candidates.append(path)
+        return candidates
+
+    def _resolve_dubbing_video_source(self) -> str:
+        video_source = self.state.source_file_path or ""
+        if os.path.splitext(video_source)[1].lower() != ".srt":
+            return video_source
+
+        discovered_video = (
+            self.state.dubbing.video_file_path
+            or session_handler.discover_video_file(self.state.session_name)
+        )
+        if discovered_video and not self.state.dubbing.video_file_path:
+            self.state.dubbing.video_file_path = discovered_video
+
+        return discovered_video or ""
 
     def _is_generation_running(self) -> bool:
         return bool(self.generation_thread and self.generation_thread.is_alive())
@@ -332,6 +386,54 @@ class AppLogic(QObject):
 
         shutil.copy2(source_abs, destination_abs)
         return destination_abs
+
+    def should_warn_before_source_change(self, selected_file_path: str | None = None) -> bool:
+        """Returns True when source switching should show a destructive warning."""
+        if not self._is_named_session_active():
+            return False
+
+        selected_abs = os.path.abspath(selected_file_path) if selected_file_path else ""
+        current_abs = os.path.abspath(self.state.source_file_path) if self.state.source_file_path else ""
+        if selected_abs and current_abs and os.path.normcase(current_abs) == os.path.normcase(selected_abs):
+            return False
+
+        if self.get_processed_sentences_snapshot():
+            return True
+
+        return session_handler.session_has_generated_artifacts(self.state.session_name)
+
+    def _stage_source_file_for_session_reset(self, file_path: str) -> tuple[str, str]:
+        """Stages a source file to a temp location when it lives in the active session directory."""
+        source_abs = os.path.abspath(file_path)
+        session_dir_abs = os.path.abspath(session_handler.get_session_path(self.state.session_name))
+        source_dir_abs = os.path.abspath(os.path.dirname(source_abs))
+
+        if os.path.normcase(source_dir_abs) != os.path.normcase(session_dir_abs):
+            return source_abs, ""
+
+        temp_dir = tempfile.mkdtemp(prefix="pandrator_source_")
+        staged_source_path = os.path.join(temp_dir, os.path.basename(source_abs))
+        shutil.copy2(source_abs, staged_source_path)
+        return staged_source_path, temp_dir
+
+    def _reset_active_session_for_source_change(self):
+        """Removes all persisted artifacts for the active session."""
+        session_name = self.state.session_name
+        session_handler.clear_session_contents(session_name)
+
+        session_dir = session_handler.get_session_path(session_name)
+        os.makedirs(os.path.join(session_dir, "Sentence_wavs"), exist_ok=True)
+
+        self.stop_playback()
+        self.state.source_file_path = ""
+        self.state.raw_text = ""
+        self.state.pdf_preprocessed = False
+        self.state.cover_image_path = None
+        self.state.dubbing.video_file_path = ""
+        self.state.metadata = {"title": "", "album": "", "artist": "", "genre": "", "language": ""}
+        self._set_processed_sentences_snapshot([], persist=True)
+        session_handler.save_metadata(session_name, self.state.metadata)
+        self._last_session_config_snapshot = ""
 
     def _try_load_raw_text_for_source(self, source_path: str, session_name: str | None = None) -> str:
         """Best-effort loading of textual source content for session restore."""
@@ -598,7 +700,7 @@ class AppLogic(QObject):
         self.log_message.emit("No cropped PDF was saved. Using the original PDF.")
         return pdf_file_path
 
-    def select_source_file(self, file_path: str) -> bool:
+    def select_source_file(self, file_path: str, reset_session: bool = False) -> bool:
         """Processes a newly selected source file."""
         if self.is_generation_or_regeneration_running():
             self.show_error.emit("Error", "Cannot change source file while generation/regeneration is running.")
@@ -612,9 +714,20 @@ class AppLogic(QObject):
         previous_source = self.state.source_file_path
         previous_raw_text = self.state.raw_text
         previous_pdf_preprocessed = self.state.pdf_preprocessed
+        previous_dubbing_video = self.state.dubbing.video_file_path
+
+        source_path_to_load = file_path
+        staging_cleanup_path = ""
+        reset_applied = False
 
         try:
-            session_file_path = self._ensure_session_file_copy(file_path)
+            if reset_session:
+                source_path_to_load, staging_cleanup_path = self._stage_source_file_for_session_reset(file_path)
+                self._reset_active_session_for_source_change()
+                reset_applied = True
+                self.log_message.emit("Cleared existing session artifacts before loading a new source.")
+
+            session_file_path = self._ensure_session_file_copy(source_path_to_load)
             self.state.source_file_path = session_file_path
             self.state.pdf_preprocessed = False
             self.log_message.emit(f"Source file selected: {session_file_path}")
@@ -673,12 +786,32 @@ class AppLogic(QObject):
             return True
 
         except Exception as e:
-            self.state.source_file_path = previous_source
-            self.state.raw_text = previous_raw_text
-            self.state.pdf_preprocessed = previous_pdf_preprocessed
+            if reset_applied:
+                self.state.source_file_path = ""
+                self.state.raw_text = ""
+                self.state.pdf_preprocessed = False
+                self.state.dubbing.video_file_path = ""
+                self._set_processed_sentences_snapshot([], persist=True)
+                self._persist_session_config(force=True)
+                self.state_changed.emit()
+            else:
+                self.state.source_file_path = previous_source
+                self.state.raw_text = previous_raw_text
+                self.state.pdf_preprocessed = previous_pdf_preprocessed
+                self.state.dubbing.video_file_path = previous_dubbing_video
+
             logging.error(f"Failed to process source file {file_path}: {e}", exc_info=True)
             self.show_error.emit("File Error", f"Could not process the selected file: {e}")
             return False
+        finally:
+            if staging_cleanup_path and os.path.exists(staging_cleanup_path):
+                try:
+                    if os.path.isdir(staging_cleanup_path):
+                        shutil.rmtree(staging_cleanup_path)
+                    else:
+                        os.remove(staging_cleanup_path)
+                except OSError as cleanup_error:
+                    logging.warning("Could not remove temporary source staging path '%s': %s", staging_cleanup_path, cleanup_error)
 
     def apply_reviewed_text(self, reviewed_text: str, mark_pdf_preprocessed: bool = False) -> bool:
         """Persists reviewed/edited text and switches the source to the edited file."""
@@ -725,7 +858,7 @@ class AppLogic(QObject):
         self._persist_session_config(force=True)
         self.state_changed.emit()
 
-    def save_pasted_text(self, text: str, mark_paragraphs: bool):
+    def save_pasted_text(self, text: str, mark_paragraphs: bool, reset_session: bool = False):
         """Saves pasted text to a file and updates the state."""
         if self.is_generation_or_regeneration_running():
             self.show_error.emit("Error", "Cannot paste new text while generation/regeneration is running.")
@@ -737,6 +870,10 @@ class AppLogic(QObject):
 
         session_dir = session_handler.get_session_path(self.state.session_name)
         try:
+            if reset_session:
+                self._reset_active_session_for_source_change()
+                self.log_message.emit("Cleared existing session artifacts before loading pasted text.")
+
             file_path = file_handler.save_pasted_text(text, session_dir, mark_paragraphs)
             # This re-uses the file selection logic to load the text and update the UI
             if self.select_source_file(file_path):
@@ -772,7 +909,7 @@ class AppLogic(QObject):
             logging.error(f"Failed to set dubbing video file {file_path}: {e}", exc_info=True)
             self.show_error.emit("File Error", f"Could not prepare dubbing video file: {e}")
 
-    def download_from_url(self, url: str):
+    def download_from_url(self, url: str, reset_session: bool = False):
         """Downloads a video from a URL in a background thread."""
         if self.is_generation_or_regeneration_running():
             self.show_error.emit("Error", "Cannot download a new source while generation/regeneration is running.")
@@ -790,7 +927,7 @@ class AppLogic(QObject):
                 video_path = file_handler.download_video_from_url(url, session_dir)
                 self.log_message.emit(f"Download complete: {video_path}")
                 # Switch to main thread to update state and UI
-                self.select_source_file(video_path)
+                self.select_source_file(video_path, reset_session=reset_session)
             except Exception as e:
                 logging.error(f"Failed to download from URL: {e}", exc_info=True)
                 self.show_error.emit("Download Error", f"Could not download video: {e}")
@@ -800,19 +937,38 @@ class AppLogic(QObject):
     # --- Text Processing ---
 
     def _find_latest_srt(self, session_dir: str, must_not_be_equalized=False) -> str | None:
-        """Finds the most recently modified SRT file in a directory."""
-        if not os.path.exists(session_dir):
-            return None
-        
-        srt_files = [
-            os.path.join(session_dir, f) for f in os.listdir(session_dir) 
-            if f.lower().endswith('.srt') and not (must_not_be_equalized and f.lower().endswith('_equalized.srt'))
-        ]
+        """Finds the most recently modified SRT file in a preferred directory with session fallback."""
+        search_dirs: list[str] = []
+        if session_dir:
+            search_dirs.append(session_dir)
+
+        root_session_dir = session_handler.get_session_path(self.state.session_name)
+        if root_session_dir and root_session_dir not in search_dirs:
+            search_dirs.append(root_session_dir)
+
+        srt_files: list[tuple[str, float, int]] = []
+        for priority, directory in enumerate(search_dirs):
+            if not os.path.isdir(directory):
+                continue
+
+            for file_name in os.listdir(directory):
+                file_name_lower = file_name.lower()
+                if not file_name_lower.endswith(".srt"):
+                    continue
+                if must_not_be_equalized and file_name_lower.endswith("_equalized.srt"):
+                    continue
+
+                full_path = os.path.join(directory, file_name)
+                if not os.path.isfile(full_path):
+                    continue
+
+                srt_files.append((full_path, os.path.getmtime(full_path), -priority))
 
         if not srt_files:
             return None
-            
-        return max(srt_files, key=os.path.getmtime)
+
+        latest_srt, _, _ = max(srt_files, key=lambda item: (item[1], item[2], item[0].lower()))
+        return latest_srt
 
     def _snapshot_speech_blocks_files(self, session_dir: str) -> dict[str, float]:
         """Takes a timestamp snapshot of speech-block JSON files in a session directory."""
@@ -827,6 +983,26 @@ class AppLogic(QObject):
             if os.path.isfile(full_path):
                 snapshot[full_path] = os.path.getmtime(full_path)
         return snapshot
+
+    def _discover_latest_file_with_suffix(self, directory: str, suffix: str) -> str | None:
+        """Finds the most recently modified file with a given suffix in a directory."""
+        if not os.path.isdir(directory):
+            return None
+
+        candidates: list[str] = []
+        normalized_suffix = suffix.lower()
+        for name in os.listdir(directory):
+            if not name.lower().endswith(normalized_suffix):
+                continue
+
+            full_path = os.path.join(directory, name)
+            if os.path.isfile(full_path):
+                candidates.append(full_path)
+
+        if not candidates:
+            return None
+
+        return max(candidates, key=lambda path: (os.path.getmtime(path), path.lower()))
 
     def _wait_for_speech_blocks_file(
         self,
@@ -847,7 +1023,10 @@ class AppLogic(QObject):
             if preferred_path:
                 candidates.append(preferred_path)
 
-            latest_session_file = session_handler.discover_latest_speech_blocks_file(self.state.session_name)
+            latest_session_file = self._discover_latest_file_with_suffix(
+                session_dir,
+                "_speech_blocks.json",
+            )
             if latest_session_file and latest_session_file not in candidates:
                 candidates.append(latest_session_file)
 
@@ -863,7 +1042,7 @@ class AppLogic(QObject):
 
         if preferred_path and os.path.exists(preferred_path):
             return preferred_path
-        return session_handler.discover_latest_speech_blocks_file(self.state.session_name)
+        return self._discover_latest_file_with_suffix(session_dir, "_speech_blocks.json")
 
     def _import_speech_blocks_into_sentences(self, speech_blocks_file: str) -> bool:
         """Converts Subdub speech blocks JSON into Pandrator sentence JSON/state."""
@@ -911,39 +1090,35 @@ class AppLogic(QObject):
     def _run_dubbing_task_thread(self, task: str):
         """The actual threaded implementation for dubbing tasks."""
         self.log_message.emit(f"Starting dubbing task: {task}")
-        session_dir = session_handler.get_session_path(self.state.session_name)
+        session_output_dir = session_handler.get_session_path(self.state.session_name)
+        dubbing_session_dir = self._get_dubbing_work_dir(ensure_exists=True)
         dub_settings = self.state.dubbing
         correction_prompt = dub_settings.custom_correction_prompt
 
         if task == "transcribe":
-            video_source = self.state.source_file_path or ""
-            if os.path.splitext(video_source)[1].lower() == ".srt":
-                discovered_video = dub_settings.video_file_path or session_handler.discover_video_file(self.state.session_name)
-                if discovered_video and not dub_settings.video_file_path:
-                    dub_settings.video_file_path = discovered_video
-                video_source = discovered_video or ""
+            video_source = self._resolve_dubbing_video_source()
 
             if not video_source or not os.path.exists(video_source):
                 self.log_message.emit("No video source found for transcription.")
                 return
 
-            subdub_handler.transcribe_video(session_dir, video_source, dub_settings.__dict__, correction_prompt)
+            subdub_handler.transcribe_video(dubbing_session_dir, video_source, dub_settings.__dict__, correction_prompt)
         elif task == "correct":
-            srt_file = self._find_latest_srt(session_dir, must_not_be_equalized=True)
+            srt_file = self._find_latest_srt(dubbing_session_dir, must_not_be_equalized=True)
             if srt_file:
-                subdub_handler.correct_subtitles(session_dir, srt_file, dub_settings.__dict__, correction_prompt)
+                subdub_handler.correct_subtitles(dubbing_session_dir, srt_file, dub_settings.__dict__, correction_prompt)
             else:
                 self.log_message.emit("No SRT file found to correct.")
         elif task == "translate":
-            srt_file = self._find_latest_srt(session_dir, must_not_be_equalized=True)
+            srt_file = self._find_latest_srt(dubbing_session_dir, must_not_be_equalized=True)
             if srt_file:
-                subdub_handler.translate_subtitles(session_dir, srt_file, dub_settings.__dict__, correction_prompt)
+                subdub_handler.translate_subtitles(dubbing_session_dir, srt_file, dub_settings.__dict__, correction_prompt)
             else:
                 self.log_message.emit("No SRT file found to translate.")
         elif task == "generate_audio":
-            self._orchestrate_dubbing_audio_generation(session_dir, dub_settings, correction_prompt)
+            self._orchestrate_dubbing_audio_generation(dubbing_session_dir, dub_settings, correction_prompt)
         elif task == "add_to_video":
-            self._orchestrate_add_to_video(session_dir)
+            self._orchestrate_add_to_video(dubbing_session_dir, session_output_dir)
         else:
             self.log_message.emit(f"Unknown dubbing task: {task}")
 
@@ -953,12 +1128,7 @@ class AppLogic(QObject):
         srt_file = self._find_latest_srt(session_dir, must_not_be_equalized=True)
         if not srt_file:
             self.log_message.emit("No SRT file found, starting transcription...")
-            video_source = self.state.source_file_path or ""
-            if os.path.splitext(video_source)[1].lower() == ".srt":
-                discovered_video = dub_settings.video_file_path or session_handler.discover_video_file(self.state.session_name)
-                if discovered_video and not dub_settings.video_file_path:
-                    dub_settings.video_file_path = discovered_video
-                video_source = discovered_video or ""
+            video_source = self._resolve_dubbing_video_source()
 
             if not video_source or not os.path.exists(video_source):
                 self.show_error.emit("Dubbing Error", "No valid video file found for transcription.")
@@ -1009,11 +1179,16 @@ class AppLogic(QObject):
         # 5. Start audio generation
         self.start_generation()
 
-    def _orchestrate_add_to_video(self, session_dir):
+    def _orchestrate_add_to_video(self, dubbing_session_dir: str, session_output_dir: str):
         """Full workflow to synchronize audio and add subtitles."""
+        video_source = self._resolve_dubbing_video_source()
+        if not video_source or not os.path.exists(video_source):
+            self.show_error.emit("Dubbing Error", "No valid video file found for synchronization.")
+            return
+
         # 1. Synchronize Audio
         self.log_message.emit("Synchronizing audio...")
-        if not subdub_handler.synchronize_audio(session_dir):
+        if not subdub_handler.synchronize_audio(dubbing_session_dir, video_file=video_source):
             self.show_error.emit("Dubbing Error", "Audio synchronization failed.")
             return
         
@@ -1021,12 +1196,12 @@ class AppLogic(QObject):
         # Legacy Subdub used a `_synced` suffix, while the refactored pipeline writes `final_output*.mp4`.
         synced_video_path = None
         candidate_videos = []
-        for file in os.listdir(session_dir):
+        for file in os.listdir(dubbing_session_dir):
             file_lower = file.lower()
             if not file_lower.endswith((".mp4", ".mkv", ".webm", ".avi", ".mov")):
                 continue
             if "_synced" in file_lower or file_lower.startswith("final_output"):
-                candidate_videos.append(os.path.join(session_dir, file))
+                candidate_videos.append(os.path.join(dubbing_session_dir, file))
 
         if candidate_videos:
             synced_video_path = max(candidate_videos, key=os.path.getmtime)
@@ -1037,7 +1212,7 @@ class AppLogic(QObject):
         self.log_message.emit(f"Found synced video: {synced_video_path}")
 
         # 2. Equalize Subtitles
-        srt_file = self._find_latest_srt(session_dir, must_not_be_equalized=True)
+        srt_file = self._find_latest_srt(dubbing_session_dir, must_not_be_equalized=True)
         if not srt_file:
             self.show_error.emit("Dubbing Error", "Cannot find SRT file to equalize.")
             return
@@ -1049,7 +1224,7 @@ class AppLogic(QObject):
         equalized_srt_path = srt_file.replace('.srt', '_equalized.srt')
         if not os.path.exists(equalized_srt_path):
             base_name = os.path.splitext(os.path.basename(srt_file))[0]
-            expected_path = os.path.join(session_dir, f"{base_name}_equalized.srt")
+            expected_path = os.path.join(dubbing_session_dir, f"{base_name}_equalized.srt")
             if os.path.exists(expected_path):
                 equalized_srt_path = expected_path
             else:
@@ -1058,13 +1233,14 @@ class AppLogic(QObject):
         self.log_message.emit(f"Found equalized SRT: {equalized_srt_path}")
 
         # 3. Add Subtitles to Video
-        output_video_path = os.path.join(session_dir, f"{self.state.session_name}_final.mp4")
+        os.makedirs(session_output_dir, exist_ok=True)
+        output_video_path = os.path.join(session_output_dir, f"{self.state.session_name}_final.mp4")
         self.log_message.emit(f"Adding subtitles to video, output will be at {output_video_path}")
         if not subdub_handler.add_subtitles_to_video(synced_video_path, equalized_srt_path, output_video_path):
             self.show_error.emit("Dubbing Error", "Failed to add subtitles to the final video.")
             return
 
-        self.log_message.emit("Dubbing workflow finished. The final video is in the session folder.")
+        self.log_message.emit(f"Dubbing workflow finished. Final output: {output_video_path}")
 
     def run_text_preprocessing(self):
         """Runs the text preprocessor on the raw text in the state."""
@@ -1170,13 +1346,19 @@ class AppLogic(QObject):
             except OSError as e:
                 self.show_error.emit("Cleanup Error", f"Could not remove sentences file: {e}")
 
-        wavs_dir = os.path.join(session_path, "Sentence_wavs")
-        if os.path.isdir(wavs_dir):
+        wavs_cleanup_failed = False
+        for wavs_dir in self._get_candidate_sentence_wavs_dirs():
+            if not os.path.isdir(wavs_dir):
+                continue
             try:
                 shutil.rmtree(wavs_dir)
-                os.makedirs(wavs_dir)
+                os.makedirs(wavs_dir, exist_ok=True)
             except OSError as e:
-                self.show_error.emit("Cleanup Error", f"Could not clear WAVs directory: {e}")
+                wavs_cleanup_failed = True
+                self.show_error.emit("Cleanup Error", f"Could not clear WAVs directory '{wavs_dir}': {e}")
+
+        if self._is_dubbing_source_selected() and not wavs_cleanup_failed:
+            os.makedirs(self._get_primary_sentence_wavs_dir(ensure_exists=False), exist_ok=True)
 
         self._set_processed_sentences_snapshot([], persist=False)
         self.state_changed.emit()
@@ -1263,7 +1445,7 @@ class AppLogic(QObject):
                 return
 
             ext = os.path.splitext(self.state.source_file_path)[1].lower() if self.state.source_file_path else ""
-            is_dubbing_workflow = ext in [".mp4", ".mkv", ".webm", ".avi", ".mov", ".srt"]
+            is_dubbing_workflow = self._is_dubbing_source_extension(ext)
 
             if not is_dubbing_workflow:
                 self.log_message.emit("Saving final output file...")
@@ -1832,13 +2014,15 @@ class AppLogic(QObject):
             self.current_playlist_index = 0
             self.playlist_timer.stop()
 
-        wav_path = os.path.join(
-            session_handler.get_session_path(self.state.session_name),
-            "Sentence_wavs",
-            f"{self.state.session_name}_sentence_{sentence_number}.wav",
-        )
+        wav_filename = f"{self.state.session_name}_sentence_{sentence_number}.wav"
+        wav_path = ""
+        for wavs_dir in self._get_candidate_sentence_wavs_dirs():
+            candidate_path = os.path.join(wavs_dir, wav_filename)
+            if os.path.exists(candidate_path):
+                wav_path = candidate_path
+                break
 
-        if not os.path.exists(wav_path):
+        if not wav_path:
             self.log_message.emit(f"Audio file not found for sentence {sentence_number}")
             if not keep_playlist_state:
                 self._set_current_playing_sentence(None)
@@ -2256,8 +2440,8 @@ class AppLogic(QObject):
             # 6. Save WAV
             session_name = self.state.session_name
             num = updated_sentence['sentence_number']
-            wav_path = os.path.join(session_handler.get_session_path(session_name), "Sentence_wavs", f"{session_name}_sentence_{num}.wav")
-            os.makedirs(os.path.dirname(wav_path), exist_ok=True)
+            wavs_dir = self._get_primary_sentence_wavs_dir(ensure_exists=True)
+            wav_path = os.path.join(wavs_dir, f"{session_name}_sentence_{num}.wav")
             audio_data.export(wav_path, format="wav")
 
             updated_sentence['tts_generated'] = 'yes'

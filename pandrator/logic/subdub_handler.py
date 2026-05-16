@@ -274,7 +274,7 @@ def generate_speech_blocks(session_dir: str, srt_file: str) -> bool:
     return _run_subdub_command(command, "Speech Block Generation")
 
 
-def synchronize_audio(session_dir: str) -> bool:
+def synchronize_audio(session_dir: str, video_file: str = "") -> bool:
     """Synchronizes generated audio with the original video using Subdub."""
     command = _build_subdub_command_base() + [
         "-session",
@@ -282,6 +282,10 @@ def synchronize_audio(session_dir: str) -> bool:
         "-task",
         "sync",
     ]
+
+    if video_file:
+        command.extend(["-v", video_file])
+
     return _run_subdub_command(command, "Synchronization")
 
 

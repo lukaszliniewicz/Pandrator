@@ -10,6 +10,7 @@ from typing import Any, Dict, List
 from ..app_state import AppState
 
 OUTPUTS_DIR = "Outputs"
+DUBBING_STAGING_DIR = "_dubbing_staging"
 SESSION_CONFIG_FILENAME = "session_config.json"
 SESSION_CONFIG_VERSION = 1
 
@@ -28,6 +29,11 @@ SOURCE_FILE_EXTENSIONS = {
 }
 VIDEO_FILE_EXTENSIONS = {".mp4", ".mkv", ".webm", ".avi", ".mov"}
 SPEECH_BLOCKS_SUFFIX = "_speech_blocks.json"
+
+_NON_ARTIFACT_FILENAMES = {
+    SESSION_CONFIG_FILENAME.lower(),
+    "metadata.json",
+}
 
 _FILE_IO_LOCK = threading.RLock()
 
@@ -59,6 +65,11 @@ def _write_json_atomic(file_path: str, payload: Any):
 def get_session_path(session_name: str) -> str:
     """Constructs the full path for a given session name."""
     return os.path.join(OUTPUTS_DIR, session_name)
+
+
+def get_dubbing_staging_path(session_name: str) -> str:
+    """Constructs the path for temporary dubbing artifacts within a session."""
+    return os.path.join(get_session_path(session_name), DUBBING_STAGING_DIR)
 
 
 def build_session_config_payload(state: AppState) -> Dict[str, Any]:
@@ -146,16 +157,18 @@ def discover_video_file(session_name: str) -> str | None:
 def discover_latest_speech_blocks_file(session_name: str) -> str | None:
     """Finds the most recently updated speech-blocks JSON file in a session directory."""
     session_path = get_session_path(session_name)
-    if not os.path.isdir(session_path):
-        return None
-
     candidates: List[str] = []
-    for name in os.listdir(session_path):
-        if not name.lower().endswith(SPEECH_BLOCKS_SUFFIX):
+    search_paths = [session_path, get_dubbing_staging_path(session_name)]
+    for search_path in search_paths:
+        if not os.path.isdir(search_path):
             continue
-        full_path = os.path.join(session_path, name)
-        if os.path.isfile(full_path):
-            candidates.append(full_path)
+
+        for name in os.listdir(search_path):
+            if not name.lower().endswith(SPEECH_BLOCKS_SUFFIX):
+                continue
+            full_path = os.path.join(search_path, name)
+            if os.path.isfile(full_path):
+                candidates.append(full_path)
 
     if not candidates:
         return None
@@ -263,6 +276,103 @@ def load_sentences(session_name: str) -> List[Dict[str, Any]]:
                 return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return []
+
+
+def _sentences_file_has_entries(sentences_file: str) -> bool:
+    try:
+        with _FILE_IO_LOCK:
+            with open(sentences_file, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return True
+
+    return bool(payload) if isinstance(payload, list) else True
+
+
+def _directory_has_artifacts(directory: str) -> bool:
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                entry_name_lower = entry.name.lower()
+                if entry.is_dir(follow_symlinks=False):
+                    if entry_name_lower == "sentence_wavs":
+                        try:
+                            with os.scandir(entry.path) as wav_entries:
+                                for _ in wav_entries:
+                                    return True
+                        except OSError:
+                            return True
+                        continue
+
+                    return True
+
+                return True
+    except OSError:
+        return True
+
+    return False
+
+
+def session_has_generated_artifacts(session_name: str) -> bool:
+    """Checks whether a session directory contains generated artifacts."""
+    session_path = get_session_path(session_name)
+    if not os.path.isdir(session_path):
+        return False
+
+    sentence_wavs_dir = os.path.join(session_path, "Sentence_wavs")
+    if os.path.isdir(sentence_wavs_dir):
+        try:
+            with os.scandir(sentence_wavs_dir) as wav_entries:
+                for _ in wav_entries:
+                    return True
+        except OSError:
+            return True
+
+    with _FILE_IO_LOCK:
+        for name in os.listdir(session_path):
+            full_path = os.path.join(session_path, name)
+            name_lower = name.lower()
+
+            if name_lower in _NON_ARTIFACT_FILENAMES or name_lower == "sentence_wavs":
+                continue
+
+            if os.path.isdir(full_path):
+                if name_lower == DUBBING_STAGING_DIR.lower():
+                    if _directory_has_artifacts(full_path):
+                        return True
+                    continue
+                return True
+
+            if name_lower.endswith("_sentences.json"):
+                if _sentences_file_has_entries(full_path):
+                    return True
+                continue
+
+            if name_lower.endswith(("_speech_blocks.json", "_equalized.srt")):
+                return True
+
+            stem_lower, ext = os.path.splitext(name_lower)
+            if stem_lower.startswith("final_output") or "_synced" in stem_lower or stem_lower.endswith("_final"):
+                return True
+
+            if ext == ".srt" and any(token in stem_lower for token in ("_translated", "_corrected", "_equalized")):
+                return True
+
+            if ext in SOURCE_FILE_EXTENSIONS:
+                continue
+
+            return True
+
+    return False
+
+
+def clear_session_contents(session_name: str):
+    """Deletes all files and directories inside a session path."""
+    session_path = get_session_path(session_name)
+    with _FILE_IO_LOCK:
+        if os.path.isdir(session_path):
+            shutil.rmtree(session_path)
+        os.makedirs(session_path, exist_ok=True)
 
 
 def session_exists(session_name: str) -> bool:
