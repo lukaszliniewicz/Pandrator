@@ -94,8 +94,7 @@ QTabBar::tab {
     border-top-right-radius: 7px;
     color: #f1f1f1;
     min-height: 32px;
-    min-width: 140px;
-    padding: 8px 18px;
+    padding: 8px 14px;
     margin-right: 3px;
 }
 
@@ -106,6 +105,12 @@ QTabBar::tab:selected {
 
 QTabBar::tab:hover:!selected {
     background-color: #52606e;
+}
+
+QTabBar QToolButton {
+    min-width: 16px;
+    max-width: 16px;
+    padding: 0;
 }
 
 QCheckBox::indicator,
