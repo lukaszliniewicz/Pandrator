@@ -28,6 +28,7 @@ PIXI_BINARY_NAME = 'pixi.exe'
 PIXI_DOWNLOAD_URL = 'https://github.com/prefix-dev/pixi/releases/latest/download/pixi-x86_64-pc-windows-msvc.exe'
 PIXI_HOME_DIRNAME = '.pixi-home'
 PIXI_CACHE_DIRNAME = '.pixi-cache'
+PYQT6_RUNTIME_PIN = 'PyQt6==6.7.1'
 
 XTTS_API_REPO_URL = 'https://github.com/lukaszliniewicz/xtts2_api.git'
 XTTS_API_REPO_DIRNAME = 'xtts2_api'
@@ -215,7 +216,20 @@ class PandratorInstaller(QMainWindow):
         
         # Initialize state
         self.refresh_ui_state()
+        self.set_startup_tab()
         atexit.register(self.shutdown_apps)
+
+    def set_startup_tab(self):
+        pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
+        install_markers = (
+            os.path.join(pandrator_path, 'config.json'),
+            os.path.join(pandrator_path, 'Pandrator', 'main.py'),
+            os.path.join(pandrator_path, 'Pandrator', 'pandrator.py'),
+        )
+        if any(os.path.exists(marker) for marker in install_markers):
+            self.tabs.setCurrentWidget(self.launch_tab)
+        else:
+            self.tabs.setCurrentWidget(self.install_tab)
 
     def show_space_warning(self):
         """Show warning when path contains spaces"""
@@ -728,6 +742,7 @@ class PandratorInstaller(QMainWindow):
     def on_installation_finished(self):
         """Handle completion of installation process"""
         self.update_status("Installation complete!")
+        self.tabs.setCurrentWidget(self.launch_tab)
         self.enable_buttons()
         QMessageBox.information(self, "Success", "Installation completed successfully!")
 
@@ -1254,6 +1269,42 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 ['python', '-m', 'pip', 'install', requirement_spec]
             )
 
+    def ensure_pyqt6_runtime(self, pandrator_path, env_name):
+        if env_name != 'pandrator_installer':
+            return
+
+        check_command = ['python', '-c', 'from PyQt6.QtWidgets import QApplication']
+        logging.info("Checking PyQt6 QtWidgets runtime in pandrator_installer...")
+
+        try:
+            self.run_pixi_in_env(
+                pandrator_path,
+                env_name,
+                check_command,
+                log_errors=False,
+            )
+            logging.info("PyQt6 runtime check passed.")
+            return
+        except subprocess.CalledProcessError as e:
+            logging.warning(
+                "PyQt6 runtime check failed in pandrator_installer. "
+                f"Reinstalling {PYQT6_RUNTIME_PIN}. STDERR: {e.stderr}"
+            )
+
+        self.run_pixi_in_env(
+            pandrator_path,
+            env_name,
+            ['python', '-m', 'pip', 'install', '--force-reinstall', PYQT6_RUNTIME_PIN]
+        )
+
+        self.run_pixi_in_env(
+            pandrator_path,
+            env_name,
+            check_command,
+            log_errors=False,
+        )
+        logging.info(f"PyQt6 runtime repaired successfully using {PYQT6_RUNTIME_PIN}.")
+
     def try_import_requirements(self, pandrator_path, env_name, requirements_file):
         logging.info(f"Running best-effort import checks for {requirements_file}...")
 
@@ -1301,6 +1352,8 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 env_name,
                 ['python', '-m', 'pip', 'install', '-r', requirements_file]
             )
+
+        self.ensure_pyqt6_runtime(pandrator_path, env_name)
 
         self.try_import_requirements(pandrator_path, env_name, requirements_file)
 
@@ -1356,6 +1409,17 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         except OSError:
             return ""
 
+    def _read_log_tail_if_exists(self, file_path, max_lines=40):
+        content = self._read_text_if_exists(file_path)
+        if not content:
+            return ""
+
+        lines = content.splitlines()
+        if len(lines) <= max_lines:
+            return "\n".join(lines)
+
+        return "\n".join(lines[-max_lines:])
+
     def get_xtts_pixi_argument(self, xtts_repo_path, pixi_path):
         if not pixi_path:
             return None
@@ -1408,6 +1472,9 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
     def install_xtts_api_server(self, xtts_repo_path, use_cpu=False, pixi_path=None):
         logging.info(f"Bootstrapping XTTS2 API server in {xtts_repo_path}...")
+        logging.info(
+            "XTTS bootstrap starts the server temporarily to validate runtime and will stop it after health checks."
+        )
 
         run_script_path = os.path.join(xtts_repo_path, 'run.bat')
         if not os.path.exists(run_script_path):
@@ -1450,6 +1517,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 )
         finally:
             if process is not None:
+                logging.info("Stopping temporary XTTS2 bootstrap process.")
                 self.terminate_process_tree(process)
             log_handle.close()
 
@@ -1852,7 +1920,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
             if xtts_var or xtts_cpu_var:
                 self.worker.update_progress.emit(0.8)
-                self.worker.update_status.emit("Bootstrapping XTTS2 API server...")
+                self.worker.update_status.emit("Bootstrapping XTTS2 API server (temporary startup)...")
                 self.worker.update_progress.emit(0.9)
                 self.install_xtts_api_server(
                     xtts_repo_path,
@@ -2056,7 +2124,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                     self.clone_repo(XTTS_API_REPO_URL, xtts_repo_path)
 
                 if not self.is_xtts_runtime_ready(xtts_repo_path):
-                    self.worker.update_status.emit("Bootstrapping XTTS2 API server...")
+                    self.worker.update_status.emit("Bootstrapping XTTS2 API server (temporary startup)...")
                     self.install_xtts_api_server(
                         xtts_repo_path,
                         use_cpu=not config.get('cuda_support', False),
@@ -2305,6 +2373,11 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
             try:
                 self.pandrator_process = self.run_script(pandrator_path, 'pandrator_installer', pandrator_script_path, pandrator_args)
+                self.ensure_process_started(
+                    self.pandrator_process,
+                    'Pandrator',
+                    getattr(self.pandrator_process, 'log_file_path', ''),
+                )
             except Exception as e:
                 error_msg = f"Failed to start Pandrator: {str(e)}"
                 self.worker.update_status.emit(error_msg)
@@ -2345,14 +2418,55 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             env_name,
             ['python', script_path] + additional_args
         )
-        
-        process = subprocess.Popen(
-            command,
-            cwd=script_dir,
-            env=self.get_pixi_subprocess_env(pandrator_path),
-            creationflags=subprocess.DETACHED_PROCESS
-        )
+
+        pandrator_log_file = os.path.join(script_dir, 'pandrator_startup.log')
+        log_handle = open(pandrator_log_file, 'a', encoding='utf-8')
+
+        creationflags = 0
+        if os.name == 'nt':
+            creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=script_dir,
+                env=self.get_pixi_subprocess_env(pandrator_path),
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                creationflags=creationflags,
+            )
+        except Exception:
+            log_handle.close()
+            raise
+
+        process.log_handle = log_handle
+        process.log_file_path = pandrator_log_file
+        logging.info(f"Pandrator startup log: {pandrator_log_file}")
         return process
+
+    def ensure_process_started(self, process, process_name, startup_log_file, grace_period_seconds=2):
+        if process is None:
+            raise RuntimeError(f"{process_name} process was not created.")
+
+        time.sleep(grace_period_seconds)
+        return_code = process.poll()
+        if return_code is None:
+            return
+
+        if hasattr(process, 'log_handle') and process.log_handle:
+            process.log_handle.flush()
+            process.log_handle.close()
+            process.log_handle = None
+
+        details = f"{process_name} exited immediately with code {return_code}."
+        if startup_log_file:
+            details += f" See log: {startup_log_file}"
+
+        log_tail = self._read_log_tail_if_exists(startup_log_file)
+        if log_tail:
+            details += f" Last output:\n{log_tail}"
+
+        raise RuntimeError(details)
 
     def run_xtts_api_server(self, xtts_server_path, use_cpu=False, pixi_path=None):
         """Run the XTTS2 API server via its upstream launcher script."""
@@ -2400,7 +2514,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
     def check_xtts_server_online(self, base_url, max_attempts=120, wait_interval=5, process=None):
         """Check if the XTTS server is online and responding."""
-        probe_paths = ['/health', '/v1/models', '/']
+        probe_paths = ['/health', '/v1/models', '/docs']
         for attempt in range(1, max_attempts + 1):
             if process is not None and process.poll() is not None:
                 logging.error("XTTS server process exited before coming online.")
@@ -2409,7 +2523,9 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             for probe_path in probe_paths:
                 try:
                     response = requests.get(f"{base_url}{probe_path}", timeout=5)
-                    if response.status_code < 500 and response.status_code != 404:
+                    if response.status_code == 404:
+                        continue
+                    if response.status_code < 400:
                         logging.info("XTTS server is online.")
                         return True
                 except requests.exceptions.RequestException:
@@ -2545,6 +2661,17 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         # Check Pandrator
         if self.pandrator_process and self.pandrator_process.poll() is not None:
             # Pandrator has exited
+            return_code = self.pandrator_process.poll()
+            startup_log_file = getattr(self.pandrator_process, 'log_file_path', '')
+            if hasattr(self.pandrator_process, 'log_handle') and self.pandrator_process.log_handle:
+                self.pandrator_process.log_handle.close()
+
+            if return_code not in (None, 0):
+                details = f"Pandrator exited with code {return_code}."
+                if startup_log_file:
+                    details += f" See log: {startup_log_file}"
+                logging.error(details)
+
             self.pandrator_process = None
             self.shutdown_apps()  # Shut down other apps when Pandrator exits
         elif self.pandrator_process:
@@ -2616,9 +2743,15 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             self.xtts_process = None
 
         # Check if any process is using port 8020 and kill it
+        seen_pids = set()
         for conn in psutil.net_connections():
             if hasattr(conn, 'laddr') and hasattr(conn.laddr, 'port') and conn.laddr.port == 8020:
+                if conn.pid in seen_pids:
+                    continue
+                seen_pids.add(conn.pid)
                 try:
+                    if conn.pid in (None, 0):
+                        continue
                     process = psutil.Process(conn.pid)
                     if process.pid != 0:  # Skip System Idle Process
                         process.terminate()

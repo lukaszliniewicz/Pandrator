@@ -4,6 +4,7 @@ import logging
 import os
 import datetime
 from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import QTimer
 
 from pandrator.app_logic import AppLogic
 from pandrator.gui.main_window import MainWindow
@@ -46,10 +47,10 @@ def main():
     log_file_path = setup_logging()
     
     parser = argparse.ArgumentParser(description="Pandrator")
-    parser.add_argument("-connect", action="store_true", help="Connect to a TTS service on launch")
-    parser.add_argument("-xtts", action="store_true", help="Connect to XTTS")
-    parser.add_argument("-voxtral", action="store_true", help="Connect to Voxtral")
-    parser.add_argument("-silero", action="store_true", help="Connect to Silero")
+    parser.add_argument("-connect", "--connect", action="store_true", help="Connect to a TTS service on launch")
+    parser.add_argument("-xtts", "--xtts", action="store_true", help="Connect to XTTS")
+    parser.add_argument("-voxtral", "--voxtral", action="store_true", help="Connect to Voxtral")
+    parser.add_argument("-silero", "--silero", action="store_true", help="Connect to Silero")
     args = parser.parse_args()
     logging.info(f"Command line arguments: {args}")
 
@@ -64,22 +65,32 @@ def main():
     logic = AppLogic()
     logic.set_log_file_path(log_file_path)
     main_window = MainWindow(logic)
-    
+
+    auto_connect_service = None
     if args.connect:
         if args.xtts:
-            logging.info("Auto-connecting to XTTS on launch")
-            logic.state.tts.service = "XTTS"
-            logic.connect_tts_server()
+            auto_connect_service = "XTTS"
         elif args.voxtral:
-            logging.info("Auto-connecting to Voxtral on launch")
-            logic.state.tts.service = "Voxtral"
-            logic.connect_tts_server()
+            auto_connect_service = "Voxtral"
         elif args.silero:
-            logging.info("Auto-connecting to Silero on launch")
-            logic.state.tts.service = "Silero"
-            logic.connect_tts_server()
+            auto_connect_service = "Silero"
+
+    if auto_connect_service:
+        logic.state.tts.service = auto_connect_service
+        if auto_connect_service == "XTTS":
+            logic.state.tts.use_external_server = False
+            logic.state.tts.external_server_url = "http://127.0.0.1:8020"
+        elif auto_connect_service == "Voxtral":
+            logic.state.tts.use_external_server = False
+            logic.state.tts.external_server_url = "http://127.0.0.1:8000"
+        logic.state_changed.emit()
 
     main_window.show()
+
+    if auto_connect_service:
+        logging.info("Auto-connecting to %s on launch", auto_connect_service)
+        QTimer.singleShot(800, logic.connect_tts_server)
+
     sys.exit(app.exec())
 
 if __name__ == "__main__":

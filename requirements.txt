@@ -1,4 +1,4 @@
-PyQt6
+PyQt6==6.7.1
 pydub
 unidecode
 sentence-splitter
@@ -15,5 +15,4 @@ Pillow
 yt-dlp
 requests
 litellm
-rvc-python
 qdarkstyle

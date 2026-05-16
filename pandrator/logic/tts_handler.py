@@ -12,13 +12,13 @@ except Exception:  # pragma: no cover - runtime dependency guard
     litellm_speech = None
 
 # XTTS default URLs
-XTTS_API_BASE_URL = "http://localhost:8020"
+XTTS_API_BASE_URL = "http://127.0.0.1:8020"
 
 # Voxtral default URLs
-VOXTRAL_API_BASE_URL = "http://localhost:8000"
+VOXTRAL_API_BASE_URL = "http://127.0.0.1:8000"
 
 # Silero default URLs
-SILERO_API_BASE_URL = "http://localhost:8001"
+SILERO_API_BASE_URL = "http://127.0.0.1:8001"
 
 XTTS_OPENAI_PLACEHOLDER_API_KEY = "sk-placeholder"
 XTTS_DEFAULT_MODEL = "tts_models/multilingual/multi-dataset/xtts_v2"

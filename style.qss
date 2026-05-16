@@ -77,7 +77,6 @@ QStatusBar {
 }
 
 QHeaderView::section,
-QTabBar::tab,
 QComboBox::drop-down,
 QProgressBar::chunk,
 QMenu::item:selected,
@@ -85,6 +84,28 @@ QTableWidget::item:selected {
     background-color: #4d5863;
     border: 1px solid #4d5863;
     color: #f1f1f1;
+}
+
+QTabBar::tab {
+    background-color: #495562;
+    border: 1px solid #4d5863;
+    border-bottom: none;
+    border-top-left-radius: 7px;
+    border-top-right-radius: 7px;
+    color: #f1f1f1;
+    min-height: 32px;
+    min-width: 140px;
+    padding: 8px 18px;
+    margin-right: 3px;
+}
+
+QTabBar::tab:selected {
+    background-color: #556473;
+    border-color: #5e6f80;
+}
+
+QTabBar::tab:hover:!selected {
+    background-color: #52606e;
 }
 
 QCheckBox::indicator,

@@ -48,7 +48,7 @@ class TextProcessingSettings:
 class TTSSettings:
     service: str = "XTTS"
     use_external_server: bool = False
-    external_server_url: str = "http://localhost:8020"
+    external_server_url: str = "http://127.0.0.1:8020"
     openai_audio_endpoint: str = "openai"
     openai_audio_endpoints_json: str = (
         '[{"name":"openai","provider":"openai","base_url":"https://api.openai.com/v1",'
