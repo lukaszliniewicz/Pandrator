@@ -53,6 +53,10 @@ def _is_openai_compatible_model(model_name: str) -> bool:
 def _build_subdub_environment(model_options: dict[str, Any] | None = None) -> dict[str, str]:
     env = os.environ.copy()
 
+    if os.name == "nt":
+        env.setdefault("PYTHONUTF8", "1")
+        env.setdefault("PYTHONIOENCODING", "utf-8")
+
     if os.path.isdir(SUBDUB_SRC_PATH):
         existing_pythonpath = env.get("PYTHONPATH", "")
         existing_entries = [entry for entry in existing_pythonpath.split(os.pathsep) if entry]
