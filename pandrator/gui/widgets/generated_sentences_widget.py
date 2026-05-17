@@ -107,12 +107,16 @@ class GeneratedSentencesWidget(QWidget):
         self.regenerate_selected_button = QPushButton("Regenerate Selected")
         self.regenerate_marked_button = QPushButton("Regenerate Marked")
         self.regenerate_all_button = QPushButton("Regenerate All")
+        self.rvc_selected_button = QPushButton("RVC Selected")
+        self.rvc_all_button = QPushButton("RVC All")
         self.remove_button = QPushButton("Remove Selected")
         self.edit_button = QPushButton("Edit Selected")
         
         self.regenerate_selected_button.clicked.connect(self._on_regenerate_selected)
         self.regenerate_marked_button.clicked.connect(self._on_regenerate_marked)
         self.regenerate_all_button.clicked.connect(self._on_regenerate_all)
+        self.rvc_selected_button.clicked.connect(self._on_rvc_selected)
+        self.rvc_all_button.clicked.connect(self._on_rvc_all)
         self.remove_button.clicked.connect(self._on_remove)
         self.edit_button.clicked.connect(self._on_edit)
 
@@ -120,6 +124,8 @@ class GeneratedSentencesWidget(QWidget):
         layout.addWidget(self.regenerate_selected_button)
         layout.addWidget(self.regenerate_marked_button)
         layout.addWidget(self.regenerate_all_button)
+        layout.addWidget(self.rvc_selected_button)
+        layout.addWidget(self.rvc_all_button)
         layout.addWidget(self.remove_button)
         layout.addWidget(self.edit_button)
         return frame
@@ -141,23 +147,41 @@ class GeneratedSentencesWidget(QWidget):
         if sentence_number is None:
             return
 
-        table.selectRow(row)
+        row_selected = any(selected_item.row() == row for selected_item in table.selectedItems())
+        if not row_selected:
+            table.selectRow(row)
+
+        selected_rows = sorted(list(set(selected_item.row() for selected_item in table.selectedItems())))
+        if not selected_rows:
+            selected_rows = [row]
+        selected_sentence_numbers = self._sentence_numbers_from_rows(table, selected_rows)
+        if not selected_sentence_numbers:
+            return
 
         menu = QMenu()
+        regenerate_action = menu.addAction("Regenerate")
         mark_action = menu.addAction("Mark for Regeneration")
         unmark_action = menu.addAction("Unmark")
-        menu.addSeparator()
-        regenerate_action = menu.addAction("Regenerate")
+        rvc_action = menu.addAction("Process with RVC")
+        if not self.logic.is_rvc_available():
+            rvc_action.setEnabled(False)
         edit_action = menu.addAction("Edit")
         action = menu.exec(table.mapToGlobal(pos))
 
-        if action == mark_action:
-            self.logic.mark_sentence(sentence_number, True)
+        if action == regenerate_action:
+            self.logic.regenerate_sentences(selected_sentence_numbers)
+        elif action == mark_action:
+            for selected_number in selected_sentence_numbers:
+                self.logic.mark_sentence(selected_number, True)
         elif action == unmark_action:
-            self.logic.mark_sentence(sentence_number, False)
-        elif action == regenerate_action:
-            self.logic.regenerate_sentences([sentence_number])
+            for selected_number in selected_sentence_numbers:
+                self.logic.mark_sentence(selected_number, False)
+        elif action == rvc_action:
+            self._process_sentence_numbers_with_rvc(selected_sentence_numbers)
         elif action == edit_action:
+            if len(selected_sentence_numbers) > 1:
+                QMessageBox.information(self, "Multiple Selection", "Please select only one sentence to edit.")
+                return
             self._start_inline_edit(table, row)
 
     def _start_inline_edit(self, table: QTableWidget, row: int):
@@ -213,6 +237,34 @@ class GeneratedSentencesWidget(QWidget):
 
         selected_rows = sorted(list(set(item.row() for item in source_table.selectedItems())))
         return selected_rows, source_table
+
+    def _sentence_numbers_from_rows(self, table: QTableWidget, rows: list[int]) -> list[str]:
+        sentence_numbers: list[str] = []
+        for row in rows:
+            num_item = table.item(row, 0)
+            if not num_item:
+                continue
+
+            sentence_number = num_item.data(Qt.ItemDataRole.UserRole)
+            if sentence_number is None:
+                continue
+
+            sentence_numbers.append(str(sentence_number))
+
+        return sentence_numbers
+
+    def _filter_generated_sentence_numbers(self, sentence_numbers: list[str]) -> list[str]:
+        available_numbers = {
+            str(sentence.get("sentence_number"))
+            for sentence in self.logic.get_processed_sentences_snapshot()
+            if sentence.get("sentence_number") is not None and sentence.get("tts_generated") == "yes"
+        }
+
+        return [
+            str(sentence_number)
+            for sentence_number in sentence_numbers
+            if str(sentence_number) in available_numbers
+        ]
 
     def _capture_selection_snapshot(self) -> tuple[set[str], str | None]:
         selected_rows, source_table = self._get_selected_rows_and_table()
@@ -391,11 +443,15 @@ class GeneratedSentencesWidget(QWidget):
     def _apply_lifecycle_action_states(self):
         generation_running = self.logic.is_generation_running()
         regeneration_running = self.logic.is_regeneration_running()
-        generation_busy = generation_running or regeneration_running
+        rvc_processing_running = self.logic.is_rvc_processing_running()
+        generation_busy = generation_running or regeneration_running or rvc_processing_running
+        rvc_available = self.logic.is_rvc_available()
 
         self.regenerate_selected_button.setEnabled(not generation_busy)
         self.regenerate_marked_button.setEnabled(not generation_busy)
         self.regenerate_all_button.setEnabled(not generation_busy)
+        self.rvc_selected_button.setEnabled((not generation_busy) and rvc_available)
+        self.rvc_all_button.setEnabled((not generation_busy) and rvc_available)
         self.remove_button.setEnabled(not generation_busy)
         self.edit_button.setEnabled(not generation_busy)
 
@@ -461,7 +517,7 @@ class GeneratedSentencesWidget(QWidget):
             QMessageBox.information(self, "No Selection", "Please select sentence(s) to regenerate.")
             return
         
-        numbers_to_regenerate = [source_table.item(row, 0).data(Qt.ItemDataRole.UserRole) for row in selected_rows]
+        numbers_to_regenerate = self._sentence_numbers_from_rows(source_table, selected_rows)
         self.logic.regenerate_sentences(numbers_to_regenerate)
 
     def _on_regenerate_marked(self):
@@ -491,6 +547,52 @@ class GeneratedSentencesWidget(QWidget):
             return
 
         self.logic.regenerate_sentences(numbers_to_regenerate)
+
+    def _process_sentence_numbers_with_rvc(self, sentence_numbers: list[str]):
+        if not self.logic.is_rvc_available():
+            QMessageBox.information(
+                self,
+                "RVC Not Available",
+                "RVC dependencies are not installed. Install RVC support to use this action.",
+            )
+            return
+
+        generated_numbers = self._filter_generated_sentence_numbers(sentence_numbers)
+        if not generated_numbers:
+            QMessageBox.information(
+                self,
+                "No Generated Audio",
+                "Selected sentence(s) do not have generated audio yet.",
+            )
+            return
+
+        self.logic.process_sentences_with_rvc(generated_numbers)
+
+    def _on_rvc_selected(self):
+        selected_rows, source_table = self._get_selected_rows_and_table()
+        if not selected_rows:
+            QMessageBox.information(self, "No Selection", "Please select sentence(s) to process with RVC.")
+            return
+
+        sentence_numbers = self._sentence_numbers_from_rows(source_table, selected_rows)
+        self._process_sentence_numbers_with_rvc(sentence_numbers)
+
+    def _on_rvc_all(self):
+        sentences = self.logic.get_processed_sentences_snapshot()
+        if not sentences:
+            QMessageBox.information(self, "No Sentences", "There are no sentences to process with RVC.")
+            return
+
+        all_numbers = [
+            str(sentence.get("sentence_number"))
+            for sentence in sentences
+            if sentence.get("sentence_number") is not None
+        ]
+        if not all_numbers:
+            QMessageBox.information(self, "No Sentences", "There are no sentences to process with RVC.")
+            return
+
+        self._process_sentence_numbers_with_rvc(all_numbers)
 
     def _on_save_output(self):
         session_name = self.logic.state.session_name

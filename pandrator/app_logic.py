@@ -90,6 +90,7 @@ class AppLogic(QObject):
         self.playback_handler = PlaybackHandler()
         self.generation_thread = None
         self.regeneration_thread = None
+        self.rvc_processing_thread = None
         self.xtts_training_thread = None
         self._tts_connection_thread = None
         self.stop_generation_flag = threading.Event()
@@ -189,6 +190,14 @@ class AppLogic(QObject):
                 candidates.append(path)
         return candidates
 
+    def _find_sentence_wav_path(self, sentence_number: str) -> str:
+        wav_filename = f"{self.state.session_name}_sentence_{sentence_number}.wav"
+        for wavs_dir in self._get_candidate_sentence_wavs_dirs():
+            candidate_path = os.path.join(wavs_dir, wav_filename)
+            if os.path.exists(candidate_path):
+                return candidate_path
+        return ""
+
     def _resolve_dubbing_video_source(self) -> str:
         video_source = self.state.source_file_path or ""
         if os.path.splitext(video_source)[1].lower() != ".srt":
@@ -209,6 +218,16 @@ class AppLogic(QObject):
     def _is_regeneration_running(self) -> bool:
         return bool(self.regeneration_thread and self.regeneration_thread.is_alive())
 
+    def _is_rvc_processing_running(self) -> bool:
+        return bool(self.rvc_processing_thread and self.rvc_processing_thread.is_alive())
+
+    def _is_generation_or_regeneration_running(self) -> bool:
+        return (
+            self._is_generation_running()
+            or self._is_regeneration_running()
+            or self._is_rvc_processing_running()
+        )
+
     def _is_xtts_training_running(self) -> bool:
         return bool(self.xtts_training_thread and self.xtts_training_thread.is_alive())
 
@@ -220,9 +239,13 @@ class AppLogic(QObject):
         """Public lifecycle helper for UI state decisions."""
         return self._is_regeneration_running()
 
+    def is_rvc_processing_running(self) -> bool:
+        """Public lifecycle helper for RVC post-processing state."""
+        return self._is_rvc_processing_running()
+
     def is_generation_or_regeneration_running(self) -> bool:
-        """Returns True while any generation workflow is active."""
-        return self._is_generation_running() or self._is_regeneration_running()
+        """Returns True while any sentence-audio workflow is active."""
+        return self._is_generation_or_regeneration_running()
 
     def is_xtts_training_running(self) -> bool:
         """Returns True when XTTS training is active."""
@@ -258,6 +281,9 @@ class AppLogic(QObject):
 
         if self._is_regeneration_running():
             return "Regenerating"
+
+        if self._is_rvc_processing_running():
+            return "RVC Processing"
 
         return "Idle"
 
@@ -1553,6 +1579,7 @@ class AppLogic(QObject):
             "enable_sentence_splitting": self.state.text_processing.enable_sentence_splitting,
             "enable_sentence_appending": self.state.text_processing.enable_sentence_appending,
             "remove_diacritics": self.state.text_processing.remove_diacritics,
+            "remove_quotation_marks": self.state.text_processing.remove_quotation_marks,
             "tts_service": self.state.tts.service
         }
         
@@ -1575,6 +1602,10 @@ class AppLogic(QObject):
 
         if self._is_regeneration_running():
             self.log_message.emit("Wait for sentence regeneration to finish before starting full generation.")
+            return
+
+        if self._is_rvc_processing_running():
+            self.log_message.emit("Wait for RVC sentence processing to finish before starting full generation.")
             return
         
         has_processed_sentences = bool(self.get_processed_sentences_snapshot())
@@ -2486,8 +2517,8 @@ class AppLogic(QObject):
 
     # --- Sentence Management ---
     def update_sentence_text(self, sentence_number: str, new_text: str):
-        if self._is_generation_running() or self._is_regeneration_running():
-            self.log_message.emit("Cannot edit sentences while generation/regeneration is running.")
+        if self._is_generation_or_regeneration_running():
+            self.log_message.emit("Cannot edit sentences while generation/regeneration/RVC processing is running.")
             return
 
         if session_handler.update_sentence(self.state.session_name, sentence_number, new_text):
@@ -2503,8 +2534,8 @@ class AppLogic(QObject):
             self.state_changed.emit()
 
     def mark_sentence(self, sentence_number: str, marked: bool):
-        if self._is_generation_running() or self._is_regeneration_running():
-            self.log_message.emit("Cannot change marked status while generation/regeneration is running.")
+        if self._is_generation_or_regeneration_running():
+            self.log_message.emit("Cannot change marked status while generation/regeneration/RVC processing is running.")
             return
 
         if session_handler.update_sentence_marked_status(self.state.session_name, sentence_number, marked):
@@ -2516,8 +2547,8 @@ class AppLogic(QObject):
             self.state_changed.emit()
 
     def remove_sentences(self, sentence_numbers: list[str]):
-        if self._is_generation_running() or self._is_regeneration_running():
-            self.log_message.emit("Cannot remove sentences while generation/regeneration is running.")
+        if self._is_generation_or_regeneration_running():
+            self.log_message.emit("Cannot remove sentences while generation/regeneration/RVC processing is running.")
             return
 
         if session_handler.remove_sentences(self.state.session_name, sentence_numbers):
@@ -2542,13 +2573,7 @@ class AppLogic(QObject):
             self.current_playlist_index = 0
             self.playlist_timer.stop()
 
-        wav_filename = f"{self.state.session_name}_sentence_{sentence_number}.wav"
-        wav_path = ""
-        for wavs_dir in self._get_candidate_sentence_wavs_dirs():
-            candidate_path = os.path.join(wavs_dir, wav_filename)
-            if os.path.exists(candidate_path):
-                wav_path = candidate_path
-                break
+        wav_path = self._find_sentence_wav_path(sentence_number)
 
         if not wav_path:
             self.log_message.emit(f"Audio file not found for sentence {sentence_number}")
@@ -2829,6 +2854,14 @@ class AppLogic(QObject):
             self.log_message.emit("Sentence regeneration is already running.")
             return
 
+        if self._is_rvc_processing_running():
+            self.log_message.emit("Cannot regenerate sentences while RVC sentence processing is running.")
+            return
+
+        if not sentence_numbers:
+            self.log_message.emit("No sentence numbers provided for regeneration.")
+            return
+
         self.regeneration_thread = self._run_threaded_task(self._regenerate_sentences_thread, sentence_numbers)
         self.state_changed.emit()
 
@@ -2869,6 +2902,113 @@ class AppLogic(QObject):
         finally:
             if self.regeneration_thread is worker_thread:
                 self.regeneration_thread = None
+            self.state_changed.emit()
+
+    def process_sentences_with_rvc(self, sentence_numbers: list[str]):
+        """Applies RVC to existing generated sentence WAV files without regenerating TTS."""
+        if self._is_generation_running():
+            self.log_message.emit("Cannot process with RVC while full generation is running.")
+            return
+
+        if self._is_regeneration_running():
+            self.log_message.emit("Cannot process with RVC while sentence regeneration is running.")
+            return
+
+        if self._is_rvc_processing_running():
+            self.log_message.emit("RVC sentence processing is already running.")
+            return
+
+        if not self.is_rvc_available():
+            self.show_error.emit("RVC Unavailable", "RVC dependencies are not installed.")
+            return
+
+        rvc_settings = copy.deepcopy(self.state.rvc.__dict__)
+        model_name = str(rvc_settings.get("rvc_model") or "").strip()
+        if not model_name:
+            self.show_error.emit("RVC Model Required", "Please select an RVC model before processing.")
+            return
+
+        normalized_numbers: list[str] = []
+        seen_numbers: set[str] = set()
+        for sentence_number in sentence_numbers:
+            normalized = str(sentence_number or "").strip()
+            if not normalized or normalized in seen_numbers:
+                continue
+            seen_numbers.add(normalized)
+            normalized_numbers.append(normalized)
+
+        if not normalized_numbers:
+            self.log_message.emit("No valid sentence numbers were provided for RVC processing.")
+            return
+
+        self.stop_playback()
+        self.rvc_processing_thread = self._run_threaded_task(
+            self._process_sentences_with_rvc_thread,
+            normalized_numbers,
+            rvc_settings,
+        )
+        self.state_changed.emit()
+
+    def _process_sentences_with_rvc_thread(self, sentence_numbers: list[str], rvc_settings: dict):
+        """Thread worker for RVC post-processing of existing sentence WAV files."""
+        worker_thread = threading.current_thread()
+        processed_count = 0
+        skipped_count = 0
+
+        try:
+            total = len(sentence_numbers)
+            self.log_message.emit(f"Starting RVC processing for {total} sentence(s).")
+            processed_sentences = self.get_processed_sentences_snapshot()
+            sentence_index_map = {
+                str(sentence.get("sentence_number")): index
+                for index, sentence in enumerate(processed_sentences)
+            }
+
+            for i, num in enumerate(sentence_numbers, start=1):
+                sentence_index = sentence_index_map.get(str(num))
+                if sentence_index is None:
+                    self.log_message.emit(f"Skipping sentence {num}; it no longer exists.")
+                    skipped_count += 1
+                    continue
+
+                sentence_dict = processed_sentences[sentence_index]
+                if sentence_dict.get("tts_generated") != "yes":
+                    self.log_message.emit(f"Skipping sentence {num}; no generated audio is available yet.")
+                    skipped_count += 1
+                    continue
+
+                wav_path = self._find_sentence_wav_path(str(num))
+                if not wav_path:
+                    self.log_message.emit(f"Skipping sentence {num}; WAV file is missing.")
+                    skipped_count += 1
+                    continue
+
+                self.log_message.emit(f"Processing sentence {i}/{total} with RVC (Number: {num})...")
+
+                try:
+                    source_audio = AudioSegment.from_wav(wav_path)
+                    converted_audio = rvc_handler.process_with_rvc(source_audio, rvc_settings)
+                    converted_audio.export(wav_path, format="wav")
+                    processed_count += 1
+                except Exception as e:
+                    logging.error(
+                        "Failed RVC post-processing for sentence %s: %s",
+                        num,
+                        e,
+                        exc_info=True,
+                    )
+                    self.log_message.emit(f"Failed RVC processing for sentence {num}; see logs for details.")
+                    skipped_count += 1
+
+            self.log_message.emit(
+                f"RVC processing finished. Processed {processed_count} sentence(s), skipped {skipped_count}."
+            )
+        except Exception as e:
+            logging.error("Unexpected RVC processing worker error: %s", e, exc_info=True)
+            self.show_error.emit("RVC Processing Error", f"Unexpected RVC processing failure: {e}")
+        finally:
+            if self.rvc_processing_thread is worker_thread:
+                self.rvc_processing_thread = None
             self.state_changed.emit()
 
     def _run_llm_processing(self, text: str) -> tuple[str, int]:

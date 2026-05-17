@@ -602,6 +602,7 @@ class SessionTab(QWidget):
             "Idle": "Idle",
             "Generating": "Generating",
             "Regenerating": "Regenerating",
+            "RVC Processing": "RVC Processing",
             "Stopping": "Stopping",
             "Cancelling": "Cancelling",
         }
@@ -828,7 +829,8 @@ class SessionTab(QWidget):
 
         generation_running = self.logic.is_generation_running()
         regeneration_running = self.logic.is_regeneration_running()
-        generation_busy = generation_running or regeneration_running
+        rvc_processing_running = self.logic.is_rvc_processing_running()
+        generation_busy = generation_running or regeneration_running or rvc_processing_running
         tts_connecting = self.logic.is_tts_connection_running()
         stop_requested = self.logic.stop_generation_flag.is_set()
         cancel_requested = self.logic.cancel_generation_flag.is_set()
