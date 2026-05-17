@@ -173,7 +173,7 @@ def preprocess_text_pdf(text, remove_double_newlines=False):
     return text
 
 def split_into_sentences(text, language, tts_service):
-    if tts_service in {"XTTS", "Voxtral", "OpenAI", "Gemini", "OpenAI-Compatible"}:
+    if tts_service in {"XTTS", "Voxtral", "Kokoro", "OpenAI", "Gemini", "OpenAI-Compatible"}:
         if language == "zh-cn":
             return split_chinese_sentences(text)
         elif language == "ja":

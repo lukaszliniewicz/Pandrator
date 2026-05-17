@@ -50,6 +50,7 @@ def main():
     parser.add_argument("-connect", "--connect", action="store_true", help="Connect to a TTS service on launch")
     parser.add_argument("-xtts", "--xtts", action="store_true", help="Connect to XTTS")
     parser.add_argument("-voxtral", "--voxtral", action="store_true", help="Connect to Voxtral")
+    parser.add_argument("-kokoro", "--kokoro", action="store_true", help="Connect to Kokoro")
     parser.add_argument("-silero", "--silero", action="store_true", help="Connect to Silero")
     args = parser.parse_args()
     logging.info(f"Command line arguments: {args}")
@@ -72,6 +73,8 @@ def main():
             auto_connect_service = "XTTS"
         elif args.voxtral:
             auto_connect_service = "Voxtral"
+        elif args.kokoro:
+            auto_connect_service = "Kokoro"
         elif args.silero:
             auto_connect_service = "Silero"
 
@@ -83,6 +86,9 @@ def main():
         elif auto_connect_service == "Voxtral":
             logic.state.tts.use_external_server = False
             logic.state.tts.external_server_url = "http://127.0.0.1:8000"
+        elif auto_connect_service == "Kokoro":
+            logic.state.tts.use_external_server = False
+            logic.state.tts.external_server_url = "http://127.0.0.1:8880"
         logic.state_changed.emit()
 
     main_window.show()

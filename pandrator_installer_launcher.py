@@ -34,6 +34,8 @@ PIXI_PIP_CACHE_SUBDIRNAME = 'pip'
 PIXI_TEMP_SUBDIRNAME = 'tmp'
 PANDRATOR_PYTHON_VERSION = '3.11'
 SILERO_PYTHON_VERSION = '3.10'
+KOKORO_PYTHON_VERSION = '3.11'
+KOKORO_ENV_NAME = 'kokoro_api_server_installer'
 XTTS_FINETUNING_PYTHON_VERSION = '3.10'
 PYQT6_RUNTIME_PIN = 'PyQt6==6.7.1'
 PYQT6_SIP_RUNTIME_SPEC = 'PyQt6-sip>=13.8,<14'
@@ -60,10 +62,17 @@ XTTS_API_REPO_URL = 'https://github.com/lukaszliniewicz/xtts2_api.git'
 XTTS_API_REPO_DIRNAME = 'xtts2_api'
 VOXTRAL_API_REPO_URL = 'https://github.com/lukaszliniewicz/voxtral-fastapi.git'
 VOXTRAL_API_REPO_DIRNAME = 'voxtral-fastapi'
+KOKORO_API_REPO_URL = 'https://github.com/remsky/Kokoro-FastAPI.git'
+KOKORO_API_REPO_DIRNAME = 'Kokoro-FastAPI'
 PANDRATOR_REPO_URL = 'https://github.com/lukaszliniewicz/Pandrator.git'
 SUBDUB_REPO_URL = 'https://github.com/lukaszliniewicz/Subdub.git'
 PYCROPPDF_REPO_URL = 'https://github.com/lukaszliniewicz/PyCropPDF.git'
 EASY_XTTS_TRAINER_REPO_URL = 'https://github.com/lukaszliniewicz/easy_xtts_trainer.git'
+
+ESPEAK_NG_MSI_URL = 'https://github.com/espeak-ng/espeak-ng/releases/download/1.52.0/espeak-ng.msi'
+ESPEAK_NG_MSI_SHA256 = '7F673C709EA5DD579D3B5EBB98688CC575328A6AB7438D2BC405B88CEDAEAFB9'
+ESPEAK_NG_DLL_RELATIVE_PATH = os.path.join('eSpeak NG', 'libespeak-ng.dll')
+ESPEAK_NG_DATA_DIR_RELATIVE_PATH = os.path.join('eSpeak NG', 'espeak-ng-data')
 
 INSTALLER_STATE_FILENAME = 'installer_state.json'
 RVC_PYTHON_FORK_INSTALL_SPEC = 'git+https://github.com/JarodMica/rvc-python@782467ababe17698a4b5100aedfe16e69cebaa56'
@@ -191,6 +200,7 @@ class PandratorInstaller(QMainWindow):
         self.xtts_cpu_var = False
         self.silero_var = False
         self.voxtral_var = False
+        self.kokoro_var = False
         self.rvc_var = False
         self.whisperx_var = False
         self.xtts_finetuning_var = False
@@ -201,6 +211,7 @@ class PandratorInstaller(QMainWindow):
         self.disable_deepspeed_var = False
         self.xtts_cpu_launch_var = False
         self.launch_voxtral_var = False
+        self.launch_kokoro_var = False
         self.launch_silero_var = False
 
         # Initialize process attributes
@@ -208,6 +219,7 @@ class PandratorInstaller(QMainWindow):
         self.pandrator_process = None
         self.silero_process = None
         self.voxtral_process = None
+        self.kokoro_process = None
 
         # Worker thread
         self.worker = None
@@ -364,6 +376,9 @@ class PandratorInstaller(QMainWindow):
 
         self.voxtral_checkbox = QCheckBox("Voxtral (GPU only)")
         engines_layout.addWidget(self.voxtral_checkbox)
+
+        self.kokoro_checkbox = QCheckBox("Kokoro")
+        engines_layout.addWidget(self.kokoro_checkbox)
         
         components_layout.addLayout(engines_layout)
         
@@ -437,6 +452,10 @@ class PandratorInstaller(QMainWindow):
         # Voxtral checkbox
         self.launch_voxtral_checkbox = QCheckBox("Voxtral")
         launch_layout.addWidget(self.launch_voxtral_checkbox)
+
+        # Kokoro checkbox
+        self.launch_kokoro_checkbox = QCheckBox("Kokoro")
+        launch_layout.addWidget(self.launch_kokoro_checkbox)
         
         # Silero checkbox
         self.launch_silero_checkbox = QCheckBox("Silero")
@@ -539,6 +558,11 @@ class PandratorInstaller(QMainWindow):
         set_widget_state(self.voxtral_checkbox, not voxtral_support, False)
         set_widget_state(self.launch_voxtral_checkbox, voxtral_support, False)
 
+        # Kokoro
+        kokoro_support = config.get('kokoro_support', False)
+        set_widget_state(self.kokoro_checkbox, not kokoro_support, False)
+        set_widget_state(self.launch_kokoro_checkbox, kokoro_support, False)
+
         # Silero
         silero_support = config.get('silero_support', False)
         set_widget_state(self.silero_checkbox, not silero_support, False)
@@ -597,6 +621,7 @@ class PandratorInstaller(QMainWindow):
         return {
             'xtts': config.get('xtts_support', False),
             'voxtral': config.get('voxtral_support', False),
+            'kokoro': config.get('kokoro_support', False),
             'silero': config.get('silero_support', False),
             'rvc': config.get('rvc_support', False),
             'whisperx': config.get('whisperx_support', False),
@@ -767,6 +792,7 @@ class PandratorInstaller(QMainWindow):
         self.xtts_cpu_var = self.xtts_cpu_checkbox.isChecked()
         self.silero_var = self.silero_checkbox.isChecked()
         self.voxtral_var = self.voxtral_checkbox.isChecked()
+        self.kokoro_var = self.kokoro_checkbox.isChecked()
         self.rvc_var = self.rvc_checkbox.isChecked()
         self.whisperx_var = self.whisperx_checkbox.isChecked()
         self.xtts_finetuning_var = self.xtts_finetuning_checkbox.isChecked()
@@ -775,6 +801,7 @@ class PandratorInstaller(QMainWindow):
             (self.xtts_var or self.xtts_cpu_var) and not installed_components['xtts'] or
             self.silero_var and not installed_components['silero'] or
             self.voxtral_var and not installed_components['voxtral'] or
+            self.kokoro_var and not installed_components['kokoro'] or
             self.rvc_var and not installed_components['rvc'] or
             self.whisperx_var and not installed_components['whisperx']
         )
@@ -1104,6 +1131,278 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         else:
             logging.info("Calibre is already installed.")
             return True
+
+    def resolve_espeak_paths(self):
+        candidate_roots = [
+            os.environ.get('ProgramFiles', r'C:\Program Files'),
+            os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)'),
+        ]
+
+        candidates = []
+        seen = set()
+        for root in candidate_roots:
+            if not root:
+                continue
+            dll_path = os.path.join(root, ESPEAK_NG_DLL_RELATIVE_PATH)
+            data_path = os.path.join(root, ESPEAK_NG_DATA_DIR_RELATIVE_PATH)
+            key = (dll_path.lower(), data_path.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append((dll_path, data_path))
+
+        for dll_path, data_path in candidates:
+            if os.path.exists(dll_path):
+                resolved_data_path = data_path if os.path.exists(data_path) else ''
+                return dll_path, resolved_data_path
+
+        return '', ''
+
+    def install_espeak_ng_direct(self):
+        dll_path, _ = self.resolve_espeak_paths()
+        if dll_path:
+            logging.info(f"eSpeak NG is already available at {dll_path}")
+            return True
+
+        logging.info("Installing eSpeak NG from direct MSI download...")
+        self.configure_tls_certificates()
+        temp_msi_path = os.path.join(tempfile.gettempdir(), 'pandrator_espeak_ng.msi')
+
+        try:
+            response = requests.get(
+                ESPEAK_NG_MSI_URL,
+                stream=True,
+                timeout=120,
+                verify=self.ca_bundle_path if self.ca_bundle_path else True,
+            )
+            response.raise_for_status()
+
+            with open(temp_msi_path, 'wb') as handle:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        handle.write(chunk)
+
+            sha256 = hashlib.sha256()
+            with open(temp_msi_path, 'rb') as handle:
+                while True:
+                    chunk = handle.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    sha256.update(chunk)
+
+            downloaded_hash = sha256.hexdigest().upper()
+            expected_hash = ESPEAK_NG_MSI_SHA256.upper()
+            if downloaded_hash != expected_hash:
+                logging.warning(
+                    "Downloaded eSpeak NG MSI checksum mismatch. "
+                    f"Expected {expected_hash}, got {downloaded_hash}."
+                )
+                return False
+
+            process = subprocess.Popen(
+                ['msiexec', '/i', temp_msi_path, '/qn', '/norestart', 'ALLUSERS=1'],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                **self.get_hidden_subprocess_kwargs(),
+            )
+            stdout, stderr = process.communicate(timeout=600)
+
+            if process.returncode not in (0, 3010):
+                logging.warning(
+                    f"eSpeak NG MSI installation failed with exit code {process.returncode}. "
+                    f"STDOUT: {stdout} STDERR: {stderr}"
+                )
+                return False
+
+            self.refresh_environment_variables()
+            dll_path, data_path = self.resolve_espeak_paths()
+            if dll_path:
+                logging.info(
+                    f"eSpeak NG installed successfully. DLL: {dll_path}; "
+                    f"Data path: {data_path or 'not detected'}"
+                )
+                return True
+
+            logging.warning(
+                "eSpeak NG installer finished but libespeak-ng.dll was not detected. "
+                "Kokoro runtime may rely on espeakng-loader fallback."
+            )
+            return False
+        except subprocess.TimeoutExpired:
+            logging.warning("Timed out while installing eSpeak NG MSI.")
+            return False
+        except Exception as e:
+            logging.warning(f"Could not install eSpeak NG automatically: {str(e)}")
+            return False
+        finally:
+            if os.path.exists(temp_msi_path):
+                os.remove(temp_msi_path)
+
+    def get_kokoro_runtime_env(self, pandrator_path, kokoro_repo_path):
+        env = self.get_pixi_subprocess_env(pandrator_path)
+        env['PYTHONUTF8'] = '1'
+        env['USE_GPU'] = 'false'
+        env['USE_ONNX'] = 'false'
+        env['MODEL_DIR'] = 'src/models'
+        env['VOICES_DIR'] = 'src/voices/v1_0'
+        env['WEB_PLAYER_PATH'] = os.path.join(kokoro_repo_path, 'web')
+        env['PYTHONPATH'] = f"{kokoro_repo_path};{os.path.join(kokoro_repo_path, 'api')}"
+
+        dll_path, data_path = self.resolve_espeak_paths()
+        if dll_path:
+            env['PHONEMIZER_ESPEAK_LIBRARY'] = dll_path
+        if data_path:
+            env['PHONEMIZER_ESPEAK_DATA'] = data_path
+            env['ESPEAK_DATA_PATH'] = data_path
+
+        return env
+
+    def is_kokoro_runtime_ready(self, pandrator_path, kokoro_repo_path):
+        manifest_path = self.get_pixi_manifest_path(pandrator_path, KOKORO_ENV_NAME)
+        model_path = os.path.join(
+            kokoro_repo_path,
+            'api',
+            'src',
+            'models',
+            'v1_0',
+            'kokoro-v1_0.pth',
+        )
+        return os.path.exists(manifest_path) and os.path.exists(model_path)
+
+    def check_kokoro_server_online(self, url, max_attempts=90, wait_interval=5, process=None):
+        """Check if the Kokoro server is online and responding."""
+        for attempt in range(1, max_attempts + 1):
+            if process is not None and process.poll() is not None:
+                logging.error("Kokoro server process exited before coming online.")
+                return False
+
+            try:
+                response = requests.get(url, timeout=5)
+                if response.status_code == 200:
+                    logging.info("Kokoro server is online.")
+                    return True
+            except requests.exceptions.RequestException:
+                pass
+
+            logging.info("Kokoro server is not online. Waiting... (Attempt %s/%s)", attempt, max_attempts)
+            time.sleep(wait_interval)
+
+        logging.error("Kokoro server failed to come online within the specified attempts.")
+        return False
+
+    def install_kokoro_api_server(self, pandrator_path, kokoro_repo_path, env_name=KOKORO_ENV_NAME):
+        logging.info(f"Bootstrapping Kokoro API server in {kokoro_repo_path}...")
+        main_path = os.path.join(kokoro_repo_path, 'api', 'src', 'main.py')
+        if not os.path.exists(main_path):
+            raise FileNotFoundError(f"Kokoro API entrypoint not found at: {main_path}")
+
+        espeak_ok = self.install_espeak_ng_direct()
+        if not espeak_ok:
+            logging.warning(
+                "Automatic eSpeak NG installation was not fully verified. "
+                "Proceeding; Kokoro may still work via espeakng-loader."
+            )
+
+        self.run_pixi_in_env(
+            pandrator_path,
+            env_name,
+            ['python', '-m', 'pip', 'install', '--upgrade', 'pip'],
+            cwd=kokoro_repo_path,
+        )
+
+        self.run_pixi_in_env(
+            pandrator_path,
+            env_name,
+            ['python', '-m', 'pip', 'install', '-e', '.[cpu]'],
+            cwd=kokoro_repo_path,
+        )
+
+        self.run_pixi_in_env(
+            pandrator_path,
+            env_name,
+            ['python', 'docker/scripts/download_model.py', '--output', 'api/src/models/v1_0'],
+            cwd=kokoro_repo_path,
+        )
+
+        if self.is_port_in_use(8880):
+            raise RuntimeError("Kokoro server cannot be bootstrapped because port 8880 is already in use.")
+
+        process = None
+        try:
+            process = self.run_kokoro_api_server(pandrator_path, env_name, kokoro_repo_path)
+            if not self.check_kokoro_server_online(
+                'http://127.0.0.1:8880/health',
+                max_attempts=180,
+                wait_interval=5,
+                process=process,
+            ):
+                return_code = process.poll()
+                if return_code is not None:
+                    raise RuntimeError(
+                        f"Kokoro bootstrap process exited before server was ready (exit code {return_code}). "
+                        f"See log: {getattr(process, 'log_file_path', '')}"
+                    )
+                raise RuntimeError(
+                    "Kokoro bootstrap did not bring the server online in time. "
+                    f"See log: {getattr(process, 'log_file_path', '')}"
+                )
+        finally:
+            if process is not None:
+                logging.info("Stopping temporary Kokoro bootstrap process.")
+                self.terminate_process_tree(process)
+                if hasattr(process, 'log_handle') and process.log_handle:
+                    process.log_handle.close()
+
+    def run_kokoro_api_server(self, pandrator_path, env_name, kokoro_server_path):
+        """Run the Kokoro API server in a dedicated Pixi environment."""
+        logging.info(f"Running Kokoro API server from {kokoro_server_path}...")
+
+        if self.is_port_in_use(8880):
+            error_msg = "Kokoro server cannot be started because port 8880 is already in use."
+            logging.error(error_msg)
+            QMessageBox.critical(self, "Error", error_msg)
+            return None
+
+        main_path = os.path.join(kokoro_server_path, 'api', 'src', 'main.py')
+        if not os.path.exists(main_path):
+            raise FileNotFoundError(f"Kokoro API entrypoint not found at: {main_path}")
+
+        kokoro_log_file = os.path.join(kokoro_server_path, 'kokoro_server.log')
+        command = self.build_pixi_run_command(
+            pandrator_path,
+            env_name,
+            [
+                'python',
+                '-m',
+                'uvicorn',
+                'api.src.main:app',
+                '--host',
+                '127.0.0.1',
+                '--port',
+                '8880',
+            ],
+        )
+
+        kokoro_env = self.get_kokoro_runtime_env(pandrator_path, kokoro_server_path)
+        log_handle = open(kokoro_log_file, 'a', encoding='utf-8')
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=kokoro_server_path,
+                env=kokoro_env,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                **self.get_hidden_subprocess_kwargs(),
+            )
+        except Exception:
+            log_handle.close()
+            raise
+
+        process.log_handle = log_handle
+        process.log_file_path = kokoro_log_file
+        self.kokoro_process = process
+        return process
 
     def get_pixi_executable(self, pandrator_path):
         return os.path.join(pandrator_path, 'bin', PIXI_BINARY_NAME)
@@ -2404,6 +2703,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         xtts_cpu_var = self.xtts_cpu_checkbox.isChecked()
         silero_var = self.silero_checkbox.isChecked()
         voxtral_var = self.voxtral_checkbox.isChecked()
+        kokoro_var = self.kokoro_checkbox.isChecked()
         rvc_var = self.rvc_checkbox.isChecked()
         whisperx_var = self.whisperx_checkbox.isChecked()
         xtts_finetuning_var = self.xtts_finetuning_checkbox.isChecked()
@@ -2414,6 +2714,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         subdub_repo_path = os.path.join(pandrator_path, 'Subdub')
         xtts_repo_path = os.path.join(pandrator_path, XTTS_API_REPO_DIRNAME)
         voxtral_repo_path = os.path.join(pandrator_path, VOXTRAL_API_REPO_DIRNAME)
+        kokoro_repo_path = os.path.join(pandrator_path, KOKORO_API_REPO_DIRNAME)
         easy_xtts_trainer_path = os.path.join(pandrator_path, 'easy_xtts_trainer')
 
         pandrator_repo_missing = not os.path.exists(pandrator_repo_path)
@@ -2487,6 +2788,9 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             if voxtral_var and not os.path.exists(voxtral_repo_path):
                 self.clone_repo(VOXTRAL_API_REPO_URL, voxtral_repo_path)
 
+            if kokoro_var and not os.path.exists(kokoro_repo_path):
+                self.clone_repo(KOKORO_API_REPO_URL, kokoro_repo_path)
+
             if needs_pandrator_environment:
                 self.worker.update_progress.emit(0.6)
                 self.worker.update_status.emit("Creating Pandrator Pixi environment...")
@@ -2527,6 +2831,19 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 self.worker.update_progress.emit(0.9)
                 self.worker.update_status.emit("Bootstrapping Voxtral API server...")
                 self.install_voxtral_api_server(voxtral_repo_path)
+
+            if kokoro_var:
+                self.worker.update_progress.emit(0.9)
+                self.worker.update_status.emit("Creating Kokoro Pixi environment...")
+                self.create_pixi_env(pandrator_path, KOKORO_ENV_NAME, KOKORO_PYTHON_VERSION)
+
+                self.worker.update_progress.emit(0.95)
+                self.worker.update_status.emit("Bootstrapping Kokoro API server...")
+                self.install_kokoro_api_server(
+                    pandrator_path,
+                    kokoro_repo_path,
+                    env_name=KOKORO_ENV_NAME,
+                )
 
             if rvc_var:
                 self.worker.update_progress.emit(0.8)
@@ -2570,6 +2887,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             config['xtts_support'] = config.get('xtts_support', False) or xtts_var or xtts_cpu_var
             config['silero_support'] = config.get('silero_support', False) or silero_var
             config['voxtral_support'] = config.get('voxtral_support', False) or voxtral_var
+            config['kokoro_support'] = config.get('kokoro_support', False) or kokoro_var
             config['whisperx_support'] = config.get('whisperx_support', False) or whisperx_var
             config['xtts_finetuning_support'] = config.get('xtts_finetuning_support', False) or xtts_finetuning_var
             config['rvc_support'] = config.get('rvc_support', False) or rvc_var
@@ -2634,6 +2952,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         subdub_repo_path = os.path.join(pandrator_base_path, 'Subdub')
         xtts_repo_path = os.path.join(pandrator_base_path, XTTS_API_REPO_DIRNAME)
         voxtral_repo_path = os.path.join(pandrator_base_path, VOXTRAL_API_REPO_DIRNAME)
+        kokoro_repo_path = os.path.join(pandrator_base_path, KOKORO_API_REPO_DIRNAME)
         easy_xtts_trainer_path = os.path.join(pandrator_base_path, 'easy_xtts_trainer')
         config_path = os.path.join(pandrator_base_path, 'config.json')
 
@@ -2645,6 +2964,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
         pandrator_env_missing = not os.path.exists(self.get_pixi_manifest_path(pandrator_base_path, 'pandrator_installer'))
         silero_env_missing = not os.path.exists(self.get_pixi_manifest_path(pandrator_base_path, 'silero_api_server_installer'))
+        kokoro_env_missing = not os.path.exists(self.get_pixi_manifest_path(pandrator_base_path, KOKORO_ENV_NAME))
         whisperx_env_missing = not os.path.exists(self.get_pixi_manifest_path(pandrator_base_path, 'whisperx_installer'))
         
         # Check admin status
@@ -2798,6 +3118,26 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                     self.worker.update_status.emit("Bootstrapping Voxtral API server...")
                     self.install_voxtral_api_server(voxtral_repo_path)
 
+            if config.get('kokoro_support', False):
+                if os.path.exists(kokoro_repo_path):
+                    self.worker.update_status.emit("Updating Kokoro API server repository...")
+                    self.pull_repo(kokoro_repo_path)
+                else:
+                    self.worker.update_status.emit("Cloning Kokoro API server repository...")
+                    self.clone_repo(KOKORO_API_REPO_URL, kokoro_repo_path)
+
+                if kokoro_env_missing:
+                    self.worker.update_status.emit("Creating Kokoro Pixi environment...")
+                    self.create_pixi_env(pandrator_base_path, KOKORO_ENV_NAME, KOKORO_PYTHON_VERSION)
+
+                if kokoro_env_missing or not self.is_kokoro_runtime_ready(pandrator_base_path, kokoro_repo_path):
+                    self.worker.update_status.emit("Bootstrapping Kokoro API server...")
+                    self.install_kokoro_api_server(
+                        pandrator_base_path,
+                        kokoro_repo_path,
+                        env_name=KOKORO_ENV_NAME,
+                    )
+
             if config.get('whisperx_support', False):
                 whisperx_needs_install = whisperx_env_missing
                 whisperx_reason = "Pixi manifest is missing"
@@ -2910,6 +3250,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         self.disable_deepspeed_var = self.deepspeed_checkbox.isChecked()
         self.xtts_cpu_launch_var = self.xtts_cpu_launch_checkbox.isChecked()
         self.launch_voxtral_var = self.launch_voxtral_checkbox.isChecked()
+        self.launch_kokoro_var = self.launch_kokoro_checkbox.isChecked()
         self.launch_silero_var = self.launch_silero_checkbox.isChecked()
         
         # Create worker thread to run the launch process
@@ -3034,6 +3375,51 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 raise RuntimeError(error_msg)
             
             pandrator_args = ['-connect', '-silero']
+            tts_engine_launched = True
+
+        if self.launch_kokoro_var and not tts_engine_launched:
+            self.worker.update_progress.emit(0.65)
+            self.worker.update_status.emit("Starting Kokoro server...")
+            kokoro_server_path = os.path.join(pandrator_path, KOKORO_API_REPO_DIRNAME)
+            logging.info(f"Kokoro server path: {kokoro_server_path}")
+
+            if not os.path.exists(kokoro_server_path):
+                error_msg = f"Kokoro server path not found: {kokoro_server_path}"
+                self.worker.update_status.emit(error_msg)
+                logging.error(error_msg)
+                raise FileNotFoundError(error_msg)
+
+            if not self.is_kokoro_runtime_ready(pandrator_path, kokoro_server_path):
+                self.worker.update_status.emit("Preparing Kokoro runtime...")
+                self.create_pixi_env(pandrator_path, KOKORO_ENV_NAME, KOKORO_PYTHON_VERSION)
+                self.install_kokoro_api_server(
+                    pandrator_path,
+                    kokoro_server_path,
+                    env_name=KOKORO_ENV_NAME,
+                )
+
+            try:
+                self.kokoro_process = self.run_kokoro_api_server(
+                    pandrator_path,
+                    KOKORO_ENV_NAME,
+                    kokoro_server_path,
+                )
+            except Exception as e:
+                error_msg = f"Failed to start Kokoro server: {str(e)}"
+                self.worker.update_status.emit(error_msg)
+                logging.error(error_msg)
+                logging.exception("Exception details:")
+                raise
+
+            kokoro_server_url = 'http://127.0.0.1:8880/health'
+            if not self.check_kokoro_server_online(kokoro_server_url, process=self.kokoro_process):
+                error_msg = "Kokoro server failed to come online"
+                self.worker.update_status.emit(error_msg)
+                logging.error(error_msg)
+                self.shutdown_kokoro()
+                raise RuntimeError(error_msg)
+
+            pandrator_args = ['-connect', '-kokoro']
             tts_engine_launched = True
 
         if self.launch_pandrator_var:
@@ -3402,7 +3788,16 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             self.silero_process = None
         elif self.silero_process:
             any_process_running = True
-        
+
+        # Check Kokoro
+        if self.kokoro_process and self.kokoro_process.poll() is not None:
+            # Kokoro has exited
+            if hasattr(self.kokoro_process, 'log_handle') and self.kokoro_process.log_handle:
+                self.kokoro_process.log_handle.close()
+            self.kokoro_process = None
+        elif self.kokoro_process:
+            any_process_running = True
+
         if not any_process_running:
             self.update_status("All processes have exited.")
             self.refresh_ui_state()
@@ -3413,6 +3808,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         """Shut down all running applications"""
         self.shutdown_xtts()
         self.shutdown_voxtral()
+        self.shutdown_kokoro()
         self.shutdown_silero()
 
     def shutdown_xtts(self):
@@ -3500,6 +3896,47 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                         logging.info(f"Terminated process using port 8000: PID {conn.pid}")
                 except psutil.NoSuchProcess:
                     logging.info(f"Process using port 8000 (PID {conn.pid}) no longer exists")
+                except psutil.AccessDenied:
+                    logging.warning(f"Access denied when terminating process with PID: {conn.pid}")
+
+    def shutdown_kokoro(self):
+        """Shut down the Kokoro server"""
+        if self.kokoro_process:
+            logging.info(f"Terminating Kokoro process with PID: {self.kokoro_process.pid}")
+            try:
+                parent = psutil.Process(self.kokoro_process.pid)
+                for child in parent.children(recursive=True):
+                    try:
+                        child.terminate()
+                    except psutil.AccessDenied:
+                        logging.warning(f"Access denied when terminating child process with PID: {child.pid}")
+                parent.terminate()
+                self.kokoro_process.wait(timeout=10)
+            except psutil.NoSuchProcess:
+                logging.info("Kokoro process already terminated.")
+            except psutil.TimeoutExpired:
+                logging.warning("Kokoro process did not terminate, forcing kill")
+                parent = psutil.Process(self.kokoro_process.pid)
+                for child in parent.children(recursive=True):
+                    try:
+                        child.kill()
+                    except psutil.AccessDenied:
+                        logging.warning(f"Access denied when killing child process with PID: {child.pid}")
+                parent.kill()
+            if hasattr(self.kokoro_process, 'log_handle') and self.kokoro_process.log_handle:
+                self.kokoro_process.log_handle.close()
+            self.kokoro_process = None
+
+        # Check if any process is using port 8880 and kill it
+        for conn in psutil.net_connections():
+            if hasattr(conn, 'laddr') and hasattr(conn.laddr, 'port') and conn.laddr.port == 8880:
+                try:
+                    process = psutil.Process(conn.pid)
+                    if process.pid != 0:  # Skip System Idle Process
+                        process.terminate()
+                        logging.info(f"Terminated process using port 8880: PID {conn.pid}")
+                except psutil.NoSuchProcess:
+                    logging.info(f"Process using port 8880 (PID {conn.pid}) no longer exists")
                 except psutil.AccessDenied:
                     logging.warning(f"Access denied when terminating process with PID: {conn.pid}")
 

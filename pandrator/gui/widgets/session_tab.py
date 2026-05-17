@@ -3,7 +3,7 @@ import os
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QFileDialog, QInputDialog, QMessageBox, QVBoxLayout, QWidget
 
-from ...constants import SILERO_LANGUAGES, XTTS_LANGUAGES
+from ...constants import KOKORO_LANGUAGES, SILERO_LANGUAGES, XTTS_LANGUAGES
 from ..dialogs.custom_prompt_dialog import CustomPromptDialog
 from ..dialogs.metadata_dialog import MetadataDialog
 from ..dialogs.paste_text_dialog import PasteTextDialog
@@ -835,12 +835,13 @@ class SessionTab(QWidget):
 
         is_xtts = state.tts.service == "XTTS"
         is_voxtral = state.tts.service == "Voxtral"
+        is_kokoro = state.tts.service == "Kokoro"
         is_cloud_tts = state.tts.service in {
             "OpenAI-Compatible",
             "OpenAI",
             "Gemini",
         }
-        is_model_based_tts = is_xtts or is_voxtral or is_cloud_tts
+        is_model_based_tts = is_xtts or is_voxtral or is_kokoro or is_cloud_tts
         show_xtts_advanced_settings = self.logic.should_show_xtts_advanced_settings()
         show_voxtral_advanced_settings = is_voxtral
         show_advanced_tts_controls = show_xtts_advanced_settings or show_voxtral_advanced_settings
@@ -850,12 +851,14 @@ class SessionTab(QWidget):
             "Connecting..." if tts_connecting else "Connect to Server"
         )
 
-        self.use_external_server_checkbox.setVisible(is_xtts or is_voxtral)
+        self.use_external_server_checkbox.setVisible(is_xtts or is_voxtral or is_kokoro)
         self.external_server_url_edit.setVisible(
-            (is_xtts or is_voxtral) and state.tts.use_external_server
+            (is_xtts or is_voxtral or is_kokoro) and state.tts.use_external_server
         )
         self.external_server_url_edit.setPlaceholderText(
-            "http://localhost:8000" if is_voxtral else "http://localhost:8020"
+            "http://localhost:8000"
+            if is_voxtral
+            else ("http://localhost:8880" if is_kokoro else "http://localhost:8020")
         )
         self.advanced_tts_checkbox.setText(
             "Advanced Voxtral Settings"
@@ -1000,7 +1003,14 @@ class SessionTab(QWidget):
         self.language_combo.blockSignals(True)
         self.language_combo.clear()
 
-        if service in {"XTTS", "Voxtral", "OpenAI", "Gemini", "OpenAI-Compatible"}:
+        if service == "Kokoro":
+            self.language_combo.addItems(KOKORO_LANGUAGES)
+            if current_lang in KOKORO_LANGUAGES:
+                self.language_combo.setCurrentText(current_lang)
+            else:
+                self.logic.state.tts.language = "en"
+                self.language_combo.setCurrentText("en")
+        elif service in {"XTTS", "Voxtral", "OpenAI", "Gemini", "OpenAI-Compatible"}:
             self.language_combo.addItems(XTTS_LANGUAGES)
             if current_lang in XTTS_LANGUAGES:
                 self.language_combo.setCurrentText(current_lang)

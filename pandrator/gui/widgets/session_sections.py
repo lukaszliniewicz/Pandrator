@@ -109,7 +109,7 @@ class TtsSettingsSection(QFrame):
         layout.setVerticalSpacing(8)
 
         self.tts_service_combo = QComboBox()
-        self.tts_service_combo.addItems(["XTTS", "Voxtral", "Silero", "OpenAI-Compatible"])
+        self.tts_service_combo.addItems(["XTTS", "Voxtral", "Kokoro", "Silero", "OpenAI-Compatible"])
         layout.addWidget(QLabel("TTS Service:"), 0, 0)
         layout.addWidget(self.tts_service_combo, 0, 1)
 

@@ -28,3 +28,4 @@ WHISPER_LANGUAGES = [
 ]
 
 XTTS_LANGUAGES = ["en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko", "hi"]
+KOKORO_LANGUAGES = ["en", "es", "fr", "hi", "it", "ja", "pt", "zh-cn"]

@@ -534,6 +534,7 @@ class AppLogic(QObject):
         supported_services = {
             "XTTS",
             "Voxtral",
+            "Kokoro",
             "Silero",
             tts_handler.OPENAI_COMPAT_SERVICE,
         }
@@ -1975,6 +1976,51 @@ class AppLogic(QObject):
                     f"Connected to Voxtral server ({len(models)} model(s), {len(speakers)} voice(s))."
                 )
 
+            elif service == "Kokoro":
+                base_url = (
+                    tts_snapshot.get("external_server_url")
+                    if tts_snapshot.get("use_external_server")
+                    else tts_handler.KOKORO_API_BASE_URL
+                )
+
+                if not tts_handler.check_kokoro_connection(base_url):
+                    result["error_title"] = "Connection Error"
+                    result["error_message"] = (
+                        f"Could not connect to Kokoro server at {base_url}. Is it running?"
+                    )
+                    self._tts_connection_result.emit(result)
+                    return
+
+                models = tts_handler.get_kokoro_models(base_url)
+                speakers = tts_handler.get_kokoro_voices(base_url)
+
+                default_model = tts_handler.KOKORO_DEFAULT_MODEL
+                default_voice = tts_handler.KOKORO_DEFAULT_VOICE
+
+                selected_model = (tts_snapshot.get("xtts_model") or "").strip()
+                if models:
+                    if selected_model not in models:
+                        selected_model = default_model if default_model in models else models[0]
+                elif not selected_model:
+                    selected_model = default_model
+
+                selected_speaker = (tts_snapshot.get("speaker") or "").strip()
+                if speakers:
+                    if selected_speaker not in speakers:
+                        selected_speaker = default_voice if default_voice in speakers else speakers[0]
+                elif not selected_speaker:
+                    selected_speaker = default_voice
+
+                result["updates"] = {
+                    "tts_models": models,
+                    "tts_speakers": speakers,
+                    "xtts_model": selected_model,
+                    "speaker": selected_speaker,
+                }
+                result["log_message"] = (
+                    f"Connected to Kokoro server ({len(models)} model(s), {len(speakers)} voice(s))."
+                )
+
             elif service == "Silero":
                 base_url = tts_handler.SILERO_API_BASE_URL
                 if not tts_handler.check_silero_connection(base_url):
@@ -2898,11 +2944,17 @@ class AppLogic(QObject):
                 if self.state.tts.use_external_server and active_service == "Voxtral"
                 else tts_handler.VOXTRAL_API_BASE_URL
             )
+            kokoro_url = (
+                self.state.tts.external_server_url
+                if self.state.tts.use_external_server and active_service == "Kokoro"
+                else tts_handler.KOKORO_API_BASE_URL
+            )
             audio_data = tts_handler.text_to_audio(
                 processed_text,
                 self.state.tts.__dict__,
                 xtts_base_url=xtts_url,
                 voxtral_base_url=voxtral_url,
+                kokoro_base_url=kokoro_url,
             )
             if not audio_data:
                 return False, None

@@ -22,6 +22,9 @@ VOXTRAL_API_BASE_URL = "http://127.0.0.1:8000"
 # Silero default URLs
 SILERO_API_BASE_URL = "http://127.0.0.1:8001"
 
+# Kokoro default URLs
+KOKORO_API_BASE_URL = "http://127.0.0.1:8880"
+
 XTTS_OPENAI_PLACEHOLDER_API_KEY = "sk-placeholder"
 XTTS_DEFAULT_MODEL = "tts_models/multilingual/multi-dataset/xtts_v2"
 XTTS_UPLOAD_FILE_PURPOSE = "user_data"
@@ -30,6 +33,85 @@ VOXTRAL_DEFAULT_MODEL = "auto"
 VOXTRAL_DEFAULT_VOICE = "casual_female"
 VOXTRAL_INSTRUCTIONS_PREFIX = "voxtral_options:"
 VOXTRAL_TTS_MODELS = ["auto", "gguf", "bf16"]
+KOKORO_DEFAULT_MODEL = "kokoro"
+KOKORO_DEFAULT_VOICE = "af_heart"
+KOKORO_TTS_MODELS = [
+    "kokoro",
+    "tts-1",
+    "tts-1-hd",
+    "gpt-4o-mini-tts",
+]
+KOKORO_TTS_VOICES = [
+    "af_alloy",
+    "af_aoede",
+    "af_bella",
+    "af_heart",
+    "af_jessica",
+    "af_kore",
+    "af_nicole",
+    "af_nova",
+    "af_river",
+    "af_sarah",
+    "af_sky",
+    "am_adam",
+    "am_echo",
+    "am_eric",
+    "am_fenrir",
+    "am_liam",
+    "am_michael",
+    "am_onyx",
+    "am_puck",
+    "am_santa",
+    "bf_alice",
+    "bf_emma",
+    "bf_isabella",
+    "bf_lily",
+    "bm_daniel",
+    "bm_fable",
+    "bm_george",
+    "bm_lewis",
+    "ef_dora",
+    "em_alex",
+    "em_santa",
+    "ff_siwis",
+    "hf_alpha",
+    "hf_beta",
+    "hm_omega",
+    "hm_psi",
+    "if_sara",
+    "im_nicola",
+    "jf_alpha",
+    "jf_gongitsune",
+    "jf_nezumi",
+    "jf_tebukuro",
+    "jm_kumo",
+    "pf_dora",
+    "pm_alex",
+    "pm_santa",
+    "zf_xiaobei",
+    "zf_xiaoni",
+    "zf_xiaoxiao",
+    "zf_xiaoyi",
+    "zm_yunjian",
+    "zm_yunxi",
+    "zm_yunxia",
+    "zm_yunyang",
+]
+KOKORO_LANG_CODE_ALIASES = {
+    "en": "a",
+    "en-us": "a",
+    "en-gb": "b",
+    "es": "e",
+    "fr": "f",
+    "fr-fr": "f",
+    "hi": "h",
+    "it": "i",
+    "ja": "j",
+    "pt": "p",
+    "pt-br": "p",
+    "zh": "z",
+    "zh-cn": "z",
+}
 OPENAI_AUDIO_DEFAULT_MODEL = "gpt-4o-mini-tts"
 OPENAI_AUDIO_DEFAULT_VOICE = "alloy"
 GEMINI_AUDIO_DEFAULT_MODEL = "gemini-3.1-flash-tts-preview"
@@ -894,6 +976,13 @@ def _merge_catalog_with_discovered(preferred: list[str], discovered: list[str]) 
     return _dedupe_ordered(preferred + discovered)
 
 
+OPENAI_CANDIDATE_FALLBACK_STATUS_CODES = {404, 405, 501}
+
+
+def _should_try_next_openai_candidate(status_code: int) -> bool:
+    return int(status_code) in OPENAI_CANDIDATE_FALLBACK_STATUS_CODES
+
+
 def _openai_url_candidates(base_url: str, suffix: str) -> list[str]:
     normalized = base_url.rstrip("/")
     if normalized.endswith("/v1"):
@@ -921,6 +1010,16 @@ def _openai_voices_urls(base_url: str) -> list[str]:
     return _openai_url_candidates(base_url, "voices")
 
 
+def _openai_audio_voices_urls(base_url: str) -> list[str]:
+    return _openai_url_candidates(base_url, "audio/voices")
+
+
+def _openai_voice_catalog_urls(base_url: str) -> list[str]:
+    return _dedupe_ordered(
+        _openai_audio_voices_urls(base_url) + _openai_voices_urls(base_url)
+    )
+
+
 def _openai_audio_speech_urls(base_url: str) -> list[str]:
     return _openai_url_candidates(base_url, "audio/speech")
 
@@ -935,6 +1034,14 @@ def _voxtral_models_urls(base_url: str) -> list[str]:
 
 def _voxtral_voices_urls(base_url: str) -> list[str]:
     return _openai_url_candidates(base_url, "audio/voices")
+
+
+def _kokoro_models_urls(base_url: str) -> list[str]:
+    return _openai_models_urls(base_url)
+
+
+def _kokoro_voices_urls(base_url: str) -> list[str]:
+    return _openai_voice_catalog_urls(base_url)
 
 
 def _extract_models_from_openai_payload(payload) -> list[str]:
@@ -954,23 +1061,38 @@ def _extract_models_from_openai_payload(payload) -> list[str]:
 
 
 def _extract_voices_from_openai_payload(payload) -> list[str]:
-    if not isinstance(payload, dict):
-        return []
-    data = payload.get("data", [])
-    if not isinstance(data, list):
+    if isinstance(payload, list):
+        candidates = payload
+    elif isinstance(payload, dict):
+        candidates = []
+        data = payload.get("data", [])
+        if isinstance(data, list):
+            candidates.extend(data)
+
+        voices = payload.get("voices", [])
+        if isinstance(voices, list):
+            candidates.extend(voices)
+    else:
         return []
 
-    voices: list[str] = []
-    for voice in data:
+    discovered: list[str] = []
+    for voice in candidates:
         if isinstance(voice, dict):
-            voice_id = str(voice.get("voice_id") or voice.get("id") or "").strip()
+            voice_id = str(
+                voice.get("voice_id")
+                or voice.get("id")
+                or voice.get("name")
+                or ""
+            ).strip()
             if voice_id:
-                voices.append(voice_id)
-        elif isinstance(voice, str):
-            trimmed = voice.strip()
-            if trimmed:
-                voices.append(trimmed)
-    return _dedupe_sorted(voices)
+                discovered.append(voice_id)
+            continue
+
+        trimmed = str(voice or "").strip()
+        if trimmed:
+            discovered.append(trimmed)
+
+    return _dedupe_sorted(discovered)
 
 
 def _extract_file_ids_from_openai_payload(
@@ -1201,6 +1323,13 @@ def _resolve_voxtral_api_key() -> str:
     return XTTS_OPENAI_PLACEHOLDER_API_KEY
 
 
+def _resolve_kokoro_api_key() -> str:
+    api_key = os.getenv("KOKORO_API_KEY", "").strip()
+    if api_key:
+        return api_key
+    return XTTS_OPENAI_PLACEHOLDER_API_KEY
+
+
 def check_openai_audio_connection(tts_settings: dict) -> tuple[bool, str]:
     """Checks OpenAI-compatible audio endpoint reachability."""
     endpoint, error = resolve_openai_audio_endpoint(tts_settings)
@@ -1218,7 +1347,7 @@ def check_openai_audio_connection(tts_settings: dict) -> tuple[bool, str]:
                 headers=_openai_auth_headers(api_key),
                 timeout=8,
             )
-            if response.status_code == 404:
+            if _should_try_next_openai_candidate(response.status_code):
                 last_status = response.status_code
                 last_text = response.text
                 continue
@@ -1299,7 +1428,7 @@ def get_openai_audio_models(tts_settings: dict) -> list[str]:
                 headers=_openai_auth_headers(_resolve_openai_audio_api_key(endpoint)),
                 timeout=8,
             )
-            if response.status_code == 404:
+            if _should_try_next_openai_candidate(response.status_code):
                 continue
 
             response.raise_for_status()
@@ -1311,7 +1440,7 @@ def get_openai_audio_models(tts_settings: dict) -> list[str]:
             break
         except (requests.exceptions.RequestException, ValueError) as e:
             logging.error("Failed to list models for endpoint '%s': %s", endpoint["name"], e)
-            break
+            continue
 
     preferred_models = [default_model] + _provider_model_catalog(provider)
 
@@ -1325,14 +1454,14 @@ def get_openai_audio_voices(tts_settings: dict) -> list[str]:
         return []
 
     voices: list[str] = []
-    for voices_url in _openai_voices_urls(endpoint["base_url"]):
+    for voices_url in _openai_voice_catalog_urls(endpoint["base_url"]):
         try:
             response = requests.get(
                 voices_url,
                 headers=_openai_auth_headers(_resolve_openai_audio_api_key(endpoint)),
                 timeout=8,
             )
-            if response.status_code == 404:
+            if _should_try_next_openai_candidate(response.status_code):
                 continue
 
             response.raise_for_status()
@@ -1343,7 +1472,7 @@ def get_openai_audio_voices(tts_settings: dict) -> list[str]:
             break
         except (requests.exceptions.RequestException, ValueError) as e:
             logging.debug("Could not list voices for endpoint '%s': %s", endpoint["name"], e)
-            break
+            continue
 
     selected_model = str(tts_settings.get("xtts_model") or "").strip()
     if not selected_model:
@@ -1363,7 +1492,9 @@ def check_voxtral_connection(base_url: str = VOXTRAL_API_BASE_URL) -> bool:
     probe_urls = [
         f"{normalized_base_url}/health",
         *_voxtral_models_urls(normalized_base_url),
+        *_openai_models_urls(normalized_base_url),
         *_voxtral_voices_urls(normalized_base_url),
+        *_openai_voice_catalog_urls(normalized_base_url),
     ]
 
     for probe_url in _dedupe_ordered(probe_urls):
@@ -1373,7 +1504,7 @@ def check_voxtral_connection(base_url: str = VOXTRAL_API_BASE_URL) -> bool:
                 headers=_openai_auth_headers(api_key),
                 timeout=4,
             )
-            if response.status_code == 404:
+            if _should_try_next_openai_candidate(response.status_code):
                 continue
             if response.status_code < 400:
                 return True
@@ -1389,22 +1520,36 @@ def get_voxtral_models(base_url: str = VOXTRAL_API_BASE_URL) -> list[str]:
     api_key = _resolve_voxtral_api_key()
 
     discovered_models: list[str] = []
-    for models_url in _voxtral_models_urls(normalized_base_url):
+    model_urls = _dedupe_ordered(
+        _voxtral_models_urls(normalized_base_url)
+        + _openai_models_urls(normalized_base_url)
+    )
+
+    for models_url in model_urls:
         try:
             response = requests.get(
                 models_url,
                 headers=_openai_auth_headers(api_key),
                 timeout=8,
             )
-            if response.status_code == 404:
+            if _should_try_next_openai_candidate(response.status_code):
                 continue
 
             response.raise_for_status()
-            discovered_models = _extract_models_from_voxtral_payload(response.json())
-            break
+            payload = response.json()
+            discovered_models = _extract_models_from_voxtral_payload(payload)
+            if not discovered_models:
+                discovered_models = [
+                    _normalize_voxtral_model(model, fallback="")
+                    for model in _extract_models_from_openai_payload(payload)
+                ]
+                discovered_models = [model for model in discovered_models if model]
+
+            if discovered_models:
+                break
         except (requests.exceptions.RequestException, ValueError) as e:
             logging.error("Failed to list Voxtral models from %s: %s", models_url, e)
-            break
+            continue
 
     if discovered_models:
         return _merge_catalog_with_discovered([VOXTRAL_DEFAULT_MODEL], discovered_models)
@@ -1419,24 +1564,121 @@ def get_voxtral_voices(base_url: str = VOXTRAL_API_BASE_URL) -> list[str]:
     api_key = _resolve_voxtral_api_key()
 
     discovered_voices: list[str] = []
-    for voices_url in _voxtral_voices_urls(normalized_base_url):
+    voice_urls = _dedupe_ordered(
+        _voxtral_voices_urls(normalized_base_url)
+        + _openai_voice_catalog_urls(normalized_base_url)
+    )
+
+    for voices_url in voice_urls:
         try:
             response = requests.get(
                 voices_url,
                 headers=_openai_auth_headers(api_key),
                 timeout=8,
             )
-            if response.status_code == 404:
+            if _should_try_next_openai_candidate(response.status_code):
                 continue
 
             response.raise_for_status()
-            discovered_voices = _extract_voices_from_voxtral_payload(response.json())
-            break
+            payload = response.json()
+            discovered_voices = _extract_voices_from_voxtral_payload(payload)
+            if not discovered_voices:
+                discovered_voices = _extract_voices_from_openai_payload(payload)
+
+            if discovered_voices:
+                break
         except (requests.exceptions.RequestException, ValueError) as e:
             logging.error("Failed to list Voxtral voices from %s: %s", voices_url, e)
-            break
+            continue
 
     return _merge_catalog_with_discovered([VOXTRAL_DEFAULT_VOICE], discovered_voices)
+
+
+def check_kokoro_connection(base_url: str = KOKORO_API_BASE_URL) -> bool:
+    """Checks if the Kokoro server is reachable."""
+    normalized_base_url = _normalize_base_url(base_url, KOKORO_API_BASE_URL)
+    api_key = _resolve_kokoro_api_key()
+
+    probe_urls = [
+        f"{normalized_base_url}/health",
+        *_kokoro_models_urls(normalized_base_url),
+        *_kokoro_voices_urls(normalized_base_url),
+    ]
+
+    for probe_url in _dedupe_ordered(probe_urls):
+        try:
+            response = requests.get(
+                probe_url,
+                headers=_openai_auth_headers(api_key),
+                timeout=4,
+            )
+            if _should_try_next_openai_candidate(response.status_code):
+                continue
+            if response.status_code < 400:
+                return True
+        except requests.exceptions.RequestException:
+            continue
+
+    return False
+
+
+def get_kokoro_models(base_url: str = KOKORO_API_BASE_URL) -> list[str]:
+    """Fetches available Kokoro models from server."""
+    normalized_base_url = _normalize_base_url(base_url, KOKORO_API_BASE_URL)
+    api_key = _resolve_kokoro_api_key()
+
+    discovered_models: list[str] = []
+    for models_url in _kokoro_models_urls(normalized_base_url):
+        try:
+            response = requests.get(
+                models_url,
+                headers=_openai_auth_headers(api_key),
+                timeout=8,
+            )
+            if _should_try_next_openai_candidate(response.status_code):
+                continue
+
+            response.raise_for_status()
+            discovered_models = [
+                model
+                for model in _extract_models_from_openai_payload(response.json())
+                if "tts" in model.lower() or model.lower() == "kokoro"
+            ]
+            break
+        except (requests.exceptions.RequestException, ValueError) as e:
+            logging.error("Failed to list Kokoro models from %s: %s", models_url, e)
+            continue
+
+    preferred_models = [KOKORO_DEFAULT_MODEL] + KOKORO_TTS_MODELS
+    return _merge_catalog_with_discovered(preferred_models, discovered_models)
+
+
+def get_kokoro_voices(base_url: str = KOKORO_API_BASE_URL) -> list[str]:
+    """Fetches available Kokoro voices from server."""
+    normalized_base_url = _normalize_base_url(base_url, KOKORO_API_BASE_URL)
+    api_key = _resolve_kokoro_api_key()
+
+    discovered_voices: list[str] = []
+    for voices_url in _kokoro_voices_urls(normalized_base_url):
+        try:
+            response = requests.get(
+                voices_url,
+                headers=_openai_auth_headers(api_key),
+                timeout=8,
+            )
+            if _should_try_next_openai_candidate(response.status_code):
+                continue
+
+            response.raise_for_status()
+            discovered_voices = _extract_voices_from_openai_payload(response.json())
+            if discovered_voices:
+                break
+        except (requests.exceptions.RequestException, ValueError) as e:
+            logging.error("Failed to list Kokoro voices from %s: %s", voices_url, e)
+            continue
+
+    preferred_voices = [KOKORO_DEFAULT_VOICE] + KOKORO_TTS_VOICES
+    return _merge_catalog_with_discovered(preferred_voices, discovered_voices)
 
 
 def check_xtts_connection(base_url: str = XTTS_API_BASE_URL) -> bool:
@@ -1471,10 +1713,29 @@ def check_silero_connection(base_url: str = SILERO_API_BASE_URL) -> bool:
 def get_xtts_speakers(base_url: str = XTTS_API_BASE_URL) -> list[str]:
     """Fetches discoverable XTTS voice identifiers from server."""
     normalized_base_url = _normalize_base_url(base_url, XTTS_API_BASE_URL)
+    # Preferred path: voice catalog endpoints (/v1/audio/voices, /v1/voices).
+    discovered_voice_ids: list[str] = []
+    for voices_url in _openai_voice_catalog_urls(normalized_base_url):
+        try:
+            response = requests.get(
+                voices_url,
+                headers=_openai_auth_headers(),
+                timeout=8,
+            )
+            if _should_try_next_openai_candidate(response.status_code):
+                continue
+
+            response.raise_for_status()
+            discovered_voice_ids = _extract_voices_from_openai_payload(response.json())
+            break
+        except (requests.exceptions.RequestException, ValueError) as e:
+            logging.debug("Could not fetch voices from %s: %s", voices_url, e)
+            continue
+
     discovered_file_ids: list[str] = []
     discoverable_purposes = set(XTTS_DISCOVERABLE_FILE_PURPOSES)
 
-    # Preferred path: OpenAI-compatible files endpoint (/v1/files).
+    # Legacy path: OpenAI-compatible files endpoint (/v1/files).
     for purpose in XTTS_DISCOVERABLE_FILE_PURPOSES:
         for files_url in _openai_files_urls(normalized_base_url):
             try:
@@ -1484,7 +1745,7 @@ def get_xtts_speakers(base_url: str = XTTS_API_BASE_URL) -> list[str]:
                     params={"purpose": purpose, "limit": 10000},
                     timeout=8,
                 )
-                if response.status_code == 404:
+                if _should_try_next_openai_candidate(response.status_code):
                     continue
 
                 response.raise_for_status()
@@ -1497,28 +1758,9 @@ def get_xtts_speakers(base_url: str = XTTS_API_BASE_URL) -> list[str]:
                 break
             except (requests.exceptions.RequestException, ValueError) as e:
                 logging.debug("Could not fetch files from %s: %s", files_url, e)
-                break
-
-    # Compatibility path: OpenAI-compatible voices endpoint (/v1/voices).
-    discovered_voice_ids: list[str] = []
-    for voices_url in _openai_voices_urls(normalized_base_url):
-        try:
-            response = requests.get(
-                voices_url,
-                headers=_openai_auth_headers(),
-                timeout=8,
-            )
-            if response.status_code == 404:
                 continue
 
-            response.raise_for_status()
-            discovered_voice_ids = _extract_voices_from_openai_payload(response.json())
-            break
-        except (requests.exceptions.RequestException, ValueError) as e:
-            logging.debug("Could not fetch voices from %s: %s", voices_url, e)
-            break
-
-    return _dedupe_ordered(discovered_file_ids + discovered_voice_ids)
+    return _dedupe_ordered(discovered_voice_ids + discovered_file_ids)
 
 def get_xtts_models(base_url: str = XTTS_API_BASE_URL) -> list[str]:
     """Fetches available XTTS models from server."""
@@ -1532,7 +1774,7 @@ def get_xtts_models(base_url: str = XTTS_API_BASE_URL) -> list[str]:
                 headers=_openai_auth_headers(),
                 timeout=8,
             )
-            if response.status_code == 404:
+            if _should_try_next_openai_candidate(response.status_code):
                 continue
 
             response.raise_for_status()
@@ -1540,7 +1782,7 @@ def get_xtts_models(base_url: str = XTTS_API_BASE_URL) -> list[str]:
             break
         except (requests.exceptions.RequestException, ValueError) as e:
             logging.debug("Could not fetch models from %s: %s", models_url, e)
-            break
+            continue
 
     return _merge_catalog_with_discovered([XTTS_DEFAULT_MODEL], discovered_models)
 
@@ -1549,16 +1791,72 @@ def upload_speaker_voice(
     wav_file_path: str,
     base_url: str = XTTS_API_BASE_URL,
 ) -> str:
-    """Uploads voice to XTTS /v1/files and returns uploaded file ID."""
+    """Uploads voice to XTTS and returns uploaded voice identifier."""
     if not wav_file_path.lower().endswith(".wav"):
         raise ValueError("Only .wav files are supported for speaker voices.")
 
     normalized_base_url = _normalize_base_url(base_url, XTTS_API_BASE_URL)
-    upload_urls = _openai_files_urls(normalized_base_url)
+    upload_voice_urls = _openai_audio_voices_urls(normalized_base_url)
+    upload_file_urls = _openai_files_urls(normalized_base_url)
 
     try:
+        # Preferred path: ecosystem voice endpoint (/v1/audio/voices).
+        last_voice_response = None
+        for upload_voice_url in upload_voice_urls:
+            with open(wav_file_path, "rb") as wav_file:
+                files = {
+                    "audio_sample": (
+                        os.path.basename(wav_file_path),
+                        wav_file,
+                        "audio/wav",
+                    )
+                }
+                form_data = {
+                    "name": os.path.splitext(os.path.basename(wav_file_path))[0],
+                    "purpose": XTTS_UPLOAD_FILE_PURPOSE,
+                }
+                response = requests.post(
+                    upload_voice_url,
+                    headers=_openai_auth_headers(),
+                    files=files,
+                    data=form_data,
+                    timeout=120,
+                )
+
+            if _should_try_next_openai_candidate(response.status_code):
+                last_voice_response = response
+                continue
+
+            if response.status_code >= 400:
+                raise RuntimeError(
+                    f"XTTS voice upload failed ({response.status_code}): {response.text}"
+                )
+
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = {}
+
+            uploaded_voice_id = str(
+                payload.get("id")
+                or payload.get("voice_id")
+                or payload.get("name")
+                or ""
+            ).strip()
+            if not uploaded_voice_id:
+                raise RuntimeError(
+                    "XTTS voice upload succeeded but did not return a voice ID."
+                )
+
+            logging.info(
+                "Uploaded XTTS voice '%s' via /audio/voices endpoint",
+                uploaded_voice_id,
+            )
+            return uploaded_voice_id
+
+        # Legacy path: OpenAI-compatible files endpoint (/v1/files).
         last_response = None
-        for upload_url in upload_urls:
+        for upload_url in upload_file_urls:
             with open(wav_file_path, "rb") as wav_file:
                 files = {
                     "file": (
@@ -1576,7 +1874,7 @@ def upload_speaker_voice(
                     timeout=120,
                 )
 
-            if response.status_code == 404:
+            if _should_try_next_openai_candidate(response.status_code):
                 last_response = response
                 continue
 
@@ -1602,9 +1900,21 @@ def upload_speaker_voice(
             )
             return uploaded_file_id
 
-        if last_response is not None and last_response.status_code == 404:
+        if (
+            last_voice_response is not None
+            and _should_try_next_openai_candidate(last_voice_response.status_code)
+        ):
+            logging.debug(
+                "XTTS server at %s does not expose /audio/voices upload; tried /files fallback.",
+                normalized_base_url,
+            )
+
+        if (
+            last_response is not None
+            and _should_try_next_openai_candidate(last_response.status_code)
+        ):
             raise RuntimeError(
-                f"XTTS server at {normalized_base_url} does not support OpenAI-compatible /files upload."
+                f"XTTS server at {normalized_base_url} does not support voice upload endpoints (/audio/voices or /files)."
             )
 
         raise RuntimeError("Could not upload speaker voice to XTTS server.")
@@ -1677,7 +1987,7 @@ def _request_xtts_audio(text: str, tts_settings: dict, xtts_base_url: str) -> re
             json=payload,
             timeout=120,
         )
-        if response.status_code == 404:
+        if _should_try_next_openai_candidate(response.status_code):
             last_response = response
             continue
         return response
@@ -1706,6 +2016,29 @@ def _build_voxtral_payload(text: str, tts_settings: dict) -> dict:
     }
 
 
+def _build_kokoro_payload(text: str, tts_settings: dict) -> dict:
+    model = _strip_provider_prefix(str(tts_settings.get("xtts_model") or "").strip())
+    if not model:
+        model = KOKORO_DEFAULT_MODEL
+
+    voice = str(tts_settings.get("speaker") or "").strip() or KOKORO_DEFAULT_VOICE
+
+    payload = {
+        "model": model,
+        "input": text,
+        "voice": voice,
+        "response_format": "wav",
+        "speed": _coerce_float(tts_settings.get("speed"), 1.0),
+    }
+
+    language_code = str(tts_settings.get("language") or "").strip().lower()
+    kokoro_lang_code = KOKORO_LANG_CODE_ALIASES.get(language_code, "")
+    if kokoro_lang_code:
+        payload["lang_code"] = kokoro_lang_code
+
+    return payload
+
+
 def _request_voxtral_audio(text: str, tts_settings: dict, voxtral_base_url: str) -> requests.Response:
     normalized_base_url = _normalize_base_url(voxtral_base_url, VOXTRAL_API_BASE_URL)
     api_key = _resolve_voxtral_api_key()
@@ -1719,7 +2052,7 @@ def _request_voxtral_audio(text: str, tts_settings: dict, voxtral_base_url: str)
             json=payload,
             timeout=120,
         )
-        if response.status_code == 404:
+        if _should_try_next_openai_candidate(response.status_code):
             last_response = response
             continue
         return response
@@ -1728,6 +2061,30 @@ def _request_voxtral_audio(text: str, tts_settings: dict, voxtral_base_url: str)
         return last_response
 
     raise RuntimeError(f"No Voxtral speech endpoint could be resolved for '{normalized_base_url}'.")
+
+
+def _request_kokoro_audio(text: str, tts_settings: dict, kokoro_base_url: str) -> requests.Response:
+    normalized_base_url = _normalize_base_url(kokoro_base_url, KOKORO_API_BASE_URL)
+    api_key = _resolve_kokoro_api_key()
+    payload = _build_kokoro_payload(text, tts_settings)
+
+    last_response = None
+    for speech_url in _openai_audio_speech_urls(normalized_base_url):
+        response = requests.post(
+            speech_url,
+            headers=_openai_auth_headers(api_key),
+            json=payload,
+            timeout=120,
+        )
+        if _should_try_next_openai_candidate(response.status_code):
+            last_response = response
+            continue
+        return response
+
+    if last_response is not None:
+        return last_response
+
+    raise RuntimeError(f"No Kokoro speech endpoint could be resolved for '{normalized_base_url}'.")
 
 
 def _build_openai_compatible_audio_payload(
@@ -1879,7 +2236,7 @@ def _request_openai_compatible_audio(text: str, tts_settings: dict) -> requests.
             json=payload,
             timeout=120,
         )
-        if response.status_code == 404:
+        if _should_try_next_openai_candidate(response.status_code):
             last_response = response
             continue
         return response
@@ -1916,6 +2273,7 @@ def text_to_audio(
     tts_settings: dict,
     xtts_base_url: str = XTTS_API_BASE_URL,
     voxtral_base_url: str = VOXTRAL_API_BASE_URL,
+    kokoro_base_url: str = KOKORO_API_BASE_URL,
     silero_base_url: str = SILERO_API_BASE_URL,
     max_attempts: int = 5,
 ) -> AudioSegment | None:
@@ -1932,6 +2290,8 @@ def text_to_audio(
                 response = _request_xtts_audio(text, tts_settings, xtts_base_url)
             elif service == "Voxtral":
                 response = _request_voxtral_audio(text, tts_settings, voxtral_base_url)
+            elif service == "Kokoro":
+                response = _request_kokoro_audio(text, tts_settings, kokoro_base_url)
             elif service in {OPENAI_SERVICE, GEMINI_SERVICE, OPENAI_COMPAT_SERVICE}:
                 response = _request_openai_compatible_audio(text, tts_settings)
             elif service == "Silero":
