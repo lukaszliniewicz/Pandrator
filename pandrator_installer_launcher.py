@@ -1321,7 +1321,8 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         self.run_pixi_in_env(
             pandrator_path,
             env_name,
-            ['python', 'docker/scripts/download_model.py', '--output', 'api/src/models/v1_0'],
+            # Force UTF-8 so Kokoro's Unicode-rich config.json validates on Windows.
+            ['python', '-X', 'utf8', 'docker/scripts/download_model.py', '--output', 'api/src/models/v1_0'],
             cwd=kokoro_repo_path,
         )
 
