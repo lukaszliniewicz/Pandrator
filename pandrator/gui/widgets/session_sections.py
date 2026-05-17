@@ -459,12 +459,14 @@ class DubbingSection(QFrame):
         self.only_transcribe_button = QPushButton("Only Transcribe")
         self.only_correct_button = QPushButton("Only Correct")
         self.only_translate_button = QPushButton("Only Translate")
+        self.fine_tune_timings_button = QPushButton("Fine-Tune Timings (Subdub GUI)")
 
         buttons_layout.addWidget(self.generate_dub_audio_button, 0, 0, 1, 3)
         buttons_layout.addWidget(self.add_dub_to_video_button, 1, 0, 1, 3)
         buttons_layout.addWidget(self.only_transcribe_button, 2, 0)
         buttons_layout.addWidget(self.only_correct_button, 2, 1)
         buttons_layout.addWidget(self.only_translate_button, 2, 2)
+        buttons_layout.addWidget(self.fine_tune_timings_button, 3, 0, 1, 3)
 
 
 class OutputOptionsSection(QFrame):

@@ -15,6 +15,16 @@ DEFAULT_LOCAL_MODEL = "openai/gpt-5.4-mini"
 DEFAULT_DUBBING_PROVIDER_ID = "anthropic"
 DEFAULT_DUBBING_MODEL_ID = "claude-sonnet-4-6"
 DEEPL_PROVIDER_ID = "deepl"
+MANUAL_CORRECTION_RESULT_PREFIX = "PANDRATOR_MANUAL_CORRECTION_RESULT="
+MANUAL_CORRECTION_AUDIO_EXTENSIONS = (
+    ".wav",
+    ".mp3",
+    ".flac",
+    ".m4a",
+    ".ogg",
+    ".aac",
+    ".opus",
+)
 
 MODEL_ALIASES = {
     "gpt 5.4": "openai/gpt-5.4",
@@ -65,10 +75,13 @@ PROVIDER_API_KEY_ENV = {
 }
 
 
-def _build_subdub_command_base() -> list[str]:
+def _resolve_python_executable() -> str:
     executable_name = os.path.basename(sys.executable).lower()
-    python_executable = sys.executable if executable_name.startswith("python") else "python"
-    return [python_executable, "-m", "subdub"]
+    return sys.executable if executable_name.startswith("python") else "python"
+
+
+def _build_subdub_command_base() -> list[str]:
+    return [_resolve_python_executable(), "-m", "subdub"]
 
 
 def _is_local_api_base(api_base: str) -> bool:
@@ -396,9 +409,14 @@ def _apply_model_options(command: list[str], model_options: dict[str, Any]):
         command.extend(["-reasoning_effort", reasoning_effort])
 
 
-def _run_subdub_command(command: list[str], task_name: str, model_options: dict[str, Any] | None = None) -> bool:
-    """Helper to run a Subdub command and handle logging."""
+def _run_subdub_command_with_output(
+    command: list[str],
+    task_name: str,
+    model_options: dict[str, Any] | None = None,
+) -> tuple[bool, list[str]]:
+    """Runs a Subdub command and returns success flag with collected output lines."""
     logging.info(f"Executing {task_name} command: {' '.join(command)}")
+    output_lines: list[str] = []
     try:
         process = subprocess.Popen(
             command,
@@ -410,19 +428,28 @@ def _run_subdub_command(command: list[str], task_name: str, model_options: dict[
             cwd=SUBDUB_REPO_PATH if os.path.isdir(SUBDUB_REPO_PATH) else None,
             env=_build_subdub_environment(model_options),
         )
-        for line in process.stdout:
-            logging.info(f"Subdub ({task_name}): {line.strip()}")
+        if process.stdout is not None:
+            for line in process.stdout:
+                stripped_line = line.strip()
+                output_lines.append(stripped_line)
+                logging.info(f"Subdub ({task_name}): {stripped_line}")
         process.wait()
         if process.returncode != 0:
             raise subprocess.CalledProcessError(process.returncode, command)
         logging.info(f"{task_name} process completed successfully.")
-        return True
+        return True, output_lines
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
         logging.error(f"{task_name} failed: {str(e)}")
-        return False
+        return False, output_lines
     except Exception as e:
         logging.error(f"An unexpected error occurred during {task_name}: {str(e)}")
-        return False
+        return False, output_lines
+
+
+def _run_subdub_command(command: list[str], task_name: str, model_options: dict[str, Any] | None = None) -> bool:
+    """Helper to run a Subdub command and handle logging."""
+    success, _ = _run_subdub_command_with_output(command, task_name, model_options)
+    return success
 
 
 def transcribe_video(session_dir: str, video_file: str, settings: dict, correction_prompt: str = "") -> bool:
@@ -546,6 +573,150 @@ def equalize_subtitles(srt_file: str) -> bool:
         "equalize",
     ]
     return _run_subdub_command(command, "Equalization")
+
+
+def find_latest_audio_file(session_dir: str) -> str | None:
+    """Finds the newest audio file in a session directory."""
+    if not os.path.isdir(session_dir):
+        return None
+
+    candidates: list[str] = []
+    for file_name in os.listdir(session_dir):
+        if not file_name.lower().endswith(MANUAL_CORRECTION_AUDIO_EXTENSIONS):
+            continue
+
+        full_path = os.path.join(session_dir, file_name)
+        if os.path.isfile(full_path):
+            candidates.append(full_path)
+
+    if not candidates:
+        return None
+
+    return max(candidates, key=lambda path: (os.path.getmtime(path), path.lower()))
+
+
+def extract_audio_for_manual_correction(video_file: str, session_dir: str) -> str | None:
+    """Extracts a mono WAV reference track for Subdub's timing correction GUI."""
+    if not video_file or not os.path.exists(video_file):
+        logging.error("Cannot extract manual correction audio: video path is invalid (%s).", video_file)
+        return None
+
+    os.makedirs(session_dir, exist_ok=True)
+
+    video_stem = os.path.splitext(os.path.basename(video_file))[0]
+    audio_path = os.path.join(session_dir, f"{video_stem}_manual_correction.wav")
+
+    if os.path.exists(audio_path):
+        try:
+            if os.path.getsize(audio_path) > 0 and os.path.getmtime(audio_path) >= os.path.getmtime(video_file):
+                return audio_path
+        except OSError:
+            pass
+
+    ffmpeg_command = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        video_file,
+        "-vn",
+        "-acodec",
+        "pcm_s16le",
+        "-ar",
+        "16000",
+        "-ac",
+        "1",
+        "-af",
+        "aresample,loudnorm",
+        audio_path,
+    ]
+
+    logging.info("Extracting audio for manual timing correction: %s", " ".join(ffmpeg_command))
+    try:
+        process = subprocess.Popen(
+            ffmpeg_command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if process.stdout is not None:
+            for line in process.stdout:
+                logging.info("FFmpeg (Manual Correction): %s", line.strip())
+        process.wait()
+
+        if process.returncode != 0:
+            raise subprocess.CalledProcessError(process.returncode, ffmpeg_command)
+
+        if not os.path.exists(audio_path) or os.path.getsize(audio_path) == 0:
+            raise RuntimeError("FFmpeg did not produce a valid audio file for manual correction.")
+
+        return audio_path
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        logging.error("Failed to extract audio for manual correction: %s", e)
+        return None
+    except Exception as e:
+        logging.error("Unexpected error while preparing manual correction audio: %s", e)
+        return None
+
+
+def open_manual_correction_gui(srt_file: str, audio_file: str, session_dir: str) -> str | None:
+    """Opens Subdub's dedicated timing correction GUI for an SRT/audio pair."""
+    if not srt_file or not os.path.exists(srt_file):
+        logging.error("Cannot open manual correction GUI: SRT path is invalid (%s).", srt_file)
+        return None
+
+    if not audio_file or not os.path.exists(audio_file):
+        logging.error("Cannot open manual correction GUI: audio path is invalid (%s).", audio_file)
+        return None
+
+    os.makedirs(session_dir, exist_ok=True)
+
+    script = "\n".join(
+        [
+            "import sys",
+            "try:",
+            "    from subdub.workflows.manual_correction import open_manual_correction_gui",
+            "except Exception:",
+            "    from subdub.workflows.pipeline import open_manual_correction_gui",
+            "result = open_manual_correction_gui(sys.argv[1], sys.argv[2], sys.argv[3])",
+            f"print('{MANUAL_CORRECTION_RESULT_PREFIX}' + str(result or ''))",
+        ]
+    )
+
+    command = [
+        _resolve_python_executable(),
+        "-c",
+        script,
+        srt_file,
+        audio_file,
+        session_dir,
+    ]
+
+    success, output_lines = _run_subdub_command_with_output(command, "Manual Boundary Correction")
+    if not success:
+        return None
+
+    corrected_srt_path = ""
+    for line in reversed(output_lines):
+        if line.startswith(MANUAL_CORRECTION_RESULT_PREFIX):
+            corrected_srt_path = line[len(MANUAL_CORRECTION_RESULT_PREFIX) :].strip()
+            break
+
+    if corrected_srt_path:
+        if not os.path.isabs(corrected_srt_path):
+            corrected_srt_path = os.path.join(session_dir, corrected_srt_path)
+        corrected_srt_path = os.path.abspath(corrected_srt_path)
+        if os.path.exists(corrected_srt_path):
+            return corrected_srt_path
+
+        logging.warning(
+            "Manual correction GUI returned a non-existent path: %s",
+            corrected_srt_path,
+        )
+
+    fallback_srt = os.path.abspath(srt_file)
+    return fallback_srt if os.path.exists(fallback_srt) else None
 
 def add_subtitles_to_video(synced_video_path: str, equalized_srt_path: str, output_video_path: str) -> bool:
     """Adds subtitles to a video file using FFmpeg.

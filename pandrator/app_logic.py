@@ -1085,6 +1085,10 @@ class AppLogic(QObject):
                 raw_text = ""
                 if ext in [".mp4", ".mkv", ".webm", ".avi", ".mov"]:
                     self.state.dubbing.video_file_path = session_file_path
+                elif ext == ".srt":
+                    self.log_message.emit(
+                        "SRT source loaded. Use 'Fine-Tune Timings (Subdub GUI)' to adjust subtitle boundaries."
+                    )
             else:
                 raise ValueError(f"Unsupported source file type: {ext or 'unknown'}")
 
@@ -1288,6 +1292,73 @@ class AppLogic(QObject):
         latest_srt, _, _ = max(srt_files, key=lambda item: (item[1], item[2], item[0].lower()))
         return latest_srt
 
+    def has_dubbing_srt_file(self) -> bool:
+        """Returns True when a non-equalized SRT exists for the active dubbing session."""
+        if not self._is_named_session_active():
+            return False
+
+        dubbing_session_dir = self._get_dubbing_work_dir(ensure_exists=False)
+        return bool(self._find_latest_srt(dubbing_session_dir, must_not_be_equalized=True))
+
+    def _prepare_manual_correction_audio_file(self, session_dir: str) -> str | None:
+        """Resolves or creates an audio reference file for manual SRT boundary correction."""
+        audio_file = subdub_handler.find_latest_audio_file(session_dir)
+        if audio_file and os.path.exists(audio_file):
+            return audio_file
+
+        video_source = self._resolve_dubbing_video_source()
+        if not video_source or not os.path.exists(video_source):
+            return None
+
+        self.log_message.emit("No session audio found for timing correction. Extracting audio from video...")
+        return subdub_handler.extract_audio_for_manual_correction(video_source, session_dir)
+
+    def _run_manual_timing_correction(self, session_dir: str):
+        """Launches Subdub's GUI for manual subtitle boundary adjustment."""
+        srt_file = self._find_latest_srt(session_dir, must_not_be_equalized=True)
+        if not srt_file:
+            self.show_error.emit(
+                "Dubbing Error",
+                "No SRT file found. Select an SRT file or run transcription first.",
+            )
+            return
+
+        audio_file = self._prepare_manual_correction_audio_file(session_dir)
+        if not audio_file or not os.path.exists(audio_file):
+            self.show_error.emit(
+                "Dubbing Error",
+                "No audio reference found for timing correction. Select a matching video first.",
+            )
+            return
+
+        self.log_message.emit(f"Opening Subdub timing editor for {srt_file}...")
+        initial_mtime = os.path.getmtime(srt_file) if os.path.exists(srt_file) else 0.0
+        corrected_srt = subdub_handler.open_manual_correction_gui(srt_file, audio_file, session_dir)
+        if not corrected_srt or not os.path.exists(corrected_srt):
+            self.show_error.emit(
+                "Dubbing Error",
+                "Subdub timing editor did not return a valid SRT file.",
+            )
+            return
+
+        corrected_srt_abs = os.path.abspath(corrected_srt)
+        original_srt_abs = os.path.abspath(srt_file)
+        updated = (
+            os.path.normcase(corrected_srt_abs) != os.path.normcase(original_srt_abs)
+            or os.path.getmtime(corrected_srt_abs) > initial_mtime
+        )
+
+        if updated:
+            self.log_message.emit(f"Timing fine-tuning complete: {corrected_srt_abs}")
+        else:
+            self.log_message.emit("Subdub timing editor closed without saving changes.")
+
+        if os.path.splitext(self.state.source_file_path or "")[1].lower() == ".srt":
+            self.state.source_file_path = corrected_srt_abs
+            self._persist_session_config(force=True)
+
+        self.state_changed.emit()
+
     def _snapshot_speech_blocks_files(self, session_dir: str) -> dict[str, float]:
         """Takes a timestamp snapshot of speech-block JSON files in a session directory."""
         if not os.path.isdir(session_dir):
@@ -1423,12 +1494,21 @@ class AppLogic(QObject):
                 self.log_message.emit("No video source found for transcription.")
                 return
 
-            subdub_handler.transcribe_video(
+            if not subdub_handler.transcribe_video(
                 dubbing_session_dir,
                 video_source,
                 dub_settings_payload,
                 correction_prompt,
-            )
+            ):
+                self.show_error.emit("Dubbing Error", "Transcription failed. Check logs for details.")
+                return
+
+            transcribed_srt = self._find_latest_srt(dubbing_session_dir, must_not_be_equalized=True)
+            if transcribed_srt:
+                self.log_message.emit(
+                    "Transcription complete. Use 'Fine-Tune Timings (Subdub GUI)' to adjust subtitle boundaries."
+                )
+                self.state_changed.emit()
         elif task == "correct":
             srt_file = self._find_latest_srt(dubbing_session_dir, must_not_be_equalized=True)
             if srt_file:
@@ -1457,6 +1537,8 @@ class AppLogic(QObject):
                 dub_settings_payload,
                 correction_prompt,
             )
+        elif task == "fine_tune_timings":
+            self._run_manual_timing_correction(dubbing_session_dir)
         elif task == "add_to_video":
             self._orchestrate_add_to_video(dubbing_session_dir, session_output_dir)
         else:
@@ -1481,6 +1563,10 @@ class AppLogic(QObject):
             if not srt_file:
                 self.show_error.emit("Dubbing Error", "Transcription did not produce an SRT file.")
                 return
+
+            self.log_message.emit(
+                "Transcription generated an SRT. Use 'Fine-Tune Timings (Subdub GUI)' before rerunning if you want manual boundary edits."
+            )
 
         # 2. Translate if enabled
         if bool(dub_settings.get("translation_enabled")):

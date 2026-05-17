@@ -180,6 +180,7 @@ class SessionTab(QWidget):
         self.only_transcribe_button = self.dubbing_frame.only_transcribe_button
         self.only_correct_button = self.dubbing_frame.only_correct_button
         self.only_translate_button = self.dubbing_frame.only_translate_button
+        self.fine_tune_timings_button = self.dubbing_frame.fine_tune_timings_button
 
         # Output controls
         self.format_combo = self.output_options_frame.format_combo
@@ -508,6 +509,9 @@ class SessionTab(QWidget):
         )
         self.only_translate_button.clicked.connect(
             lambda: self.logic.run_dubbing_task("translate")
+        )
+        self.fine_tune_timings_button.clicked.connect(
+            lambda: self.logic.run_dubbing_task("fine_tune_timings")
         )
 
     def _on_dub_translation_model_changed(self, model_name: str):
@@ -992,6 +996,11 @@ class SessionTab(QWidget):
 
         self.dub_trans_model_combo.setEnabled(
             dubbing_controls_enabled and not is_deepl_provider
+        )
+
+        self.fine_tune_timings_button.setVisible(is_dubbing_source)
+        self.fine_tune_timings_button.setEnabled(
+            dubbing_controls_enabled and self.logic.has_dubbing_srt_file()
         )
 
         if is_dubbing_source:
