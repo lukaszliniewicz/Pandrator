@@ -61,10 +61,12 @@ RVC_FAIRSEQ_WHEEL_URL_BY_PYTHON = {
 RVC_TORCH_VERSION = '2.3.1'
 RVC_TORCHVISION_VERSION = '0.18.1'
 RVC_TORCHAUDIO_VERSION = '2.3.1'
+RVC_NUMPY_VERSION = '1.23.5'
 RVC_TORCH_INDEX_URL = 'https://download.pytorch.org/whl/cu121'
 RVC_REQUIRED_PACKAGE_SPECS = (
     'rvc-python',
     'fairseq',
+    f'numpy=={RVC_NUMPY_VERSION}',
     f'torch=={RVC_TORCH_VERSION}',
     f'torchvision=={RVC_TORCHVISION_VERSION}',
     f'torchaudio=={RVC_TORCHAUDIO_VERSION}',
@@ -2125,11 +2127,30 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 ]
             )
 
+            logging.info("Pinning NumPy to a 1.x build for faiss/RVC compatibility...")
+            self.run_pixi_in_env(
+                pandrator_path,
+                env_name,
+                [
+                    'python', '-m', 'pip', 'install',
+                    '--upgrade', '--force-reinstall',
+                    f'numpy=={RVC_NUMPY_VERSION}',
+                ]
+            )
+
             logging.info("Verifying RVC runtime imports...")
             self.run_pixi_in_env(
                 pandrator_path,
                 env_name,
-                ['python', '-c', 'import fairseq, rvc_python, torch, torchvision, torchaudio']
+                [
+                    'python', '-c',
+                    (
+                        'import numpy as np; '
+                        'import fairseq, rvc_python, torch, torchvision, torchaudio; '
+                        'assert int(np.__version__.split(".")[0]) < 2, '
+                        'f"NumPy must be <2 for RVC compatibility, got {np.__version__}"'
+                    ),
+                ]
             )
 
             logging.info("RVC Python installation completed successfully.")
