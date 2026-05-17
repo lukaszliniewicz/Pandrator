@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QTabWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -22,11 +23,10 @@ class ProvidersTab(QWidget):
         main_layout = QVBoxLayout(self)
         main_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        main_layout.addWidget(self._create_group_label("LLM Providers"))
-        main_layout.addWidget(self._create_llm_frame())
-
-        main_layout.addWidget(self._create_group_label("TTS Providers"))
-        main_layout.addWidget(self._create_tts_frame())
+        self.providers_tabs = QTabWidget()
+        self.providers_tabs.addTab(self._create_tts_tab(), "TTS")
+        self.providers_tabs.addTab(self._create_llm_tab(), "LLM")
+        main_layout.addWidget(self.providers_tabs)
 
         self._connect_signals()
         self.update_ui_from_state()
@@ -39,6 +39,24 @@ class ProvidersTab(QWidget):
         font.setBold(True)
         label.setFont(font)
         return label
+
+    def _create_llm_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        layout.addWidget(self._create_group_label("LLM Providers"))
+        layout.addWidget(self._create_llm_frame())
+        return tab
+
+    def _create_tts_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        layout.addWidget(self._create_group_label("TTS Providers"))
+        layout.addWidget(self._create_tts_frame())
+        return tab
 
     def _create_llm_frame(self) -> QFrame:
         frame = QFrame()

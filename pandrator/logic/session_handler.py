@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -207,6 +208,13 @@ def load_speech_blocks_file(speech_blocks_file: str) -> List[Dict[str, Any]]:
     return _extract_speech_blocks(payload)
 
 
+def _normalize_subtitle_text(raw_text: Any) -> str:
+    normalized = re.sub(r"\r\n?", "\n", str(raw_text or ""))
+    normalized = re.sub(r"\s*\n+\s*", " ", normalized)
+    normalized = re.sub(r"[ \t]{2,}", " ", normalized)
+    return normalized.strip()
+
+
 def speech_blocks_to_sentences(speech_blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Converts speech blocks into the sentence JSON structure used by Pandrator."""
     sentences: List[Dict[str, Any]] = []
@@ -220,10 +228,12 @@ def speech_blocks_to_sentences(speech_blocks: List[Dict[str, Any]]) -> List[Dict
         if block_text is None:
             raise ValueError(f"Speech block #{idx} does not contain a 'text' field.")
 
+        normalized_block_text = _normalize_subtitle_text(block_text)
+
         sentences.append(
             {
                 "sentence_number": str(sentence_number),
-                "original_sentence": str(block_text),
+                "original_sentence": normalized_block_text,
                 "tts_generated": "no",
             }
         )

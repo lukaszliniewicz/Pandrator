@@ -143,6 +143,13 @@ class AppLogic(QObject):
     def _is_dubbing_source_extension(extension: str) -> bool:
         return extension in {".mp4", ".mkv", ".webm", ".avi", ".mov", ".srt"}
 
+    @staticmethod
+    def _normalize_subtitle_sentence_text(text: str) -> str:
+        normalized = re.sub(r"\r\n?", "\n", str(text or ""))
+        normalized = re.sub(r"\s*\n+\s*", " ", normalized)
+        normalized = re.sub(r"[ \t]{2,}", " ", normalized)
+        return normalized.strip()
+
     def _is_dubbing_source_selected(self) -> bool:
         source_path = self.state.source_file_path or ""
         source_ext = os.path.splitext(source_path)[1].lower()
@@ -2860,13 +2867,21 @@ class AppLogic(QObject):
         """Runs the full generation pipeline (LLM, TTS, RVC, fade) for a single sentence."""
         try:
             updated_sentence = copy.deepcopy(sentence_dict)
-            text_to_process = updated_sentence.get('processed_sentence') or updated_sentence.get('original_sentence', '')
-            if not text_to_process:
+            text_source_key = "processed_sentence" if updated_sentence.get("processed_sentence") else "original_sentence"
+            text_to_process = str(updated_sentence.get(text_source_key) or "")
+            is_dubbing_sentence = self._is_dubbing_source_selected()
+            if is_dubbing_sentence:
+                text_to_process = self._normalize_subtitle_sentence_text(text_to_process)
+                updated_sentence[text_source_key] = text_to_process
+
+            if not text_to_process.strip():
                 return True, updated_sentence  # Skip empty sentences
 
             # 1. LLM Processing
             if self.state.llm.processing_enabled:
                 processed_text, _ = self._run_llm_processing(text_to_process)
+                if is_dubbing_sentence:
+                    processed_text = self._normalize_subtitle_sentence_text(processed_text)
                 updated_sentence['processed_sentence'] = processed_text
             else:
                 processed_text = text_to_process
