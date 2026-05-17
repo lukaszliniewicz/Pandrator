@@ -300,7 +300,21 @@ def equalize_subtitles(srt_file: str) -> bool:
     return _run_subdub_command(command, "Equalization")
 
 def add_subtitles_to_video(synced_video_path: str, equalized_srt_path: str, output_video_path: str) -> bool:
-    """Adds subtitles to a video file using FFmpeg."""
+    """Adds subtitles to a video file using FFmpeg.
+
+    Writes to a temporary file first and only replaces the target output on
+    success, so a failed remux does not destroy an existing final video.
+    """
+    output_abs_path = os.path.abspath(output_video_path)
+    output_dir = os.path.dirname(output_abs_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
+    output_name = os.path.basename(output_abs_path)
+    output_stem, output_ext = os.path.splitext(output_name)
+    temp_ext = output_ext or ".mp4"
+    temp_output_path = os.path.join(output_dir or ".", f".{output_stem}_tmp{temp_ext}")
+
     ffmpeg_command = [
         "ffmpeg", "-y",
         "-i", synced_video_path,
@@ -308,21 +322,39 @@ def add_subtitles_to_video(synced_video_path: str, equalized_srt_path: str, outp
         "-c", "copy",
         "-c:s", "mov_text",
         "-metadata:s:s:0", "language=eng",
-        output_video_path
+        temp_output_path,
     ]
     logging.info(f"Executing FFmpeg command to add subtitles: {' '.join(ffmpeg_command)}")
     try:
         process = subprocess.Popen(
-            ffmpeg_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            universal_newlines=True, encoding='utf-8', errors='replace'
+            ffmpeg_command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
+            encoding="utf-8",
+            errors="replace",
         )
         for line in process.stdout:
             logging.info(f"FFmpeg: {line.strip()}")
         process.wait()
         if process.returncode != 0:
             raise subprocess.CalledProcessError(process.returncode, ffmpeg_command)
+
+        if not os.path.exists(temp_output_path) or os.path.getsize(temp_output_path) == 0:
+            raise RuntimeError("FFmpeg did not create a valid output video.")
+
+        os.replace(temp_output_path, output_abs_path)
         logging.info("Subtitles have been successfully embedded into the final video.")
         return True
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
         logging.error(f"Failed to add subtitles: {e}")
         return False
+    except Exception as e:
+        logging.error(f"Unexpected error while adding subtitles: {e}")
+        return False
+    finally:
+        if os.path.exists(temp_output_path):
+            try:
+                os.remove(temp_output_path)
+            except OSError:
+                pass
