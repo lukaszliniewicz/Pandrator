@@ -65,6 +65,7 @@ def main():
 
     logic = AppLogic()
     logic.set_log_file_path(log_file_path)
+    app.aboutToQuit.connect(logic.shutdown)
     main_window = MainWindow(logic)
 
     auto_connect_service = None

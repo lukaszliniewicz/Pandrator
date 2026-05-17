@@ -8,10 +8,22 @@ import re
 import requests
 from pydub import AudioSegment
 
-try:
-    from litellm import speech as litellm_speech
-except Exception:  # pragma: no cover - runtime dependency guard
-    litellm_speech = None
+_litellm_speech = None
+_litellm_speech_import_attempted = False
+
+
+def _get_litellm_speech_client():
+    global _litellm_speech, _litellm_speech_import_attempted
+    if not _litellm_speech_import_attempted:
+        _litellm_speech_import_attempted = True
+        try:
+            from litellm import speech as litellm_speech
+        except Exception as e:  # pragma: no cover - runtime dependency guard
+            logging.debug("LiteLLM speech import failed: %s", e)
+        else:
+            _litellm_speech = litellm_speech
+
+    return _litellm_speech
 
 # XTTS default URLs
 XTTS_API_BASE_URL = "http://127.0.0.1:8020"
@@ -2159,6 +2171,7 @@ def _litellm_response_to_requests_response(litellm_response) -> requests.Respons
 
 
 def _request_litellm_audio(payload: dict, endpoint: dict[str, str]) -> requests.Response:
+    litellm_speech = _get_litellm_speech_client()
     if litellm_speech is None:
         raise RuntimeError("LiteLLM is not installed. Please install the 'litellm' package.")
 

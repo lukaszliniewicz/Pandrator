@@ -79,6 +79,8 @@ class AppLogic(QObject):
     xtts_training_progress_updated = pyqtSignal(int)
     tts_connection_running_changed = pyqtSignal(bool)
     _tts_connection_result = pyqtSignal(dict)
+    _download_source_ready = pyqtSignal(str, bool)
+    _start_generation_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -87,7 +89,7 @@ class AppLogic(QObject):
         self._last_global_settings_snapshot = ""
         self._load_global_settings()
 
-        self.playback_handler = PlaybackHandler()
+        self.playback_handler: PlaybackHandler | None = None
         self.generation_thread = None
         self.regeneration_thread = None
         self.rvc_processing_thread = None
@@ -97,14 +99,13 @@ class AppLogic(QObject):
         self.cancel_generation_flag = threading.Event()
         self._loaded_llm_model = None
         self.log_file_path = ""
-        rvc_handler.initialize_rvc("rvc_models")
 
         # Playlist attributes
         self.playlist_sentences = []
         self.current_playlist_index = 0
         self.playlist_active = False
         self.current_playing_sentence_number = None
-        self.playlist_timer = QTimer()
+        self.playlist_timer = QTimer(self)
         self.playlist_timer.timeout.connect(self._check_playlist_status)
         self.playlist_timer.setInterval(250) # Check every 250ms
 
@@ -120,12 +121,26 @@ class AppLogic(QObject):
         self._global_settings_persist_timer.start()
 
         self._tts_connection_result.connect(self._apply_tts_connection_result)
+        self._download_source_ready.connect(self._on_download_source_ready)
+        self._start_generation_requested.connect(self.start_generation)
 
         logging.info("AppLogic initialized.")
 
     def set_log_file_path(self, path: str):
         """Sets the path to the log file."""
         self.log_file_path = path
+
+    def _ensure_playback_handler(self) -> PlaybackHandler | None:
+        if self.playback_handler is not None:
+            return self.playback_handler
+
+        try:
+            self.playback_handler = PlaybackHandler()
+        except Exception as e:
+            logging.error("Failed to initialize playback handler: %s", e, exc_info=True)
+            self.playback_handler = None
+
+        return self.playback_handler
 
     def _update_and_notify(self, **kwargs):
         """Helper to update state attributes and emit state_changed signal."""
@@ -1226,13 +1241,16 @@ class AppLogic(QObject):
             try:
                 video_path = file_handler.download_video_from_url(url, session_dir)
                 self.log_message.emit(f"Download complete: {video_path}")
-                # Switch to main thread to update state and UI
-                self.select_source_file(video_path, reset_session=reset_session)
+                self._download_source_ready.emit(video_path, bool(reset_session))
             except Exception as e:
                 logging.error(f"Failed to download from URL: {e}", exc_info=True)
                 self.show_error.emit("Download Error", f"Could not download video: {e}")
 
         threading.Thread(target=thread_target, daemon=True).start()
+
+    def _on_download_source_ready(self, file_path: str, reset_session: bool):
+        """Applies a downloaded source file update on the Qt/main thread."""
+        self.select_source_file(file_path, reset_session=bool(reset_session))
 
     # --- Text Processing ---
 
@@ -1596,6 +1614,10 @@ class AppLogic(QObject):
     
     def start_generation(self):
         """Starts the audio generation worker thread, running preprocessing if needed."""
+        if threading.current_thread() is not threading.main_thread():
+            self._start_generation_requested.emit()
+            return
+
         if self._is_generation_running():
             self.log_message.emit("Generation is already running.")
             return
@@ -1613,6 +1635,7 @@ class AppLogic(QObject):
             self.show_error.emit("Error", "No text to process. Please select a source file first.")
             return
 
+        self.stop_playback()
         self._persist_session_config(force=True)
 
         self.log_message.emit("Starting audio generation process...")
@@ -2573,6 +2596,13 @@ class AppLogic(QObject):
             self.current_playlist_index = 0
             self.playlist_timer.stop()
 
+        playback_handler = self._ensure_playback_handler()
+        if playback_handler is None:
+            self.log_message.emit("Audio playback is unavailable.")
+            if not keep_playlist_state:
+                self._set_current_playing_sentence(None)
+            return False
+
         wav_path = self._find_sentence_wav_path(sentence_number)
 
         if not wav_path:
@@ -2581,7 +2611,7 @@ class AppLogic(QObject):
                 self._set_current_playing_sentence(None)
             return False
 
-        if self.playback_handler.play(wav_path):
+        if playback_handler.play(wav_path):
             self._set_current_playing_sentence(str(sentence_number))
             self.playlist_timer.start()
             return True
@@ -2596,11 +2626,13 @@ class AppLogic(QObject):
         self.playlist_sentences = []
         self.current_playlist_index = 0
         self.playlist_timer.stop()
-        self.playback_handler.stop()
+        if self.playback_handler is not None:
+            self.playback_handler.stop()
         self._set_current_playing_sentence(None)
 
     def toggle_pause_playback(self):
-        self.playback_handler.toggle_pause()
+        if self.playback_handler is not None:
+            self.playback_handler.toggle_pause()
 
     def play_playlist(self, start_sentence_number: str | None = None):
         """Starts playing the processed sentences as a playlist."""
@@ -2693,7 +2725,10 @@ class AppLogic(QObject):
 
     def _check_playlist_status(self):
         """Called by a timer to check if current playback has finished."""
-        playback_finished = self.playback_handler.check_if_finished()
+        playback_handler = self.playback_handler
+        playback_finished = True
+        if playback_handler is not None:
+            playback_finished = playback_handler.check_if_finished()
 
         if not self.playlist_active:
             if playback_finished:
@@ -2706,7 +2741,7 @@ class AppLogic(QObject):
             self._refresh_playlist_sentences(self.current_playing_sentence_number)
             if self._play_current_playlist_item():
                 return
-        elif self.playback_handler.get_busy():
+        elif playback_handler is not None and playback_handler.get_busy():
             return
         else:
             self._refresh_playlist_sentences(self.current_playing_sentence_number)
@@ -2718,6 +2753,22 @@ class AppLogic(QObject):
 
         self.log_message.emit("Playlist finished.")
         self.stop_playback()
+
+    def shutdown(self):
+        """Best-effort cleanup of runtime resources before app exit."""
+        try:
+            self.playlist_active = False
+            self.playlist_sentences = []
+            self.current_playlist_index = 0
+            self.playlist_timer.stop()
+            self.current_playing_sentence_number = None
+            if self.playback_handler is not None:
+                self.playback_handler.stop()
+                self.playback_handler.quit()
+            self._persist_session_config(force=True)
+            self._persist_global_settings(force=True)
+        except Exception as e:
+            logging.warning("Shutdown cleanup encountered an issue: %s", e, exc_info=True)
 
     # --- Output Generation ---
     def save_output(self, output_path: str):
@@ -2862,6 +2913,7 @@ class AppLogic(QObject):
             self.log_message.emit("No sentence numbers provided for regeneration.")
             return
 
+        self.stop_playback()
         self.regeneration_thread = self._run_threaded_task(self._regenerate_sentences_thread, sentence_numbers)
         self.state_changed.emit()
 

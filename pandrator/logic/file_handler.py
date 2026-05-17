@@ -3,13 +3,10 @@ import re
 import shutil
 import subprocess
 import datetime
-from ebooklib import epub
-import ebooklib
-from bs4 import BeautifulSoup
-from pdftextract import XPdf
-import yt_dlp
 
 def _extract_chapter_text(html_content, all_html_content=""):
+    from bs4 import BeautifulSoup
+
     chapter_text = ""
     soup = BeautifulSoup(html_content, 'html.parser')
     all_soup = BeautifulSoup(all_html_content, 'html.parser')
@@ -118,6 +115,9 @@ def _extract_chapter_text(html_content, all_html_content=""):
 
 def extract_text_from_epub(epub_path: str) -> str:
     """Extracts and combines text from all documents in an EPUB file."""
+    import ebooklib
+    from ebooklib import epub
+
     book = epub.read_epub(epub_path)
     chapters = []
     all_html_content = ""
@@ -136,6 +136,8 @@ def extract_text_from_epub(epub_path: str) -> str:
 
 def extract_text_from_pdf(pdf_path: str) -> str:
     """Extracts raw text from a PDF file."""
+    from pdftextract import XPdf
+
     pdf = XPdf(pdf_path)
     return pdf.to_text()
 
@@ -160,6 +162,8 @@ def convert_doc_to_text(doc_path: str, output_txt_path: str) -> bool:
 
 def download_video_from_url(url: str, output_dir: str) -> str:
     """Downloads a video from a URL (e.g., YouTube) and returns the file path."""
+    import yt_dlp
+
     ydl_opts = {
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'outtmpl': os.path.join(output_dir, '%(title)s.%(ext)s'),

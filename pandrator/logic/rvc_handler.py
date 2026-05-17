@@ -3,24 +3,55 @@ import shutil
 import logging
 import tempfile
 import threading
+import importlib.util
 from pydub import AudioSegment
 
-# Conditional imports
-try:
-    import torch
-    from rvc_python.infer import RVCInference
-    RVC_AVAILABLE = True
-except ImportError:
-    RVC_AVAILABLE = False
+_RVC_RUNTIME_CHECKED = False
+_RVC_RUNTIME_AVAILABLE = False
+_TORCH_MODULE = None
+_RVC_INFERENCE_CLASS = None
 
 RVC_INFERENCE_INSTANCE = None
 RVC_LOCK = threading.RLock()
 RVC_ACTIVE_MODEL = None
 RVC_ACTIVE_PARAMS = None
 
+
+def _has_dependency(module_name: str) -> bool:
+    try:
+        return importlib.util.find_spec(module_name) is not None
+    except Exception:
+        return False
+
+
+def _ensure_runtime_loaded() -> bool:
+    global _TORCH_MODULE, _RVC_INFERENCE_CLASS, _RVC_RUNTIME_AVAILABLE
+    if _TORCH_MODULE is not None and _RVC_INFERENCE_CLASS is not None:
+        return True
+
+    if not is_rvc_available():
+        return False
+
+    try:
+        import torch as torch_module
+        from rvc_python.infer import RVCInference as rvc_inference_class
+    except Exception as e:
+        logging.warning("RVC dependencies are installed but failed to import: %s", e)
+        _RVC_RUNTIME_AVAILABLE = False
+        return False
+
+    _TORCH_MODULE = torch_module
+    _RVC_INFERENCE_CLASS = rvc_inference_class
+    return True
+
 def is_rvc_available() -> bool:
     """Checks if torch and rvc_python are installed."""
-    return RVC_AVAILABLE
+    global _RVC_RUNTIME_CHECKED, _RVC_RUNTIME_AVAILABLE
+    if not _RVC_RUNTIME_CHECKED:
+        _RVC_RUNTIME_AVAILABLE = _has_dependency("torch") and _has_dependency("rvc_python.infer")
+        _RVC_RUNTIME_CHECKED = True
+
+    return _RVC_RUNTIME_AVAILABLE
 
 def get_rvc_models(rvc_models_dir: str) -> list[str]:
     """Lists the available RVC models from the specified directory."""
@@ -34,23 +65,26 @@ def get_rvc_models(rvc_models_dir: str) -> list[str]:
 def initialize_rvc(rvc_models_dir: str) -> bool:
     """Initializes the RVCInference instance."""
     global RVC_INFERENCE_INSTANCE, RVC_ACTIVE_MODEL, RVC_ACTIVE_PARAMS
-    if not is_rvc_available():
+    if not _ensure_runtime_loaded():
         logging.warning("RVC functionality not available. Skipping initialization.")
         return False
+
+    torch_module = _TORCH_MODULE
+    rvc_inference_class = _RVC_INFERENCE_CLASS
     try:
-        device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        device = "cuda:0" if torch_module.cuda.is_available() else "cpu"
         with RVC_LOCK:
             if RVC_INFERENCE_INSTANCE:
                 try:
                     RVC_INFERENCE_INSTANCE.unload_model()
                 except Exception:
                     pass
-            RVC_INFERENCE_INSTANCE = RVCInference(models_dir=rvc_models_dir, device=device)
+            RVC_INFERENCE_INSTANCE = rvc_inference_class(models_dir=rvc_models_dir, device=device)
             RVC_ACTIVE_MODEL = None
             RVC_ACTIVE_PARAMS = None
         logging.info(f"RVC initialized successfully. Using device: {device}")
-        if torch.cuda.is_available():
-            logging.info(f"GPU: {torch.cuda.get_device_name(0)}")
+        if torch_module.cuda.is_available():
+            logging.info(f"GPU: {torch_module.cuda.get_device_name(0)}")
         return True
     except Exception as e:
         logging.error(f"Failed to initialize RVC: {e}")
@@ -89,8 +123,10 @@ def process_with_rvc(audio_segment: AudioSegment, settings: dict) -> AudioSegmen
     global RVC_ACTIVE_MODEL, RVC_ACTIVE_PARAMS
 
     if not RVC_INFERENCE_INSTANCE:
-        logging.warning("RVC is not initialized. Skipping RVC processing.")
-        return audio_segment
+        models_dir = str(settings.get("rvc_models_dir") or "rvc_models")
+        if not initialize_rvc(models_dir):
+            logging.warning("RVC is not initialized. Skipping RVC processing.")
+            return audio_segment
 
     model_name = settings.get("rvc_model")
     if not model_name:

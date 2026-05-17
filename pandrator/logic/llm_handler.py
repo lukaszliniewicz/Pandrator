@@ -69,12 +69,25 @@ NON_TEXT_MODEL_KEYWORDS = (
     "dall",
 )
 
-try:
-    from litellm import completion
-    from litellm.utils import get_valid_models
-except Exception:  # pragma: no cover - runtime dependency guard
-    completion = None
-    get_valid_models = None
+_litellm_completion = None
+_litellm_get_valid_models = None
+_litellm_import_attempted = False
+
+
+def _get_litellm_clients() -> tuple[Any, Any]:
+    global _litellm_completion, _litellm_get_valid_models, _litellm_import_attempted
+    if not _litellm_import_attempted:
+        _litellm_import_attempted = True
+        try:
+            from litellm import completion as litellm_completion
+            from litellm.utils import get_valid_models as litellm_get_valid_models
+        except Exception as e:  # pragma: no cover - runtime dependency guard
+            logging.debug("LiteLLM import failed: %s", e)
+        else:
+            _litellm_completion = litellm_completion
+            _litellm_get_valid_models = litellm_get_valid_models
+
+    return _litellm_completion, _litellm_get_valid_models
 
 
 def _read_setting(settings: Any, key: str, default: Any = None) -> Any:
@@ -409,6 +422,7 @@ def _detect_models_for_builtin_provider(provider_config: dict[str, Any]) -> list
     if not provider:
         return fallback_models
 
+    _, get_valid_models = _get_litellm_clients()
     if get_valid_models is None:
         return fallback_models
 
@@ -888,6 +902,7 @@ def _make_api_request(
     llm_settings: Any | None = None,
 ) -> str:
     """Makes a single LiteLLM chat completion request."""
+    completion, _ = _get_litellm_clients()
     if completion is None:
         logging.error("LiteLLM is not installed. Please install the 'litellm' package.")
         return ""
