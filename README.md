@@ -28,12 +28,12 @@ Pandrator aspires to be easy to use and install - it has a one-click installer a
 - transform text, PDF (including see-through cropping), EPUB and SRT files into spoken audio in multiple languages based chiefly on open source software run locally, including preprocessing to make the generated speech sound as natural as possible by, among other things, splitting the text into paragraphs, sentences and smaller logical text blocks (clauses), which the TTS models can process with minimal artifacts. Each sentence can be regenerated if the first attempt is not satisfactory, including marking for regeneration using mouse or keyboard actions when listening back to the generation. Voice cloning is possible for models that support it, and text can be additionally preprocessed using LLMs (to remove OCR artifacts or spell out things that the TTS models struggle with, like Roman numerals and abbreviations, for example),
 - generate dubbing either directly from a video file, including transcription (using [WhisperX](https://github.com/m-bain/whisperX)), or from an .srt file. It includes a complete workflow from a video file to a dubbed video file with subtitles - including translation using a variety of APIs and techniques to improve the quality of translation. [Subdub](https://github.com/lukaszliniewicz/Subdub), a companion app developed for this purpose, can also be used on its own. You can also correct or translate subtitles without generating audio. 
 
-At the moment, Pandrator supports multiple TTS backends: [XTTS v2](https://huggingface.co/coqui/XTTS-v2) via the OpenAI-compatible [XTTS2 API server](https://github.com/lukaszliniewicz/xtts2_api), [Voxtral](https://huggingface.co/mistralai/Voxtral-4B-TTS-2603) via [voxtral-fastapi](https://github.com/lukaszliniewicz/voxtral-fastapi), and [Silero](https://github.com/snakers4/silero-models) via `silero-api-server`. It also supports commercial and custom OpenAI-compatible audio endpoints, optional [RVC Python (JarodMica fork)](https://github.com/JarodMica/rvc-python) post-processing, and optional NISQA quality evaluation. For local LLM text preprocessing, Pandrator works well with OpenAI-compatible local servers such as LM Studio and Ollama-compatible endpoints.
+At the moment, Pandrator supports multiple TTS backends: [XTTS v2](https://huggingface.co/coqui/XTTS-v2) via the OpenAI-compatible [XTTS2 API server](https://github.com/lukaszliniewicz/xtts2_api), [Voxtral](https://huggingface.co/mistralai/Voxtral-4B-TTS-2603) via [voxtral-fastapi](https://github.com/lukaszliniewicz/voxtral-fastapi), and [Silero](https://github.com/snakers4/silero-models) via `silero-api-server`. It also supports commercial and custom OpenAI-compatible audio endpoints and optional [RVC Python (JarodMica fork)](https://github.com/JarodMica/rvc-python) post-processing. For local LLM text preprocessing, Pandrator works well with OpenAI-compatible local servers such as LM Studio and Ollama-compatible endpoints.
 
 ## Supported Languages
 - XTTS supports English (en), Spanish (es), French (fr), German (de), Italian (it), Portuguese (pt), Polish (pl), Turkish (tr), Russian (ru), Dutch (nl), Czech (cs), Arabic (ar), Chinese (zh-cn), Japanese (ja), Hungarian (hu) and Korean (ko). 
 
-- Voxtral supports multilingual generation through model/voice presets exposed by `voxtral-fastapi`.
+- Voxtral currently supports Arabic (ar), English (en), German (de), Spanish (es), French (fr), Hindi (hi), Italian (it), Dutch (nl), and Portuguese (pt) via preset voices exposed by `voxtral-fastapi`.
 
 - Silero supports English, German, Russian, Spanish, French, Hindi, Russian, Tatar, Ukrainian, Uzbek and Kalmyk. 
 
@@ -79,7 +79,6 @@ This project relies on several APIs and services (running locally) and libraries
 - [Easy XTTS Trainer](https://github.com/lukaszliniewicz/easy_xtts_trainer), a command line app that enables XTTS fine-tuning using one or more audio files, made specially for Pandrator.
 - [RVC Python (JarodMica fork)](https://github.com/JarodMica/rvc-python) for enhancing voice quality and cloning results with [Retrieval Based Voice Conversion](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI).
 - A local OpenAI-compatible LLM endpoint (for example LM Studio, Ollama-compatible endpoints, or other compatible providers) for LLM-based text pre-processing.
-- [NISQA by gabrielmittag](https://github.com/gabrielmittag/NISQA.git) for evaluating TTS generations (using the [FastAPI implementation](https://github.com/lukaszliniewicz/NISQA-API)).
 
 ## Installation
 
@@ -134,7 +133,6 @@ To re-run setup from scratch, remove the generated `Pandrator/` folder and start
 
 For additional functionality not yet included in the installer:
 - Configure a local OpenAI-compatible LLM endpoint (for example LM Studio or an Ollama-compatible endpoint) if you want LLM text preprocessing and local translation.
-- Set up NISQA API for automatic evaluation of generations.
 
 Please refer to the repositories linked under [Dependencies](#dependencies) for detailed API-server options. The selected API server must be running for local TTS generation.
 
@@ -289,7 +287,7 @@ Choose a `.txt`, `.srt`, `.pdf`, `.epub`, `.mobi` or `.docx` file. If you choose
 1. Select the TTS service you want to use (XTTS, Voxtral, Silero, or a configured cloud/OpenAI-compatible endpoint) and then choose the language.
 2. Choose the voice you want to use.
    1. **XTTS**, voices are short, 6-12s `.wav` files (22050hz sample rate, mono) stored in the `tts_voices` directory (`Pandrator/Pandrator/tts_voices`). You can upload and select them via the GUI. The XTTS model uses the audio to clone the voice. It doesn't matter what language the sample is in, you will be able to generate speech in all supported languages, but the quality will be best if you provide a sample in your target language. You may use the sample one in the repository or upload your own. Please make sure that the audio is between 6 and 12s, mono, and the sample rate is 22050hz. You may use a tool like Audacity to prepare the files. The less noise, the better. You may use a tool like [Resemble AI](https://github.com/resemble-ai/resemble-enhance) for denoising and/or enhancement of your samples on [Hugging Face](https://huggingface.co/spaces/ResembleAI/resemble-enhance). You may put several samples in a folder inside `tts_voices` and the model will use all of them at once (generally up to 4). It can improve the quality. 
-   2. **Voxtral** exposes preset voices and model choices from the local API server. It is GPU-only in the current local wrapper.
+   2. **Voxtral** exposes preset voices and model choices from the local API server. Current voice presets cover Arabic, English, German, Spanish, French, Hindi, Italian, Dutch and Portuguese. It is GPU-only in the current local wrapper.
    3. **Silero** offers a number of voices for each language it supports. It doesn't support voice cloning. Simply select a voice from the dropdown after choosing the language.
 
 #### Output options
@@ -343,12 +341,6 @@ Pandrator offers a comprehensive workflow for generating dubbed videos from vide
 - Enable RVC to enhance the generated audio quality and apply voice cloning.
 - Select the RVC model file (.pth) and the corresponding index file using the "Select RVC Model" and "Select RVC Index" buttons in the Audio Processing tab.
 - When RVC is enabled, the generated audio will be processed using the selected RVC model and index before being saved.
-
-### NISQA TTS Evaluation
-- Enable TTS evaluation to assess the quality of the generated audio using the NISQA (Non-Intrusive Speech Quality Assessment) model.
-- Set the target MOS (Mean Opinion Score) value and the maximum number of attempts for each sentence.
-- When TTS evaluation is enabled, the generated audio will be evaluated using the NISQA model, and the best audio (based on the MOS score) will be chosen for each sentence.
-- If the target MOS value is not reached within the maximum number of attempts, the best audio generated so far will be used.
 
 ## Contributing
 Contributions, suggestions for improvements, and bug reports are most welcome!
