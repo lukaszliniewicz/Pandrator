@@ -10,6 +10,25 @@ from num2words import num2words
 
 CHUNK_SIZE = 20000
 
+DOUBLE_QUOTATION_MARKS = (
+    "\""
+    "\u201c\u201d\u201e\u201f"
+    "\u00ab\u00bb\u2039\u203a"
+    "\u300c\u300d\u300e\u300f\u300a\u300b"
+    "\u301d\u301e\uff02"
+)
+SINGLE_QUOTATION_MARKS = "'\u2018\u2019\u201a\u201b\u0060\u00b4"
+
+DOUBLE_QUOTATION_MARK_TRANSLATION_TABLE = str.maketrans("", "", DOUBLE_QUOTATION_MARKS)
+SINGLE_QUOTATION_MARK_PATTERN = re.compile(
+    rf"(?<!\w)[{re.escape(SINGLE_QUOTATION_MARKS)}]|[{re.escape(SINGLE_QUOTATION_MARKS)}](?!\w)"
+)
+
+
+def strip_quotation_marks(text: str) -> str:
+    without_double_quotes = text.translate(DOUBLE_QUOTATION_MARK_TRANSLATION_TABLE)
+    return SINGLE_QUOTATION_MARK_PATTERN.sub("", without_double_quotes)
+
 def preprocess_text(text: str, settings: dict) -> list[dict]:
     """
     Main entry point for text preprocessing. Chooses parallel or sequential.
@@ -60,6 +79,7 @@ def _process_chunk(chunk: str, settings: dict) -> list[dict]:
     enable_sentence_splitting = settings.get('enable_sentence_splitting', True)
     enable_sentence_appending = settings.get('enable_sentence_appending', True)
     remove_diacritics = settings.get('remove_diacritics', False)
+    remove_quotation_marks = settings.get('remove_quotation_marks', False)
     tts_service = settings.get('tts_service', 'XTTS')
 
     chunk = re.sub(r'\r\n?', '\n', chunk)
@@ -79,6 +99,9 @@ def _process_chunk(chunk: str, settings: dict) -> list[dict]:
     if remove_diacritics:
         chunk = ''.join(char for char in chunk if not unicodedata.combining(char))
         chunk = unidecode(chunk)
+
+    if remove_quotation_marks:
+        chunk = strip_quotation_marks(chunk)
 
     chunk = re.sub(r'(^|\n+)([^\n.!?]+)(?=\n+|$)', r'\1\2.', chunk)
     sentences = split_into_sentences(chunk, language, tts_service)

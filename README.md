@@ -365,6 +365,7 @@ Pandrator offers a comprehensive workflow for generating dubbed videos from vide
 1. You can disable/enable splitting long sentences and set the max length a text fragment sent for TTS generation may have (enabled by default; it tries to split sentences whose length exceeds the max length value; it looks for punctuation marks (, ; : -) and chooses the one closest to the midpoint of the sentence; if there are no punctuation marks, it looks for conjunctions like "and"; it performs this operation twice as some sentence fragments may still be too long after just one split).
 2. You can disable/enable appending short sentences (to preceding or following sentences; disabled by default, which may improve flow because the length of text fragments sent to the model is more uniform).
 3. Remove diacritics (useful when generating text that contains many foreign words or transliterations from foreign alphabets, e.g. Japanese). Do not enable this if you generate in a language that needs diacritics, like German or Polish. The pronunciation will be wrong then.
+4. Remove quotation marks (useful for models that sometimes read quotation marks aloud).
 
 ### LLM Pre-processing
 - Enable LLM processing to use language models for preprocessing text before sending it to the TTS API. For example, you may ask the LLM to remove OCR artifacts, spell out abbreviations, and correct punctuation.

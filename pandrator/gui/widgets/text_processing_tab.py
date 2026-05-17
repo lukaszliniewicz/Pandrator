@@ -62,6 +62,7 @@ class TextProcessingTab(QWidget):
         self.max_length_spinbox.setRange(50, 500)
         self.append_sentences_checkbox = QCheckBox("Append Short Sentences")
         self.remove_diacritics_checkbox = QCheckBox("Remove Diacritics")
+        self.remove_quotation_marks_checkbox = QCheckBox("Remove Quotation Marks")
         self.disable_paragraph_detection_checkbox = QCheckBox("Disable Paragraph Detection")
 
         layout.addWidget(self.split_sentences_checkbox, 0, 0)
@@ -69,7 +70,8 @@ class TextProcessingTab(QWidget):
         layout.addWidget(self.max_length_spinbox, 1, 1)
         layout.addWidget(self.append_sentences_checkbox, 2, 0)
         layout.addWidget(self.remove_diacritics_checkbox, 3, 0)
-        layout.addWidget(self.disable_paragraph_detection_checkbox, 4, 0)
+        layout.addWidget(self.remove_quotation_marks_checkbox, 4, 0)
+        layout.addWidget(self.disable_paragraph_detection_checkbox, 5, 0)
 
         return frame
 
@@ -157,6 +159,13 @@ class TextProcessingTab(QWidget):
                 self.logic.state.text_processing,
                 "remove_diacritics",
                 self.remove_diacritics_checkbox.isChecked(),
+            )
+        )
+        self.remove_quotation_marks_checkbox.stateChanged.connect(
+            lambda: setattr(
+                self.logic.state.text_processing,
+                "remove_quotation_marks",
+                self.remove_quotation_marks_checkbox.isChecked(),
             )
         )
         self.disable_paragraph_detection_checkbox.stateChanged.connect(
@@ -255,6 +264,7 @@ class TextProcessingTab(QWidget):
         self.max_length_spinbox.setValue(tp_state.max_sentence_length)
         self.append_sentences_checkbox.setChecked(tp_state.enable_sentence_appending)
         self.remove_diacritics_checkbox.setChecked(tp_state.remove_diacritics)
+        self.remove_quotation_marks_checkbox.setChecked(tp_state.remove_quotation_marks)
         self.disable_paragraph_detection_checkbox.setChecked(tp_state.disable_paragraph_detection)
 
         # LLM Settings

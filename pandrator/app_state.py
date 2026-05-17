@@ -122,6 +122,7 @@ class TextProcessingSettings:
     max_sentence_length: int = 160
     enable_sentence_appending: bool = True
     remove_diacritics: bool = False
+    remove_quotation_marks: bool = False
     disable_paragraph_detection: bool = False
 
 @dataclass
