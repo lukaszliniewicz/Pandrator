@@ -1803,10 +1803,22 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
             installed_version = installed_packages.get(normalized_package_name)
             if comparator in ('==', '===', '=') and expected_version:
-                if installed_version != expected_version:
+                if not self.versions_match_exact_spec(installed_version, expected_version):
                     unsatisfied_specs.append(package_spec)
 
         return unsatisfied_specs
+
+    def versions_match_exact_spec(self, installed_version, expected_version):
+        if installed_version == expected_version:
+            return True
+
+        if not installed_version or not expected_version:
+            return False
+
+        if '+' not in expected_version and '+' in installed_version:
+            return installed_version.split('+', 1)[0] == expected_version
+
+        return False
 
     def format_package_specs(self, package_specs, max_items=5):
         if not package_specs:
@@ -2606,6 +2618,9 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
     def install_whisperx(self, pandrator_path, env_name):
         logging.info(f"Installing WhisperX in {env_name}...")
         try:
+            self.add_pixi_conda_package(pandrator_path, env_name, 'cudnn=8.9.7.29')
+            self.add_pixi_conda_package(pandrator_path, env_name, 'ffmpeg')
+
             self.run_pixi_in_env(
                 pandrator_path,
                 env_name,
@@ -2617,9 +2632,6 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                     '--index-url', WHISPERX_TORCH_INDEX_URL
                 ]
             )
-
-            self.add_pixi_conda_package(pandrator_path, env_name, 'cudnn=8.9.7.29')
-            self.add_pixi_conda_package(pandrator_path, env_name, 'ffmpeg')
 
             self.run_pixi_in_env(
                 pandrator_path,
@@ -2965,7 +2977,6 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         pandrator_env_missing = not os.path.exists(self.get_pixi_manifest_path(pandrator_base_path, 'pandrator_installer'))
         silero_env_missing = not os.path.exists(self.get_pixi_manifest_path(pandrator_base_path, 'silero_api_server_installer'))
         kokoro_env_missing = not os.path.exists(self.get_pixi_manifest_path(pandrator_base_path, KOKORO_ENV_NAME))
-        whisperx_env_missing = not os.path.exists(self.get_pixi_manifest_path(pandrator_base_path, 'whisperx_installer'))
         
         # Check admin status
         is_admin = self.is_admin()
@@ -3138,20 +3149,25 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                         env_name=KOKORO_ENV_NAME,
                     )
 
-            if config.get('whisperx_support', False):
-                whisperx_needs_install = whisperx_env_missing
-                whisperx_reason = "Pixi manifest is missing"
-                if not whisperx_needs_install:
-                    whisperx_needs_install, whisperx_reason = self.component_needs_package_sync(
-                        pandrator_base_path,
-                        'whisperx_installer',
-                        WHISPERX_REQUIRED_PACKAGE_SPECS,
-                    )
+            whisperx_required = config.get('whisperx_support', False) or config.get('xtts_finetuning_support', False)
+            if whisperx_required:
+                if not config.get('whisperx_support', False):
+                    logging.info("WhisperX update check enabled because XTTS fine-tuning support is installed.")
+
+                self.worker.update_status.emit("Checking WhisperX environment...")
+                self.create_pixi_env(pandrator_base_path, 'whisperx_installer', WHISPERX_PYTHON_VERSION)
+                self.add_pixi_conda_package(pandrator_base_path, 'whisperx_installer', 'cudnn=8.9.7.29')
+                self.add_pixi_conda_package(pandrator_base_path, 'whisperx_installer', 'ffmpeg')
+
+                whisperx_needs_install, whisperx_reason = self.component_needs_package_sync(
+                    pandrator_base_path,
+                    'whisperx_installer',
+                    WHISPERX_REQUIRED_PACKAGE_SPECS,
+                )
 
                 if whisperx_needs_install:
                     self.worker.update_status.emit("Installing/upgrading WhisperX dependencies...")
                     logging.info(f"Installing WhisperX packages because {whisperx_reason}")
-                    self.create_pixi_env(pandrator_base_path, 'whisperx_installer', WHISPERX_PYTHON_VERSION)
                     self.install_whisperx(pandrator_base_path, 'whisperx_installer')
                 else:
                     logging.info(f"Skipping WhisperX reinstall: {whisperx_reason}")
