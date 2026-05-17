@@ -20,22 +20,6 @@ from .session_sections import (
     create_section_label,
 )
 
-
-LEGACY_DUBBING_MODEL_UI_MAP = {
-    "haiku": "Custom (LiteLLM)",
-    "sonnet": "Sonnet 4.6",
-    "sonnet thinking": "Sonnet 4.6",
-    "gpt-4o-mini": "GPT 5.4-mini",
-    "gpt-4o": "GPT 5.4",
-    "gemini-flash": "Gemini 3.0 Flash",
-    "gemini-pro": "Gemini 3.1 Pro",
-    "deepl": "DeepL",
-    "local": "Custom (LiteLLM)",
-    "deepseek-r1": "Custom (LiteLLM)",
-    "qwq-32b": "Custom (LiteLLM)",
-}
-
-
 class SessionTab(QWidget):
     def __init__(self, logic, parent=None):
         super().__init__(parent)
@@ -127,6 +111,8 @@ class SessionTab(QWidget):
         self.speed_label = self.tts_section.speed_label
         self.advanced_tts_checkbox = self.tts_section.advanced_tts_checkbox
         self.cloud_provider_hint = self.tts_section.cloud_provider_hint
+        self.cloud_provider_label = self.tts_section.cloud_provider_label
+        self.cloud_provider_combo = self.tts_section.cloud_provider_combo
         self.openai_audio_instructions_label = self.tts_section.openai_audio_instructions_label
         self.openai_audio_instructions_edit = self.tts_section.openai_audio_instructions_edit
 
@@ -184,9 +170,9 @@ class SessionTab(QWidget):
         self.dub_to_lang_combo = self.dubbing_frame.dub_to_lang_combo
         self.dub_cot_check = self.dubbing_frame.dub_cot_check
         self.dub_glossary_check = self.dubbing_frame.dub_glossary_check
+        self.dub_trans_provider_combo = self.dubbing_frame.dub_trans_provider_combo
         self.dub_trans_model_combo = self.dubbing_frame.dub_trans_model_combo
-        self.dub_custom_model_edit = self.dubbing_frame.dub_custom_model_edit
-        self.dub_custom_api_base_edit = self.dubbing_frame.dub_custom_api_base_edit
+        self.dub_trans_model_hint = self.dubbing_frame.dub_trans_model_hint
         self.selected_video_file_label = self.dubbing_frame.selected_video_file_label
         self.select_video_file_button = self.dubbing_frame.select_video_file_button
         self.generate_dub_audio_button = self.dubbing_frame.generate_dub_audio_button
@@ -235,6 +221,7 @@ class SessionTab(QWidget):
             lambda t: setattr(self.logic.state.tts, "external_server_url", t)
         )
         self.tts_service_combo.currentTextChanged.connect(self._on_tts_service_changed)
+        self.cloud_provider_combo.currentIndexChanged.connect(self._on_cloud_provider_changed)
         self.xtts_model_combo.currentTextChanged.connect(
             lambda t: t and self.logic.on_tts_model_changed(t)
         )
@@ -500,14 +487,11 @@ class SessionTab(QWidget):
                 self.dub_glossary_check.isChecked(),
             )
         )
+        self.dub_trans_provider_combo.currentIndexChanged.connect(
+            self._on_dub_translation_provider_changed
+        )
         self.dub_trans_model_combo.currentTextChanged.connect(
             self._on_dub_translation_model_changed
-        )
-        self.dub_custom_model_edit.textChanged.connect(
-            lambda t: setattr(self.logic.state.dubbing, "custom_translation_model", t)
-        )
-        self.dub_custom_api_base_edit.textChanged.connect(
-            lambda t: setattr(self.logic.state.dubbing, "custom_api_base", t)
         )
         self.select_video_file_button.clicked.connect(self._on_select_video_file)
         self.generate_dub_audio_button.clicked.connect(
@@ -527,7 +511,26 @@ class SessionTab(QWidget):
         )
 
     def _on_dub_translation_model_changed(self, model_name: str):
-        self.logic.state.dubbing.translation_model = model_name
+        self.logic.state.dubbing.translation_model = model_name.strip()
+
+    def _on_dub_translation_provider_changed(self, _index: int = -1):
+        provider_id = str(self.dub_trans_provider_combo.currentData() or "").strip()
+        if not provider_id:
+            return
+
+        self.logic.state.dubbing.translation_provider = provider_id
+        if provider_id == "deepl":
+            self.logic.state.dubbing.translation_model = ""
+        else:
+            models = self.logic.list_dubbing_translation_models(provider_id)
+            current_model = str(self.logic.state.dubbing.translation_model or "").strip()
+            if models and current_model not in models:
+                self.logic.state.dubbing.translation_model = models[0]
+            elif not current_model and models:
+                self.logic.state.dubbing.translation_model = models[0]
+
+        self.logic.normalize_dubbing_translation_state(self.logic.state.dubbing)
+        self.logic.state_changed.emit()
 
     def _connect_generation_signals(self):
         self.start_button.clicked.connect(self.logic.start_generation)
@@ -644,13 +647,31 @@ class SessionTab(QWidget):
     def _update_tts_state(self, state):
         tts_state = state.tts
         current_service = tts_state.service
-        if current_service == "OpenAI-Compatible":
-            endpoint = str(tts_state.openai_audio_endpoint or "").strip().lower()
-            current_service = "Gemini" if endpoint == "gemini" else "OpenAI"
-            tts_state.service = current_service
 
         if self.tts_service_combo.currentText() != current_service:
             self.tts_service_combo.setCurrentText(current_service)
+
+        cloud_providers = self.logic.list_tts_provider_configs()
+        selected_provider_id = str(tts_state.openai_audio_endpoint or "").strip()
+
+        self.cloud_provider_combo.blockSignals(True)
+        self.cloud_provider_combo.clear()
+        for provider in cloud_providers:
+            provider_id = str(provider.get("id") or "")
+            provider_name = str(provider.get("name") or provider_id)
+            if provider_id:
+                self.cloud_provider_combo.addItem(provider_name, provider_id)
+
+        if self.cloud_provider_combo.count() > 0:
+            target_index = self.cloud_provider_combo.findData(selected_provider_id)
+            if target_index < 0:
+                target_index = 0
+                selected_provider_id = str(self.cloud_provider_combo.itemData(0) or "")
+                if selected_provider_id and selected_provider_id != tts_state.openai_audio_endpoint:
+                    tts_state.openai_audio_endpoint = selected_provider_id
+            self.cloud_provider_combo.setCurrentIndex(target_index)
+
+        self.cloud_provider_combo.blockSignals(False)
 
         self.use_external_server_checkbox.setChecked(tts_state.use_external_server)
 
@@ -738,6 +759,8 @@ class SessionTab(QWidget):
 
     def _update_dubbing_state(self, state):
         dub_state = state.dubbing
+        self.logic.normalize_dubbing_translation_state(dub_state)
+
         self.dub_whisper_lang_combo.setCurrentText(dub_state.whisper_language)
         self.dub_whisper_model_combo.setCurrentText(dub_state.whisper_model)
         self.dub_correct_transcription_check.setChecked(dub_state.correction_enabled)
@@ -747,35 +770,43 @@ class SessionTab(QWidget):
         self.dub_cot_check.setChecked(dub_state.chain_of_thought_enabled)
         self.dub_glossary_check.setChecked(dub_state.glossary_enabled)
 
-        combo_items = {
-            self.dub_trans_model_combo.itemText(i)
-            for i in range(self.dub_trans_model_combo.count())
-        }
-        selected_model = dub_state.translation_model
-        custom_model_text = dub_state.custom_translation_model
-        if selected_model not in combo_items:
-            mapped_model = LEGACY_DUBBING_MODEL_UI_MAP.get(str(selected_model).strip().lower())
-            if mapped_model:
-                selected_model = mapped_model
-                if mapped_model == "Custom (LiteLLM)" and not custom_model_text:
-                    custom_model_text = dub_state.translation_model
-            elif "/" in str(selected_model):
-                custom_model_text = custom_model_text or str(selected_model)
-                selected_model = "Custom (LiteLLM)"
-            else:
-                selected_model = "Sonnet 4.6"
+        provider_options = self.logic.list_dubbing_translation_provider_configs()
+        selected_provider_id = str(dub_state.translation_provider or "").strip()
+
+        self.dub_trans_provider_combo.blockSignals(True)
+        self.dub_trans_provider_combo.clear()
+        for provider in provider_options:
+            provider_id = str(provider.get("id") or "").strip()
+            provider_name = str(provider.get("name") or provider_id).strip()
+            if provider_id:
+                self.dub_trans_provider_combo.addItem(provider_name, provider_id)
+
+        if self.dub_trans_provider_combo.count() > 0:
+            target_index = self.dub_trans_provider_combo.findData(selected_provider_id)
+            if target_index < 0:
+                target_index = 0
+                selected_provider_id = str(self.dub_trans_provider_combo.itemData(0) or "")
+                if selected_provider_id != str(dub_state.translation_provider or ""):
+                    dub_state.translation_provider = selected_provider_id
+            self.dub_trans_provider_combo.setCurrentIndex(target_index)
+
+        self.dub_trans_provider_combo.blockSignals(False)
+
+        provider_models = self.logic.list_dubbing_translation_models(selected_provider_id)
+        selected_model = str(dub_state.translation_model or "").strip()
 
         self.dub_trans_model_combo.blockSignals(True)
-        self.dub_trans_model_combo.setCurrentText(selected_model)
+        self.dub_trans_model_combo.clear()
+        self.dub_trans_model_combo.addItems(provider_models)
+
+        if selected_provider_id != "deepl":
+            if selected_model and self.dub_trans_model_combo.findText(selected_model) == -1:
+                self.dub_trans_model_combo.addItem(selected_model)
+            self.dub_trans_model_combo.setCurrentText(selected_model)
+        else:
+            self.dub_trans_model_combo.setCurrentText("")
+
         self.dub_trans_model_combo.blockSignals(False)
-
-        self.dub_custom_model_edit.blockSignals(True)
-        self.dub_custom_model_edit.setText(custom_model_text)
-        self.dub_custom_model_edit.blockSignals(False)
-
-        self.dub_custom_api_base_edit.blockSignals(True)
-        self.dub_custom_api_base_edit.setText(dub_state.custom_api_base)
-        self.dub_custom_api_base_edit.blockSignals(False)
 
         if dub_state.video_file_path:
             filename = dub_state.video_file_path.split("/")[-1].split("\\")[-1]
@@ -791,6 +822,9 @@ class SessionTab(QWidget):
         is_video = source_ext in ["mp4", "mkv", "webm", "avi", "mov"]
         is_srt = source_ext == "srt"
         is_dubbing_source = is_video or is_srt
+        is_deepl_provider = (
+            str(state.dubbing.translation_provider or "").strip().lower() == "deepl"
+        )
 
         generation_running = self.logic.is_generation_running()
         regeneration_running = self.logic.is_regeneration_running()
@@ -801,15 +835,16 @@ class SessionTab(QWidget):
 
         is_xtts = state.tts.service == "XTTS"
         is_voxtral = state.tts.service == "Voxtral"
-        is_openai = state.tts.service == "OpenAI"
-        is_gemini = state.tts.service == "Gemini"
-        is_legacy_openai_compatible = state.tts.service == "OpenAI-Compatible"
-        is_cloud_tts = is_openai or is_gemini or is_legacy_openai_compatible
+        is_cloud_tts = state.tts.service in {
+            "OpenAI-Compatible",
+            "OpenAI",
+            "Gemini",
+        }
         is_model_based_tts = is_xtts or is_voxtral or is_cloud_tts
         show_xtts_advanced_settings = self.logic.should_show_xtts_advanced_settings()
         show_voxtral_advanced_settings = is_voxtral
         show_advanced_tts_controls = show_xtts_advanced_settings or show_voxtral_advanced_settings
-        show_openai_instructions = is_openai and not show_xtts_advanced_settings
+        show_openai_instructions = is_cloud_tts and not show_xtts_advanced_settings
 
         self.connect_server_button.setText(
             "Connecting..." if tts_connecting else "Connect to Server"
@@ -836,6 +871,8 @@ class SessionTab(QWidget):
         self.speaker_label.setText("Speaker Voice:" if is_xtts else "Voice:")
         self.upload_voice_button.setVisible(is_xtts)
 
+        self.cloud_provider_label.setVisible(is_cloud_tts)
+        self.cloud_provider_combo.setVisible(is_cloud_tts)
         self.cloud_provider_hint.setVisible(is_cloud_tts)
         self.openai_audio_instructions_label.setVisible(show_openai_instructions)
         self.openai_audio_instructions_edit.setVisible(show_openai_instructions)
@@ -848,6 +885,7 @@ class SessionTab(QWidget):
 
         self.dubbing_label.setVisible(is_dubbing_source)
         self.dubbing_frame.setVisible(is_dubbing_source)
+        self.dub_trans_model_hint.setVisible(is_dubbing_source and not is_deepl_provider)
         self.output_options_label.setVisible(not is_dubbing_source)
         self.output_options_frame.setVisible(not is_dubbing_source)
 
@@ -876,6 +914,7 @@ class SessionTab(QWidget):
         for widget in (
             self.tts_service_combo,
             self.connect_server_button,
+            self.cloud_provider_combo,
             self.use_external_server_checkbox,
             self.external_server_url_edit,
             self.xtts_model_combo,
@@ -927,6 +966,16 @@ class SessionTab(QWidget):
 
         dubbing_controls_enabled = (not generation_busy) and is_dubbing_source
         for widget in (
+            self.dub_whisper_lang_combo,
+            self.dub_whisper_model_combo,
+            self.dub_correct_transcription_check,
+            self.dub_custom_prompt_button,
+            self.dub_translate_check,
+            self.dub_from_lang_combo,
+            self.dub_to_lang_combo,
+            self.dub_cot_check,
+            self.dub_glossary_check,
+            self.dub_trans_provider_combo,
             self.select_video_file_button,
             self.generate_dub_audio_button,
             self.add_dub_to_video_button,
@@ -935,6 +984,10 @@ class SessionTab(QWidget):
             self.only_translate_button,
         ):
             widget.setEnabled(dubbing_controls_enabled)
+
+        self.dub_trans_model_combo.setEnabled(
+            dubbing_controls_enabled and not is_deepl_provider
+        )
 
         if is_dubbing_source:
             self.transcription_frame.setVisible(is_video)
@@ -1139,7 +1192,11 @@ class SessionTab(QWidget):
             self.logic.select_dubbing_video_file(file_path)
 
     def _on_tts_service_changed(self, service: str):
-        self.logic.state.tts.service = service
+        normalized_service = service
+        if service in {"OpenAI", "Gemini"}:
+            normalized_service = "OpenAI-Compatible"
+
+        self.logic.state.tts.service = normalized_service
         self.logic.state.tts.tts_models = []
         self.logic.state.tts.tts_speakers = []
         self.logic.state.tts.xtts_model = ""
@@ -1149,14 +1206,41 @@ class SessionTab(QWidget):
             self.logic.state.tts.openai_audio_endpoint = "openai"
         elif service == "Gemini":
             self.logic.state.tts.openai_audio_endpoint = "gemini"
+        elif normalized_service == "OpenAI-Compatible":
+            selected_provider_id = str(
+                self.cloud_provider_combo.currentData()
+                or self.logic.state.tts.openai_audio_endpoint
+                or "openai"
+            )
+            self.logic.state.tts.openai_audio_endpoint = selected_provider_id
 
-        if service in {"OpenAI", "Gemini"}:
+        if normalized_service == "OpenAI-Compatible":
             self.logic.populate_cloud_tts_catalogs(
                 use_remote=False,
+                provider_id=self.logic.state.tts.openai_audio_endpoint,
                 emit_state=False,
             )
 
         self._update_language_dropdown()
+        self.logic.state_changed.emit()
+
+    def _on_cloud_provider_changed(self, _index: int = -1):
+        selected_provider_id = str(self.cloud_provider_combo.currentData() or "").strip()
+        if not selected_provider_id:
+            return
+
+        self.logic.state.tts.openai_audio_endpoint = selected_provider_id
+        if self.logic.state.tts.service == "OpenAI-Compatible":
+            self.logic.state.tts.tts_models = []
+            self.logic.state.tts.tts_speakers = []
+            self.logic.state.tts.xtts_model = ""
+            self.logic.state.tts.speaker = ""
+            self.logic.populate_cloud_tts_catalogs(
+                use_remote=False,
+                provider_id=selected_provider_id,
+                emit_state=False,
+            )
+
         self.logic.state_changed.emit()
 
     def _on_speed_changed(self, value: int):

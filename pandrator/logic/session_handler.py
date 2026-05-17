@@ -84,6 +84,7 @@ def build_session_config_payload(state: AppState) -> Dict[str, Any]:
         tts_payload.pop("tts_models", None)
         tts_payload.pop("tts_speakers", None)
         tts_payload.pop("openai_audio_endpoints_json", None)
+        tts_payload.pop("provider_configs", None)
 
     llm_payload = payload.get("llm")
     if isinstance(llm_payload, dict):

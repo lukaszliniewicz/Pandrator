@@ -271,7 +271,7 @@ def _coerce_provider_record(item: Any) -> dict[str, Any] | None:
     return {
         "id": provider_id,
         "name": str(item.get("name") or raw_id or provider_id).strip() or provider_id,
-        "provider": "openai",
+        "provider": explicit_provider or "openai",
         "api_base": api_base,
         "api_key_env": str(item.get("api_key_env") or "").strip(),
         "api_key": str(item.get("api_key") or "").strip(),
@@ -318,9 +318,10 @@ def get_provider_configs(llm_settings: Any | None = None) -> list[dict[str, Any]
     )
 
     for provider in ordered_providers + sorted_custom:
-        provider["provider"] = "openai" if provider.get("is_custom") else _normalize_provider_key(provider.get("provider"))
-        if not provider["provider"]:
-            provider["provider"] = "openai"
+        provider_key = _normalize_provider_key(provider.get("provider"))
+        if not provider_key:
+            provider_key = "openai"
+        provider["provider"] = provider_key
 
         provider["api_base"] = _normalize_base_url(provider.get("api_base"))
         provider["api_key_env"] = str(provider.get("api_key_env") or "").strip()
@@ -472,6 +473,7 @@ def refresh_builtin_provider_models(
 def save_custom_provider(
     llm_settings: Any | None,
     provider_name: str,
+    provider_key: str,
     api_base: str,
     api_key: str = "",
     models: list[str] | str | None = None,
@@ -492,17 +494,21 @@ def save_custom_provider(
             f"'{display_name}' is reserved for a built-in provider.",
         )
 
+    normalized_provider_key = _normalize_provider_key(provider_key)
+    if not normalized_provider_key:
+        return False, get_provider_configs(llm_settings), "", "LiteLLM provider is required."
+
     normalized_api_base = _normalize_base_url(api_base)
-    if not normalized_api_base:
+    if normalized_provider_key == "openai" and not normalized_api_base:
         return False, get_provider_configs(llm_settings), "", "API base URL is required."
 
     provider_configs = get_provider_configs(llm_settings)
-    normalized_models = _parse_models(models or [], "openai")
+    normalized_models = _parse_models(models or [], normalized_provider_key)
 
     custom_record = {
         "id": provider_id,
         "name": display_name,
-        "provider": "openai",
+        "provider": normalized_provider_key,
         "api_base": normalized_api_base,
         "api_key_env": "",
         "api_key": str(api_key or "").strip(),
@@ -527,6 +533,104 @@ def save_custom_provider(
     customs = sorted(customs, key=lambda item: str(item.get("name") or "").lower())
 
     return True, builtins + customs, provider_id, ""
+
+
+def update_provider(
+    llm_settings: Any | None,
+    provider_id: str,
+    provider_name: str,
+    provider_key: str,
+    api_base: str,
+    api_key: str,
+    models: list[str] | str | None,
+) -> tuple[bool, list[dict[str, Any]], str]:
+    normalized_provider_id = _normalize_provider_id(provider_id)
+    if not normalized_provider_id:
+        return False, get_provider_configs(llm_settings), "Provider id is required."
+
+    provider_configs = get_provider_configs(llm_settings)
+    existing = next(
+        (
+            provider
+            for provider in provider_configs
+            if str(provider.get("id") or "") == normalized_provider_id
+        ),
+        None,
+    )
+
+    is_builtin = normalized_provider_id in BUILTIN_PROVIDER_CONFIGS
+    if existing is None and not is_builtin:
+        return False, provider_configs, f"Provider '{provider_id}' was not found."
+
+    if is_builtin:
+        normalized_provider_key = _normalize_provider_key(provider_key) or BUILTIN_PROVIDER_CONFIGS[normalized_provider_id]["provider"]
+    else:
+        normalized_provider_key = _normalize_provider_key(provider_key)
+        if not normalized_provider_key:
+            return False, provider_configs, "LiteLLM provider is required."
+
+    normalized_api_base = _normalize_base_url(api_base)
+    if not is_builtin and normalized_provider_key == "openai" and not normalized_api_base:
+        return False, provider_configs, "API base URL is required for OpenAI-compatible providers."
+
+    if is_builtin:
+        updated_record = copy.deepcopy(BUILTIN_PROVIDER_CONFIGS[normalized_provider_id])
+        if existing is not None:
+            updated_record.update(existing)
+    else:
+        updated_record = copy.deepcopy(existing or {})
+
+    display_name = str(provider_name or "").strip()
+    if not display_name:
+        display_name = str(updated_record.get("name") or normalized_provider_id)
+
+    parsed_models = _parse_models(models or [], normalized_provider_key)
+    if not parsed_models:
+        if is_builtin:
+            parsed_models = list(BUILTIN_PROVIDER_CONFIGS[normalized_provider_id]["models"])
+        else:
+            parsed_models = _parse_models(updated_record.get("models", []), normalized_provider_key)
+
+    updated_record.update(
+        {
+            "id": normalized_provider_id,
+            "name": display_name,
+            "provider": normalized_provider_key,
+            "api_base": normalized_api_base or str(updated_record.get("api_base") or "").strip(),
+            "api_key_env": str(updated_record.get("api_key_env") or "").strip(),
+            "api_key": str(api_key or "").strip(),
+            "is_custom": not is_builtin,
+            "models": parsed_models,
+        }
+    )
+
+    updated_configs: list[dict[str, Any]] = []
+    replaced = False
+    for provider in provider_configs:
+        if str(provider.get("id") or "") == normalized_provider_id:
+            updated_configs.append(updated_record)
+            replaced = True
+        else:
+            updated_configs.append(provider)
+
+    if not replaced:
+        updated_configs.append(updated_record)
+
+    builtins = [item for item in updated_configs if not item.get("is_custom", False)]
+    customs = [item for item in updated_configs if item.get("is_custom", False)]
+    customs = sorted(customs, key=lambda item: str(item.get("name") or "").lower())
+
+    builtins_by_id = {
+        str(item.get("id") or ""): item
+        for item in builtins
+    }
+    ordered_builtins = [
+        builtins_by_id[provider_id]
+        for provider_id in BUILTIN_PROVIDER_ORDER
+        if provider_id in builtins_by_id
+    ]
+
+    return True, ordered_builtins + customs, ""
 
 
 def remove_custom_provider(
@@ -691,21 +795,29 @@ def _resolve_model_request(
                 f"Custom provider '{custom_provider_id}' does not have a concrete model selected."
             )
 
-        custom_model_id = _normalize_model_id(normalized_model, "openai")
+        custom_provider_key = _normalize_provider_key(provider.get("provider")) or "openai"
+        custom_model_id = _normalize_model_id(normalized_model, custom_provider_key)
         if not custom_model_id:
             raise ValueError(
                 f"Custom provider '{custom_provider_id}' has an invalid model identifier."
             )
 
-        resolved_model = f"openai/{custom_model_id}"
+        resolved_model = _to_litellm_model_name(custom_provider_key, custom_model_id)
         api_base = str(provider.get("api_base") or "").strip()
-        if not api_base:
+        if custom_provider_key == "openai" and not api_base:
             raise ValueError(
                 f"Custom provider '{custom_provider_id}' is missing an API base URL."
             )
 
-        request_overrides["api_base"] = api_base
-        request_overrides["api_key"] = _resolve_api_key(provider) or PLACEHOLDER_API_KEY
+        if api_base:
+            request_overrides["api_base"] = api_base
+
+        resolved_api_key = _resolve_api_key(provider)
+        if custom_provider_key == "openai":
+            request_overrides["api_key"] = resolved_api_key or PLACEHOLDER_API_KEY
+        elif resolved_api_key:
+            request_overrides["api_key"] = resolved_api_key
+
         return resolved_model, request_overrides
 
     if "/" not in normalized_model:

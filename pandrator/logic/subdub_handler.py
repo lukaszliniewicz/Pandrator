@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import subprocess
 import sys
 from typing import Any
@@ -11,12 +12,15 @@ SUBDUB_SRC_PATH = os.path.join(SUBDUB_REPO_PATH, "src")
 
 DEFAULT_LOCAL_API_BASE = "http://localhost:1234/v1"
 DEFAULT_LOCAL_MODEL = "openai/gpt-5.4-mini"
+DEFAULT_DUBBING_PROVIDER_ID = "anthropic"
+DEFAULT_DUBBING_MODEL_ID = "claude-sonnet-4-6"
+DEEPL_PROVIDER_ID = "deepl"
 
 MODEL_ALIASES = {
     "gpt 5.4": "openai/gpt-5.4",
     "gpt 5.4-mini": "openai/gpt-5.4-mini",
-    "gemini 3.1 pro": "gemini/gemini-3.1-pro",
-    "gemini 3.0 flash": "gemini/gemini-3.0-flash",
+    "gemini 3.1 pro": "gemini/gemini-3.1-pro-preview",
+    "gemini 3.0 flash": "gemini/gemini-3-flash-preview",
     "opus 4.7": "anthropic/claude-opus-4-7",
     "sonnet 4.6": "anthropic/claude-sonnet-4-6",
 }
@@ -31,6 +35,33 @@ LEGACY_MODEL_ALIASES = {
     "gemini-pro": "gemini/gemini-1.5-pro",
     "deepseek-r1": "openrouter/deepseek/deepseek-r1",
     "qwq-32b": "openrouter/qwen/qwq-32b",
+}
+
+KNOWN_PROVIDER_PREFIXES = {
+    "openai",
+    "gemini",
+    "anthropic",
+    "vertex_ai",
+    "azure",
+    "bedrock",
+    "openrouter",
+    "groq",
+    "mistral",
+    "ollama",
+}
+
+PROVIDER_API_KEY_ENV = {
+    "openai": "OPENAI_API_KEY",
+    "azure": "AZURE_API_KEY",
+    "text-completion-openai": "OPENAI_API_KEY",
+    "custom_openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+    "groq": "GROQ_API_KEY",
+    "mistral": "MISTRAL_API_KEY",
+    "bedrock": "AWS_SECRET_ACCESS_KEY",
+    "vertex_ai": "GOOGLE_API_KEY",
 }
 
 
@@ -50,31 +81,198 @@ def _is_openai_compatible_model(model_name: str) -> bool:
     return provider in {"openai", "azure", "text-completion-openai", "custom_openai"}
 
 
-def _build_subdub_environment(model_options: dict[str, Any] | None = None) -> dict[str, str]:
-    env = os.environ.copy()
-
-    if os.name == "nt":
-        env.setdefault("PYTHONUTF8", "1")
-        env.setdefault("PYTHONIOENCODING", "utf-8")
-
-    if os.path.isdir(SUBDUB_SRC_PATH):
-        existing_pythonpath = env.get("PYTHONPATH", "")
-        existing_entries = [entry for entry in existing_pythonpath.split(os.pathsep) if entry]
-        if SUBDUB_SRC_PATH not in existing_entries:
-            env["PYTHONPATH"] = (
-                f"{SUBDUB_SRC_PATH}{os.pathsep}{existing_pythonpath}"
-                if existing_pythonpath
-                else SUBDUB_SRC_PATH
-            )
-
-    api_base = str((model_options or {}).get("api_base", "")).strip()
-    if api_base and _is_local_api_base(api_base) and not env.get("OPENAI_API_KEY"):
-        env["OPENAI_API_KEY"] = "lm-studio"
-
-    return env
+def _normalize_provider_id(raw_value: str | None) -> str:
+    lowered = str(raw_value or "").strip().lower()
+    return re.sub(r"[^a-z0-9]+", "-", lowered).strip("-")
 
 
-def _resolve_model_options(settings: dict) -> dict[str, Any]:
+def _normalize_provider_key(raw_value: str | None) -> str:
+    provider = str(raw_value or "").strip().lower()
+    aliases = {
+        "google": "gemini",
+        "google-ai": "gemini",
+        "google_ai": "gemini",
+        "google-ai-studio": "gemini",
+        "openai-compatible": "openai",
+        "openai_compatible": "openai",
+    }
+    return aliases.get(provider, provider)
+
+
+def _normalize_model_for_provider(model_name: str, provider_key: str) -> str:
+    normalized = str(model_name or "").strip()
+    if not normalized:
+        return ""
+
+    if normalized.lower().startswith("custom:"):
+        remainder = normalized[len("custom:") :].strip()
+        _, separator, model_part = remainder.partition("/")
+        if separator and model_part.strip():
+            normalized = model_part.strip()
+
+    if normalized.lower().startswith("models/"):
+        normalized = normalized.split("/", 1)[1].strip()
+
+    if "/" in normalized:
+        prefix, remainder = normalized.split("/", 1)
+        if _normalize_provider_key(prefix) == _normalize_provider_key(provider_key) and remainder.strip():
+            return remainder.strip()
+
+    return normalized
+
+
+def _to_litellm_model_name(provider_key: str, model_name: str) -> str:
+    normalized_model = str(model_name or "").strip()
+    if not normalized_model:
+        return ""
+
+    if "/" in normalized_model:
+        prefix, _ = normalized_model.split("/", 1)
+        if _normalize_provider_key(prefix) in KNOWN_PROVIDER_PREFIXES:
+            return normalized_model
+
+    normalized_provider = _normalize_provider_key(provider_key) or "openai"
+    return f"{normalized_provider}/{normalized_model}"
+
+
+def _coerce_provider_configs(raw_configs: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(raw_configs, list):
+        return {}
+
+    provider_configs: dict[str, dict[str, Any]] = {}
+    for item in raw_configs:
+        if not isinstance(item, dict):
+            continue
+        provider_id = _normalize_provider_id(item.get("id") or item.get("name") or "")
+        if not provider_id:
+            continue
+        provider_configs[provider_id] = item
+
+    return provider_configs
+
+
+def _provider_models(provider_config: dict[str, Any]) -> list[str]:
+    raw_models = provider_config.get("models", [])
+    if not isinstance(raw_models, list):
+        return []
+
+    models: list[str] = []
+    for model in raw_models:
+        normalized = str(model or "").strip()
+        if normalized:
+            models.append(normalized)
+    return models
+
+
+def _provider_default_model(provider_config: dict[str, Any]) -> str:
+    default_model = str(provider_config.get("default_model") or "").strip()
+    if default_model:
+        return default_model
+
+    provider_models = _provider_models(provider_config)
+    if provider_models:
+        return provider_models[0]
+
+    provider_key = _normalize_provider_key(provider_config.get("provider") or "")
+    if provider_key == "anthropic":
+        return DEFAULT_DUBBING_MODEL_ID
+    if provider_key == "gemini":
+        return "gemini-3-flash-preview"
+    return DEFAULT_LOCAL_MODEL.split("/", 1)[-1]
+
+
+def _api_key_env_for_provider(provider_key: str, model_name: str = "") -> str:
+    normalized_provider = _normalize_provider_key(provider_key)
+    if normalized_provider in PROVIDER_API_KEY_ENV:
+        return PROVIDER_API_KEY_ENV[normalized_provider]
+
+    model_prefix = ""
+    model_text = str(model_name or "").strip()
+    if "/" in model_text:
+        model_prefix = _normalize_provider_key(model_text.split("/", 1)[0])
+
+    if model_prefix in PROVIDER_API_KEY_ENV:
+        return PROVIDER_API_KEY_ENV[model_prefix]
+
+    return "OPENAI_API_KEY"
+
+
+def _resolve_provider_backed_model_options(settings: dict) -> dict[str, Any] | None:
+    provider_configs = _coerce_provider_configs(settings.get("llm_provider_configs"))
+    selected_provider_id = _normalize_provider_id(settings.get("translation_provider") or "")
+    if not selected_provider_id:
+        return None
+
+    if selected_provider_id == DEEPL_PROVIDER_ID:
+        return {
+            "model": "openrouter/auto",
+            "provider": DEEPL_PROVIDER_ID,
+            "use_deepl": True,
+            "api_base": "",
+            "api_key": "",
+            "api_key_env": "DEEPL_API_KEY",
+            "reasoning_effort": "",
+        }
+
+    provider_config = provider_configs.get(selected_provider_id)
+    if provider_config is None:
+        return None
+
+    provider_key = _normalize_provider_key(provider_config.get("provider") or selected_provider_id)
+    selected_model_raw = str(settings.get("translation_model") or "").strip()
+    if selected_model_raw.lower() == "deepl":
+        return {
+            "model": "openrouter/auto",
+            "provider": DEEPL_PROVIDER_ID,
+            "use_deepl": True,
+            "api_base": "",
+            "api_key": "",
+            "api_key_env": "DEEPL_API_KEY",
+            "reasoning_effort": "",
+        }
+
+    selected_model = _normalize_model_for_provider(selected_model_raw, provider_key)
+
+    if selected_model_raw.lower() in {"custom (litellm)", "custom", "local"}:
+        selected_model = str(settings.get("custom_translation_model") or "").strip()
+
+    if not selected_model:
+        selected_model = _provider_default_model(provider_config)
+
+    if selected_model.lower() in MODEL_ALIASES:
+        selected_model = MODEL_ALIASES[selected_model.lower()]
+    elif selected_model.lower() in LEGACY_MODEL_ALIASES:
+        selected_model = LEGACY_MODEL_ALIASES[selected_model.lower()]
+
+    model_value = _to_litellm_model_name(provider_key, selected_model)
+    api_base = str(provider_config.get("api_base") or "").strip()
+    custom_api_base = str(settings.get("custom_api_base") or "").strip()
+    if custom_api_base and _is_openai_compatible_model(model_value):
+        api_base = custom_api_base
+
+    reasoning_effort = ""
+    if selected_model_raw.lower() == "sonnet thinking":
+        reasoning_effort = "high"
+    elif settings.get("chain_of_thought_enabled"):
+        reasoning_effort = "medium"
+
+    api_key = str(provider_config.get("api_key") or "").strip()
+    api_key_env = str(provider_config.get("api_key_env") or "").strip()
+    if not api_key_env:
+        api_key_env = _api_key_env_for_provider(provider_key, model_value)
+
+    return {
+        "model": model_value,
+        "provider": provider_key,
+        "use_deepl": False,
+        "api_base": api_base,
+        "api_key": api_key,
+        "api_key_env": api_key_env,
+        "reasoning_effort": reasoning_effort,
+    }
+
+
+def _resolve_legacy_model_options(settings: dict) -> dict[str, Any]:
     selected_model_raw = str(settings.get("translation_model", "Sonnet 4.6")).strip()
     selected_model = selected_model_raw.lower()
     custom_model = str(settings.get("custom_translation_model", "")).strip()
@@ -129,12 +327,58 @@ def _resolve_model_options(settings: dict) -> dict[str, Any]:
     if settings.get("chain_of_thought_enabled") and not reasoning_effort and not use_deepl:
         reasoning_effort = "medium"
 
+    provider_prefix = model_value.split("/", 1)[0].strip().lower() if "/" in model_value else ""
     return {
         "model": model_value,
+        "provider": provider_prefix,
         "use_deepl": use_deepl,
         "api_base": api_base,
+        "api_key": "",
+        "api_key_env": _api_key_env_for_provider(provider_prefix, model_value),
         "reasoning_effort": reasoning_effort,
     }
+
+
+def _build_subdub_environment(model_options: dict[str, Any] | None = None) -> dict[str, str]:
+    env = os.environ.copy()
+
+    if os.name == "nt":
+        env.setdefault("PYTHONUTF8", "1")
+        env.setdefault("PYTHONIOENCODING", "utf-8")
+
+    if os.path.isdir(SUBDUB_SRC_PATH):
+        existing_pythonpath = env.get("PYTHONPATH", "")
+        existing_entries = [entry for entry in existing_pythonpath.split(os.pathsep) if entry]
+        if SUBDUB_SRC_PATH not in existing_entries:
+            env["PYTHONPATH"] = (
+                f"{SUBDUB_SRC_PATH}{os.pathsep}{existing_pythonpath}"
+                if existing_pythonpath
+                else SUBDUB_SRC_PATH
+            )
+
+    options = model_options or {}
+    model_name = str(options.get("model") or "").strip()
+    api_base = str(options.get("api_base") or "").strip()
+    api_key = str(options.get("api_key") or "").strip()
+    api_key_env = str(options.get("api_key_env") or "").strip()
+
+    if api_key and api_key_env and not env.get(api_key_env):
+        env[api_key_env] = api_key
+    elif api_key and _is_openai_compatible_model(model_name) and not env.get("OPENAI_API_KEY"):
+        env["OPENAI_API_KEY"] = api_key
+
+    if api_base and _is_local_api_base(api_base) and not env.get("OPENAI_API_KEY"):
+        env["OPENAI_API_KEY"] = api_key or "lm-studio"
+
+    return env
+
+
+def _resolve_model_options(settings: dict) -> dict[str, Any]:
+    provider_backed = _resolve_provider_backed_model_options(settings)
+    if provider_backed is not None:
+        return provider_backed
+
+    return _resolve_legacy_model_options(settings)
 
 
 def _apply_model_options(command: list[str], model_options: dict[str, Any]):

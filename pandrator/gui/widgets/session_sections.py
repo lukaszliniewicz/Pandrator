@@ -109,7 +109,7 @@ class TtsSettingsSection(QFrame):
         layout.setVerticalSpacing(8)
 
         self.tts_service_combo = QComboBox()
-        self.tts_service_combo.addItems(["XTTS", "Voxtral", "Silero", "Gemini", "OpenAI"])
+        self.tts_service_combo.addItems(["XTTS", "Voxtral", "Silero", "OpenAI-Compatible"])
         layout.addWidget(QLabel("TTS Service:"), 0, 0)
         layout.addWidget(self.tts_service_combo, 0, 1)
 
@@ -117,33 +117,38 @@ class TtsSettingsSection(QFrame):
         self.connect_server_button.setObjectName("primaryButton")
         layout.addWidget(self.connect_server_button, 0, 2, 1, 2)
 
+        self.cloud_provider_label = QLabel("Cloud Provider:")
+        self.cloud_provider_combo = QComboBox()
+        layout.addWidget(self.cloud_provider_label, 1, 0)
+        layout.addWidget(self.cloud_provider_combo, 1, 1, 1, 3)
+
         self.use_external_server_checkbox = QCheckBox("Use External Server")
         self.external_server_url_edit = QLineEdit()
         self.external_server_url_edit.setPlaceholderText("http://localhost:8020")
-        layout.addWidget(self.use_external_server_checkbox, 1, 0)
-        layout.addWidget(self.external_server_url_edit, 1, 1, 1, 3)
+        layout.addWidget(self.use_external_server_checkbox, 2, 0)
+        layout.addWidget(self.external_server_url_edit, 2, 1, 1, 3)
 
         self.xtts_model_label = QLabel("XTTS Model:")
         self.xtts_model_combo = QComboBox()
         self.xtts_model_combo.setEditable(True)
-        layout.addWidget(self.xtts_model_label, 2, 0)
-        layout.addWidget(self.xtts_model_combo, 2, 1)
+        layout.addWidget(self.xtts_model_label, 3, 0)
+        layout.addWidget(self.xtts_model_combo, 3, 1)
 
         self.language_label = QLabel("Language:")
         self.language_combo = QComboBox()
-        layout.addWidget(self.language_label, 3, 0)
-        layout.addWidget(self.language_combo, 3, 1)
+        layout.addWidget(self.language_label, 4, 0)
+        layout.addWidget(self.language_combo, 4, 1)
 
         self.speaker_label = QLabel("Speaker Voice:")
         self.speaker_combo = QComboBox()
         self.speaker_combo.setEditable(True)
-        layout.addWidget(self.speaker_label, 4, 0)
-        layout.addWidget(self.speaker_combo, 4, 1)
+        layout.addWidget(self.speaker_label, 5, 0)
+        layout.addWidget(self.speaker_combo, 5, 1)
 
         self.upload_voice_button = QPushButton("Upload New Voices")
-        layout.addWidget(self.upload_voice_button, 4, 2)
+        layout.addWidget(self.upload_voice_button, 5, 2)
 
-        layout.addWidget(QLabel("Speed:"), 5, 0)
+        layout.addWidget(QLabel("Speed:"), 6, 0)
         speed_layout = QHBoxLayout()
         self.speed_slider = QSlider(Qt.Orientation.Horizontal)
         self.speed_slider.setRange(20, 200)
@@ -151,25 +156,25 @@ class TtsSettingsSection(QFrame):
         self.speed_label.setObjectName("secondaryInfoLabel")
         speed_layout.addWidget(self.speed_slider)
         speed_layout.addWidget(self.speed_label)
-        layout.addLayout(speed_layout, 5, 1, 1, 3)
+        layout.addLayout(speed_layout, 6, 1, 1, 3)
 
         self.advanced_tts_checkbox = QCheckBox("Advanced XTTS Settings")
-        layout.addWidget(self.advanced_tts_checkbox, 6, 0)
+        layout.addWidget(self.advanced_tts_checkbox, 7, 0)
 
         self.cloud_provider_hint = QLabel(
-            "OpenAI and Gemini use API keys from the API Keys tab."
+            "Cloud voices use providers configured in the Providers tab."
         )
         self.cloud_provider_hint.setWordWrap(True)
         self.cloud_provider_hint.setObjectName("secondaryInfoLabel")
-        layout.addWidget(self.cloud_provider_hint, 7, 0, 1, 4)
+        layout.addWidget(self.cloud_provider_hint, 8, 0, 1, 4)
 
         self.openai_audio_instructions_label = QLabel("Voice Instructions:")
         self.openai_audio_instructions_edit = QLineEdit()
         self.openai_audio_instructions_edit.setPlaceholderText(
             "Optional style guidance for OpenAI speech"
         )
-        layout.addWidget(self.openai_audio_instructions_label, 8, 0)
-        layout.addWidget(self.openai_audio_instructions_edit, 8, 1, 1, 3)
+        layout.addWidget(self.openai_audio_instructions_label, 9, 0)
+        layout.addWidget(self.openai_audio_instructions_edit, 9, 1, 1, 3)
 
 
 class AdvancedTtsSettingsSection(QFrame):
@@ -410,29 +415,25 @@ class DubbingSection(QFrame):
         self.dub_glossary_check = QCheckBox("Enable glossary")
         transl_layout.addWidget(self.dub_glossary_check, 2, 2, 1, 2)
 
-        transl_layout.addWidget(QLabel("Translation/Correction Model:"), 3, 0)
+        transl_layout.addWidget(QLabel("Translation Provider:"), 3, 0)
+        self.dub_trans_provider_combo = QComboBox()
+        transl_layout.addWidget(self.dub_trans_provider_combo, 3, 1, 1, 3)
+
+        transl_layout.addWidget(QLabel("Translation Model:"), 4, 0)
         self.dub_trans_model_combo = QComboBox()
-        self.dub_trans_model_combo.addItems([
-            "GPT 5.4",
-            "GPT 5.4-mini",
-            "Gemini 3.1 Pro",
-            "Gemini 3.0 Flash",
-            "Opus 4.7",
-            "Sonnet 4.6",
-            "DeepL",
-            "Custom (LiteLLM)",
-        ])
-        transl_layout.addWidget(self.dub_trans_model_combo, 3, 1, 1, 3)
+        self.dub_trans_model_combo.setEditable(True)
+        self.dub_trans_model_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        model_line_edit = self.dub_trans_model_combo.lineEdit()
+        if model_line_edit is not None:
+            model_line_edit.setPlaceholderText("Type model ID if not listed")
+        transl_layout.addWidget(self.dub_trans_model_combo, 4, 1, 1, 3)
 
-        transl_layout.addWidget(QLabel("Custom LiteLLM Model:"), 4, 0)
-        self.dub_custom_model_edit = QLineEdit()
-        self.dub_custom_model_edit.setPlaceholderText("provider/model (for example openai/gpt-5.4-mini)")
-        transl_layout.addWidget(self.dub_custom_model_edit, 4, 1, 1, 3)
-
-        transl_layout.addWidget(QLabel("Custom API Base:"), 5, 0)
-        self.dub_custom_api_base_edit = QLineEdit()
-        self.dub_custom_api_base_edit.setPlaceholderText("Optional for OpenAI-compatible models (for example http://localhost:1234/v1)")
-        transl_layout.addWidget(self.dub_custom_api_base_edit, 5, 1, 1, 3)
+        self.dub_trans_model_hint = QLabel(
+            "Manage provider catalogs in the Providers tab."
+        )
+        self.dub_trans_model_hint.setWordWrap(True)
+        self.dub_trans_model_hint.setObjectName("secondaryInfoLabel")
+        transl_layout.addWidget(self.dub_trans_model_hint, 5, 0, 1, 4)
 
         self.video_file_frame = QFrame()
         self.video_file_frame.setObjectName("rowFrame")

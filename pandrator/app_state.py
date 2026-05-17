@@ -36,6 +36,86 @@ def default_llm_provider_configs() -> List[Dict[str, Any]]:
         },
     ]
 
+
+def default_tts_provider_configs() -> List[Dict[str, Any]]:
+    return [
+        {
+            "id": "openai",
+            "name": "OpenAI",
+            "provider": "openai",
+            "api_base": "https://api.openai.com/v1",
+            "api_key_env": "OPENAI_API_KEY",
+            "api_key": "",
+            "is_custom": False,
+            "models": ["gpt-4o-mini-tts", "tts-1-hd", "tts-1"],
+            "default_model": "gpt-4o-mini-tts",
+            "voices": [
+                "alloy",
+                "ash",
+                "ballad",
+                "coral",
+                "echo",
+                "fable",
+                "nova",
+                "onyx",
+                "sage",
+                "shimmer",
+                "verse",
+                "marin",
+                "cedar",
+            ],
+            "default_voice": "alloy",
+        },
+        {
+            "id": "gemini",
+            "name": "Gemini",
+            "provider": "gemini",
+            "api_base": "https://generativelanguage.googleapis.com/v1beta/openai",
+            "api_key_env": "GEMINI_API_KEY",
+            "api_key": "",
+            "is_custom": False,
+            "models": [
+                "gemini-3.1-flash-tts-preview",
+                "gemini-2.5-flash-preview-tts",
+                "gemini-2.5-pro-preview-tts",
+            ],
+            "default_model": "gemini-3.1-flash-tts-preview",
+            "voices": [
+                "Achernar",
+                "Achird",
+                "Algenib",
+                "Algieba",
+                "Alnilam",
+                "Aoede",
+                "Autonoe",
+                "Callirrhoe",
+                "Charon",
+                "Despina",
+                "Enceladus",
+                "Erinome",
+                "Fenrir",
+                "Gacrux",
+                "Iapetus",
+                "Kore",
+                "Laomedeia",
+                "Leda",
+                "Orus",
+                "Pulcherrima",
+                "Puck",
+                "Rasalgethi",
+                "Sadachbia",
+                "Sadaltager",
+                "Schedar",
+                "Sulafat",
+                "Umbriel",
+                "Vindemiatrix",
+                "Zephyr",
+                "Zubenelgenubi",
+            ],
+            "default_voice": "Kore",
+        },
+    ]
+
 @dataclass
 class TextProcessingSettings:
     enable_sentence_splitting: bool = True
@@ -50,14 +130,8 @@ class TTSSettings:
     use_external_server: bool = False
     external_server_url: str = "http://127.0.0.1:8020"
     openai_audio_endpoint: str = "openai"
-    openai_audio_endpoints_json: str = (
-        '[{"name":"openai","provider":"openai","base_url":"https://api.openai.com/v1",'
-        '"api_key_env":"OPENAI_API_KEY","api_key":"sk-placeholder",'
-        '"default_model":"gpt-4o-mini-tts","default_voice":"alloy"},'
-        '{"name":"gemini","provider":"gemini","base_url":"https://generativelanguage.googleapis.com/v1beta/openai",'
-        '"api_key_env":"GEMINI_API_KEY","api_key":"sk-placeholder",'
-        '"default_model":"gemini-3.1-flash-tts-preview","default_voice":"Kore"}]'
-    )
+    provider_configs: List[Dict[str, Any]] = field(default_factory=default_tts_provider_configs)
+    openai_audio_endpoints_json: str = ""
     openai_audio_instructions: str = ""
     xtts_model: str = ""
     language: str = "en"
@@ -160,7 +234,8 @@ class DubbingSettings:
     target_language: str = "en"
     chain_of_thought_enabled: bool = False
     glossary_enabled: bool = False
-    translation_model: str = "Sonnet 4.6"
+    translation_provider: str = "anthropic"
+    translation_model: str = "claude-sonnet-4-6"
     custom_translation_model: str = ""
     custom_api_base: str = ""
     video_file_path: str = ""

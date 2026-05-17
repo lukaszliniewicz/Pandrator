@@ -31,6 +31,39 @@ from .logic import (
 from .logic.playback_handler import PlaybackHandler
 
 
+DUBBING_DEEPL_PROVIDER_ID = "deepl"
+LEGACY_DUBBING_MODEL_ALIASES: dict[str, str] = {
+    "gpt 5.4": "openai/gpt-5.4",
+    "gpt 5.4-mini": "openai/gpt-5.4-mini",
+    "gemini 3.1 pro": "gemini/gemini-3.1-pro-preview",
+    "gemini 3.0 flash": "gemini/gemini-3-flash-preview",
+    "opus 4.7": "anthropic/claude-opus-4-7",
+    "sonnet 4.6": "anthropic/claude-sonnet-4-6",
+    "haiku": "anthropic/claude-3-5-haiku-20241022",
+    "sonnet": "anthropic/claude-3-5-sonnet-20241022",
+    "sonnet thinking": "anthropic/claude-3-5-sonnet-20241022",
+    "gpt-4o-mini": "openai/gpt-4o-mini",
+    "gpt-4o": "openai/gpt-4o",
+    "gemini-flash": "gemini/gemini-2.0-flash",
+    "gemini-pro": "gemini/gemini-1.5-pro",
+    "deepseek-r1": "openrouter/deepseek/deepseek-r1",
+    "qwq-32b": "openrouter/qwen/qwq-32b",
+}
+
+KNOWN_LITELLM_PROVIDER_KEYS = {
+    "openai",
+    "anthropic",
+    "gemini",
+    "openrouter",
+    "ollama",
+    "groq",
+    "mistral",
+    "vertex_ai",
+    "azure",
+    "bedrock",
+}
+
+
 class AppLogic(QObject):
     """
     Main controller for the application.
@@ -241,37 +274,261 @@ class AppLogic(QObject):
 
         return False
 
+    @staticmethod
+    def _normalize_provider_id(raw_value: str | None) -> str:
+        lowered = str(raw_value or "").strip().lower()
+        return re.sub(r"[^a-z0-9]+", "-", lowered).strip("-")
+
+    def list_dubbing_translation_provider_configs(self) -> list[dict]:
+        """Returns available translation providers (DeepL + configured LLM providers)."""
+        providers: list[dict] = [
+            {
+                "id": DUBBING_DEEPL_PROVIDER_ID,
+                "name": "DeepL",
+                "provider": DUBBING_DEEPL_PROVIDER_ID,
+                "is_custom": False,
+                "models": [],
+            }
+        ]
+        providers.extend(self.list_llm_provider_configs())
+        return copy.deepcopy(providers)
+
+    def list_dubbing_translation_models(self, provider_id: str) -> list[str]:
+        """Returns configured translation models for a provider id."""
+        normalized_provider_id = self._normalize_provider_id(provider_id)
+        if normalized_provider_id == DUBBING_DEEPL_PROVIDER_ID:
+            return []
+
+        for provider in self.list_llm_provider_configs():
+            provider_item_id = self._normalize_provider_id(provider.get("id"))
+            if provider_item_id != normalized_provider_id:
+                continue
+
+            models = provider.get("models", [])
+            if not isinstance(models, list):
+                return []
+            return [
+                str(model).strip()
+                for model in models
+                if str(model).strip()
+            ]
+
+        return []
+
+    def _infer_dubbing_provider_from_model(
+        self,
+        model_name: str,
+        provider_configs: list[dict],
+    ) -> tuple[str, str]:
+        normalized_model = str(model_name or "").strip()
+        if not normalized_model:
+            return "", ""
+
+        if normalized_model.lower().startswith("custom:"):
+            remainder = normalized_model[len("custom:") :].strip()
+            provider_part, separator, model_part = remainder.partition("/")
+            inferred_provider_id = self._normalize_provider_id(provider_part)
+            if separator and inferred_provider_id and model_part.strip():
+                return inferred_provider_id, model_part.strip()
+
+        if "/" not in normalized_model:
+            return "", normalized_model
+
+        prefix, remainder = normalized_model.split("/", 1)
+        prefix = prefix.strip()
+        remainder = remainder.strip()
+        if not remainder:
+            return "", normalized_model
+
+        providers_by_id = {
+            self._normalize_provider_id(provider.get("id")): provider
+            for provider in provider_configs
+            if self._normalize_provider_id(provider.get("id"))
+        }
+
+        direct_provider_id = self._normalize_provider_id(prefix)
+        if direct_provider_id in providers_by_id:
+            return direct_provider_id, remainder
+
+        provider_key = prefix.lower()
+        if provider_key not in KNOWN_LITELLM_PROVIDER_KEYS:
+            return "", normalized_model
+
+        matching_provider_ids: list[str] = []
+        for provider_id, provider in providers_by_id.items():
+            provider_type = str(provider.get("provider") or "").strip().lower()
+            if provider_type == provider_key:
+                matching_provider_ids.append(provider_id)
+
+        if not matching_provider_ids:
+            return "", normalized_model
+
+        for provider_id in matching_provider_ids:
+            provider_models = self.list_dubbing_translation_models(provider_id)
+            if remainder in provider_models:
+                return provider_id, remainder
+
+        if len(matching_provider_ids) == 1:
+            return matching_provider_ids[0], remainder
+
+        preferred_order = [
+            "anthropic",
+            "openai",
+            "gemini",
+        ]
+        for preferred in preferred_order:
+            if preferred in matching_provider_ids:
+                return preferred, remainder
+
+        return matching_provider_ids[0], remainder
+
+    def normalize_dubbing_translation_state(self, dubbing_state=None):
+        """Normalizes dubbing translation provider/model selections and migrates legacy values."""
+        target_state = dubbing_state or self.state.dubbing
+        provider_configs = self.list_llm_provider_configs()
+        providers_by_id = {
+            self._normalize_provider_id(provider.get("id")): provider
+            for provider in provider_configs
+            if self._normalize_provider_id(provider.get("id"))
+        }
+
+        provider_id = self._normalize_provider_id(
+            getattr(target_state, "translation_provider", "")
+        )
+        selected_model = str(getattr(target_state, "translation_model", "") or "").strip()
+        custom_model = str(getattr(target_state, "custom_translation_model", "") or "").strip()
+        custom_api_base = str(getattr(target_state, "custom_api_base", "") or "").strip()
+        provider_was_fallback = False
+        retain_custom_api_base = False
+
+        legacy_key = selected_model.lower()
+        if legacy_key in LEGACY_DUBBING_MODEL_ALIASES:
+            selected_model = LEGACY_DUBBING_MODEL_ALIASES[legacy_key]
+        elif legacy_key in {"custom (litellm)", "custom"} and custom_model:
+            selected_model = custom_model
+            retain_custom_api_base = bool(custom_api_base)
+        elif legacy_key == "local":
+            selected_model = (
+                custom_model
+                or os.environ.get("PANDRATOR_SUBDUB_LOCAL_MODEL", "")
+                or llm_handler.DEFAULT_LITELLM_MODEL
+            )
+            retain_custom_api_base = bool(custom_api_base)
+
+        if legacy_key == "deepl":
+            provider_id = DUBBING_DEEPL_PROVIDER_ID
+            selected_model = ""
+
+        if (not provider_id or provider_id not in providers_by_id) and selected_model:
+            inferred_provider_id, inferred_model = self._infer_dubbing_provider_from_model(
+                selected_model,
+                provider_configs,
+            )
+            if inferred_provider_id:
+                provider_id = inferred_provider_id
+                selected_model = inferred_model
+
+        if provider_id != DUBBING_DEEPL_PROVIDER_ID and provider_id not in providers_by_id:
+            provider_was_fallback = True
+            for fallback_provider_id in ("anthropic", "openai", "gemini"):
+                if fallback_provider_id in providers_by_id:
+                    provider_id = fallback_provider_id
+                    break
+            else:
+                provider_id = next(iter(providers_by_id), DUBBING_DEEPL_PROVIDER_ID)
+
+        if provider_id == DUBBING_DEEPL_PROVIDER_ID:
+            selected_model = ""
+        elif provider_id in providers_by_id:
+            provider = providers_by_id[provider_id]
+            provider_key = str(provider.get("provider") or "").strip().lower()
+
+            if selected_model.lower().startswith("models/"):
+                selected_model = selected_model.split("/", 1)[1].strip()
+
+            if "/" in selected_model:
+                prefix, remainder = selected_model.split("/", 1)
+                if prefix.strip().lower() == provider_key and remainder.strip():
+                    selected_model = remainder.strip()
+
+            available_models = self.list_dubbing_translation_models(provider_id)
+            if (
+                provider_was_fallback
+                and available_models
+                and selected_model not in available_models
+            ):
+                preferred_fallback_model = subdub_handler.DEFAULT_DUBBING_MODEL_ID
+                if preferred_fallback_model in available_models:
+                    selected_model = preferred_fallback_model
+                else:
+                    selected_model = available_models[0]
+
+            if not selected_model:
+                if available_models:
+                    selected_model = available_models[0]
+                elif provider_key:
+                    default_litellm_model = llm_handler.normalize_default_model(
+                        self.state.llm.default_model
+                    )
+                    if "/" in default_litellm_model:
+                        default_prefix, default_model = default_litellm_model.split("/", 1)
+                        if default_prefix.strip().lower() == provider_key and default_model.strip():
+                            selected_model = default_model.strip()
+
+                if not selected_model:
+                    selected_model = subdub_handler.DEFAULT_DUBBING_MODEL_ID
+
+        if getattr(target_state, "translation_provider", "") != provider_id:
+            setattr(target_state, "translation_provider", provider_id)
+        if getattr(target_state, "translation_model", "") != selected_model:
+            setattr(target_state, "translation_model", selected_model)
+        if not retain_custom_api_base and custom_api_base:
+            setattr(target_state, "custom_api_base", "")
+
     def _normalize_tts_service_state(self, tts_state=None):
         target_state = tts_state or self.state.tts
         service = str(target_state.service or "").strip()
         service_lower = service.lower()
-        endpoint = str(target_state.openai_audio_endpoint or "").strip().lower()
+        endpoint = str(target_state.openai_audio_endpoint or "").strip()
+        target_state.provider_configs = tts_handler.get_provider_configs(target_state)
+        available_provider_ids = [
+            str(item.get("id") or "").strip()
+            for item in target_state.provider_configs
+            if str(item.get("id") or "").strip()
+        ]
 
-        if service_lower == tts_handler.OPENAI_COMPAT_SERVICE.lower():
-            if endpoint == tts_handler.GEMINI_PROVIDER:
-                target_state.service = tts_handler.GEMINI_SERVICE
-                target_state.openai_audio_endpoint = tts_handler.GEMINI_PROVIDER
-            else:
-                target_state.service = tts_handler.OPENAI_SERVICE
-                target_state.openai_audio_endpoint = tts_handler.OPENAI_PROVIDER
-            return
+        cloud_services = {
+            tts_handler.OPENAI_COMPAT_SERVICE.lower(),
+            tts_handler.OPENAI_SERVICE.lower(),
+            tts_handler.GEMINI_SERVICE.lower(),
+        }
+        if service_lower in cloud_services:
+            target_state.service = tts_handler.OPENAI_COMPAT_SERVICE
+            if service_lower == tts_handler.OPENAI_SERVICE.lower():
+                endpoint = tts_handler.OPENAI_PROVIDER
+            elif service_lower == tts_handler.GEMINI_SERVICE.lower():
+                endpoint = tts_handler.GEMINI_PROVIDER
 
-        if service_lower == tts_handler.OPENAI_SERVICE.lower():
-            target_state.service = tts_handler.OPENAI_SERVICE
-            target_state.openai_audio_endpoint = tts_handler.OPENAI_PROVIDER
-            return
+            normalized_endpoint = re.sub(r"[^a-z0-9]+", "-", endpoint.lower()).strip("-")
+            if normalized_endpoint in available_provider_ids:
+                endpoint = normalized_endpoint
 
-        if service_lower == tts_handler.GEMINI_SERVICE.lower():
-            target_state.service = tts_handler.GEMINI_SERVICE
-            target_state.openai_audio_endpoint = tts_handler.GEMINI_PROVIDER
+            if endpoint not in available_provider_ids:
+                if tts_handler.OPENAI_PROVIDER in available_provider_ids:
+                    endpoint = tts_handler.OPENAI_PROVIDER
+                elif available_provider_ids:
+                    endpoint = available_provider_ids[0]
+                else:
+                    endpoint = tts_handler.OPENAI_PROVIDER
+
+            target_state.openai_audio_endpoint = endpoint
             return
 
         supported_services = {
             "XTTS",
             "Voxtral",
             "Silero",
-            tts_handler.OPENAI_SERVICE,
-            tts_handler.GEMINI_SERVICE,
+            tts_handler.OPENAI_COMPAT_SERVICE,
         }
         if service not in supported_services:
             target_state.service = "XTTS"
@@ -283,6 +540,7 @@ class AppLogic(QObject):
             settings_handler.apply_global_settings_payload(self.state, payload)
             llm_handler.normalize_llm_settings(self.state.llm)
             self._normalize_tts_service_state(self.state.tts)
+            self.normalize_dubbing_translation_state(self.state.dubbing)
 
             snapshot_payload = settings_handler.build_global_settings_payload(self.state)
             self._last_global_settings_snapshot = json.dumps(
@@ -487,6 +745,7 @@ class AppLogic(QObject):
         self.state.tts = current_tts_state
         settings_handler.apply_global_settings_payload(self.state, provider_settings_payload)
         self._normalize_tts_service_state(self.state.tts)
+        self.normalize_dubbing_translation_state(self.state.dubbing)
         self._loaded_llm_model = None
         session_dir = session_handler.get_session_path(self.state.session_name)
         os.makedirs(session_dir, exist_ok=True)
@@ -559,6 +818,7 @@ class AppLogic(QObject):
         self._apply_saved_state(restored_state, saved_state_payload)
         llm_handler.normalize_llm_settings(restored_state.llm)
         self._normalize_tts_service_state(restored_state.tts)
+        self.normalize_dubbing_translation_state(restored_state.dubbing)
 
         restored_state.session_name = session_name
         restored_state.processed_sentences = sentences
@@ -630,6 +890,8 @@ class AppLogic(QObject):
                 self.state = AppState() # Reset to default state
                 self.state.tts = current_tts_state
                 settings_handler.apply_global_settings_payload(self.state, provider_settings_payload)
+                self._normalize_tts_service_state(self.state.tts)
+                self.normalize_dubbing_translation_state(self.state.dubbing)
                 self._loaded_llm_model = None
                 self._last_session_config_snapshot = ""
                 self._persist_global_settings(force=True)
@@ -1089,6 +1351,8 @@ class AppLogic(QObject):
             self.log_message.emit("Cannot run dubbing tasks while generation/regeneration is active.")
             return
 
+        self.normalize_dubbing_translation_state(self.state.dubbing)
+
         self._run_threaded_task(self._run_dubbing_task_thread, task)
 
     def _run_dubbing_task_thread(self, task: str):
@@ -1096,8 +1360,9 @@ class AppLogic(QObject):
         self.log_message.emit(f"Starting dubbing task: {task}")
         session_output_dir = session_handler.get_session_path(self.state.session_name)
         dubbing_session_dir = self._get_dubbing_work_dir(ensure_exists=True)
-        dub_settings = self.state.dubbing
-        correction_prompt = dub_settings.custom_correction_prompt
+        dub_settings_payload = copy.deepcopy(self.state.dubbing.__dict__)
+        dub_settings_payload["llm_provider_configs"] = llm_handler.get_provider_configs(self.state.llm)
+        correction_prompt = str(dub_settings_payload.get("custom_correction_prompt", ""))
 
         if task == "transcribe":
             video_source = self._resolve_dubbing_video_source()
@@ -1106,27 +1371,46 @@ class AppLogic(QObject):
                 self.log_message.emit("No video source found for transcription.")
                 return
 
-            subdub_handler.transcribe_video(dubbing_session_dir, video_source, dub_settings.__dict__, correction_prompt)
+            subdub_handler.transcribe_video(
+                dubbing_session_dir,
+                video_source,
+                dub_settings_payload,
+                correction_prompt,
+            )
         elif task == "correct":
             srt_file = self._find_latest_srt(dubbing_session_dir, must_not_be_equalized=True)
             if srt_file:
-                subdub_handler.correct_subtitles(dubbing_session_dir, srt_file, dub_settings.__dict__, correction_prompt)
+                subdub_handler.correct_subtitles(
+                    dubbing_session_dir,
+                    srt_file,
+                    dub_settings_payload,
+                    correction_prompt,
+                )
             else:
                 self.log_message.emit("No SRT file found to correct.")
         elif task == "translate":
             srt_file = self._find_latest_srt(dubbing_session_dir, must_not_be_equalized=True)
             if srt_file:
-                subdub_handler.translate_subtitles(dubbing_session_dir, srt_file, dub_settings.__dict__, correction_prompt)
+                subdub_handler.translate_subtitles(
+                    dubbing_session_dir,
+                    srt_file,
+                    dub_settings_payload,
+                    correction_prompt,
+                )
             else:
                 self.log_message.emit("No SRT file found to translate.")
         elif task == "generate_audio":
-            self._orchestrate_dubbing_audio_generation(dubbing_session_dir, dub_settings, correction_prompt)
+            self._orchestrate_dubbing_audio_generation(
+                dubbing_session_dir,
+                dub_settings_payload,
+                correction_prompt,
+            )
         elif task == "add_to_video":
             self._orchestrate_add_to_video(dubbing_session_dir, session_output_dir)
         else:
             self.log_message.emit(f"Unknown dubbing task: {task}")
 
-    def _orchestrate_dubbing_audio_generation(self, session_dir, dub_settings, correction_prompt):
+    def _orchestrate_dubbing_audio_generation(self, session_dir, dub_settings: dict, correction_prompt):
         """Full workflow to generate dubbing audio from a video."""
         # 1. Transcribe if no SRT exists
         srt_file = self._find_latest_srt(session_dir, must_not_be_equalized=True)
@@ -1138,7 +1422,7 @@ class AppLogic(QObject):
                 self.show_error.emit("Dubbing Error", "No valid video file found for transcription.")
                 return
 
-            if not subdub_handler.transcribe_video(session_dir, video_source, dub_settings.__dict__, correction_prompt):
+            if not subdub_handler.transcribe_video(session_dir, video_source, dub_settings, correction_prompt):
                 self.show_error.emit("Dubbing Error", "Transcription failed. Check logs for details.")
                 return
             srt_file = self._find_latest_srt(session_dir, must_not_be_equalized=True)
@@ -1147,9 +1431,9 @@ class AppLogic(QObject):
                 return
 
         # 2. Translate if enabled
-        if dub_settings.translation_enabled:
+        if bool(dub_settings.get("translation_enabled")):
             self.log_message.emit("Translation is enabled, starting translation...")
-            if not subdub_handler.translate_subtitles(session_dir, srt_file, dub_settings.__dict__, correction_prompt):
+            if not subdub_handler.translate_subtitles(session_dir, srt_file, dub_settings, correction_prompt):
                 self.show_error.emit("Dubbing Error", "Translation failed. Check logs for details.")
                 return
             srt_file = self._find_latest_srt(session_dir, must_not_be_equalized=True) # Find the new translated file
@@ -1488,6 +1772,7 @@ class AppLogic(QObject):
     def populate_cloud_tts_catalogs(
         self,
         use_remote: bool = False,
+        provider_id: str | None = None,
         preferred_model: str | None = None,
         allow_unknown_model: bool = False,
         emit_state: bool = True,
@@ -1502,6 +1787,11 @@ class AppLogic(QObject):
             return False
 
         tts_snapshot = copy.deepcopy(self.state.tts.__dict__)
+        tts_snapshot["provider_configs"] = tts_handler.get_provider_configs(tts_snapshot)
+
+        if provider_id is not None:
+            tts_snapshot["openai_audio_endpoint"] = str(provider_id).strip()
+
         if service == tts_handler.OPENAI_SERVICE:
             tts_snapshot["openai_audio_endpoint"] = tts_handler.OPENAI_PROVIDER
         elif service == tts_handler.GEMINI_SERVICE:
@@ -1886,10 +2176,64 @@ class AppLogic(QObject):
             self.state.llm.provider_configs = provider_configs
         return copy.deepcopy(provider_configs)
 
+    def save_llm_provider(
+        self,
+        provider_id: str,
+        provider_name: str,
+        provider_key: str,
+        api_base: str,
+        api_key: str,
+        models: list[str] | str | None,
+    ) -> tuple[bool, str, str]:
+        """Creates or updates an LLM provider."""
+        current_configs = llm_handler.get_provider_configs(self.state.llm)
+        normalized_provider_id = str(provider_id or "").strip()
+        existing_provider = next(
+            (
+                provider
+                for provider in current_configs
+                if str(provider.get("id") or "") == normalized_provider_id
+            ),
+            None,
+        )
+
+        if existing_provider is not None:
+            success, provider_configs, message = llm_handler.update_provider(
+                self.state.llm,
+                provider_id=normalized_provider_id,
+                provider_name=provider_name,
+                provider_key=provider_key,
+                api_base=api_base,
+                api_key=api_key,
+                models=models,
+            )
+            if success:
+                self.state.llm.provider_configs = provider_configs
+                self.normalize_dubbing_translation_state(self.state.dubbing)
+                self.state_changed.emit()
+                return True, normalized_provider_id, ""
+            return False, "", message
+
+        success, provider_configs, resolved_provider_id, message = llm_handler.save_custom_provider(
+            self.state.llm,
+            provider_name=provider_name,
+            provider_key=provider_key,
+            api_base=api_base,
+            api_key=api_key,
+            models=models,
+        )
+        if success:
+            self.state.llm.provider_configs = provider_configs
+            self.normalize_dubbing_translation_state(self.state.dubbing)
+            self.state_changed.emit()
+            return True, resolved_provider_id, ""
+        return False, "", message
+
     def refresh_llm_builtin_models(self) -> list[str]:
         """Uses LiteLLM to refresh model catalogs for built-in providers."""
         provider_configs, status_lines = llm_handler.refresh_builtin_provider_models(self.state.llm)
         self.state.llm.provider_configs = provider_configs
+        self.normalize_dubbing_translation_state(self.state.dubbing)
         self.state_changed.emit()
         return status_lines
 
@@ -1899,32 +2243,159 @@ class AppLogic(QObject):
         api_base: str,
         api_key: str,
         models: list[str] | str | None,
+        provider_key: str = "openai",
     ) -> tuple[bool, str, str]:
-        """Creates or updates a custom OpenAI-compatible LLM provider."""
-        success, provider_configs, provider_id, message = llm_handler.save_custom_provider(
-            self.state.llm,
+        """Backward-compatible wrapper for custom LLM provider creation."""
+        return self.save_llm_provider(
+            provider_id="",
             provider_name=provider_name,
+            provider_key=provider_key,
             api_base=api_base,
             api_key=api_key,
             models=models,
         )
-        if success:
-            self.state.llm.provider_configs = provider_configs
-            self.state_changed.emit()
-            return True, provider_id, ""
-        return False, "", message
 
-    def remove_llm_custom_provider(self, provider_name_or_id: str) -> tuple[bool, str]:
-        """Removes a custom OpenAI-compatible LLM provider."""
+    def remove_llm_provider(self, provider_name_or_id: str) -> tuple[bool, str]:
+        """Removes a custom LLM provider."""
         success, provider_configs, message = llm_handler.remove_custom_provider(
             self.state.llm,
             provider_name_or_id,
         )
         if success:
             self.state.llm.provider_configs = provider_configs
+            removed_provider_id = self._normalize_provider_id(provider_name_or_id)
+            if removed_provider_id:
+                removed_prefix = f"custom:{removed_provider_id}/"
+                if str(self.state.llm.default_model or "").startswith(removed_prefix):
+                    self.state.llm.default_model = llm_handler.DEFAULT_LITELLM_MODEL
+
+                for prompt_key in ("first_prompt", "second_prompt", "third_prompt"):
+                    prompt_state = getattr(self.state.llm, prompt_key)
+                    if str(prompt_state.model or "").startswith(removed_prefix):
+                        prompt_state.model = "default"
+
+            self.normalize_dubbing_translation_state(self.state.dubbing)
             self.state_changed.emit()
             return True, ""
         return False, message
+
+    def remove_llm_custom_provider(self, provider_name_or_id: str) -> tuple[bool, str]:
+        """Backward-compatible wrapper for removing a custom LLM provider."""
+        return self.remove_llm_provider(provider_name_or_id)
+
+    # --- TTS Providers ---
+    def list_tts_provider_configs(self) -> list[dict]:
+        """Returns normalized provider configuration for cloud TTS UI."""
+        provider_configs = tts_handler.get_provider_configs(self.state.tts)
+        if provider_configs != self.state.tts.provider_configs:
+            self.state.tts.provider_configs = provider_configs
+        return copy.deepcopy(provider_configs)
+
+    def save_tts_provider(
+        self,
+        provider_id: str,
+        provider_name: str,
+        provider_type: str,
+        api_base: str,
+        api_key: str,
+        models: list[str] | str | None,
+        voices: list[str] | str | None,
+    ) -> tuple[bool, str, str]:
+        """Creates or updates an OpenAI-compatible TTS provider."""
+        success, provider_configs, resolved_provider_id, message = tts_handler.save_provider(
+            self.state.tts,
+            provider_name=provider_name,
+            provider_type=provider_type,
+            api_base=api_base,
+            api_key=api_key,
+            models=models,
+            voices=voices,
+            provider_id=provider_id,
+        )
+        if not success:
+            return False, "", message
+
+        self.state.tts.provider_configs = provider_configs
+        if not self.state.tts.openai_audio_endpoint:
+            self.state.tts.openai_audio_endpoint = resolved_provider_id
+        self._normalize_tts_service_state(self.state.tts)
+        self.state_changed.emit()
+        return True, resolved_provider_id, ""
+
+    def remove_tts_provider(self, provider_name_or_id: str) -> tuple[bool, str]:
+        """Removes a custom cloud TTS provider."""
+        success, provider_configs, message = tts_handler.remove_custom_provider(
+            self.state.tts,
+            provider_name_or_id,
+        )
+        if not success:
+            return False, message
+
+        removed_provider_id = self._normalize_provider_id(provider_name_or_id)
+        self.state.tts.provider_configs = provider_configs
+        selected_endpoint_id = self._normalize_provider_id(self.state.tts.openai_audio_endpoint)
+        if selected_endpoint_id == removed_provider_id:
+            self.state.tts.openai_audio_endpoint = tts_handler.OPENAI_PROVIDER
+            self.populate_cloud_tts_catalogs(use_remote=False, emit_state=False)
+
+        self._normalize_tts_service_state(self.state.tts)
+        self.state_changed.emit()
+        return True, ""
+
+    def test_tts_provider_connection(self, provider_id: str) -> tuple[bool, str]:
+        """Checks connectivity for a specific cloud TTS provider."""
+        normalized_provider_id = self._normalize_provider_id(provider_id)
+        if not normalized_provider_id:
+            return False, "Select a provider first."
+
+        tts_snapshot = copy.deepcopy(self.state.tts.__dict__)
+        tts_snapshot["service"] = tts_handler.OPENAI_COMPAT_SERVICE
+        tts_snapshot["provider_configs"] = tts_handler.get_provider_configs(self.state.tts)
+        tts_snapshot["openai_audio_endpoint"] = normalized_provider_id
+
+        connected, message = tts_handler.check_openai_audio_connection(tts_snapshot)
+        if connected:
+            self.log_message.emit(message)
+        return connected, message
+
+    def discover_tts_provider_catalog(
+        self,
+        provider_id: str,
+    ) -> tuple[bool, list[str], list[str], str]:
+        """Attempts remote discovery for provider models and voices."""
+        normalized_provider_id = self._normalize_provider_id(provider_id)
+        if not normalized_provider_id:
+            return False, [], [], "Select a provider first."
+
+        tts_snapshot = copy.deepcopy(self.state.tts.__dict__)
+        tts_snapshot["service"] = tts_handler.OPENAI_COMPAT_SERVICE
+        tts_snapshot["provider_configs"] = tts_handler.get_provider_configs(self.state.tts)
+        tts_snapshot["openai_audio_endpoint"] = normalized_provider_id
+
+        endpoint, endpoint_error = tts_handler.resolve_openai_audio_endpoint(tts_snapshot)
+        if endpoint is None:
+            return False, [], [], endpoint_error
+
+        connected, connection_message = tts_handler.check_openai_audio_connection(tts_snapshot)
+        if not connected:
+            return False, [], [], connection_message
+
+        models = tts_handler.get_openai_audio_models(tts_snapshot)
+        if not models:
+            models = tts_handler.get_openai_audio_models_fallback(tts_snapshot)
+
+        selected_model = models[0] if models else str(endpoint.get("default_model") or "")
+        if selected_model:
+            tts_snapshot["xtts_model"] = selected_model
+
+        voices = tts_handler.get_openai_audio_voices(tts_snapshot)
+        if not voices:
+            voices = tts_handler.get_openai_audio_voices_fallback(tts_snapshot)
+
+        message = (
+            f"{connection_message} Discovered {len(models)} model(s) and {len(voices)} voice(s)."
+        )
+        return True, models, voices, message
 
     # --- RVC ---
     def is_rvc_available(self) -> bool:

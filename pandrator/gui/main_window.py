@@ -8,7 +8,7 @@ from PyQt6.QtGui import QKeyEvent
 from .widgets.session_tab import SessionTab
 from .widgets.text_processing_tab import TextProcessingTab
 from .widgets.audio_processing_tab import AudioProcessingTab
-from .widgets.api_keys_tab import ApiKeysTab
+from .widgets.providers_tab import ProvidersTab
 from .widgets.logs_tab import LogsTab
 from .widgets.train_xtts_tab import TrainXttsTab
 from .widgets.generated_sentences_widget import GeneratedSentencesWidget
@@ -70,8 +70,8 @@ class MainWindow(QMainWindow):
         self.audio_processing_tab = AudioProcessingTab(self.logic)
         self.tab_widget.addTab(self.audio_processing_tab, "Audio Processing")
 
-        self.api_keys_tab = ApiKeysTab(self.logic)
-        self.tab_widget.addTab(self.api_keys_tab, "API Keys")
+        self.providers_tab = ProvidersTab(self.logic)
+        self.tab_widget.addTab(self.providers_tab, "Providers")
         
         self.train_xtts_tab = TrainXttsTab(self.logic)
         self.tab_widget.addTab(self.train_xtts_tab, "Train XTTS")

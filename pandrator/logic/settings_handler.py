@@ -6,9 +6,10 @@ from typing import Any, Dict
 
 from ..app_state import AppState
 from . import llm_handler
+from . import tts_handler
 
 GLOBAL_SETTINGS_FILENAME = "pandrator_settings.json"
-GLOBAL_SETTINGS_VERSION = 1
+GLOBAL_SETTINGS_VERSION = 2
 APP_ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 TTS_GLOBAL_STR_FIELDS = (
@@ -50,11 +51,16 @@ TTS_GLOBAL_BOOL_FIELDS = (
     "xtts_send_overlap_wav_len",
 )
 
+TTS_GLOBAL_LIST_FIELDS = (
+    "provider_configs",
+)
+
 TTS_GLOBAL_FIELDS = (
     *TTS_GLOBAL_STR_FIELDS,
     *TTS_GLOBAL_FLOAT_FIELDS,
     *TTS_GLOBAL_INT_FIELDS,
     *TTS_GLOBAL_BOOL_FIELDS,
+    *TTS_GLOBAL_LIST_FIELDS,
 )
 
 _FILE_IO_LOCK = threading.RLock()
@@ -103,6 +109,7 @@ def _coerce_bool(value: Any, default: bool) -> bool:
 
 def build_global_settings_payload(state: AppState) -> Dict[str, Any]:
     llm_handler.normalize_llm_settings(state.llm)
+    state.tts.provider_configs = tts_handler.get_provider_configs(state.tts)
     tts_payload: Dict[str, Any] = {}
     for field_name in TTS_GLOBAL_FIELDS:
         tts_payload[field_name] = getattr(state.tts, field_name)
@@ -146,6 +153,10 @@ def apply_global_settings_payload(state: AppState, payload: Dict[str, Any]):
 
     tts_payload = payload.get("tts", {})
     if isinstance(tts_payload, dict):
+        provider_configs = tts_payload.get("provider_configs")
+        if isinstance(provider_configs, list):
+            state.tts.provider_configs = provider_configs
+
         audio_endpoints = tts_payload.get("openai_audio_endpoints_json")
         if isinstance(audio_endpoints, str):
             state.tts.openai_audio_endpoints_json = audio_endpoints
@@ -175,6 +186,8 @@ def apply_global_settings_payload(state: AppState, payload: Dict[str, Any]):
                 continue
             current = getattr(state.tts, field_name)
             setattr(state.tts, field_name, _coerce_bool(tts_payload[field_name], current))
+
+        state.tts.provider_configs = tts_handler.get_provider_configs(state.tts)
 
 
 def save_global_settings(payload: Dict[str, Any]):

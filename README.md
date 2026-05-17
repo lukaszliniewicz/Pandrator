@@ -284,7 +284,9 @@ Either create a new session or load an existing one (select a folder in `Outputs
 Choose a `.txt`, `.srt`, `.pdf`, `.epub`, `.mobi` or `.docx` file. If you choose a PDF or EPUB file, a preview window will open with the extracted text. For PDFs, you will be able to crop the document (with translucent pages) to remove headers and footers or selected pages. You may edit the extracted text (OCRed books often have poorly recognized text from the title page, for example) and check/add paragraphs and Chapter markers (they will be created automatically for EPUB files). Files that contain a lot of text, regardless of format, can take a moment to finish preprocessing before generation begins. The GUI will freeze, but as long as there is processor activity, it's simply working.
 
 #### Selecting the TTS Engine and the voice
-1. Select the TTS service you want to use (XTTS, Voxtral, Silero, or a configured cloud/OpenAI-compatible endpoint) and then choose the language.
+1. Select the TTS service you want to use (XTTS, Voxtral, Silero, or OpenAI-Compatible cloud TTS) and then choose the language.
+   - Cloud providers (OpenAI, Gemini, and custom OpenAI-compatible endpoints) are managed in the **Providers** tab.
+   - In the Session tab, pick the cloud provider and then choose its model/voice.
 2. Choose the voice you want to use.
    1. **XTTS**, voices are short, 6-12s `.wav` files (22050hz sample rate, mono) stored in the `tts_voices` directory (`Pandrator/Pandrator/tts_voices`). You can upload and select them via the GUI. The XTTS model uses the audio to clone the voice. It doesn't matter what language the sample is in, you will be able to generate speech in all supported languages, but the quality will be best if you provide a sample in your target language. You may use the sample one in the repository or upload your own. Please make sure that the audio is between 6 and 12s, mono, and the sample rate is 22050hz. You may use a tool like Audacity to prepare the files. The less noise, the better. You may use a tool like [Resemble AI](https://github.com/resemble-ai/resemble-enhance) for denoising and/or enhancement of your samples on [Hugging Face](https://huggingface.co/spaces/ResembleAI/resemble-enhance). You may put several samples in a folder inside `tts_voices` and the model will use all of them at once (generally up to 4). It can improve the quality. 
    2. **Voxtral** exposes preset voices and model choices from the local API server. Current voice presets cover Arabic, English, German, Spanish, French, Hindi, Italian, Dutch and Portuguese. It is GPU-only in the current local wrapper.
@@ -314,9 +316,9 @@ Pandrator offers a comprehensive workflow for generating dubbed videos from vide
 3. **Translation (optional):**
     - **Enable Translation:** Toggle this option to translate the subtitles.
     - **Original and Target Languages:** Select the original language of the subtitles and the language you want to translate them into.
-    - **Translation Model:** Choose a translation model (for example `GPT 5.4`, `GPT 5.4-mini`, `Gemini 3.1 Pro`, `Gemini 3.0 Flash`, `Opus 4.7`, `Sonnet 4.6`, `DeepL`, or `Custom (LiteLLM)`).
-    - **Custom LiteLLM Model (optional):** If you select `Custom (LiteLLM)`, provide a model in `provider/model` format (for example `openai/gpt-5.4-mini` or `openrouter/meta-llama/llama-3.1-70b-instruct`).
-    - **Custom API Base (optional):** Set this when using OpenAI-compatible endpoints (for example LM Studio, vLLM, Ollama-compatible gateways, or custom proxy URLs).
+    - **Translation Provider:** Choose an LLM provider from your configured Providers catalog, or choose `DeepL`.
+    - **Translation Model:** Choose a model from that provider's catalog (or type one manually if needed).
+    - Manage provider API base URLs, keys and model catalogs in the **Providers** tab.
     - **Chain-of-thought (optional):** Enables additional reasoning effort for LLM-based translation/correction (not used with DeepL).
 4. In order to generate speech, click on __Generate Dubbing Audio__. You will be able to edit/regenerate the sentences as in the Audiobook workflow. You can also choose to only transcribe the chosen video file or only translate a subtitle file.
 5. **Synchronization:** When you're happy with the generated audio, click on __Add Dubbing to Video__. The dubbing will be synchronised with the video, producing a dubbed video file with embedded subtitles.
@@ -335,7 +337,7 @@ Pandrator offers a comprehensive workflow for generating dubbed videos from vide
 - Enable LLM processing to use language models for preprocessing text before sending it to the TTS API. For example, you may ask the LLM to remove OCR artifacts, spell out abbreviations, and correct punctuation.
 - You can define up to three prompts for text optimization. Each prompt is sent to the LLM API separately, and the output of the last prompt is used for TTS generation.
 - For each prompt, you can enable/disable it, set the prompt text, choose the LLM model to use, and enable/disable evaluation (if enabled, the LLM API will be called twice for each prompt, and then again for the model to choose the better result).
-- Load the available LLM models using the "Load LLM Models" button in the Session tab.
+- Manage providers/models in the **Providers** tab, then refresh built-in catalogs from the **Text Processing** tab if needed.
 
 ### RVC Quality Enhancement and Voice Cloning
 - Enable RVC to enhance the generated audio quality and apply voice cloning.
