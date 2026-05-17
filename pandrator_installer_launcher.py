@@ -41,6 +41,11 @@ PANDRATOR_RUNTIME_REPAIR_SPECS = (
     PYQT6_SIP_RUNTIME_SPEC,
     PYGAME_RUNTIME_SPEC,
 )
+SUBDUB_RUNTIME_REPAIR_SPECS = (
+    'litellm',
+    'tiktoken',
+    'fastuuid',
+)
 WHISPERX_PYTHON_VERSION = '3.13'
 WHISPERX_VERSION = '3.8.5'
 WHISPERX_CTRANSLATE2_VERSION = '4.7.1'
@@ -1734,6 +1739,71 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
     def ensure_pyqt6_runtime(self, pandrator_path, env_name):
         self.ensure_pandrator_runtime(pandrator_path, env_name)
 
+    def ensure_subdub_runtime(self, pandrator_path, env_name, subdub_repo_path):
+        if env_name != 'pandrator_installer':
+            return
+
+        if not os.path.isdir(subdub_repo_path):
+            logging.warning(
+                f"Skipping Subdub runtime import check because repository path does not exist: {subdub_repo_path}"
+            )
+            return
+
+        check_command = ['python', '-c', 'import subdub; import litellm, tiktoken, fastuuid']
+        logging.info("Checking Subdub runtime imports (subdub + litellm + tiktoken + fastuuid) in pandrator_installer...")
+
+        try:
+            self.run_pixi_in_env(
+                pandrator_path,
+                env_name,
+                check_command,
+                cwd=subdub_repo_path,
+                log_errors=False,
+            )
+            logging.info("Subdub runtime import check passed.")
+            return
+        except subprocess.CalledProcessError as e:
+            logging.warning(
+                "Subdub runtime import check failed in pandrator_installer. "
+                f"Reinstalling runtime packages {SUBDUB_RUNTIME_REPAIR_SPECS}. STDERR: {e.stderr}"
+            )
+
+        self.run_pixi_in_env(
+            pandrator_path,
+            env_name,
+            [
+                'python',
+                '-m',
+                'pip',
+                'install',
+                '--upgrade',
+                '--force-reinstall',
+                '--no-cache-dir',
+                *SUBDUB_RUNTIME_REPAIR_SPECS,
+            ],
+            cwd=subdub_repo_path,
+        )
+
+        self.run_pixi_in_env(
+            pandrator_path,
+            env_name,
+            ['python', '-m', 'pip', 'install', '--no-deps', '-e', '.'],
+            cwd=subdub_repo_path,
+        )
+
+        self.run_pixi_in_env(
+            pandrator_path,
+            env_name,
+            check_command,
+            cwd=subdub_repo_path,
+            log_errors=False,
+        )
+
+        logging.info(
+            "Subdub runtime repaired successfully using %s.",
+            ', '.join(SUBDUB_RUNTIME_REPAIR_SPECS),
+        )
+
     def try_import_requirements(self, pandrator_path, env_name, requirements_file):
         logging.info(f"Running best-effort import checks for {requirements_file}...")
 
@@ -2243,6 +2313,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                     ['python', '-m', 'pip', 'install', '-e', '.'],
                     cwd=subdub_repo_path,
                 )
+                self.ensure_subdub_runtime(pandrator_path, env_name, subdub_repo_path)
                 return
 
             requirements_file = os.path.join(subdub_repo_path, 'requirements.txt')
