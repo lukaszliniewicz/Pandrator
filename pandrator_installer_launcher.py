@@ -34,6 +34,13 @@ PANDRATOR_PYTHON_VERSION = '3.11'
 SILERO_PYTHON_VERSION = '3.10'
 XTTS_FINETUNING_PYTHON_VERSION = '3.10'
 PYQT6_RUNTIME_PIN = 'PyQt6==6.7.1'
+PYQT6_SIP_RUNTIME_SPEC = 'PyQt6-sip>=13.8,<14'
+PYGAME_RUNTIME_SPEC = 'pygame>=2.6.1,<3'
+PANDRATOR_RUNTIME_REPAIR_SPECS = (
+    PYQT6_RUNTIME_PIN,
+    PYQT6_SIP_RUNTIME_SPEC,
+    PYGAME_RUNTIME_SPEC,
+)
 WHISPERX_PYTHON_VERSION = '3.13'
 WHISPERX_VERSION = '3.8.5'
 WHISPERX_CTRANSLATE2_VERSION = '4.7.1'
@@ -1681,12 +1688,12 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 ['python', '-m', 'pip', 'install', requirement_spec]
             )
 
-    def ensure_pyqt6_runtime(self, pandrator_path, env_name):
+    def ensure_pandrator_runtime(self, pandrator_path, env_name):
         if env_name != 'pandrator_installer':
             return
 
-        check_command = ['python', '-c', 'from PyQt6.QtWidgets import QApplication']
-        logging.info("Checking PyQt6 QtWidgets runtime in pandrator_installer...")
+        check_command = ['python', '-c', 'from PyQt6.QtWidgets import QApplication; import PyQt6.sip; import pygame']
+        logging.info("Checking Pandrator runtime imports (PyQt6 + pygame) in pandrator_installer...")
 
         try:
             self.run_pixi_in_env(
@@ -1695,18 +1702,22 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 check_command,
                 log_errors=False,
             )
-            logging.info("PyQt6 runtime check passed.")
+            logging.info("Pandrator runtime import check passed.")
             return
         except subprocess.CalledProcessError as e:
             logging.warning(
-                "PyQt6 runtime check failed in pandrator_installer. "
-                f"Reinstalling {PYQT6_RUNTIME_PIN}. STDERR: {e.stderr}"
+                "Pandrator runtime import check failed in pandrator_installer. "
+                f"Reinstalling runtime packages {PANDRATOR_RUNTIME_REPAIR_SPECS}. STDERR: {e.stderr}"
             )
 
         self.run_pixi_in_env(
             pandrator_path,
             env_name,
-            ['python', '-m', 'pip', 'install', '--force-reinstall', PYQT6_RUNTIME_PIN]
+            [
+                'python', '-m', 'pip', 'install',
+                '--upgrade', '--force-reinstall', '--no-cache-dir',
+                *PANDRATOR_RUNTIME_REPAIR_SPECS,
+            ]
         )
 
         self.run_pixi_in_env(
@@ -1715,7 +1726,13 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             check_command,
             log_errors=False,
         )
-        logging.info(f"PyQt6 runtime repaired successfully using {PYQT6_RUNTIME_PIN}.")
+        logging.info(
+            "Pandrator runtime repaired successfully using %s.",
+            ', '.join(PANDRATOR_RUNTIME_REPAIR_SPECS),
+        )
+
+    def ensure_pyqt6_runtime(self, pandrator_path, env_name):
+        self.ensure_pandrator_runtime(pandrator_path, env_name)
 
     def try_import_requirements(self, pandrator_path, env_name, requirements_file):
         logging.info(f"Running best-effort import checks for {requirements_file}...")
@@ -1765,7 +1782,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 ['python', '-m', 'pip', 'install', '-r', requirements_file]
             )
 
-        self.ensure_pyqt6_runtime(pandrator_path, env_name)
+        self.ensure_pandrator_runtime(pandrator_path, env_name)
 
         self.try_import_requirements(pandrator_path, env_name, requirements_file)
 
@@ -2539,6 +2556,8 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             self.worker.update_status.emit("Checking Pandrator environment...")
             self.create_pixi_env(pandrator_base_path, 'pandrator_installer', PANDRATOR_PYTHON_VERSION)
             self.add_pixi_conda_package(pandrator_base_path, 'pandrator_installer', 'ffmpeg')
+            self.worker.update_status.emit("Checking Pandrator runtime...")
+            self.ensure_pandrator_runtime(pandrator_base_path, 'pandrator_installer')
 
             requirements_file = os.path.join(pandrator_repo_path, 'requirements.txt')
             logging.info(f"Checking requirements from: {requirements_file}")
@@ -2902,6 +2921,10 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             tts_engine_launched = True
 
         if self.launch_pandrator_var:
+            self.worker.update_progress.emit(0.85)
+            self.worker.update_status.emit("Checking Pandrator runtime...")
+            self.ensure_pandrator_runtime(pandrator_path, 'pandrator_installer')
+
             self.worker.update_progress.emit(0.9)
             self.worker.update_status.emit("Starting Pandrator...")
             pandrator_repo_path = os.path.join(pandrator_path, 'Pandrator')
