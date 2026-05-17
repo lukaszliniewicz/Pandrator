@@ -823,8 +823,30 @@ class PandratorInstaller(QMainWindow):
         else:
             QMessageBox.warning(self, "Log Not Available", "No log file is available yet.")
 
+    def get_hidden_subprocess_kwargs(self):
+        """Return subprocess kwargs that hide transient console windows on Windows."""
+        if os.name != 'nt':
+            return {}
+
+        kwargs = {}
+
+        creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+        if creationflags:
+            kwargs['creationflags'] = creationflags
+
+        startupinfo_factory = getattr(subprocess, 'STARTUPINFO', None)
+        startf_use_showwindow = getattr(subprocess, 'STARTF_USESHOWWINDOW', 0)
+        if startupinfo_factory and startf_use_showwindow:
+            startupinfo = startupinfo_factory()
+            startupinfo.dwFlags |= startf_use_showwindow
+            startupinfo.wShowWindow = getattr(subprocess, 'SW_HIDE', 0)
+            kwargs['startupinfo'] = startupinfo
+
+        return kwargs
+
     def run_command(self, command, use_shell=False, cwd=None, env=None, log_errors=True):
         try:
+            subprocess_kwargs = self.get_hidden_subprocess_kwargs()
             if use_shell:
                 process = subprocess.Popen(
                     command if isinstance(command, str) else " ".join(command),
@@ -834,7 +856,8 @@ class PandratorInstaller(QMainWindow):
                     cwd=cwd,
                     env=env,
                     encoding='utf-8',
-                    errors='replace'
+                    errors='replace',
+                    **subprocess_kwargs,
                 )
             else:
                 process = subprocess.Popen(
@@ -844,7 +867,8 @@ class PandratorInstaller(QMainWindow):
                     cwd=cwd,
                     env=env,
                     encoding='utf-8',
-                    errors='replace'
+                    errors='replace',
+                    **subprocess_kwargs,
                 )
             
             stdout, stderr = process.communicate()
@@ -892,6 +916,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                **self.get_hidden_subprocess_kwargs(),
             )
             stdout, stderr = process.communicate()
 
@@ -903,6 +928,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                     check=True,
                     capture_output=True,
                     text=True,
+                    **self.get_hidden_subprocess_kwargs(),
                 )
                 logging.info("Global confirmation enabled for Chocolatey.")
                 # Refresh env vars so choco.exe is on PATH for subsequent calls
@@ -987,7 +1013,8 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 shell=True,
-                text=True
+                text=True,
+                **self.get_hidden_subprocess_kwargs(),
             )
             
             stdout, stderr = process.communicate()
@@ -1008,7 +1035,8 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     shell=True,
-                    text=True
+                    text=True,
+                    **self.get_hidden_subprocess_kwargs(),
                 )
                 
                 stdout, stderr = process.communicate()
@@ -1044,6 +1072,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                         ["winget", "install", "--id", "calibre",
                          "--accept-package-agreements", "--accept-source-agreements"],
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                        **self.get_hidden_subprocess_kwargs(),
                     )
                     stdout, stderr = process.communicate(timeout=300)
                     if process.returncode == 0:
@@ -2008,6 +2037,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 cwd=xtts_repo_path,
                 stdout=log_handle,
                 stderr=subprocess.STDOUT,
+                **self.get_hidden_subprocess_kwargs(),
             )
 
             if not self.check_xtts_server_online(
@@ -2352,7 +2382,12 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             # Use icacls to give Users full control (F) with inheritance flags (OI)(CI)
             # OI = Object Inherit, CI = Container Inherit, F = Full Control
             command = f'icacls "{path}" /grant:r Users:(OI)(CI)F /T /Q'
-            subprocess.run(command, shell=True, check=True)
+            subprocess.run(
+                command,
+                shell=True,
+                check=True,
+                **self.get_hidden_subprocess_kwargs(),
+            )
             
             logging.info(f"Successfully set permissions on: {path}")
             return True
@@ -3083,10 +3118,6 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         pandrator_log_file = os.path.join(script_dir, 'pandrator_startup.log')
         log_handle = open(pandrator_log_file, 'a', encoding='utf-8')
 
-        creationflags = 0
-        if os.name == 'nt':
-            creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
-
         try:
             process = subprocess.Popen(
                 command,
@@ -3094,7 +3125,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 env=self.get_pixi_subprocess_env(pandrator_path),
                 stdout=log_handle,
                 stderr=subprocess.STDOUT,
-                creationflags=creationflags,
+                **self.get_hidden_subprocess_kwargs(),
             )
         except Exception:
             log_handle.close()
@@ -3170,6 +3201,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 env=xtts_env,
                 stdout=log_handle,
                 stderr=subprocess.STDOUT,
+                **self.get_hidden_subprocess_kwargs(),
             )
         except Exception:
             log_handle.close()
@@ -3243,6 +3275,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 cwd=voxtral_server_path,
                 stdout=log_handle,
                 stderr=subprocess.STDOUT,
+                **self.get_hidden_subprocess_kwargs(),
             )
         except Exception:
             log_handle.close()
@@ -3293,7 +3326,8 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 cwd=pandrator_path,
                 env=self.get_pixi_subprocess_env(pandrator_path),
                 stdout=log_handle,
-                stderr=subprocess.STDOUT
+                stderr=subprocess.STDOUT,
+                **self.get_hidden_subprocess_kwargs(),
             )
         except Exception:
             log_handle.close()
