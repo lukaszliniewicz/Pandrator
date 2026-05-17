@@ -30,6 +30,8 @@ PIXI_BINARY_NAME = 'pixi.exe'
 PIXI_DOWNLOAD_URL = 'https://github.com/prefix-dev/pixi/releases/latest/download/pixi-x86_64-pc-windows-msvc.exe'
 PIXI_HOME_DIRNAME = '.pixi-home'
 PIXI_CACHE_DIRNAME = '.pixi-cache'
+PIXI_PIP_CACHE_SUBDIRNAME = 'pip'
+PIXI_TEMP_SUBDIRNAME = 'tmp'
 PANDRATOR_PYTHON_VERSION = '3.11'
 SILERO_PYTHON_VERSION = '3.10'
 XTTS_FINETUNING_PYTHON_VERSION = '3.10'
@@ -1087,15 +1089,23 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         pixi_home = os.path.join(pandrator_path, PIXI_HOME_DIRNAME)
         pixi_cache = os.path.join(pandrator_path, PIXI_CACHE_DIRNAME)
         rattler_cache = os.path.join(pixi_cache, 'rattler')
+        pip_cache = os.path.join(pixi_cache, PIXI_PIP_CACHE_SUBDIRNAME)
+        local_temp = os.path.join(pixi_cache, PIXI_TEMP_SUBDIRNAME)
 
         os.makedirs(pixi_home, exist_ok=True)
         os.makedirs(pixi_cache, exist_ok=True)
         os.makedirs(rattler_cache, exist_ok=True)
+        os.makedirs(pip_cache, exist_ok=True)
+        os.makedirs(local_temp, exist_ok=True)
 
         env = os.environ.copy()
         env['PIXI_HOME'] = pixi_home
         env['PIXI_CACHE_DIR'] = pixi_cache
         env['RATTLER_CACHE_DIR'] = rattler_cache
+        env['PIP_CACHE_DIR'] = pip_cache
+        env['TMP'] = local_temp
+        env['TEMP'] = local_temp
+        env['TMPDIR'] = local_temp
         return env
 
     def run_pixi_command(self, pandrator_path, arguments, cwd=None, log_errors=True):
