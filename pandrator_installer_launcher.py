@@ -9,6 +9,7 @@ import sys
 import atexit
 import psutil
 import json
+import re
 import traceback
 import tempfile
 import ctypes
@@ -29,6 +30,9 @@ PIXI_BINARY_NAME = 'pixi.exe'
 PIXI_DOWNLOAD_URL = 'https://github.com/prefix-dev/pixi/releases/latest/download/pixi-x86_64-pc-windows-msvc.exe'
 PIXI_HOME_DIRNAME = '.pixi-home'
 PIXI_CACHE_DIRNAME = '.pixi-cache'
+PANDRATOR_PYTHON_VERSION = '3.11'
+SILERO_PYTHON_VERSION = '3.10'
+XTTS_FINETUNING_PYTHON_VERSION = '3.10'
 PYQT6_RUNTIME_PIN = 'PyQt6==6.7.1'
 WHISPERX_PYTHON_VERSION = '3.13'
 WHISPERX_VERSION = '3.8.5'
@@ -48,10 +52,22 @@ PYCROPPDF_REPO_URL = 'https://github.com/lukaszliniewicz/PyCropPDF.git'
 EASY_XTTS_TRAINER_REPO_URL = 'https://github.com/lukaszliniewicz/easy_xtts_trainer.git'
 
 INSTALLER_STATE_FILENAME = 'installer_state.json'
+RVC_PYTHON_FORK_INSTALL_SPEC = 'git+https://github.com/JarodMica/rvc-python@782467ababe17698a4b5100aedfe16e69cebaa56'
+RVC_PYTHON_FORK_SOURCE_FRAGMENT = 'github.com/jarodmica/rvc-python'
+RVC_FAIRSEQ_WHEEL_URL_BY_PYTHON = {
+    '3.10': 'https://huggingface.co/Jmica/rvc/resolve/main/fairseq-0.12.2-cp310-cp310-win_amd64.whl?download=true',
+    '3.11': 'https://huggingface.co/Jmica/rvc/resolve/main/fairseq-0.12.4-cp311-cp311-win_amd64.whl?download=true',
+}
+RVC_TORCH_VERSION = '2.3.1'
+RVC_TORCHVISION_VERSION = '0.18.1'
+RVC_TORCHAUDIO_VERSION = '2.3.1'
+RVC_TORCH_INDEX_URL = 'https://download.pytorch.org/whl/cu121'
 RVC_REQUIRED_PACKAGE_SPECS = (
     'rvc-python',
-    'torch==2.1.1+cu121',
-    'torchaudio==2.1.1+cu121',
+    'fairseq',
+    f'torch=={RVC_TORCH_VERSION}',
+    f'torchvision=={RVC_TORCHVISION_VERSION}',
+    f'torchaudio=={RVC_TORCHAUDIO_VERSION}',
 )
 SILERO_REQUIRED_PACKAGE_SPECS = (
     'requests',
@@ -340,7 +356,7 @@ class PandratorInstaller(QMainWindow):
         other_tools_label.setStyleSheet("font-weight: bold;")
         components_layout.addWidget(other_tools_label)
         
-        self.rvc_checkbox = QCheckBox("RVC (rvc-python)")
+        self.rvc_checkbox = QCheckBox("RVC (rvc-python fork)")
         components_layout.addWidget(self.rvc_checkbox)
         
         self.whisperx_checkbox = QCheckBox("WhisperX (needed for dubbing and XTTS training)")
@@ -1142,6 +1158,34 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             if os.path.exists(temp_pixi_path):
                 os.remove(temp_pixi_path)
 
+    def update_manifest_python_dependency(self, manifest_path, python_version):
+        desired_python_line = f'python = "{python_version}.*"'
+
+        try:
+            with open(manifest_path, 'r', encoding='utf-8', errors='replace') as f:
+                manifest_contents = f.read()
+        except OSError as e:
+            logging.warning(f"Could not read manifest for Python migration ({manifest_path}): {str(e)}")
+            return False
+
+        python_line_pattern = r'(?mi)^[ \t]*python[ \t]*=[ \t]*"[^"]*"[ \t]*$'
+        if re.search(python_line_pattern, manifest_contents):
+            updated_contents = re.sub(python_line_pattern, desired_python_line, manifest_contents, count=1)
+        elif '[dependencies]' in manifest_contents:
+            updated_contents = manifest_contents.replace('[dependencies]', f'[dependencies]\n{desired_python_line}', 1)
+        else:
+            newline = '' if manifest_contents.endswith('\n') else '\n'
+            updated_contents = f"{manifest_contents}{newline}\n[dependencies]\n{desired_python_line}\n"
+
+        if updated_contents == manifest_contents:
+            return False
+
+        with open(manifest_path, 'w', encoding='utf-8') as f:
+            f.write(updated_contents)
+
+        logging.info(f"Updated Python dependency for {manifest_path} to {python_version}.*")
+        return True
+
     def ensure_pixi_manifest(self, pandrator_path, env_name, python_version):
         env_dir = self.get_pixi_env_dir(pandrator_path, env_name)
         manifest_path = self.get_pixi_manifest_path(pandrator_path, env_name)
@@ -1161,8 +1205,34 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
             with open(manifest_path, 'w', encoding='utf-8') as f:
                 f.write(manifest_contents)
+        else:
+            self.update_manifest_python_dependency(manifest_path, python_version)
 
         return manifest_path
+
+    def get_env_python_version(self, pandrator_path, env_name):
+        stdout, _ = self.run_pixi_in_env(
+            pandrator_path,
+            env_name,
+            ['python', '-c', 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'],
+            log_errors=False,
+        )
+
+        python_version = stdout.strip().splitlines()[-1] if stdout.strip() else ''
+        if not python_version:
+            raise RuntimeError(f"Could not detect Python version in {env_name}")
+
+        return python_version
+
+    def get_rvc_fairseq_wheel_url(self, python_version):
+        wheel_url = RVC_FAIRSEQ_WHEEL_URL_BY_PYTHON.get(python_version)
+        if wheel_url:
+            return wheel_url
+
+        raise RuntimeError(
+            f"No fairseq wheel URL configured for Python {python_version}. "
+            "Supported versions are 3.10 and 3.11."
+        )
 
     def create_pixi_env(self, pandrator_path, env_name, python_version):
         logging.info(f"Creating pixi environment {env_name}...")
@@ -1333,6 +1403,37 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
         return installed_packages
 
+    def get_installed_pip_freeze_entries(self, pandrator_path, env_name):
+        try:
+            stdout, _ = self.run_pixi_in_env(
+                pandrator_path,
+                env_name,
+                ['python', '-m', 'pip', 'freeze'],
+                log_errors=False,
+            )
+        except subprocess.CalledProcessError as e:
+            logging.warning(
+                f"Failed to inspect pip freeze entries in {env_name}; source checks will require reinstall. STDERR: {e.stderr}"
+            )
+            return None
+
+        freeze_entries = {}
+        for raw_line in stdout.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith('#') or line.startswith('-e '):
+                continue
+
+            package_name = ''
+            if ' @ ' in line:
+                package_name = line.split(' @ ', 1)[0].strip()
+            elif '==' in line:
+                package_name = line.split('==', 1)[0].strip()
+
+            if package_name:
+                freeze_entries[self.normalize_package_name(package_name)] = line
+
+        return freeze_entries
+
     def find_unsatisfied_package_specs(self, package_specs, installed_packages):
         if installed_packages is None:
             return list(package_specs)
@@ -1419,6 +1520,44 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             )
 
         return False, "package checks passed"
+
+    def package_source_matches(self, pandrator_path, env_name, package_name, expected_source_fragment):
+        freeze_entries = self.get_installed_pip_freeze_entries(pandrator_path, env_name)
+        if freeze_entries is None:
+            return False, "pip freeze inspection failed"
+
+        normalized_package_name = self.normalize_package_name(package_name)
+        freeze_entry = freeze_entries.get(normalized_package_name)
+        if not freeze_entry:
+            return False, f"{package_name} is not installed"
+
+        if ' @ ' not in freeze_entry:
+            return False, f"{package_name} is not installed from an explicit source"
+
+        if expected_source_fragment.lower() not in freeze_entry.lower():
+            return False, f"{package_name} is installed from a different source"
+
+        return True, "source check passed"
+
+    def rvc_needs_package_sync(self, pandrator_path, env_name):
+        needs_sync, reason = self.component_needs_package_sync(
+            pandrator_path,
+            env_name,
+            RVC_REQUIRED_PACKAGE_SPECS,
+        )
+        if needs_sync:
+            return True, reason
+
+        source_ok, source_reason = self.package_source_matches(
+            pandrator_path,
+            env_name,
+            'rvc-python',
+            RVC_PYTHON_FORK_SOURCE_FRAGMENT,
+        )
+        if not source_ok:
+            return True, source_reason
+
+        return False, "package and source checks passed"
 
     def extract_import_candidates(self, requirements_file):
         candidates = []
@@ -1948,22 +2087,49 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 ['python', '-m', 'pip', 'install', 'pip==24']
             )
 
-            logging.info("Installing RVC Python...")
-            self.run_pixi_in_env(
-                pandrator_path,
-                env_name,
-                ['python', '-m', 'pip', 'install', 'rvc-python']
-            )
+            python_version = self.get_env_python_version(pandrator_path, env_name)
+            fairseq_wheel_url = self.get_rvc_fairseq_wheel_url(python_version)
 
-            logging.info("Installing specific PyTorch version...")
+            logging.info(f"Installing RVC Python fork for Python {python_version}...")
             self.run_pixi_in_env(
                 pandrator_path,
                 env_name,
                 [
                     'python', '-m', 'pip', 'install',
-                    'torch==2.1.1+cu121', 'torchaudio==2.1.1+cu121',
-                    '--index-url', 'https://download.pytorch.org/whl/cu121'
+                    '--upgrade', '--force-reinstall',
+                    RVC_PYTHON_FORK_INSTALL_SPEC,
                 ]
+            )
+
+            logging.info("Installing fairseq wheel required by the RVC fork...")
+            self.run_pixi_in_env(
+                pandrator_path,
+                env_name,
+                [
+                    'python', '-m', 'pip', 'install',
+                    '--upgrade', '--force-reinstall',
+                    fairseq_wheel_url,
+                ]
+            )
+
+            logging.info("Installing PyTorch stack for RVC...")
+            self.run_pixi_in_env(
+                pandrator_path,
+                env_name,
+                [
+                    'python', '-m', 'pip', 'install', '--upgrade',
+                    f'torch=={RVC_TORCH_VERSION}',
+                    f'torchvision=={RVC_TORCHVISION_VERSION}',
+                    f'torchaudio=={RVC_TORCHAUDIO_VERSION}',
+                    '--index-url', RVC_TORCH_INDEX_URL,
+                ]
+            )
+
+            logging.info("Verifying RVC runtime imports...")
+            self.run_pixi_in_env(
+                pandrator_path,
+                env_name,
+                ['python', '-c', 'import fairseq, rvc_python, torch, torchvision, torchaudio']
             )
 
             logging.info("RVC Python installation completed successfully.")
@@ -2154,7 +2320,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             if needs_pandrator_environment:
                 self.worker.update_progress.emit(0.6)
                 self.worker.update_status.emit("Creating Pandrator Pixi environment...")
-                self.create_pixi_env(pandrator_path, 'pandrator_installer', '3.10')
+                self.create_pixi_env(pandrator_path, 'pandrator_installer', PANDRATOR_PYTHON_VERSION)
                 self.add_pixi_conda_package(pandrator_path, 'pandrator_installer', 'ffmpeg')
 
                 self.worker.update_progress.emit(0.7)
@@ -2181,7 +2347,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             if silero_var:
                 self.worker.update_progress.emit(0.8)
                 self.worker.update_status.emit("Creating Silero Pixi environment...")
-                self.create_pixi_env(pandrator_path, 'silero_api_server_installer', '3.10')
+                self.create_pixi_env(pandrator_path, 'silero_api_server_installer', SILERO_PYTHON_VERSION)
 
                 self.worker.update_progress.emit(0.9)
                 self.worker.update_status.emit("Installing Silero API server...")
@@ -2194,7 +2360,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
             if rvc_var:
                 self.worker.update_progress.emit(0.8)
-                self.worker.update_status.emit("Installing RVC Python...")
+                self.worker.update_status.emit("Installing RVC Python fork...")
                 self.install_rvc_python(pandrator_path, 'pandrator_installer')
 
             if whisperx_var:
@@ -2212,7 +2378,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
                 self.worker.update_progress.emit(0.90)
                 self.worker.update_status.emit("Creating XTTS Fine-tuning Pixi environment...")
-                self.create_pixi_env(pandrator_path, 'easy_xtts_trainer', '3.10')
+                self.create_pixi_env(pandrator_path, 'easy_xtts_trainer', XTTS_FINETUNING_PYTHON_VERSION)
 
                 self.worker.update_progress.emit(0.95)
                 self.worker.update_status.emit("Installing XTTS Fine-tuning requirements...")
@@ -2334,7 +2500,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             self.pull_repo(pandrator_repo_path)
 
             self.worker.update_status.emit("Checking Pandrator environment...")
-            self.create_pixi_env(pandrator_base_path, 'pandrator_installer', '3.10')
+            self.create_pixi_env(pandrator_base_path, 'pandrator_installer', PANDRATOR_PYTHON_VERSION)
             self.add_pixi_conda_package(pandrator_base_path, 'pandrator_installer', 'ffmpeg')
 
             requirements_file = os.path.join(pandrator_repo_path, 'requirements.txt')
@@ -2402,14 +2568,13 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 rvc_needs_install = pandrator_env_missing
                 rvc_reason = "Pixi manifest is missing"
                 if not rvc_needs_install:
-                    rvc_needs_install, rvc_reason = self.component_needs_package_sync(
+                    rvc_needs_install, rvc_reason = self.rvc_needs_package_sync(
                         pandrator_base_path,
                         'pandrator_installer',
-                        RVC_REQUIRED_PACKAGE_SPECS,
                     )
 
                 if rvc_needs_install:
-                    self.worker.update_status.emit("Installing/upgrading RVC dependencies...")
+                    self.worker.update_status.emit("Installing/upgrading RVC fork dependencies...")
                     logging.info(f"Installing RVC packages because {rvc_reason}")
                     self.install_rvc_python(pandrator_base_path, 'pandrator_installer')
                 else:
@@ -2444,7 +2609,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 if silero_needs_install:
                     self.worker.update_status.emit("Installing/upgrading Silero dependencies...")
                     logging.info(f"Installing Silero packages because {silero_reason}")
-                    self.create_pixi_env(pandrator_base_path, 'silero_api_server_installer', '3.10')
+                    self.create_pixi_env(pandrator_base_path, 'silero_api_server_installer', SILERO_PYTHON_VERSION)
                     self.install_silero_api_server(pandrator_base_path, 'silero_api_server_installer')
                 else:
                     logging.info(f"Skipping Silero reinstall: {silero_reason}")
@@ -2487,7 +2652,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
                 xtts_requirements_file = os.path.join(easy_xtts_trainer_path, 'requirements.txt')
                 if os.path.exists(xtts_requirements_file):
-                    self.create_pixi_env(pandrator_base_path, 'easy_xtts_trainer', '3.10')
+                    self.create_pixi_env(pandrator_base_path, 'easy_xtts_trainer', XTTS_FINETUNING_PYTHON_VERSION)
 
                     self.worker.update_status.emit("Checking easy XTTS trainer dependencies...")
                     needs_easy_xtts_requirements, easy_xtts_requirements_reason = self.should_install_requirements(
@@ -2528,7 +2693,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             elif config.get('xtts_finetuning_support', False):
                 self.worker.update_status.emit("Migrating easy XTTS trainer to Pixi...")
                 self.clone_repo(EASY_XTTS_TRAINER_REPO_URL, easy_xtts_trainer_path)
-                self.create_pixi_env(pandrator_base_path, 'easy_xtts_trainer', '3.10')
+                self.create_pixi_env(pandrator_base_path, 'easy_xtts_trainer', XTTS_FINETUNING_PYTHON_VERSION)
                 xtts_requirements_file = os.path.join(easy_xtts_trainer_path, 'requirements.txt')
                 self.install_requirements(pandrator_base_path, 'easy_xtts_trainer', xtts_requirements_file)
                 self.install_pytorch_for_xtts_finetuning(pandrator_base_path, 'easy_xtts_trainer')
