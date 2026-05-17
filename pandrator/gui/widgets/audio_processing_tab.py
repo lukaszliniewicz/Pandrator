@@ -176,6 +176,18 @@ class AudioProcessingTab(QWidget):
         ap_state = self.logic.state.audio_processing
         self.sentence_silence_spinbox.setValue(ap_state.silence_between_sentences)
         self.paragraph_silence_spinbox.setValue(ap_state.silence_for_paragraphs)
+        is_dubbing_mode = self.logic.is_dubbing_mode_active()
+        silence_controls_enabled = not is_dubbing_mode
+        self.sentence_silence_spinbox.setEnabled(silence_controls_enabled)
+        self.paragraph_silence_spinbox.setEnabled(silence_controls_enabled)
+
+        silence_tooltip = (
+            "Sentence and paragraph silence are forced to 0 while dubbing mode is active."
+            if is_dubbing_mode
+            else ""
+        )
+        self.sentence_silence_spinbox.setToolTip(silence_tooltip)
+        self.paragraph_silence_spinbox.setToolTip(silence_tooltip)
         
         # RVC
         rvc_state = self.logic.state.rvc

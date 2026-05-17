@@ -115,6 +115,10 @@ class AppLogic(QObject):
         source_ext = os.path.splitext(source_path)[1].lower()
         return self._is_dubbing_source_extension(source_ext)
 
+    def is_dubbing_mode_active(self) -> bool:
+        """Returns True when the selected source uses dubbing workflow."""
+        return self._is_dubbing_source_selected()
+
     def _get_dubbing_work_dir(self, ensure_exists: bool = False) -> str:
         staging_dir = session_handler.get_dubbing_staging_path(self.state.session_name)
         if ensure_exists:
@@ -2426,8 +2430,7 @@ class AppLogic(QObject):
                 audio_data = audio_processor.apply_fade(audio_data, self.state.audio_processing.fade_in_duration, self.state.audio_processing.fade_out_duration)
             
             # 5. Add Silence
-            ext = os.path.splitext(self.state.source_file_path)[1].lower() if self.state.source_file_path else ""
-            if ext != ".srt":
+            if not self._is_dubbing_source_selected():
                 silence_to_add = 0
                 if updated_sentence.get("paragraph", "no") == "yes":
                     silence_to_add = self.state.audio_processing.silence_for_paragraphs
