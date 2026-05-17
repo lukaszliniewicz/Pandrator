@@ -4014,9 +4014,9 @@ if __name__ == "__main__":
     app.setStyle("Fusion")  # Use Fusion style for a modern look
     
     # Define pastel purple color
-    pastel_purple = QColor("#A589D9")  # Main button color
-    pastel_purple_hover = QColor("#B79AE6")  # Lighter for hover
-    pastel_purple_pressed = QColor("#8A6CC7")  # Darker for pressed state
+    pastel_purple = QColor("#9B7DD1")  # Main button color
+    pastel_purple_hover = QColor("#AB90DB")  # Lighter for hover
+    pastel_purple_pressed = QColor("#8668BC")  # Darker for pressed state
     
     # Create dark palette
     dark_palette = QPalette()

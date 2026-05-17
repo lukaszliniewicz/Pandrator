@@ -13,7 +13,7 @@ class GeneratedSentencesWidget(QWidget):
         super().__init__(parent)
         self.logic = logic
         self._table_update_in_progress = False
-        self._highlight_color = QColor("#4d5863")
+        self._highlight_color = QColor("#9b7dd1")
         self._inline_edit_triggers = (
             QAbstractItemView.EditTrigger.DoubleClicked
             | QAbstractItemView.EditTrigger.EditKeyPressed
