@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ...constants import WHISPER_LANGUAGES, XTTS_LANGUAGES
+from ...constants import LANGUAGE_DISPLAY_NAMES, WHISPER_LANGUAGES, XTTS_LANGUAGES
 
 
 def create_section_label(text: str) -> QLabel:
@@ -406,7 +406,11 @@ class DubbingSection(QFrame):
 
         transl_layout.addWidget(QLabel("To:"), 1, 2)
         self.dub_to_lang_combo = QComboBox()
-        self.dub_to_lang_combo.addItems(XTTS_LANGUAGES)
+        for language_code in XTTS_LANGUAGES:
+            self.dub_to_lang_combo.addItem(
+                LANGUAGE_DISPLAY_NAMES.get(language_code, language_code),
+                language_code,
+            )
         transl_layout.addWidget(self.dub_to_lang_combo, 1, 3)
 
         self.dub_cot_check = QCheckBox("Enable chain-of-thought")

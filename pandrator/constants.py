@@ -28,4 +28,27 @@ WHISPER_LANGUAGES = [
 ]
 
 XTTS_LANGUAGES = ["en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko", "hi"]
-KOKORO_LANGUAGES = ["en", "es", "fr", "hi", "it", "ja", "pt", "zh-cn"]
+VOXTRAL_LANGUAGES = ["ar", "en", "de", "es", "fr", "hi", "it", "nl", "pt"]
+KOKORO_LANGUAGES = ["en", "en-gb", "es", "fr", "hi", "it", "ja", "pt", "zh-cn"]
+
+LANGUAGE_DISPLAY_NAMES = {
+    "ar": "Arabic",
+    "cs": "Czech",
+    "de": "German",
+    "en": "English",
+    "en-gb": "English (British)",
+    "en-us": "English (American)",
+    "es": "Spanish",
+    "fr": "French",
+    "hi": "Hindi",
+    "hu": "Hungarian",
+    "it": "Italian",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "nl": "Dutch",
+    "pl": "Polish",
+    "pt": "Portuguese",
+    "ru": "Russian",
+    "tr": "Turkish",
+    "zh-cn": "Chinese (Simplified)",
+}

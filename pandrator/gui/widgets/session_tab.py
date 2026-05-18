@@ -1,9 +1,16 @@
 import os
+import re
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QFileDialog, QInputDialog, QMessageBox, QVBoxLayout, QWidget
 
-from ...constants import KOKORO_LANGUAGES, SILERO_LANGUAGES, XTTS_LANGUAGES
+from ...constants import (
+    KOKORO_LANGUAGES,
+    LANGUAGE_DISPLAY_NAMES,
+    SILERO_LANGUAGES,
+    VOXTRAL_LANGUAGES,
+    XTTS_LANGUAGES,
+)
 from ..dialogs.custom_prompt_dialog import CustomPromptDialog
 from ..dialogs.metadata_dialog import MetadataDialog
 from ..dialogs.paste_text_dialog import PasteTextDialog
@@ -19,6 +26,51 @@ from .session_sections import (
     TtsSettingsSection,
     create_section_label,
 )
+
+
+KOKORO_VOICE_LANGUAGE_GROUPS = {
+    "a": "American English",
+    "b": "British English",
+    "e": "Spanish",
+    "f": "French",
+    "h": "Hindi",
+    "i": "Italian",
+    "j": "Japanese",
+    "p": "Portuguese",
+    "z": "Chinese (Simplified)",
+}
+
+VOICE_GENDER_LABELS = {
+    "f": "Female",
+    "m": "Male",
+    "female": "Female",
+    "male": "Male",
+}
+
+VOXTRAL_STYLE_LABELS = {
+    "casual": "Casual",
+    "cheerful": "Cheerful",
+    "neutral": "Neutral",
+}
+
+KOKORO_OPENAI_ALIAS_VOICES = {
+    "alloy",
+    "ash",
+    "ballad",
+    "cedar",
+    "coral",
+    "echo",
+    "fable",
+    "marin",
+    "nova",
+    "onyx",
+    "sage",
+    "shimmer",
+    "verse",
+}
+
+SPEAKER_HEADING_VALUE = "__heading__"
+KOKORO_MISC_GROUP_ORDER = ["OpenAI Alias Voices", "Voice Blends", "Other Voices"]
 
 class SessionTab(QWidget):
     def __init__(self, logic, parent=None):
@@ -226,12 +278,8 @@ class SessionTab(QWidget):
         self.xtts_model_combo.currentTextChanged.connect(
             lambda t: t and self.logic.on_tts_model_changed(t)
         )
-        self.language_combo.currentTextChanged.connect(
-            lambda t: t and self.logic.on_tts_language_changed(t)
-        )
-        self.speaker_combo.currentTextChanged.connect(
-            lambda t: setattr(self.logic.state.tts, "speaker", t)
-        )
+        self.language_combo.currentIndexChanged.connect(self._on_tts_language_selected)
+        self.speaker_combo.currentTextChanged.connect(self._on_speaker_selected)
         self.openai_audio_instructions_edit.textChanged.connect(
             lambda t: setattr(self.logic.state.tts, "openai_audio_instructions", t)
         )
@@ -471,8 +519,8 @@ class SessionTab(QWidget):
         self.dub_from_lang_combo.currentTextChanged.connect(
             lambda t: setattr(self.logic.state.dubbing, "original_language", t)
         )
-        self.dub_to_lang_combo.currentTextChanged.connect(
-            lambda t: setattr(self.logic.state.dubbing, "target_language", t)
+        self.dub_to_lang_combo.currentIndexChanged.connect(
+            self._on_dub_target_language_selected
         )
         self.dub_cot_check.stateChanged.connect(
             lambda: setattr(
@@ -703,15 +751,37 @@ class SessionTab(QWidget):
         self.xtts_model_combo.setCurrentText(tts_state.xtts_model)
         self.xtts_model_combo.blockSignals(False)
 
+        speaker_options = self._build_speaker_combo_options(
+            current_service,
+            tts_state.tts_speakers,
+        )
+
         self.speaker_combo.blockSignals(True)
-        current_speakers = [
-            self.speaker_combo.itemText(i)
+        current_speaker_options = [
+            (
+                self.speaker_combo.itemText(i),
+                str(self.speaker_combo.itemData(i) or "").strip(),
+                self._is_combo_index_enabled(self.speaker_combo, i),
+            )
             for i in range(self.speaker_combo.count())
         ]
-        if tts_state.tts_speakers != current_speakers:
+        if speaker_options != current_speaker_options:
             self.speaker_combo.clear()
-            self.speaker_combo.addItems(tts_state.tts_speakers)
-        self.speaker_combo.setCurrentText(tts_state.speaker)
+            for speaker_label, speaker_id, speaker_enabled in speaker_options:
+                self.speaker_combo.addItem(speaker_label, speaker_id)
+                self._set_combo_index_enabled(
+                    self.speaker_combo,
+                    self.speaker_combo.count() - 1,
+                    speaker_enabled,
+                )
+
+        selected_speaker = str(tts_state.speaker or "").strip()
+        selected_speaker_index = self.speaker_combo.findData(selected_speaker)
+        if selected_speaker_index >= 0:
+            self.speaker_combo.setCurrentIndex(selected_speaker_index)
+        else:
+            self.speaker_combo.setEditText(selected_speaker)
+
         self.speaker_combo.blockSignals(False)
 
         self.speed_slider.setValue(int(tts_state.speed * 100))
@@ -771,7 +841,7 @@ class SessionTab(QWidget):
         self.dub_correct_transcription_check.setChecked(dub_state.correction_enabled)
         self.dub_translate_check.setChecked(dub_state.translation_enabled)
         self.dub_from_lang_combo.setCurrentText(dub_state.original_language)
-        self.dub_to_lang_combo.setCurrentText(dub_state.target_language)
+        self._update_dubbing_target_language_dropdown(dub_state.target_language)
         self.dub_cot_check.setChecked(dub_state.chain_of_thought_enabled)
         self.dub_glossary_check.setChecked(dub_state.glossary_enabled)
 
@@ -873,9 +943,10 @@ class SessionTab(QWidget):
         )
         self.advanced_tts_checkbox.setVisible(show_advanced_tts_controls)
 
+        show_model_selector = is_model_based_tts and not is_kokoro
         self.xtts_model_label.setText("XTTS Model:" if is_xtts else "Model:")
-        self.xtts_model_label.setVisible(is_model_based_tts)
-        self.xtts_model_combo.setVisible(is_model_based_tts)
+        self.xtts_model_label.setVisible(show_model_selector)
+        self.xtts_model_combo.setVisible(show_model_selector)
 
         self.speaker_label.setText("Speaker Voice:" if is_xtts else "Voice:")
         self.upload_voice_button.setVisible(is_xtts)
@@ -1009,26 +1080,12 @@ class SessionTab(QWidget):
 
     def _update_language_dropdown(self):
         service = self.logic.state.tts.service
-        current_lang = self.logic.state.tts.language
+        current_lang = str(self.logic.state.tts.language or "").strip()
 
         self.language_combo.blockSignals(True)
         self.language_combo.clear()
 
-        if service == "Kokoro":
-            self.language_combo.addItems(KOKORO_LANGUAGES)
-            if current_lang in KOKORO_LANGUAGES:
-                self.language_combo.setCurrentText(current_lang)
-            else:
-                self.logic.state.tts.language = "en"
-                self.language_combo.setCurrentText("en")
-        elif service in {"XTTS", "Voxtral", "OpenAI", "Gemini", "OpenAI-Compatible"}:
-            self.language_combo.addItems(XTTS_LANGUAGES)
-            if current_lang in XTTS_LANGUAGES:
-                self.language_combo.setCurrentText(current_lang)
-            else:
-                self.logic.state.tts.language = "en"
-                self.language_combo.setCurrentText("en")
-        elif service == "Silero":
+        if service == "Silero":
             lang_names = [lang["name"] for lang in SILERO_LANGUAGES]
             self.language_combo.addItems(lang_names)
             if current_lang in lang_names:
@@ -1036,8 +1093,396 @@ class SessionTab(QWidget):
             else:
                 self.logic.state.tts.language = "English (v3)"
                 self.language_combo.setCurrentText("English (v3)")
+            self.language_combo.blockSignals(False)
+            return
+
+        language_codes = self._language_codes_for_service(service)
+        for language_code in language_codes:
+            self.language_combo.addItem(
+                self._language_label_for_service(service, language_code),
+                language_code,
+            )
+
+        normalized_lang = self._normalize_language_code_for_service(service, current_lang)
+        if self.language_combo.findData(normalized_lang) == -1:
+            fallback_lang = "en"
+            normalized_lang = fallback_lang if self.language_combo.findData(fallback_lang) != -1 else ""
+
+        if not normalized_lang and self.language_combo.count() > 0:
+            normalized_lang = str(self.language_combo.itemData(0) or "").strip()
+
+        if normalized_lang:
+            target_index = self.language_combo.findData(normalized_lang)
+            if target_index >= 0:
+                self.language_combo.setCurrentIndex(target_index)
+
+            if normalized_lang != current_lang:
+                self.logic.state.tts.language = normalized_lang
 
         self.language_combo.blockSignals(False)
+
+    def _on_tts_language_selected(self, _index: int = -1):
+        language_value = self._combo_backend_value(self.language_combo)
+        if language_value:
+            self.logic.on_tts_language_changed(language_value)
+
+    def _update_dubbing_target_language_dropdown(self, target_language: str):
+        current_target = str(target_language or "").strip()
+
+        self.dub_to_lang_combo.blockSignals(True)
+        self.dub_to_lang_combo.clear()
+        for language_code in XTTS_LANGUAGES:
+            self.dub_to_lang_combo.addItem(
+                self._language_label_for_service("XTTS", language_code),
+                language_code,
+            )
+
+        normalized_target = self._normalize_language_code_for_service("XTTS", current_target)
+        if self.dub_to_lang_combo.findData(normalized_target) == -1:
+            normalized_target = "en" if self.dub_to_lang_combo.findData("en") != -1 else ""
+
+        if not normalized_target and self.dub_to_lang_combo.count() > 0:
+            normalized_target = str(self.dub_to_lang_combo.itemData(0) or "").strip()
+
+        if normalized_target:
+            target_index = self.dub_to_lang_combo.findData(normalized_target)
+            if target_index >= 0:
+                self.dub_to_lang_combo.setCurrentIndex(target_index)
+
+            if normalized_target != current_target:
+                self.logic.state.dubbing.target_language = normalized_target
+
+        self.dub_to_lang_combo.blockSignals(False)
+
+    def _on_dub_target_language_selected(self, _index: int = -1):
+        target_language = self._combo_backend_value(self.dub_to_lang_combo)
+        if target_language:
+            setattr(self.logic.state.dubbing, "target_language", target_language)
+
+    def _on_speaker_selected(self, _text: str):
+        speaker_value = self._combo_backend_value(self.speaker_combo)
+        if speaker_value or not self.speaker_combo.currentText().strip():
+            setattr(self.logic.state.tts, "speaker", speaker_value)
+
+    @staticmethod
+    def _combo_backend_value(combo) -> str:
+        current_text = combo.currentText().strip()
+        current_index = combo.currentIndex()
+        if current_index >= 0:
+            current_item_text = combo.itemText(current_index).strip()
+            if current_text and current_text != current_item_text:
+                return current_text
+            if not SessionTab._is_combo_index_enabled(combo, current_index):
+                return ""
+
+        combo_data = combo.currentData()
+        if isinstance(combo_data, str):
+            normalized_data = combo_data.strip()
+            if normalized_data == SPEAKER_HEADING_VALUE:
+                return ""
+            if normalized_data:
+                return normalized_data
+        elif combo_data is not None:
+            normalized_data = str(combo_data).strip()
+            if normalized_data:
+                return normalized_data
+
+        return current_text
+
+    @staticmethod
+    def _set_combo_index_enabled(combo, index: int, enabled: bool):
+        model = combo.model()
+        if model is None or not hasattr(model, "item"):
+            return
+        item = model.item(index)
+        if item is not None:
+            item.setEnabled(bool(enabled))
+
+    @staticmethod
+    def _is_combo_index_enabled(combo, index: int) -> bool:
+        model = combo.model()
+        if model is None or not hasattr(model, "item"):
+            return True
+        item = model.item(index)
+        return True if item is None else item.isEnabled()
+
+    @staticmethod
+    def _titleize_identifier(value: str) -> str:
+        tokens = [token for token in re.split(r"[_\-]+", str(value or "").strip()) if token]
+        return " ".join(token.capitalize() for token in tokens)
+
+    @staticmethod
+    def _split_weight_suffix(voice_token: str) -> tuple[str, str]:
+        trimmed = str(voice_token or "").strip()
+        weighted_match = re.fullmatch(r"(.+?)(\(\s*\d+(?:\.\d+)?\s*\))", trimmed)
+        if not weighted_match:
+            return trimmed, ""
+        return weighted_match.group(1).strip(), f" {weighted_match.group(2)}"
+
+    @staticmethod
+    def _parse_kokoro_voice_name(raw_name: str) -> tuple[str, str]:
+        normalized_name = str(raw_name or "").strip("_").strip()
+        if not normalized_name:
+            return "Voice", ""
+
+        version_suffix = ""
+        version_match = re.match(r"^v(\d+)_?(.*)$", normalized_name, flags=re.IGNORECASE)
+        if version_match and version_match.group(2):
+            normalized_name = version_match.group(2).strip("_").strip()
+            version_suffix = f" (v{version_match.group(1)})"
+
+        tokens = [token for token in re.split(r"[_\-]+", normalized_name) if token]
+        display_name = " ".join(token.capitalize() for token in tokens) if tokens else "Voice"
+        return display_name, version_suffix
+
+    def _format_kokoro_voice_component(self, voice_token: str) -> str:
+        token_without_weight, weight_suffix = self._split_weight_suffix(voice_token)
+        prefix, separator, voice_name = token_without_weight.partition("_")
+        normalized_prefix = prefix.lower().strip()
+
+        if separator and len(normalized_prefix) == 2:
+            if KOKORO_VOICE_LANGUAGE_GROUPS.get(normalized_prefix[0], "") and VOICE_GENDER_LABELS.get(
+                normalized_prefix[1],
+                "",
+            ):
+                display_name, version_suffix = self._parse_kokoro_voice_name(voice_name)
+                return f"{display_name}{version_suffix}{weight_suffix}"
+
+        if normalized_prefix in KOKORO_OPENAI_ALIAS_VOICES and not separator:
+            alias_name = self._titleize_identifier(normalized_prefix)
+            return f"{alias_name}{weight_suffix}"
+
+        fallback_name = self._titleize_identifier(token_without_weight)
+        return f"{fallback_name}{weight_suffix}" if fallback_name else token_without_weight
+
+    def _format_kokoro_voice_label(self, voice_id: str) -> str:
+        normalized_voice_id = str(voice_id or "").strip()
+        if not normalized_voice_id:
+            return ""
+
+        parts = [part.strip() for part in normalized_voice_id.split("+") if part.strip()]
+        if len(parts) > 1:
+            formatted_parts = " + ".join(
+                self._format_kokoro_voice_component(part)
+                for part in parts
+            )
+            return f"Blend: {formatted_parts} ({normalized_voice_id})"
+
+        return f"{self._format_kokoro_voice_component(normalized_voice_id)} ({normalized_voice_id})"
+
+    def _kokoro_voice_group(self, voice_id: str) -> tuple[str, str]:
+        normalized_voice_id = str(voice_id or "").strip()
+        if not normalized_voice_id:
+            return "Other Voices", ""
+
+        if "+" in normalized_voice_id:
+            return "Voice Blends", ""
+
+        prefix, separator, _ = normalized_voice_id.partition("_")
+        normalized_prefix = prefix.lower().strip()
+        if separator and len(normalized_prefix) == 2:
+            language_label = KOKORO_VOICE_LANGUAGE_GROUPS.get(normalized_prefix[0], "")
+            gender_label = VOICE_GENDER_LABELS.get(normalized_prefix[1], "")
+            if language_label and gender_label:
+                return language_label, gender_label
+
+        if normalized_prefix in KOKORO_OPENAI_ALIAS_VOICES and not separator:
+            return "OpenAI Alias Voices", ""
+
+        return "Other Voices", ""
+
+    def _format_voxtral_voice_label(self, voice_id: str) -> str:
+        normalized_voice_id = str(voice_id or "").strip()
+        if not normalized_voice_id:
+            return ""
+
+        normalized = normalized_voice_id.lower()
+        left, separator, right = normalized.partition("_")
+        if separator:
+            if left in VOXTRAL_STYLE_LABELS and right in VOICE_GENDER_LABELS:
+                return f"{VOXTRAL_STYLE_LABELS[left]} ({normalized_voice_id})"
+
+            if left in VOXTRAL_LANGUAGES and right in VOICE_GENDER_LABELS:
+                return f"Standard ({normalized_voice_id})"
+
+        fallback_name = self._titleize_identifier(normalized_voice_id)
+        return f"{fallback_name} ({normalized_voice_id})" if fallback_name else normalized_voice_id
+
+    def _voxtral_voice_group(self, voice_id: str) -> tuple[str, str]:
+        normalized_voice_id = str(voice_id or "").strip().lower()
+        if not normalized_voice_id:
+            return "Other Voices", ""
+
+        left, separator, right = normalized_voice_id.partition("_")
+        if not separator:
+            return "Other Voices", ""
+
+        gender_label = VOICE_GENDER_LABELS.get(right, "")
+        if not gender_label:
+            return "Other Voices", ""
+
+        if left in VOXTRAL_STYLE_LABELS:
+            return "English", gender_label
+
+        if left in VOXTRAL_LANGUAGES:
+            return LANGUAGE_DISPLAY_NAMES.get(left, left.upper()), gender_label
+
+        return "Other Voices", gender_label
+
+    def _build_grouped_speaker_options(
+        self,
+        grouped_voices: dict[tuple[str, str], list[tuple[str, str]]],
+        group_order: dict[str, int],
+    ) -> list[tuple[str, str, bool]]:
+        gender_order = {"Female": 0, "Male": 1, "": 2}
+        sorted_keys = sorted(
+            grouped_voices.keys(),
+            key=lambda key: (
+                group_order.get(key[0], 999),
+                key[0],
+                gender_order.get(key[1], 99),
+                key[1],
+            ),
+        )
+
+        options: list[tuple[str, str, bool]] = []
+        current_language = ""
+        for language_label, gender_label in sorted_keys:
+            if language_label and language_label != current_language:
+                options.append((f"[ {language_label} ]", SPEAKER_HEADING_VALUE, False))
+                current_language = language_label
+
+            if gender_label:
+                options.append((f"  - {gender_label} -", SPEAKER_HEADING_VALUE, False))
+
+            for voice_label, voice_id in grouped_voices[(language_label, gender_label)]:
+                options.append((f"    {voice_label}", voice_id, True))
+
+        return options
+
+    def _build_kokoro_speaker_options(self, speaker_ids: list[str]) -> list[tuple[str, str, bool]]:
+        seen: set[str] = set()
+        grouped_voices: dict[tuple[str, str], list[tuple[str, str]]] = {}
+
+        for speaker_id in speaker_ids:
+            normalized_speaker_id = str(speaker_id or "").strip()
+            if not normalized_speaker_id:
+                continue
+
+            dedupe_key = normalized_speaker_id.lower()
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+
+            group_key = self._kokoro_voice_group(normalized_speaker_id)
+            grouped_voices.setdefault(group_key, []).append(
+                (
+                    self._format_kokoro_voice_label(normalized_speaker_id) or normalized_speaker_id,
+                    normalized_speaker_id,
+                )
+            )
+
+        if not grouped_voices:
+            return []
+
+        language_order = {
+            label: index
+            for index, label in enumerate(
+                list(KOKORO_VOICE_LANGUAGE_GROUPS.values()) + KOKORO_MISC_GROUP_ORDER,
+            )
+        }
+        return self._build_grouped_speaker_options(grouped_voices, language_order)
+
+    def _build_voxtral_speaker_options(self, speaker_ids: list[str]) -> list[tuple[str, str, bool]]:
+        seen: set[str] = set()
+        grouped_voices: dict[tuple[str, str], list[tuple[str, str]]] = {}
+
+        for speaker_id in speaker_ids:
+            normalized_speaker_id = str(speaker_id or "").strip()
+            if not normalized_speaker_id:
+                continue
+
+            dedupe_key = normalized_speaker_id.lower()
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+
+            group_key = self._voxtral_voice_group(normalized_speaker_id)
+            grouped_voices.setdefault(group_key, []).append(
+                (
+                    self._format_voxtral_voice_label(normalized_speaker_id) or normalized_speaker_id,
+                    normalized_speaker_id,
+                )
+            )
+
+        if not grouped_voices:
+            return []
+
+        language_order = {
+            self._language_label_for_service("Voxtral", language_code): index
+            for index, language_code in enumerate(VOXTRAL_LANGUAGES)
+        }
+        language_order["Other Voices"] = len(language_order)
+        return self._build_grouped_speaker_options(grouped_voices, language_order)
+
+    def _build_speaker_combo_options(self, service: str, speaker_ids: list[str]) -> list[tuple[str, str, bool]]:
+        if service == "Kokoro":
+            return self._build_kokoro_speaker_options(speaker_ids)
+        if service == "Voxtral":
+            return self._build_voxtral_speaker_options(speaker_ids)
+
+        seen: set[str] = set()
+        options: list[tuple[str, str, bool]] = []
+
+        for speaker_id in speaker_ids:
+            normalized_speaker_id = str(speaker_id or "").strip()
+            if not normalized_speaker_id:
+                continue
+
+            dedupe_key = normalized_speaker_id.lower()
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+
+            options.append((normalized_speaker_id, normalized_speaker_id, True))
+
+        return options
+
+    @staticmethod
+    def _language_codes_for_service(service: str) -> list[str]:
+        if service == "Kokoro":
+            return KOKORO_LANGUAGES
+        if service == "Voxtral":
+            return VOXTRAL_LANGUAGES
+        if service in {"XTTS", "OpenAI", "Gemini", "OpenAI-Compatible"}:
+            return XTTS_LANGUAGES
+        return []
+
+    @staticmethod
+    def _normalize_language_code_for_service(service: str, language_value: str) -> str:
+        normalized = str(language_value or "").strip().lower()
+        if not normalized:
+            return ""
+
+        if service == "Kokoro":
+            kokoro_aliases = {
+                "en-us": "en",
+                "pt-br": "pt",
+                "fr-fr": "fr",
+                "zh": "zh-cn",
+            }
+            normalized = kokoro_aliases.get(normalized, normalized)
+
+        return normalized
+
+    @staticmethod
+    def _language_label_for_service(service: str, language_code: str) -> str:
+        normalized = str(language_code or "").strip().lower()
+        if service == "Kokoro" and normalized == "en":
+            return "American English"
+        if service == "Kokoro" and normalized == "en-gb":
+            return "British English"
+        return LANGUAGE_DISPLAY_NAMES.get(normalized, str(language_code or "").strip())
 
     def _prompt_for_new_session_name(self) -> str | None:
         text, ok = QInputDialog.getText(
