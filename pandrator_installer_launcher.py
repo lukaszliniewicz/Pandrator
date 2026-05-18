@@ -14,6 +14,7 @@ import traceback
 import tempfile
 import ctypes
 import winreg
+import argparse
 from datetime import datetime
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QTabWidget, 
                             QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
@@ -75,6 +76,52 @@ ESPEAK_NG_DLL_RELATIVE_PATH = os.path.join('eSpeak NG', 'libespeak-ng.dll')
 ESPEAK_NG_DATA_DIR_RELATIVE_PATH = os.path.join('eSpeak NG', 'espeak-ng-data')
 
 INSTALLER_STATE_FILENAME = 'installer_state.json'
+BUNDLED_WHEELS_RELATIVE_PATH = os.path.join('vendor', 'wheels')
+PYOPENJTALK_WHEEL_PREFIX = 'pyopenjtalk-'
+PACKAGING_LAYOUT_FILENAME = 'packaging_layout.json'
+PACKAGING_CONFIG_FLAGS = (
+    'cuda_support',
+    'xtts_support',
+    'silero_support',
+    'voxtral_support',
+    'kokoro_support',
+    'whisperx_support',
+    'xtts_finetuning_support',
+    'rvc_support',
+)
+PACKAGING_SHARED_PATHS = (
+    'Pandrator',
+    'Subdub',
+    'bin',
+    PIXI_HOME_DIRNAME,
+    PIXI_CACHE_DIRNAME,
+    os.path.join('envs', 'pandrator_installer'),
+    'config.json',
+    INSTALLER_STATE_FILENAME,
+    PACKAGING_LAYOUT_FILENAME,
+)
+PACKAGING_COMPONENT_PATHS = {
+    'xtts': (
+        XTTS_API_REPO_DIRNAME,
+    ),
+    'voxtral': (
+        VOXTRAL_API_REPO_DIRNAME,
+    ),
+    'kokoro': (
+        KOKORO_API_REPO_DIRNAME,
+        os.path.join('envs', KOKORO_ENV_NAME),
+    ),
+    'silero': (
+        os.path.join('envs', 'silero_api_server_installer'),
+    ),
+    'whisperx': (
+        os.path.join('envs', 'whisperx_installer'),
+    ),
+    'xtts_finetuning': (
+        'easy_xtts_trainer',
+        os.path.join('envs', 'easy_xtts_trainer'),
+    ),
+}
 RVC_PYTHON_FORK_INSTALL_SPEC = 'git+https://github.com/JarodMica/rvc-python@782467ababe17698a4b5100aedfe16e69cebaa56'
 RVC_PYTHON_FORK_SOURCE_FRAGMENT = 'github.com/jarodmica/rvc-python'
 RVC_FAIRSEQ_WHEEL_URL_BY_PYTHON = {
@@ -139,6 +186,38 @@ class QtLogEmitter(QObject):
     message_logged = pyqtSignal(str)
 
 
+class HeadlessSignalEmitter:
+    def __init__(self, callback=None):
+        self.callback = callback
+
+    def emit(self, value):
+        if self.callback is None:
+            return
+        self.callback(value)
+
+
+class HeadlessWorkerProxy:
+    def __init__(self):
+        self.update_progress = HeadlessSignalEmitter(self.on_progress)
+        self.update_status = HeadlessSignalEmitter(self.on_status)
+
+    @staticmethod
+    def on_progress(value):
+        try:
+            percentage = int(float(value) * 100)
+        except Exception:
+            return
+
+        percentage = max(0, min(100, percentage))
+        logging.info(f"Progress: {percentage}%")
+
+    @staticmethod
+    def on_status(text):
+        message = str(text)
+        logging.info(message)
+        print(message)
+
+
 class QtLogHandler(logging.Handler):
     def __init__(self, emitter):
         super().__init__()
@@ -185,12 +264,13 @@ class InfoDialog(QDialog):
 
 
 class PandratorInstaller(QMainWindow):
-    def __init__(self):
+    def __init__(self, headless=False, working_dir=None, skip_space_warning=False):
         super().__init__()
-        self.initial_working_dir = os.getcwd()
+        self.headless = bool(headless)
+        self.initial_working_dir = os.path.abspath(working_dir or os.getcwd())
         
         # Check for spaces in the working directory
-        if ' ' in self.initial_working_dir:
+        if ' ' in self.initial_working_dir and not skip_space_warning and not self.headless:
             self.show_space_warning()
         
         # Define instance variables for checkboxes
@@ -311,6 +391,14 @@ class PandratorInstaller(QMainWindow):
 
     def show_space_warning(self):
         """Show warning when path contains spaces"""
+        if self.headless:
+            logging.warning(
+                "Installation path contains spaces in headless mode: %s. "
+                "Third-party tooling may fail in this location.",
+                self.initial_working_dir,
+            )
+            return
+
         warning_message = (
             f"⚠️ WARNING: Your installation path contains spaces:\n\n"
             f"{self.initial_working_dir}\n\n"
@@ -511,6 +599,28 @@ class PandratorInstaller(QMainWindow):
             self.log_view.clear()
 
     # Utility functions
+    def get_packaging_layout(self):
+        return {
+            'layout_version': 1,
+            'generated_at_utc': datetime.utcnow().isoformat(timespec='seconds') + 'Z',
+            'config_flags': list(PACKAGING_CONFIG_FLAGS),
+            'shared_paths': list(PACKAGING_SHARED_PATHS),
+            'component_paths': {
+                component: list(paths)
+                for component, paths in PACKAGING_COMPONENT_PATHS.items()
+            },
+        }
+
+    def write_packaging_layout(self, pandrator_path):
+        layout_path = os.path.join(pandrator_path, PACKAGING_LAYOUT_FILENAME)
+        layout = self.get_packaging_layout()
+
+        try:
+            with open(layout_path, 'w', encoding='utf-8') as f:
+                json.dump(layout, f, indent=2, sort_keys=True)
+        except Exception as e:
+            logging.warning(f"Failed to write packaging layout file {layout_path}: {str(e)}")
+
     def refresh_ui_state(self):
         pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
         config_path = os.path.join(pandrator_path, 'config.json')
@@ -842,6 +952,65 @@ class PandratorInstaller(QMainWindow):
         self.update_status(f"Installation failed: {error_message}")
         self.enable_buttons()
         QMessageBox.critical(self, "Installation Error", f"Installation failed:\n\n{error_message}\n\nCheck the log for more details.")
+
+    def run_headless_install(self, components, install_pandrator=True):
+        valid_components = {
+            'xtts',
+            'xtts_cpu',
+            'silero',
+            'voxtral',
+            'kokoro',
+            'rvc',
+            'whisperx',
+            'xtts_finetuning',
+        }
+
+        selected_components = {str(component).strip().lower() for component in components if str(component).strip()}
+        unknown_components = sorted(component for component in selected_components if component not in valid_components)
+        if unknown_components:
+            raise ValueError(
+                "Unsupported headless component(s): "
+                + ", ".join(unknown_components)
+                + ". Supported values: "
+                + ", ".join(sorted(valid_components))
+            )
+
+        if 'xtts' in selected_components and 'xtts_cpu' in selected_components:
+            raise ValueError("Select either 'xtts' or 'xtts_cpu' for headless installation, not both.")
+
+        if 'xtts_finetuning' in selected_components and 'whisperx' not in selected_components:
+            logging.info("Headless mode: enabling WhisperX because XTTS fine-tuning depends on it.")
+            selected_components.add('whisperx')
+
+        self.pandrator_checkbox.setChecked(bool(install_pandrator))
+        self.xtts_checkbox.setChecked('xtts' in selected_components)
+        self.xtts_cpu_checkbox.setChecked('xtts_cpu' in selected_components)
+        self.silero_checkbox.setChecked('silero' in selected_components)
+        self.voxtral_checkbox.setChecked('voxtral' in selected_components)
+        self.kokoro_checkbox.setChecked('kokoro' in selected_components)
+        self.rvc_checkbox.setChecked('rvc' in selected_components)
+        self.xtts_finetuning_checkbox.setChecked('xtts_finetuning' in selected_components)
+        self.whisperx_checkbox.setChecked('whisperx' in selected_components)
+        self.update_whisperx_checkbox()
+
+        selected_label = ', '.join(sorted(selected_components)) if selected_components else 'none'
+        logging.info(
+            "Starting headless installation in %s with components: %s",
+            self.initial_working_dir,
+            selected_label,
+        )
+
+        self.initialize_logging()
+        self.worker = HeadlessWorkerProxy()
+
+        try:
+            self.install_process()
+        finally:
+            self.worker = None
+            self.shutdown_logging()
+            self.refresh_ui_state()
+
+        logging.info("Headless installation completed successfully.")
 
     def open_log_file(self):
         """Open the log file with the default system application"""
@@ -1270,6 +1439,46 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         )
         return os.path.exists(manifest_path) and os.path.exists(model_path)
 
+    def get_bundled_wheels_directories(self, pandrator_path):
+        candidate_directories = [
+            os.path.join(pandrator_path, 'Pandrator', BUNDLED_WHEELS_RELATIVE_PATH),
+            os.path.join(self.initial_working_dir, BUNDLED_WHEELS_RELATIVE_PATH),
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), BUNDLED_WHEELS_RELATIVE_PATH),
+        ]
+
+        bundled_directories = []
+        seen = set()
+        for candidate in candidate_directories:
+            normalized_candidate = os.path.normcase(os.path.normpath(candidate))
+            if normalized_candidate in seen:
+                continue
+
+            seen.add(normalized_candidate)
+            if os.path.isdir(candidate):
+                bundled_directories.append(candidate)
+
+        return bundled_directories
+
+    def find_bundled_pyopenjtalk_wheel(self, pandrator_path):
+        for wheels_directory in self.get_bundled_wheels_directories(pandrator_path):
+            try:
+                wheel_names = sorted(os.listdir(wheels_directory), reverse=True)
+            except OSError:
+                continue
+
+            for wheel_name in wheel_names:
+                normalized_name = wheel_name.lower()
+                if not normalized_name.endswith('.whl'):
+                    continue
+                if not normalized_name.startswith(PYOPENJTALK_WHEEL_PREFIX):
+                    continue
+
+                wheel_path = os.path.join(wheels_directory, wheel_name)
+                if os.path.isfile(wheel_path):
+                    return wheel_path, wheels_directory
+
+        return '', ''
+
     def check_kokoro_server_online(self, url, max_attempts=90, wait_interval=5, process=None):
         """Check if the Kokoro server is online and responding."""
         for attempt in range(1, max_attempts + 1):
@@ -1311,10 +1520,33 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             cwd=kokoro_repo_path,
         )
 
+        bundled_pyopenjtalk_wheel, bundled_wheel_directory = self.find_bundled_pyopenjtalk_wheel(pandrator_path)
+        if bundled_pyopenjtalk_wheel:
+            logging.info(f"Installing bundled pyopenjtalk wheel: {bundled_pyopenjtalk_wheel}")
+            self.run_pixi_in_env(
+                pandrator_path,
+                env_name,
+                ['python', '-m', 'pip', 'install', '--upgrade', bundled_pyopenjtalk_wheel],
+                cwd=kokoro_repo_path,
+            )
+
+        editable_install_command = ['python', '-m', 'pip', 'install', '-e', '.[cpu]']
+        wheels_directories = self.get_bundled_wheels_directories(pandrator_path)
+        if wheels_directories:
+            for wheels_directory in wheels_directories:
+                editable_install_command.extend(['--find-links', wheels_directory])
+            editable_install_command.append('--prefer-binary')
+
+            if bundled_wheel_directory:
+                logging.info(
+                    "Using bundled wheel directory for Kokoro dependency resolution: %s",
+                    bundled_wheel_directory,
+                )
+
         self.run_pixi_in_env(
             pandrator_path,
             env_name,
-            ['python', '-m', 'pip', 'install', '-e', '.[cpu]'],
+            editable_install_command,
             cwd=kokoro_repo_path,
         )
 
@@ -2908,6 +3140,8 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             with open(config_path, 'w') as f:
                 json.dump(config, f)
 
+            self.write_packaging_layout(pandrator_path)
+
             # Set final permissions if admin
             if is_admin:
                 self.worker.update_progress.emit(0.98)
@@ -3228,6 +3462,8 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 self.install_pytorch_for_xtts_finetuning(pandrator_base_path, 'easy_xtts_trainer')
             else:
                 logging.info("easy XTTS trainer not installed, skipping update.")
+
+            self.write_packaging_layout(pandrator_base_path)
 
             # Set permissions if running as admin
             if is_admin:
@@ -4005,19 +4241,86 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         event.accept()
 
 
-if __name__ == "__main__":
+def parse_headless_components(raw_components):
+    parsed_components = set()
+    for raw_component in str(raw_components or '').split(','):
+        normalized = raw_component.strip().lower().replace('-', '_')
+        if normalized:
+            parsed_components.add(normalized)
+    return parsed_components
+
+
+def parse_launcher_cli_args(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Pandrator installer GUI and headless automation entrypoint.",
+    )
+    parser.add_argument(
+        '--headless-install',
+        action='store_true',
+        help='Run installation without showing the GUI.',
+    )
+    parser.add_argument(
+        '--workspace',
+        default=None,
+        help='Directory where the installer should create/use the Pandrator folder.',
+    )
+    parser.add_argument(
+        '--components',
+        default='',
+        help=(
+            'Comma-separated component list for headless mode: '
+            'xtts,xtts_cpu,silero,voxtral,kokoro,rvc,whisperx,xtts_finetuning'
+        ),
+    )
+    parser.add_argument(
+        '--skip-pandrator',
+        action='store_true',
+        help='Do not select Pandrator core checkbox in headless mode.',
+    )
+    return parser.parse_args(argv)
+
+
+def run_headless_install_from_cli(args):
+    if not args.workspace:
+        raise RuntimeError('--workspace is required with --headless-install.')
+
+    if 'QT_QPA_PLATFORM' not in os.environ:
+        os.environ['QT_QPA_PLATFORM'] = 'offscreen'
+
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    workspace = os.path.abspath(os.path.expanduser(args.workspace))
+    os.makedirs(workspace, exist_ok=True)
+
+    app = QApplication.instance() or QApplication([])
+    installer = PandratorInstaller(headless=True, working_dir=workspace, skip_space_warning=True)
+    installer.hide()
+
+    try:
+        components = parse_headless_components(args.components)
+        installer.run_headless_install(
+            components,
+            install_pandrator=not args.skip_pandrator,
+        )
+    finally:
+        installer.shutdown_apps()
+        installer.shutdown_logging()
+        installer.close()
+        app.quit()
+
+
+def run_gui_app():
     # Import needed modules
     from PyQt6.QtGui import QColor, QPalette
-    
+
     # Set up application style
     app = QApplication(sys.argv)
-    app.setStyle("Fusion")  # Use Fusion style for a modern look
-    
+    app.setStyle('Fusion')  # Use Fusion style for a modern look
+
     # Define pastel purple color
-    pastel_purple = QColor("#9B7DD1")  # Main button color
-    pastel_purple_hover = QColor("#AB90DB")  # Lighter for hover
-    pastel_purple_pressed = QColor("#8668BC")  # Darker for pressed state
-    
+    pastel_purple = QColor('#9B7DD1')  # Main button color
+    pastel_purple_hover = QColor('#AB90DB')  # Lighter for hover
+    pastel_purple_pressed = QColor('#8668BC')  # Darker for pressed state
+
     # Create dark palette
     dark_palette = QPalette()
     # Set colors using the QPalette.ColorRole enum
@@ -4035,7 +4338,7 @@ if __name__ == "__main__":
     dark_palette.setColor(QPalette.ColorRole.Highlight, pastel_purple)  # Changed to match buttons
     dark_palette.setColor(QPalette.ColorRole.HighlightedText, QColor(255, 255, 255))
     app.setPalette(dark_palette)
-    
+
     # Set stylesheet for custom styling with pastel purple buttons and white checkbox borders
     app.setStyleSheet(f"""
         QMainWindow {{
@@ -4121,9 +4424,23 @@ if __name__ == "__main__":
             width: 10px;
         }}
     """)
-    
+
     # Create and show the main window
     window = PandratorInstaller()
     window.show()
-    
-    sys.exit(app.exec())
+
+    return app.exec()
+
+
+if __name__ == '__main__':
+    cli_args = parse_launcher_cli_args(sys.argv[1:])
+
+    if cli_args.headless_install:
+        try:
+            run_headless_install_from_cli(cli_args)
+        except Exception as e:
+            print(f"Headless installation failed: {str(e)}")
+            sys.exit(1)
+        sys.exit(0)
+
+    sys.exit(run_gui_app())

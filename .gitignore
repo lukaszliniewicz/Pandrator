@@ -13,6 +13,11 @@ conda/
 # Build and packaging artifacts
 build/
 dist/
+.release_blocks/
+.release_staging/
+.release_sources/
+release_packages/
+package_release/
 *.egg-info/
 .eggs/
 pip-wheel-metadata/

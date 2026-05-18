@@ -95,11 +95,64 @@ I've prepared packages (archives) that you can simply unpack - everything is pre
 
 You can use the launcher to start Pandrator, update it and install new features. 
 
-| Package | Contents                                                   | Unpacked Size | 
-|---------|-------------------------------------------------------------|---------------|
-| 1       | Pandrator and Silero                                        | 4GB           | 
-| 2       | Pandrator and XTTS                                          | 14GB          | 
-| 3       | Pandrator, XTTS, RVC, WhisperX (for dubbing) and XTTS fine-tuning | 36GB          | 
+| Package | Contents | Unpacked Size | 
+|---------|----------|---------------|
+| 1       | Pandrator + Kokoro | Varies |
+| 2       | Pandrator + XTTS + WhisperX + XTTS fine-tuning + RVC | Varies |
+| 3       | Pandrator + Voxtral | Varies |
+| 4       | Pandrator + Voxtral + XTTS + WhisperX + XTTS fine-tuning + RVC | Varies |
+
+### Maintainer workflow: building the package zips
+
+`scripts/build_release_packages.py` automates archive generation and keeps a reusable local block cache so you do not need to re-download/re-bootstrap every stack for each zip.
+
+By default it creates/uses `package_release/` and runs all cache/staging/output work from that directory.
+
+The script now supports two workflows.
+
+1) Fully automated source preparation (recommended):
+
+```powershell
+python scripts/build_release_packages.py --prepare-sources --sources-root "D:/pandrator-builds/sources" --installer-exe "dist/PandratorInstaller.exe"
+```
+
+Kokoro-only build (prepare + package):
+
+```powershell
+python scripts/build_release_packages.py --prepare-sources --only kokoro --installer-exe "dist/PandratorInstaller.exe"
+```
+
+This runs `pandrator_installer_launcher.py` in headless mode to prepare/reuse 4 source installs under `--sources-root`:
+
+- `core` (base runtime),
+- `stack` (XTTS + WhisperX + XTTS fine-tuning + RVC),
+- `kokoro`,
+- `voxtral`.
+
+2) Manual source paths (if you already manage source installs yourself):
+
+```powershell
+python scripts/build_release_packages.py --core-source "D:/pandrator-builds/core/Pandrator" --stack-source "D:/pandrator-builds/xtts-rvc/Pandrator" --kokoro-source "D:/pandrator-builds/kokoro/Pandrator" --voxtral-source "D:/pandrator-builds/voxtral/Pandrator" --installer-exe "dist/PandratorInstaller.exe"
+```
+
+What it does:
+
+- reuses cached blocks in `.release_blocks/` and only refreshes changed inputs,
+- assembles each package in `.release_staging/`,
+- writes final archives to `release_packages/`,
+- includes both `PandratorInstaller.exe` (or the path passed with `--installer-exe`) and the `Pandrator/` folder in every zip.
+
+Those paths are inside `package_release/` unless `--release-root` is changed.
+
+Useful flags:
+
+- `--force-refresh` to rebuild all cached blocks,
+- `--release-root` to change the working root directory,
+- `--only` to build only selected packages (for example `--only kokoro`),
+- `--skip-voxtral-with-rest` to skip the combined Voxtral + XTTS/WhisperX/RVC package,
+- `--no-hardlinks` to force plain copies,
+- `--prepare-force` to reinstall auto-prepared source installs,
+- `--installer-script` and `--python-exe` to control how headless source preparation is executed.
 
 
 ### GUI Installer and Launcher (Windows)
@@ -107,6 +160,12 @@ You can use the launcher to start Pandrator, update it and install new features.
 ![pandrator_installer_launcher_KLoHrNDIps](https://github.com/user-attachments/assets/2be46b49-9e79-4281-89ed-5797bdfbe28b)
 
 Run `pandrator_installer_launcher.exe` from [Releases](https://github.com/lukaszliniewicz/Pandrator/releases). The executable is built from `pandrator_installer_launcher.py`.
+
+For automation, the launcher also supports headless installation:
+
+```powershell
+python pandrator_installer_launcher.py --headless-install --workspace "D:/pandrator-builds/core" --components "kokoro"
+```
 
 > [!NOTE]
 > Some antivirus tools may flag standalone executables. If needed, add an exception or run from source.
