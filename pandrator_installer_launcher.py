@@ -92,6 +92,14 @@ ESPEAK_NG_MSI_URL = 'https://github.com/espeak-ng/espeak-ng/releases/download/1.
 ESPEAK_NG_MSI_SHA256 = '7F673C709EA5DD579D3B5EBB98688CC575328A6AB7438D2BC405B88CEDAEAFB9'
 ESPEAK_NG_DLL_RELATIVE_PATH = os.path.join('eSpeak NG', 'libespeak-ng.dll')
 ESPEAK_NG_DATA_DIR_RELATIVE_PATH = os.path.join('eSpeak NG', 'espeak-ng-data')
+CALIBRE_WIN64_MSI_URL = 'https://calibre-ebook.com/dist/win64'
+CALIBRE_BUNDLED_DIRNAME = 'Calibre Portable'
+CALIBRE_BUNDLED_CALIBRE_SUBDIR = 'Calibre'
+CALIBRE_BUNDLED_EBOOK_CONVERT_RELATIVE_PATH = os.path.join(
+    CALIBRE_BUNDLED_DIRNAME,
+    CALIBRE_BUNDLED_CALIBRE_SUBDIR,
+    'ebook-convert.exe',
+)
 
 INSTALLER_STATE_FILENAME = 'installer_state.json'
 BUNDLED_WHEELS_RELATIVE_PATH = os.path.join('vendor', 'wheels')
@@ -111,6 +119,7 @@ PACKAGING_SHARED_PATHS = (
     'Pandrator',
     'Subdub',
     'bin',
+    CALIBRE_BUNDLED_DIRNAME,
     PIXI_HOME_DIRNAME,
     PIXI_CACHE_DIRNAME,
     os.path.join('envs', 'pandrator_installer'),
@@ -1107,8 +1116,25 @@ class PandratorInstaller(QMainWindow):
         try:
             self.run_command(['where', program], log_errors=False)
             return True
-        except subprocess.CalledProcessError:
+        except (subprocess.CalledProcessError, FileNotFoundError):
             return False
+
+    def get_bundled_calibre_executable(self, pandrator_path):
+        return os.path.join(pandrator_path, CALIBRE_BUNDLED_EBOOK_CONVERT_RELATIVE_PATH)
+
+    def check_calibre_available(self, pandrator_path=None):
+        if self.check_program_installed('ebook-convert'):
+            return True
+
+        if self.check_program_installed('calibre'):
+            return True
+
+        if pandrator_path:
+            bundled_calibre_exe = self.get_bundled_calibre_executable(pandrator_path)
+            if os.path.exists(bundled_calibre_exe):
+                return True
+
+        return False
 
     def install_chocolatey(self):
         """Install Chocolatey using PowerShell's Invoke-WebRequest (no deprecated WebClient).
@@ -1209,18 +1235,36 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             logging.error(traceback.format_exc())
             raise
 
-    def install_dependencies(self):
-        return self.install_calibre()
+    def install_dependencies(self, pandrator_path, allow_system_install=True):
+        return self.install_calibre(
+            pandrator_path,
+            allow_system_install=allow_system_install,
+        )
             
     def show_calibre_installation_message(self):
         message = ("Calibre installation failed. Please install Calibre manually.\n"
                    "You can download it from: https://calibre-ebook.com/download_windows")
-        QMessageBox.warning(self, "Calibre Installation Required", message)
+
+        if self.headless:
+            logging.warning(message)
+            print(message)
+            return
+
+        def _show_message():
+            QMessageBox.warning(self, "Calibre Installation Required", message)
+
+        app = QApplication.instance()
+        if app is not None and QThread.currentThread() is not app.thread():
+            QTimer.singleShot(0, _show_message)
+            return
+
+        _show_message()
 
     def install_with_chocolatey(self, package_name, args=""):
         logging.info(f"Attempting to install {package_name} with Chocolatey...")
         
         # First, try using 'choco' command
+        process = None
         try:
             process = subprocess.Popen(
                 f"choco install {package_name} -y {args}",
@@ -1231,16 +1275,22 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 **self.get_hidden_subprocess_kwargs(),
             )
             
-            stdout, stderr = process.communicate()
+            stdout, stderr = process.communicate(timeout=600)
             logging.info(stdout)
             
             if process.returncode == 0:
                 logging.info(f"{package_name} installed successfully using 'choco' command.")
                 return True
+        except subprocess.TimeoutExpired:
+            if process is not None:
+                process.kill()
+                process.communicate()
+            logging.warning(f"Chocolatey install for {package_name} timed out using 'choco' command.")
         except Exception as e:
             logging.error(f"Error using 'choco' command: {str(e)}")
         
         # If 'choco' command fails, try using the Chocolatey executable directly
+        process = None
         try:
             choco_exe = os.path.join(os.environ.get('ProgramData', ''), 'chocolatey', 'bin', 'choco.exe')
             if os.path.exists(choco_exe):
@@ -1253,7 +1303,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                     **self.get_hidden_subprocess_kwargs(),
                 )
                 
-                stdout, stderr = process.communicate()
+                stdout, stderr = process.communicate(timeout=600)
                 logging.info(stdout)
                 
                 if process.returncode == 0:
@@ -1261,63 +1311,189 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                     return True
             else:
                 logging.error("Chocolatey executable not found.")
+        except subprocess.TimeoutExpired:
+            if process is not None:
+                process.kill()
+                process.communicate()
+            logging.warning(
+                f"Chocolatey install for {package_name} timed out using Chocolatey executable."
+            )
         except Exception as e:
             logging.error(f"Error using Chocolatey executable: {str(e)}")
         
         logging.error(f"Failed to install {package_name} using Chocolatey.")
         return False
 
-    def install_calibre(self):
-        """Install Calibre.  Prefers winget, falls back to Chocolatey."""
+    def install_calibre_portable(self, pandrator_path):
+        bundled_calibre_exe = self.get_bundled_calibre_executable(pandrator_path)
+        if os.path.exists(bundled_calibre_exe):
+            logging.info(f"Bundled Calibre executable already available at {bundled_calibre_exe}")
+            return True
+
+        logging.info("Installing bundled Calibre fallback from direct MSI download...")
+        if hasattr(self, 'worker') and self.worker is not None:
+            self.worker.update_status.emit("Installing bundled Calibre fallback...")
+
+        self.configure_tls_certificates()
+
+        temp_root = tempfile.mkdtemp(prefix='pandrator_calibre_')
+        temp_msi_path = os.path.join(temp_root, 'calibre.msi')
+        temp_extract_dir = os.path.join(temp_root, 'extract')
+        extracted_calibre_dir = os.path.join(temp_extract_dir, 'PFiles64', 'Calibre2')
+
+        try:
+            response = requests.get(
+                CALIBRE_WIN64_MSI_URL,
+                stream=True,
+                timeout=120,
+                verify=self.ca_bundle_path if self.ca_bundle_path else True,
+            )
+            response.raise_for_status()
+
+            with open(temp_msi_path, 'wb') as handle:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        handle.write(chunk)
+
+            os.makedirs(temp_extract_dir, exist_ok=True)
+            process = subprocess.Popen(
+                ['msiexec', '/a', temp_msi_path, '/qn', f'TARGETDIR={temp_extract_dir}'],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                **self.get_hidden_subprocess_kwargs(),
+            )
+            stdout, stderr = process.communicate(timeout=900)
+
+            if process.returncode != 0:
+                logging.warning(
+                    "MSI extraction for bundled Calibre failed with code %s. STDOUT: %s STDERR: %s",
+                    process.returncode,
+                    stdout,
+                    stderr,
+                )
+                return False
+
+            extracted_ebook_convert = os.path.join(extracted_calibre_dir, 'ebook-convert.exe')
+            if not os.path.exists(extracted_ebook_convert):
+                logging.warning(
+                    "Bundled Calibre extraction completed but ebook-convert.exe was not found at %s",
+                    extracted_ebook_convert,
+                )
+                return False
+
+            bundled_calibre_root = os.path.join(pandrator_path, CALIBRE_BUNDLED_DIRNAME)
+            bundled_calibre_dir = os.path.join(
+                bundled_calibre_root,
+                CALIBRE_BUNDLED_CALIBRE_SUBDIR,
+            )
+
+            os.makedirs(bundled_calibre_root, exist_ok=True)
+            if os.path.exists(bundled_calibre_dir):
+                shutil.rmtree(bundled_calibre_dir)
+
+            shutil.copytree(extracted_calibre_dir, bundled_calibre_dir)
+
+            if not os.path.exists(bundled_calibre_exe):
+                logging.warning(
+                    "Bundled Calibre copy completed but executable is missing at %s",
+                    bundled_calibre_exe,
+                )
+                return False
+
+            self.run_command([bundled_calibre_exe, '--version'], log_errors=False)
+            logging.info(f"Bundled Calibre installed successfully at {bundled_calibre_dir}")
+            return True
+        except subprocess.TimeoutExpired:
+            logging.warning("Timed out while extracting bundled Calibre MSI.")
+            return False
+        except Exception as e:
+            logging.warning(f"Bundled Calibre installation failed: {e}")
+            return False
+        finally:
+            shutil.rmtree(temp_root, ignore_errors=True)
+
+    def install_calibre(self, pandrator_path, allow_system_install=True):
+        """Install Calibre. Prefers system install, then bundles a local fallback."""
         logging.info("Checking installation for Calibre")
-        if not self.check_program_installed('calibre'):
-            logging.info("Installing Calibre...")
+        if self.check_calibre_available(pandrator_path):
+            logging.info("Calibre is already installed.")
+            return True
 
-            # Try winget first (built-in on Windows 10+/11)
-            winget_exe = os.path.join(os.environ.get('LOCALAPPDATA', r'C:\Program Files\WindowsApps'),
-                                      'Microsoft.DesktopAppInstaller_8wekyb3d8bbwe', 'winget.exe')
+        logging.info("Installing Calibre...")
+
+        if allow_system_install:
+            winget_exe = os.path.join(
+                os.environ.get('LOCALAPPDATA', r'C:\Program Files\WindowsApps'),
+                'Microsoft.DesktopAppInstaller_8wekyb3d8bbwe',
+                'winget.exe',
+            )
             winget_alt = r'C:\Program Files (x86)\Microsoft\WinGet\winget.exe'
-            winget_found = os.path.exists(winget_exe) or os.path.exists(winget_alt)
 
-            if winget_found:
+            winget_cmd = None
+            if self.check_program_installed('winget'):
+                winget_cmd = 'winget'
+            elif os.path.exists(winget_exe):
+                winget_cmd = winget_exe
+            elif os.path.exists(winget_alt):
+                winget_cmd = winget_alt
+
+            if winget_cmd:
                 try:
-                    self.update_status("Installing Calibre via winget...")
+                    if hasattr(self, 'worker') and self.worker is not None:
+                        self.worker.update_status.emit("Installing Calibre via winget...")
                     process = subprocess.Popen(
-                        ["winget", "install", "--id", "calibre",
-                         "--accept-package-agreements", "--accept-source-agreements"],
-                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                        [
+                            winget_cmd,
+                            'install',
+                            '--id',
+                            'calibre',
+                            '--accept-package-agreements',
+                            '--accept-source-agreements',
+                        ],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
                         **self.get_hidden_subprocess_kwargs(),
                     )
-                    stdout, stderr = process.communicate(timeout=300)
+                    stdout, stderr = process.communicate(timeout=600)
                     if process.returncode == 0:
                         logging.info("Calibre installed via winget.")
                         self.refresh_environment_variables()
-                        if self.check_program_installed('calibre'):
+                        if self.check_calibre_available(pandrator_path):
                             return True
-                        logging.warning("Calibre installed via winget but not detected on PATH yet.")
-                        return True
+                        logging.warning(
+                            "Calibre installed via winget but not detected. Continuing with fallback options."
+                        )
                     else:
-                        logging.warning(f"winget calibre install returned {process.returncode}: {stderr}")
+                        logging.warning(
+                            f"winget calibre install returned {process.returncode}: {stderr}"
+                        )
                 except subprocess.TimeoutExpired:
-                    logging.warning("winget calibre install timed out, falling back to Chocolatey.")
+                    logging.warning(
+                        "winget calibre install timed out, falling back to other methods."
+                    )
                 except Exception as e:
-                    logging.warning(f"winget calibre install failed: {e}, falling back to Chocolatey.")
+                    logging.warning(
+                        f"winget calibre install failed: {e}, falling back to other methods."
+                    )
 
-            # Fallback: Chocolatey
             if self.install_with_chocolatey('calibre'):
                 self.refresh_environment_variables()
-                if self.check_program_installed('calibre'):
-                    logging.info("Calibre installed successfully.")
+                if self.check_calibre_available(pandrator_path):
+                    logging.info("Calibre installed successfully via Chocolatey.")
                     return True
-                else:
-                    logging.warning("Calibre installation not detected after installation attempt.")
-                    return False
-            else:
-                self.show_calibre_installation_message()
-                return False
+                logging.warning(
+                    "Calibre installation via Chocolatey completed but executable was not detected."
+                )
         else:
-            logging.info("Calibre is already installed.")
+            logging.info("Skipping system-wide Calibre installation (requires admin).")
+
+        if self.install_calibre_portable(pandrator_path):
             return True
+
+        self.show_calibre_installation_message()
+        return False
 
     def resolve_espeak_paths(self):
         candidate_roots = [
@@ -3016,18 +3192,20 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             self.worker.update_progress.emit(0.2)
             self.worker.update_status.emit("Installing dependencies...")
             try:
-                if is_admin:
-                    self.install_dependencies()
-                else:
+                if not is_admin:
                     self.worker.update_status.emit("Checking for Calibre...")
-                    if not self.check_program_installed('calibre'):
-                        QTimer.singleShot(0, self.show_calibre_installation_message)
-                    else:
-                        logging.info("Calibre is already installed.")
+
+                dependencies_ok = self.install_dependencies(
+                    pandrator_path,
+                    allow_system_install=is_admin,
+                )
+                if not dependencies_ok:
+                    logging.warning(
+                        "Calibre is unavailable. DOCX/MOBI conversion will require manual setup."
+                    )
             except Exception as e:
                 logging.error(f"Error during dependency installation: {str(e)}")
-                if is_admin:
-                    QTimer.singleShot(0, self.show_calibre_installation_message)
+                self.show_calibre_installation_message()
 
             self.worker.update_progress.emit(0.35)
             self.worker.update_status.emit("Installing Pixi...")

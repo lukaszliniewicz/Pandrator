@@ -35,6 +35,7 @@ DEFAULT_SHARED_PATHS = (
     "Pandrator",
     "Subdub",
     "bin",
+    "Calibre Portable",
     ".pixi-home",
     ".pixi-cache",
     "envs/pandrator_installer",

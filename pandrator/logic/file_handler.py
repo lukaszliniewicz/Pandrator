@@ -155,9 +155,14 @@ def convert_doc_to_text(doc_path: str, output_txt_path: str) -> bool:
     else:
         # Fallback to a possible Calibre Portable installation relative to the project root
         project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
-        calibre_portable_path = os.path.join(project_root, 'Calibre Portable', 'Calibre', 'ebook-convert.exe')
-        if os.path.exists(calibre_portable_path) and run_ebook_convert([calibre_portable_path, doc_path, output_txt_path]):
-            return True
+        portable_candidates = [
+            os.path.join(project_root, 'Calibre Portable', 'Calibre', 'ebook-convert.exe'),
+            os.path.join(project_root, 'Calibre Portable', 'PFiles64', 'Calibre2', 'ebook-convert.exe'),
+        ]
+
+        for calibre_portable_path in portable_candidates:
+            if os.path.exists(calibre_portable_path) and run_ebook_convert([calibre_portable_path, doc_path, output_txt_path]):
+                return True
     return False
 
 def download_video_from_url(url: str, output_dir: str) -> str:
