@@ -21,6 +21,7 @@ DEFAULT_LOCAL_API_BASE = "http://localhost:1234/v1"
 DEFAULT_LOCAL_MODEL = "openai/gpt-5.4-mini"
 DEFAULT_DUBBING_PROVIDER_ID = "anthropic"
 DEFAULT_DUBBING_MODEL_ID = "claude-sonnet-4-6"
+NON_LLM_TASK_MODEL = "openrouter/auto"
 DEEPL_PROVIDER_ID = "deepl"
 MANUAL_CORRECTION_RESULT_PREFIX = "PANDRATOR_MANUAL_CORRECTION_RESULT="
 MANUAL_CORRECTION_AUDIO_EXTENSIONS = (
@@ -405,6 +406,18 @@ def _resolve_model_options(settings: dict) -> dict[str, Any]:
     return _resolve_legacy_model_options(settings)
 
 
+def _non_llm_task_model_options() -> dict[str, Any]:
+    return {
+        "model": NON_LLM_TASK_MODEL,
+        "provider": "openrouter",
+        "use_deepl": False,
+        "api_base": "",
+        "api_key": "",
+        "api_key_env": "",
+        "reasoning_effort": "",
+    }
+
+
 def _apply_model_options(command: list[str], model_options: dict[str, Any]):
     command.extend(["-model", str(model_options["model"])])
 
@@ -465,7 +478,8 @@ def _run_subdub_command(command: list[str], task_name: str, model_options: dict[
 
 def transcribe_video(session_dir: str, video_file: str, settings: dict, correction_prompt: str = "") -> bool:
     """Transcribes a video file using Subdub."""
-    model_options = _resolve_model_options(settings)
+    correction_enabled = bool(settings.get("correction_enabled"))
+    model_options = _resolve_model_options(settings) if correction_enabled else _non_llm_task_model_options()
     command = _build_subdub_command_base() + [
         "-i",
         video_file,
@@ -480,7 +494,7 @@ def transcribe_video(session_dir: str, video_file: str, settings: dict, correcti
     ]
     _apply_model_options(command, model_options)
 
-    if settings.get("correction_enabled"):
+    if correction_enabled:
         if model_options.get("use_deepl"):
             logging.warning("Skipping correction stage: DeepL mode does not support correction-only LLM steps.")
         else:
@@ -549,6 +563,7 @@ def translate_subtitles(session_dir: str, srt_file: str, settings: dict, correct
 
 def generate_speech_blocks(session_dir: str, srt_file: str) -> bool:
     """Generates speech blocks from an SRT file using Subdub."""
+    model_options = _non_llm_task_model_options()
     command = _build_subdub_command_base() + [
         "-i",
         srt_file,
@@ -557,11 +572,13 @@ def generate_speech_blocks(session_dir: str, srt_file: str) -> bool:
         "-task",
         "speech_blocks",
     ]
-    return _run_subdub_command(command, "Speech Block Generation")
+    _apply_model_options(command, model_options)
+    return _run_subdub_command(command, "Speech Block Generation", model_options)
 
 
 def synchronize_audio(session_dir: str, video_file: str = "") -> bool:
     """Synchronizes generated audio with the original video using Subdub."""
+    model_options = _non_llm_task_model_options()
     command = _build_subdub_command_base() + [
         "-session",
         session_dir,
@@ -572,18 +589,21 @@ def synchronize_audio(session_dir: str, video_file: str = "") -> bool:
     if video_file:
         command.extend(["-v", video_file])
 
-    return _run_subdub_command(command, "Synchronization")
+    _apply_model_options(command, model_options)
+    return _run_subdub_command(command, "Synchronization", model_options)
 
 
 def equalize_subtitles(srt_file: str) -> bool:
     """Equalizes subtitles timings using Subdub."""
+    model_options = _non_llm_task_model_options()
     command = _build_subdub_command_base() + [
         "-i",
         srt_file,
         "-task",
         "equalize",
     ]
-    return _run_subdub_command(command, "Equalization")
+    _apply_model_options(command, model_options)
+    return _run_subdub_command(command, "Equalization", model_options)
 
 
 def find_latest_audio_file(session_dir: str) -> str | None:
