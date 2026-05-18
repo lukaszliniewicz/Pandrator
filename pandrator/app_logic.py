@@ -81,6 +81,7 @@ class AppLogic(QObject):
     _tts_connection_result = pyqtSignal(dict)
     _download_source_ready = pyqtSignal(str, bool)
     _start_generation_requested = pyqtSignal()
+    _start_generation_anew_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -123,6 +124,7 @@ class AppLogic(QObject):
         self._tts_connection_result.connect(self._apply_tts_connection_result)
         self._download_source_ready.connect(self._on_download_source_ready)
         self._start_generation_requested.connect(self.start_generation)
+        self._start_generation_anew_requested.connect(self.start_generation_anew)
 
         logging.info("AppLogic initialized.")
 
@@ -269,6 +271,23 @@ class AppLogic(QObject):
     def is_tts_connection_running(self) -> bool:
         """Returns True while a TTS connection check is in progress."""
         return bool(self._tts_connection_thread and self._tts_connection_thread.is_alive())
+
+    def has_resumable_generation_progress(self) -> bool:
+        """Returns True when generation has partial progress that can be resumed."""
+        has_generated = False
+        has_pending = False
+
+        with self._state_lock:
+            for sentence in self.state.processed_sentences:
+                if sentence.get("tts_generated") == "yes":
+                    has_generated = True
+                else:
+                    has_pending = True
+
+                if has_generated and has_pending:
+                    return True
+
+        return False
 
     def get_processed_sentences_snapshot(self) -> list[dict]:
         """Returns a thread-safe snapshot of processed sentences."""
@@ -1468,7 +1487,7 @@ class AppLogic(QObject):
         thread.start()
         return thread
 
-    def run_dubbing_task(self, task: str):
+    def run_dubbing_task(self, task: str, subtitle_mode: str = "soft"):
         """Runs a dubbing-related task like transcribe, translate, etc., in a background thread."""
         if self.is_generation_or_regeneration_running():
             self.log_message.emit("Cannot run dubbing tasks while generation/regeneration is active.")
@@ -1476,9 +1495,9 @@ class AppLogic(QObject):
 
         self.normalize_dubbing_translation_state(self.state.dubbing)
 
-        self._run_threaded_task(self._run_dubbing_task_thread, task)
+        self._run_threaded_task(self._run_dubbing_task_thread, task, subtitle_mode)
 
-    def _run_dubbing_task_thread(self, task: str):
+    def _run_dubbing_task_thread(self, task: str, subtitle_mode: str = "soft"):
         """The actual threaded implementation for dubbing tasks."""
         self.log_message.emit(f"Starting dubbing task: {task}")
         session_output_dir = session_handler.get_session_path(self.state.session_name)
@@ -1540,7 +1559,11 @@ class AppLogic(QObject):
         elif task == "fine_tune_timings":
             self._run_manual_timing_correction(dubbing_session_dir)
         elif task == "add_to_video":
-            self._orchestrate_add_to_video(dubbing_session_dir, session_output_dir)
+            self._orchestrate_add_to_video(
+                dubbing_session_dir,
+                session_output_dir,
+                subtitle_mode=subtitle_mode,
+            )
         else:
             self.log_message.emit(f"Unknown dubbing task: {task}")
 
@@ -1605,8 +1628,17 @@ class AppLogic(QObject):
         # 5. Start audio generation
         self.start_generation()
 
-    def _orchestrate_add_to_video(self, dubbing_session_dir: str, session_output_dir: str):
+    def _orchestrate_add_to_video(
+        self,
+        dubbing_session_dir: str,
+        session_output_dir: str,
+        subtitle_mode: str = "soft",
+    ):
         """Full workflow to synchronize audio and add subtitles."""
+        normalized_subtitle_mode = str(subtitle_mode or "soft").strip().lower()
+        if normalized_subtitle_mode not in {"soft", "burned", "both"}:
+            normalized_subtitle_mode = "soft"
+
         video_source = self._resolve_dubbing_video_source()
         if not video_source or not os.path.exists(video_source):
             self.show_error.emit("Dubbing Error", "No valid video file found for synchronization.")
@@ -1660,13 +1692,47 @@ class AppLogic(QObject):
 
         # 3. Add Subtitles to Video
         os.makedirs(session_output_dir, exist_ok=True)
-        output_video_path = os.path.join(session_output_dir, f"{self.state.session_name}_final.mp4")
-        self.log_message.emit(f"Adding subtitles to video, output will be at {output_video_path}")
-        if not subdub_handler.add_subtitles_to_video(synced_video_path, equalized_srt_path, output_video_path):
-            self.show_error.emit("Dubbing Error", "Failed to add subtitles to the final video.")
+        mode_to_filename = {
+            "soft": f"{self.state.session_name}_final_softsubs.mp4",
+            "burned": f"{self.state.session_name}_final_burnedsubs.mp4",
+        }
+        mode_to_label = {
+            "soft": "embedded as a selectable subtitle track",
+            "burned": "burned into the video",
+        }
+        render_modes = ["soft", "burned"] if normalized_subtitle_mode == "both" else [normalized_subtitle_mode]
+        if normalized_subtitle_mode == "both":
+            self.log_message.emit("Rendering both subtitle modes (soft + burned-in)...")
+
+        generated_outputs: list[str] = []
+        for render_mode in render_modes:
+            subtitle_mode_label = mode_to_label[render_mode]
+            output_video_path = os.path.join(session_output_dir, mode_to_filename[render_mode])
+            self.log_message.emit(
+                f"Adding subtitles to video ({subtitle_mode_label}), output will be at {output_video_path}"
+            )
+            if not subdub_handler.add_subtitles_to_video(
+                synced_video_path,
+                equalized_srt_path,
+                output_video_path,
+                subtitle_mode=render_mode,
+            ):
+                self.show_error.emit(
+                    "Dubbing Error",
+                    f"Failed to add {render_mode} subtitles to the final video.",
+                )
+                return
+
+            generated_outputs.append(output_video_path)
+
+        if len(generated_outputs) == 1:
+            self.log_message.emit(f"Dubbing workflow finished. Final output: {generated_outputs[0]}")
             return
 
-        self.log_message.emit(f"Dubbing workflow finished. Final output: {output_video_path}")
+        self.log_message.emit(
+            "Dubbing workflow finished. Final outputs: "
+            + "; ".join(generated_outputs)
+        )
 
     def run_text_preprocessing(self):
         """Runs the text preprocessor on the raw text in the state."""
@@ -1697,7 +1763,69 @@ class AppLogic(QObject):
             self.show_error.emit("Preprocessing Error", str(e))
 
     # --- Generation ---
-    
+
+    def _reset_generation_progress(self) -> bool | None:
+        """Resets generated sentence flags and removes existing sentence WAV artifacts."""
+        processed_sentences = self.get_processed_sentences_snapshot()
+        if not processed_sentences:
+            return False
+
+        had_generated_sentences = any(
+            sentence.get("tts_generated") == "yes"
+            for sentence in processed_sentences
+        )
+        if not had_generated_sentences:
+            return False
+
+        for wavs_dir in self._get_candidate_sentence_wavs_dirs():
+            if not os.path.isdir(wavs_dir):
+                continue
+            try:
+                shutil.rmtree(wavs_dir)
+                os.makedirs(wavs_dir, exist_ok=True)
+            except OSError as e:
+                self.show_error.emit(
+                    "Generation Error",
+                    f"Could not clear WAV directory '{wavs_dir}': {e}",
+                )
+                return None
+
+        reset_sentences: list[dict] = []
+        for sentence in processed_sentences:
+            reset_sentence = copy.deepcopy(sentence)
+            reset_sentence["tts_generated"] = "no"
+            reset_sentences.append(reset_sentence)
+
+        self._set_processed_sentences_snapshot(reset_sentences)
+        self.progress_updated.emit(0, max(len(reset_sentences), 1), 0.0)
+        self.state_changed.emit()
+        return True
+
+    def start_generation_anew(self):
+        """Clears current progress and restarts generation from the beginning."""
+        if threading.current_thread() is not threading.main_thread():
+            self._start_generation_anew_requested.emit()
+            return
+
+        if (
+            self._is_generation_running()
+            or self._is_regeneration_running()
+            or self._is_rvc_processing_running()
+        ):
+            self.start_generation()
+            return
+
+        reset_result = self._reset_generation_progress()
+        if reset_result is None:
+            return
+
+        if reset_result:
+            self.log_message.emit(
+                "Generation progress cleared. Restarting from sentence 1..."
+            )
+
+        self.start_generation()
+
     def start_generation(self):
         """Starts the audio generation worker thread, running preprocessing if needed."""
         if threading.current_thread() is not threading.main_thread():

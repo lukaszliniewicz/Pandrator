@@ -363,7 +363,12 @@ def session_has_generated_artifacts(session_name: str) -> bool:
                 return True
 
             stem_lower, ext = os.path.splitext(name_lower)
-            if stem_lower.startswith("final_output") or "_synced" in stem_lower or stem_lower.endswith("_final"):
+            if (
+                stem_lower.startswith("final_output")
+                or "_synced" in stem_lower
+                or stem_lower.endswith("_final")
+                or "_final_" in stem_lower
+            ):
                 return True
 
             if ext == ".srt" and any(token in stem_lower for token in ("_translated", "_corrected", "_equalized")):

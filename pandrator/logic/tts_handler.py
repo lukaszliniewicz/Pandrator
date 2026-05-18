@@ -109,21 +109,6 @@ KOKORO_TTS_VOICES = [
     "zm_yunxia",
     "zm_yunyang",
 ]
-KOKORO_LANG_CODE_ALIASES = {
-    "en": "a",
-    "en-us": "a",
-    "en-gb": "b",
-    "es": "e",
-    "fr": "f",
-    "fr-fr": "f",
-    "hi": "h",
-    "it": "i",
-    "ja": "j",
-    "pt": "p",
-    "pt-br": "p",
-    "zh": "z",
-    "zh-cn": "z",
-}
 OPENAI_AUDIO_DEFAULT_MODEL = "gpt-4o-mini-tts"
 OPENAI_AUDIO_DEFAULT_VOICE = "alloy"
 GEMINI_AUDIO_DEFAULT_MODEL = "gemini-3.1-flash-tts-preview"
@@ -2042,11 +2027,6 @@ def _build_kokoro_payload(text: str, tts_settings: dict) -> dict:
         "response_format": "wav",
         "speed": _coerce_float(tts_settings.get("speed"), 1.0),
     }
-
-    language_code = str(tts_settings.get("language") or "").strip().lower()
-    kokoro_lang_code = KOKORO_LANG_CODE_ALIASES.get(language_code, "")
-    if kokoro_lang_code:
-        payload["lang_code"] = kokoro_lang_code
 
     return payload
 

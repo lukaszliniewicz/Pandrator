@@ -24,6 +24,40 @@ SINGLE_QUOTATION_MARK_PATTERN = re.compile(
     rf"(?<!\w)[{re.escape(SINGLE_QUOTATION_MARKS)}]|[{re.escape(SINGLE_QUOTATION_MARKS)}](?!\w)"
 )
 
+SENTENCE_SPLITTER_SUPPORTED_LANGUAGES = {
+    "ca",
+    "cs",
+    "da",
+    "de",
+    "el",
+    "en",
+    "es",
+    "fi",
+    "fr",
+    "hu",
+    "is",
+    "it",
+    "lt",
+    "lv",
+    "nl",
+    "no",
+    "pl",
+    "pt",
+    "ro",
+    "ru",
+    "sk",
+    "sl",
+    "sv",
+    "tr",
+}
+
+SENTENCE_SPLITTER_LANGUAGE_ALIASES = {
+    "en-us": "en",
+    "en-gb": "en",
+    "fr-fr": "fr",
+    "pt-br": "pt",
+}
+
 
 def strip_quotation_marks(text: str) -> str:
     without_double_quotes = text.translate(DOUBLE_QUOTATION_MARK_TRANSLATION_TABLE)
@@ -195,15 +229,46 @@ def preprocess_text_pdf(text, remove_double_newlines=False):
     text = regex.sub(r'(?m)^[ \t]+', '', text)
     return text
 
+
+def _normalize_sentence_splitter_language(language: str) -> str:
+    normalized = str(language or "").strip().lower()
+    if not normalized:
+        return "en"
+
+    normalized = SENTENCE_SPLITTER_LANGUAGE_ALIASES.get(normalized, normalized)
+
+    if normalized in SENTENCE_SPLITTER_SUPPORTED_LANGUAGES:
+        return normalized
+
+    if "-" in normalized:
+        base_language = normalized.split("-", 1)[0]
+        if base_language in SENTENCE_SPLITTER_SUPPORTED_LANGUAGES:
+            return base_language
+
+    return "en"
+
+
+def _split_with_sentence_splitter(text: str, language: str) -> list[str]:
+    splitter_language = _normalize_sentence_splitter_language(language)
+    try:
+        splitter = SentenceSplitter(language=splitter_language)
+        return splitter.split(text)
+    except Exception:
+        if splitter_language != "en":
+            splitter = SentenceSplitter(language="en")
+            return splitter.split(text)
+        raise
+
 def split_into_sentences(text, language, tts_service):
+    normalized_language = str(language or "").strip().lower()
+
     if tts_service in {"XTTS", "Voxtral", "Kokoro", "OpenAI", "Gemini", "OpenAI-Compatible"}:
-        if language == "zh-cn":
+        if normalized_language in {"zh", "zh-cn"}:
             return split_chinese_sentences(text)
-        elif language == "ja":
+        elif normalized_language.startswith("ja"):
             return hasami.segment_sentences(text)
         else:
-            splitter = SentenceSplitter(language=language)
-            return splitter.split(text)
+            return _split_with_sentence_splitter(text, normalized_language)
     elif tts_service == "Silero":
         # This mapping is more robust than parsing the code string from constants
         silero_name_to_lang_code = {
@@ -219,12 +284,10 @@ def split_into_sentences(text, language, tts_service):
             "Uzbek (v3)": "uz",
             "Kalmyk (v3)": "ru",  # Fallback for Kalmyk to Russian
         }
-        simple_lang = silero_name_to_lang_code.get(language, "en")
-        splitter = SentenceSplitter(language=simple_lang)
-        return splitter.split(text)
+        simple_lang = silero_name_to_lang_code.get(language, normalized_language or "en")
+        return _split_with_sentence_splitter(text, simple_lang)
 
-    splitter = SentenceSplitter(language="en")
-    return splitter.split(text)
+    return _split_with_sentence_splitter(text, "en")
 
 def split_chinese_sentences(text):
     end_punctuation = '。！？…'

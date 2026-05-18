@@ -539,9 +539,7 @@ class SessionTab(QWidget):
         self.generate_dub_audio_button.clicked.connect(
             lambda: self.logic.run_dubbing_task("generate_audio")
         )
-        self.add_dub_to_video_button.clicked.connect(
-            lambda: self.logic.run_dubbing_task("add_to_video")
-        )
+        self.add_dub_to_video_button.clicked.connect(self._on_add_dubbing_to_video)
         self.only_transcribe_button.clicked.connect(
             lambda: self.logic.run_dubbing_task("transcribe")
         )
@@ -578,10 +576,20 @@ class SessionTab(QWidget):
         self.logic.state_changed.emit()
 
     def _connect_generation_signals(self):
-        self.start_button.clicked.connect(self.logic.start_generation)
+        self.start_button.clicked.connect(self._on_start_generation_clicked)
         self.resume_button.clicked.connect(self.logic.start_generation)
         self.stop_button.clicked.connect(self.logic.stop_generation)
         self.cancel_button.clicked.connect(self.logic.cancel_generation)
+
+    def _has_resumable_generation_progress(self) -> bool:
+        return self.logic.has_resumable_generation_progress()
+
+    def _on_start_generation_clicked(self):
+        if self._has_resumable_generation_progress():
+            self.logic.start_generation_anew()
+            return
+
+        self.logic.start_generation()
 
     @staticmethod
     def _format_duration(seconds: float) -> str:
@@ -614,21 +622,24 @@ class SessionTab(QWidget):
             self.progress_bar.setFormat("0.00%")
             self.remaining_time_label.setText("N/A")
 
+    def _ensure_named_session_for_source_action(self, action_description: str) -> bool:
+        if self.logic.state.session_name and self.logic.state.session_name != "Untitled Session":
+            return True
+
+        QMessageBox.warning(
+            self,
+            "No Session",
+            f"Please create or load a session before {action_description}.",
+        )
+        return False
+
     def _on_download_url(self):
+        if not self._ensure_named_session_for_source_action("downloading from URL"):
+            return
+
         url, ok = QInputDialog.getText(self, "Download from URL", "Enter YouTube URL:")
         normalized_url = url.strip() if ok and url else ""
         if not normalized_url:
-            return
-
-        if (
-            not self.logic.state.session_name
-            or self.logic.state.session_name == "Untitled Session"
-        ):
-            QMessageBox.warning(
-                self,
-                "No Session",
-                "Please create or load a session before downloading.",
-            )
             return
 
         should_continue, reset_session = self._confirm_source_replacement()
@@ -962,6 +973,11 @@ class SessionTab(QWidget):
         self.output_options_frame.setVisible(not is_dubbing_source)
 
         can_start_or_resume = (not generation_busy) and (not is_dubbing_source)
+        start_button_label = (
+            "Start anew" if self._has_resumable_generation_progress() else "Start Generation"
+        )
+        if self.start_button.text() != start_button_label:
+            self.start_button.setText(start_button_label)
         self.start_button.setEnabled(can_start_or_resume)
         self.resume_button.setEnabled(can_start_or_resume)
         self._set_button_accent(self.start_button, not is_dubbing_source)
@@ -1540,6 +1556,9 @@ class SessionTab(QWidget):
             self.logic.delete_session(self.logic.state.session_name)
 
     def _on_paste_text(self):
+        if not self._ensure_named_session_for_source_action("pasting text"):
+            return
+
         dialog = PasteTextDialog(self)
         if dialog.exec():
             data = dialog.get_data()
@@ -1554,6 +1573,9 @@ class SessionTab(QWidget):
                 )
 
     def _on_select_file(self):
+        if not self._ensure_named_session_for_source_action("selecting a source file"):
+            return
+
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Select Source File",
@@ -1648,6 +1670,38 @@ class SessionTab(QWidget):
         )
         if file_path:
             self.logic.select_dubbing_video_file(file_path)
+
+    def _on_add_dubbing_to_video(self):
+        chooser = QMessageBox(self)
+        chooser.setIcon(QMessageBox.Icon.Question)
+        chooser.setWindowTitle("Add Subtitles to Video")
+        chooser.setText("How should subtitles be added to the final video?")
+        chooser.setInformativeText(
+            "Soft subtitles can be toggled, burned subtitles are always visible, and each mode is saved as a separate file."
+        )
+        soft_subtitles_button = chooser.addButton(
+            "Soft subtitles",
+            QMessageBox.ButtonRole.AcceptRole,
+        )
+        burned_subtitles_button = chooser.addButton(
+            "Burn into video",
+            QMessageBox.ButtonRole.ActionRole,
+        )
+        both_subtitle_modes_button = chooser.addButton(
+            "Create both",
+            QMessageBox.ButtonRole.ActionRole,
+        )
+        chooser.addButton(QMessageBox.StandardButton.Cancel)
+        chooser.setDefaultButton(soft_subtitles_button)
+        chooser.exec()
+
+        clicked_button = chooser.clickedButton()
+        if clicked_button == soft_subtitles_button:
+            self.logic.run_dubbing_task("add_to_video", subtitle_mode="soft")
+        elif clicked_button == burned_subtitles_button:
+            self.logic.run_dubbing_task("add_to_video", subtitle_mode="burned")
+        elif clicked_button == both_subtitle_modes_button:
+            self.logic.run_dubbing_task("add_to_video", subtitle_mode="both")
 
     def _on_tts_service_changed(self, service: str):
         normalized_service = service

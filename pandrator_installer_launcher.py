@@ -15,6 +15,7 @@ import tempfile
 import ctypes
 import winreg
 import argparse
+import shlex
 from datetime import datetime
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QTabWidget, 
                             QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
@@ -1189,14 +1190,26 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
         Reads machine and user-level environment variables from the registry and injects
         them into os.environ AND the current process environment block via
-        SetEnvironmentVariableW.  This ensures child processes spawned by subprocess
-        inherit the updated PATH/COMSPEC etc. without rebooting or broadcasting
-        WM_SETTINGCHANGE (which is unreliable from a non-elevated context).
+        SetEnvironmentVariableW. This ensures child processes spawned by subprocess
+        inherit updated values without rebooting or broadcasting WM_SETTINGCHANGE.
         """
         try:
             logging.info("Refreshing environment variables from registry...")
 
-            def _read_registry_env(key_path, root=winreg.HKEY_LOCAL_MACHINE):
+            def _expand_registry_value(value, value_type):
+                if value_type != winreg.REG_EXPAND_SZ:
+                    return value
+
+                try:
+                    return winreg.ExpandEnvironmentStrings(value)
+                except OSError:
+                    return os.path.expandvars(value)
+
+            def _read_registry_env(
+                key_path,
+                root=winreg.HKEY_LOCAL_MACHINE,
+                merge_path_with_existing=False,
+            ):
                 try:
                     with winreg.OpenKey(
                         root, key_path,
@@ -1206,14 +1219,23 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                         while True:
                             try:
                                 name, value, value_type = winreg.EnumValue(key, i)
-                                if value_type in (
-                                    winreg.REG_SZ,
-                                    winreg.REG_EXPAND_SZ,
-                                ):
-                                    os.environ[name] = value
-                                    ctypes.windll.kernel32.SetEnvironmentVariableW(
-                                        name, value
-                                    )
+                                if value_type not in (winreg.REG_SZ, winreg.REG_EXPAND_SZ):
+                                    i += 1
+                                    continue
+
+                                value = _expand_registry_value(value, value_type)
+
+                                if merge_path_with_existing and name.lower() == 'path':
+                                    existing_path = os.environ.get('Path') or os.environ.get('PATH')
+                                    if existing_path and value:
+                                        value = f"{existing_path}{os.pathsep}{value}"
+                                    elif existing_path and not value:
+                                        value = existing_path
+
+                                os.environ[name] = value
+                                ctypes.windll.kernel32.SetEnvironmentVariableW(
+                                    name, value
+                                )
                                 i += 1
                             except OSError:
                                 break
@@ -1227,7 +1249,27 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
             )
             # User-level environment variables
-            _read_registry_env(r"Environment", root=winreg.HKEY_CURRENT_USER)
+            _read_registry_env(
+                r"Environment",
+                root=winreg.HKEY_CURRENT_USER,
+                merge_path_with_existing=True,
+            )
+
+            # If COMSPEC is unexpanded (e.g. "%SystemRoot%\\system32\\cmd.exe"),
+            # shell=True subprocess calls raise FileNotFoundError.
+            comspec = os.environ.get('COMSPEC') or os.environ.get('ComSpec')
+            if comspec:
+                comspec = os.path.expandvars(comspec)
+
+            if not comspec or not os.path.exists(comspec):
+                system_root = os.environ.get('SystemRoot', r'C:\Windows')
+                fallback_comspec = os.path.join(system_root, 'System32', 'cmd.exe')
+                if os.path.exists(fallback_comspec):
+                    comspec = fallback_comspec
+
+            if comspec:
+                os.environ['COMSPEC'] = comspec
+                ctypes.windll.kernel32.SetEnvironmentVariableW('COMSPEC', comspec)
 
             logging.info("Environment variables refreshed from registry.")
         except Exception as e:
@@ -1262,15 +1304,22 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
     def install_with_chocolatey(self, package_name, args=""):
         logging.info(f"Attempting to install {package_name} with Chocolatey...")
+
+        try:
+            extra_args = shlex.split(args, posix=False) if args else []
+        except ValueError as e:
+            logging.warning(
+                f"Unable to parse Chocolatey arguments '{args}': {e}. Falling back to basic split."
+            )
+            extra_args = args.split()
         
         # First, try using 'choco' command
         process = None
         try:
             process = subprocess.Popen(
-                f"choco install {package_name} -y {args}",
+                ['choco', 'install', package_name, '-y', *extra_args],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                shell=True,
                 text=True,
                 **self.get_hidden_subprocess_kwargs(),
             )
@@ -1281,6 +1330,10 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             if process.returncode == 0:
                 logging.info(f"{package_name} installed successfully using 'choco' command.")
                 return True
+
+            logging.warning(
+                f"Chocolatey 'choco' command exited with code {process.returncode}. STDERR: {stderr}"
+            )
         except subprocess.TimeoutExpired:
             if process is not None:
                 process.kill()
@@ -1292,13 +1345,13 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         # If 'choco' command fails, try using the Chocolatey executable directly
         process = None
         try:
-            choco_exe = os.path.join(os.environ.get('ProgramData', ''), 'chocolatey', 'bin', 'choco.exe')
+            program_data = os.path.expandvars(os.environ.get('ProgramData', r'C:\ProgramData'))
+            choco_exe = os.path.join(program_data, 'chocolatey', 'bin', 'choco.exe')
             if os.path.exists(choco_exe):
                 process = subprocess.Popen(
-                    f'"{choco_exe}" install {package_name} -y {args}',
+                    [choco_exe, 'install', package_name, '-y', *extra_args],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
-                    shell=True,
                     text=True,
                     **self.get_hidden_subprocess_kwargs(),
                 )
@@ -1309,8 +1362,12 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 if process.returncode == 0:
                     logging.info(f"{package_name} installed successfully using Chocolatey executable.")
                     return True
+
+                logging.warning(
+                    f"Chocolatey executable exited with code {process.returncode}. STDERR: {stderr}"
+                )
             else:
-                logging.error("Chocolatey executable not found.")
+                logging.error(f"Chocolatey executable not found at: {choco_exe}")
         except subprocess.TimeoutExpired:
             if process is not None:
                 process.kill()
@@ -3122,21 +3179,58 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         try:
             self.update_status(f"Setting permissions on {os.path.basename(path)}...")
             logging.info(f"Setting permissive permissions on: {path}")
+
+            icacls_executable = shutil.which('icacls')
+            if not icacls_executable:
+                system_root = os.environ.get('SystemRoot', r'C:\Windows')
+                fallback_icacls = os.path.join(system_root, 'System32', 'icacls.exe')
+                if os.path.exists(fallback_icacls):
+                    icacls_executable = fallback_icacls
+
+            if not icacls_executable:
+                logging.error(f"Could not locate icacls.exe. Skipping permission update for {path}")
+                return False
             
             # Use icacls to give Users full control (F) with inheritance flags (OI)(CI)
             # OI = Object Inherit, CI = Container Inherit, F = Full Control
-            command = f'icacls "{path}" /grant:r Users:(OI)(CI)F /T /Q'
-            subprocess.run(
+            command = [
+                icacls_executable,
+                path,
+                '/grant:r',
+                'Users:(OI)(CI)F',
+                '/T',
+                '/Q',
+            ]
+            completed_process = subprocess.run(
                 command,
-                shell=True,
                 check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
                 **self.get_hidden_subprocess_kwargs(),
             )
+
+            if completed_process.stdout:
+                logging.debug(f"icacls output for {path}: {completed_process.stdout}")
+            if completed_process.stderr:
+                logging.debug(f"icacls stderr for {path}: {completed_process.stderr}")
             
             logging.info(f"Successfully set permissions on: {path}")
             return True
         except subprocess.CalledProcessError as e:
             logging.error(f"Failed to set permissions on {path}: {str(e)}")
+            if e.stdout:
+                logging.error(f"icacls stdout: {e.stdout}")
+            if e.stderr:
+                logging.error(f"icacls stderr: {e.stderr}")
+            logging.error(traceback.format_exc())
+            return False
+        except FileNotFoundError as e:
+            logging.error(f"Permission tool missing while updating {path}: {str(e)}")
+            logging.error(traceback.format_exc())
+            return False
+        except Exception as e:
+            logging.error(f"Unexpected error while setting permissions on {path}: {str(e)}")
             logging.error(traceback.format_exc())
             return False
 

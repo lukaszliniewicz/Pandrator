@@ -384,6 +384,7 @@ def _build_subdub_environment(model_options: dict[str, Any] | None = None) -> di
 
     if api_base and _is_local_api_base(api_base) and not env.get("OPENAI_API_KEY"):
         env["OPENAI_API_KEY"] = api_key or "lm-studio"
+
     if not env.get(WHISPERX_PIXI_EXE_ENV):
         for candidate in WHISPERX_PIXI_EXE_CANDIDATES:
             if os.path.isfile(candidate):
@@ -392,7 +393,6 @@ def _build_subdub_environment(model_options: dict[str, Any] | None = None) -> di
 
     if not env.get(WHISPERX_PIXI_MANIFEST_ENV) and os.path.isfile(WHISPERX_PIXI_MANIFEST_PATH):
         env[WHISPERX_PIXI_MANIFEST_ENV] = WHISPERX_PIXI_MANIFEST_PATH
-
 
     return env
 
@@ -751,12 +751,32 @@ def open_manual_correction_gui(srt_file: str, audio_file: str, session_dir: str)
     fallback_srt = srt_path
     return fallback_srt if os.path.exists(fallback_srt) else None
 
-def add_subtitles_to_video(synced_video_path: str, equalized_srt_path: str, output_video_path: str) -> bool:
+def _escape_ffmpeg_subtitles_filter_path(path: str) -> str:
+    """Escapes an absolute subtitle path for FFmpeg subtitles filter usage."""
+    normalized_path = os.path.abspath(path).replace("\\", "/")
+    escaped_path = normalized_path.replace(":", r"\:")
+    escaped_path = escaped_path.replace("'", r"\'")
+    escaped_path = escaped_path.replace(",", r"\,")
+    escaped_path = escaped_path.replace("[", r"\[")
+    escaped_path = escaped_path.replace("]", r"\]")
+    return escaped_path
+
+
+def add_subtitles_to_video(
+    synced_video_path: str,
+    equalized_srt_path: str,
+    output_video_path: str,
+    subtitle_mode: str = "soft",
+) -> bool:
     """Adds subtitles to a video file using FFmpeg.
 
     Writes to a temporary file first and only replaces the target output on
     success, so a failed remux does not destroy an existing final video.
     """
+    normalized_subtitle_mode = str(subtitle_mode or "soft").strip().lower()
+    if normalized_subtitle_mode not in {"soft", "burned"}:
+        normalized_subtitle_mode = "soft"
+
     output_abs_path = os.path.abspath(output_video_path)
     output_dir = os.path.dirname(output_abs_path)
     if output_dir:
@@ -767,16 +787,47 @@ def add_subtitles_to_video(synced_video_path: str, equalized_srt_path: str, outp
     temp_ext = output_ext or ".mp4"
     temp_output_path = os.path.join(output_dir or ".", f".{output_stem}_tmp{temp_ext}")
 
-    ffmpeg_command = [
-        "ffmpeg", "-y",
-        "-i", synced_video_path,
-        "-i", equalized_srt_path,
-        "-c", "copy",
-        "-c:s", "mov_text",
-        "-metadata:s:s:0", "language=eng",
-        temp_output_path,
-    ]
-    logging.info(f"Executing FFmpeg command to add subtitles: {' '.join(ffmpeg_command)}")
+    if normalized_subtitle_mode == "burned":
+        escaped_subtitle_path = _escape_ffmpeg_subtitles_filter_path(equalized_srt_path)
+        ffmpeg_command = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            synced_video_path,
+            "-vf",
+            f"subtitles='{escaped_subtitle_path}'",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "18",
+            "-c:a",
+            "copy",
+            temp_output_path,
+        ]
+    else:
+        ffmpeg_command = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            synced_video_path,
+            "-i",
+            equalized_srt_path,
+            "-c",
+            "copy",
+            "-c:s",
+            "mov_text",
+            "-metadata:s:s:0",
+            "language=eng",
+            temp_output_path,
+        ]
+
+    logging.info(
+        "Executing FFmpeg command to add subtitles (%s): %s",
+        normalized_subtitle_mode,
+        " ".join(ffmpeg_command),
+    )
     try:
         process = subprocess.Popen(
             ffmpeg_command,
@@ -796,7 +847,10 @@ def add_subtitles_to_video(synced_video_path: str, equalized_srt_path: str, outp
             raise RuntimeError("FFmpeg did not create a valid output video.")
 
         os.replace(temp_output_path, output_abs_path)
-        logging.info("Subtitles have been successfully embedded into the final video.")
+        logging.info(
+            "Subtitles have been successfully added to the final video (%s mode).",
+            normalized_subtitle_mode,
+        )
         return True
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
         logging.error(f"Failed to add subtitles: {e}")
