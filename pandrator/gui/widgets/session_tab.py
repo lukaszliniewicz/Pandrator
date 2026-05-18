@@ -211,6 +211,7 @@ class SessionTab(QWidget):
         self.voxtral_level_audio_checkbox = self.advanced_tts_frame.voxtral_level_audio_checkbox
 
         # Dubbing controls
+        self.transcription_heading = self.dubbing_frame.transcription_heading
         self.transcription_frame = self.dubbing_frame.transcription_frame
         self.video_file_frame = self.dubbing_frame.video_file_frame
         self.dub_whisper_lang_combo = self.dubbing_frame.dub_whisper_lang_combo
@@ -220,7 +221,6 @@ class SessionTab(QWidget):
         self.dub_translate_check = self.dubbing_frame.dub_translate_check
         self.dub_from_lang_combo = self.dubbing_frame.dub_from_lang_combo
         self.dub_to_lang_combo = self.dubbing_frame.dub_to_lang_combo
-        self.dub_cot_check = self.dubbing_frame.dub_cot_check
         self.dub_glossary_check = self.dubbing_frame.dub_glossary_check
         self.dub_trans_provider_combo = self.dubbing_frame.dub_trans_provider_combo
         self.dub_trans_model_combo = self.dubbing_frame.dub_trans_model_combo
@@ -521,13 +521,6 @@ class SessionTab(QWidget):
         )
         self.dub_to_lang_combo.currentIndexChanged.connect(
             self._on_dub_target_language_selected
-        )
-        self.dub_cot_check.stateChanged.connect(
-            lambda: setattr(
-                self.logic.state.dubbing,
-                "chain_of_thought_enabled",
-                self.dub_cot_check.isChecked(),
-            )
         )
         self.dub_glossary_check.stateChanged.connect(
             lambda: setattr(
@@ -842,7 +835,6 @@ class SessionTab(QWidget):
         self.dub_translate_check.setChecked(dub_state.translation_enabled)
         self.dub_from_lang_combo.setCurrentText(dub_state.original_language)
         self._update_dubbing_target_language_dropdown(dub_state.target_language)
-        self.dub_cot_check.setChecked(dub_state.chain_of_thought_enabled)
         self.dub_glossary_check.setChecked(dub_state.glossary_enabled)
 
         provider_options = self.logic.list_dubbing_translation_provider_configs()
@@ -1053,7 +1045,6 @@ class SessionTab(QWidget):
             self.dub_translate_check,
             self.dub_from_lang_combo,
             self.dub_to_lang_combo,
-            self.dub_cot_check,
             self.dub_glossary_check,
             self.dub_trans_provider_combo,
             self.select_video_file_button,
@@ -1074,9 +1065,10 @@ class SessionTab(QWidget):
             dubbing_controls_enabled and self.logic.has_dubbing_srt_file()
         )
 
-        if is_dubbing_source:
-            self.transcription_frame.setVisible(is_video)
-            self.video_file_frame.setVisible(is_srt)
+        show_transcription_options = is_dubbing_source and is_video
+        self.transcription_heading.setVisible(show_transcription_options)
+        self.transcription_frame.setVisible(show_transcription_options)
+        self.video_file_frame.setVisible(is_dubbing_source and is_srt)
 
     def _update_language_dropdown(self):
         service = self.logic.state.tts.service

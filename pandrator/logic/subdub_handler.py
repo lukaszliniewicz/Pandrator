@@ -266,8 +266,6 @@ def _resolve_provider_backed_model_options(settings: dict) -> dict[str, Any] | N
     reasoning_effort = ""
     if selected_model_raw.lower() == "sonnet thinking":
         reasoning_effort = "high"
-    elif settings.get("chain_of_thought_enabled"):
-        reasoning_effort = "medium"
 
     api_key = str(provider_config.get("api_key") or "").strip()
     api_key_env = str(provider_config.get("api_key_env") or "").strip()
@@ -336,9 +334,6 @@ def _resolve_legacy_model_options(settings: dict) -> dict[str, Any]:
 
     if custom_api_base and not api_base and _is_openai_compatible_model(model_value):
         api_base = custom_api_base
-
-    if settings.get("chain_of_thought_enabled") and not reasoning_effort and not use_deepl:
-        reasoning_effort = "medium"
 
     provider_prefix = model_value.split("/", 1)[0].strip().lower() if "/" in model_value else ""
     return {
@@ -662,15 +657,22 @@ def extract_audio_for_manual_correction(video_file: str, session_dir: str) -> st
 
 def open_manual_correction_gui(srt_file: str, audio_file: str, session_dir: str) -> str | None:
     """Opens Subdub's dedicated timing correction GUI for an SRT/audio pair."""
-    if not srt_file or not os.path.exists(srt_file):
+    srt_path = os.path.abspath(srt_file) if srt_file else ""
+    if not srt_path or not os.path.exists(srt_path):
         logging.error("Cannot open manual correction GUI: SRT path is invalid (%s).", srt_file)
         return None
 
-    if not audio_file or not os.path.exists(audio_file):
+    audio_path = os.path.abspath(audio_file) if audio_file else ""
+    if not audio_path or not os.path.exists(audio_path):
         logging.error("Cannot open manual correction GUI: audio path is invalid (%s).", audio_file)
         return None
 
-    os.makedirs(session_dir, exist_ok=True)
+    session_path = os.path.abspath(session_dir) if session_dir else ""
+    if not session_path:
+        logging.error("Cannot open manual correction GUI: session path is invalid (%s).", session_dir)
+        return None
+
+    os.makedirs(session_path, exist_ok=True)
 
     script = "\n".join(
         [
@@ -688,9 +690,9 @@ def open_manual_correction_gui(srt_file: str, audio_file: str, session_dir: str)
         _resolve_python_executable(),
         "-c",
         script,
-        srt_file,
-        audio_file,
-        session_dir,
+        srt_path,
+        audio_path,
+        session_path,
     ]
 
     success, output_lines = _run_subdub_command_with_output(command, "Manual Boundary Correction")
@@ -704,18 +706,33 @@ def open_manual_correction_gui(srt_file: str, audio_file: str, session_dir: str)
             break
 
     if corrected_srt_path:
-        if not os.path.isabs(corrected_srt_path):
-            corrected_srt_path = os.path.join(session_dir, corrected_srt_path)
-        corrected_srt_path = os.path.abspath(corrected_srt_path)
-        if os.path.exists(corrected_srt_path):
-            return corrected_srt_path
+        candidate_paths: list[str] = []
+        if os.path.isabs(corrected_srt_path):
+            candidate_paths.append(os.path.abspath(corrected_srt_path))
+        else:
+            raw_candidates = [
+                corrected_srt_path,
+                os.path.join(session_path, corrected_srt_path),
+                os.path.join(os.path.dirname(srt_path), corrected_srt_path),
+            ]
+            if os.path.isdir(SUBDUB_REPO_PATH):
+                raw_candidates.append(os.path.join(SUBDUB_REPO_PATH, corrected_srt_path))
+
+            for raw_candidate in raw_candidates:
+                candidate_path = os.path.abspath(raw_candidate)
+                if candidate_path not in candidate_paths:
+                    candidate_paths.append(candidate_path)
+
+        for candidate_path in candidate_paths:
+            if os.path.exists(candidate_path):
+                return candidate_path
 
         logging.warning(
             "Manual correction GUI returned a non-existent path: %s",
             corrected_srt_path,
         )
 
-    fallback_srt = os.path.abspath(srt_file)
+    fallback_srt = srt_path
     return fallback_srt if os.path.exists(fallback_srt) else None
 
 def add_subtitles_to_video(synced_video_path: str, equalized_srt_path: str, output_video_path: str) -> bool:

@@ -413,11 +413,8 @@ class DubbingSection(QFrame):
             )
         transl_layout.addWidget(self.dub_to_lang_combo, 1, 3)
 
-        self.dub_cot_check = QCheckBox("Enable chain-of-thought")
-        transl_layout.addWidget(self.dub_cot_check, 2, 0, 1, 2)
-
         self.dub_glossary_check = QCheckBox("Enable glossary")
-        transl_layout.addWidget(self.dub_glossary_check, 2, 2, 1, 2)
+        transl_layout.addWidget(self.dub_glossary_check, 2, 0, 1, 4)
 
         transl_layout.addWidget(QLabel("Translation Provider:"), 3, 0)
         self.dub_trans_provider_combo = QComboBox()
