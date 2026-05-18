@@ -1799,17 +1799,26 @@ def upload_speaker_voice(
     try:
         # Preferred path: ecosystem voice endpoint (/v1/audio/voices).
         last_voice_response = None
+        voice_filename = os.path.basename(wav_file_path)
+        voice_name = os.path.splitext(voice_filename)[0]
         for upload_voice_url in upload_voice_urls:
-            with open(wav_file_path, "rb") as wav_file:
+            # Keep both multipart field names for compatibility across XTTS API releases.
+            with open(wav_file_path, "rb") as files_wav, open(wav_file_path, "rb") as audio_sample_wav:
                 files = {
+                    "files": (
+                        voice_filename,
+                        files_wav,
+                        "audio/wav",
+                    ),
                     "audio_sample": (
-                        os.path.basename(wav_file_path),
-                        wav_file,
+                        voice_filename,
+                        audio_sample_wav,
                         "audio/wav",
                     )
                 }
                 form_data = {
-                    "name": os.path.splitext(os.path.basename(wav_file_path))[0],
+                    "voice_id": voice_name,
+                    "name": voice_name,
                     "purpose": XTTS_UPLOAD_FILE_PURPOSE,
                 }
                 response = requests.post(
@@ -1857,7 +1866,7 @@ def upload_speaker_voice(
             with open(wav_file_path, "rb") as wav_file:
                 files = {
                     "file": (
-                        os.path.basename(wav_file_path),
+                        voice_filename,
                         wav_file,
                         "audio/wav",
                     )
