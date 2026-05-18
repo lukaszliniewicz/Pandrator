@@ -46,11 +46,29 @@ PANDRATOR_RUNTIME_REPAIR_SPECS = (
     PYQT6_SIP_RUNTIME_SPEC,
     PYGAME_RUNTIME_SPEC,
 )
+SUBDUB_EDITABLE_INSTALL_SPEC = '.[gui]'
+SUBDUB_GUI_RUNTIME_REPAIR_SPECS = (
+    PYQT6_RUNTIME_PIN,
+    PYQT6_SIP_RUNTIME_SPEC,
+    'matplotlib',
+    'sounddevice',
+)
 SUBDUB_RUNTIME_REPAIR_SPECS = (
     'litellm',
     'tiktoken',
     'fastuuid',
+    *SUBDUB_GUI_RUNTIME_REPAIR_SPECS,
 )
+SUBDUB_RUNTIME_CHECK_COMMAND = [
+    'python',
+    '-c',
+    (
+        'import subdub; import litellm, tiktoken, fastuuid; '
+        'from PyQt6.QtWidgets import QApplication; '
+        'import matplotlib; import sounddevice; '
+        'import subdub.corrector.gui.app'
+    ),
+]
 WHISPERX_PYTHON_VERSION = '3.13'
 WHISPERX_VERSION = '3.8.5'
 WHISPERX_CTRANSLATE2_VERSION = '4.7.1'
@@ -2332,8 +2350,11 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             )
             return
 
-        check_command = ['python', '-c', 'import subdub; import litellm, tiktoken, fastuuid']
-        logging.info("Checking Subdub runtime imports (subdub + litellm + tiktoken + fastuuid) in pandrator_installer...")
+        check_command = SUBDUB_RUNTIME_CHECK_COMMAND
+        logging.info(
+            "Checking Subdub runtime imports (subdub + litellm + tiktoken + fastuuid + "
+            "PyQt6 + matplotlib + sounddevice) in pandrator_installer..."
+        )
 
         try:
             self.run_pixi_in_env(
@@ -2370,7 +2391,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         self.run_pixi_in_env(
             pandrator_path,
             env_name,
-            ['python', '-m', 'pip', 'install', '--no-deps', '-e', '.'],
+            ['python', '-m', 'pip', 'install', '--no-deps', '-e', SUBDUB_EDITABLE_INSTALL_SPEC],
             cwd=subdub_repo_path,
         )
 
@@ -2890,11 +2911,14 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
             pyproject_file = os.path.join(subdub_repo_path, 'pyproject.toml')
             if os.path.exists(pyproject_file):
-                logging.info("Detected refactored Subdub package layout (pyproject.toml). Installing editable package...")
+                logging.info(
+                    "Detected refactored Subdub package layout (pyproject.toml). "
+                    "Installing editable package with GUI extras..."
+                )
                 self.run_pixi_in_env(
                     pandrator_path,
                     env_name,
-                    ['python', '-m', 'pip', 'install', '-e', '.'],
+                    ['python', '-m', 'pip', 'install', '-e', SUBDUB_EDITABLE_INSTALL_SPEC],
                     cwd=subdub_repo_path,
                 )
                 self.ensure_subdub_runtime(pandrator_path, env_name, subdub_repo_path)
