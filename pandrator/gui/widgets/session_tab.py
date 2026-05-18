@@ -599,6 +599,9 @@ class SessionTab(QWidget):
         return f"{hours:02}:{minutes:02}:{secs:02}"
 
     def _on_progress_updated(self, current: int, total: int, elapsed_time: float):
+        if self.progress_bar.minimum() == 0 and self.progress_bar.maximum() == 0:
+            self.progress_bar.setRange(0, 100)
+
         if total > 0 and total >= current:
             progress_percent = (current / total) * 100
             self.progress_bar.setValue(int(progress_percent))
@@ -656,6 +659,7 @@ class SessionTab(QWidget):
         status = self.logic.get_lifecycle_status()
         labels = {
             "Idle": "Idle",
+            "Processing Text": "Processing...",
             "Generating": "Generating",
             "Regenerating": "Regenerating",
             "RVC Processing": "RVC Processing",
@@ -663,6 +667,24 @@ class SessionTab(QWidget):
             "Cancelling": "Cancelling",
         }
         self.lifecycle_status_label.setText(labels.get(status, status))
+
+    def _update_generation_progress_indicator(self):
+        if self.logic.is_text_preprocessing_running():
+            if self.progress_bar.minimum() != 0 or self.progress_bar.maximum() != 0:
+                self.progress_bar.setRange(0, 0)
+            self.progress_bar.setFormat("Processing text...")
+            self.remaining_time_label.setText("Estimating...")
+            return
+
+        if self.progress_bar.minimum() == 0 and self.progress_bar.maximum() == 0:
+            self.progress_bar.setRange(0, 100)
+
+        if self.progress_bar.format() == "Processing text...":
+            self.progress_bar.setValue(0)
+            self.progress_bar.setFormat("0.00%")
+
+        if self.remaining_time_label.text() == "Estimating...":
+            self.remaining_time_label.setText("N/A")
 
     def _on_tts_connection_running_changed(self, _running: bool):
         self.update_ui_from_state()
@@ -681,6 +703,7 @@ class SessionTab(QWidget):
     def update_ui_from_state(self):
         state = self.logic.state
         self._update_lifecycle_indicator()
+        self._update_generation_progress_indicator()
         self._update_session_state(state)
         self._update_source_state(state)
         self._update_tts_state(state)

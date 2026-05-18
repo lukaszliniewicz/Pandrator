@@ -96,6 +96,7 @@ class AppLogic(QObject):
         self.rvc_processing_thread = None
         self.xtts_training_thread = None
         self._tts_connection_thread = None
+        self._text_preprocessing_running = False
         self.stop_generation_flag = threading.Event()
         self.cancel_generation_flag = threading.Event()
         self._loaded_llm_model = None
@@ -272,6 +273,20 @@ class AppLogic(QObject):
         """Returns True while a TTS connection check is in progress."""
         return bool(self._tts_connection_thread and self._tts_connection_thread.is_alive())
 
+    def _set_text_preprocessing_running(self, running: bool):
+        running = bool(running)
+        with self._state_lock:
+            if self._text_preprocessing_running == running:
+                return
+            self._text_preprocessing_running = running
+
+        self.state_changed.emit()
+
+    def is_text_preprocessing_running(self) -> bool:
+        """Returns True while text preprocessing is active."""
+        with self._state_lock:
+            return bool(self._text_preprocessing_running)
+
     def has_resumable_generation_progress(self) -> bool:
         """Returns True when generation has partial progress that can be resumed."""
         has_generated = False
@@ -311,7 +326,12 @@ class AppLogic(QObject):
                 return "Cancelling"
             if self.stop_generation_flag.is_set():
                 return "Stopping"
+            if self.is_text_preprocessing_running():
+                return "Processing Text"
             return "Generating"
+
+        if self.is_text_preprocessing_running():
+            return "Processing Text"
 
         if self._is_regeneration_running():
             return "Regenerating"
@@ -1753,6 +1773,7 @@ class AppLogic(QObject):
             "tts_service": self.state.tts.service
         }
         
+        self._set_text_preprocessing_running(True)
         try:
             processed_sentences = text_preprocessor.preprocess_text(self.state.raw_text, settings)
             self._set_processed_sentences_snapshot(processed_sentences)
@@ -1761,6 +1782,8 @@ class AppLogic(QObject):
         except Exception as e:
             logging.error(f"Text preprocessing failed: {e}", exc_info=True)
             self.show_error.emit("Preprocessing Error", str(e))
+        finally:
+            self._set_text_preprocessing_running(False)
 
     # --- Generation ---
 
@@ -1860,6 +1883,7 @@ class AppLogic(QObject):
         # The worker thread will handle finding the start index and preprocessing.
         self.generation_thread = threading.Thread(target=self._generation_thread_worker, daemon=True)
         self.generation_thread.start()
+        self.state_changed.emit()
 
     def stop_generation(self):
         """Stops the audio generation worker thread after the current sentence."""

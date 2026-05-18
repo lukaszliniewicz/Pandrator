@@ -148,6 +148,10 @@ class MainWindow(QMainWindow):
         if lifecycle_status == "Generating" and self.activity_status_label.text().startswith("Generation "):
             return
 
+        if lifecycle_status == "Processing Text":
+            self.activity_status_label.setText("Processing text...")
+            return
+
         self.activity_status_label.setText(lifecycle_status)
 
     def keyPressEvent(self, event: QKeyEvent):
