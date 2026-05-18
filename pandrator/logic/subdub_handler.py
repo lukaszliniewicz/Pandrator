@@ -9,6 +9,13 @@ from typing import Any
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 SUBDUB_REPO_PATH = os.path.join(PROJECT_ROOT, "Subdub")
 SUBDUB_SRC_PATH = os.path.join(SUBDUB_REPO_PATH, "src")
+WHISPERX_PIXI_EXE_ENV = "WHISPERX_PIXI_EXE"
+WHISPERX_PIXI_MANIFEST_ENV = "WHISPERX_PIXI_MANIFEST"
+WHISPERX_PIXI_MANIFEST_PATH = os.path.join(PROJECT_ROOT, "envs", "whisperx_installer", "pixi.toml")
+WHISPERX_PIXI_EXE_CANDIDATES = (
+    os.path.join(PROJECT_ROOT, "bin", "pixi.exe"),
+    os.path.join(PROJECT_ROOT, "bin", "pixi"),
+)
 
 DEFAULT_LOCAL_API_BASE = "http://localhost:1234/v1"
 DEFAULT_LOCAL_MODEL = "openai/gpt-5.4-mini"
@@ -377,6 +384,15 @@ def _build_subdub_environment(model_options: dict[str, Any] | None = None) -> di
 
     if api_base and _is_local_api_base(api_base) and not env.get("OPENAI_API_KEY"):
         env["OPENAI_API_KEY"] = api_key or "lm-studio"
+    if not env.get(WHISPERX_PIXI_EXE_ENV):
+        for candidate in WHISPERX_PIXI_EXE_CANDIDATES:
+            if os.path.isfile(candidate):
+                env[WHISPERX_PIXI_EXE_ENV] = candidate
+                break
+
+    if not env.get(WHISPERX_PIXI_MANIFEST_ENV) and os.path.isfile(WHISPERX_PIXI_MANIFEST_PATH):
+        env[WHISPERX_PIXI_MANIFEST_ENV] = WHISPERX_PIXI_MANIFEST_PATH
+
 
     return env
 
