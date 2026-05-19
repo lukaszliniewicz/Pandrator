@@ -53,6 +53,9 @@ tts_voices/**/*.wav
 .env.*
 !.env.example
 
+# Local planning notes (name contains "plan")
+*[Pp][Ll][Aa][Nn]*.md
+
 # IDE and OS files
 .vscode/
 .idea/
