@@ -3096,9 +3096,32 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 "Git failed and Dulwich is not available in the launcher runtime."
             ) from e
 
+    def is_existing_git_repo(self, repo_path):
+        git_metadata_path = os.path.join(repo_path, '.git')
+        return os.path.isdir(git_metadata_path) or os.path.isfile(git_metadata_path)
+
     def clone_repo(self, repo_url, target_dir):
         logging.info(f"Cloning repository {repo_url} to {target_dir}...")
         self.configure_tls_certificates()
+
+        if os.path.exists(target_dir):
+            if not os.path.isdir(target_dir):
+                raise RuntimeError(
+                    f"Cannot clone repository because target path exists and is not a directory: {target_dir}"
+                )
+
+            if self.is_existing_git_repo(target_dir):
+                logging.info(
+                    f"Repository already exists at {target_dir}; skipping clone and pulling latest changes instead."
+                )
+                self.pull_repo(target_dir)
+                return
+
+            if any(os.scandir(target_dir)):
+                raise RuntimeError(
+                    f"Cannot clone repository because target directory already exists and is not empty: {target_dir}"
+                )
+
         try:
             self.run_git_command(['clone', repo_url, target_dir])
             logging.info("Repository cloned successfully with git.")
