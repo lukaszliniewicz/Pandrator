@@ -737,9 +737,13 @@ class PandratorInstaller(QMainWindow):
     def update_whisperx_checkbox(self):
         """Update WhisperX checkbox when XTTS Fine-tuning is toggled"""
         installed_components = self.get_installed_components()
+        whisperx_support = installed_components.get('whisperx', False)
         xtts_finetuning_support = installed_components.get('xtts_finetuning', False)
         
-        if self.xtts_finetuning_checkbox.isChecked() and not xtts_finetuning_support:
+        if whisperx_support:
+            self.whisperx_checkbox.setChecked(False)
+            self.whisperx_checkbox.setEnabled(False)
+        elif self.xtts_finetuning_checkbox.isChecked() and not xtts_finetuning_support:
             self.whisperx_checkbox.setChecked(True)
             self.whisperx_checkbox.setEnabled(False)
         elif xtts_finetuning_support:
@@ -938,12 +942,13 @@ class PandratorInstaller(QMainWindow):
         self.xtts_finetuning_var = self.xtts_finetuning_checkbox.isChecked()
         
         new_components_selected = (
-            (self.xtts_var or self.xtts_cpu_var) and not installed_components['xtts'] or
-            self.silero_var and not installed_components['silero'] or
-            self.voxtral_var and not installed_components['voxtral'] or
-            self.kokoro_var and not installed_components['kokoro'] or
-            self.rvc_var and not installed_components['rvc'] or
-            self.whisperx_var and not installed_components['whisperx']
+            ((self.xtts_var or self.xtts_cpu_var) and not installed_components['xtts']) or
+            (self.silero_var and not installed_components['silero']) or
+            (self.voxtral_var and not installed_components['voxtral']) or
+            (self.kokoro_var and not installed_components['kokoro']) or
+            (self.rvc_var and not installed_components['rvc']) or
+            (self.whisperx_var and not installed_components['whisperx']) or
+            (self.xtts_finetuning_var and not installed_components['xtts_finetuning'])
         )
         
         if pandrator_already_installed and not self.pandrator_var:
