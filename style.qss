@@ -1,10 +1,10 @@
 QWidget {
-    background-color: #2b2f33;
+    background-color: #2d2d30;
     color: #f1f1f1;
 }
 
 QFrame#groupFrame {
-    background-color: #2b2f33;
+    background-color: #2d2d30;
     border: 1px solid #4d5863;
     border-radius: 8px;
     margin-top: 0.2em;
@@ -12,7 +12,7 @@ QFrame#groupFrame {
 }
 
 QFrame#subGroupFrame {
-    background-color: #2f3439;
+    background-color: #1e1e1e;
     border: none;
     border-radius: 8px;
     margin-top: 0.2em;
@@ -20,7 +20,7 @@ QFrame#subGroupFrame {
 }
 
 QFrame#rowFrame {
-    background-color: #2b2f33;
+    background-color: #2d2d30;
     border: none;
     margin: 0;
     padding: 0;
@@ -96,14 +96,14 @@ QTableWidget,
 QMenu,
 QProgressBar,
 QStatusBar {
-    background-color: #2b2f33;
+    background-color: #2d2d30;
     border: 1px solid #4d5863;
     color: #f1f1f1;
 }
 
 QScrollArea#leftPaneScrollArea,
 QScrollArea#leftPaneScrollArea > QWidget > QWidget {
-    background-color: #2b2f33;
+    background-color: #2d2d30;
     border: none;
 }
 
@@ -158,7 +158,7 @@ QTabBar QToolButton {
 
 QCheckBox::indicator,
 QRadioButton::indicator {
-    background-color: #2b2f33;
+    background-color: #2d2d30;
     border: 1px solid #4d5863;
 }
 
@@ -174,7 +174,7 @@ QScrollBar::add-line,
 QScrollBar::sub-line,
 QScrollBar::add-page,
 QScrollBar::sub-page {
-    background-color: #2b2f33;
+    background-color: #2d2d30;
 }
 
 QScrollBar::handle:vertical,
