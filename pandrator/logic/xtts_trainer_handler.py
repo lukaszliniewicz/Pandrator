@@ -213,6 +213,18 @@ def _emit_status(status_callback: Callable[[str], None] | None, message: str):
         status_callback(message)
 
 
+def _normalize_sample_method(value: str) -> str:
+    normalized = str(value or '').strip().lower().replace('_', '-').replace(' ', '-')
+    aliases = {
+        'mixed': 'mixed',
+        'maximise-punctuation': 'maximise-punctuation',
+        'maximize-punctuation': 'maximise-punctuation',
+        'punctuation': 'punctuation-only',
+        'punctuation-only': 'punctuation-only',
+    }
+    return aliases.get(normalized, normalized)
+
+
 def start_training(
     settings: dict,
     output_callback: Callable[[str], None] | None = None,
@@ -221,6 +233,8 @@ def start_training(
     """Runs XTTS training and returns `(success, message)`."""
     model_name = str(settings.get("model_name", "")).strip()
     source_audio_path = str(settings.get("source_audio_path", "")).strip()
+    source_text_path = str(settings.get('source_text_path', '')).strip()
+
     if not source_audio_path or not model_name:
         message = "Source audio path and model name are required for training."
         logging.error(message)
@@ -230,6 +244,19 @@ def start_training(
         message = f"Source audio path does not exist: {source_audio_path}"
         logging.error(message)
         return False, message
+
+    if source_text_path and not os.path.isfile(source_text_path):
+        message = f"CTC text source path does not exist: {source_text_path}"
+        logging.error(message)
+        return False, message
+
+    sample_method = _normalize_sample_method(settings.get('sample_method', 'mixed'))
+
+    chapter_per_audio = 1
+    try:
+        chapter_per_audio = max(1, int(settings.get('chapter_per_audio', 1)))
+    except (TypeError, ValueError):
+        chapter_per_audio = 1
 
     setup_ok, setup_message = validate_training_environment()
     if not setup_ok:
@@ -261,7 +288,7 @@ def start_training(
         '--batch',
         str(settings.get('batches', 2)),
         '--sample-method',
-        settings.get('sample_method', 'Mixed').lower().replace(' ', '-'),
+        sample_method,
         '--sample-rate',
         str(settings.get('sample_rate', 22050)),
         '--max-audio-time',
@@ -271,7 +298,7 @@ def start_training(
         '--method-proportion',
         settings.get('method_proportion', '6_4'),
         '--training-proportion',
-        settings.get('training_split', '9_1'),
+        settings.get('training_split', '8_2'),
         '--voice-sample-mode',
         settings.get('voice_sample_mode', 'basic'),
     ]
@@ -284,6 +311,10 @@ def start_training(
 
     if settings.get('alignment_model', '').strip():
         command.extend(['--align-model', settings.get('alignment_model').strip()])
+
+    if source_text_path:
+        command.extend(['--source-text', source_text_path])
+        command.extend(['--chapter-per-audio', str(chapter_per_audio)])
 
     if settings.get('enable_denoise'):
         command.append('--denoise')
