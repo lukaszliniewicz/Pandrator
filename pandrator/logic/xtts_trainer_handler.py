@@ -12,6 +12,8 @@ TRAINER_ENV_NAME = 'easy_xtts_trainer'
 WHISPERX_ENV_NAME = 'whisperx_installer'
 WHISPERX_PIXI_EXE_ENV = 'WHISPERX_PIXI_EXE'
 WHISPERX_PIXI_MANIFEST_ENV = 'WHISPERX_PIXI_MANIFEST'
+PANDRATOR_SUBDUB_CACHE_DIR_ENV = 'PANDRATOR_SUBDUB_CACHE_DIR'
+DEFAULT_WHISPER_CACHE_ROOT = os.path.join(PROJECT_ROOT, 'cache', 'subdub')
 
 
 def _deduplicate_paths(paths: list[str]) -> list[str]:
@@ -44,6 +46,53 @@ def _is_executable_available(executable_path: str) -> bool:
     if os.path.isfile(executable_path):
         return True
     return shutil.which(executable_path) is not None
+
+
+def _normalize_path(path: str) -> str:
+    expanded = os.path.expandvars(os.path.expanduser(str(path or '').strip()))
+    return os.path.abspath(expanded) if expanded else ''
+
+
+def _resolve_whisper_cache_root() -> str:
+    configured_path = str(os.environ.get(PANDRATOR_SUBDUB_CACHE_DIR_ENV, '')).strip()
+    if configured_path:
+        return _normalize_path(configured_path)
+
+    return DEFAULT_WHISPER_CACHE_ROOT
+
+
+def _setdefault_directory_env(env: dict[str, str], env_key: str, default_path: str) -> None:
+    configured_path = str(env.get(env_key) or '').strip()
+    target_path = _normalize_path(configured_path or default_path)
+    if not target_path:
+        return
+
+    if not os.path.isdir(target_path):
+        try:
+            os.makedirs(target_path, exist_ok=True)
+        except OSError as error:
+            logging.warning(
+                "Could not prepare cache directory for %s at %s: %s",
+                env_key,
+                target_path,
+                error,
+            )
+            return
+
+    env[env_key] = target_path
+
+
+def _apply_whisper_cache_environment(env: dict[str, str]) -> None:
+    cache_root = _resolve_whisper_cache_root()
+    huggingface_root = os.path.join(cache_root, 'huggingface')
+    huggingface_hub_cache = os.path.join(huggingface_root, 'hub')
+
+    _setdefault_directory_env(env, 'XDG_CACHE_HOME', cache_root)
+    _setdefault_directory_env(env, 'HF_HOME', huggingface_root)
+    _setdefault_directory_env(env, 'HF_HUB_CACHE', huggingface_hub_cache)
+    _setdefault_directory_env(env, 'HUGGINGFACE_HUB_CACHE', huggingface_hub_cache)
+    _setdefault_directory_env(env, 'TRANSFORMERS_CACHE', os.path.join(huggingface_root, 'transformers'))
+    _setdefault_directory_env(env, 'TORCH_HOME', os.path.join(cache_root, 'torch'))
 
 
 def _manifest_candidates(roots: list[str], env_name: str) -> list[str]:
@@ -133,6 +182,7 @@ def _detect_legacy_conda_paths(roots: list[str]) -> tuple[str, str, str]:
 
 def _build_trainer_subprocess_env(paths: dict[str, str]) -> dict[str, str]:
     env = os.environ.copy()
+    _apply_whisper_cache_environment(env)
     env.setdefault(WHISPERX_PIXI_EXE_ENV, paths['pixi_executable'])
     env.setdefault(WHISPERX_PIXI_MANIFEST_ENV, paths['whisperx_manifest'])
     return env

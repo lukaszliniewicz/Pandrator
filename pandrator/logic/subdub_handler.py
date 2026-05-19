@@ -12,7 +12,9 @@ SUBDUB_REPO_PATH = os.path.join(PROJECT_ROOT, "Subdub")
 SUBDUB_SRC_PATH = os.path.join(SUBDUB_REPO_PATH, "src")
 WHISPERX_PIXI_EXE_ENV = "WHISPERX_PIXI_EXE"
 WHISPERX_PIXI_MANIFEST_ENV = "WHISPERX_PIXI_MANIFEST"
+PANDRATOR_SUBDUB_CACHE_DIR_ENV = "PANDRATOR_SUBDUB_CACHE_DIR"
 WHISPERX_PIXI_MANIFEST_PATH = os.path.join(PROJECT_ROOT, "envs", "whisperx_installer", "pixi.toml")
+DEFAULT_SUBDUB_CACHE_ROOT = os.path.join(PROJECT_ROOT, "cache", "subdub")
 WHISPERX_PIXI_EXE_CANDIDATES = (
     os.path.join(PROJECT_ROOT, "bin", "pixi.exe"),
     os.path.join(PROJECT_ROOT, "bin", "pixi"),
@@ -114,6 +116,53 @@ def _build_subdub_command_base() -> list[str]:
 def _resolve_subdub_path(path: str) -> str:
     expanded = os.path.expanduser(str(path or "").strip())
     return os.path.abspath(expanded) if expanded else expanded
+
+
+def _normalize_path(path: str) -> str:
+    expanded = os.path.expandvars(os.path.expanduser(str(path or "").strip()))
+    return os.path.abspath(expanded) if expanded else ""
+
+
+def _resolve_subdub_cache_root() -> str:
+    configured_path = str(os.environ.get(PANDRATOR_SUBDUB_CACHE_DIR_ENV) or "").strip()
+    if configured_path:
+        return _normalize_path(configured_path)
+
+    return DEFAULT_SUBDUB_CACHE_ROOT
+
+
+def _setdefault_directory_env(env: dict[str, str], env_key: str, default_path: str) -> None:
+    configured_path = str(env.get(env_key) or "").strip()
+    target_path = _normalize_path(configured_path or default_path)
+    if not target_path:
+        return
+
+    if not os.path.isdir(target_path):
+        try:
+            os.makedirs(target_path, exist_ok=True)
+        except OSError as error:
+            logging.warning(
+                "Could not prepare cache directory for %s at %s: %s",
+                env_key,
+                target_path,
+                error,
+            )
+            return
+
+    env[env_key] = target_path
+
+
+def _apply_subdub_cache_environment(env: dict[str, str]) -> None:
+    cache_root = _resolve_subdub_cache_root()
+    huggingface_root = os.path.join(cache_root, "huggingface")
+    huggingface_hub_cache = os.path.join(huggingface_root, "hub")
+
+    _setdefault_directory_env(env, "XDG_CACHE_HOME", cache_root)
+    _setdefault_directory_env(env, "HF_HOME", huggingface_root)
+    _setdefault_directory_env(env, "HF_HUB_CACHE", huggingface_hub_cache)
+    _setdefault_directory_env(env, "HUGGINGFACE_HUB_CACHE", huggingface_hub_cache)
+    _setdefault_directory_env(env, "TRANSFORMERS_CACHE", os.path.join(huggingface_root, "transformers"))
+    _setdefault_directory_env(env, "TORCH_HOME", os.path.join(cache_root, "torch"))
 
 
 def _is_local_api_base(api_base: str) -> bool:
@@ -385,6 +434,8 @@ def _build_subdub_environment(model_options: dict[str, Any] | None = None) -> di
     if os.name == "nt":
         env.setdefault("PYTHONUTF8", "1")
         env.setdefault("PYTHONIOENCODING", "utf-8")
+
+    _apply_subdub_cache_environment(env)
 
     if os.path.isdir(SUBDUB_SRC_PATH):
         existing_pythonpath = env.get("PYTHONPATH", "")
