@@ -16,6 +16,7 @@ import ctypes
 import winreg
 import argparse
 import shlex
+import zipfile
 from datetime import datetime
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QTabWidget, 
                             QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
@@ -109,6 +110,8 @@ CALIBRE_BUNDLED_EBOOK_CONVERT_RELATIVE_PATH = os.path.join(
     CALIBRE_BUNDLED_CALIBRE_SUBDIR,
     'ebook-convert.exe',
 )
+FFMPEG_SUBTITLES_WINDOWS_ZIP_URL = 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip'
+FFMPEG_BUNDLED_RELATIVE_PATH = os.path.join('bin', 'ffmpeg.exe')
 
 INSTALLER_STATE_FILENAME = 'installer_state.json'
 BUNDLED_WHEELS_RELATIVE_PATH = os.path.join('vendor', 'wheels')
@@ -1144,6 +1147,158 @@ class PandratorInstaller(QMainWindow):
     def get_bundled_calibre_executable(self, pandrator_path):
         return os.path.join(pandrator_path, CALIBRE_BUNDLED_EBOOK_CONVERT_RELATIVE_PATH)
 
+    def get_bundled_ffmpeg_executable(self, pandrator_path):
+        return os.path.join(pandrator_path, FFMPEG_BUNDLED_RELATIVE_PATH)
+
+    def get_local_temp_dir(self, pandrator_path):
+        preferred_temp_dir = os.path.join(
+            pandrator_path,
+            PIXI_CACHE_DIRNAME,
+            PIXI_TEMP_SUBDIRNAME,
+        )
+        try:
+            os.makedirs(preferred_temp_dir, exist_ok=True)
+            return preferred_temp_dir
+        except OSError as e:
+            logging.warning(
+                "Could not create local temp directory at %s (%s). Falling back to system TEMP.",
+                preferred_temp_dir,
+                e,
+            )
+            return tempfile.gettempdir()
+
+    def ffmpeg_supports_subtitles_filter(self, ffmpeg_path):
+        if not ffmpeg_path or not os.path.exists(ffmpeg_path):
+            return False
+
+        try:
+            process = subprocess.run(
+                [
+                    ffmpeg_path,
+                    '-hide_banner',
+                    '-v',
+                    'error',
+                    '-h',
+                    'filter=subtitles',
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                **self.get_hidden_subprocess_kwargs(),
+            )
+        except Exception as e:
+            logging.warning(f"Could not probe FFmpeg subtitles filter support at {ffmpeg_path}: {e}")
+            return False
+
+        output = (process.stdout or '').lower()
+        return (
+            "unknown filter 'subtitles'" not in output
+            and 'no such filter' not in output
+        )
+
+    def _find_ffmpeg_exe_in_extracted_archive(self, extracted_root):
+        bin_candidate = ''
+        any_candidate = ''
+
+        for root, _dirs, files in os.walk(extracted_root):
+            for file_name in files:
+                if file_name.lower() != 'ffmpeg.exe':
+                    continue
+
+                candidate = os.path.join(root, file_name)
+                if not any_candidate:
+                    any_candidate = candidate
+
+                if os.path.basename(root).lower() == 'bin':
+                    bin_candidate = candidate
+                    break
+
+            if bin_candidate:
+                break
+
+        return bin_candidate or any_candidate
+
+    def ensure_bundled_ffmpeg_with_subtitles(self, pandrator_path):
+        bundled_ffmpeg_path = self.get_bundled_ffmpeg_executable(pandrator_path)
+        if self.ffmpeg_supports_subtitles_filter(bundled_ffmpeg_path):
+            logging.info(
+                "Bundled FFmpeg already supports subtitle burning at %s",
+                bundled_ffmpeg_path,
+            )
+            return True
+
+        logging.info("Installing bundled FFmpeg build with libass subtitle support...")
+        self.configure_tls_certificates()
+
+        temp_root = tempfile.mkdtemp(
+            prefix='pandrator_ffmpeg_',
+            dir=self.get_local_temp_dir(pandrator_path),
+        )
+        logging.info("Using temporary FFmpeg download directory: %s", temp_root)
+        temp_archive_path = os.path.join(temp_root, 'ffmpeg_libass.zip')
+        extracted_dir = os.path.join(temp_root, 'extract')
+        os.makedirs(extracted_dir, exist_ok=True)
+
+        try:
+            response = requests.get(
+                FFMPEG_SUBTITLES_WINDOWS_ZIP_URL,
+                stream=True,
+                timeout=180,
+                verify=self.ca_bundle_path if self.ca_bundle_path else True,
+            )
+            response.raise_for_status()
+
+            with open(temp_archive_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        f.write(chunk)
+
+            with zipfile.ZipFile(temp_archive_path, 'r') as archive:
+                archive.extractall(extracted_dir)
+
+            extracted_ffmpeg = self._find_ffmpeg_exe_in_extracted_archive(extracted_dir)
+            if not extracted_ffmpeg or not os.path.exists(extracted_ffmpeg):
+                logging.warning(
+                    "Downloaded FFmpeg archive did not contain ffmpeg.exe. "
+                    "Subtitle burning may remain unavailable."
+                )
+                return False
+
+            if not self.ffmpeg_supports_subtitles_filter(extracted_ffmpeg):
+                logging.warning(
+                    "Downloaded FFmpeg binary does not expose the subtitles filter. "
+                    "Subtitle burning may remain unavailable."
+                )
+                return False
+
+            os.makedirs(os.path.dirname(bundled_ffmpeg_path), exist_ok=True)
+            temp_target_path = f"{bundled_ffmpeg_path}.tmp"
+            shutil.copy2(extracted_ffmpeg, temp_target_path)
+            os.replace(temp_target_path, bundled_ffmpeg_path)
+
+            if not self.ffmpeg_supports_subtitles_filter(bundled_ffmpeg_path):
+                logging.warning(
+                    "Bundled FFmpeg copy completed but subtitles filter probe failed at %s.",
+                    bundled_ffmpeg_path,
+                )
+                return False
+
+            logging.info(
+                "Bundled FFmpeg with subtitle filter support installed at %s",
+                bundled_ffmpeg_path,
+            )
+            return True
+        except Exception as e:
+            logging.warning(
+                "Could not install bundled FFmpeg with subtitle support: %s",
+                e,
+            )
+            return False
+        finally:
+            shutil.rmtree(temp_root, ignore_errors=True)
+
     def check_calibre_available(self, pandrator_path=None):
         if self.check_program_installed('ebook-convert'):
             return True
@@ -1414,7 +1569,11 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
         self.configure_tls_certificates()
 
-        temp_root = tempfile.mkdtemp(prefix='pandrator_calibre_')
+        temp_root = tempfile.mkdtemp(
+            prefix='pandrator_calibre_',
+            dir=self.get_local_temp_dir(pandrator_path),
+        )
+        logging.info("Using temporary Calibre download directory: %s", temp_root)
         temp_msi_path = os.path.join(temp_root, 'calibre.msi')
         temp_extract_dir = os.path.join(temp_root, 'extract')
         extracted_calibre_dir = os.path.join(temp_extract_dir, 'PFiles64', 'Calibre2')
@@ -1599,7 +1758,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
         return '', ''
 
-    def install_espeak_ng_direct(self):
+    def install_espeak_ng_direct(self, pandrator_path=None):
         dll_path, _ = self.resolve_espeak_paths()
         if dll_path:
             logging.info(f"eSpeak NG is already available at {dll_path}")
@@ -1607,7 +1766,13 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
         logging.info("Installing eSpeak NG from direct MSI download...")
         self.configure_tls_certificates()
-        temp_msi_path = os.path.join(tempfile.gettempdir(), 'pandrator_espeak_ng.msi')
+
+        temp_root = tempfile.mkdtemp(
+            prefix='pandrator_espeak_',
+            dir=self.get_local_temp_dir(pandrator_path) if pandrator_path else tempfile.gettempdir(),
+        )
+        logging.info("Using temporary eSpeak NG download directory: %s", temp_root)
+        temp_msi_path = os.path.join(temp_root, 'espeak-ng.msi')
 
         try:
             response = requests.get(
@@ -1677,8 +1842,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             logging.warning(f"Could not install eSpeak NG automatically: {str(e)}")
             return False
         finally:
-            if os.path.exists(temp_msi_path):
-                os.remove(temp_msi_path)
+            shutil.rmtree(temp_root, ignore_errors=True)
 
     def get_kokoro_runtime_env(self, pandrator_path, kokoro_repo_path):
         env = self.get_pixi_subprocess_env(pandrator_path)
@@ -1838,7 +2002,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         if not os.path.exists(main_path):
             raise FileNotFoundError(f"Kokoro API entrypoint not found at: {main_path}")
 
-        espeak_ok = self.install_espeak_ng_direct()
+        espeak_ok = self.install_espeak_ng_direct(pandrator_path=pandrator_path)
         if not espeak_ok:
             logging.warning(
                 "Automatic eSpeak NG installation was not fully verified. "
@@ -1999,6 +2163,11 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         env['TMP'] = local_temp
         env['TEMP'] = local_temp
         env['TMPDIR'] = local_temp
+
+        bundled_ffmpeg_path = self.get_bundled_ffmpeg_executable(pandrator_path)
+        if os.path.exists(bundled_ffmpeg_path):
+            env['PANDRATOR_FFMPEG_EXE'] = bundled_ffmpeg_path
+
         return env
 
     def run_pixi_command(self, pandrator_path, arguments, cwd=None, log_errors=True):
@@ -2052,7 +2221,13 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             logging.info("Pixi is already installed.")
             return
 
-        temp_pixi_path = os.path.join(tempfile.gettempdir(), 'pandrator_pixi.exe')
+        temp_fd, temp_pixi_path = tempfile.mkstemp(
+            prefix='pandrator_pixi_',
+            suffix='.exe',
+            dir=self.get_local_temp_dir(pandrator_path),
+        )
+        os.close(temp_fd)
+        logging.info("Using temporary Pixi download path: %s", temp_pixi_path)
 
         try:
             response = requests.get(
@@ -2860,6 +3035,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 temp_fd, temporary_requirements_file = tempfile.mkstemp(
                     prefix='pandrator_filtered_requirements_',
                     suffix='.txt',
+                    dir=self.get_local_temp_dir(pandrator_path),
                 )
                 os.close(temp_fd)
                 with open(temporary_requirements_file, 'w', encoding='utf-8') as f:
@@ -3533,6 +3709,13 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 logging.error("Pixi installation failed")
                 return
 
+            self.worker.update_status.emit("Checking bundled FFmpeg subtitle support...")
+            if not self.ensure_bundled_ffmpeg_with_subtitles(pandrator_path):
+                logging.warning(
+                    "Bundled FFmpeg with subtitle burning support could not be prepared. "
+                    "Soft subtitles will still work."
+                )
+
             shared_pixi_path = self.get_pixi_executable(pandrator_path)
             
             self.worker.update_progress.emit(0.45)
@@ -3751,6 +3934,13 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
             if not self.check_pixi(pandrator_base_path):
                 raise FileNotFoundError("Pixi installation failed during update.")
+
+            self.worker.update_status.emit("Checking bundled FFmpeg subtitle support...")
+            if not self.ensure_bundled_ffmpeg_with_subtitles(pandrator_base_path):
+                logging.warning(
+                    "Bundled FFmpeg with subtitle burning support could not be prepared during update. "
+                    "Soft subtitles will still work."
+                )
 
             shared_pixi_path = self.get_pixi_executable(pandrator_base_path)
 

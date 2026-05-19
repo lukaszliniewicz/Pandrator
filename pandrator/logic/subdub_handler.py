@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 from typing import Any
@@ -15,6 +16,10 @@ WHISPERX_PIXI_MANIFEST_PATH = os.path.join(PROJECT_ROOT, "envs", "whisperx_insta
 WHISPERX_PIXI_EXE_CANDIDATES = (
     os.path.join(PROJECT_ROOT, "bin", "pixi.exe"),
     os.path.join(PROJECT_ROOT, "bin", "pixi"),
+)
+BUNDLED_FFMPEG_CANDIDATES = (
+    os.path.join(PROJECT_ROOT, "bin", "ffmpeg.exe"),
+    os.path.join(PROJECT_ROOT, "bin", "ffmpeg"),
 )
 
 DEFAULT_LOCAL_API_BASE = "http://localhost:1234/v1"
@@ -33,6 +38,8 @@ MANUAL_CORRECTION_AUDIO_EXTENSIONS = (
     ".aac",
     ".opus",
 )
+
+_FFMPEG_SUBTITLES_SUPPORT_CACHE: dict[str, bool] = {}
 
 MODEL_ALIASES = {
     "gpt 5.4": "openai/gpt-5.4",
@@ -797,6 +804,110 @@ def _escape_ffmpeg_subtitles_filter_path(path: str) -> str:
     return escaped_path
 
 
+def _normalize_executable_cache_key(executable: str) -> str:
+    normalized = str(executable or "").strip()
+    if not normalized:
+        return ""
+
+    expanded = os.path.expandvars(os.path.expanduser(normalized))
+    resolved = shutil.which(expanded) if not os.path.isabs(expanded) else expanded
+    final_path = resolved or expanded
+    return os.path.normcase(os.path.abspath(final_path))
+
+
+def _ffmpeg_supports_subtitles_filter(ffmpeg_executable: str) -> bool:
+    cache_key = _normalize_executable_cache_key(ffmpeg_executable)
+    if not cache_key:
+        return False
+
+    cached = _FFMPEG_SUBTITLES_SUPPORT_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    supported = False
+    try:
+        probe = subprocess.run(
+            [
+                ffmpeg_executable,
+                "-hide_banner",
+                "-v",
+                "error",
+                "-h",
+                "filter=subtitles",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        probe_output = str(probe.stdout or "")
+        lowered_output = probe_output.lower()
+        supported = (
+            "unknown filter 'subtitles'" not in lowered_output
+            and "no such filter" not in lowered_output
+        )
+    except (FileNotFoundError, OSError):
+        supported = False
+
+    _FFMPEG_SUBTITLES_SUPPORT_CACHE[cache_key] = supported
+    return supported
+
+
+def _discover_ffmpeg_candidates() -> list[str]:
+    candidates: list[str] = []
+
+    explicit_ffmpeg = str(os.environ.get("PANDRATOR_FFMPEG_EXE") or "").strip()
+    if explicit_ffmpeg:
+        candidates.append(explicit_ffmpeg)
+
+    for bundled_candidate in BUNDLED_FFMPEG_CANDIDATES:
+        if os.path.isfile(bundled_candidate):
+            candidates.append(bundled_candidate)
+
+    default_ffmpeg = shutil.which("ffmpeg")
+    if default_ffmpeg:
+        candidates.append(default_ffmpeg)
+
+    candidates.append("ffmpeg")
+
+    if os.name == "nt":
+        try:
+            where_result = subprocess.run(
+                ["where.exe", "ffmpeg"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                universal_newlines=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            if where_result.returncode == 0:
+                for raw_line in str(where_result.stdout or "").splitlines():
+                    candidate = raw_line.strip().strip('"')
+                    if candidate:
+                        candidates.append(candidate)
+        except Exception:
+            pass
+
+    unique_candidates: list[str] = []
+    seen_keys: set[str] = set()
+    for candidate in candidates:
+        cache_key = _normalize_executable_cache_key(candidate)
+        if not cache_key or cache_key in seen_keys:
+            continue
+        seen_keys.add(cache_key)
+        unique_candidates.append(candidate)
+
+    return unique_candidates
+
+
+def _resolve_ffmpeg_for_burned_subtitles() -> str | None:
+    for candidate in _discover_ffmpeg_candidates():
+        if _ffmpeg_supports_subtitles_filter(candidate):
+            return candidate
+    return None
+
+
 def add_subtitles_to_video(
     synced_video_path: str,
     equalized_srt_path: str,
@@ -823,14 +934,22 @@ def add_subtitles_to_video(
     temp_output_path = os.path.join(output_dir or ".", f".{output_stem}_tmp{temp_ext}")
 
     if normalized_subtitle_mode == "burned":
+        ffmpeg_executable = _resolve_ffmpeg_for_burned_subtitles()
+        if not ffmpeg_executable:
+            logging.error(
+                "Cannot burn subtitles: no FFmpeg executable with the subtitles filter was found. "
+                "Use an FFmpeg build compiled with --enable-libass, or use soft subtitles."
+            )
+            return False
+
         escaped_subtitle_path = _escape_ffmpeg_subtitles_filter_path(equalized_srt_path)
         ffmpeg_command = [
-            "ffmpeg",
+            ffmpeg_executable,
             "-y",
             "-i",
             synced_video_path,
             "-vf",
-            f"subtitles='{escaped_subtitle_path}'",
+            f"subtitles=filename='{escaped_subtitle_path}'",
             "-c:v",
             "libx264",
             "-preset",
