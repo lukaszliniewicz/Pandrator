@@ -21,6 +21,7 @@ package_release/
 *.egg-info/
 .eggs/
 pip-wheel-metadata/
+*.spec
 
 # Test and tooling caches
 .pytest_cache/
