@@ -960,6 +960,117 @@ def _resolve_ffmpeg_for_burned_subtitles() -> str | None:
     return None
 
 
+def find_latest_dubbed_audio_track(session_dir: str) -> str | None:
+    """Finds the newest generated dubbed-audio artifact in a session directory."""
+    if not os.path.isdir(session_dir):
+        return None
+
+    supported_extensions = {".wav", ".mp3", ".flac", ".m4a", ".ogg", ".aac", ".opus"}
+    preferred_candidates: list[str] = []
+    fallback_candidates: list[str] = []
+
+    for file_name in os.listdir(session_dir):
+        full_path = os.path.join(session_dir, file_name)
+        if not os.path.isfile(full_path):
+            continue
+
+        name_lower = file_name.lower()
+        stem_lower, extension = os.path.splitext(name_lower)
+        if extension not in supported_extensions:
+            continue
+
+        if stem_lower.startswith("amplified_dubbed_audio"):
+            preferred_candidates.append(full_path)
+            continue
+
+        if name_lower == "aligned_audio.wav" or "dubbed_audio" in stem_lower:
+            fallback_candidates.append(full_path)
+
+    if preferred_candidates:
+        return max(preferred_candidates, key=lambda path: (os.path.getmtime(path), path.lower()))
+    if fallback_candidates:
+        return max(fallback_candidates, key=lambda path: (os.path.getmtime(path), path.lower()))
+    return None
+
+
+def replace_video_audio_track(video_path: str, audio_path: str, output_video_path: str) -> bool:
+    """Creates a copy of a video with its audio replaced by the provided track."""
+    if not video_path or not os.path.exists(video_path):
+        logging.error("Cannot replace video audio track: video path is invalid (%s).", video_path)
+        return False
+
+    if not audio_path or not os.path.exists(audio_path):
+        logging.error("Cannot replace video audio track: audio path is invalid (%s).", audio_path)
+        return False
+
+    output_abs_path = os.path.abspath(output_video_path)
+    output_dir = os.path.dirname(output_abs_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
+    output_name = os.path.basename(output_abs_path)
+    output_stem, output_ext = os.path.splitext(output_name)
+    temp_ext = output_ext or ".mp4"
+    temp_output_path = os.path.join(output_dir or ".", f".{output_stem}_tmp{temp_ext}")
+
+    ffmpeg_command = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        video_path,
+        "-i",
+        audio_path,
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
+        "-c:v",
+        "copy",
+        "-c:a",
+        "aac",
+        "-shortest",
+        temp_output_path,
+    ]
+
+    logging.info(
+        "Executing FFmpeg command to replace video audio track: %s",
+        " ".join(ffmpeg_command),
+    )
+    try:
+        process = subprocess.Popen(
+            ffmpeg_command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        for line in process.stdout:
+            logging.info(f"FFmpeg: {line.strip()}")
+        process.wait()
+        if process.returncode != 0:
+            raise subprocess.CalledProcessError(process.returncode, ffmpeg_command)
+
+        if not os.path.exists(temp_output_path) or os.path.getsize(temp_output_path) == 0:
+            raise RuntimeError("FFmpeg did not create a valid dubbed-only video.")
+
+        os.replace(temp_output_path, output_abs_path)
+        logging.info("Created dubbed-only video output: %s", output_abs_path)
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        logging.error("Failed to replace video audio track: %s", e)
+        return False
+    except Exception as e:
+        logging.error("Unexpected error while replacing video audio track: %s", e)
+        return False
+    finally:
+        if os.path.exists(temp_output_path):
+            try:
+                os.remove(temp_output_path)
+            except OSError:
+                pass
+
+
 def add_subtitles_to_video(
     synced_video_path: str,
     equalized_srt_path: str,

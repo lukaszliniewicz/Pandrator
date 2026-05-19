@@ -97,6 +97,7 @@ class AppLogic(QObject):
         self.xtts_training_thread = None
         self._tts_connection_thread = None
         self._text_preprocessing_running = False
+        self._pending_dubbing_add_to_video_request: dict[str, object] | None = None
         self.stop_generation_flag = threading.Event()
         self.cancel_generation_flag = threading.Event()
         self._loaded_llm_model = None
@@ -248,6 +249,31 @@ class AppLogic(QObject):
             self.state.dubbing.video_file_path = discovered_video
 
         return discovered_video or ""
+
+    def _set_pending_dubbing_add_to_video_request(
+        self,
+        subtitle_mode: str,
+        dubbed_audio_only: bool,
+    ):
+        normalized_subtitle_mode = str(subtitle_mode or "soft").strip().lower()
+        if normalized_subtitle_mode not in {"soft", "burned", "both"}:
+            normalized_subtitle_mode = "soft"
+
+        with self._state_lock:
+            self._pending_dubbing_add_to_video_request = {
+                "subtitle_mode": normalized_subtitle_mode,
+                "dubbed_audio_only": bool(dubbed_audio_only),
+            }
+
+    def _consume_pending_dubbing_add_to_video_request(self) -> dict[str, object] | None:
+        with self._state_lock:
+            request = self._pending_dubbing_add_to_video_request
+            self._pending_dubbing_add_to_video_request = None
+        return request
+
+    def _clear_pending_dubbing_add_to_video_request(self):
+        with self._state_lock:
+            self._pending_dubbing_add_to_video_request = None
 
     def _is_generation_running(self) -> bool:
         return bool(self.generation_thread and self.generation_thread.is_alive())
@@ -1526,7 +1552,13 @@ class AppLogic(QObject):
         thread.start()
         return thread
 
-    def run_dubbing_task(self, task: str, subtitle_mode: str = "soft"):
+    def run_dubbing_task(
+        self,
+        task: str,
+        subtitle_mode: str = "soft",
+        dubbed_audio_only: bool = False,
+        auto_add_to_video: bool = False,
+    ):
         """Runs a dubbing-related task like transcribe, translate, etc., in a background thread."""
         if self.is_generation_or_regeneration_running():
             self.log_message.emit("Cannot run dubbing tasks while generation/regeneration is active.")
@@ -1534,9 +1566,21 @@ class AppLogic(QObject):
 
         self.normalize_dubbing_translation_state(self.state.dubbing)
 
-        self._run_threaded_task(self._run_dubbing_task_thread, task, subtitle_mode)
+        self._run_threaded_task(
+            self._run_dubbing_task_thread,
+            task,
+            subtitle_mode,
+            dubbed_audio_only,
+            auto_add_to_video,
+        )
 
-    def _run_dubbing_task_thread(self, task: str, subtitle_mode: str = "soft"):
+    def _run_dubbing_task_thread(
+        self,
+        task: str,
+        subtitle_mode: str = "soft",
+        dubbed_audio_only: bool = False,
+        auto_add_to_video: bool = False,
+    ):
         """The actual threaded implementation for dubbing tasks."""
         self.log_message.emit(f"Starting dubbing task: {task}")
         session_output_dir = session_handler.get_session_path(self.state.session_name)
@@ -1594,6 +1638,9 @@ class AppLogic(QObject):
                 dubbing_session_dir,
                 dub_settings_payload,
                 correction_prompt,
+                subtitle_mode=subtitle_mode,
+                dubbed_audio_only=dubbed_audio_only,
+                auto_add_to_video=auto_add_to_video,
             )
         elif task == "fine_tune_timings":
             self._run_manual_timing_correction(dubbing_session_dir)
@@ -1602,11 +1649,20 @@ class AppLogic(QObject):
                 dubbing_session_dir,
                 session_output_dir,
                 subtitle_mode=subtitle_mode,
+                dubbed_audio_only=dubbed_audio_only,
             )
         else:
             self.log_message.emit(f"Unknown dubbing task: {task}")
 
-    def _orchestrate_dubbing_audio_generation(self, session_dir, dub_settings: dict, correction_prompt):
+    def _orchestrate_dubbing_audio_generation(
+        self,
+        session_dir,
+        dub_settings: dict,
+        correction_prompt,
+        subtitle_mode: str = "soft",
+        dubbed_audio_only: bool = False,
+        auto_add_to_video: bool = False,
+    ):
         """Full workflow to generate dubbing audio from a video."""
         # 1. Transcribe if no SRT exists
         srt_file = self._find_latest_srt(session_dir, must_not_be_equalized=True)
@@ -1665,6 +1721,17 @@ class AppLogic(QObject):
         self.state_changed.emit()
 
         # 5. Start audio generation
+        if auto_add_to_video:
+            self._set_pending_dubbing_add_to_video_request(
+                subtitle_mode=subtitle_mode,
+                dubbed_audio_only=dubbed_audio_only,
+            )
+            self.log_message.emit(
+                "Auto-continue enabled: the app will render the final video right after generation completes."
+            )
+        else:
+            self._clear_pending_dubbing_add_to_video_request()
+
         self.start_generation()
 
     def _orchestrate_add_to_video(
@@ -1672,6 +1739,7 @@ class AppLogic(QObject):
         dubbing_session_dir: str,
         session_output_dir: str,
         subtitle_mode: str = "soft",
+        dubbed_audio_only: bool = False,
     ):
         """Full workflow to synchronize audio and add subtitles."""
         normalized_subtitle_mode = str(subtitle_mode or "soft").strip().lower()
@@ -1754,6 +1822,32 @@ class AppLogic(QObject):
              return
         self.log_message.emit(f"Found synced video: {synced_video_path}")
 
+        video_for_subtitles_path = synced_video_path
+        if dubbed_audio_only:
+            self.log_message.emit("Preparing dubbed-only audio output (without original mix)...")
+            dubbed_audio_path = subdub_handler.find_latest_dubbed_audio_track(sync_session_dir)
+            if not dubbed_audio_path:
+                self.show_error.emit(
+                    "Dubbing Error",
+                    "Could not find a generated dubbing audio track after synchronization.",
+                )
+                return
+
+            dubbed_only_video_path = os.path.join(sync_session_dir, "final_output_dubbed_only.mp4")
+            if not subdub_handler.replace_video_audio_track(
+                synced_video_path,
+                dubbed_audio_path,
+                dubbed_only_video_path,
+            ):
+                self.show_error.emit(
+                    "Dubbing Error",
+                    "Failed to create a dubbed-only video track before subtitle rendering.",
+                )
+                return
+
+            self.log_message.emit(f"Using dubbed-only audio track: {dubbed_audio_path}")
+            video_for_subtitles_path = dubbed_only_video_path
+
         # 2. Equalize Subtitles
         srt_file = self._find_latest_srt(sync_session_dir, must_not_be_equalized=True)
         if not srt_file:
@@ -1797,7 +1891,7 @@ class AppLogic(QObject):
                 f"Adding subtitles to video ({subtitle_mode_label}), output will be at {output_video_path}"
             )
             if not subdub_handler.add_subtitles_to_video(
-                synced_video_path,
+                video_for_subtitles_path,
                 equalized_srt_path,
                 output_video_path,
                 subtitle_mode=render_mode,
@@ -1922,19 +2016,23 @@ class AppLogic(QObject):
 
         if self._is_generation_running():
             self.log_message.emit("Generation is already running.")
+            self._clear_pending_dubbing_add_to_video_request()
             return
 
         if self._is_regeneration_running():
             self.log_message.emit("Wait for sentence regeneration to finish before starting full generation.")
+            self._clear_pending_dubbing_add_to_video_request()
             return
 
         if self._is_rvc_processing_running():
             self.log_message.emit("Wait for RVC sentence processing to finish before starting full generation.")
+            self._clear_pending_dubbing_add_to_video_request()
             return
         
         has_processed_sentences = bool(self.get_processed_sentences_snapshot())
         if not self.state.raw_text and not has_processed_sentences:
             self.show_error.emit("Error", "No text to process. Please select a source file first.")
+            self._clear_pending_dubbing_add_to_video_request()
             return
 
         self.stop_playback()
@@ -2021,6 +2119,7 @@ class AppLogic(QObject):
     def _generation_thread_worker(self):
         """The main worker loop for generating audio for all sentences."""
         cleanup_requested = False
+        post_generation_add_to_video_request: dict[str, object] | None = None
         worker_thread = threading.current_thread()
 
         try:
@@ -2050,6 +2149,11 @@ class AppLogic(QObject):
             total_sentences = len(processed_sentences)
             if start_index >= total_sentences:
                 self.log_message.emit("All sentences have already been generated.")
+                ext = os.path.splitext(self.state.source_file_path)[1].lower() if self.state.source_file_path else ""
+                if self._is_dubbing_source_extension(ext):
+                    post_generation_add_to_video_request = self._consume_pending_dubbing_add_to_video_request()
+                else:
+                    self._clear_pending_dubbing_add_to_video_request()
                 return
 
             self.log_message.emit(f"Starting generation from sentence {start_index + 1}...")
@@ -2100,7 +2204,10 @@ class AppLogic(QObject):
             ext = os.path.splitext(self.state.source_file_path)[1].lower() if self.state.source_file_path else ""
             is_dubbing_workflow = self._is_dubbing_source_extension(ext)
 
-            if not is_dubbing_workflow:
+            if is_dubbing_workflow:
+                post_generation_add_to_video_request = self._consume_pending_dubbing_add_to_video_request()
+            else:
+                self._clear_pending_dubbing_add_to_video_request()
                 self.log_message.emit("Saving final output file...")
                 output_format = self.state.audio_processing.output_format
                 output_path = os.path.join(
@@ -2122,6 +2229,27 @@ class AppLogic(QObject):
                 self.generation_thread = None
 
             self.state_changed.emit()
+
+            if post_generation_add_to_video_request:
+                subtitle_mode = str(
+                    post_generation_add_to_video_request.get("subtitle_mode")
+                    or "soft"
+                )
+                dubbed_audio_only = bool(
+                    post_generation_add_to_video_request.get("dubbed_audio_only")
+                )
+                self.log_message.emit(
+                    "Starting automatic video rendering for the generated dubbing audio..."
+                )
+                self._run_threaded_task(
+                    self._run_dubbing_task_thread,
+                    "add_to_video",
+                    subtitle_mode,
+                    dubbed_audio_only,
+                    False,
+                )
+            else:
+                self._clear_pending_dubbing_add_to_video_request()
 
     # --- Metadata ---
     def save_metadata(self, metadata: dict):

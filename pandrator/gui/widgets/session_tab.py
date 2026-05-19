@@ -2,7 +2,7 @@ import os
 import re
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QFileDialog, QInputDialog, QMessageBox, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QCheckBox, QFileDialog, QInputDialog, QMessageBox, QVBoxLayout, QWidget
 
 from ...constants import (
     KOKORO_LANGUAGES,
@@ -536,9 +536,7 @@ class SessionTab(QWidget):
             self._on_dub_translation_model_changed
         )
         self.select_video_file_button.clicked.connect(self._on_select_video_file)
-        self.generate_dub_audio_button.clicked.connect(
-            lambda: self.logic.run_dubbing_task("generate_audio")
-        )
+        self.generate_dub_audio_button.clicked.connect(self._on_generate_dubbing_audio)
         self.add_dub_to_video_button.clicked.connect(self._on_add_dubbing_to_video)
         self.only_transcribe_button.clicked.connect(
             lambda: self.logic.run_dubbing_task("transcribe")
@@ -1694,7 +1692,7 @@ class SessionTab(QWidget):
         if file_path:
             self.logic.select_dubbing_video_file(file_path)
 
-    def _on_add_dubbing_to_video(self):
+    def _prompt_dubbing_video_output_options(self) -> tuple[str, bool] | None:
         chooser = QMessageBox(self)
         chooser.setIcon(QMessageBox.Icon.Question)
         chooser.setWindowTitle("Add Subtitles to Video")
@@ -1702,6 +1700,11 @@ class SessionTab(QWidget):
         chooser.setInformativeText(
             "Soft subtitles can be toggled, burned subtitles are always visible, and each mode is saved as a separate file."
         )
+        dubbed_audio_only_checkbox = QCheckBox(
+            "Use only generated dubbing audio (no original mix)"
+        )
+        dubbed_audio_only_checkbox.setChecked(False)
+        chooser.setCheckBox(dubbed_audio_only_checkbox)
         soft_subtitles_button = chooser.addButton(
             "Soft subtitles",
             QMessageBox.ButtonRole.AcceptRole,
@@ -1719,12 +1722,69 @@ class SessionTab(QWidget):
         chooser.exec()
 
         clicked_button = chooser.clickedButton()
+        dubbed_audio_only = bool(dubbed_audio_only_checkbox.isChecked())
         if clicked_button == soft_subtitles_button:
-            self.logic.run_dubbing_task("add_to_video", subtitle_mode="soft")
-        elif clicked_button == burned_subtitles_button:
-            self.logic.run_dubbing_task("add_to_video", subtitle_mode="burned")
-        elif clicked_button == both_subtitle_modes_button:
-            self.logic.run_dubbing_task("add_to_video", subtitle_mode="both")
+            return "soft", dubbed_audio_only
+        if clicked_button == burned_subtitles_button:
+            return "burned", dubbed_audio_only
+        if clicked_button == both_subtitle_modes_button:
+            return "both", dubbed_audio_only
+        return None
+
+    def _on_generate_dubbing_audio(self):
+        chooser = QMessageBox(self)
+        chooser.setIcon(QMessageBox.Icon.Question)
+        chooser.setWindowTitle("Generate Dubbing Audio")
+        chooser.setText(
+            "After generation, do you want to review the sentences first or continue straight to final video output?"
+        )
+        chooser.setInformativeText(
+            "Reviewing lets you listen and regenerate individual lines before rendering. "
+            "If you continue directly, you can still regenerate later and run 'Add Dubbing to Video' again to overwrite the output."
+        )
+        review_button = chooser.addButton(
+            "Review/Regenerate First",
+            QMessageBox.ButtonRole.AcceptRole,
+        )
+        direct_to_video_button = chooser.addButton(
+            "Generate and Add to Video",
+            QMessageBox.ButtonRole.ActionRole,
+        )
+        chooser.addButton(QMessageBox.StandardButton.Cancel)
+        chooser.setDefaultButton(review_button)
+        chooser.exec()
+
+        clicked_button = chooser.clickedButton()
+        if clicked_button == review_button:
+            self.logic.run_dubbing_task("generate_audio")
+            return
+
+        if clicked_button != direct_to_video_button:
+            return
+
+        output_options = self._prompt_dubbing_video_output_options()
+        if not output_options:
+            return
+
+        subtitle_mode, dubbed_audio_only = output_options
+        self.logic.run_dubbing_task(
+            "generate_audio",
+            subtitle_mode=subtitle_mode,
+            dubbed_audio_only=dubbed_audio_only,
+            auto_add_to_video=True,
+        )
+
+    def _on_add_dubbing_to_video(self):
+        output_options = self._prompt_dubbing_video_output_options()
+        if not output_options:
+            return
+
+        subtitle_mode, dubbed_audio_only = output_options
+        self.logic.run_dubbing_task(
+            "add_to_video",
+            subtitle_mode=subtitle_mode,
+            dubbed_audio_only=dubbed_audio_only,
+        )
 
     def _on_tts_service_changed(self, service: str):
         normalized_service = service
