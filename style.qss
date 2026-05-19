@@ -12,7 +12,7 @@ QFrame#groupFrame {
 }
 
 QFrame#subGroupFrame {
-    background-color: #1e1e1e;
+    background-color: #2d2d30;
     border: none;
     border-radius: 8px;
     margin-top: 0.2em;
