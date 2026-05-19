@@ -38,7 +38,7 @@ PANDRATOR_PYTHON_VERSION = '3.11'
 SILERO_PYTHON_VERSION = '3.10'
 KOKORO_PYTHON_VERSION = '3.11'
 KOKORO_ENV_NAME = 'kokoro_api_server_installer'
-XTTS_FINETUNING_PYTHON_VERSION = '3.10'
+XTTS_FINETUNING_PYTHON_VERSION = '3.13'
 PYQT6_RUNTIME_PIN = 'PyQt6==6.7.1'
 PYQT6_SIP_RUNTIME_SPEC = 'PyQt6-sip>=13.8,<14'
 PYGAME_RUNTIME_SPEC = 'pygame>=2.6.1,<3'
@@ -181,9 +181,11 @@ WHISPERX_REQUIRED_PACKAGE_SPECS = (
     f'torchaudio=={WHISPERX_TORCHAUDIO_VERSION}',
 )
 XTTS_FINETUNING_TORCH_PACKAGE_SPECS = (
-    'torch==2.2.0+cu118',
-    'torchaudio==2.2.0+cu118',
+    f'torch=={WHISPERX_TORCH_VERSION}',
+    f'torchvision=={WHISPERX_TORCHVISION_VERSION}',
+    f'torchaudio=={WHISPERX_TORCHAUDIO_VERSION}',
 )
+XTTS_FINETUNING_TORCH_INDEX_URL = WHISPERX_TORCH_INDEX_URL
 
 
 
@@ -910,7 +912,7 @@ class PandratorInstaller(QMainWindow):
                 env_name,
                 ['python', '-m', 'pip', 'install']
                 + list(XTTS_FINETUNING_TORCH_PACKAGE_SPECS)
-                + ['--index-url', 'https://download.pytorch.org/whl/cu118']
+                + ['--index-url', XTTS_FINETUNING_TORCH_INDEX_URL]
             )
             logging.info("PyTorch for XTTS Fine-tuning installed successfully.")
         except subprocess.CalledProcessError as e:

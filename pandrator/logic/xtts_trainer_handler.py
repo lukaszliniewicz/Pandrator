@@ -5,22 +5,156 @@ import shutil
 import time
 from typing import Callable
 
-# Assuming conda and trainer scripts are in known relative locations
-CONDA_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', 'conda', 'Scripts', 'conda.exe'))
-TRAINER_ENV_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', 'conda', 'envs', 'easy_xtts_trainer'))
-TRAINER_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', 'easy_xtts_trainer'))
-TRAINER_SCRIPT = os.path.join(TRAINER_DIR, 'easy_xtts_trainer.py')
-XTTS_MODELS_DIR = os.path.abspath(os.path.join(TRAINER_DIR, '..', 'xtts-api-server', 'xtts_models'))
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+WORKSPACE_ROOT = os.path.abspath(os.path.join(PROJECT_ROOT, '..'))
+
+TRAINER_ENV_NAME = 'easy_xtts_trainer'
+WHISPERX_ENV_NAME = 'whisperx_installer'
+WHISPERX_PIXI_EXE_ENV = 'WHISPERX_PIXI_EXE'
+WHISPERX_PIXI_MANIFEST_ENV = 'WHISPERX_PIXI_MANIFEST'
+
+
+def _deduplicate_paths(paths: list[str]) -> list[str]:
+    unique_paths: list[str] = []
+    seen_normalized: set[str] = set()
+
+    for path in paths:
+        normalized = os.path.normcase(os.path.normpath(path))
+        if normalized in seen_normalized:
+            continue
+
+        seen_normalized.add(normalized)
+        unique_paths.append(path)
+
+    return unique_paths
+
+
+def _candidate_roots() -> list[str]:
+    return _deduplicate_paths([PROJECT_ROOT, WORKSPACE_ROOT])
+
+
+def _first_existing_path(candidates: list[str], exists_check: Callable[[str], bool]) -> str | None:
+    for candidate in candidates:
+        if exists_check(candidate):
+            return candidate
+    return None
+
+
+def _is_executable_available(executable_path: str) -> bool:
+    if os.path.isfile(executable_path):
+        return True
+    return shutil.which(executable_path) is not None
+
+
+def _manifest_candidates(roots: list[str], env_name: str) -> list[str]:
+    return [os.path.join(root, 'envs', env_name, 'pixi.toml') for root in roots]
+
+
+def _resolve_manifest_path(roots: list[str], env_name: str) -> str:
+    candidates = _manifest_candidates(roots, env_name)
+    existing_manifest = _first_existing_path(candidates, os.path.isfile)
+    if existing_manifest:
+        return existing_manifest
+    return candidates[0]
+
+
+def _resolve_pixi_executable(roots: list[str]) -> str:
+    pixi_override = str(os.environ.get(WHISPERX_PIXI_EXE_ENV, '')).strip()
+    if pixi_override and _is_executable_available(pixi_override):
+        return pixi_override
+
+    pixi_candidates = []
+    for root in roots:
+        pixi_candidates.append(os.path.join(root, 'bin', 'pixi.exe'))
+        pixi_candidates.append(os.path.join(root, 'bin', 'pixi'))
+
+    existing_pixi = _first_existing_path(pixi_candidates, os.path.isfile)
+    if existing_pixi:
+        return existing_pixi
+
+    path_pixi = shutil.which('pixi')
+    if path_pixi:
+        return path_pixi
+
+    return pixi_candidates[0]
+
+
+def _resolve_trainer_dir(roots: list[str]) -> str:
+    trainer_candidates = [os.path.join(root, 'easy_xtts_trainer') for root in roots]
+    existing_trainer_dir = _first_existing_path(trainer_candidates, os.path.isdir)
+    if existing_trainer_dir:
+        return existing_trainer_dir
+    return trainer_candidates[0]
+
+
+def _resolve_xtts_models_dir(roots: list[str], trainer_dir: str) -> str:
+    model_dir_candidates = [
+        os.path.abspath(os.path.join(trainer_dir, '..', 'xtts-api-server', 'xtts_models')),
+        os.path.abspath(os.path.join(trainer_dir, '..', 'xtts2_api', 'xtts_models')),
+    ]
+
+    for root in roots:
+        model_dir_candidates.extend(
+            [
+                os.path.join(root, 'xtts-api-server', 'xtts_models'),
+                os.path.join(root, 'xtts2_api', 'xtts_models'),
+            ]
+        )
+
+    existing_models_dir = _first_existing_path(
+        _deduplicate_paths(model_dir_candidates),
+        os.path.isdir,
+    )
+    if existing_models_dir:
+        return existing_models_dir
+
+    return model_dir_candidates[0]
+
+
+def _detect_legacy_conda_paths(roots: list[str]) -> tuple[str, str, str]:
+    conda_executable_candidates = [
+        os.path.join(root, 'conda', 'Scripts', 'conda.exe')
+        for root in roots
+    ]
+    trainer_conda_env_candidates = [
+        os.path.join(root, 'conda', 'envs', TRAINER_ENV_NAME)
+        for root in roots
+    ]
+    whisperx_conda_env_candidates = [
+        os.path.join(root, 'conda', 'envs', WHISPERX_ENV_NAME)
+        for root in roots
+    ]
+
+    legacy_conda_executable = _first_existing_path(conda_executable_candidates, os.path.isfile) or ''
+    legacy_trainer_conda_env = _first_existing_path(trainer_conda_env_candidates, os.path.isdir) or ''
+    legacy_whisperx_conda_env = _first_existing_path(whisperx_conda_env_candidates, os.path.isdir) or ''
+    return legacy_conda_executable, legacy_trainer_conda_env, legacy_whisperx_conda_env
+
+
+def _build_trainer_subprocess_env(paths: dict[str, str]) -> dict[str, str]:
+    env = os.environ.copy()
+    env.setdefault(WHISPERX_PIXI_EXE_ENV, paths['pixi_executable'])
+    env.setdefault(WHISPERX_PIXI_MANIFEST_ENV, paths['whisperx_manifest'])
+    return env
 
 
 def get_training_paths() -> dict[str, str]:
     """Returns all filesystem paths required by the XTTS training workflow."""
+    roots = _candidate_roots()
+    trainer_dir = _resolve_trainer_dir(roots)
+    trainer_script = os.path.join(trainer_dir, 'easy_xtts_trainer.py')
+    legacy_conda_executable, legacy_trainer_conda_env, legacy_whisperx_conda_env = _detect_legacy_conda_paths(roots)
+
     return {
-        "conda_path": CONDA_PATH,
-        "trainer_env_path": TRAINER_ENV_PATH,
-        "trainer_dir": TRAINER_DIR,
-        "trainer_script": TRAINER_SCRIPT,
-        "xtts_models_dir": XTTS_MODELS_DIR,
+        'pixi_executable': _resolve_pixi_executable(roots),
+        'trainer_manifest': _resolve_manifest_path(roots, TRAINER_ENV_NAME),
+        'trainer_dir': trainer_dir,
+        'trainer_script': trainer_script,
+        'xtts_models_dir': _resolve_xtts_models_dir(roots, trainer_dir),
+        'whisperx_manifest': _resolve_manifest_path(roots, WHISPERX_ENV_NAME),
+        'legacy_conda_executable': legacy_conda_executable,
+        'legacy_trainer_conda_env': legacy_trainer_conda_env,
+        'legacy_whisperx_conda_env': legacy_whisperx_conda_env,
     }
 
 
@@ -28,15 +162,46 @@ def validate_training_environment() -> tuple[bool, str]:
     """Validates external dependencies and trainer paths in one place."""
     paths = get_training_paths()
     checks = [
-        ("Conda executable", paths["conda_path"]),
-        ("Trainer environment", paths["trainer_env_path"]),
-        ("Trainer directory", paths["trainer_dir"]),
-        ("Trainer script", paths["trainer_script"]),
+        ('Pixi executable', paths['pixi_executable'], _is_executable_available),
+        ('Trainer Pixi manifest', paths['trainer_manifest'], os.path.isfile),
+        ('WhisperX Pixi manifest', paths['whisperx_manifest'], os.path.isfile),
+        ('Trainer directory', paths['trainer_dir'], os.path.isdir),
+        ('Trainer script', paths['trainer_script'], os.path.isfile),
     ]
 
-    missing = [f"- {label}: {path}" for label, path in checks if not os.path.exists(path)]
+    missing = [
+        f'- {label}: {path}'
+        for label, path, exists_check in checks
+        if not exists_check(path)
+    ]
+
     if missing:
-        message = "XTTS trainer setup is incomplete:\n" + "\n".join(missing)
+        message_lines = ['XTTS trainer setup is incomplete:', *missing]
+
+        if (
+            paths['legacy_conda_executable']
+            or paths['legacy_trainer_conda_env']
+            or paths['legacy_whisperx_conda_env']
+        ):
+            message_lines.extend(
+                [
+                    '',
+                    'Legacy Conda trainer artifacts were detected during migration:',
+                ]
+            )
+            if paths['legacy_conda_executable']:
+                message_lines.append(f"- Conda executable: {paths['legacy_conda_executable']}")
+            if paths['legacy_trainer_conda_env']:
+                message_lines.append(f"- Trainer env: {paths['legacy_trainer_conda_env']}")
+            if paths['legacy_whisperx_conda_env']:
+                message_lines.append(f"- WhisperX env: {paths['legacy_whisperx_conda_env']}")
+
+            message_lines.append(
+                'Run Pandrator Installer -> Update Pandrator to migrate this workspace to '
+                'Pixi manifests in envs/easy_xtts_trainer/pixi.toml and envs/whisperx_installer/pixi.toml.'
+            )
+
+        message = '\n'.join(message_lines)
         logging.error(message)
         return False, message
 
@@ -74,56 +239,91 @@ def start_training(
     _emit_status(status_callback, "Building XTTS training command...")
 
     command = [
-        paths["conda_path"], "run", "-p", paths["trainer_env_path"], '--no-capture-output', "python", paths["trainer_script"],
-        "--input", source_audio_path,
-        "--source-language", settings.get("model_language", "en"),
-        "--whisper-model", settings.get("whisper_model", "large-v3"),
-        "--session", model_name,
-        "--epochs", str(settings.get("epochs", 6)),
-        "--gradient", str(settings.get("gradient", 1)),
-        "--batch", str(settings.get("batches", 2)),
-        "--sample-method", settings.get("sample_method", "Mixed").lower().replace(" ", "-"),
-        "--sample-rate", str(settings.get("sample_rate", 22050)),
-        "--max-audio-time", str(float(settings.get("max_duration", 11.0))),
-        "--max-text-length", str(int(settings.get("max_text_length", 200))),
-        "--method-proportion", settings.get("method_proportion", "6_4"),
-        "--training-proportion", settings.get("training_split", "9_1"),
-        "--voice-sample-mode", settings.get("voice_sample_mode", "basic")
+        paths['pixi_executable'],
+        'run',
+        '--manifest-path',
+        paths['trainer_manifest'],
+        '--executable',
+        'python',
+        paths['trainer_script'],
+        '--input',
+        source_audio_path,
+        '--source-language',
+        settings.get('model_language', 'en'),
+        '--whisper-model',
+        settings.get('whisper_model', 'large-v3'),
+        '--session',
+        model_name,
+        '--epochs',
+        str(settings.get('epochs', 6)),
+        '--gradient',
+        str(settings.get('gradient', 1)),
+        '--batch',
+        str(settings.get('batches', 2)),
+        '--sample-method',
+        settings.get('sample_method', 'Mixed').lower().replace(' ', '-'),
+        '--sample-rate',
+        str(settings.get('sample_rate', 22050)),
+        '--max-audio-time',
+        str(float(settings.get('max_duration', 11.0))),
+        '--max-text-length',
+        str(int(settings.get('max_text_length', 200))),
+        '--method-proportion',
+        settings.get('method_proportion', '6_4'),
+        '--training-proportion',
+        settings.get('training_split', '9_1'),
+        '--voice-sample-mode',
+        settings.get('voice_sample_mode', 'basic'),
     ]
 
-    if settings.get("voice_sample_mode") != "basic":
-        command.extend(["--voice-samples", str(settings.get("voice_samples_count", 3))])
+    if settings.get('voice_sample_mode') != 'basic':
+        command.extend(['--voice-samples', str(settings.get('voice_samples_count', 3))])
     
-    if settings.get("voice_sample_only_sentence"):
-        command.append("--voice-sample-only-sentence")
+    if settings.get('voice_sample_only_sentence'):
+        command.append('--voice-sample-only-sentence')
 
-    if settings.get("alignment_model", "").strip():
-        command.extend(["--align-model", settings.get("alignment_model").strip()])
+    if settings.get('alignment_model', '').strip():
+        command.extend(['--align-model', settings.get('alignment_model').strip()])
 
-    if settings.get("enable_denoise"): command.append("--denoise")
-    if settings.get("enable_breath_removal"): command.append("--breath")
-    if settings.get("enable_normalize"): command.extend(["--normalize", str(settings.get("lufs_value", "-16")).strip('-')])
-    if settings.get("enable_compress"): command.extend(["--compress", settings.get("compress_profile", "neutral")])
-    if settings.get("enable_dess"): command.append("--dess")
+    if settings.get('enable_denoise'):
+        command.append('--denoise')
+    if settings.get('enable_breath_removal'):
+        command.append('--breath')
+    if settings.get('enable_normalize'):
+        command.extend(['--normalize', str(settings.get('lufs_value', '-16')).strip('-')])
+    if settings.get('enable_compress'):
+        command.extend(['--compress', settings.get('compress_profile', 'neutral')])
+    if settings.get('enable_dess'):
+        command.append('--dess')
 
-    logging.info("Executing training command: %s", " ".join(command))
+    process_env = _build_trainer_subprocess_env(paths)
+    logging.info('Executing training command: %s', ' '.join(command))
+    logging.info(
+        'XTTS trainer WhisperX contract: %s=%s, %s=%s',
+        WHISPERX_PIXI_EXE_ENV,
+        process_env.get(WHISPERX_PIXI_EXE_ENV, ''),
+        WHISPERX_PIXI_MANIFEST_ENV,
+        process_env.get(WHISPERX_PIXI_MANIFEST_ENV, ''),
+    )
 
     _emit_status(status_callback, "XTTS training in progress...")
     try:
         process = subprocess.Popen(
             command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, bufsize=1, universal_newlines=True, encoding='utf-8', errors='replace',
-            cwd=paths["trainer_dir"],
+            cwd=paths['trainer_dir'],
+            env=process_env,
         )
         
-        for line in process.stdout:
-            cleaned = line.strip()
-            if not cleaned:
-                continue
+        if process.stdout is not None:
+            for line in process.stdout:
+                cleaned = line.strip()
+                if not cleaned:
+                    continue
 
-            logging.info("XTTS Trainer: %s", cleaned)
-            if output_callback:
-                output_callback(cleaned)
+                logging.info("XTTS Trainer: %s", cleaned)
+                if output_callback:
+                    output_callback(cleaned)
         
         process.wait()
 
