@@ -186,6 +186,7 @@ XTTS_FINETUNING_TORCH_PACKAGE_SPECS = (
     f'torchaudio=={WHISPERX_TORCHAUDIO_VERSION}',
 )
 XTTS_FINETUNING_TORCH_INDEX_URL = WHISPERX_TORCH_INDEX_URL
+XTTS_FINETUNING_BUNDLED_WHEEL_PREFIX = 'ctc_forced_aligner-'
 
 
 
@@ -1736,6 +1737,66 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                     return wheel_path, wheels_directory
 
         return '', ''
+
+    def find_bundled_xtts_finetuning_wheel(self, pandrator_path, easy_xtts_trainer_path):
+        candidate_directories = [
+            os.path.join(easy_xtts_trainer_path, 'vendor'),
+            *self.get_bundled_wheels_directories(pandrator_path),
+        ]
+
+        seen = set()
+        for wheels_directory in candidate_directories:
+            normalized_directory = os.path.normcase(os.path.normpath(wheels_directory))
+            if normalized_directory in seen:
+                continue
+
+            seen.add(normalized_directory)
+            if not os.path.isdir(wheels_directory):
+                continue
+
+            try:
+                wheel_names = sorted(os.listdir(wheels_directory), reverse=True)
+            except OSError:
+                continue
+
+            for wheel_name in wheel_names:
+                normalized_name = wheel_name.lower()
+                if not normalized_name.endswith('.whl'):
+                    continue
+                if not normalized_name.startswith(XTTS_FINETUNING_BUNDLED_WHEEL_PREFIX):
+                    continue
+
+                wheel_path = os.path.join(wheels_directory, wheel_name)
+                if os.path.isfile(wheel_path):
+                    return wheel_path, wheels_directory
+
+        return '', ''
+
+    def install_xtts_finetuning_bundled_wheel(self, pandrator_path, env_name, easy_xtts_trainer_path):
+        bundled_wheel_path, bundled_wheel_directory = self.find_bundled_xtts_finetuning_wheel(
+            pandrator_path,
+            easy_xtts_trainer_path,
+        )
+        if not bundled_wheel_path:
+            logging.warning(
+                "Bundled XTTS fine-tuning wheel was not found in %s. "
+                "Skipping optional source-text alignment dependency installation.",
+                easy_xtts_trainer_path,
+            )
+            return False
+
+        logging.info(f"Installing bundled XTTS fine-tuning wheel: {bundled_wheel_path}")
+        self.run_pixi_in_env(
+            pandrator_path,
+            env_name,
+            ['python', '-m', 'pip', 'install', '--upgrade', bundled_wheel_path],
+            cwd=easy_xtts_trainer_path,
+        )
+        logging.info(
+            "Installed bundled XTTS fine-tuning wheel from: %s",
+            bundled_wheel_directory,
+        )
+        return True
 
     def check_kokoro_server_online(self, url, max_attempts=90, wait_interval=5, process=None):
         """Check if the Kokoro server is online and responding."""
@@ -3414,10 +3475,18 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 self.worker.update_progress.emit(0.90)
                 self.worker.update_status.emit("Creating XTTS Fine-tuning Pixi environment...")
                 self.create_pixi_env(pandrator_path, 'easy_xtts_trainer', XTTS_FINETUNING_PYTHON_VERSION)
+                self.add_pixi_conda_package(pandrator_path, 'easy_xtts_trainer', 'ffmpeg')
 
                 self.worker.update_progress.emit(0.95)
                 self.worker.update_status.emit("Installing XTTS Fine-tuning requirements...")
                 self.install_requirements(pandrator_path, 'easy_xtts_trainer', os.path.join(easy_xtts_trainer_path, 'requirements.txt'))
+
+                self.worker.update_status.emit("Installing XTTS fine-tuning bundled wheel...")
+                self.install_xtts_finetuning_bundled_wheel(
+                    pandrator_path,
+                    'easy_xtts_trainer',
+                    easy_xtts_trainer_path,
+                )
 
                 self.worker.update_status.emit("Installing PyTorch for XTTS Fine-tuning...")
                 self.install_pytorch_for_xtts_finetuning(pandrator_path, 'easy_xtts_trainer')
@@ -3719,6 +3788,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 xtts_requirements_file = os.path.join(easy_xtts_trainer_path, 'requirements.txt')
                 if os.path.exists(xtts_requirements_file):
                     self.create_pixi_env(pandrator_base_path, 'easy_xtts_trainer', XTTS_FINETUNING_PYTHON_VERSION)
+                    self.add_pixi_conda_package(pandrator_base_path, 'easy_xtts_trainer', 'ffmpeg')
 
                     self.worker.update_status.emit("Checking easy XTTS trainer dependencies...")
                     needs_easy_xtts_requirements, easy_xtts_requirements_reason = self.should_install_requirements(
@@ -3743,6 +3813,13 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                             easy_xtts_requirements_reason,
                         )
 
+                    self.worker.update_status.emit("Checking easy XTTS trainer bundled wheel...")
+                    self.install_xtts_finetuning_bundled_wheel(
+                        pandrator_base_path,
+                        'easy_xtts_trainer',
+                        easy_xtts_trainer_path,
+                    )
+
                     needs_xtts_torch, xtts_torch_reason = self.component_needs_package_sync(
                         pandrator_base_path,
                         'easy_xtts_trainer',
@@ -3760,8 +3837,14 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 self.worker.update_status.emit("Migrating easy XTTS trainer to Pixi...")
                 self.clone_repo(EASY_XTTS_TRAINER_REPO_URL, easy_xtts_trainer_path)
                 self.create_pixi_env(pandrator_base_path, 'easy_xtts_trainer', XTTS_FINETUNING_PYTHON_VERSION)
+                self.add_pixi_conda_package(pandrator_base_path, 'easy_xtts_trainer', 'ffmpeg')
                 xtts_requirements_file = os.path.join(easy_xtts_trainer_path, 'requirements.txt')
                 self.install_requirements(pandrator_base_path, 'easy_xtts_trainer', xtts_requirements_file)
+                self.install_xtts_finetuning_bundled_wheel(
+                    pandrator_base_path,
+                    'easy_xtts_trainer',
+                    easy_xtts_trainer_path,
+                )
                 self.install_pytorch_for_xtts_finetuning(pandrator_base_path, 'easy_xtts_trainer')
             else:
                 logging.info("easy XTTS trainer not installed, skipping update.")
