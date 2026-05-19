@@ -27,6 +27,11 @@ SYNC_OVERWRITE_GUARDED_AUDIO_STEMS = (
     "original_audio",
     "mixed_audio",
     "amplified_dubbed_audio",
+    "aligned_audio",
+)
+SYNC_STALE_SYNC_SRT_SUFFIXES = (
+    "_equalized",
+    "_final",
 )
 SYNC_OUTPUT_VIDEO_EXTENSIONS = (
     ".mp4",
@@ -680,6 +685,8 @@ def _clear_previous_sync_outputs(session_dir: str) -> None:
         ):
             should_remove = True
         elif extension in SYNC_OUTPUT_VIDEO_EXTENSIONS and stem.startswith("final_output"):
+            should_remove = True
+        elif extension == ".srt" and any(stem.endswith(suffix) for suffix in SYNC_STALE_SYNC_SRT_SUFFIXES):
             should_remove = True
 
         if not should_remove:
