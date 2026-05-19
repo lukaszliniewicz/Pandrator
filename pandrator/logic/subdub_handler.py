@@ -21,6 +21,18 @@ BUNDLED_FFMPEG_CANDIDATES = (
     os.path.join(PROJECT_ROOT, "bin", "ffmpeg.exe"),
     os.path.join(PROJECT_ROOT, "bin", "ffmpeg"),
 )
+SYNC_OVERWRITE_GUARDED_AUDIO_STEMS = (
+    "original_audio",
+    "mixed_audio",
+    "amplified_dubbed_audio",
+)
+SYNC_OUTPUT_VIDEO_EXTENSIONS = (
+    ".mp4",
+    ".mkv",
+    ".webm",
+    ".avi",
+    ".mov",
+)
 
 DEFAULT_LOCAL_API_BASE = "http://localhost:1234/v1"
 DEFAULT_LOCAL_MODEL = "openai/gpt-5.4-mini"
@@ -596,10 +608,50 @@ def generate_speech_blocks(session_dir: str, srt_file: str) -> bool:
     return _run_subdub_command(command, "Speech Block Generation", model_options)
 
 
+def _clear_previous_sync_outputs(session_dir: str) -> None:
+    """Removes stale sync artifacts that can block FFmpeg overwrite in Subdub."""
+    if not os.path.isdir(session_dir):
+        return
+
+    removed_files: list[str] = []
+    for file_name in os.listdir(session_dir):
+        file_path = os.path.join(session_dir, file_name)
+        if not os.path.isfile(file_path):
+            continue
+
+        lower_name = file_name.lower()
+        stem, extension = os.path.splitext(lower_name)
+
+        should_remove = False
+        if extension == ".wav" and any(
+            stem.startswith(audio_stem)
+            for audio_stem in SYNC_OVERWRITE_GUARDED_AUDIO_STEMS
+        ):
+            should_remove = True
+        elif extension in SYNC_OUTPUT_VIDEO_EXTENSIONS and stem.startswith("final_output"):
+            should_remove = True
+
+        if not should_remove:
+            continue
+
+        try:
+            os.remove(file_path)
+            removed_files.append(file_path)
+        except OSError as error:
+            logging.warning("Could not remove stale sync artifact '%s': %s", file_path, error)
+
+    if removed_files:
+        logging.info(
+            "Removed %d stale sync artifact(s) before synchronization.",
+            len(removed_files),
+        )
+
+
 def synchronize_audio(session_dir: str, video_file: str = "") -> bool:
     """Synchronizes generated audio with the original video using Subdub."""
     model_options = _non_llm_task_model_options()
     resolved_session_dir = _resolve_subdub_path(session_dir)
+    _clear_previous_sync_outputs(resolved_session_dir)
     command = _build_subdub_command_base() + [
         "-session",
         resolved_session_dir,
