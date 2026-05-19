@@ -31,10 +31,7 @@ from PyQt6.QtGui import QColor, QPalette
 try:
     from packaging.specifiers import SpecifierSet as PackagingSpecifierSet
 except ImportError:
-    try:
-        from pip._vendor.packaging.specifiers import SpecifierSet as PackagingSpecifierSet
-    except ImportError:
-        PackagingSpecifierSet = None
+    PackagingSpecifierSet = None
 
 
 PIXI_BINARY_NAME = 'pixi.exe'
