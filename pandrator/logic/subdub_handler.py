@@ -92,6 +92,11 @@ def _build_subdub_command_base() -> list[str]:
     return [_resolve_python_executable(), "-m", "subdub"]
 
 
+def _resolve_subdub_path(path: str) -> str:
+    expanded = os.path.expanduser(str(path or "").strip())
+    return os.path.abspath(expanded) if expanded else expanded
+
+
 def _is_local_api_base(api_base: str) -> bool:
     lowered = api_base.lower()
     return any(host in lowered for host in ("localhost", "127.0.0.1", "0.0.0.0"))
@@ -480,11 +485,13 @@ def transcribe_video(session_dir: str, video_file: str, settings: dict, correcti
     """Transcribes a video file using Subdub."""
     correction_enabled = bool(settings.get("correction_enabled"))
     model_options = _resolve_model_options(settings) if correction_enabled else _non_llm_task_model_options()
+    resolved_session_dir = _resolve_subdub_path(session_dir)
+    resolved_video_file = _resolve_subdub_path(video_file)
     command = _build_subdub_command_base() + [
         "-i",
-        video_file,
+        resolved_video_file,
         "-session",
-        session_dir,
+        resolved_session_dir,
         "-sl",
         settings.get("whisper_language", "English"),
         "-whisper_model",
@@ -512,11 +519,13 @@ def correct_subtitles(session_dir: str, srt_file: str, settings: dict, correctio
         logging.error("DeepL cannot be used for correction-only tasks. Choose an LLM model for correction.")
         return False
 
+    resolved_session_dir = _resolve_subdub_path(session_dir)
+    resolved_srt_file = _resolve_subdub_path(srt_file)
     command = _build_subdub_command_base() + [
         "-i",
-        srt_file,
+        resolved_srt_file,
         "-session",
-        session_dir,
+        resolved_session_dir,
         "-task",
         "correct",
         "-context",
@@ -532,11 +541,13 @@ def correct_subtitles(session_dir: str, srt_file: str, settings: dict, correctio
 def translate_subtitles(session_dir: str, srt_file: str, settings: dict, correction_prompt: str = "") -> bool:
     """Translates an SRT file using Subdub."""
     model_options = _resolve_model_options(settings)
+    resolved_session_dir = _resolve_subdub_path(session_dir)
+    resolved_srt_file = _resolve_subdub_path(srt_file)
     command = _build_subdub_command_base() + [
         "-i",
-        srt_file,
+        resolved_srt_file,
         "-session",
-        session_dir,
+        resolved_session_dir,
         "-sl",
         settings.get("original_language", "English"),
         "-tl",
@@ -564,11 +575,13 @@ def translate_subtitles(session_dir: str, srt_file: str, settings: dict, correct
 def generate_speech_blocks(session_dir: str, srt_file: str) -> bool:
     """Generates speech blocks from an SRT file using Subdub."""
     model_options = _non_llm_task_model_options()
+    resolved_session_dir = _resolve_subdub_path(session_dir)
+    resolved_srt_file = _resolve_subdub_path(srt_file)
     command = _build_subdub_command_base() + [
         "-i",
-        srt_file,
+        resolved_srt_file,
         "-session",
-        session_dir,
+        resolved_session_dir,
         "-task",
         "speech_blocks",
     ]
@@ -579,15 +592,16 @@ def generate_speech_blocks(session_dir: str, srt_file: str) -> bool:
 def synchronize_audio(session_dir: str, video_file: str = "") -> bool:
     """Synchronizes generated audio with the original video using Subdub."""
     model_options = _non_llm_task_model_options()
+    resolved_session_dir = _resolve_subdub_path(session_dir)
     command = _build_subdub_command_base() + [
         "-session",
-        session_dir,
+        resolved_session_dir,
         "-task",
         "sync",
     ]
 
     if video_file:
-        command.extend(["-v", video_file])
+        command.extend(["-v", _resolve_subdub_path(video_file)])
 
     _apply_model_options(command, model_options)
     return _run_subdub_command(command, "Synchronization", model_options)
@@ -596,9 +610,10 @@ def synchronize_audio(session_dir: str, video_file: str = "") -> bool:
 def equalize_subtitles(srt_file: str) -> bool:
     """Equalizes subtitles timings using Subdub."""
     model_options = _non_llm_task_model_options()
+    resolved_srt_file = _resolve_subdub_path(srt_file)
     command = _build_subdub_command_base() + [
         "-i",
-        srt_file,
+        resolved_srt_file,
         "-task",
         "equalize",
     ]

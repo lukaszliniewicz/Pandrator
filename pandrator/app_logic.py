@@ -216,6 +216,25 @@ class AppLogic(QObject):
                 return candidate_path
         return ""
 
+    def _session_dir_has_sentence_wavs(self, session_dir: str) -> bool:
+        """Returns True when a session folder contains generated sentence WAVs."""
+        if not session_dir:
+            return False
+
+        wavs_dir = os.path.join(session_dir, "Sentence_wavs")
+        if not os.path.isdir(wavs_dir):
+            return False
+
+        try:
+            for file_name in os.listdir(wavs_dir):
+                file_path = os.path.join(wavs_dir, file_name)
+                if os.path.isfile(file_path) and file_name.lower().endswith(".wav"):
+                    return True
+        except OSError:
+            return False
+
+        return False
+
     def _resolve_dubbing_video_source(self) -> str:
         video_source = self.state.source_file_path or ""
         if os.path.splitext(video_source)[1].lower() != ".srt":
@@ -1664,9 +1683,55 @@ class AppLogic(QObject):
             self.show_error.emit("Dubbing Error", "No valid video file found for synchronization.")
             return
 
+        sync_session_dir = dubbing_session_dir
+        if not self._session_dir_has_sentence_wavs(sync_session_dir):
+            if self._session_dir_has_sentence_wavs(session_output_dir):
+                sync_session_dir = session_output_dir
+                self.log_message.emit(
+                    "Using root session audio artifacts for synchronization (legacy session layout detected)."
+                )
+
+        if not self._session_dir_has_sentence_wavs(sync_session_dir):
+            self.show_error.emit(
+                "Dubbing Error",
+                "No generated sentence WAVs found for synchronization. Run 'Generate Dub Audio' first.",
+            )
+            return
+
+        speech_blocks_file = self._discover_latest_file_with_suffix(sync_session_dir, "_speech_blocks.json")
+        if not speech_blocks_file:
+            srt_for_speech_blocks = self._find_latest_srt(sync_session_dir, must_not_be_equalized=True)
+            if not srt_for_speech_blocks:
+                self.show_error.emit(
+                    "Dubbing Error",
+                    "No SRT file found to regenerate speech blocks. Run transcription first.",
+                )
+                return
+
+            speech_blocks_snapshot = self._snapshot_speech_blocks_files(sync_session_dir)
+            self.log_message.emit("No speech blocks JSON found. Regenerating speech blocks...")
+            if not subdub_handler.generate_speech_blocks(sync_session_dir, srt_for_speech_blocks):
+                self.show_error.emit(
+                    "Dubbing Error",
+                    "Speech block regeneration failed. Check logs for details.",
+                )
+                return
+
+            speech_blocks_file = self._wait_for_speech_blocks_file(
+                session_dir=sync_session_dir,
+                source_srt_file=srt_for_speech_blocks,
+                previous_snapshot=speech_blocks_snapshot,
+            )
+            if not speech_blocks_file:
+                self.show_error.emit(
+                    "Dubbing Error",
+                    "Speech blocks file was not detected after regeneration.",
+                )
+                return
+
         # 1. Synchronize Audio
         self.log_message.emit("Synchronizing audio...")
-        if not subdub_handler.synchronize_audio(dubbing_session_dir, video_file=video_source):
+        if not subdub_handler.synchronize_audio(sync_session_dir, video_file=video_source):
             self.show_error.emit("Dubbing Error", "Audio synchronization failed.")
             return
         
@@ -1674,12 +1739,12 @@ class AppLogic(QObject):
         # Legacy Subdub used a `_synced` suffix, while the refactored pipeline writes `final_output*.mp4`.
         synced_video_path = None
         candidate_videos = []
-        for file in os.listdir(dubbing_session_dir):
+        for file in os.listdir(sync_session_dir):
             file_lower = file.lower()
             if not file_lower.endswith((".mp4", ".mkv", ".webm", ".avi", ".mov")):
                 continue
             if "_synced" in file_lower or file_lower.startswith("final_output"):
-                candidate_videos.append(os.path.join(dubbing_session_dir, file))
+                candidate_videos.append(os.path.join(sync_session_dir, file))
 
         if candidate_videos:
             synced_video_path = max(candidate_videos, key=os.path.getmtime)
@@ -1690,7 +1755,7 @@ class AppLogic(QObject):
         self.log_message.emit(f"Found synced video: {synced_video_path}")
 
         # 2. Equalize Subtitles
-        srt_file = self._find_latest_srt(dubbing_session_dir, must_not_be_equalized=True)
+        srt_file = self._find_latest_srt(sync_session_dir, must_not_be_equalized=True)
         if not srt_file:
             self.show_error.emit("Dubbing Error", "Cannot find SRT file to equalize.")
             return
@@ -1702,7 +1767,7 @@ class AppLogic(QObject):
         equalized_srt_path = srt_file.replace('.srt', '_equalized.srt')
         if not os.path.exists(equalized_srt_path):
             base_name = os.path.splitext(os.path.basename(srt_file))[0]
-            expected_path = os.path.join(dubbing_session_dir, f"{base_name}_equalized.srt")
+            expected_path = os.path.join(sync_session_dir, f"{base_name}_equalized.srt")
             if os.path.exists(expected_path):
                 equalized_srt_path = expected_path
             else:
