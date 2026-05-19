@@ -187,6 +187,11 @@ XTTS_FINETUNING_TORCH_PACKAGE_SPECS = (
 )
 XTTS_FINETUNING_TORCH_INDEX_URL = WHISPERX_TORCH_INDEX_URL
 XTTS_FINETUNING_BUNDLED_WHEEL_PREFIX = 'ctc_forced_aligner-'
+OPTIONAL_REQUIREMENT_EXCLUSIONS_BY_ENV = {
+    'easy_xtts_trainer': (
+        'breath-removal',
+    ),
+}
 
 
 
@@ -2273,6 +2278,56 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         package_name = package_name.split('[', 1)[0].strip()
         return package_name, comparator, version
 
+    def get_optional_requirement_exclusions(self, env_name):
+        configured_exclusions = OPTIONAL_REQUIREMENT_EXCLUSIONS_BY_ENV.get(env_name, ())
+        return {
+            self.normalize_package_name(package_name)
+            for package_name in configured_exclusions
+            if package_name
+        }
+
+    def should_skip_requirement_line(self, line, excluded_packages):
+        if not excluded_packages:
+            return False
+
+        package_name, _, _ = self.parse_package_spec(line)
+        normalized_package_name = self.normalize_package_name(package_name) if package_name else ''
+        if normalized_package_name in excluded_packages:
+            return True
+
+        lower_line = line.lower()
+        if not any(marker in lower_line for marker in ('git+', 'http://', 'https://', 'file://')):
+            return False
+
+        normalized_line = lower_line.replace('_', '-')
+        for excluded_package in excluded_packages:
+            if re.search(rf'(^|[^a-z0-9]){re.escape(excluded_package)}([^a-z0-9]|$)', normalized_line):
+                return True
+
+        return False
+
+    def filter_requirements_text(self, requirements_text, env_name):
+        excluded_packages = self.get_optional_requirement_exclusions(env_name)
+        if not excluded_packages:
+            return requirements_text, []
+
+        filtered_lines = []
+        skipped_lines = []
+
+        for raw_line in requirements_text.splitlines():
+            line = raw_line.split('#', 1)[0].strip()
+            if line and self.should_skip_requirement_line(line, excluded_packages):
+                skipped_lines.append(line)
+                continue
+
+            filtered_lines.append(raw_line)
+
+        filtered_requirements_text = '\n'.join(filtered_lines)
+        if requirements_text.endswith('\n'):
+            filtered_requirements_text += '\n'
+
+        return filtered_requirements_text, skipped_lines
+
     def get_installed_pip_packages(self, pandrator_path, env_name):
         try:
             stdout, _ = self.run_pixi_in_env(
@@ -2395,7 +2450,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         current_hash = self.calculate_file_sha256(requirements_file)
         previous_hash = requirements_hashes.get(state_key)
 
-        _, requirement_specs, unsupported_lines = self.load_pypi_requirements(requirements_file)
+        _, _, requirement_specs, unsupported_lines, _ = self.load_pypi_requirements(requirements_file, env_name)
         has_non_exact_constraints = any(
             self.parse_package_spec(requirement_spec)[1] not in (None, '==', '===', '=')
             for requirement_spec in requirement_specs
@@ -2491,7 +2546,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
         return False, "package and source checks passed"
 
-    def extract_import_candidates(self, requirements_file):
+    def extract_import_candidates(self, requirements_file, env_name=None):
         candidates = []
         seen = set()
         import_aliases = {
@@ -2502,35 +2557,41 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             'pillow': 'PIL',
         }
 
-        with open(requirements_file, 'r', encoding='utf-8-sig', errors='replace') as f:
-            for raw_line in f:
-                line = raw_line.split('#', 1)[0].strip()
-                if not line or line.startswith(('-', 'git+', 'http://', 'https://', '.', '/')):
-                    continue
+        with open(requirements_file, 'rb') as f:
+            requirements_text = f.read().decode('utf-8-sig', errors='replace')
 
-                requirement = line.split(';', 1)[0].strip()
-                requirement = requirement.split('@', 1)[0].strip()
+        filtered_requirements_text, _ = self.filter_requirements_text(requirements_text, env_name)
 
-                package_name = requirement
-                for separator in ('[', '==', '>=', '<=', '~=', '!=', '>', '<', '='):
-                    package_name = package_name.split(separator, 1)[0].strip()
+        for raw_line in filtered_requirements_text.splitlines():
+            line = raw_line.split('#', 1)[0].strip()
+            if not line or line.startswith(('-', 'git+', 'http://', 'https://', '.', '/')):
+                continue
 
-                normalized_package_name = package_name.lower().replace('_', '-').replace('.', '-')
-                import_name = import_aliases.get(normalized_package_name, package_name.replace('-', '_'))
-                if import_name and import_name not in seen:
-                    seen.add(import_name)
-                    candidates.append(import_name)
+            requirement = line.split(';', 1)[0].strip()
+            requirement = requirement.split('@', 1)[0].strip()
+
+            package_name = requirement
+            for separator in ('[', '==', '>=', '<=', '~=', '!=', '>', '<', '='):
+                package_name = package_name.split(separator, 1)[0].strip()
+
+            normalized_package_name = package_name.lower().replace('_', '-').replace('.', '-')
+            import_name = import_aliases.get(normalized_package_name, package_name.replace('-', '_'))
+            if import_name and import_name not in seen:
+                seen.add(import_name)
+                candidates.append(import_name)
 
         return candidates
 
-    def load_pypi_requirements(self, requirements_file):
+    def load_pypi_requirements(self, requirements_file, env_name=None):
         requirement_specs = []
         unsupported_lines = []
 
         with open(requirements_file, 'rb') as f:
             requirements_text = f.read().decode('utf-8-sig', errors='replace')
 
-        for raw_line in requirements_text.splitlines():
+        filtered_requirements_text, skipped_lines = self.filter_requirements_text(requirements_text, env_name)
+
+        for raw_line in filtered_requirements_text.splitlines():
             line = raw_line.split('#', 1)[0].strip()
             if not line:
                 continue
@@ -2546,7 +2607,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
             requirement_specs.append(line)
 
-        return requirements_text, requirement_specs, unsupported_lines
+        return requirements_text, filtered_requirements_text, requirement_specs, unsupported_lines, skipped_lines
 
     def add_pypi_requirements(self, pandrator_path, env_name, requirement_specs):
         if not requirement_specs:
@@ -2712,7 +2773,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
     def try_import_requirements(self, pandrator_path, env_name, requirements_file):
         logging.info(f"Running best-effort import checks for {requirements_file}...")
 
-        for import_name in self.extract_import_candidates(requirements_file):
+        for import_name in self.extract_import_candidates(requirements_file, env_name):
             try:
                 self.run_pixi_in_env(
                     pandrator_path,
@@ -2729,8 +2790,17 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
     def install_requirements(self, pandrator_path, env_name, requirements_file):
         logging.info(f"Installing requirements for {env_name}...")
 
-        requirements_text, requirement_specs, unsupported_lines = self.load_pypi_requirements(requirements_file)
+        (
+            requirements_text,
+            filtered_requirements_text,
+            requirement_specs,
+            unsupported_lines,
+            skipped_lines,
+        ) = self.load_pypi_requirements(requirements_file, env_name)
         logging.info(f"Requirements file contents:\n{requirements_text}")
+
+        if skipped_lines:
+            logging.info(f"Skipping optional requirements for {env_name}: {skipped_lines}")
 
         failed_pixi_specs = []
 
@@ -2747,15 +2817,37 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             self.install_requirement_specs_with_pip(pandrator_path, env_name, failed_pixi_specs)
 
         if unsupported_lines:
+            pip_requirements_file = requirements_file
+            temporary_requirements_file = None
+            if skipped_lines:
+                temp_fd, temporary_requirements_file = tempfile.mkstemp(
+                    prefix='pandrator_filtered_requirements_',
+                    suffix='.txt',
+                )
+                os.close(temp_fd)
+                with open(temporary_requirements_file, 'w', encoding='utf-8') as f:
+                    f.write(filtered_requirements_text)
+
+                pip_requirements_file = temporary_requirements_file
+
             logging.warning(
                 "Unsupported requirement lines for pixi add detected; "
-                f"falling back to pip install -r for {requirements_file}: {unsupported_lines}"
+                f"falling back to pip install -r for {pip_requirements_file}: {unsupported_lines}"
             )
-            self.run_pixi_in_env(
-                pandrator_path,
-                env_name,
-                ['python', '-m', 'pip', 'install', '-r', requirements_file]
-            )
+            try:
+                self.run_pixi_in_env(
+                    pandrator_path,
+                    env_name,
+                    ['python', '-m', 'pip', 'install', '-r', pip_requirements_file]
+                )
+            finally:
+                if temporary_requirements_file and os.path.exists(temporary_requirements_file):
+                    try:
+                        os.remove(temporary_requirements_file)
+                    except OSError as e:
+                        logging.warning(
+                            f"Failed to remove temporary requirements file {temporary_requirements_file}: {e}"
+                        )
 
         self.ensure_pandrator_runtime(pandrator_path, env_name)
 
