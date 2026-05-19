@@ -27,6 +27,14 @@ from PyQt6.QtGui import QIcon, QFont, QPixmap
 from PyQt6.QtGui import QColor
 from PyQt6.QtGui import QColor, QPalette
 
+try:
+    from packaging.specifiers import SpecifierSet as PackagingSpecifierSet
+except ImportError:
+    try:
+        from pip._vendor.packaging.specifiers import SpecifierSet as PackagingSpecifierSet
+    except ImportError:
+        PackagingSpecifierSet = None
+
 
 PIXI_BINARY_NAME = 'pixi.exe'
 PIXI_DOWNLOAD_URL = 'https://github.com/prefix-dev/pixi/releases/latest/download/pixi-x86_64-pc-windows-msvc.exe'
@@ -2409,11 +2417,47 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 continue
 
             installed_version = installed_packages.get(normalized_package_name)
-            if comparator in ('==', '===', '=') and expected_version:
-                if not self.versions_match_exact_spec(installed_version, expected_version):
-                    unsatisfied_specs.append(package_spec)
+            spec_satisfied = self.requirement_spec_satisfied(
+                installed_version,
+                comparator,
+                expected_version,
+            )
+            if spec_satisfied is False:
+                unsatisfied_specs.append(package_spec)
 
         return unsatisfied_specs
+
+    def requirement_spec_satisfied(self, installed_version, comparator, expected_version):
+        if comparator is None or not expected_version:
+            return True
+
+        if not installed_version:
+            return False
+
+        if comparator in ('==', '===', '=') and self.versions_match_exact_spec(installed_version, expected_version):
+            return True
+
+        if PackagingSpecifierSet is None:
+            if comparator in ('==', '===', '='):
+                return False
+            return None
+
+        normalized_comparator = '==' if comparator in ('===', '=') else comparator
+        specifier_text = f"{normalized_comparator}{expected_version}"
+
+        try:
+            return PackagingSpecifierSet(specifier_text).contains(installed_version, prereleases=True)
+        except Exception:
+            logging.debug(
+                "Could not evaluate version specifier '%s' against installed version '%s'",
+                specifier_text,
+                installed_version,
+            )
+
+            if comparator in ('==', '===', '='):
+                return False
+
+            return None
 
     def versions_match_exact_spec(self, installed_version, expected_version):
         if installed_version == expected_version:
@@ -2451,10 +2495,6 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         previous_hash = requirements_hashes.get(state_key)
 
         _, _, requirement_specs, unsupported_lines, _ = self.load_pypi_requirements(requirements_file, env_name)
-        has_non_exact_constraints = any(
-            self.parse_package_spec(requirement_spec)[1] not in (None, '==', '===', '=')
-            for requirement_spec in requirement_specs
-        )
         installed_packages = self.get_installed_pip_packages(pandrator_path, env_name)
         unsatisfied_specs = self.find_unsatisfied_package_specs(requirement_specs, installed_packages)
 
@@ -2469,9 +2509,6 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
         if unsupported_lines:
             return True, "requirements changed and include entries that require pip -r"
-
-        if has_non_exact_constraints:
-            return True, "requirements changed and include non-exact version constraints"
 
         requirements_hashes[state_key] = current_hash
         self.save_installer_state(pandrator_path, state)
