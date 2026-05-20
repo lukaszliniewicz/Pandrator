@@ -1769,7 +1769,7 @@ class SessionTab(QWidget):
         chooser.setText("Do you want to attach a transcript for this voice sample?")
         chooser.setInformativeText(
             "For normal voice cloning, choose 'No Transcript'. "
-            "You can still attach one now for future hi-fi workflows."
+            "If you attach a transcript, this voice is uploaded in hi-fi mode."
         )
 
         skip_button = chooser.addButton("No Transcript", QMessageBox.ButtonRole.AcceptRole)

@@ -2748,14 +2748,23 @@ class AppLogic(QObject):
             )
 
             normalized_prompt_text = str(prompt_text or "").strip() or None
+            voxcpm_prompt_text = None
+            voxcpm_mode = None
+            if service == "VoxCPM":
+                voxcpm_prompt_text = normalized_prompt_text
+                voxcpm_mode = "hifi" if voxcpm_prompt_text else "reference"
+
             speaker_name = tts_handler.upload_speaker_voice(
                 wav_file_path,
                 base_url=base_url,
                 service=service,
-                prompt_text=normalized_prompt_text if service == "VoxCPM" else None,
-                mode="reference" if service == "VoxCPM" else None,
+                prompt_text=voxcpm_prompt_text,
+                mode=voxcpm_mode,
             )
-            self.log_message.emit(f"Uploaded {service} voice: {speaker_name}")
+            if service == "VoxCPM":
+                self.log_message.emit(f"Uploaded VoxCPM voice: {speaker_name} ({voxcpm_mode} mode)")
+            else:
+                self.log_message.emit(f"Uploaded {service} voice: {speaker_name}")
             self.state.tts.speaker = speaker_name
             self.state_changed.emit()
             self.connect_tts_server()
