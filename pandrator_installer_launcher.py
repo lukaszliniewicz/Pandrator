@@ -713,15 +713,71 @@ class PandratorInstaller(QMainWindow):
         except Exception as e:
             logging.warning(f"Failed to write packaging layout file {layout_path}: {str(e)}")
 
-    def refresh_ui_state(self):
-        pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
-        config_path = os.path.join(pandrator_path, 'config.json')
-        
+    def get_install_config_path(self, pandrator_path):
+        return os.path.join(pandrator_path, 'config.json')
+
+    def load_install_config(self, pandrator_path, detect_rvc=False):
+        config_path = self.get_install_config_path(pandrator_path)
+
         if os.path.exists(config_path):
-            with open(config_path, 'r') as f:
-                config = json.load(f)
+            try:
+                with open(config_path, 'r', encoding='utf-8', errors='replace') as f:
+                    config = json.load(f)
+
+                if not isinstance(config, dict):
+                    raise ValueError("config root must be a dictionary")
+            except Exception as e:
+                logging.warning(f"Failed to load config from {config_path}: {str(e)}")
+                config = {}
         else:
             config = {}
+
+        if detect_rvc:
+            config = self.ensure_rvc_support_flag(pandrator_path, config)
+
+        return config
+
+    def save_install_config(self, pandrator_path, config):
+        config_path = self.get_install_config_path(pandrator_path)
+        os.makedirs(pandrator_path, exist_ok=True)
+
+        serializable_config = config if isinstance(config, dict) else {}
+
+        try:
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(serializable_config, f)
+        except Exception as e:
+            logging.warning(f"Failed to save config to {config_path}: {str(e)}")
+
+    def ensure_rvc_support_flag(self, pandrator_path, config):
+        if config.get('rvc_support', False):
+            return config
+
+        if not self.check_pixi(pandrator_path):
+            return config
+
+        manifest_path = self.get_pixi_manifest_path(pandrator_path, 'pandrator_installer')
+        if not os.path.exists(manifest_path):
+            return config
+
+        try:
+            rvc_needs_install, _ = self.rvc_needs_package_sync(pandrator_path, 'pandrator_installer')
+        except Exception as e:
+            logging.warning(f"Could not auto-detect RVC installation state: {str(e)}")
+            return config
+
+        if rvc_needs_install:
+            return config
+
+        updated_config = dict(config)
+        updated_config['rvc_support'] = True
+        self.save_install_config(pandrator_path, updated_config)
+        logging.info("Detected existing RVC dependencies and persisted rvc_support=true in config.json")
+        return updated_config
+
+    def refresh_ui_state(self):
+        pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
+        config = self.load_install_config(pandrator_path, detect_rvc=True)
 
         # Helper function to set widget state
         def set_widget_state(widget, state, value=None):
@@ -823,13 +879,7 @@ class PandratorInstaller(QMainWindow):
 
     def get_installed_components(self):
         pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
-        config_path = os.path.join(pandrator_path, 'config.json')
-        
-        if os.path.exists(config_path):
-            with open(config_path, 'r') as f:
-                config = json.load(f)
-        else:
-            config = {}
+        config = self.load_install_config(pandrator_path, detect_rvc=True)
         
         return {
             'xtts': config.get('xtts_support', False),
@@ -4180,12 +4230,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 self.install_pytorch_for_xtts_finetuning(pandrator_path, 'easy_xtts_trainer')
 
             # Create or update config file
-            config_path = os.path.join(pandrator_path, 'config.json')
-            if os.path.exists(config_path):
-                with open(config_path, 'r') as f:
-                    config = json.load(f)
-            else:
-                config = {}
+            config = self.load_install_config(pandrator_path)
 
             # Update config based on what was installed or already exists
             config['cuda_support'] = config.get('cuda_support', False) or xtts_var
@@ -4198,8 +4243,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             config['xtts_finetuning_support'] = config.get('xtts_finetuning_support', False) or xtts_finetuning_var
             config['rvc_support'] = config.get('rvc_support', False) or rvc_var
 
-            with open(config_path, 'w') as f:
-                json.dump(config, f)
+            self.save_install_config(pandrator_path, config)
 
             self.write_packaging_layout(pandrator_path)
 
@@ -4263,13 +4307,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         voxtral_repo_path = os.path.join(pandrator_base_path, VOXTRAL_API_REPO_DIRNAME)
         kokoro_repo_path = os.path.join(pandrator_base_path, KOKORO_API_REPO_DIRNAME)
         easy_xtts_trainer_path = os.path.join(pandrator_base_path, 'easy_xtts_trainer')
-        config_path = os.path.join(pandrator_base_path, 'config.json')
-
-        if os.path.exists(config_path):
-            with open(config_path, 'r', encoding='utf-8', errors='replace') as f:
-                config = json.load(f)
-        else:
-            config = {}
+        config = self.load_install_config(pandrator_base_path, detect_rvc=True)
 
         pandrator_env_missing = not os.path.exists(self.get_pixi_manifest_path(pandrator_base_path, 'pandrator_installer'))
         silero_env_missing = not os.path.exists(self.get_pixi_manifest_path(pandrator_base_path, 'silero_api_server_installer'))
