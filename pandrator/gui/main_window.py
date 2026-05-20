@@ -1,9 +1,11 @@
+import os
+
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout,
     QTabWidget, QSplitter, QScrollArea, QMessageBox, QLabel
 )
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QKeyEvent
+from PyQt6.QtCore import Qt, QUrl
+from PyQt6.QtGui import QDesktopServices, QKeyEvent
 
 from .widgets.session_tab import SessionTab
 from .widgets.text_processing_tab import TextProcessingTab
@@ -49,6 +51,7 @@ class MainWindow(QMainWindow):
         self.logic.state_changed.connect(self.update_window_title)
         self.logic.log_message.connect(self._on_log_message)
         self.logic.show_error.connect(self._on_show_error)
+        self.logic.dubbing_video_saved.connect(self._on_dubbing_video_saved)
         self.logic.progress_updated.connect(self._on_generation_progress_updated)
         self.logic.xtts_training_running_changed.connect(self._on_training_running_changed)
         self.logic.xtts_training_status_updated.connect(self._on_training_status_updated)
@@ -98,6 +101,52 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, title, message)
         else:
             QMessageBox.critical(self, title, message)
+
+    def _on_dubbing_video_saved(self, output_paths):
+        paths = [str(path).strip() for path in (output_paths or []) if str(path).strip()]
+        if not paths:
+            return
+
+        dialog = QMessageBox(self)
+        dialog.setIcon(QMessageBox.Icon.Information)
+        dialog.setWindowTitle("Dubbing Saved")
+
+        button_to_path = {}
+        if len(paths) == 1:
+            saved_path = paths[0]
+            dialog.setText("Dubbing was added to the video and saved.")
+            dialog.setInformativeText(os.path.basename(saved_path))
+            open_file_button = dialog.addButton("Open File", QMessageBox.ButtonRole.AcceptRole)
+            button_to_path[open_file_button] = saved_path
+        else:
+            dialog.setText(f"Dubbing was added and {len(paths)} video files were saved.")
+            dialog.setInformativeText("Choose a file to open.")
+            for saved_path in paths:
+                button_label = f"Open {os.path.basename(saved_path)}"
+                open_file_button = dialog.addButton(button_label, QMessageBox.ButtonRole.ActionRole)
+                button_to_path[open_file_button] = saved_path
+
+        dialog.addButton(QMessageBox.StandardButton.Close)
+        dialog.exec()
+
+        selected_path = button_to_path.get(dialog.clickedButton())
+        if not selected_path:
+            return
+
+        if not os.path.exists(selected_path):
+            QMessageBox.warning(
+                self,
+                "Open File Failed",
+                f"The saved file could not be found:\n{selected_path}",
+            )
+            return
+
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(selected_path)):
+            QMessageBox.warning(
+                self,
+                "Open File Failed",
+                f"Could not open the saved file:\n{selected_path}",
+            )
 
     def _on_generation_progress_updated(self, current: int, total: int, _elapsed: float):
         if total <= 0:

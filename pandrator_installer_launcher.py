@@ -5334,7 +5334,7 @@ def run_gui_app():
     dark_palette.setColor(QPalette.ColorRole.HighlightedText, QColor(255, 255, 255))
     app.setPalette(dark_palette)
 
-    # Set stylesheet for custom styling with pastel purple buttons and white checkbox borders
+    # Set stylesheet for custom styling with pastel purple buttons and clearer disabled states
     app.setStyleSheet(f"""
         QMainWindow {{
             background-color: #2D2D30;
@@ -5363,6 +5363,9 @@ def run_gui_app():
         QCheckBox {{
             spacing: 8px;
         }}
+        QCheckBox:disabled {{
+            color: #8A8A8A;
+        }}
         QCheckBox::indicator {{
             width: 18px;
             height: 18px;
@@ -5376,6 +5379,18 @@ def run_gui_app():
         QCheckBox::indicator:unchecked {{
             background-color: transparent;
             border: 1px solid white;
+        }}
+        QCheckBox::indicator:disabled {{
+            border: 1px solid #7A7A7A;
+            background-color: transparent;
+        }}
+        QCheckBox::indicator:checked:disabled {{
+            background-color: #6E5A93;
+            border: 1px solid #7A7A7A;
+        }}
+        QCheckBox::indicator:unchecked:disabled {{
+            background-color: transparent;
+            border: 1px solid #7A7A7A;
         }}
         QGroupBox {{
             border: 1px solid #444444;

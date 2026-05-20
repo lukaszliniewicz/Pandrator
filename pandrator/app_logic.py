@@ -73,6 +73,7 @@ class AppLogic(QObject):
     state_changed = pyqtSignal()
     log_message = pyqtSignal(str)
     show_error = pyqtSignal(str, str)  # title, message
+    dubbing_video_saved = pyqtSignal(object)  # list[str] output paths
     progress_updated = pyqtSignal(int, int, float) # current, total, elapsed_time
     xtts_training_running_changed = pyqtSignal(bool)
     xtts_training_status_updated = pyqtSignal(str)
@@ -1911,12 +1912,14 @@ class AppLogic(QObject):
 
         if len(generated_outputs) == 1:
             self.log_message.emit(f"Dubbing workflow finished. Final output: {generated_outputs[0]}")
+            self.dubbing_video_saved.emit(generated_outputs)
             return
 
         self.log_message.emit(
             "Dubbing workflow finished. Final outputs: "
             + "; ".join(generated_outputs)
         )
+        self.dubbing_video_saved.emit(generated_outputs)
 
     def run_text_preprocessing(self):
         """Runs the text preprocessor on the raw text in the state."""
