@@ -166,6 +166,15 @@ class TTSSettings:
     xtts_send_max_ref_len: bool = False
     xtts_send_sound_norm_refs: bool = False
     xtts_send_overlap_wav_len: bool = False
+    voxcpm_cfg_value: float = 1.5
+    voxcpm_inference_timesteps: int = 15
+    voxcpm_normalize: bool = False
+    voxcpm_denoise: bool = False
+    voxcpm_retry_badcase: bool = True
+    voxcpm_retry_badcase_max_times: int = 3
+    voxcpm_retry_badcase_ratio_threshold: float = 6.0
+    voxcpm_min_len: int = 2
+    voxcpm_max_len: int = 4096
     voxtral_max_frames: int = 1024
     voxtral_euler_steps: int = 8
     voxtral_chunk: bool = False

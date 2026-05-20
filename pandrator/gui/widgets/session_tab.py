@@ -170,6 +170,7 @@ class SessionTab(QWidget):
 
         # Advanced TTS controls
         self.xtts_advanced_settings_frame = self.advanced_tts_frame.xtts_advanced_settings_frame
+        self.voxcpm_advanced_settings_frame = self.advanced_tts_frame.voxcpm_advanced_settings_frame
         self.voxtral_advanced_settings_frame = self.advanced_tts_frame.voxtral_advanced_settings_frame
         self.xtts_send_hint_label = self.advanced_tts_frame.xtts_send_hint_label
         self.adv_tts_temp_send_checkbox = self.advanced_tts_frame.adv_tts_temp_send_checkbox
@@ -201,6 +202,21 @@ class SessionTab(QWidget):
         self.adv_tts_overlap_wav_len_send_checkbox = self.advanced_tts_frame.adv_tts_overlap_wav_len_send_checkbox
         self.adv_tts_overlap_wav_len_spinbox = self.advanced_tts_frame.adv_tts_overlap_wav_len_spinbox
         self.adv_tts_apply_button = self.advanced_tts_frame.adv_tts_apply_button
+        self.voxcpm_cfg_value_spinbox = self.advanced_tts_frame.voxcpm_cfg_value_spinbox
+        self.voxcpm_inference_timesteps_spinbox = (
+            self.advanced_tts_frame.voxcpm_inference_timesteps_spinbox
+        )
+        self.voxcpm_normalize_checkbox = self.advanced_tts_frame.voxcpm_normalize_checkbox
+        self.voxcpm_denoise_checkbox = self.advanced_tts_frame.voxcpm_denoise_checkbox
+        self.voxcpm_retry_badcase_checkbox = self.advanced_tts_frame.voxcpm_retry_badcase_checkbox
+        self.voxcpm_retry_badcase_max_times_spinbox = (
+            self.advanced_tts_frame.voxcpm_retry_badcase_max_times_spinbox
+        )
+        self.voxcpm_retry_badcase_ratio_threshold_spinbox = (
+            self.advanced_tts_frame.voxcpm_retry_badcase_ratio_threshold_spinbox
+        )
+        self.voxcpm_min_len_spinbox = self.advanced_tts_frame.voxcpm_min_len_spinbox
+        self.voxcpm_max_len_spinbox = self.advanced_tts_frame.voxcpm_max_len_spinbox
         self.voxtral_max_frames_spinbox = self.advanced_tts_frame.voxtral_max_frames_spinbox
         self.voxtral_euler_steps_spinbox = self.advanced_tts_frame.voxtral_euler_steps_spinbox
         self.voxtral_chunk_checkbox = self.advanced_tts_frame.voxtral_chunk_checkbox
@@ -440,6 +456,46 @@ class SessionTab(QWidget):
         )
         self.adv_tts_overlap_wav_len_spinbox.valueChanged.connect(
             lambda v: setattr(self.logic.state.tts, "overlap_wav_len", v)
+        )
+
+        self.voxcpm_cfg_value_spinbox.valueChanged.connect(
+            lambda v: setattr(self.logic.state.tts, "voxcpm_cfg_value", v)
+        )
+        self.voxcpm_inference_timesteps_spinbox.valueChanged.connect(
+            lambda v: setattr(self.logic.state.tts, "voxcpm_inference_timesteps", v)
+        )
+        self.voxcpm_normalize_checkbox.stateChanged.connect(
+            lambda: setattr(
+                self.logic.state.tts,
+                "voxcpm_normalize",
+                self.voxcpm_normalize_checkbox.isChecked(),
+            )
+        )
+        self.voxcpm_denoise_checkbox.stateChanged.connect(
+            lambda: setattr(
+                self.logic.state.tts,
+                "voxcpm_denoise",
+                self.voxcpm_denoise_checkbox.isChecked(),
+            )
+        )
+        self.voxcpm_retry_badcase_checkbox.stateChanged.connect(
+            lambda: setattr(
+                self.logic.state.tts,
+                "voxcpm_retry_badcase",
+                self.voxcpm_retry_badcase_checkbox.isChecked(),
+            )
+        )
+        self.voxcpm_retry_badcase_max_times_spinbox.valueChanged.connect(
+            lambda v: setattr(self.logic.state.tts, "voxcpm_retry_badcase_max_times", v)
+        )
+        self.voxcpm_retry_badcase_ratio_threshold_spinbox.valueChanged.connect(
+            lambda v: setattr(self.logic.state.tts, "voxcpm_retry_badcase_ratio_threshold", v)
+        )
+        self.voxcpm_min_len_spinbox.valueChanged.connect(
+            lambda v: setattr(self.logic.state.tts, "voxcpm_min_len", v)
+        )
+        self.voxcpm_max_len_spinbox.valueChanged.connect(
+            lambda v: setattr(self.logic.state.tts, "voxcpm_max_len", v)
         )
 
         self.voxtral_max_frames_spinbox.valueChanged.connect(
@@ -841,6 +897,17 @@ class SessionTab(QWidget):
         self.adv_tts_max_ref_len_spinbox.setValue(tts_state.max_ref_len)
         self.adv_tts_sound_norm_refs_checkbox.setChecked(tts_state.sound_norm_refs)
         self.adv_tts_overlap_wav_len_spinbox.setValue(tts_state.overlap_wav_len)
+        self.voxcpm_cfg_value_spinbox.setValue(tts_state.voxcpm_cfg_value)
+        self.voxcpm_inference_timesteps_spinbox.setValue(tts_state.voxcpm_inference_timesteps)
+        self.voxcpm_normalize_checkbox.setChecked(tts_state.voxcpm_normalize)
+        self.voxcpm_denoise_checkbox.setChecked(tts_state.voxcpm_denoise)
+        self.voxcpm_retry_badcase_checkbox.setChecked(tts_state.voxcpm_retry_badcase)
+        self.voxcpm_retry_badcase_max_times_spinbox.setValue(tts_state.voxcpm_retry_badcase_max_times)
+        self.voxcpm_retry_badcase_ratio_threshold_spinbox.setValue(
+            tts_state.voxcpm_retry_badcase_ratio_threshold
+        )
+        self.voxcpm_min_len_spinbox.setValue(tts_state.voxcpm_min_len)
+        self.voxcpm_max_len_spinbox.setValue(tts_state.voxcpm_max_len)
         self.voxtral_max_frames_spinbox.setValue(tts_state.voxtral_max_frames)
         self.voxtral_euler_steps_spinbox.setValue(tts_state.voxtral_euler_steps)
         self.voxtral_chunk_checkbox.setChecked(tts_state.voxtral_chunk)
@@ -934,6 +1001,7 @@ class SessionTab(QWidget):
         cancel_requested = self.logic.cancel_generation_flag.is_set()
 
         is_xtts = state.tts.service == "XTTS"
+        is_voxcpm = state.tts.service == "VoxCPM"
         is_voxtral = state.tts.service == "Voxtral"
         is_kokoro = state.tts.service == "Kokoro"
         is_cloud_tts = state.tts.service in {
@@ -941,19 +1009,24 @@ class SessionTab(QWidget):
             "OpenAI",
             "Gemini",
         }
-        is_model_based_tts = is_xtts or is_voxtral or is_kokoro or is_cloud_tts
+        is_model_based_tts = is_xtts or is_voxcpm or is_voxtral or is_kokoro or is_cloud_tts
         show_xtts_advanced_settings = self.logic.should_show_xtts_advanced_settings()
+        show_voxcpm_advanced_settings = is_voxcpm
         show_voxtral_advanced_settings = is_voxtral
-        show_advanced_tts_controls = show_xtts_advanced_settings or show_voxtral_advanced_settings
+        show_advanced_tts_controls = (
+            show_xtts_advanced_settings
+            or show_voxcpm_advanced_settings
+            or show_voxtral_advanced_settings
+        )
         show_openai_instructions = is_cloud_tts and not show_xtts_advanced_settings
 
         self.connect_server_button.setText(
             "Connecting..." if tts_connecting else "Connect to Server"
         )
 
-        self.use_external_server_checkbox.setVisible(is_xtts or is_voxtral or is_kokoro)
+        self.use_external_server_checkbox.setVisible(is_xtts or is_voxcpm or is_voxtral or is_kokoro)
         self.external_server_url_edit.setVisible(
-            (is_xtts or is_voxtral or is_kokoro) and state.tts.use_external_server
+            (is_xtts or is_voxcpm or is_voxtral or is_kokoro) and state.tts.use_external_server
         )
         self.external_server_url_edit.setPlaceholderText(
             "http://localhost:8000"
@@ -963,7 +1036,11 @@ class SessionTab(QWidget):
         self.advanced_tts_checkbox.setText(
             "Advanced Voxtral Settings"
             if show_voxtral_advanced_settings
-            else "Advanced XTTS Settings"
+            else (
+                "Advanced VoxCPM Settings"
+                if show_voxcpm_advanced_settings
+                else "Advanced XTTS Settings"
+            )
         )
         self.advanced_tts_checkbox.setVisible(show_advanced_tts_controls)
 
@@ -973,7 +1050,7 @@ class SessionTab(QWidget):
         self.xtts_model_combo.setVisible(show_model_selector)
 
         self.speaker_label.setText("Speaker Voice:" if is_xtts else "Voice:")
-        self.upload_voice_button.setVisible(is_xtts)
+        self.upload_voice_button.setVisible(is_xtts or is_voxcpm)
 
         self.cloud_provider_label.setVisible(is_cloud_tts)
         self.cloud_provider_combo.setVisible(is_cloud_tts)
@@ -982,6 +1059,7 @@ class SessionTab(QWidget):
         self.openai_audio_instructions_edit.setVisible(show_openai_instructions)
         self.adv_tts_apply_button.setVisible(is_xtts)
         self.xtts_advanced_settings_frame.setVisible(show_xtts_advanced_settings)
+        self.voxcpm_advanced_settings_frame.setVisible(show_voxcpm_advanced_settings)
         self.voxtral_advanced_settings_frame.setVisible(show_voxtral_advanced_settings)
         self.advanced_tts_frame.setVisible(
             show_advanced_tts_controls and self.advanced_tts_checkbox.isChecked()
@@ -1061,6 +1139,15 @@ class SessionTab(QWidget):
             self.adv_tts_sound_norm_refs_checkbox,
             self.adv_tts_overlap_wav_len_send_checkbox,
             self.adv_tts_overlap_wav_len_spinbox,
+            self.voxcpm_cfg_value_spinbox,
+            self.voxcpm_inference_timesteps_spinbox,
+            self.voxcpm_normalize_checkbox,
+            self.voxcpm_denoise_checkbox,
+            self.voxcpm_retry_badcase_checkbox,
+            self.voxcpm_retry_badcase_max_times_spinbox,
+            self.voxcpm_retry_badcase_ratio_threshold_spinbox,
+            self.voxcpm_min_len_spinbox,
+            self.voxcpm_max_len_spinbox,
             self.voxtral_max_frames_spinbox,
             self.voxtral_euler_steps_spinbox,
             self.voxtral_chunk_checkbox,
@@ -1483,7 +1570,7 @@ class SessionTab(QWidget):
             return KOKORO_LANGUAGES
         if service == "Voxtral":
             return VOXTRAL_LANGUAGES
-        if service in {"XTTS", "OpenAI", "Gemini", "OpenAI-Compatible"}:
+        if service in {"XTTS", "VoxCPM", "OpenAI", "Gemini", "OpenAI-Compatible"}:
             return XTTS_LANGUAGES
         return []
 
@@ -1663,6 +1750,79 @@ class SessionTab(QWidget):
         if file_path:
             self.logic.select_cover_image(file_path)
 
+    @staticmethod
+    def _read_voxcpm_transcript_file(file_path: str) -> str:
+        for encoding in ("utf-8", "utf-8-sig", "cp1250", "cp1252", "latin-1"):
+            try:
+                with open(file_path, "r", encoding=encoding) as handle:
+                    return handle.read()
+            except UnicodeDecodeError:
+                continue
+
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as handle:
+            return handle.read()
+
+    def _prompt_voxcpm_transcription(self) -> tuple[bool, str | None]:
+        chooser = QMessageBox(self)
+        chooser.setIcon(QMessageBox.Icon.Question)
+        chooser.setWindowTitle("VoxCPM Transcript")
+        chooser.setText("Do you want to attach a transcript for this voice sample?")
+        chooser.setInformativeText(
+            "For normal voice cloning, choose 'No Transcript'. "
+            "You can still attach one now for future hi-fi workflows."
+        )
+
+        skip_button = chooser.addButton("No Transcript", QMessageBox.ButtonRole.AcceptRole)
+        paste_button = chooser.addButton("Type/Paste Text", QMessageBox.ButtonRole.ActionRole)
+        file_button = chooser.addButton("Load TXT File", QMessageBox.ButtonRole.ActionRole)
+        chooser.addButton(QMessageBox.StandardButton.Cancel)
+        chooser.setDefaultButton(skip_button)
+        chooser.exec()
+
+        clicked_button = chooser.clickedButton()
+        if clicked_button == skip_button:
+            return False, None
+
+        if clicked_button == paste_button:
+            transcript, ok = QInputDialog.getMultiLineText(
+                self,
+                "Paste Transcript",
+                "Paste transcript for this sample:",
+            )
+            if not ok:
+                return True, None
+
+            normalized_transcript = transcript.strip()
+            return False, normalized_transcript or None
+
+        if clicked_button == file_button:
+            transcript_file_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select Transcript File",
+                "",
+                "Text Files (*.txt);;All files (*.*)",
+            )
+            if not transcript_file_path:
+                return True, None
+
+            try:
+                transcript = self._read_voxcpm_transcript_file(transcript_file_path).strip()
+            except OSError as e:
+                QMessageBox.critical(self, "Transcript Error", f"Could not read transcript file: {e}")
+                return True, None
+
+            if not transcript:
+                QMessageBox.warning(
+                    self,
+                    "Transcript Empty",
+                    "The selected transcript file is empty. Uploading without transcript.",
+                )
+                return False, None
+
+            return False, transcript
+
+        return True, None
+
     def _on_upload_voice(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -1670,8 +1830,16 @@ class SessionTab(QWidget):
             "",
             "WAV files (*.wav)",
         )
-        if file_path:
-            self.logic.upload_speaker_voice(file_path)
+        if not file_path:
+            return
+
+        prompt_text = None
+        if self.logic.state.tts.service == "VoxCPM":
+            cancelled, prompt_text = self._prompt_voxcpm_transcription()
+            if cancelled:
+                return
+
+        self.logic.upload_speaker_voice(file_path, prompt_text=prompt_text)
 
     def _on_open_custom_prompt(self):
         dialog = CustomPromptDialog(

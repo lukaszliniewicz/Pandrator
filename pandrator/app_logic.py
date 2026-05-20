@@ -656,8 +656,13 @@ class AppLogic(QObject):
             target_state.openai_audio_endpoint = endpoint
             return
 
+        if service_lower in {"voxcpm", "voxcpm2"}:
+            target_state.service = "VoxCPM"
+            return
+
         supported_services = {
             "XTTS",
+            "VoxCPM",
             "Voxtral",
             "Kokoro",
             "Silero",
@@ -2416,6 +2421,51 @@ class AppLogic(QObject):
                     f"Connected to XTTS server ({len(models)} model(s), {len(speakers)} voice(s))."
                 )
 
+            elif service == "VoxCPM":
+                base_url = (
+                    tts_snapshot.get("external_server_url")
+                    if tts_snapshot.get("use_external_server")
+                    else tts_handler.VOXCPM_API_BASE_URL
+                )
+
+                if not tts_handler.check_voxcpm_connection(base_url):
+                    result["error_title"] = "Connection Error"
+                    result["error_message"] = (
+                        f"Could not connect to VoxCPM server at {base_url}. Is it running?"
+                    )
+                    self._tts_connection_result.emit(result)
+                    return
+
+                models = tts_handler.get_voxcpm_models(base_url)
+                speakers = tts_handler.get_voxcpm_voices(base_url)
+
+                default_model = tts_handler.VOXCPM_DEFAULT_MODEL
+                default_voice = tts_handler.VOXCPM_DEFAULT_VOICE
+
+                selected_model = (tts_snapshot.get("xtts_model") or "").strip()
+                if models:
+                    if selected_model not in models:
+                        selected_model = default_model if default_model in models else models[0]
+                elif not selected_model:
+                    selected_model = default_model
+
+                selected_speaker = (tts_snapshot.get("speaker") or "").strip()
+                if speakers:
+                    if selected_speaker not in speakers:
+                        selected_speaker = default_voice if default_voice in speakers else speakers[0]
+                elif not selected_speaker:
+                    selected_speaker = default_voice
+
+                result["updates"] = {
+                    "tts_models": models,
+                    "tts_speakers": speakers,
+                    "xtts_model": selected_model,
+                    "speaker": selected_speaker,
+                }
+                result["log_message"] = (
+                    f"Connected to VoxCPM server ({len(models)} model(s), {len(speakers)} voice(s))."
+                )
+
             elif service == "Voxtral":
                 base_url = (
                     tts_snapshot.get("external_server_url")
@@ -2678,25 +2728,39 @@ class AppLogic(QObject):
         else:
             self.state_changed.emit()
 
-    def upload_speaker_voice(self, wav_file_path: str):
-        """Uploads a speaker voice file and refreshes available XTTS voices."""
-        if self.state.tts.service != "XTTS":
-            self.show_error.emit("Upload Error", "Voice upload is only supported for XTTS.")
+    def upload_speaker_voice(self, wav_file_path: str, prompt_text: str | None = None):
+        """Uploads a speaker voice file and refreshes available XTTS/VoxCPM voices."""
+        service = str(self.state.tts.service or "").strip()
+        if service not in {"XTTS", "VoxCPM"}:
+            self.show_error.emit("Upload Error", "Voice upload is only supported for XTTS and VoxCPM.")
             return
 
         try:
-            base_url = self.state.tts.external_server_url if self.state.tts.use_external_server else tts_handler.XTTS_API_BASE_URL
+            default_base_url = (
+                tts_handler.XTTS_API_BASE_URL
+                if service == "XTTS"
+                else tts_handler.VOXCPM_API_BASE_URL
+            )
+            base_url = (
+                self.state.tts.external_server_url
+                if self.state.tts.use_external_server
+                else default_base_url
+            )
+
+            normalized_prompt_text = str(prompt_text or "").strip() or None
             speaker_name = tts_handler.upload_speaker_voice(
                 wav_file_path,
                 base_url=base_url,
+                service=service,
+                prompt_text=normalized_prompt_text if service == "VoxCPM" else None,
+                mode="reference" if service == "VoxCPM" else None,
             )
-            self.log_message.emit(f"Uploaded speaker voice: {speaker_name}")
-            if self.state.tts.service == "XTTS":
-                self.state.tts.speaker = speaker_name
-                self.state_changed.emit()
-                self.connect_tts_server()
+            self.log_message.emit(f"Uploaded {service} voice: {speaker_name}")
+            self.state.tts.speaker = speaker_name
+            self.state_changed.emit()
+            self.connect_tts_server()
         except Exception as e:
-            self.show_error.emit("Upload Error", f"Failed to upload speaker voice: {e}")
+            self.show_error.emit("Upload Error", f"Failed to upload {service} voice: {e}")
 
     def should_show_xtts_advanced_settings(self) -> bool:
         """Returns whether XTTS advanced controls should be visible in the UI."""
@@ -3562,6 +3626,11 @@ class AppLogic(QObject):
                 if self.state.tts.use_external_server and active_service == "XTTS"
                 else tts_handler.XTTS_API_BASE_URL
             )
+            voxcpm_url = (
+                self.state.tts.external_server_url
+                if self.state.tts.use_external_server and active_service == "VoxCPM"
+                else tts_handler.VOXCPM_API_BASE_URL
+            )
             voxtral_url = (
                 self.state.tts.external_server_url
                 if self.state.tts.use_external_server and active_service == "Voxtral"
@@ -3576,6 +3645,7 @@ class AppLogic(QObject):
                 processed_text,
                 self.state.tts.__dict__,
                 xtts_base_url=xtts_url,
+                voxcpm_base_url=voxcpm_url,
                 voxtral_base_url=voxtral_url,
                 kokoro_base_url=kokoro_url,
             )

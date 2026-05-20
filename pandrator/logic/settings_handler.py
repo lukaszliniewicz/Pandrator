@@ -21,6 +21,8 @@ TTS_GLOBAL_FLOAT_FIELDS = (
     "length_penalty",
     "repetition_penalty",
     "top_p",
+    "voxcpm_cfg_value",
+    "voxcpm_retry_badcase_ratio_threshold",
 )
 TTS_GLOBAL_INT_FIELDS = (
     "top_k",
@@ -30,11 +32,18 @@ TTS_GLOBAL_INT_FIELDS = (
     "gpt_cond_chunk_len",
     "max_ref_len",
     "overlap_wav_len",
+    "voxcpm_inference_timesteps",
+    "voxcpm_retry_badcase_max_times",
+    "voxcpm_min_len",
+    "voxcpm_max_len",
 )
 TTS_GLOBAL_BOOL_FIELDS = (
     "do_sample",
     "enable_text_splitting",
     "sound_norm_refs",
+    "voxcpm_normalize",
+    "voxcpm_denoise",
+    "voxcpm_retry_badcase",
     "xtts_send_temperature",
     "xtts_send_length_penalty",
     "xtts_send_repetition_penalty",

@@ -28,6 +28,9 @@ def _get_litellm_speech_client():
 # XTTS default URLs
 XTTS_API_BASE_URL = "http://127.0.0.1:8020"
 
+# VoxCPM default URLs
+VOXCPM_API_BASE_URL = "http://127.0.0.1:8020"
+
 # Voxtral default URLs
 VOXTRAL_API_BASE_URL = "http://127.0.0.1:8000"
 
@@ -41,6 +44,20 @@ XTTS_OPENAI_PLACEHOLDER_API_KEY = "sk-placeholder"
 XTTS_DEFAULT_MODEL = "tts_models/multilingual/multi-dataset/xtts_v2"
 XTTS_UPLOAD_FILE_PURPOSE = "user_data"
 XTTS_DISCOVERABLE_FILE_PURPOSES = ("user_data", "assistants")
+VOXCPM_DEFAULT_MODEL = "openbmb/VoxCPM2"
+VOXCPM_MODEL_ALIAS = "voxcpm2"
+VOXCPM_DEFAULT_VOICE = "default"
+VOXCPM_DEFAULT_CFG_VALUE = 1.5
+VOXCPM_DEFAULT_INFERENCE_TIMESTEPS = 15
+VOXCPM_DEFAULT_NORMALIZE = False
+VOXCPM_DEFAULT_DENOISE = False
+VOXCPM_DEFAULT_RETRY_BADCASE = True
+VOXCPM_DEFAULT_RETRY_BADCASE_MAX_TIMES = 3
+VOXCPM_DEFAULT_RETRY_BADCASE_RATIO_THRESHOLD = 6.0
+VOXCPM_DEFAULT_MIN_LEN = 2
+VOXCPM_DEFAULT_MAX_LEN = 4096
+VOXCPM_TTS_MODELS = [VOXCPM_DEFAULT_MODEL, VOXCPM_MODEL_ALIAS]
+VOXCPM_UPLOAD_FILE_PURPOSE = "user_data"
 VOXTRAL_DEFAULT_MODEL = "auto"
 VOXTRAL_DEFAULT_VOICE = "casual_female"
 VOXTRAL_INSTRUCTIONS_PREFIX = "voxtral_options:"
@@ -771,6 +788,78 @@ def _build_xtts_instructions_payload(tts_settings: dict, existing_instructions: 
     return json.dumps(payload, ensure_ascii=False)
 
 
+def _normalize_voxcpm_model(model_name: str, fallback: str = VOXCPM_DEFAULT_MODEL) -> str:
+    normalized = str(model_name or "").strip()
+    if not normalized:
+        return fallback
+
+    lowered = normalized.lower()
+    if lowered in {"openbmb/voxcpm2", "voxcpm2"}:
+        return VOXCPM_DEFAULT_MODEL
+    return normalized
+
+
+def _build_voxcpm_options(tts_settings: dict) -> dict[str, object]:
+    cfg_value = _coerce_float(
+        tts_settings.get("voxcpm_cfg_value"),
+        VOXCPM_DEFAULT_CFG_VALUE,
+    )
+    cfg_value = min(20.0, max(0.01, cfg_value))
+
+    inference_timesteps = _coerce_int(
+        tts_settings.get("voxcpm_inference_timesteps"),
+        VOXCPM_DEFAULT_INFERENCE_TIMESTEPS,
+    )
+    inference_timesteps = min(200, max(1, inference_timesteps))
+
+    retry_badcase_max_times = _coerce_int(
+        tts_settings.get("voxcpm_retry_badcase_max_times"),
+        VOXCPM_DEFAULT_RETRY_BADCASE_MAX_TIMES,
+    )
+    retry_badcase_max_times = min(20, max(1, retry_badcase_max_times))
+
+    retry_badcase_ratio_threshold = _coerce_float(
+        tts_settings.get("voxcpm_retry_badcase_ratio_threshold"),
+        VOXCPM_DEFAULT_RETRY_BADCASE_RATIO_THRESHOLD,
+    )
+    retry_badcase_ratio_threshold = min(50.0, max(0.01, retry_badcase_ratio_threshold))
+
+    min_len = _coerce_int(
+        tts_settings.get("voxcpm_min_len"),
+        VOXCPM_DEFAULT_MIN_LEN,
+    )
+    min_len = max(1, min_len)
+
+    max_len = _coerce_int(
+        tts_settings.get("voxcpm_max_len"),
+        VOXCPM_DEFAULT_MAX_LEN,
+    )
+    max_len = max(1, max_len)
+    if max_len < min_len:
+        max_len = min_len
+
+    return {
+        "cfg_value": cfg_value,
+        "inference_timesteps": inference_timesteps,
+        "normalize": _coerce_bool(
+            tts_settings.get("voxcpm_normalize"),
+            VOXCPM_DEFAULT_NORMALIZE,
+        ),
+        "denoise": _coerce_bool(
+            tts_settings.get("voxcpm_denoise"),
+            VOXCPM_DEFAULT_DENOISE,
+        ),
+        "retry_badcase": _coerce_bool(
+            tts_settings.get("voxcpm_retry_badcase"),
+            VOXCPM_DEFAULT_RETRY_BADCASE,
+        ),
+        "retry_badcase_max_times": retry_badcase_max_times,
+        "retry_badcase_ratio_threshold": retry_badcase_ratio_threshold,
+        "min_len": min_len,
+        "max_len": max_len,
+    }
+
+
 def _normalize_voxtral_model(model_name: str, fallback: str = VOXTRAL_DEFAULT_MODEL) -> str:
     normalized = str(model_name or "").strip().lower()
     if "/" in normalized:
@@ -1313,6 +1402,13 @@ def _resolve_openai_audio_api_key(endpoint: dict[str, str]) -> str:
     return XTTS_OPENAI_PLACEHOLDER_API_KEY
 
 
+def _resolve_voxcpm_api_key() -> str:
+    api_key = os.getenv("VOXCPM_API_KEY", "").strip()
+    if api_key:
+        return api_key
+    return XTTS_OPENAI_PLACEHOLDER_API_KEY
+
+
 def _resolve_voxtral_api_key() -> str:
     api_key = os.getenv("VOXTRAL_API_KEY", "").strip()
     if api_key:
@@ -1479,6 +1575,98 @@ def get_openai_audio_voices(tts_settings: dict) -> list[str]:
     preferred_voices = [default_voice] + _provider_voice_catalog(provider, selected_model)
 
     return _merge_catalog_with_discovered(preferred_voices, voices)
+
+
+def check_voxcpm_connection(base_url: str = VOXCPM_API_BASE_URL) -> bool:
+    """Checks if the VoxCPM server is reachable."""
+    normalized_base_url = _normalize_base_url(base_url, VOXCPM_API_BASE_URL)
+    api_key = _resolve_voxcpm_api_key()
+
+    probe_urls = [
+        f"{normalized_base_url}/health",
+        *_openai_models_urls(normalized_base_url),
+        *_openai_voice_catalog_urls(normalized_base_url),
+        *_openai_files_urls(normalized_base_url),
+    ]
+
+    for probe_url in _dedupe_ordered(probe_urls):
+        try:
+            response = requests.get(
+                probe_url,
+                headers=_openai_auth_headers(api_key),
+                timeout=4,
+            )
+            if _should_try_next_openai_candidate(response.status_code):
+                continue
+            if response.status_code < 400:
+                return True
+        except requests.exceptions.RequestException:
+            continue
+
+    return False
+
+
+def get_voxcpm_models(base_url: str = VOXCPM_API_BASE_URL) -> list[str]:
+    """Fetches available VoxCPM models from server."""
+    normalized_base_url = _normalize_base_url(base_url, VOXCPM_API_BASE_URL)
+    api_key = _resolve_voxcpm_api_key()
+
+    discovered_models: list[str] = []
+    for models_url in _openai_models_urls(normalized_base_url):
+        try:
+            response = requests.get(
+                models_url,
+                headers=_openai_auth_headers(api_key),
+                timeout=8,
+            )
+            if _should_try_next_openai_candidate(response.status_code):
+                continue
+
+            response.raise_for_status()
+            discovered_models = [
+                _normalize_voxcpm_model(model, fallback="")
+                for model in _extract_models_from_openai_payload(response.json())
+            ]
+            discovered_models = [model for model in discovered_models if model]
+            if discovered_models:
+                break
+        except (requests.exceptions.RequestException, ValueError) as e:
+            logging.error("Failed to list VoxCPM models from %s: %s", models_url, e)
+            continue
+
+    return _merge_catalog_with_discovered(VOXCPM_TTS_MODELS, discovered_models)
+
+
+def get_voxcpm_voices(base_url: str = VOXCPM_API_BASE_URL) -> list[str]:
+    """Fetches available VoxCPM voices from server."""
+    normalized_base_url = _normalize_base_url(base_url, VOXCPM_API_BASE_URL)
+    api_key = _resolve_voxcpm_api_key()
+
+    discovered_voices: list[str] = []
+    voice_urls = _dedupe_ordered(
+        _openai_voice_catalog_urls(normalized_base_url)
+        + _openai_files_urls(normalized_base_url)
+    )
+
+    for voices_url in voice_urls:
+        try:
+            response = requests.get(
+                voices_url,
+                headers=_openai_auth_headers(api_key),
+                timeout=8,
+            )
+            if _should_try_next_openai_candidate(response.status_code):
+                continue
+
+            response.raise_for_status()
+            discovered_voices = _extract_voices_from_openai_payload(response.json())
+            if discovered_voices:
+                break
+        except (requests.exceptions.RequestException, ValueError) as e:
+            logging.error("Failed to list VoxCPM voices from %s: %s", voices_url, e)
+            continue
+
+    return _merge_catalog_with_discovered([VOXCPM_DEFAULT_VOICE], discovered_voices)
 
 
 def check_voxtral_connection(base_url: str = VOXTRAL_API_BASE_URL) -> bool:
@@ -1784,17 +1972,25 @@ def get_xtts_models(base_url: str = XTTS_API_BASE_URL) -> list[str]:
     return _merge_catalog_with_discovered([XTTS_DEFAULT_MODEL], discovered_models)
 
 
-def upload_speaker_voice(
+def _upload_speaker_voice_openai_compatible(
     wav_file_path: str,
-    base_url: str = XTTS_API_BASE_URL,
+    *,
+    base_url: str,
+    fallback_base_url: str,
+    service_name: str,
+    api_key: str,
+    upload_purpose: str,
+    prompt_text: str | None = None,
+    mode: str | None = None,
 ) -> str:
-    """Uploads voice to XTTS and returns uploaded voice identifier."""
     if not wav_file_path.lower().endswith(".wav"):
         raise ValueError("Only .wav files are supported for speaker voices.")
 
-    normalized_base_url = _normalize_base_url(base_url, XTTS_API_BASE_URL)
+    normalized_base_url = _normalize_base_url(base_url, fallback_base_url)
     upload_voice_urls = _openai_audio_voices_urls(normalized_base_url)
     upload_file_urls = _openai_files_urls(normalized_base_url)
+    normalized_prompt_text = str(prompt_text or "").strip()
+    normalized_mode = str(mode or "").strip().lower()
 
     try:
         # Preferred path: ecosystem voice endpoint (/v1/audio/voices).
@@ -1802,7 +1998,7 @@ def upload_speaker_voice(
         voice_filename = os.path.basename(wav_file_path)
         voice_name = os.path.splitext(voice_filename)[0]
         for upload_voice_url in upload_voice_urls:
-            # Keep both multipart field names for compatibility across XTTS API releases.
+            # Keep both multipart field names for compatibility across API wrappers.
             with open(wav_file_path, "rb") as files_wav, open(wav_file_path, "rb") as audio_sample_wav:
                 files = {
                     "files": (
@@ -1814,16 +2010,21 @@ def upload_speaker_voice(
                         voice_filename,
                         audio_sample_wav,
                         "audio/wav",
-                    )
+                    ),
                 }
                 form_data = {
                     "voice_id": voice_name,
                     "name": voice_name,
-                    "purpose": XTTS_UPLOAD_FILE_PURPOSE,
+                    "purpose": upload_purpose,
                 }
+                if normalized_prompt_text:
+                    form_data["prompt_text"] = normalized_prompt_text
+                if normalized_mode:
+                    form_data["mode"] = normalized_mode
+
                 response = requests.post(
                     upload_voice_url,
-                    headers=_openai_auth_headers(),
+                    headers=_openai_auth_headers(api_key),
                     files=files,
                     data=form_data,
                     timeout=120,
@@ -1835,7 +2036,7 @@ def upload_speaker_voice(
 
             if response.status_code >= 400:
                 raise RuntimeError(
-                    f"XTTS voice upload failed ({response.status_code}): {response.text}"
+                    f"{service_name} voice upload failed ({response.status_code}): {response.text}"
                 )
 
             try:
@@ -1851,11 +2052,12 @@ def upload_speaker_voice(
             ).strip()
             if not uploaded_voice_id:
                 raise RuntimeError(
-                    "XTTS voice upload succeeded but did not return a voice ID."
+                    f"{service_name} voice upload succeeded but did not return a voice ID."
                 )
 
             logging.info(
-                "Uploaded XTTS voice '%s' via /audio/voices endpoint",
+                "Uploaded %s voice '%s' via /audio/voices endpoint",
+                service_name,
                 uploaded_voice_id,
             )
             return uploaded_voice_id
@@ -1871,10 +2073,19 @@ def upload_speaker_voice(
                         "audio/wav",
                     )
                 }
-                form_data = {"purpose": XTTS_UPLOAD_FILE_PURPOSE}
+                form_data = {
+                    "voice_id": voice_name,
+                    "name": voice_name,
+                    "purpose": upload_purpose,
+                }
+                if normalized_prompt_text:
+                    form_data["prompt_text"] = normalized_prompt_text
+                if normalized_mode:
+                    form_data["mode"] = normalized_mode
+
                 response = requests.post(
                     upload_url,
-                    headers=_openai_auth_headers(),
+                    headers=_openai_auth_headers(api_key),
                     files=files,
                     data=form_data,
                     timeout=120,
@@ -1886,7 +2097,7 @@ def upload_speaker_voice(
 
             if response.status_code >= 400:
                 raise RuntimeError(
-                    f"XTTS voice upload failed ({response.status_code}): {response.text}"
+                    f"{service_name} voice upload failed ({response.status_code}): {response.text}"
                 )
 
             try:
@@ -1894,14 +2105,20 @@ def upload_speaker_voice(
             except ValueError:
                 payload = {}
 
-            uploaded_file_id = str(payload.get("id") or "").strip()
+            uploaded_file_id = str(
+                payload.get("id")
+                or payload.get("voice_id")
+                or payload.get("name")
+                or ""
+            ).strip()
             if not uploaded_file_id:
                 raise RuntimeError(
-                    "XTTS file upload succeeded but did not return a file ID."
+                    f"{service_name} file upload succeeded but did not return a file ID."
                 )
 
             logging.info(
-                "Uploaded XTTS voice file '%s' via OpenAI-compatible endpoint",
+                "Uploaded %s voice file '%s' via OpenAI-compatible endpoint",
+                service_name,
                 uploaded_file_id,
             )
             return uploaded_file_id
@@ -1911,7 +2128,8 @@ def upload_speaker_voice(
             and _should_try_next_openai_candidate(last_voice_response.status_code)
         ):
             logging.debug(
-                "XTTS server at %s does not expose /audio/voices upload; tried /files fallback.",
+                "%s server at %s does not expose /audio/voices upload; tried /files fallback.",
+                service_name,
                 normalized_base_url,
             )
 
@@ -1920,14 +2138,75 @@ def upload_speaker_voice(
             and _should_try_next_openai_candidate(last_response.status_code)
         ):
             raise RuntimeError(
-                f"XTTS server at {normalized_base_url} does not support voice upload endpoints (/audio/voices or /files)."
+                f"{service_name} server at {normalized_base_url} does not support voice upload endpoints (/audio/voices or /files)."
             )
 
-        raise RuntimeError("Could not upload speaker voice to XTTS server.")
+        raise RuntimeError(f"Could not upload speaker voice to {service_name} server.")
     except requests.exceptions.RequestException as e:
-        raise RuntimeError(f"Failed uploading voice to XTTS server {normalized_base_url}: {e}") from e
+        raise RuntimeError(
+            f"Failed uploading voice to {service_name} server {normalized_base_url}: {e}"
+        ) from e
     except OSError as e:
         raise RuntimeError(f"Could not read WAV file for upload: {e}") from e
+
+
+def upload_xtts_speaker_voice(
+    wav_file_path: str,
+    base_url: str = XTTS_API_BASE_URL,
+) -> str:
+    """Uploads voice to XTTS and returns uploaded voice identifier."""
+    return _upload_speaker_voice_openai_compatible(
+        wav_file_path,
+        base_url=base_url,
+        fallback_base_url=XTTS_API_BASE_URL,
+        service_name="XTTS",
+        api_key=XTTS_OPENAI_PLACEHOLDER_API_KEY,
+        upload_purpose=XTTS_UPLOAD_FILE_PURPOSE,
+    )
+
+
+def upload_voxcpm_speaker_voice(
+    wav_file_path: str,
+    base_url: str = VOXCPM_API_BASE_URL,
+    *,
+    prompt_text: str | None = None,
+    mode: str = "reference",
+) -> str:
+    """Uploads voice to VoxCPM and returns uploaded voice identifier."""
+    return _upload_speaker_voice_openai_compatible(
+        wav_file_path,
+        base_url=base_url,
+        fallback_base_url=VOXCPM_API_BASE_URL,
+        service_name="VoxCPM",
+        api_key=_resolve_voxcpm_api_key(),
+        upload_purpose=VOXCPM_UPLOAD_FILE_PURPOSE,
+        prompt_text=prompt_text,
+        mode=mode,
+    )
+
+
+def upload_speaker_voice(
+    wav_file_path: str,
+    base_url: str = XTTS_API_BASE_URL,
+    *,
+    service: str = "XTTS",
+    prompt_text: str | None = None,
+    mode: str | None = None,
+) -> str:
+    """Uploads a speaker voice file and returns uploaded voice identifier."""
+    normalized_service = str(service or "XTTS").strip().lower()
+    if normalized_service in {"voxcpm", "voxcpm2"}:
+        return upload_voxcpm_speaker_voice(
+            wav_file_path,
+            base_url=base_url,
+            prompt_text=prompt_text,
+            mode=mode or "reference",
+        )
+
+    return upload_xtts_speaker_voice(
+        wav_file_path,
+        base_url=base_url,
+    )
 
 
 # Silero Functions
@@ -2002,6 +2281,53 @@ def _request_xtts_audio(text: str, tts_settings: dict, xtts_base_url: str) -> re
         return last_response
 
     raise RuntimeError(f"No XTTS speech endpoint could be resolved for '{normalized_base_url}'.")
+
+
+def _build_voxcpm_payload(text: str, tts_settings: dict) -> dict:
+    model = _normalize_voxcpm_model(
+        tts_settings.get("xtts_model", ""),
+        fallback=VOXCPM_DEFAULT_MODEL,
+    )
+    voice = str(tts_settings.get("speaker") or "").strip() or VOXCPM_DEFAULT_VOICE
+
+    payload = {
+        "model": model,
+        "input": text,
+        "voice": voice,
+        "response_format": "wav",
+        "speed": _coerce_float(tts_settings.get("speed"), 1.0),
+        "voxcpm": _build_voxcpm_options(tts_settings),
+    }
+
+    instructions = str(tts_settings.get("openai_audio_instructions") or "").strip()
+    if instructions:
+        payload["instructions"] = instructions
+
+    return payload
+
+
+def _request_voxcpm_audio(text: str, tts_settings: dict, voxcpm_base_url: str) -> requests.Response:
+    normalized_base_url = _normalize_base_url(voxcpm_base_url, VOXCPM_API_BASE_URL)
+    api_key = _resolve_voxcpm_api_key()
+    payload = _build_voxcpm_payload(text, tts_settings)
+    last_response = None
+
+    for speech_url in _openai_audio_speech_urls(normalized_base_url):
+        response = requests.post(
+            speech_url,
+            headers=_openai_auth_headers(api_key),
+            json=payload,
+            timeout=120,
+        )
+        if _should_try_next_openai_candidate(response.status_code):
+            last_response = response
+            continue
+        return response
+
+    if last_response is not None:
+        return last_response
+
+    raise RuntimeError(f"No VoxCPM speech endpoint could be resolved for '{normalized_base_url}'.")
 
 
 def _build_voxtral_payload(text: str, tts_settings: dict) -> dict:
@@ -2278,6 +2604,7 @@ def text_to_audio(
     kokoro_base_url: str = KOKORO_API_BASE_URL,
     silero_base_url: str = SILERO_API_BASE_URL,
     max_attempts: int = 5,
+    voxcpm_base_url: str = VOXCPM_API_BASE_URL,
 ) -> AudioSegment | None:
     """
     Generates audio from text using the specified TTS service.
@@ -2290,6 +2617,8 @@ def text_to_audio(
         try:
             if service == "XTTS":
                 response = _request_xtts_audio(text, tts_settings, xtts_base_url)
+            elif service == "VoxCPM":
+                response = _request_voxcpm_audio(text, tts_settings, voxcpm_base_url)
             elif service == "Voxtral":
                 response = _request_voxtral_audio(text, tts_settings, voxtral_base_url)
             elif service == "Kokoro":

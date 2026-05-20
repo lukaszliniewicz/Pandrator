@@ -49,6 +49,7 @@ def main():
     parser = argparse.ArgumentParser(description="Pandrator")
     parser.add_argument("-connect", "--connect", action="store_true", help="Connect to a TTS service on launch")
     parser.add_argument("-xtts", "--xtts", action="store_true", help="Connect to XTTS")
+    parser.add_argument("-voxcpm", "--voxcpm", action="store_true", help="Connect to VoxCPM")
     parser.add_argument("-voxtral", "--voxtral", action="store_true", help="Connect to Voxtral")
     parser.add_argument("-kokoro", "--kokoro", action="store_true", help="Connect to Kokoro")
     parser.add_argument("-silero", "--silero", action="store_true", help="Connect to Silero")
@@ -72,6 +73,8 @@ def main():
     if args.connect:
         if args.xtts:
             auto_connect_service = "XTTS"
+        elif args.voxcpm:
+            auto_connect_service = "VoxCPM"
         elif args.voxtral:
             auto_connect_service = "Voxtral"
         elif args.kokoro:
@@ -82,6 +85,9 @@ def main():
     if auto_connect_service:
         logic.state.tts.service = auto_connect_service
         if auto_connect_service == "XTTS":
+            logic.state.tts.use_external_server = False
+            logic.state.tts.external_server_url = "http://127.0.0.1:8020"
+        elif auto_connect_service == "VoxCPM":
             logic.state.tts.use_external_server = False
             logic.state.tts.external_server_url = "http://127.0.0.1:8020"
         elif auto_connect_service == "Voxtral":

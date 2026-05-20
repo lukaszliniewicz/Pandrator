@@ -109,7 +109,7 @@ class TtsSettingsSection(QFrame):
         layout.setVerticalSpacing(8)
 
         self.tts_service_combo = QComboBox()
-        self.tts_service_combo.addItems(["XTTS", "Voxtral", "Kokoro", "Silero", "OpenAI-Compatible"])
+        self.tts_service_combo.addItems(["XTTS", "VoxCPM", "Voxtral", "Kokoro", "Silero", "OpenAI-Compatible"])
         layout.addWidget(QLabel("TTS Service:"), 0, 0)
         layout.addWidget(self.tts_service_combo, 0, 1)
 
@@ -298,6 +298,191 @@ class AdvancedTtsSettingsSection(QFrame):
         xtts_layout.addWidget(self.adv_tts_apply_button, 15, 0, 1, 3)
 
         layout.addWidget(self.xtts_advanced_settings_frame)
+
+        self.voxcpm_advanced_settings_frame = QFrame()
+        self.voxcpm_advanced_settings_frame.setObjectName("subGroupFrame")
+        voxcpm_layout = QGridLayout(self.voxcpm_advanced_settings_frame)
+        voxcpm_layout.setHorizontalSpacing(10)
+        voxcpm_layout.setVerticalSpacing(8)
+
+        def _format_voxcpm_tooltip(title: str, lines: list[str], note: str = "") -> str:
+            tooltip = f"<b>{title}</b><br><br>"
+            tooltip += "<br>".join(f"- {line}" for line in lines)
+            if note:
+                tooltip += f"<br><br><i>{note}</i>"
+            return tooltip
+
+        def _apply_tooltip(widgets: list, text: str):
+            for widget in widgets:
+                widget.setToolTip(text)
+
+        self.voxcpm_advanced_hint_label = QLabel(
+            "VoxCPM inference controls are sent in the request voxcpm object."
+        )
+        self.voxcpm_advanced_hint_label.setWordWrap(True)
+        self.voxcpm_advanced_hint_label.setObjectName("secondaryInfoLabel")
+        voxcpm_layout.addWidget(self.voxcpm_advanced_hint_label, 0, 0, 1, 2)
+        self.voxcpm_advanced_hint_label.setToolTip(
+            _format_voxcpm_tooltip(
+                "VoxCPM Advanced Settings",
+                [
+                    "All controls in this section are sent as the voxcpm object.",
+                    "Use conservative values first, then tune one parameter at a time.",
+                ],
+            )
+        )
+
+        self.voxcpm_cfg_value_spinbox = QDoubleSpinBox()
+        self.voxcpm_cfg_value_spinbox.setDecimals(2)
+        self.voxcpm_cfg_value_spinbox.setRange(0.1, 20.0)
+        self.voxcpm_cfg_value_spinbox.setSingleStep(0.1)
+        self.voxcpm_cfg_value_label = QLabel("CFG Value:")
+        voxcpm_layout.addWidget(self.voxcpm_cfg_value_label, 1, 0)
+        voxcpm_layout.addWidget(self.voxcpm_cfg_value_spinbox, 1, 1)
+        _apply_tooltip(
+            [self.voxcpm_cfg_value_label, self.voxcpm_cfg_value_spinbox],
+            _format_voxcpm_tooltip(
+                "CFG Value",
+                [
+                    "Higher values enforce stronger conditioning.",
+                    "Lower values allow looser, more varied outputs.",
+                    "Range: 0.1 to 20.0 (default: 1.5).",
+                ],
+                note="Start near 1.5 to 3.0 for balanced cloning.",
+            ),
+        )
+
+        self.voxcpm_inference_timesteps_spinbox = QSpinBox()
+        self.voxcpm_inference_timesteps_spinbox.setRange(1, 200)
+        self.voxcpm_inference_timesteps_label = QLabel("Inference Steps:")
+        voxcpm_layout.addWidget(self.voxcpm_inference_timesteps_label, 2, 0)
+        voxcpm_layout.addWidget(self.voxcpm_inference_timesteps_spinbox, 2, 1)
+        _apply_tooltip(
+            [self.voxcpm_inference_timesteps_label, self.voxcpm_inference_timesteps_spinbox],
+            _format_voxcpm_tooltip(
+                "Inference Steps",
+                [
+                    "More steps can improve detail but take longer.",
+                    "Fewer steps are faster but may reduce quality.",
+                    "Range: 1 to 200 (default: 15).",
+                ],
+            ),
+        )
+
+        self.voxcpm_normalize_checkbox = QCheckBox("Normalize Audio")
+        voxcpm_layout.addWidget(self.voxcpm_normalize_checkbox, 3, 0, 1, 2)
+        self.voxcpm_normalize_checkbox.setToolTip(
+            _format_voxcpm_tooltip(
+                "Normalize Audio",
+                [
+                    "Applies loudness normalization to generated speech.",
+                    "Useful when sentence volume varies too much.",
+                ],
+            )
+        )
+
+        self.voxcpm_denoise_checkbox = QCheckBox("Denoise Audio")
+        voxcpm_layout.addWidget(self.voxcpm_denoise_checkbox, 4, 0, 1, 2)
+        self.voxcpm_denoise_checkbox.setToolTip(
+            _format_voxcpm_tooltip(
+                "Denoise Audio",
+                [
+                    "Applies denoising during synthesis.",
+                    "Can reduce background noise but may soften fine detail.",
+                ],
+            )
+        )
+
+        self.voxcpm_retry_badcase_checkbox = QCheckBox("Retry Bad Cases")
+        voxcpm_layout.addWidget(self.voxcpm_retry_badcase_checkbox, 5, 0, 1, 2)
+        self.voxcpm_retry_badcase_checkbox.setToolTip(
+            _format_voxcpm_tooltip(
+                "Retry Bad Cases",
+                [
+                    "Automatically retries outputs detected as low quality.",
+                    "Helps with unstable lines and difficult prompts.",
+                ],
+            )
+        )
+
+        self.voxcpm_retry_badcase_max_times_spinbox = QSpinBox()
+        self.voxcpm_retry_badcase_max_times_spinbox.setRange(1, 20)
+        self.voxcpm_retry_badcase_max_times_label = QLabel("Retry Max Times:")
+        voxcpm_layout.addWidget(self.voxcpm_retry_badcase_max_times_label, 6, 0)
+        voxcpm_layout.addWidget(self.voxcpm_retry_badcase_max_times_spinbox, 6, 1)
+        _apply_tooltip(
+            [
+                self.voxcpm_retry_badcase_max_times_label,
+                self.voxcpm_retry_badcase_max_times_spinbox,
+            ],
+            _format_voxcpm_tooltip(
+                "Retry Max Times",
+                [
+                    "Maximum retries when badcase retry is enabled.",
+                    "Higher values may recover quality but increase latency.",
+                    "Range: 1 to 20 (default: 3).",
+                ],
+            ),
+        )
+
+        self.voxcpm_retry_badcase_ratio_threshold_spinbox = QDoubleSpinBox()
+        self.voxcpm_retry_badcase_ratio_threshold_spinbox.setDecimals(2)
+        self.voxcpm_retry_badcase_ratio_threshold_spinbox.setRange(0.1, 50.0)
+        self.voxcpm_retry_badcase_ratio_threshold_spinbox.setSingleStep(0.1)
+        self.voxcpm_retry_badcase_ratio_threshold_label = QLabel("Retry Ratio Threshold:")
+        voxcpm_layout.addWidget(self.voxcpm_retry_badcase_ratio_threshold_label, 7, 0)
+        voxcpm_layout.addWidget(self.voxcpm_retry_badcase_ratio_threshold_spinbox, 7, 1)
+        _apply_tooltip(
+            [
+                self.voxcpm_retry_badcase_ratio_threshold_label,
+                self.voxcpm_retry_badcase_ratio_threshold_spinbox,
+            ],
+            _format_voxcpm_tooltip(
+                "Retry Ratio Threshold",
+                [
+                    "Sensitivity used by badcase detection.",
+                    "Lower values trigger retries more often.",
+                    "Range: 0.1 to 50.0 (default: 6.0).",
+                ],
+            ),
+        )
+
+        self.voxcpm_min_len_spinbox = QSpinBox()
+        self.voxcpm_min_len_spinbox.setRange(1, 12000)
+        self.voxcpm_min_len_label = QLabel("Min Length:")
+        voxcpm_layout.addWidget(self.voxcpm_min_len_label, 8, 0)
+        voxcpm_layout.addWidget(self.voxcpm_min_len_spinbox, 8, 1)
+        _apply_tooltip(
+            [self.voxcpm_min_len_label, self.voxcpm_min_len_spinbox],
+            _format_voxcpm_tooltip(
+                "Min Length",
+                [
+                    "Minimum backend generation length hint.",
+                    "Useful for avoiding too-short outputs in edge cases.",
+                    "Range: 1 to 12000 (default: 2).",
+                ],
+            ),
+        )
+
+        self.voxcpm_max_len_spinbox = QSpinBox()
+        self.voxcpm_max_len_spinbox.setRange(1, 12000)
+        self.voxcpm_max_len_label = QLabel("Max Length:")
+        voxcpm_layout.addWidget(self.voxcpm_max_len_label, 9, 0)
+        voxcpm_layout.addWidget(self.voxcpm_max_len_spinbox, 9, 1)
+        _apply_tooltip(
+            [self.voxcpm_max_len_label, self.voxcpm_max_len_spinbox],
+            _format_voxcpm_tooltip(
+                "Max Length",
+                [
+                    "Maximum backend generation length hint.",
+                    "Allows longer outputs but can increase compute cost.",
+                    "Range: 1 to 12000 (default: 4096).",
+                ],
+                note="If Max Length is below Min Length, Min Length is used.",
+            ),
+        )
+
+        layout.addWidget(self.voxcpm_advanced_settings_frame)
 
         self.voxtral_advanced_settings_frame = QFrame()
         self.voxtral_advanced_settings_frame.setObjectName("subGroupFrame")

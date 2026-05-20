@@ -86,6 +86,8 @@ WHISPERX_TORCH_INDEX_URL = 'https://download.pytorch.org/whl/cu128'
 
 XTTS_API_REPO_URL = 'https://github.com/lukaszliniewicz/xtts2_api.git'
 XTTS_API_REPO_DIRNAME = 'xtts2_api'
+VOXCPM_API_REPO_URL = 'https://github.com/lukaszliniewicz/voxcpm_fastapi.git'
+VOXCPM_API_REPO_DIRNAME = 'voxcpm_fastapi'
 VOXTRAL_API_REPO_URL = 'https://github.com/lukaszliniewicz/voxtral-fastapi.git'
 VOXTRAL_API_REPO_DIRNAME = 'voxtral-fastapi'
 KOKORO_API_REPO_URL = 'https://github.com/remsky/Kokoro-FastAPI.git'
@@ -117,6 +119,7 @@ PACKAGING_LAYOUT_FILENAME = 'packaging_layout.json'
 PACKAGING_CONFIG_FLAGS = (
     'cuda_support',
     'xtts_support',
+    'voxcpm_support',
     'silero_support',
     'voxtral_support',
     'kokoro_support',
@@ -139,6 +142,9 @@ PACKAGING_SHARED_PATHS = (
 PACKAGING_COMPONENT_PATHS = {
     'xtts': (
         XTTS_API_REPO_DIRNAME,
+    ),
+    'voxcpm': (
+        VOXCPM_API_REPO_DIRNAME,
     ),
     'voxtral': (
         VOXTRAL_API_REPO_DIRNAME,
@@ -322,6 +328,7 @@ class PandratorInstaller(QMainWindow):
         self.pandrator_var = False
         self.xtts_var = False
         self.xtts_cpu_var = False
+        self.voxcpm_var = False
         self.silero_var = False
         self.voxtral_var = False
         self.kokoro_var = False
@@ -334,12 +341,14 @@ class PandratorInstaller(QMainWindow):
         self.launch_xtts_var = False
         self.disable_deepspeed_var = False
         self.xtts_cpu_launch_var = False
+        self.launch_voxcpm_var = False
         self.launch_voxtral_var = False
         self.launch_kokoro_var = False
         self.launch_silero_var = False
 
         # Initialize process attributes
         self.xtts_process = None
+        self.voxcpm_process = None
         self.pandrator_process = None
         self.silero_process = None
         self.voxtral_process = None
@@ -502,7 +511,10 @@ class PandratorInstaller(QMainWindow):
         
         self.xtts_cpu_checkbox = QCheckBox("XTTS CPU only")
         engines_layout.addWidget(self.xtts_cpu_checkbox)
-        
+
+        self.voxcpm_checkbox = QCheckBox("VoxCPM2")
+        engines_layout.addWidget(self.voxcpm_checkbox)
+
         self.silero_checkbox = QCheckBox("Silero")
         engines_layout.addWidget(self.silero_checkbox)
 
@@ -580,6 +592,10 @@ class PandratorInstaller(QMainWindow):
         xtts_layout.addWidget(self.deepspeed_checkbox, 0, 2)
         
         launch_layout.addWidget(xtts_frame)
+
+        # VoxCPM checkbox
+        self.launch_voxcpm_checkbox = QCheckBox("VoxCPM")
+        launch_layout.addWidget(self.launch_voxcpm_checkbox)
 
         # Voxtral checkbox
         self.launch_voxtral_checkbox = QCheckBox("Voxtral")
@@ -707,6 +723,11 @@ class PandratorInstaller(QMainWindow):
             set_widget_state(self.xtts_cpu_launch_checkbox, False, False)
             set_widget_state(self.deepspeed_checkbox, False, False)
 
+        # VoxCPM
+        voxcpm_support = config.get('voxcpm_support', False)
+        set_widget_state(self.voxcpm_checkbox, not voxcpm_support, False)
+        set_widget_state(self.launch_voxcpm_checkbox, voxcpm_support, False)
+
         # Voxtral
         voxtral_support = config.get('voxtral_support', False)
         set_widget_state(self.voxtral_checkbox, not voxtral_support, False)
@@ -778,6 +799,7 @@ class PandratorInstaller(QMainWindow):
         
         return {
             'xtts': config.get('xtts_support', False),
+            'voxcpm': config.get('voxcpm_support', False),
             'voxtral': config.get('voxtral_support', False),
             'kokoro': config.get('kokoro_support', False),
             'silero': config.get('silero_support', False),
@@ -948,6 +970,7 @@ class PandratorInstaller(QMainWindow):
         self.pandrator_var = self.pandrator_checkbox.isChecked()
         self.xtts_var = self.xtts_checkbox.isChecked()
         self.xtts_cpu_var = self.xtts_cpu_checkbox.isChecked()
+        self.voxcpm_var = self.voxcpm_checkbox.isChecked()
         self.silero_var = self.silero_checkbox.isChecked()
         self.voxtral_var = self.voxtral_checkbox.isChecked()
         self.kokoro_var = self.kokoro_checkbox.isChecked()
@@ -957,6 +980,7 @@ class PandratorInstaller(QMainWindow):
         
         new_components_selected = (
             ((self.xtts_var or self.xtts_cpu_var) and not installed_components['xtts']) or
+            (self.voxcpm_var and not installed_components['voxcpm']) or
             (self.silero_var and not installed_components['silero']) or
             (self.voxtral_var and not installed_components['voxtral']) or
             (self.kokoro_var and not installed_components['kokoro']) or
@@ -1006,6 +1030,7 @@ class PandratorInstaller(QMainWindow):
         valid_components = {
             'xtts',
             'xtts_cpu',
+            'voxcpm',
             'silero',
             'voxtral',
             'kokoro',
@@ -1034,6 +1059,7 @@ class PandratorInstaller(QMainWindow):
         self.pandrator_checkbox.setChecked(bool(install_pandrator))
         self.xtts_checkbox.setChecked('xtts' in selected_components)
         self.xtts_cpu_checkbox.setChecked('xtts_cpu' in selected_components)
+        self.voxcpm_checkbox.setChecked('voxcpm' in selected_components)
         self.silero_checkbox.setChecked('silero' in selected_components)
         self.voxtral_checkbox.setChecked('voxtral' in selected_components)
         self.kokoro_checkbox.setChecked('kokoro' in selected_components)
@@ -3108,6 +3134,12 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
         return command
 
+    def build_voxcpm_launcher_command(self, pixi_path=None):
+        command = ['cmd', '/c', 'run.bat']
+        if pixi_path:
+            command.extend(['--pixi-path', pixi_path])
+        return command
+
     def _read_text_if_exists(self, file_path):
         if not os.path.exists(file_path):
             return ""
@@ -3138,6 +3170,18 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             return pixi_path
 
         logging.info("XTTS launcher does not advertise --pixi-path, skipping shared Pixi argument.")
+        return None
+
+    def get_voxcpm_pixi_argument(self, voxcpm_repo_path, pixi_path):
+        if not pixi_path:
+            return None
+
+        run_bat_contents = self._read_text_if_exists(os.path.join(voxcpm_repo_path, 'run.bat')).lower()
+        run_py_contents = self._read_text_if_exists(os.path.join(voxcpm_repo_path, 'run.py')).lower()
+        if '--pixi-path' in run_bat_contents or '--pixi-path' in run_py_contents:
+            return pixi_path
+
+        logging.info("VoxCPM launcher does not advertise --pixi-path, skipping shared Pixi argument.")
         return None
 
     def terminate_process_tree(self, process, timeout=10):
@@ -3227,6 +3271,62 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         finally:
             if process is not None:
                 logging.info("Stopping temporary XTTS2 bootstrap process.")
+                self.terminate_process_tree(process)
+            log_handle.close()
+
+    def is_voxcpm_runtime_ready(self, voxcpm_repo_path):
+        run_bat_path = os.path.join(voxcpm_repo_path, 'run.bat')
+        env_python_path = os.path.join(voxcpm_repo_path, '.pixi', 'envs', 'default', 'python.exe')
+        return all(os.path.exists(path) for path in (run_bat_path, env_python_path))
+
+    def install_voxcpm_api_server(self, voxcpm_repo_path, pixi_path=None):
+        logging.info(f"Bootstrapping VoxCPM API server in {voxcpm_repo_path}...")
+        logging.info(
+            "VoxCPM bootstrap starts the server temporarily to validate runtime and will stop it after health checks."
+        )
+
+        run_script_path = os.path.join(voxcpm_repo_path, 'run.bat')
+        if not os.path.exists(run_script_path):
+            raise FileNotFoundError(f"VoxCPM run script not found at: {run_script_path}")
+
+        if self.is_port_in_use(8020):
+            raise RuntimeError("VoxCPM server cannot be bootstrapped because port 8020 is already in use.")
+
+        voxcpm_install_log_file = os.path.join(voxcpm_repo_path, 'voxcpm_install.log')
+        command = self.build_voxcpm_launcher_command(
+            pixi_path=self.get_voxcpm_pixi_argument(voxcpm_repo_path, pixi_path),
+        )
+
+        log_handle = open(voxcpm_install_log_file, 'a', encoding='utf-8')
+        process = None
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=voxcpm_repo_path,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                **self.get_hidden_subprocess_kwargs(),
+            )
+
+            if not self.check_voxcpm_server_online(
+                'http://127.0.0.1:8020',
+                max_attempts=360,
+                wait_interval=5,
+                process=process,
+            ):
+                return_code = process.poll()
+                if return_code is not None:
+                    raise RuntimeError(
+                        f"VoxCPM bootstrap process exited before server was ready (exit code {return_code}). "
+                        f"See log: {voxcpm_install_log_file}"
+                    )
+                raise RuntimeError(
+                    "VoxCPM bootstrap did not bring the server online in time. "
+                    f"See log: {voxcpm_install_log_file}"
+                )
+        finally:
+            if process is not None:
+                logging.info("Stopping temporary VoxCPM bootstrap process.")
                 self.terminate_process_tree(process)
             log_handle.close()
 
@@ -3633,6 +3733,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         pandrator_var = self.pandrator_checkbox.isChecked()
         xtts_var = self.xtts_checkbox.isChecked()
         xtts_cpu_var = self.xtts_cpu_checkbox.isChecked()
+        voxcpm_var = self.voxcpm_checkbox.isChecked()
         silero_var = self.silero_checkbox.isChecked()
         voxtral_var = self.voxtral_checkbox.isChecked()
         kokoro_var = self.kokoro_checkbox.isChecked()
@@ -3645,6 +3746,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         pandrator_repo_path = os.path.join(pandrator_path, 'Pandrator')
         subdub_repo_path = os.path.join(pandrator_path, 'Subdub')
         xtts_repo_path = os.path.join(pandrator_path, XTTS_API_REPO_DIRNAME)
+        voxcpm_repo_path = os.path.join(pandrator_path, VOXCPM_API_REPO_DIRNAME)
         voxtral_repo_path = os.path.join(pandrator_path, VOXTRAL_API_REPO_DIRNAME)
         kokoro_repo_path = os.path.join(pandrator_path, KOKORO_API_REPO_DIRNAME)
         easy_xtts_trainer_path = os.path.join(pandrator_path, 'easy_xtts_trainer')
@@ -3726,6 +3828,9 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             if (xtts_var or xtts_cpu_var) and not os.path.exists(xtts_repo_path):
                 self.clone_repo(XTTS_API_REPO_URL, xtts_repo_path)
 
+            if voxcpm_var and not os.path.exists(voxcpm_repo_path):
+                self.clone_repo(VOXCPM_API_REPO_URL, voxcpm_repo_path)
+
             if voxtral_var and not os.path.exists(voxtral_repo_path):
                 self.clone_repo(VOXTRAL_API_REPO_URL, voxtral_repo_path)
 
@@ -3756,6 +3861,14 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 self.install_xtts_api_server(
                     xtts_repo_path,
                     use_cpu=xtts_cpu_var,
+                    pixi_path=shared_pixi_path,
+                )
+
+            if voxcpm_var:
+                self.worker.update_progress.emit(0.85)
+                self.worker.update_status.emit("Bootstrapping VoxCPM API server (temporary startup)...")
+                self.install_voxcpm_api_server(
+                    voxcpm_repo_path,
                     pixi_path=shared_pixi_path,
                 )
 
@@ -3834,6 +3947,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             # Update config based on what was installed or already exists
             config['cuda_support'] = config.get('cuda_support', False) or xtts_var
             config['xtts_support'] = config.get('xtts_support', False) or xtts_var or xtts_cpu_var
+            config['voxcpm_support'] = config.get('voxcpm_support', False) or voxcpm_var
             config['silero_support'] = config.get('silero_support', False) or silero_var
             config['voxtral_support'] = config.get('voxtral_support', False) or voxtral_var
             config['kokoro_support'] = config.get('kokoro_support', False) or kokoro_var
@@ -3902,6 +4016,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         pycroppdf_repo_path = os.path.join(pandrator_repo_path, 'PyCropPDF')
         subdub_repo_path = os.path.join(pandrator_base_path, 'Subdub')
         xtts_repo_path = os.path.join(pandrator_base_path, XTTS_API_REPO_DIRNAME)
+        voxcpm_repo_path = os.path.join(pandrator_base_path, VOXCPM_API_REPO_DIRNAME)
         voxtral_repo_path = os.path.join(pandrator_base_path, VOXTRAL_API_REPO_DIRNAME)
         kokoro_repo_path = os.path.join(pandrator_base_path, KOKORO_API_REPO_DIRNAME)
         easy_xtts_trainer_path = os.path.join(pandrator_base_path, 'easy_xtts_trainer')
@@ -4042,6 +4157,21 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                     self.install_xtts_api_server(
                         xtts_repo_path,
                         use_cpu=not config.get('cuda_support', False),
+                        pixi_path=shared_pixi_path,
+                    )
+
+            if config.get('voxcpm_support', False):
+                if os.path.exists(voxcpm_repo_path):
+                    self.worker.update_status.emit("Updating VoxCPM API server repository...")
+                    self.pull_repo(voxcpm_repo_path)
+                else:
+                    self.worker.update_status.emit("Cloning VoxCPM API server repository...")
+                    self.clone_repo(VOXCPM_API_REPO_URL, voxcpm_repo_path)
+
+                if not self.is_voxcpm_runtime_ready(voxcpm_repo_path):
+                    self.worker.update_status.emit("Bootstrapping VoxCPM API server...")
+                    self.install_voxcpm_api_server(
+                        voxcpm_repo_path,
                         pixi_path=shared_pixi_path,
                     )
 
@@ -4227,6 +4357,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         self.launch_xtts_var = self.launch_xtts_checkbox.isChecked()
         self.disable_deepspeed_var = self.deepspeed_checkbox.isChecked()
         self.xtts_cpu_launch_var = self.xtts_cpu_launch_checkbox.isChecked()
+        self.launch_voxcpm_var = self.launch_voxcpm_checkbox.isChecked()
         self.launch_voxtral_var = self.launch_voxtral_checkbox.isChecked()
         self.launch_kokoro_var = self.launch_kokoro_checkbox.isChecked()
         self.launch_silero_var = self.launch_silero_checkbox.isChecked()
@@ -4297,6 +4428,41 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 raise RuntimeError(error_msg)
             
             pandrator_args = ['-connect', '-xtts']
+            tts_engine_launched = True
+
+        if self.launch_voxcpm_var and not tts_engine_launched:
+            self.worker.update_progress.emit(0.5)
+            self.worker.update_status.emit("Starting VoxCPM server...")
+            voxcpm_server_path = os.path.join(pandrator_path, VOXCPM_API_REPO_DIRNAME)
+            logging.info(f"VoxCPM server path: {voxcpm_server_path}")
+
+            if not os.path.exists(voxcpm_server_path):
+                error_msg = f"VoxCPM server path not found: {voxcpm_server_path}"
+                self.worker.update_status.emit(error_msg)
+                logging.error(error_msg)
+                raise FileNotFoundError(error_msg)
+
+            try:
+                self.voxcpm_process = self.run_voxcpm_api_server(
+                    voxcpm_server_path,
+                    pixi_path=shared_pixi_path,
+                )
+            except Exception as e:
+                error_msg = f"Failed to start VoxCPM server: {str(e)}"
+                self.worker.update_status.emit(error_msg)
+                logging.error(error_msg)
+                logging.exception("Exception details:")
+                raise
+
+            voxcpm_server_url = 'http://127.0.0.1:8020'
+            if not self.check_voxcpm_server_online(voxcpm_server_url, process=self.voxcpm_process):
+                error_msg = "VoxCPM server failed to come online"
+                self.worker.update_status.emit(error_msg)
+                logging.error(error_msg)
+                self.shutdown_voxcpm()
+                raise RuntimeError(error_msg)
+
+            pandrator_args = ['-connect', '-voxcpm']
             tts_engine_launched = True
 
         if self.launch_voxtral_var and not tts_engine_launched:
@@ -4600,6 +4766,71 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         logging.error("XTTS server failed to come online within the specified attempts.")
         return False
 
+    def run_voxcpm_api_server(self, voxcpm_server_path, pixi_path=None):
+        """Run the VoxCPM API server via its upstream launcher script."""
+        logging.info(f"Running VoxCPM API server from {voxcpm_server_path}...")
+
+        if self.is_port_in_use(8020):
+            error_msg = "VoxCPM server cannot be started because port 8020 is already in use."
+            logging.error(error_msg)
+            QMessageBox.critical(self, "Error", error_msg)
+            return None
+
+        run_script_path = os.path.join(voxcpm_server_path, 'run.bat')
+        if not os.path.exists(run_script_path):
+            raise FileNotFoundError(f"VoxCPM run script not found at: {run_script_path}")
+
+        voxcpm_log_file = os.path.join(voxcpm_server_path, 'voxcpm_server.log')
+        command = self.build_voxcpm_launcher_command(
+            pixi_path=self.get_voxcpm_pixi_argument(voxcpm_server_path, pixi_path),
+        )
+
+        log_handle = open(voxcpm_log_file, 'a', encoding='utf-8')
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=voxcpm_server_path,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                **self.get_hidden_subprocess_kwargs(),
+            )
+        except Exception:
+            log_handle.close()
+            raise
+
+        process.log_handle = log_handle
+        self.voxcpm_process = process
+        return process
+
+    def check_voxcpm_server_online(self, base_url, max_attempts=120, wait_interval=5, process=None):
+        """Check if the VoxCPM server is online and responding."""
+        probe_paths = ['/health', '/v1/models', '/v1/audio/voices']
+        for attempt in range(1, max_attempts + 1):
+            if process is not None and process.poll() is not None:
+                logging.error("VoxCPM server process exited before coming online.")
+                return False
+
+            for probe_path in probe_paths:
+                try:
+                    response = requests.get(f"{base_url}{probe_path}", timeout=5)
+                    if response.status_code == 404:
+                        continue
+                    if response.status_code < 400:
+                        logging.info("VoxCPM server is online.")
+                        return True
+                except requests.exceptions.RequestException:
+                    continue
+
+            logging.info(
+                "VoxCPM server is not online yet. Waiting... (Attempt %s/%s)",
+                attempt,
+                max_attempts,
+            )
+            time.sleep(wait_interval)
+
+        logging.error("VoxCPM server failed to come online within the specified attempts.")
+        return False
+
     def run_voxtral_api_server(self, voxtral_server_path):
         """Run the Voxtral API server via its upstream launcher script."""
         logging.info(f"Running Voxtral API server from {voxtral_server_path}...")
@@ -4749,6 +4980,15 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         elif self.xtts_process:
             any_process_running = True
 
+        # Check VoxCPM
+        if self.voxcpm_process and self.voxcpm_process.poll() is not None:
+            # VoxCPM has exited
+            if hasattr(self.voxcpm_process, 'log_handle') and self.voxcpm_process.log_handle:
+                self.voxcpm_process.log_handle.close()
+            self.voxcpm_process = None
+        elif self.voxcpm_process:
+            any_process_running = True
+
         # Check Voxtral
         if self.voxtral_process and self.voxtral_process.poll() is not None:
             # Voxtral has exited
@@ -4784,6 +5024,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
     def shutdown_apps(self):
         """Shut down all running applications"""
+        self.shutdown_voxcpm()
         self.shutdown_xtts()
         self.shutdown_voxtral()
         self.shutdown_kokoro()
@@ -4835,6 +5076,35 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                     logging.info(f"Process using port 8020 (PID {conn.pid}) no longer exists")
                 except psutil.AccessDenied:
                     logging.warning(f"Access denied when terminating process with PID: {conn.pid}")
+
+    def shutdown_voxcpm(self):
+        """Shut down the VoxCPM server."""
+        if self.voxcpm_process:
+            logging.info(f"Terminating VoxCPM process with PID: {self.voxcpm_process.pid}")
+            try:
+                parent = psutil.Process(self.voxcpm_process.pid)
+                for child in parent.children(recursive=True):
+                    try:
+                        child.terminate()
+                    except psutil.AccessDenied:
+                        logging.warning(f"Access denied when terminating child process with PID: {child.pid}")
+                parent.terminate()
+                self.voxcpm_process.wait(timeout=10)
+            except psutil.NoSuchProcess:
+                logging.info("VoxCPM process already terminated.")
+            except psutil.TimeoutExpired:
+                logging.warning("VoxCPM process did not terminate, forcing kill")
+                parent = psutil.Process(self.voxcpm_process.pid)
+                for child in parent.children(recursive=True):
+                    try:
+                        child.kill()
+                    except psutil.AccessDenied:
+                        logging.warning(f"Access denied when killing child process with PID: {child.pid}")
+                parent.kill()
+
+            if hasattr(self.voxcpm_process, 'log_handle') and self.voxcpm_process.log_handle:
+                self.voxcpm_process.log_handle.close()
+            self.voxcpm_process = None
 
     def shutdown_voxtral(self):
         """Shut down the Voxtral server"""
@@ -4994,7 +5264,7 @@ def parse_launcher_cli_args(argv=None):
         default='',
         help=(
             'Comma-separated component list for headless mode: '
-            'xtts,xtts_cpu,silero,voxtral,kokoro,rvc,whisperx,xtts_finetuning'
+            'xtts,xtts_cpu,voxcpm,silero,voxtral,kokoro,rvc,whisperx,xtts_finetuning'
         ),
     )
     parser.add_argument(
