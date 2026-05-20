@@ -353,6 +353,7 @@ class PandratorInstaller(QMainWindow):
         self.silero_process = None
         self.voxtral_process = None
         self.kokoro_process = None
+        self.backend_stop_targets = []
 
         # Worker thread
         self.worker = None
@@ -428,6 +429,9 @@ class PandratorInstaller(QMainWindow):
         # Initialize state
         self.refresh_ui_state()
         self.set_startup_tab()
+        self.backend_status_timer = QTimer(self)
+        self.backend_status_timer.timeout.connect(self.update_backend_runtime_controls)
+        self.backend_status_timer.start(2000)
         atexit.register(self.shutdown_apps)
 
     def set_startup_tab(self):
@@ -616,6 +620,34 @@ class PandratorInstaller(QMainWindow):
         self.launch_button.clicked.connect(self.launch_apps)
         self.launch_button.setMinimumHeight(40)
         layout.addWidget(self.launch_button)
+
+        backend_runtime_group = QGroupBox("Backend Runtime")
+        backend_runtime_layout = QVBoxLayout(backend_runtime_group)
+
+        self.active_backend_value_label = QLabel("No backend running")
+        self.active_backend_value_label.setWordWrap(True)
+        backend_runtime_layout.addWidget(self.active_backend_value_label)
+
+        backend_runtime_hint_label = QLabel(
+            "Tip: Stop the running backend before starting another one to free RAM/VRAM. "
+            "Pandrator and your active session stay open."
+        )
+        backend_runtime_hint_label.setWordWrap(True)
+        backend_runtime_hint_label.setStyleSheet("color: #B8B8B8;")
+        backend_runtime_layout.addWidget(backend_runtime_hint_label)
+
+        backend_runtime_buttons_layout = QHBoxLayout()
+        self.stop_backend_button = QPushButton("Stop Running Backend")
+        self.stop_backend_button.clicked.connect(self.stop_running_backends)
+        backend_runtime_buttons_layout.addWidget(self.stop_backend_button)
+
+        self.refresh_backend_status_button = QPushButton("Refresh Status")
+        self.refresh_backend_status_button.clicked.connect(self.update_backend_runtime_controls)
+        backend_runtime_buttons_layout.addWidget(self.refresh_backend_status_button)
+        backend_runtime_buttons_layout.addStretch()
+
+        backend_runtime_layout.addLayout(backend_runtime_buttons_layout)
+        layout.addWidget(backend_runtime_group)
         
         # Add stretch to push everything to the top
         layout.addStretch()
@@ -769,6 +801,8 @@ class PandratorInstaller(QMainWindow):
         self.install_button.setEnabled(True)
         self.update_button.setEnabled(pandrator_installed)
 
+        self.update_backend_runtime_controls()
+
     def update_whisperx_checkbox(self):
         """Update WhisperX checkbox when XTTS Fine-tuning is toggled"""
         installed_components = self.get_installed_components()
@@ -813,6 +847,10 @@ class PandratorInstaller(QMainWindow):
         self.install_button.setEnabled(False)
         self.update_button.setEnabled(False)
         self.launch_button.setEnabled(False)
+        if hasattr(self, 'stop_backend_button'):
+            self.stop_backend_button.setEnabled(False)
+        if hasattr(self, 'refresh_backend_status_button'):
+            self.refresh_backend_status_button.setEnabled(False)
         
         # Disable checkboxes in install tab
         for child in self.install_tab.findChildren(QCheckBox):
@@ -834,6 +872,211 @@ class PandratorInstaller(QMainWindow):
         """Update status label text"""
         self.status_label.setText(text)
         logging.info(text)
+
+    def _backend_runtime_specs(self):
+        return (
+            ('xtts', 'XTTS', 'xtts_process', self.shutdown_xtts),
+            ('voxcpm', 'VoxCPM', 'voxcpm_process', self.shutdown_voxcpm),
+            ('voxtral', 'Voxtral', 'voxtral_process', self.shutdown_voxtral),
+            ('kokoro', 'Kokoro', 'kokoro_process', self.shutdown_kokoro),
+            ('silero', 'Silero', 'silero_process', self.shutdown_silero),
+        )
+
+    @staticmethod
+    def _close_process_log_handle(process):
+        if hasattr(process, 'log_handle') and process.log_handle:
+            try:
+                process.log_handle.close()
+            except Exception:
+                pass
+            process.log_handle = None
+
+    def _collect_running_backends(self):
+        running = []
+        for backend_key, backend_label, process_attr, _ in self._backend_runtime_specs():
+            process = getattr(self, process_attr, None)
+            if not process:
+                continue
+
+            try:
+                return_code = process.poll()
+            except Exception:
+                return_code = 1
+
+            if return_code is None:
+                running.append((backend_key, backend_label, process))
+            else:
+                self._close_process_log_handle(process)
+                setattr(self, process_attr, None)
+
+        return running
+
+    def _get_running_pandrator_process(self):
+        process = self.pandrator_process
+        if not process:
+            return None
+
+        try:
+            return_code = process.poll()
+        except Exception:
+            return_code = 1
+
+        if return_code is None:
+            return process
+
+        self._close_process_log_handle(process)
+        self.pandrator_process = None
+        return None
+
+    def _selected_launch_backend_keys(self):
+        selected = []
+        if self.launch_xtts_var:
+            selected.append('xtts')
+        if self.launch_voxcpm_var:
+            selected.append('voxcpm')
+        if self.launch_voxtral_var:
+            selected.append('voxtral')
+        if self.launch_silero_var:
+            selected.append('silero')
+        if self.launch_kokoro_var:
+            selected.append('kokoro')
+        return selected
+
+    def _backend_label_from_key(self, backend_key):
+        for key, label, _, _ in self._backend_runtime_specs():
+            if key == backend_key:
+                return label
+        return str(backend_key or '').strip() or 'Backend'
+
+    def _stop_backends_by_keys(self, backend_keys, report_progress=False):
+        requested_keys = [str(key).strip().lower() for key in backend_keys if str(key).strip()]
+        if not requested_keys:
+            return
+
+        shutdown_by_key = {
+            key: shutdown
+            for key, _, _, shutdown in self._backend_runtime_specs()
+        }
+
+        total = len(requested_keys)
+        for index, backend_key in enumerate(requested_keys, start=1):
+            shutdown = shutdown_by_key.get(backend_key)
+            if shutdown:
+                shutdown()
+
+            if report_progress and self.worker is not None:
+                self.worker.update_progress.emit(index / total)
+
+    def update_backend_runtime_controls(self):
+        if not hasattr(self, 'active_backend_value_label'):
+            return
+
+        running_backends = self._collect_running_backends()
+        if running_backends:
+            running_details = ", ".join(
+                f"{label} (PID {process.pid})"
+                for _, label, process in running_backends
+            )
+            self.active_backend_value_label.setText(f"Running: {running_details}")
+        else:
+            self.active_backend_value_label.setText("No backend running")
+
+        worker_busy = bool(self.worker and self.worker.isRunning())
+        if hasattr(self, 'stop_backend_button'):
+            self.stop_backend_button.setEnabled(bool(running_backends) and not worker_busy)
+            if len(running_backends) > 1:
+                self.stop_backend_button.setText("Stop Running Backends")
+            else:
+                self.stop_backend_button.setText("Stop Running Backend")
+
+        if hasattr(self, 'refresh_backend_status_button'):
+            self.refresh_backend_status_button.setEnabled(not worker_busy)
+
+    def stop_running_backends(self):
+        if self.worker and self.worker.isRunning():
+            QMessageBox.information(
+                self,
+                "Please Wait",
+                "Another operation is still in progress.",
+            )
+            return
+
+        running_backends = self._collect_running_backends()
+        if not running_backends:
+            self.update_backend_runtime_controls()
+            QMessageBox.information(self, "No Backend Running", "There is no running backend to stop.")
+            return
+
+        running_backend_names = ", ".join(label for _, label, _ in running_backends)
+        confirm_stop = QMessageBox.question(
+            self,
+            "Stop Backend",
+            "Stop the running backend(s)?\n\n"
+            f"{running_backend_names}\n\n"
+            "Pandrator will stay open and your active session will remain available.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if confirm_stop != QMessageBox.StandardButton.Yes:
+            return
+
+        self.backend_stop_targets = [backend_key for backend_key, _, _ in running_backends]
+        self.initialize_logging()
+        self.progress_bar.setValue(0)
+        self.update_status("Stopping running backend(s)...")
+        self.install_button.setEnabled(False)
+        self.update_button.setEnabled(False)
+        self.launch_button.setEnabled(False)
+        self.stop_backend_button.setEnabled(False)
+        self.refresh_backend_status_button.setEnabled(False)
+
+        self.worker = Worker(self.stop_running_backends_process)
+        self.worker.update_progress.connect(self.update_progress)
+        self.worker.update_status.connect(self.update_status)
+        self.worker.finished.connect(self.on_stop_backends_finished)
+        self.worker.error.connect(self.on_stop_backends_error)
+        self.worker.start()
+
+    def stop_running_backends_process(self):
+        targets = list(self.backend_stop_targets)
+        if not targets:
+            self.worker.update_status.emit("No backend stop target found.")
+            return
+
+        labels = [self._backend_label_from_key(target) for target in targets]
+        self.worker.update_status.emit(
+            "Stopping backend(s): " + ", ".join(labels)
+        )
+        self._stop_backends_by_keys(targets, report_progress=True)
+        self.worker.update_status.emit("Backend stop complete.")
+
+    def on_stop_backends_finished(self):
+        self.backend_stop_targets = []
+        pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
+        pandrator_installed = os.path.exists(pandrator_path)
+
+        self.install_button.setEnabled(True)
+        self.update_button.setEnabled(pandrator_installed)
+        self.launch_button.setEnabled(pandrator_installed)
+        self.update_status("Backend stopped. You can launch another backend without closing Pandrator.")
+        self.update_backend_runtime_controls()
+
+    def on_stop_backends_error(self, error_message):
+        self.backend_stop_targets = []
+        pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
+        pandrator_installed = os.path.exists(pandrator_path)
+
+        self.install_button.setEnabled(True)
+        self.update_button.setEnabled(pandrator_installed)
+        self.launch_button.setEnabled(pandrator_installed)
+        self.update_backend_runtime_controls()
+
+        self.update_status(f"Stopping backend failed: {error_message}")
+        QMessageBox.critical(
+            self,
+            "Stop Backend Error",
+            f"Failed to stop backend(s):\n\n{error_message}\n\nCheck the log for details.",
+        )
 
     # Installation methods
     def initialize_logging(self):
@@ -4350,6 +4593,14 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
     # Launch methods
     def launch_apps(self):
         """Launch the selected applications"""
+        if self.worker and self.worker.isRunning():
+            QMessageBox.information(
+                self,
+                "Please Wait",
+                "Another operation is still in progress.",
+            )
+            return
+
         self.initialize_logging()
 
         # Get checkbox states
@@ -4361,7 +4612,17 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         self.launch_voxtral_var = self.launch_voxtral_checkbox.isChecked()
         self.launch_kokoro_var = self.launch_kokoro_checkbox.isChecked()
         self.launch_silero_var = self.launch_silero_checkbox.isChecked()
-        
+
+        selected_backend_keys = self._selected_launch_backend_keys()
+        if len(selected_backend_keys) > 1:
+            selected_label = self._backend_label_from_key(selected_backend_keys[0])
+            QMessageBox.information(
+                self,
+                "Single Backend Mode",
+                "Only one backend can run at a time. "
+                f"This launch will start: {selected_label}.",
+            )
+
         # Create worker thread to run the launch process
         self.worker = Worker(self.launch_process)
         self.worker.update_progress.connect(self.update_progress)
@@ -4388,228 +4649,276 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
         shared_pixi_path = self.get_pixi_executable(pandrator_path)
 
+        selected_backend_keys = self._selected_launch_backend_keys()
+        selected_backend_key = selected_backend_keys[0] if selected_backend_keys else None
+        running_backends = self._collect_running_backends()
+
+        if selected_backend_key and running_backends:
+            conflicting_backends = [
+                backend_key
+                for backend_key, _, _ in running_backends
+                if backend_key != selected_backend_key
+            ]
+            if conflicting_backends:
+                running_names = ", ".join(
+                    self._backend_label_from_key(backend_key)
+                    for backend_key in conflicting_backends
+                )
+                self.worker.update_status.emit(
+                    "Stopping running backend(s) before switching: " + running_names
+                )
+                self._stop_backends_by_keys(conflicting_backends)
+                running_backends = self._collect_running_backends()
+
+        running_backend_keys = {
+            backend_key
+            for backend_key, _, _ in running_backends
+        }
+        running_pandrator_process = self._get_running_pandrator_process()
+
         pandrator_args = []
         tts_engine_launched = False
 
         if self.launch_xtts_var:
             self.worker.update_progress.emit(0.4)
-            self.worker.update_status.emit("Starting XTTS server...")
-            xtts_server_path = os.path.join(pandrator_path, XTTS_API_REPO_DIRNAME)
-            logging.info(f"XTTS server path: {xtts_server_path}")
-            
-            if not os.path.exists(xtts_server_path):
-                error_msg = f"XTTS server path not found: {xtts_server_path}"
-                self.worker.update_status.emit(error_msg)
-                logging.error(error_msg)
-                raise FileNotFoundError(error_msg)
-            
-            try:
-                use_cpu = self.xtts_cpu_launch_var
-                xtts_process = self.run_xtts_api_server(
-                    xtts_server_path,
-                    use_cpu,
-                    pixi_path=shared_pixi_path,
-                )
-            except Exception as e:
-                error_msg = f"Failed to start XTTS server: {str(e)}"
-                self.worker.update_status.emit(error_msg)
-                logging.error(error_msg)
-                logging.exception("Exception details:")
-                raise
-
-            self.xtts_process = xtts_process
-            
             xtts_server_url = 'http://127.0.0.1:8020'
-            if not self.check_xtts_server_online(xtts_server_url, process=xtts_process):
-                error_msg = "XTTS server failed to come online"
-                self.worker.update_status.emit(error_msg)
-                logging.error(error_msg)
-                self.shutdown_xtts()
-                raise RuntimeError(error_msg)
-            
+            if 'xtts' in running_backend_keys and self.xtts_process:
+                self.worker.update_status.emit("XTTS server is already running. Reusing existing backend.")
+            else:
+                self.worker.update_status.emit("Starting XTTS server...")
+                xtts_server_path = os.path.join(pandrator_path, XTTS_API_REPO_DIRNAME)
+                logging.info(f"XTTS server path: {xtts_server_path}")
+
+                if not os.path.exists(xtts_server_path):
+                    error_msg = f"XTTS server path not found: {xtts_server_path}"
+                    self.worker.update_status.emit(error_msg)
+                    logging.error(error_msg)
+                    raise FileNotFoundError(error_msg)
+
+                try:
+                    use_cpu = self.xtts_cpu_launch_var
+                    xtts_process = self.run_xtts_api_server(
+                        xtts_server_path,
+                        use_cpu,
+                        pixi_path=shared_pixi_path,
+                    )
+                except Exception as e:
+                    error_msg = f"Failed to start XTTS server: {str(e)}"
+                    self.worker.update_status.emit(error_msg)
+                    logging.error(error_msg)
+                    logging.exception("Exception details:")
+                    raise
+
+                self.xtts_process = xtts_process
+
+                if not self.check_xtts_server_online(xtts_server_url, process=xtts_process):
+                    error_msg = "XTTS server failed to come online"
+                    self.worker.update_status.emit(error_msg)
+                    logging.error(error_msg)
+                    self.shutdown_xtts()
+                    raise RuntimeError(error_msg)
+
             pandrator_args = ['-connect', '-xtts']
             tts_engine_launched = True
 
         if self.launch_voxcpm_var and not tts_engine_launched:
             self.worker.update_progress.emit(0.5)
-            self.worker.update_status.emit("Starting VoxCPM server...")
-            voxcpm_server_path = os.path.join(pandrator_path, VOXCPM_API_REPO_DIRNAME)
-            logging.info(f"VoxCPM server path: {voxcpm_server_path}")
-
-            if not os.path.exists(voxcpm_server_path):
-                error_msg = f"VoxCPM server path not found: {voxcpm_server_path}"
-                self.worker.update_status.emit(error_msg)
-                logging.error(error_msg)
-                raise FileNotFoundError(error_msg)
-
-            try:
-                self.voxcpm_process = self.run_voxcpm_api_server(
-                    voxcpm_server_path,
-                    pixi_path=shared_pixi_path,
-                )
-            except Exception as e:
-                error_msg = f"Failed to start VoxCPM server: {str(e)}"
-                self.worker.update_status.emit(error_msg)
-                logging.error(error_msg)
-                logging.exception("Exception details:")
-                raise
-
             voxcpm_server_url = 'http://127.0.0.1:8020'
-            if not self.check_voxcpm_server_online(voxcpm_server_url, process=self.voxcpm_process):
-                error_msg = "VoxCPM server failed to come online"
-                self.worker.update_status.emit(error_msg)
-                logging.error(error_msg)
-                self.shutdown_voxcpm()
-                raise RuntimeError(error_msg)
+            if 'voxcpm' in running_backend_keys and self.voxcpm_process:
+                self.worker.update_status.emit("VoxCPM server is already running. Reusing existing backend.")
+            else:
+                self.worker.update_status.emit("Starting VoxCPM server...")
+                voxcpm_server_path = os.path.join(pandrator_path, VOXCPM_API_REPO_DIRNAME)
+                logging.info(f"VoxCPM server path: {voxcpm_server_path}")
+
+                if not os.path.exists(voxcpm_server_path):
+                    error_msg = f"VoxCPM server path not found: {voxcpm_server_path}"
+                    self.worker.update_status.emit(error_msg)
+                    logging.error(error_msg)
+                    raise FileNotFoundError(error_msg)
+
+                try:
+                    self.voxcpm_process = self.run_voxcpm_api_server(
+                        voxcpm_server_path,
+                        pixi_path=shared_pixi_path,
+                    )
+                except Exception as e:
+                    error_msg = f"Failed to start VoxCPM server: {str(e)}"
+                    self.worker.update_status.emit(error_msg)
+                    logging.error(error_msg)
+                    logging.exception("Exception details:")
+                    raise
+
+                if not self.check_voxcpm_server_online(voxcpm_server_url, process=self.voxcpm_process):
+                    error_msg = "VoxCPM server failed to come online"
+                    self.worker.update_status.emit(error_msg)
+                    logging.error(error_msg)
+                    self.shutdown_voxcpm()
+                    raise RuntimeError(error_msg)
 
             pandrator_args = ['-connect', '-voxcpm']
             tts_engine_launched = True
 
         if self.launch_voxtral_var and not tts_engine_launched:
             self.worker.update_progress.emit(0.55)
-            self.worker.update_status.emit("Starting Voxtral server...")
-            voxtral_server_path = os.path.join(pandrator_path, VOXTRAL_API_REPO_DIRNAME)
-            logging.info(f"Voxtral server path: {voxtral_server_path}")
-
-            if not os.path.exists(voxtral_server_path):
-                error_msg = f"Voxtral server path not found: {voxtral_server_path}"
-                self.worker.update_status.emit(error_msg)
-                logging.error(error_msg)
-                raise FileNotFoundError(error_msg)
-
-            try:
-                self.voxtral_process = self.run_voxtral_api_server(voxtral_server_path)
-            except Exception as e:
-                error_msg = f"Failed to start Voxtral server: {str(e)}"
-                self.worker.update_status.emit(error_msg)
-                logging.error(error_msg)
-                logging.exception("Exception details:")
-                raise
-
             voxtral_server_url = 'http://127.0.0.1:8000/health'
-            if not self.check_voxtral_server_online(voxtral_server_url):
-                error_msg = "Voxtral server failed to come online"
-                self.worker.update_status.emit(error_msg)
-                logging.error(error_msg)
-                self.shutdown_voxtral()
-                raise RuntimeError(error_msg)
+            if 'voxtral' in running_backend_keys and self.voxtral_process:
+                self.worker.update_status.emit("Voxtral server is already running. Reusing existing backend.")
+            else:
+                self.worker.update_status.emit("Starting Voxtral server...")
+                voxtral_server_path = os.path.join(pandrator_path, VOXTRAL_API_REPO_DIRNAME)
+                logging.info(f"Voxtral server path: {voxtral_server_path}")
+
+                if not os.path.exists(voxtral_server_path):
+                    error_msg = f"Voxtral server path not found: {voxtral_server_path}"
+                    self.worker.update_status.emit(error_msg)
+                    logging.error(error_msg)
+                    raise FileNotFoundError(error_msg)
+
+                try:
+                    self.voxtral_process = self.run_voxtral_api_server(voxtral_server_path)
+                except Exception as e:
+                    error_msg = f"Failed to start Voxtral server: {str(e)}"
+                    self.worker.update_status.emit(error_msg)
+                    logging.error(error_msg)
+                    logging.exception("Exception details:")
+                    raise
+
+                if not self.check_voxtral_server_online(voxtral_server_url):
+                    error_msg = "Voxtral server failed to come online"
+                    self.worker.update_status.emit(error_msg)
+                    logging.error(error_msg)
+                    self.shutdown_voxtral()
+                    raise RuntimeError(error_msg)
 
             pandrator_args = ['-connect', '-voxtral']
             tts_engine_launched = True
 
         if self.launch_silero_var and not tts_engine_launched:
             self.worker.update_progress.emit(0.6)
-            self.worker.update_status.emit("Starting Silero server...")
-            
-            try:
-                self.silero_process = self.run_silero_api_server(pandrator_path, 'silero_api_server_installer')
-            except Exception as e:
-                error_msg = f"Failed to start Silero server: {str(e)}"
-                self.worker.update_status.emit(error_msg)
-                logging.error(error_msg)
-                logging.exception("Exception details:")
-                raise
-            
             silero_server_url = 'http://127.0.0.1:8001/docs'
-            if not self.check_silero_server_online(silero_server_url):
-                error_msg = "Silero server failed to come online"
-                self.worker.update_status.emit(error_msg)
-                logging.error(error_msg)
-                self.shutdown_silero()
-                raise RuntimeError(error_msg)
-            
+            if 'silero' in running_backend_keys and self.silero_process:
+                self.worker.update_status.emit("Silero server is already running. Reusing existing backend.")
+            else:
+                self.worker.update_status.emit("Starting Silero server...")
+
+                try:
+                    self.silero_process = self.run_silero_api_server(pandrator_path, 'silero_api_server_installer')
+                except Exception as e:
+                    error_msg = f"Failed to start Silero server: {str(e)}"
+                    self.worker.update_status.emit(error_msg)
+                    logging.error(error_msg)
+                    logging.exception("Exception details:")
+                    raise
+
+                if not self.check_silero_server_online(silero_server_url):
+                    error_msg = "Silero server failed to come online"
+                    self.worker.update_status.emit(error_msg)
+                    logging.error(error_msg)
+                    self.shutdown_silero()
+                    raise RuntimeError(error_msg)
+
             pandrator_args = ['-connect', '-silero']
             tts_engine_launched = True
 
         if self.launch_kokoro_var and not tts_engine_launched:
             self.worker.update_progress.emit(0.65)
-            self.worker.update_status.emit("Starting Kokoro server...")
-            kokoro_server_path = os.path.join(pandrator_path, KOKORO_API_REPO_DIRNAME)
-            logging.info(f"Kokoro server path: {kokoro_server_path}")
-
-            if not os.path.exists(kokoro_server_path):
-                error_msg = f"Kokoro server path not found: {kokoro_server_path}"
-                self.worker.update_status.emit(error_msg)
-                logging.error(error_msg)
-                raise FileNotFoundError(error_msg)
-
-            if not self.is_kokoro_runtime_ready(pandrator_path, kokoro_server_path):
-                self.worker.update_status.emit("Preparing Kokoro runtime...")
-                self.create_pixi_env(pandrator_path, KOKORO_ENV_NAME, KOKORO_PYTHON_VERSION)
-                self.install_kokoro_api_server(
-                    pandrator_path,
-                    kokoro_server_path,
-                    env_name=KOKORO_ENV_NAME,
-                )
-
-            try:
-                self.kokoro_process = self.run_kokoro_api_server(
-                    pandrator_path,
-                    KOKORO_ENV_NAME,
-                    kokoro_server_path,
-                )
-            except Exception as e:
-                error_msg = f"Failed to start Kokoro server: {str(e)}"
-                self.worker.update_status.emit(error_msg)
-                logging.error(error_msg)
-                logging.exception("Exception details:")
-                raise
-
             kokoro_server_url = 'http://127.0.0.1:8880/health'
-            if not self.check_kokoro_server_online(kokoro_server_url, process=self.kokoro_process):
-                error_msg = "Kokoro server failed to come online"
-                self.worker.update_status.emit(error_msg)
-                logging.error(error_msg)
-                self.shutdown_kokoro()
-                raise RuntimeError(error_msg)
+            if 'kokoro' in running_backend_keys and self.kokoro_process:
+                self.worker.update_status.emit("Kokoro server is already running. Reusing existing backend.")
+            else:
+                self.worker.update_status.emit("Starting Kokoro server...")
+                kokoro_server_path = os.path.join(pandrator_path, KOKORO_API_REPO_DIRNAME)
+                logging.info(f"Kokoro server path: {kokoro_server_path}")
+
+                if not os.path.exists(kokoro_server_path):
+                    error_msg = f"Kokoro server path not found: {kokoro_server_path}"
+                    self.worker.update_status.emit(error_msg)
+                    logging.error(error_msg)
+                    raise FileNotFoundError(error_msg)
+
+                if not self.is_kokoro_runtime_ready(pandrator_path, kokoro_server_path):
+                    self.worker.update_status.emit("Preparing Kokoro runtime...")
+                    self.create_pixi_env(pandrator_path, KOKORO_ENV_NAME, KOKORO_PYTHON_VERSION)
+                    self.install_kokoro_api_server(
+                        pandrator_path,
+                        kokoro_server_path,
+                        env_name=KOKORO_ENV_NAME,
+                    )
+
+                try:
+                    self.kokoro_process = self.run_kokoro_api_server(
+                        pandrator_path,
+                        KOKORO_ENV_NAME,
+                        kokoro_server_path,
+                    )
+                except Exception as e:
+                    error_msg = f"Failed to start Kokoro server: {str(e)}"
+                    self.worker.update_status.emit(error_msg)
+                    logging.error(error_msg)
+                    logging.exception("Exception details:")
+                    raise
+
+                if not self.check_kokoro_server_online(kokoro_server_url, process=self.kokoro_process):
+                    error_msg = "Kokoro server failed to come online"
+                    self.worker.update_status.emit(error_msg)
+                    logging.error(error_msg)
+                    self.shutdown_kokoro()
+                    raise RuntimeError(error_msg)
 
             pandrator_args = ['-connect', '-kokoro']
             tts_engine_launched = True
 
         if self.launch_pandrator_var:
             self.worker.update_progress.emit(0.85)
-            self.worker.update_status.emit("Checking Pandrator runtime...")
-            self.ensure_pandrator_runtime(pandrator_path, 'pandrator_installer')
-
-            self.worker.update_progress.emit(0.9)
-            self.worker.update_status.emit("Starting Pandrator...")
-            pandrator_repo_path = os.path.join(pandrator_path, 'Pandrator')
-            pandrator_script_candidates = [
-                os.path.join(pandrator_repo_path, 'main.py'),
-                os.path.join(pandrator_repo_path, 'pandrator.py'),
-            ]
-            pandrator_script_path = next(
-                (candidate for candidate in pandrator_script_candidates if os.path.exists(candidate)),
-                '',
-            )
-
-            if pandrator_script_path:
-                logging.info(f"Pandrator script path: {pandrator_script_path}")
+            if running_pandrator_process:
+                self.worker.update_progress.emit(0.9)
+                self.worker.update_status.emit(
+                    "Pandrator is already running. Reusing the current instance."
+                )
             else:
-                logging.error(
-                    "Pandrator script not found. Checked candidates: %s",
-                    ", ".join(pandrator_script_candidates),
-                )
-                error_msg = (
-                    "Pandrator script not found. Checked: "
-                    + ", ".join(pandrator_script_candidates)
-                )
-                self.worker.update_status.emit(error_msg)
-                raise FileNotFoundError(error_msg)
+                self.worker.update_status.emit("Checking Pandrator runtime...")
+                self.ensure_pandrator_runtime(pandrator_path, 'pandrator_installer')
 
-            try:
-                self.pandrator_process = self.run_script(pandrator_path, 'pandrator_installer', pandrator_script_path, pandrator_args)
-                self.ensure_process_started(
-                    self.pandrator_process,
-                    'Pandrator',
-                    getattr(self.pandrator_process, 'log_file_path', ''),
+                self.worker.update_progress.emit(0.9)
+                self.worker.update_status.emit("Starting Pandrator...")
+                pandrator_repo_path = os.path.join(pandrator_path, 'Pandrator')
+                pandrator_script_candidates = [
+                    os.path.join(pandrator_repo_path, 'main.py'),
+                    os.path.join(pandrator_repo_path, 'pandrator.py'),
+                ]
+                pandrator_script_path = next(
+                    (candidate for candidate in pandrator_script_candidates if os.path.exists(candidate)),
+                    '',
                 )
-            except Exception as e:
-                error_msg = f"Failed to start Pandrator: {str(e)}"
-                self.worker.update_status.emit(error_msg)
-                logging.error(error_msg)
-                logging.exception("Exception details:")
-                raise
+
+                if pandrator_script_path:
+                    logging.info(f"Pandrator script path: {pandrator_script_path}")
+                else:
+                    logging.error(
+                        "Pandrator script not found. Checked candidates: %s",
+                        ", ".join(pandrator_script_candidates),
+                    )
+                    error_msg = (
+                        "Pandrator script not found. Checked: "
+                        + ", ".join(pandrator_script_candidates)
+                    )
+                    self.worker.update_status.emit(error_msg)
+                    raise FileNotFoundError(error_msg)
+
+                try:
+                    self.pandrator_process = self.run_script(pandrator_path, 'pandrator_installer', pandrator_script_path, pandrator_args)
+                    self.ensure_process_started(
+                        self.pandrator_process,
+                        'Pandrator',
+                        getattr(self.pandrator_process, 'log_file_path', ''),
+                    )
+                except Exception as e:
+                    error_msg = f"Failed to start Pandrator: {str(e)}"
+                    self.worker.update_status.emit(error_msg)
+                    logging.error(error_msg)
+                    logging.exception("Exception details:")
+                    raise
 
         self.worker.update_progress.emit(1.0)
         self.worker.update_status.emit("Apps are running!")
@@ -4618,6 +4927,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         """Handle successful launch"""
         self.update_status("Applications launched successfully")
         self.enable_buttons()
+        self.update_backend_runtime_controls()
         # Start process monitoring
         QTimer.singleShot(5000, self.check_processes_status)
 
@@ -4625,6 +4935,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         """Handle launch errors"""
         self.update_status(f"Launch failed: {error_message}")
         self.enable_buttons()
+        self.update_backend_runtime_controls()
         QMessageBox.critical(self, "Launch Error", f"Failed to launch applications:\n\n{error_message}\n\nCheck the log for more details.")
 
     def is_port_in_use(self, port):
@@ -4953,14 +5264,14 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
     def check_processes_status(self):
         """Check the status of running processes and update UI accordingly"""
         any_process_running = False
-        
+        pandrator_exited = False
+
         # Check Pandrator
         if self.pandrator_process and self.pandrator_process.poll() is not None:
             # Pandrator has exited
             return_code = self.pandrator_process.poll()
             startup_log_file = getattr(self.pandrator_process, 'log_file_path', '')
-            if hasattr(self.pandrator_process, 'log_handle') and self.pandrator_process.log_handle:
-                self.pandrator_process.log_handle.close()
+            self._close_process_log_handle(self.pandrator_process)
 
             if return_code not in (None, 0):
                 details = f"Pandrator exited with code {return_code}."
@@ -4969,51 +5280,15 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 logging.error(details)
 
             self.pandrator_process = None
-            self.shutdown_apps()  # Shut down other apps when Pandrator exits
+            pandrator_exited = True
         elif self.pandrator_process:
             any_process_running = True
-            
-        # Check XTTS
-        if self.xtts_process and self.xtts_process.poll() is not None:
-            # XTTS has exited
-            self.xtts_process = None
-        elif self.xtts_process:
-            any_process_running = True
 
-        # Check VoxCPM
-        if self.voxcpm_process and self.voxcpm_process.poll() is not None:
-            # VoxCPM has exited
-            if hasattr(self.voxcpm_process, 'log_handle') and self.voxcpm_process.log_handle:
-                self.voxcpm_process.log_handle.close()
-            self.voxcpm_process = None
-        elif self.voxcpm_process:
-            any_process_running = True
+        if pandrator_exited:
+            self.shutdown_apps()  # Shut down other apps when Pandrator exits
 
-        # Check Voxtral
-        if self.voxtral_process and self.voxtral_process.poll() is not None:
-            # Voxtral has exited
-            if hasattr(self.voxtral_process, 'log_handle') and self.voxtral_process.log_handle:
-                self.voxtral_process.log_handle.close()
-            self.voxtral_process = None
-        elif self.voxtral_process:
-            any_process_running = True
-            
-        # Check Silero
-        if self.silero_process and self.silero_process.poll() is not None:
-            # Silero has exited
-            if hasattr(self.silero_process, 'log_handle') and self.silero_process.log_handle:
-                self.silero_process.log_handle.close()
-            self.silero_process = None
-        elif self.silero_process:
-            any_process_running = True
-
-        # Check Kokoro
-        if self.kokoro_process and self.kokoro_process.poll() is not None:
-            # Kokoro has exited
-            if hasattr(self.kokoro_process, 'log_handle') and self.kokoro_process.log_handle:
-                self.kokoro_process.log_handle.close()
-            self.kokoro_process = None
-        elif self.kokoro_process:
+        running_backends = self._collect_running_backends()
+        if running_backends:
             any_process_running = True
 
         if not any_process_running:
@@ -5021,6 +5296,8 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             self.refresh_ui_state()
         else:
             QTimer.singleShot(5000, self.check_processes_status)  # Schedule next check
+
+        self.update_backend_runtime_controls()
 
     def shutdown_apps(self):
         """Shut down all running applications"""
