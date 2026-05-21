@@ -23,6 +23,7 @@ from .logic import (
     text_preprocessor,
     llm_handler,
     tts_handler,
+    voice_library_handler,
     rvc_handler,
     audio_processor,
     subdub_handler,
@@ -661,9 +662,14 @@ class AppLogic(QObject):
             target_state.service = "VoxCPM"
             return
 
+        if service_lower in {"fishs2", "fish-s2", "fishs2cpp", "fishs2-cpp"}:
+            target_state.service = "FishS2"
+            return
+
         supported_services = {
             "XTTS",
             "VoxCPM",
+            "FishS2",
             "Voxtral",
             "Kokoro",
             "Silero",
@@ -2469,6 +2475,51 @@ class AppLogic(QObject):
                     f"Connected to VoxCPM server ({len(models)} model(s), {len(speakers)} voice(s))."
                 )
 
+            elif service == "FishS2":
+                base_url = (
+                    tts_snapshot.get("external_server_url")
+                    if tts_snapshot.get("use_external_server")
+                    else tts_handler.FISHS2_API_BASE_URL
+                )
+
+                if not tts_handler.check_fishs2_connection(base_url):
+                    result["error_title"] = "Connection Error"
+                    result["error_message"] = (
+                        f"Could not connect to FishS2 server at {base_url}. Is it running?"
+                    )
+                    self._tts_connection_result.emit(result)
+                    return
+
+                models = tts_handler.get_fishs2_models(base_url)
+                speakers = tts_handler.get_fishs2_voices(base_url)
+
+                default_model = tts_handler.FISHS2_DEFAULT_MODEL
+                default_voice = tts_handler.FISHS2_DEFAULT_VOICE
+
+                selected_model = (tts_snapshot.get("xtts_model") or "").strip()
+                if models:
+                    if selected_model not in models:
+                        selected_model = default_model if default_model in models else models[0]
+                elif not selected_model:
+                    selected_model = default_model
+
+                selected_speaker = (tts_snapshot.get("speaker") or "").strip()
+                if speakers:
+                    if selected_speaker not in speakers:
+                        selected_speaker = default_voice if default_voice in speakers else speakers[0]
+                elif not selected_speaker:
+                    selected_speaker = default_voice
+
+                result["updates"] = {
+                    "tts_models": models,
+                    "tts_speakers": speakers,
+                    "xtts_model": selected_model,
+                    "speaker": selected_speaker,
+                }
+                result["log_message"] = (
+                    f"Connected to FishS2 server ({len(models)} model(s), {len(speakers)} voice(s))."
+                )
+
             elif service == "Voxtral":
                 base_url = (
                     tts_snapshot.get("external_server_url")
@@ -2731,19 +2782,186 @@ class AppLogic(QObject):
         else:
             self.state_changed.emit()
 
-    def upload_speaker_voice(self, wav_file_path: str, prompt_text: str | None = None):
-        """Uploads a speaker voice file and refreshes available XTTS/VoxCPM voices."""
+    def list_voice_library(self) -> list[dict]:
+        """Returns voice library entries with sample metadata."""
+        return voice_library_handler.list_voices()
+
+    def create_voice_library_voice(self, name: str, notes: str = "") -> dict:
+        """Creates a new voice library entry."""
+        return voice_library_handler.create_voice(name, notes=notes)
+
+    def update_voice_library_voice(
+        self,
+        voice_id: str,
+        *,
+        name: str | None = None,
+        notes: str | None = None,
+    ) -> dict:
+        """Updates a voice library entry."""
+        return voice_library_handler.update_voice(
+            voice_id,
+            name=name,
+            notes=notes,
+        )
+
+    def delete_voice_library_voice(self, voice_id: str):
+        """Deletes a voice library entry and its stored samples."""
+        voice_library_handler.delete_voice(voice_id)
+
+    def add_voice_library_samples(self, voice_id: str, source_wav_paths: list[str]) -> list[dict]:
+        """Copies WAV samples into the voice library and stores metadata."""
+        return voice_library_handler.add_samples(voice_id, source_wav_paths)
+
+    def update_voice_library_sample(
+        self,
+        voice_id: str,
+        sample_id: str,
+        *,
+        transcript: str | None = None,
+        notes: str | None = None,
+    ) -> dict:
+        """Updates transcript or notes for a voice sample."""
+        return voice_library_handler.update_sample(
+            voice_id,
+            sample_id,
+            transcript=transcript,
+            notes=notes,
+        )
+
+    def delete_voice_library_sample(self, voice_id: str, sample_id: str):
+        """Deletes one sample from a voice library entry."""
+        voice_library_handler.delete_sample(voice_id, sample_id)
+
+    def _resolve_tts_upload_base_url(self, service: str) -> str:
+        default_base_url = tts_handler.XTTS_API_BASE_URL
+        if service == "VoxCPM":
+            default_base_url = tts_handler.VOXCPM_API_BASE_URL
+        elif service == "FishS2":
+            default_base_url = tts_handler.FISHS2_API_BASE_URL
+
+        return (
+            self.state.tts.external_server_url
+            if self.state.tts.use_external_server
+            else default_base_url
+        )
+
+    def upload_voice_library_voice(
+        self,
+        voice_id: str,
+        sample_id: str | None = None,
+    ) -> tuple[bool, str]:
+        """Uploads a library voice to the current local backend service."""
         service = str(self.state.tts.service or "").strip()
-        if service not in {"XTTS", "VoxCPM"}:
-            self.show_error.emit("Upload Error", "Voice upload is only supported for XTTS and VoxCPM.")
+        if service not in {"XTTS", "VoxCPM", "FishS2"}:
+            message = "Voice library upload is only supported for XTTS, VoxCPM, and FishS2."
+            self.show_error.emit("Upload Error", message)
+            return False, message
+
+        try:
+            voice = voice_library_handler.get_voice(voice_id)
+            if voice is None:
+                raise ValueError("Voice library entry was not found.")
+
+            voice_name = str(voice.get("name") or "").strip()
+            if not voice_name:
+                raise ValueError("Voice library entry must have a name before upload.")
+
+            samples = list(voice.get("samples") or [])
+            if not samples:
+                raise ValueError("Voice library entry does not contain any samples.")
+
+            base_url = self._resolve_tts_upload_base_url(service)
+
+            if service == "XTTS":
+                sample_paths: list[str] = []
+                for sample in samples:
+                    sample_path = voice_library_handler.resolve_sample_path(
+                        str(sample.get("relative_path") or "")
+                    )
+                    if sample_path and os.path.isfile(sample_path):
+                        sample_paths.append(sample_path)
+
+                if not sample_paths:
+                    raise ValueError("None of the saved WAV files for this voice are available on disk.")
+
+                speaker_name = tts_handler.upload_speaker_voice(
+                    sample_paths,
+                    base_url=base_url,
+                    service=service,
+                    voice_id=voice_name,
+                )
+                self.log_message.emit(
+                    f"Uploaded XTTS voice: {speaker_name} ({len(sample_paths)} sample(s))"
+                )
+            else:
+                selected_sample = None
+                normalized_sample_id = str(sample_id or "").strip()
+                if normalized_sample_id:
+                    selected_sample = next(
+                        (
+                            sample
+                            for sample in samples
+                            if str(sample.get("id") or "").strip() == normalized_sample_id
+                        ),
+                        None,
+                    )
+                    if selected_sample is None:
+                        raise ValueError("Selected sample was not found in this voice entry.")
+                else:
+                    selected_sample = samples[0]
+
+                sample_path = voice_library_handler.resolve_sample_path(
+                    str(selected_sample.get("relative_path") or "")
+                )
+                if not sample_path or not os.path.isfile(sample_path):
+                    raise ValueError("Selected sample WAV file is missing on disk.")
+
+                normalized_transcript = str(selected_sample.get("transcript") or "").strip()
+                upload_prompt_text = normalized_transcript or None
+                upload_mode = "hifi" if (service == "VoxCPM" and upload_prompt_text) else "reference"
+
+                speaker_name = tts_handler.upload_speaker_voice(
+                    sample_path,
+                    base_url=base_url,
+                    service=service,
+                    prompt_text=upload_prompt_text,
+                    mode=upload_mode,
+                    voice_id=voice_name,
+                )
+                transcript_note = "with transcript" if upload_prompt_text else "without transcript"
+                if service == "VoxCPM":
+                    self.log_message.emit(
+                        f"Uploaded VoxCPM voice: {speaker_name} ({upload_mode} mode, {transcript_note})"
+                    )
+                else:
+                    self.log_message.emit(f"Uploaded FishS2 voice: {speaker_name} ({transcript_note})")
+
+            self.state.tts.speaker = speaker_name
+            self.state_changed.emit()
+            self.connect_tts_server()
+            return True, speaker_name
+        except Exception as e:
+            message = f"Failed to upload {service} voice from library: {e}"
+            self.show_error.emit("Upload Error", message)
+            return False, str(e)
+
+    def upload_speaker_voice(self, wav_file_path: str, prompt_text: str | None = None):
+        """Uploads a speaker voice file and refreshes available local backend voices."""
+        service = str(self.state.tts.service or "").strip()
+        if service not in {"XTTS", "VoxCPM", "FishS2"}:
+            self.show_error.emit(
+                "Upload Error",
+                "Voice upload is only supported for XTTS, VoxCPM, and FishS2.",
+            )
             return
 
         try:
-            default_base_url = (
-                tts_handler.XTTS_API_BASE_URL
-                if service == "XTTS"
-                else tts_handler.VOXCPM_API_BASE_URL
-            )
+            default_base_url = tts_handler.XTTS_API_BASE_URL
+            if service == "VoxCPM":
+                default_base_url = tts_handler.VOXCPM_API_BASE_URL
+            elif service == "FishS2":
+                default_base_url = tts_handler.FISHS2_API_BASE_URL
+
             base_url = (
                 self.state.tts.external_server_url
                 if self.state.tts.use_external_server
@@ -2751,21 +2969,26 @@ class AppLogic(QObject):
             )
 
             normalized_prompt_text = str(prompt_text or "").strip() or None
-            voxcpm_prompt_text = None
-            voxcpm_mode = None
+            upload_prompt_text = None
+            upload_mode = None
             if service == "VoxCPM":
-                voxcpm_prompt_text = normalized_prompt_text
-                voxcpm_mode = "hifi" if voxcpm_prompt_text else "reference"
+                upload_prompt_text = normalized_prompt_text
+                upload_mode = "hifi" if upload_prompt_text else "reference"
+            elif service == "FishS2":
+                upload_prompt_text = normalized_prompt_text
 
             speaker_name = tts_handler.upload_speaker_voice(
                 wav_file_path,
                 base_url=base_url,
                 service=service,
-                prompt_text=voxcpm_prompt_text,
-                mode=voxcpm_mode,
+                prompt_text=upload_prompt_text,
+                mode=upload_mode,
             )
             if service == "VoxCPM":
-                self.log_message.emit(f"Uploaded VoxCPM voice: {speaker_name} ({voxcpm_mode} mode)")
+                self.log_message.emit(f"Uploaded VoxCPM voice: {speaker_name} ({upload_mode} mode)")
+            elif service == "FishS2":
+                transcript_note = "with transcript" if upload_prompt_text else "without transcript"
+                self.log_message.emit(f"Uploaded FishS2 voice: {speaker_name} ({transcript_note})")
             else:
                 self.log_message.emit(f"Uploaded {service} voice: {speaker_name}")
             self.state.tts.speaker = speaker_name
@@ -3643,6 +3866,11 @@ class AppLogic(QObject):
                 if self.state.tts.use_external_server and active_service == "VoxCPM"
                 else tts_handler.VOXCPM_API_BASE_URL
             )
+            fishs2_url = (
+                self.state.tts.external_server_url
+                if self.state.tts.use_external_server and active_service == "FishS2"
+                else tts_handler.FISHS2_API_BASE_URL
+            )
             voxtral_url = (
                 self.state.tts.external_server_url
                 if self.state.tts.use_external_server and active_service == "Voxtral"
@@ -3658,6 +3886,7 @@ class AppLogic(QObject):
                 self.state.tts.__dict__,
                 xtts_base_url=xtts_url,
                 voxcpm_base_url=voxcpm_url,
+                fishs2_base_url=fishs2_url,
                 voxtral_base_url=voxtral_url,
                 kokoro_base_url=kokoro_url,
             )

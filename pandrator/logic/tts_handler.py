@@ -4,6 +4,7 @@ import logging
 import os
 import copy
 import re
+from contextlib import ExitStack
 
 import requests
 from pydub import AudioSegment
@@ -30,6 +31,9 @@ XTTS_API_BASE_URL = "http://127.0.0.1:8020"
 
 # VoxCPM default URLs
 VOXCPM_API_BASE_URL = "http://127.0.0.1:8020"
+
+# FishS2 default URLs
+FISHS2_API_BASE_URL = "http://127.0.0.1:8020"
 
 # Voxtral default URLs
 VOXTRAL_API_BASE_URL = "http://127.0.0.1:8000"
@@ -58,6 +62,14 @@ VOXCPM_DEFAULT_MIN_LEN = 2
 VOXCPM_DEFAULT_MAX_LEN = 4096
 VOXCPM_TTS_MODELS = [VOXCPM_DEFAULT_MODEL, VOXCPM_MODEL_ALIAS]
 VOXCPM_UPLOAD_FILE_PURPOSE = "user_data"
+FISHS2_DEFAULT_MODEL = "fishaudio/s2-pro"
+FISHS2_MODEL_ALIASES = [
+    "fishs2",
+    "fish-s2",
+    "s2-pro",
+]
+FISHS2_DEFAULT_VOICE = "default"
+FISHS2_UPLOAD_FILE_PURPOSE = "user_data"
 VOXTRAL_DEFAULT_MODEL = "auto"
 VOXTRAL_DEFAULT_VOICE = "casual_female"
 VOXTRAL_INSTRUCTIONS_PREFIX = "voxtral_options:"
@@ -799,6 +811,17 @@ def _normalize_voxcpm_model(model_name: str, fallback: str = VOXCPM_DEFAULT_MODE
     return normalized
 
 
+def _normalize_fishs2_model(model_name: str, fallback: str = FISHS2_DEFAULT_MODEL) -> str:
+    normalized = str(model_name or "").strip()
+    if not normalized:
+        return fallback
+
+    lowered = normalized.lower()
+    if lowered in {"fishs2", "fish-s2", "s2-pro", "fishaudio/s2-pro"}:
+        return FISHS2_DEFAULT_MODEL
+    return normalized
+
+
 def _build_voxcpm_options(tts_settings: dict) -> dict[str, object]:
     cfg_value = _coerce_float(
         tts_settings.get("voxcpm_cfg_value"),
@@ -1409,6 +1432,13 @@ def _resolve_voxcpm_api_key() -> str:
     return XTTS_OPENAI_PLACEHOLDER_API_KEY
 
 
+def _resolve_fishs2_api_key() -> str:
+    api_key = os.getenv("FISHS2_API_KEY", "").strip()
+    if api_key:
+        return api_key
+    return XTTS_OPENAI_PLACEHOLDER_API_KEY
+
+
 def _resolve_voxtral_api_key() -> str:
     api_key = os.getenv("VOXTRAL_API_KEY", "").strip()
     if api_key:
@@ -1667,6 +1697,99 @@ def get_voxcpm_voices(base_url: str = VOXCPM_API_BASE_URL) -> list[str]:
             continue
 
     return _merge_catalog_with_discovered([VOXCPM_DEFAULT_VOICE], discovered_voices)
+
+
+def check_fishs2_connection(base_url: str = FISHS2_API_BASE_URL) -> bool:
+    """Checks if the FishS2 server is reachable."""
+    normalized_base_url = _normalize_base_url(base_url, FISHS2_API_BASE_URL)
+    api_key = _resolve_fishs2_api_key()
+
+    probe_urls = [
+        f"{normalized_base_url}/health",
+        *_openai_models_urls(normalized_base_url),
+        *_openai_voice_catalog_urls(normalized_base_url),
+        *_openai_files_urls(normalized_base_url),
+    ]
+
+    for probe_url in _dedupe_ordered(probe_urls):
+        try:
+            response = requests.get(
+                probe_url,
+                headers=_openai_auth_headers(api_key),
+                timeout=4,
+            )
+            if _should_try_next_openai_candidate(response.status_code):
+                continue
+            if response.status_code < 400:
+                return True
+        except requests.exceptions.RequestException:
+            continue
+
+    return False
+
+
+def get_fishs2_models(base_url: str = FISHS2_API_BASE_URL) -> list[str]:
+    """Fetches available FishS2 models from server."""
+    normalized_base_url = _normalize_base_url(base_url, FISHS2_API_BASE_URL)
+    api_key = _resolve_fishs2_api_key()
+
+    discovered_models: list[str] = []
+    for models_url in _openai_models_urls(normalized_base_url):
+        try:
+            response = requests.get(
+                models_url,
+                headers=_openai_auth_headers(api_key),
+                timeout=8,
+            )
+            if _should_try_next_openai_candidate(response.status_code):
+                continue
+
+            response.raise_for_status()
+            discovered_models = [
+                _normalize_fishs2_model(model, fallback="")
+                for model in _extract_models_from_openai_payload(response.json())
+            ]
+            discovered_models = [model for model in discovered_models if model]
+            if discovered_models:
+                break
+        except (requests.exceptions.RequestException, ValueError) as e:
+            logging.error("Failed to list FishS2 models from %s: %s", models_url, e)
+            continue
+
+    preferred_models = [FISHS2_DEFAULT_MODEL] + FISHS2_MODEL_ALIASES
+    return _merge_catalog_with_discovered(preferred_models, discovered_models)
+
+
+def get_fishs2_voices(base_url: str = FISHS2_API_BASE_URL) -> list[str]:
+    """Fetches available FishS2 voices from server."""
+    normalized_base_url = _normalize_base_url(base_url, FISHS2_API_BASE_URL)
+    api_key = _resolve_fishs2_api_key()
+
+    discovered_voices: list[str] = []
+    voice_urls = _dedupe_ordered(
+        _openai_voice_catalog_urls(normalized_base_url)
+        + _openai_files_urls(normalized_base_url)
+    )
+
+    for voices_url in voice_urls:
+        try:
+            response = requests.get(
+                voices_url,
+                headers=_openai_auth_headers(api_key),
+                timeout=8,
+            )
+            if _should_try_next_openai_candidate(response.status_code):
+                continue
+
+            response.raise_for_status()
+            discovered_voices = _extract_voices_from_openai_payload(response.json())
+            if discovered_voices:
+                break
+        except (requests.exceptions.RequestException, ValueError) as e:
+            logging.error("Failed to list FishS2 voices from %s: %s", voices_url, e)
+            continue
+
+    return _merge_catalog_with_discovered([FISHS2_DEFAULT_VOICE], discovered_voices)
 
 
 def check_voxtral_connection(base_url: str = VOXTRAL_API_BASE_URL) -> bool:
@@ -1972,8 +2095,51 @@ def get_xtts_models(base_url: str = XTTS_API_BASE_URL) -> list[str]:
     return _merge_catalog_with_discovered([XTTS_DEFAULT_MODEL], discovered_models)
 
 
+def _normalize_upload_wav_paths(wav_file_path: str | list[str]) -> list[str]:
+    if isinstance(wav_file_path, str):
+        candidates = [wav_file_path]
+    elif isinstance(wav_file_path, (list, tuple, set)):
+        candidates = [str(candidate or "") for candidate in wav_file_path]
+    else:
+        raise ValueError("Voice upload expects a WAV path or a list of WAV paths.")
+
+    normalized_paths: list[str] = []
+    for candidate in candidates:
+        normalized_candidate = str(candidate or "").strip()
+        if not normalized_candidate:
+            continue
+        if not normalized_candidate.lower().endswith(".wav"):
+            raise ValueError("Only .wav files are supported for speaker voices.")
+        if not os.path.isfile(normalized_candidate):
+            raise ValueError(f"WAV file not found: {normalized_candidate}")
+        normalized_paths.append(normalized_candidate)
+
+    if not normalized_paths:
+        raise ValueError("No WAV files were provided for upload.")
+
+    return normalized_paths
+
+
+def _extract_uploaded_identifier(payload: object) -> str:
+    if isinstance(payload, dict):
+        return str(
+            payload.get("id")
+            or payload.get("voice_id")
+            or payload.get("name")
+            or ""
+        ).strip()
+
+    if isinstance(payload, list):
+        for item in payload:
+            uploaded_identifier = _extract_uploaded_identifier(item)
+            if uploaded_identifier:
+                return uploaded_identifier
+
+    return ""
+
+
 def _upload_speaker_voice_openai_compatible(
-    wav_file_path: str,
+    wav_file_path: str | list[str],
     *,
     base_url: str,
     fallback_base_url: str,
@@ -1982,42 +2148,57 @@ def _upload_speaker_voice_openai_compatible(
     upload_purpose: str,
     prompt_text: str | None = None,
     mode: str | None = None,
+    voice_id: str | None = None,
 ) -> str:
-    if not wav_file_path.lower().endswith(".wav"):
-        raise ValueError("Only .wav files are supported for speaker voices.")
-
+    wav_file_paths = _normalize_upload_wav_paths(wav_file_path)
     normalized_base_url = _normalize_base_url(base_url, fallback_base_url)
     upload_voice_urls = _openai_audio_voices_urls(normalized_base_url)
     upload_file_urls = _openai_files_urls(normalized_base_url)
     normalized_prompt_text = str(prompt_text or "").strip()
     normalized_mode = str(mode or "").strip().lower()
+    first_voice_filename = os.path.basename(wav_file_paths[0])
+    fallback_voice_name = os.path.splitext(first_voice_filename)[0]
+    resolved_voice_id = str(voice_id or fallback_voice_name).strip() or fallback_voice_name
 
     try:
         # Preferred path: ecosystem voice endpoint (/v1/audio/voices).
         last_voice_response = None
-        voice_filename = os.path.basename(wav_file_path)
-        voice_name = os.path.splitext(voice_filename)[0]
         for upload_voice_url in upload_voice_urls:
             # Keep both multipart field names for compatibility across API wrappers.
-            with open(wav_file_path, "rb") as files_wav, open(wav_file_path, "rb") as audio_sample_wav:
-                files = {
-                    "files": (
-                        voice_filename,
-                        files_wav,
-                        "audio/wav",
-                    ),
-                    "audio_sample": (
-                        voice_filename,
-                        audio_sample_wav,
-                        "audio/wav",
-                    ),
-                }
+            with ExitStack() as stack:
+                files_payload = []
+                for sample_path in wav_file_paths:
+                    sample_filename = os.path.basename(sample_path)
+                    sample_handle = stack.enter_context(open(sample_path, "rb"))
+                    files_payload.append(
+                        (
+                            "files",
+                            (
+                                sample_filename,
+                                sample_handle,
+                                "audio/wav",
+                            ),
+                        )
+                    )
+
+                audio_sample_handle = stack.enter_context(open(wav_file_paths[0], "rb"))
+                files_payload.append(
+                    (
+                        "audio_sample",
+                        (
+                            first_voice_filename,
+                            audio_sample_handle,
+                            "audio/wav",
+                        ),
+                    )
+                )
+
                 form_data = {
-                    "voice_id": voice_name,
-                    "name": voice_name,
+                    "voice_id": resolved_voice_id,
+                    "name": resolved_voice_id,
                     "purpose": upload_purpose,
                 }
-                if normalized_prompt_text:
+                if normalized_prompt_text and len(wav_file_paths) == 1:
                     form_data["prompt_text"] = normalized_prompt_text
                 if normalized_mode:
                     form_data["mode"] = normalized_mode
@@ -2025,7 +2206,7 @@ def _upload_speaker_voice_openai_compatible(
                 response = requests.post(
                     upload_voice_url,
                     headers=_openai_auth_headers(api_key),
-                    files=files,
+                    files=files_payload,
                     data=form_data,
                     timeout=120,
                 )
@@ -2044,84 +2225,81 @@ def _upload_speaker_voice_openai_compatible(
             except ValueError:
                 payload = {}
 
-            uploaded_voice_id = str(
-                payload.get("id")
-                or payload.get("voice_id")
-                or payload.get("name")
-                or ""
-            ).strip()
+            uploaded_voice_id = _extract_uploaded_identifier(payload)
             if not uploaded_voice_id:
                 raise RuntimeError(
                     f"{service_name} voice upload succeeded but did not return a voice ID."
                 )
 
             logging.info(
-                "Uploaded %s voice '%s' via /audio/voices endpoint",
+                "Uploaded %s voice '%s' via /audio/voices endpoint (%d sample(s))",
                 service_name,
                 uploaded_voice_id,
+                len(wav_file_paths),
             )
             return uploaded_voice_id
 
         # Legacy path: OpenAI-compatible files endpoint (/v1/files).
         last_response = None
         for upload_url in upload_file_urls:
-            with open(wav_file_path, "rb") as wav_file:
-                files = {
-                    "file": (
-                        voice_filename,
-                        wav_file,
-                        "audio/wav",
+            uploaded_file_id = ""
+            for sample_path in wav_file_paths:
+                sample_filename = os.path.basename(sample_path)
+                with open(sample_path, "rb") as wav_file:
+                    files = {
+                        "file": (
+                            sample_filename,
+                            wav_file,
+                            "audio/wav",
+                        )
+                    }
+                    form_data = {
+                        "voice_id": resolved_voice_id,
+                        "name": resolved_voice_id,
+                        "purpose": upload_purpose,
+                    }
+                    if normalized_prompt_text and len(wav_file_paths) == 1:
+                        form_data["prompt_text"] = normalized_prompt_text
+                    if normalized_mode:
+                        form_data["mode"] = normalized_mode
+
+                    response = requests.post(
+                        upload_url,
+                        headers=_openai_auth_headers(api_key),
+                        files=files,
+                        data=form_data,
+                        timeout=120,
                     )
-                }
-                form_data = {
-                    "voice_id": voice_name,
-                    "name": voice_name,
-                    "purpose": upload_purpose,
-                }
-                if normalized_prompt_text:
-                    form_data["prompt_text"] = normalized_prompt_text
-                if normalized_mode:
-                    form_data["mode"] = normalized_mode
 
-                response = requests.post(
-                    upload_url,
-                    headers=_openai_auth_headers(api_key),
-                    files=files,
-                    data=form_data,
-                    timeout=120,
+                if _should_try_next_openai_candidate(response.status_code):
+                    last_response = response
+                    uploaded_file_id = ""
+                    break
+
+                if response.status_code >= 400:
+                    raise RuntimeError(
+                        f"{service_name} voice upload failed ({response.status_code}): {response.text}"
+                    )
+
+                try:
+                    payload = response.json()
+                except ValueError:
+                    payload = {}
+
+                uploaded_file_id = _extract_uploaded_identifier(payload)
+                if not uploaded_file_id:
+                    raise RuntimeError(
+                        f"{service_name} file upload succeeded but did not return a file ID."
+                    )
+
+            if uploaded_file_id:
+                logging.info(
+                    "Uploaded %s voice file '%s' via OpenAI-compatible endpoint (%d sample(s))",
+                    service_name,
+                    uploaded_file_id,
+                    len(wav_file_paths),
                 )
-
-            if _should_try_next_openai_candidate(response.status_code):
-                last_response = response
-                continue
-
-            if response.status_code >= 400:
-                raise RuntimeError(
-                    f"{service_name} voice upload failed ({response.status_code}): {response.text}"
-                )
-
-            try:
-                payload = response.json()
-            except ValueError:
-                payload = {}
-
-            uploaded_file_id = str(
-                payload.get("id")
-                or payload.get("voice_id")
-                or payload.get("name")
-                or ""
-            ).strip()
-            if not uploaded_file_id:
-                raise RuntimeError(
-                    f"{service_name} file upload succeeded but did not return a file ID."
-                )
-
-            logging.info(
-                "Uploaded %s voice file '%s' via OpenAI-compatible endpoint",
-                service_name,
-                uploaded_file_id,
-            )
-            return uploaded_file_id
+                return uploaded_file_id
 
         if (
             last_voice_response is not None
@@ -2151,8 +2329,10 @@ def _upload_speaker_voice_openai_compatible(
 
 
 def upload_xtts_speaker_voice(
-    wav_file_path: str,
+    wav_file_path: str | list[str],
     base_url: str = XTTS_API_BASE_URL,
+    *,
+    voice_id: str | None = None,
 ) -> str:
     """Uploads voice to XTTS and returns uploaded voice identifier."""
     return _upload_speaker_voice_openai_compatible(
@@ -2162,15 +2342,17 @@ def upload_xtts_speaker_voice(
         service_name="XTTS",
         api_key=XTTS_OPENAI_PLACEHOLDER_API_KEY,
         upload_purpose=XTTS_UPLOAD_FILE_PURPOSE,
+        voice_id=voice_id,
     )
 
 
 def upload_voxcpm_speaker_voice(
-    wav_file_path: str,
+    wav_file_path: str | list[str],
     base_url: str = VOXCPM_API_BASE_URL,
     *,
     prompt_text: str | None = None,
     mode: str = "reference",
+    voice_id: str | None = None,
 ) -> str:
     """Uploads voice to VoxCPM and returns uploaded voice identifier."""
     return _upload_speaker_voice_openai_compatible(
@@ -2182,16 +2364,38 @@ def upload_voxcpm_speaker_voice(
         upload_purpose=VOXCPM_UPLOAD_FILE_PURPOSE,
         prompt_text=prompt_text,
         mode=mode,
+        voice_id=voice_id,
+    )
+
+
+def upload_fishs2_speaker_voice(
+    wav_file_path: str | list[str],
+    base_url: str = FISHS2_API_BASE_URL,
+    *,
+    prompt_text: str | None = None,
+    voice_id: str | None = None,
+) -> str:
+    """Uploads voice to FishS2 and returns uploaded voice identifier."""
+    return _upload_speaker_voice_openai_compatible(
+        wav_file_path,
+        base_url=base_url,
+        fallback_base_url=FISHS2_API_BASE_URL,
+        service_name="FishS2",
+        api_key=_resolve_fishs2_api_key(),
+        upload_purpose=FISHS2_UPLOAD_FILE_PURPOSE,
+        prompt_text=prompt_text,
+        voice_id=voice_id,
     )
 
 
 def upload_speaker_voice(
-    wav_file_path: str,
+    wav_file_path: str | list[str],
     base_url: str = XTTS_API_BASE_URL,
     *,
     service: str = "XTTS",
     prompt_text: str | None = None,
     mode: str | None = None,
+    voice_id: str | None = None,
 ) -> str:
     """Uploads a speaker voice file and returns uploaded voice identifier."""
     normalized_service = str(service or "XTTS").strip().lower()
@@ -2201,11 +2405,21 @@ def upload_speaker_voice(
             base_url=base_url,
             prompt_text=prompt_text,
             mode=mode or "reference",
+            voice_id=voice_id,
+        )
+
+    if normalized_service in {"fishs2", "fish-s2", "fishs2-cpp", "fishs2cpp"}:
+        return upload_fishs2_speaker_voice(
+            wav_file_path,
+            base_url=base_url,
+            prompt_text=prompt_text,
+            voice_id=voice_id,
         )
 
     return upload_xtts_speaker_voice(
         wav_file_path,
         base_url=base_url,
+        voice_id=voice_id,
     )
 
 
@@ -2371,6 +2585,53 @@ def _request_voxcpm_audio(text: str, tts_settings: dict, voxcpm_base_url: str) -
         return last_response
 
     raise RuntimeError(f"No VoxCPM speech endpoint could be resolved for '{normalized_base_url}'.")
+
+
+def _build_fishs2_payload(text: str, tts_settings: dict) -> dict:
+    model = _normalize_fishs2_model(
+        tts_settings.get("xtts_model", ""),
+        fallback=FISHS2_DEFAULT_MODEL,
+    )
+    voice = str(tts_settings.get("speaker") or "").strip() or FISHS2_DEFAULT_VOICE
+
+    payload = {
+        "model": model,
+        "input": text,
+        "voice": voice,
+        "response_format": "wav",
+        "speed": 1.0,
+    }
+
+    instructions = str(tts_settings.get("openai_audio_instructions") or "").strip()
+    if instructions:
+        payload["instructions"] = instructions
+
+    return payload
+
+
+def _request_fishs2_audio(text: str, tts_settings: dict, fishs2_base_url: str) -> requests.Response:
+    normalized_base_url = _normalize_base_url(fishs2_base_url, FISHS2_API_BASE_URL)
+    api_key = _resolve_fishs2_api_key()
+    payload = _build_fishs2_payload(text, tts_settings)
+    last_response = None
+
+    for speech_url in _openai_audio_speech_urls(normalized_base_url):
+        response = requests.post(
+            speech_url,
+            headers=_openai_auth_headers(api_key),
+            json=payload,
+            timeout=120,
+        )
+
+        if _should_try_next_openai_candidate(response.status_code):
+            last_response = response
+            continue
+        return response
+
+    if last_response is not None:
+        return last_response
+
+    raise RuntimeError(f"No FishS2 speech endpoint could be resolved for '{normalized_base_url}'.")
 
 
 def _build_voxtral_payload(text: str, tts_settings: dict) -> dict:
@@ -2643,11 +2904,12 @@ def text_to_audio(
     text: str,
     tts_settings: dict,
     xtts_base_url: str = XTTS_API_BASE_URL,
+    voxcpm_base_url: str = VOXCPM_API_BASE_URL,
+    fishs2_base_url: str = FISHS2_API_BASE_URL,
     voxtral_base_url: str = VOXTRAL_API_BASE_URL,
     kokoro_base_url: str = KOKORO_API_BASE_URL,
     silero_base_url: str = SILERO_API_BASE_URL,
     max_attempts: int = 5,
-    voxcpm_base_url: str = VOXCPM_API_BASE_URL,
 ) -> AudioSegment | None:
     """
     Generates audio from text using the specified TTS service.
@@ -2662,6 +2924,8 @@ def text_to_audio(
                 response = _request_xtts_audio(text, tts_settings, xtts_base_url)
             elif service == "VoxCPM":
                 response = _request_voxcpm_audio(text, tts_settings, voxcpm_base_url)
+            elif service == "FishS2":
+                response = _request_fishs2_audio(text, tts_settings, fishs2_base_url)
             elif service == "Voxtral":
                 response = _request_voxtral_audio(text, tts_settings, voxtral_base_url)
             elif service == "Kokoro":

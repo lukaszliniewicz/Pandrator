@@ -109,7 +109,7 @@ class TtsSettingsSection(QFrame):
         layout.setVerticalSpacing(8)
 
         self.tts_service_combo = QComboBox()
-        self.tts_service_combo.addItems(["XTTS", "VoxCPM", "Voxtral", "Kokoro", "Silero", "OpenAI-Compatible"])
+        self.tts_service_combo.addItems(["XTTS", "VoxCPM", "FishS2", "Voxtral", "Kokoro", "Silero", "OpenAI-Compatible"])
         layout.addWidget(QLabel("TTS Service:"), 0, 0)
         layout.addWidget(self.tts_service_combo, 0, 1)
 
@@ -145,7 +145,7 @@ class TtsSettingsSection(QFrame):
         layout.addWidget(self.speaker_label, 5, 0)
         layout.addWidget(self.speaker_combo, 5, 1)
 
-        self.upload_voice_button = QPushButton("Upload New Voices")
+        self.upload_voice_button = QPushButton("Manage Voices")
         layout.addWidget(self.upload_voice_button, 5, 2)
 
         layout.addWidget(QLabel("Speed:"), 6, 0)

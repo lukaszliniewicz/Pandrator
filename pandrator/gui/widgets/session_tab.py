@@ -5,6 +5,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QCheckBox, QFileDialog, QInputDialog, QMessageBox, QVBoxLayout, QWidget
 
 from ...constants import (
+    FISHS2_LANGUAGES,
     KOKORO_LANGUAGES,
     LANGUAGE_DISPLAY_NAMES,
     SILERO_LANGUAGES,
@@ -15,6 +16,7 @@ from ..dialogs.custom_prompt_dialog import CustomPromptDialog
 from ..dialogs.metadata_dialog import MetadataDialog
 from ..dialogs.paste_text_dialog import PasteTextDialog
 from ..dialogs.review_text_dialog import ReviewTextDialog
+from ..dialogs.voice_library_dialog import VoiceLibraryDialog
 from .session_sections import (
     AdvancedTtsSettingsSection,
     DubbingSection,
@@ -1002,6 +1004,7 @@ class SessionTab(QWidget):
 
         is_xtts = state.tts.service == "XTTS"
         is_voxcpm = state.tts.service == "VoxCPM"
+        is_fishs2 = state.tts.service == "FishS2"
         is_voxtral = state.tts.service == "Voxtral"
         is_kokoro = state.tts.service == "Kokoro"
         is_cloud_tts = state.tts.service in {
@@ -1009,7 +1012,7 @@ class SessionTab(QWidget):
             "OpenAI",
             "Gemini",
         }
-        is_model_based_tts = is_xtts or is_voxcpm or is_voxtral or is_kokoro or is_cloud_tts
+        is_model_based_tts = is_xtts or is_voxcpm or is_fishs2 or is_voxtral or is_kokoro or is_cloud_tts
         show_xtts_advanced_settings = self.logic.should_show_xtts_advanced_settings()
         show_voxcpm_advanced_settings = is_voxcpm
         show_voxtral_advanced_settings = is_voxtral
@@ -1024,9 +1027,12 @@ class SessionTab(QWidget):
             "Connecting..." if tts_connecting else "Connect to Server"
         )
 
-        self.use_external_server_checkbox.setVisible(is_xtts or is_voxcpm or is_voxtral or is_kokoro)
+        self.use_external_server_checkbox.setVisible(
+            is_xtts or is_voxcpm or is_fishs2 or is_voxtral or is_kokoro
+        )
         self.external_server_url_edit.setVisible(
-            (is_xtts or is_voxcpm or is_voxtral or is_kokoro) and state.tts.use_external_server
+            (is_xtts or is_voxcpm or is_fishs2 or is_voxtral or is_kokoro)
+            and state.tts.use_external_server
         )
         self.external_server_url_edit.setPlaceholderText(
             "http://localhost:8000"
@@ -1050,7 +1056,7 @@ class SessionTab(QWidget):
         self.xtts_model_combo.setVisible(show_model_selector)
 
         self.speaker_label.setText("Speaker Voice:" if is_xtts else "Voice:")
-        self.upload_voice_button.setVisible(is_xtts or is_voxcpm)
+        self.upload_voice_button.setVisible(is_xtts or is_voxcpm or is_fishs2)
 
         self.cloud_provider_label.setVisible(is_cloud_tts)
         self.cloud_provider_combo.setVisible(is_cloud_tts)
@@ -1570,6 +1576,8 @@ class SessionTab(QWidget):
             return KOKORO_LANGUAGES
         if service == "Voxtral":
             return VOXTRAL_LANGUAGES
+        if service == "FishS2":
+            return FISHS2_LANGUAGES
         if service in {"XTTS", "VoxCPM", "OpenAI", "Gemini", "OpenAI-Compatible"}:
             return XTTS_LANGUAGES
         return []
@@ -1750,96 +1758,9 @@ class SessionTab(QWidget):
         if file_path:
             self.logic.select_cover_image(file_path)
 
-    @staticmethod
-    def _read_voxcpm_transcript_file(file_path: str) -> str:
-        for encoding in ("utf-8", "utf-8-sig", "cp1250", "cp1252", "latin-1"):
-            try:
-                with open(file_path, "r", encoding=encoding) as handle:
-                    return handle.read()
-            except UnicodeDecodeError:
-                continue
-
-        with open(file_path, "r", encoding="utf-8", errors="ignore") as handle:
-            return handle.read()
-
-    def _prompt_voxcpm_transcription(self) -> tuple[bool, str | None]:
-        chooser = QMessageBox(self)
-        chooser.setIcon(QMessageBox.Icon.Question)
-        chooser.setWindowTitle("VoxCPM Transcript")
-        chooser.setText("Do you want to attach a transcript for this voice sample?")
-        chooser.setInformativeText(
-            "For normal voice cloning, choose 'No Transcript'. "
-            "If you attach a transcript, this voice is uploaded in hi-fi mode."
-        )
-
-        skip_button = chooser.addButton("No Transcript", QMessageBox.ButtonRole.AcceptRole)
-        paste_button = chooser.addButton("Type/Paste Text", QMessageBox.ButtonRole.ActionRole)
-        file_button = chooser.addButton("Load TXT File", QMessageBox.ButtonRole.ActionRole)
-        chooser.addButton(QMessageBox.StandardButton.Cancel)
-        chooser.setDefaultButton(skip_button)
-        chooser.exec()
-
-        clicked_button = chooser.clickedButton()
-        if clicked_button == skip_button:
-            return False, None
-
-        if clicked_button == paste_button:
-            transcript, ok = QInputDialog.getMultiLineText(
-                self,
-                "Paste Transcript",
-                "Paste transcript for this sample:",
-            )
-            if not ok:
-                return True, None
-
-            normalized_transcript = transcript.strip()
-            return False, normalized_transcript or None
-
-        if clicked_button == file_button:
-            transcript_file_path, _ = QFileDialog.getOpenFileName(
-                self,
-                "Select Transcript File",
-                "",
-                "Text Files (*.txt);;All files (*.*)",
-            )
-            if not transcript_file_path:
-                return True, None
-
-            try:
-                transcript = self._read_voxcpm_transcript_file(transcript_file_path).strip()
-            except OSError as e:
-                QMessageBox.critical(self, "Transcript Error", f"Could not read transcript file: {e}")
-                return True, None
-
-            if not transcript:
-                QMessageBox.warning(
-                    self,
-                    "Transcript Empty",
-                    "The selected transcript file is empty. Uploading without transcript.",
-                )
-                return False, None
-
-            return False, transcript
-
-        return True, None
-
     def _on_upload_voice(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Upload Speaker Voice",
-            "",
-            "WAV files (*.wav)",
-        )
-        if not file_path:
-            return
-
-        prompt_text = None
-        if self.logic.state.tts.service == "VoxCPM":
-            cancelled, prompt_text = self._prompt_voxcpm_transcription()
-            if cancelled:
-                return
-
-        self.logic.upload_speaker_voice(file_path, prompt_text=prompt_text)
+        dialog = VoiceLibraryDialog(self.logic, self)
+        dialog.exec()
 
     def _on_open_custom_prompt(self):
         dialog = CustomPromptDialog(
