@@ -50,6 +50,7 @@ def main():
     parser.add_argument("-connect", "--connect", action="store_true", help="Connect to a TTS service on launch")
     parser.add_argument("-xtts", "--xtts", action="store_true", help="Connect to XTTS")
     parser.add_argument("-voxcpm", "--voxcpm", action="store_true", help="Connect to VoxCPM")
+    parser.add_argument("-fishs2", "--fishs2", action="store_true", help="Connect to FishS2")
     parser.add_argument("-voxtral", "--voxtral", action="store_true", help="Connect to Voxtral")
     parser.add_argument("-kokoro", "--kokoro", action="store_true", help="Connect to Kokoro")
     parser.add_argument("-silero", "--silero", action="store_true", help="Connect to Silero")
@@ -75,6 +76,8 @@ def main():
             auto_connect_service = "XTTS"
         elif args.voxcpm:
             auto_connect_service = "VoxCPM"
+        elif args.fishs2:
+            auto_connect_service = "FishS2"
         elif args.voxtral:
             auto_connect_service = "Voxtral"
         elif args.kokoro:
@@ -88,6 +91,9 @@ def main():
             logic.state.tts.use_external_server = False
             logic.state.tts.external_server_url = "http://127.0.0.1:8020"
         elif auto_connect_service == "VoxCPM":
+            logic.state.tts.use_external_server = False
+            logic.state.tts.external_server_url = "http://127.0.0.1:8020"
+        elif auto_connect_service == "FishS2":
             logic.state.tts.use_external_server = False
             logic.state.tts.external_server_url = "http://127.0.0.1:8020"
         elif auto_connect_service == "Voxtral":

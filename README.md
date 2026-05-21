@@ -29,10 +29,12 @@ Pandrator aspires to be easy to use and install - it has a one-click installer a
 - transform text, PDF (including see-through cropping), EPUB and SRT files into spoken audio in multiple languages based chiefly on open source software run locally, including preprocessing to make the generated speech sound as natural as possible by, among other things, splitting the text into paragraphs, sentences and smaller logical text blocks (clauses), which the TTS models can process with minimal artifacts. Each sentence can be regenerated if the first attempt is not satisfactory, including marking for regeneration using mouse or keyboard actions when listening back to the generation. Voice cloning is possible for models that support it, and text can be additionally preprocessed using LLMs (to remove OCR artifacts or spell out things that the TTS models struggle with, like Roman numerals and abbreviations, for example),
 - generate dubbing either directly from a video file, including transcription (using [WhisperX](https://github.com/m-bain/whisperX)), or from an .srt file. It includes a complete workflow from a video file to a dubbed video file with subtitles - including translation using a variety of APIs and techniques to improve the quality of translation. [Subdub](https://github.com/lukaszliniewicz/Subdub), a companion app developed for this purpose, can also be used on its own. You can also correct or translate subtitles without generating audio. 
 
-At the moment, Pandrator supports multiple TTS backends: [XTTS v2](https://huggingface.co/coqui/XTTS-v2) via the OpenAI-compatible [XTTS2 API server](https://github.com/lukaszliniewicz/xtts2_api), [Voxtral](https://huggingface.co/mistralai/Voxtral-4B-TTS-2603) via [voxtral-fastapi](https://github.com/lukaszliniewicz/voxtral-fastapi), [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) via [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI), and [Silero](https://github.com/snakers4/silero-models) via `silero-api-server`. It also supports commercial and custom OpenAI-compatible audio endpoints and optional [RVC Python (JarodMica fork)](https://github.com/JarodMica/rvc-python) post-processing. For local LLM text preprocessing, Pandrator works well with OpenAI-compatible local servers such as LM Studio and Ollama-compatible endpoints.
+At the moment, Pandrator supports multiple TTS backends: [XTTS v2](https://huggingface.co/coqui/XTTS-v2) via the OpenAI-compatible [XTTS2 API server](https://github.com/lukaszliniewicz/xtts2_api), [Fish Audio S2 Pro GGUF](https://huggingface.co/rodrigomt/s2-pro-gguf) via [fishs2-cpp-fastapi](https://github.com/lukaszliniewicz/fishs2-cpp-fastapi), [Voxtral](https://huggingface.co/mistralai/Voxtral-4B-TTS-2603) via [voxtral-fastapi](https://github.com/lukaszliniewicz/voxtral-fastapi), [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) via [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI), and [Silero](https://github.com/snakers4/silero-models) via `silero-api-server`. It also supports commercial and custom OpenAI-compatible audio endpoints and optional [RVC Python (JarodMica fork)](https://github.com/JarodMica/rvc-python) post-processing. For local LLM text preprocessing, Pandrator works well with OpenAI-compatible local servers such as LM Studio and Ollama-compatible endpoints.
 
 ## Supported Languages
 - XTTS supports English (en), Spanish (es), French (fr), German (de), Italian (it), Portuguese (pt), Polish (pl), Turkish (tr), Russian (ru), Dutch (nl), Czech (cs), Arabic (ar), Chinese (zh-cn), Japanese (ja), Hungarian (hu) and Korean (ko). 
+
+- FishS2 currently uses multilingual Fish S2 GGUF models and OpenAI-compatible voice upload endpoints via `fishs2-cpp-fastapi`.
 
 - Voxtral currently supports Arabic (ar), English (en), German (de), Spanish (es), French (fr), Hindi (hi), Italian (it), Dutch (nl), and Portuguese (pt) via preset voices exposed by `voxtral-fastapi`.
 
@@ -58,6 +60,7 @@ https://github.com/user-attachments/assets/1ba8068d-986e-4dec-a162-3b7cc49052f4
 | TTS Model       | CPU Requirements                                              | GPU Requirements                                                       |
 |------------|---------------------------------------------------------------|-------------------------------------------------------------------------|
 | XTTS       | A reasonably modern CPU with 4+ cores (for CPU-only generation)              | NVIDIA GPU with 4GB+ of VRAM for good performance                        |
+| FishS2     | CPU mode exists but is generally too slow for practical long-form usage       | NVIDIA GPU strongly recommended (8GB+ VRAM practical target)             |
 | Voxtral    | N/A (GPU-only backend in current wrapper)                    | Dedicated GPU strongly recommended (4GB+ practical minimum)             |
 | Kokoro     | Works well on modern CPUs; install includes direct eSpeak setup on Windows    | Optional (CPU path is supported)                                         |
 | Silero     | Performs well on most CPUs regardless of core count                   | N/A                                                                     |
@@ -68,6 +71,7 @@ This project relies on several APIs and services (running locally) and libraries
 #### Required
 - One or more local/remote TTS endpoints:
   - [XTTS2 API](https://github.com/lukaszliniewicz/xtts2_api) (OpenAI-compatible XTTS v2 server)
+  - [fishs2-cpp-fastapi](https://github.com/lukaszliniewicz/fishs2-cpp-fastapi) (OpenAI-compatible Fish S2 server)
   - [voxtral-fastapi](https://github.com/lukaszliniewicz/voxtral-fastapi) (OpenAI-compatible Voxtral server)
   - [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI) (OpenAI-compatible Kokoro server)
   - [silero-api-server](https://pypi.org/project/silero-api-server/) (Silero backend)
@@ -79,7 +83,7 @@ For local OpenAI-compatible TTS wrappers used by Pandrator, the preferred ecosys
 - `POST /v1/audio/speech`
 - `GET /v1/models`
 - `GET /v1/audio/voices` (preferred voice catalog) with legacy `GET /v1/voices` support during migration
-- `POST /v1/audio/voices` for cloning-capable backends (XTTS), with legacy `/v1/files` fallback
+- `POST /v1/audio/voices` for cloning-capable backends (XTTS, FishS2), with legacy `/v1/files` fallback
 
 #### Optional
 - [Subdub](https://github.com/lukaszliniewicz/Subdub), a command line app that transcribes video files, translates subtitles and synchronises the generated speech with the video, made specially for Pandrator.
@@ -174,6 +178,7 @@ You can install components incrementally (during first setup or later):
 
 - Pandrator core app
 - XTTS2 API (`XTTS` GPU or `XTTS CPU only`)
+- FishS2 API (`FishS2`)
 - Voxtral API (`Voxtral`, GPU only)
 - Kokoro API (`Kokoro`)
 - Silero API
@@ -184,19 +189,20 @@ Current installer flow:
 1. Creates `Pandrator/` in the selected location.
 2. Installs/checks Calibre.
 3. Downloads shared Pixi runtime to `Pandrator/bin/pixi.exe`.
-4. Clones required repositories (`Pandrator`, `Subdub`) and selected server repos (`xtts2_api`, `voxtral-fastapi`, `Kokoro-FastAPI`).
+4. Clones required repositories (`Pandrator`, `Subdub`) and selected server repos (`xtts2_api`, `fishs2-cpp-fastapi`, `voxtral-fastapi`, `Kokoro-FastAPI`).
 5. Sets up Pandrator dependencies and selected optional environments/tools.
-6. Bootstraps XTTS2, Voxtral, and Kokoro via their own launcher scripts.
+6. Bootstraps XTTS2, FishS2, Voxtral, and Kokoro via their own launcher scripts.
 
 Launch tab options:
 
 - `Pandrator`
 - `XTTS` (+ `Use CPU`, `DeepSpeed`)
+- `FishS2`
 - `Voxtral`
 - `Kokoro`
 - `Silero`
 
-If a local TTS server is launched from the launcher, Pandrator is auto-started with the matching connect flag (`-connect -xtts`, `-connect -voxtral`, `-connect -kokoro`, `-connect -silero`).
+If a local TTS server is launched from the launcher, Pandrator is auto-started with the matching connect flag (`-connect -xtts`, `-connect -fishs2`, `-connect -voxtral`, `-connect -kokoro`, `-connect -silero`).
 
 To re-run setup from scratch, remove the generated `Pandrator/` folder and start again.
 
@@ -259,7 +265,18 @@ Please refer to the repositories linked under [Dependencies](#dependencies) for 
    cd ..
    ```
 
-6. (Optional) Install Voxtral API:
+6. (Optional) Install FishS2 API:
+
+   ```
+   git clone https://github.com/lukaszliniewicz/fishs2-cpp-fastapi.git
+   cd fishs2-cpp-fastapi
+   run.bat
+   # Linux/macOS:
+   # bash run.sh
+   cd ..
+   ```
+
+7. (Optional) Install Voxtral API:
 
    ```
    git clone https://github.com/lukaszliniewicz/voxtral-fastapi.git
@@ -270,7 +287,7 @@ Please refer to the repositories linked under [Dependencies](#dependencies) for 
    cd ..
    ```
 
-7. (Optional) Install Kokoro API:
+8. (Optional) Install Kokoro API:
 
    ```
    git clone https://github.com/remsky/Kokoro-FastAPI.git
@@ -280,13 +297,13 @@ Please refer to the repositories linked under [Dependencies](#dependencies) for 
    cd ..
    ```
 
-8. (Optional) Install Silero API:
+9. (Optional) Install Silero API:
 
    ```
    python -m pip install silero-api-server
    ```
 
-9. (Optional) Install Easy XTTS Trainer:
+10. (Optional) Install Easy XTTS Trainer:
 
    ```
    git clone https://github.com/lukaszliniewicz/easy_xtts_trainer.git
@@ -310,6 +327,8 @@ Please refer to the repositories linked under [Dependencies](#dependencies) for 
    cd Pandrator
    python main.py -connect -xtts
    # or
+   python main.py -connect -fishs2
+   # or
    python main.py -connect -voxtral
    # or
    python main.py -connect -kokoro
@@ -325,21 +344,28 @@ Please refer to the repositories linked under [Dependencies](#dependencies) for 
    # or run.bat --backend cuda
    ```
 
-4. Run Voxtral API (if installed):
+4. Run FishS2 API (if installed):
+
+   ```
+   cd fishs2-cpp-fastapi
+   run.bat
+   ```
+
+5. Run Voxtral API (if installed):
 
    ```
    cd voxtral-fastapi
    run.bat
    ```
 
-5. Run Kokoro API (if installed):
+6. Run Kokoro API (if installed):
 
    ```
    cd Kokoro-FastAPI
    python -m uvicorn api.src.main:app --host 127.0.0.1 --port 8880
    ```
 
-6. Run Silero API (if installed):
+7. Run Silero API (if installed):
 
    ```
    python -m silero_api_server
@@ -354,6 +380,7 @@ Pandrator/
 ├── Pandrator/
 ├── Subdub/
 ├── xtts2_api/ (optional)
+├── fishs2-cpp-fastapi/ (optional)
 ├── voxtral-fastapi/ (optional)
 ├── Kokoro-FastAPI/ (optional)
 ├── easy_xtts_trainer/ (optional)
@@ -373,14 +400,15 @@ Either create a new session or load an existing one (select a folder in `Outputs
 Choose a `.txt`, `.srt`, `.pdf`, `.epub`, `.mobi` or `.docx` file. If you choose a PDF or EPUB file, a preview window will open with the extracted text. For PDFs, you will be able to crop the document (with translucent pages) to remove headers and footers or selected pages. You may edit the extracted text (OCRed books often have poorly recognized text from the title page, for example) and check/add paragraphs and Chapter markers (they will be created automatically for EPUB files). Files that contain a lot of text, regardless of format, can take a moment to finish preprocessing before generation begins. The GUI will freeze, but as long as there is processor activity, it's simply working.
 
 #### Selecting the TTS Engine and the voice
-1. Select the TTS service you want to use (XTTS, Voxtral, Kokoro, Silero, or OpenAI-Compatible cloud TTS) and then choose the language.
+1. Select the TTS service you want to use (XTTS, FishS2, Voxtral, Kokoro, Silero, or OpenAI-Compatible cloud TTS) and then choose the language.
    - Cloud providers (OpenAI, Gemini, and custom OpenAI-compatible endpoints) are managed in the **Providers** tab.
    - In the Session tab, pick the cloud provider and then choose its model/voice.
 2. Choose the voice you want to use.
    1. **XTTS**, voices are short, 6-12s `.wav` files (22050hz sample rate, mono) stored in the `tts_voices` directory (`Pandrator/Pandrator/tts_voices`). You can upload and select them via the GUI. The XTTS model uses the audio to clone the voice. It doesn't matter what language the sample is in, you will be able to generate speech in all supported languages, but the quality will be best if you provide a sample in your target language. You may use the sample one in the repository or upload your own. Please make sure that the audio is between 6 and 12s, mono, and the sample rate is 22050hz. You may use a tool like Audacity to prepare the files. The less noise, the better. You may use a tool like [Resemble AI](https://github.com/resemble-ai/resemble-enhance) for denoising and/or enhancement of your samples on [Hugging Face](https://huggingface.co/spaces/ResembleAI/resemble-enhance). You may put several samples in a folder inside `tts_voices` and the model will use all of them at once (generally up to 4). It can improve the quality. 
-   2. **Voxtral** exposes preset voices and model choices from the local API server. Current voice presets cover Arabic, English, German, Spanish, French, Hindi, Italian, Dutch and Portuguese. It is GPU-only in the current local wrapper.
-   3. **Kokoro** exposes local preset voices through an OpenAI-compatible API and supports language-conditioned synthesis (`lang_code`) for supported languages.
-   4. **Silero** offers a number of voices for each language it supports. It doesn't support voice cloning. Simply select a voice from the dropdown after choosing the language.
+   2. **FishS2** supports reference-based voice cloning through uploaded local voice profiles (`/v1/audio/voices`) and uses OpenAI-compatible model/voice fields.
+   3. **Voxtral** exposes preset voices and model choices from the local API server. Current voice presets cover Arabic, English, German, Spanish, French, Hindi, Italian, Dutch and Portuguese. It is GPU-only in the current local wrapper.
+   4. **Kokoro** exposes local preset voices through an OpenAI-compatible API and supports language-conditioned synthesis (`lang_code`) for supported languages.
+   5. **Silero** offers a number of voices for each language it supports. It doesn't support voice cloning. Simply select a voice from the dropdown after choosing the language.
 
 #### Output options
 The default output format is .m4b. You can also select opus, mp3 or wav, choose a cover image and provide metadata.

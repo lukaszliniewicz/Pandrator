@@ -88,6 +88,8 @@ XTTS_API_REPO_URL = 'https://github.com/lukaszliniewicz/xtts2_api.git'
 XTTS_API_REPO_DIRNAME = 'xtts2_api'
 VOXCPM_API_REPO_URL = 'https://github.com/lukaszliniewicz/voxcpm_fastapi.git'
 VOXCPM_API_REPO_DIRNAME = 'voxcpm_fastapi'
+FISHS2_API_REPO_URL = 'https://github.com/lukaszliniewicz/fishs2-cpp-fastapi.git'
+FISHS2_API_REPO_DIRNAME = 'fishs2-cpp-fastapi'
 VOXTRAL_API_REPO_URL = 'https://github.com/lukaszliniewicz/voxtral-fastapi.git'
 VOXTRAL_API_REPO_DIRNAME = 'voxtral-fastapi'
 KOKORO_API_REPO_URL = 'https://github.com/remsky/Kokoro-FastAPI.git'
@@ -120,6 +122,7 @@ PACKAGING_CONFIG_FLAGS = (
     'cuda_support',
     'xtts_support',
     'voxcpm_support',
+    'fishs2_support',
     'silero_support',
     'voxtral_support',
     'kokoro_support',
@@ -145,6 +148,9 @@ PACKAGING_COMPONENT_PATHS = {
     ),
     'voxcpm': (
         VOXCPM_API_REPO_DIRNAME,
+    ),
+    'fishs2': (
+        FISHS2_API_REPO_DIRNAME,
     ),
     'voxtral': (
         VOXTRAL_API_REPO_DIRNAME,
@@ -329,6 +335,7 @@ class PandratorInstaller(QMainWindow):
         self.xtts_var = False
         self.xtts_cpu_var = False
         self.voxcpm_var = False
+        self.fishs2_var = False
         self.silero_var = False
         self.voxtral_var = False
         self.kokoro_var = False
@@ -342,6 +349,7 @@ class PandratorInstaller(QMainWindow):
         self.disable_deepspeed_var = False
         self.xtts_cpu_launch_var = False
         self.launch_voxcpm_var = False
+        self.launch_fishs2_var = False
         self.launch_voxtral_var = False
         self.launch_kokoro_var = False
         self.launch_silero_var = False
@@ -349,6 +357,7 @@ class PandratorInstaller(QMainWindow):
         # Initialize process attributes
         self.xtts_process = None
         self.voxcpm_process = None
+        self.fishs2_process = None
         self.pandrator_process = None
         self.silero_process = None
         self.voxtral_process = None
@@ -519,6 +528,9 @@ class PandratorInstaller(QMainWindow):
         self.voxcpm_checkbox = QCheckBox("VoxCPM2")
         engines_layout.addWidget(self.voxcpm_checkbox)
 
+        self.fishs2_checkbox = QCheckBox("FishS2")
+        engines_layout.addWidget(self.fishs2_checkbox)
+
         self.silero_checkbox = QCheckBox("Silero")
         engines_layout.addWidget(self.silero_checkbox)
 
@@ -600,6 +612,10 @@ class PandratorInstaller(QMainWindow):
         # VoxCPM checkbox
         self.launch_voxcpm_checkbox = QCheckBox("VoxCPM")
         launch_layout.addWidget(self.launch_voxcpm_checkbox)
+
+        # FishS2 checkbox
+        self.launch_fishs2_checkbox = QCheckBox("FishS2")
+        launch_layout.addWidget(self.launch_fishs2_checkbox)
 
         # Voxtral checkbox
         self.launch_voxtral_checkbox = QCheckBox("Voxtral")
@@ -816,6 +832,11 @@ class PandratorInstaller(QMainWindow):
         set_widget_state(self.voxcpm_checkbox, not voxcpm_support, False)
         set_widget_state(self.launch_voxcpm_checkbox, voxcpm_support, False)
 
+        # FishS2
+        fishs2_support = config.get('fishs2_support', False)
+        set_widget_state(self.fishs2_checkbox, not fishs2_support, False)
+        set_widget_state(self.launch_fishs2_checkbox, fishs2_support, False)
+
         # Voxtral
         voxtral_support = config.get('voxtral_support', False)
         set_widget_state(self.voxtral_checkbox, not voxtral_support, False)
@@ -884,6 +905,7 @@ class PandratorInstaller(QMainWindow):
         return {
             'xtts': config.get('xtts_support', False),
             'voxcpm': config.get('voxcpm_support', False),
+            'fishs2': config.get('fishs2_support', False),
             'voxtral': config.get('voxtral_support', False),
             'kokoro': config.get('kokoro_support', False),
             'silero': config.get('silero_support', False),
@@ -927,6 +949,7 @@ class PandratorInstaller(QMainWindow):
         return (
             ('xtts', 'XTTS', 'xtts_process', self.shutdown_xtts),
             ('voxcpm', 'VoxCPM', 'voxcpm_process', self.shutdown_voxcpm),
+            ('fishs2', 'FishS2', 'fishs2_process', self.shutdown_fishs2),
             ('voxtral', 'Voxtral', 'voxtral_process', self.shutdown_voxtral),
             ('kokoro', 'Kokoro', 'kokoro_process', self.shutdown_kokoro),
             ('silero', 'Silero', 'silero_process', self.shutdown_silero),
@@ -984,6 +1007,8 @@ class PandratorInstaller(QMainWindow):
             selected.append('xtts')
         if self.launch_voxcpm_var:
             selected.append('voxcpm')
+        if self.launch_fishs2_var:
+            selected.append('fishs2')
         if self.launch_voxtral_var:
             selected.append('voxtral')
         if self.launch_silero_var:
@@ -1264,6 +1289,7 @@ class PandratorInstaller(QMainWindow):
         self.xtts_var = self.xtts_checkbox.isChecked()
         self.xtts_cpu_var = self.xtts_cpu_checkbox.isChecked()
         self.voxcpm_var = self.voxcpm_checkbox.isChecked()
+        self.fishs2_var = self.fishs2_checkbox.isChecked()
         self.silero_var = self.silero_checkbox.isChecked()
         self.voxtral_var = self.voxtral_checkbox.isChecked()
         self.kokoro_var = self.kokoro_checkbox.isChecked()
@@ -1274,6 +1300,7 @@ class PandratorInstaller(QMainWindow):
         new_components_selected = (
             ((self.xtts_var or self.xtts_cpu_var) and not installed_components['xtts']) or
             (self.voxcpm_var and not installed_components['voxcpm']) or
+            (self.fishs2_var and not installed_components['fishs2']) or
             (self.silero_var and not installed_components['silero']) or
             (self.voxtral_var and not installed_components['voxtral']) or
             (self.kokoro_var and not installed_components['kokoro']) or
@@ -1324,6 +1351,7 @@ class PandratorInstaller(QMainWindow):
             'xtts',
             'xtts_cpu',
             'voxcpm',
+            'fishs2',
             'silero',
             'voxtral',
             'kokoro',
@@ -1353,6 +1381,7 @@ class PandratorInstaller(QMainWindow):
         self.xtts_checkbox.setChecked('xtts' in selected_components)
         self.xtts_cpu_checkbox.setChecked('xtts_cpu' in selected_components)
         self.voxcpm_checkbox.setChecked('voxcpm' in selected_components)
+        self.fishs2_checkbox.setChecked('fishs2' in selected_components)
         self.silero_checkbox.setChecked('silero' in selected_components)
         self.voxtral_checkbox.setChecked('voxtral' in selected_components)
         self.kokoro_checkbox.setChecked('kokoro' in selected_components)
@@ -3433,6 +3462,12 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             command.extend(['--pixi-path', pixi_path])
         return command
 
+    def build_fishs2_launcher_command(self, pixi_path=None):
+        command = ['cmd', '/c', 'run.bat']
+        if pixi_path:
+            command.extend(['--pixi-path', pixi_path])
+        return command
+
     def _read_text_if_exists(self, file_path):
         if not os.path.exists(file_path):
             return ""
@@ -3475,6 +3510,18 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             return pixi_path
 
         logging.info("VoxCPM launcher does not advertise --pixi-path, skipping shared Pixi argument.")
+        return None
+
+    def get_fishs2_pixi_argument(self, fishs2_repo_path, pixi_path):
+        if not pixi_path:
+            return None
+
+        run_bat_contents = self._read_text_if_exists(os.path.join(fishs2_repo_path, 'run.bat')).lower()
+        run_py_contents = self._read_text_if_exists(os.path.join(fishs2_repo_path, 'run.py')).lower()
+        if '--pixi-path' in run_bat_contents or '--pixi-path' in run_py_contents:
+            return pixi_path
+
+        logging.info("FishS2 launcher does not advertise --pixi-path, skipping shared Pixi argument.")
         return None
 
     def terminate_process_tree(self, process, timeout=10):
@@ -3620,6 +3667,62 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         finally:
             if process is not None:
                 logging.info("Stopping temporary VoxCPM bootstrap process.")
+                self.terminate_process_tree(process)
+            log_handle.close()
+
+    def is_fishs2_runtime_ready(self, fishs2_repo_path):
+        run_bat_path = os.path.join(fishs2_repo_path, 'run.bat')
+        env_python_path = os.path.join(fishs2_repo_path, '.pixi', 'envs', 'default', 'python.exe')
+        return all(os.path.exists(path) for path in (run_bat_path, env_python_path))
+
+    def install_fishs2_api_server(self, fishs2_repo_path, pixi_path=None):
+        logging.info(f"Bootstrapping FishS2 API server in {fishs2_repo_path}...")
+        logging.info(
+            "FishS2 bootstrap starts the server temporarily to validate runtime and will stop it after health checks."
+        )
+
+        run_script_path = os.path.join(fishs2_repo_path, 'run.bat')
+        if not os.path.exists(run_script_path):
+            raise FileNotFoundError(f"FishS2 run script not found at: {run_script_path}")
+
+        if self.is_port_in_use(8020):
+            raise RuntimeError("FishS2 server cannot be bootstrapped because port 8020 is already in use.")
+
+        fishs2_install_log_file = os.path.join(fishs2_repo_path, 'fishs2_install.log')
+        command = self.build_fishs2_launcher_command(
+            pixi_path=self.get_fishs2_pixi_argument(fishs2_repo_path, pixi_path),
+        )
+
+        log_handle = open(fishs2_install_log_file, 'a', encoding='utf-8')
+        process = None
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=fishs2_repo_path,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                **self.get_hidden_subprocess_kwargs(),
+            )
+
+            if not self.check_fishs2_server_online(
+                'http://127.0.0.1:8020',
+                max_attempts=360,
+                wait_interval=5,
+                process=process,
+            ):
+                return_code = process.poll()
+                if return_code is not None:
+                    raise RuntimeError(
+                        f"FishS2 bootstrap process exited before server was ready (exit code {return_code}). "
+                        f"See log: {fishs2_install_log_file}"
+                    )
+                raise RuntimeError(
+                    "FishS2 bootstrap did not bring the server online in time. "
+                    f"See log: {fishs2_install_log_file}"
+                )
+        finally:
+            if process is not None:
+                logging.info("Stopping temporary FishS2 bootstrap process.")
                 self.terminate_process_tree(process)
             log_handle.close()
 
@@ -4027,6 +4130,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         xtts_var = self.xtts_checkbox.isChecked()
         xtts_cpu_var = self.xtts_cpu_checkbox.isChecked()
         voxcpm_var = self.voxcpm_checkbox.isChecked()
+        fishs2_var = self.fishs2_checkbox.isChecked()
         silero_var = self.silero_checkbox.isChecked()
         voxtral_var = self.voxtral_checkbox.isChecked()
         kokoro_var = self.kokoro_checkbox.isChecked()
@@ -4040,6 +4144,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         subdub_repo_path = os.path.join(pandrator_path, 'Subdub')
         xtts_repo_path = os.path.join(pandrator_path, XTTS_API_REPO_DIRNAME)
         voxcpm_repo_path = os.path.join(pandrator_path, VOXCPM_API_REPO_DIRNAME)
+        fishs2_repo_path = os.path.join(pandrator_path, FISHS2_API_REPO_DIRNAME)
         voxtral_repo_path = os.path.join(pandrator_path, VOXTRAL_API_REPO_DIRNAME)
         kokoro_repo_path = os.path.join(pandrator_path, KOKORO_API_REPO_DIRNAME)
         easy_xtts_trainer_path = os.path.join(pandrator_path, 'easy_xtts_trainer')
@@ -4124,6 +4229,9 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             if voxcpm_var and not os.path.exists(voxcpm_repo_path):
                 self.clone_repo(VOXCPM_API_REPO_URL, voxcpm_repo_path)
 
+            if fishs2_var and not os.path.exists(fishs2_repo_path):
+                self.clone_repo(FISHS2_API_REPO_URL, fishs2_repo_path)
+
             if voxtral_var and not os.path.exists(voxtral_repo_path):
                 self.clone_repo(VOXTRAL_API_REPO_URL, voxtral_repo_path)
 
@@ -4162,6 +4270,14 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 self.worker.update_status.emit("Bootstrapping VoxCPM API server (temporary startup)...")
                 self.install_voxcpm_api_server(
                     voxcpm_repo_path,
+                    pixi_path=shared_pixi_path,
+                )
+
+            if fishs2_var:
+                self.worker.update_progress.emit(0.88)
+                self.worker.update_status.emit("Bootstrapping FishS2 API server (temporary startup)...")
+                self.install_fishs2_api_server(
+                    fishs2_repo_path,
                     pixi_path=shared_pixi_path,
                 )
 
@@ -4236,6 +4352,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             config['cuda_support'] = config.get('cuda_support', False) or xtts_var
             config['xtts_support'] = config.get('xtts_support', False) or xtts_var or xtts_cpu_var
             config['voxcpm_support'] = config.get('voxcpm_support', False) or voxcpm_var
+            config['fishs2_support'] = config.get('fishs2_support', False) or fishs2_var
             config['silero_support'] = config.get('silero_support', False) or silero_var
             config['voxtral_support'] = config.get('voxtral_support', False) or voxtral_var
             config['kokoro_support'] = config.get('kokoro_support', False) or kokoro_var
@@ -4304,6 +4421,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         subdub_repo_path = os.path.join(pandrator_base_path, 'Subdub')
         xtts_repo_path = os.path.join(pandrator_base_path, XTTS_API_REPO_DIRNAME)
         voxcpm_repo_path = os.path.join(pandrator_base_path, VOXCPM_API_REPO_DIRNAME)
+        fishs2_repo_path = os.path.join(pandrator_base_path, FISHS2_API_REPO_DIRNAME)
         voxtral_repo_path = os.path.join(pandrator_base_path, VOXTRAL_API_REPO_DIRNAME)
         kokoro_repo_path = os.path.join(pandrator_base_path, KOKORO_API_REPO_DIRNAME)
         easy_xtts_trainer_path = os.path.join(pandrator_base_path, 'easy_xtts_trainer')
@@ -4453,6 +4571,21 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                     self.worker.update_status.emit("Bootstrapping VoxCPM API server...")
                     self.install_voxcpm_api_server(
                         voxcpm_repo_path,
+                        pixi_path=shared_pixi_path,
+                    )
+
+            if config.get('fishs2_support', False):
+                if os.path.exists(fishs2_repo_path):
+                    self.worker.update_status.emit("Updating FishS2 API server repository...")
+                    self.pull_repo(fishs2_repo_path)
+                else:
+                    self.worker.update_status.emit("Cloning FishS2 API server repository...")
+                    self.clone_repo(FISHS2_API_REPO_URL, fishs2_repo_path)
+
+                if not self.is_fishs2_runtime_ready(fishs2_repo_path):
+                    self.worker.update_status.emit("Bootstrapping FishS2 API server...")
+                    self.install_fishs2_api_server(
+                        fishs2_repo_path,
                         pixi_path=shared_pixi_path,
                     )
 
@@ -4647,6 +4780,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         self.disable_deepspeed_var = self.deepspeed_checkbox.isChecked()
         self.xtts_cpu_launch_var = self.xtts_cpu_launch_checkbox.isChecked()
         self.launch_voxcpm_var = self.launch_voxcpm_checkbox.isChecked()
+        self.launch_fishs2_var = self.launch_fishs2_checkbox.isChecked()
         self.launch_voxtral_var = self.launch_voxtral_checkbox.isChecked()
         self.launch_kokoro_var = self.launch_kokoro_checkbox.isChecked()
         self.launch_silero_var = self.launch_silero_checkbox.isChecked()
@@ -4795,6 +4929,44 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                     raise RuntimeError(error_msg)
 
             pandrator_args = ['-connect', '-voxcpm']
+            tts_engine_launched = True
+
+        if self.launch_fishs2_var and not tts_engine_launched:
+            self.worker.update_progress.emit(0.53)
+            fishs2_server_url = 'http://127.0.0.1:8020'
+            if 'fishs2' in running_backend_keys and self.fishs2_process:
+                self.worker.update_status.emit("FishS2 server is already running. Reusing existing backend.")
+            else:
+                self.worker.update_status.emit("Starting FishS2 server...")
+                fishs2_server_path = os.path.join(pandrator_path, FISHS2_API_REPO_DIRNAME)
+                logging.info(f"FishS2 server path: {fishs2_server_path}")
+
+                if not os.path.exists(fishs2_server_path):
+                    error_msg = f"FishS2 server path not found: {fishs2_server_path}"
+                    self.worker.update_status.emit(error_msg)
+                    logging.error(error_msg)
+                    raise FileNotFoundError(error_msg)
+
+                try:
+                    self.fishs2_process = self.run_fishs2_api_server(
+                        fishs2_server_path,
+                        pixi_path=shared_pixi_path,
+                    )
+                except Exception as e:
+                    error_msg = f"Failed to start FishS2 server: {str(e)}"
+                    self.worker.update_status.emit(error_msg)
+                    logging.error(error_msg)
+                    logging.exception("Exception details:")
+                    raise
+
+                if not self.check_fishs2_server_online(fishs2_server_url, process=self.fishs2_process):
+                    error_msg = "FishS2 server failed to come online"
+                    self.worker.update_status.emit(error_msg)
+                    logging.error(error_msg)
+                    self.shutdown_fishs2()
+                    raise RuntimeError(error_msg)
+
+            pandrator_args = ['-connect', '-fishs2']
             tts_engine_launched = True
 
         if self.launch_voxtral_var and not tts_engine_launched:
@@ -5180,6 +5352,71 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         logging.error("VoxCPM server failed to come online within the specified attempts.")
         return False
 
+    def run_fishs2_api_server(self, fishs2_server_path, pixi_path=None):
+        """Run the FishS2 API server via its upstream launcher script."""
+        logging.info(f"Running FishS2 API server from {fishs2_server_path}...")
+
+        if self.is_port_in_use(8020):
+            error_msg = "FishS2 server cannot be started because port 8020 is already in use."
+            logging.error(error_msg)
+            QMessageBox.critical(self, "Error", error_msg)
+            return None
+
+        run_script_path = os.path.join(fishs2_server_path, 'run.bat')
+        if not os.path.exists(run_script_path):
+            raise FileNotFoundError(f"FishS2 run script not found at: {run_script_path}")
+
+        fishs2_log_file = os.path.join(fishs2_server_path, 'fishs2_server.log')
+        command = self.build_fishs2_launcher_command(
+            pixi_path=self.get_fishs2_pixi_argument(fishs2_server_path, pixi_path),
+        )
+
+        log_handle = open(fishs2_log_file, 'a', encoding='utf-8')
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=fishs2_server_path,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                **self.get_hidden_subprocess_kwargs(),
+            )
+        except Exception:
+            log_handle.close()
+            raise
+
+        process.log_handle = log_handle
+        self.fishs2_process = process
+        return process
+
+    def check_fishs2_server_online(self, base_url, max_attempts=120, wait_interval=5, process=None):
+        """Check if the FishS2 server is online and responding."""
+        probe_paths = ['/health', '/v1/models', '/v1/audio/voices']
+        for attempt in range(1, max_attempts + 1):
+            if process is not None and process.poll() is not None:
+                logging.error("FishS2 server process exited before coming online.")
+                return False
+
+            for probe_path in probe_paths:
+                try:
+                    response = requests.get(f"{base_url}{probe_path}", timeout=5)
+                    if response.status_code == 404:
+                        continue
+                    if response.status_code < 400:
+                        logging.info("FishS2 server is online.")
+                        return True
+                except requests.exceptions.RequestException:
+                    continue
+
+            logging.info(
+                "FishS2 server is not online yet. Waiting... (Attempt %s/%s)",
+                attempt,
+                max_attempts,
+            )
+            time.sleep(wait_interval)
+
+        logging.error("FishS2 server failed to come online within the specified attempts.")
+        return False
+
     def run_voxtral_api_server(self, voxtral_server_path):
         """Run the Voxtral API server via its upstream launcher script."""
         logging.info(f"Running Voxtral API server from {voxtral_server_path}...")
@@ -5340,6 +5577,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
     def shutdown_apps(self):
         """Shut down all running applications"""
         self.shutdown_voxcpm()
+        self.shutdown_fishs2()
         self.shutdown_xtts()
         self.shutdown_voxtral()
         self.shutdown_kokoro()
@@ -5420,6 +5658,35 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             if hasattr(self.voxcpm_process, 'log_handle') and self.voxcpm_process.log_handle:
                 self.voxcpm_process.log_handle.close()
             self.voxcpm_process = None
+
+    def shutdown_fishs2(self):
+        """Shut down the FishS2 server."""
+        if self.fishs2_process:
+            logging.info(f"Terminating FishS2 process with PID: {self.fishs2_process.pid}")
+            try:
+                parent = psutil.Process(self.fishs2_process.pid)
+                for child in parent.children(recursive=True):
+                    try:
+                        child.terminate()
+                    except psutil.AccessDenied:
+                        logging.warning(f"Access denied when terminating child process with PID: {child.pid}")
+                parent.terminate()
+                self.fishs2_process.wait(timeout=10)
+            except psutil.NoSuchProcess:
+                logging.info("FishS2 process already terminated.")
+            except psutil.TimeoutExpired:
+                logging.warning("FishS2 process did not terminate, forcing kill")
+                parent = psutil.Process(self.fishs2_process.pid)
+                for child in parent.children(recursive=True):
+                    try:
+                        child.kill()
+                    except psutil.AccessDenied:
+                        logging.warning(f"Access denied when killing child process with PID: {child.pid}")
+                parent.kill()
+
+            if hasattr(self.fishs2_process, 'log_handle') and self.fishs2_process.log_handle:
+                self.fishs2_process.log_handle.close()
+            self.fishs2_process = None
 
     def shutdown_voxtral(self):
         """Shut down the Voxtral server"""
@@ -5579,7 +5846,7 @@ def parse_launcher_cli_args(argv=None):
         default='',
         help=(
             'Comma-separated component list for headless mode: '
-            'xtts,xtts_cpu,voxcpm,silero,voxtral,kokoro,rvc,whisperx,xtts_finetuning'
+            'xtts,xtts_cpu,voxcpm,fishs2,silero,voxtral,kokoro,rvc,whisperx,xtts_finetuning'
         ),
     )
     parser.add_argument(
