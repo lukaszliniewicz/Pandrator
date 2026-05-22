@@ -65,6 +65,7 @@ def default_tts_provider_configs() -> List[Dict[str, Any]]:
                 "cedar",
             ],
             "default_voice": "alloy",
+            "supports_prebuilt_voices": True,
         },
         {
             "id": "gemini",
@@ -113,6 +114,7 @@ def default_tts_provider_configs() -> List[Dict[str, Any]]:
                 "Zubenelgenubi",
             ],
             "default_voice": "Kore",
+            "supports_prebuilt_voices": True,
         },
     ]
 

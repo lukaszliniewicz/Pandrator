@@ -147,8 +147,15 @@ class TtsSettingsSection(QFrame):
 
         self.upload_voice_button = QPushButton("Manage Voices")
         layout.addWidget(self.upload_voice_button, 5, 2)
+        self.browse_voices_button = QPushButton("Browse Voices")
+        layout.addWidget(self.browse_voices_button, 5, 3)
 
-        layout.addWidget(QLabel("Speed:"), 6, 0)
+        self.voice_mode_hint_label = QLabel("")
+        self.voice_mode_hint_label.setWordWrap(True)
+        self.voice_mode_hint_label.setObjectName("secondaryInfoLabel")
+        layout.addWidget(self.voice_mode_hint_label, 6, 0, 1, 4)
+
+        layout.addWidget(QLabel("Speed:"), 7, 0)
         speed_layout = QHBoxLayout()
         self.speed_slider = QSlider(Qt.Orientation.Horizontal)
         self.speed_slider.setRange(20, 200)
@@ -156,25 +163,25 @@ class TtsSettingsSection(QFrame):
         self.speed_label.setObjectName("secondaryInfoLabel")
         speed_layout.addWidget(self.speed_slider)
         speed_layout.addWidget(self.speed_label)
-        layout.addLayout(speed_layout, 6, 1, 1, 3)
+        layout.addLayout(speed_layout, 7, 1, 1, 3)
 
         self.advanced_tts_checkbox = QCheckBox("Advanced XTTS Settings")
-        layout.addWidget(self.advanced_tts_checkbox, 7, 0)
+        layout.addWidget(self.advanced_tts_checkbox, 8, 0)
 
         self.cloud_provider_hint = QLabel(
             "Cloud voices use providers configured in the Providers tab."
         )
         self.cloud_provider_hint.setWordWrap(True)
         self.cloud_provider_hint.setObjectName("secondaryInfoLabel")
-        layout.addWidget(self.cloud_provider_hint, 8, 0, 1, 4)
+        layout.addWidget(self.cloud_provider_hint, 9, 0, 1, 4)
 
         self.openai_audio_instructions_label = QLabel("Voice Instructions:")
         self.openai_audio_instructions_edit = QLineEdit()
         self.openai_audio_instructions_edit.setPlaceholderText(
             "Optional style guidance for OpenAI speech"
         )
-        layout.addWidget(self.openai_audio_instructions_label, 9, 0)
-        layout.addWidget(self.openai_audio_instructions_edit, 9, 1, 1, 3)
+        layout.addWidget(self.openai_audio_instructions_label, 10, 0)
+        layout.addWidget(self.openai_audio_instructions_edit, 10, 1, 1, 3)
 
 
 class AdvancedTtsSettingsSection(QFrame):

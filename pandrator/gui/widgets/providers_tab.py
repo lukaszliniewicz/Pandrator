@@ -3,6 +3,7 @@ import re
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFrame,
     QGridLayout,
@@ -148,6 +149,8 @@ class ProvidersTab(QWidget):
         self.tts_provider_voices_edit = QTextEdit()
         self.tts_provider_voices_edit.setPlaceholderText("One voice per line or comma-separated")
         self.tts_provider_voices_edit.setFixedHeight(70)
+        self.tts_provider_prebuilt_checkbox = QCheckBox("Provider offers pre-built voices")
+        self.tts_provider_prebuilt_checkbox.setChecked(True)
 
         self.tts_new_provider_button = QPushButton("New")
         self.tts_save_provider_button = QPushButton("Save")
@@ -180,11 +183,12 @@ class ProvidersTab(QWidget):
 
         layout.addWidget(QLabel("Voices:"), 6, 0)
         layout.addWidget(self.tts_provider_voices_edit, 6, 1, 1, 3)
+        layout.addWidget(self.tts_provider_prebuilt_checkbox, 7, 1, 1, 3)
 
-        layout.addWidget(self.tts_test_connection_button, 7, 1)
-        layout.addWidget(self.tts_discover_catalog_button, 7, 2)
-        layout.addWidget(self.tts_save_provider_button, 7, 3)
-        layout.addWidget(self.tts_feedback_label, 8, 0, 1, 4)
+        layout.addWidget(self.tts_test_connection_button, 8, 1)
+        layout.addWidget(self.tts_discover_catalog_button, 8, 2)
+        layout.addWidget(self.tts_save_provider_button, 8, 3)
+        layout.addWidget(self.tts_feedback_label, 9, 0, 1, 4)
 
         return frame
 
@@ -305,6 +309,8 @@ class ProvidersTab(QWidget):
             self.tts_provider_api_key_edit.setText("")
             self.tts_provider_models_edit.setPlainText("")
             self.tts_provider_voices_edit.setPlainText("")
+            self.tts_provider_prebuilt_checkbox.setChecked(True)
+            self.tts_provider_prebuilt_checkbox.setEnabled(True)
             self.tts_remove_provider_button.setEnabled(False)
             self.tts_test_connection_button.setEnabled(False)
             self.tts_discover_catalog_button.setEnabled(False)
@@ -316,7 +322,12 @@ class ProvidersTab(QWidget):
         self.tts_provider_api_key_edit.setText(str(provider.get("api_key") or ""))
         self.tts_provider_models_edit.setPlainText(self._format_items(provider.get("models", [])))
         self.tts_provider_voices_edit.setPlainText(self._format_items(provider.get("voices", [])))
-        self.tts_remove_provider_button.setEnabled(bool(provider.get("is_custom", False)))
+        is_custom_provider = bool(provider.get("is_custom", False))
+        self.tts_provider_prebuilt_checkbox.setChecked(
+            bool(provider.get("supports_prebuilt_voices", bool(provider.get("voices", []))))
+        )
+        self.tts_provider_prebuilt_checkbox.setEnabled(is_custom_provider)
+        self.tts_remove_provider_button.setEnabled(is_custom_provider)
         self.tts_test_connection_button.setEnabled(True)
         self.tts_discover_catalog_button.setEnabled(True)
 
@@ -386,6 +397,7 @@ class ProvidersTab(QWidget):
         api_key = self.tts_provider_api_key_edit.text().strip()
         models = self._parse_items(self.tts_provider_models_edit.toPlainText())
         voices = self._parse_items(self.tts_provider_voices_edit.toPlainText())
+        supports_prebuilt_voices = self.tts_provider_prebuilt_checkbox.isChecked()
 
         success, resolved_provider_id, error_message = self.logic.save_tts_provider(
             provider_id=provider_id,
@@ -395,6 +407,7 @@ class ProvidersTab(QWidget):
             api_key=api_key,
             models=models,
             voices=voices,
+            supports_prebuilt_voices=supports_prebuilt_voices,
         )
         if not success:
             self.tts_feedback_label.setText(error_message or "Could not save TTS provider.")

@@ -2782,6 +2782,224 @@ class AppLogic(QObject):
         else:
             self.state_changed.emit()
 
+    @staticmethod
+    def _dedupe_ordered_text(values: list[str]) -> list[str]:
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            normalized_value = str(value or "").strip()
+            if not normalized_value:
+                continue
+            dedupe_key = normalized_value.lower()
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            deduped.append(normalized_value)
+        return deduped
+
+    def tts_service_supports_prebuilt_voices(
+        self,
+        service: str | None = None,
+        provider_id: str | None = None,
+    ) -> bool:
+        normalized_service = str(service or self.state.tts.service or "").strip()
+        if normalized_service in {"Kokoro", "Silero", "Voxtral"}:
+            return True
+        if normalized_service in {tts_handler.OPENAI_SERVICE, tts_handler.GEMINI_SERVICE}:
+            return True
+        if normalized_service != tts_handler.OPENAI_COMPAT_SERVICE:
+            return False
+
+        normalized_provider_id = self._normalize_provider_id(
+            provider_id or self.state.tts.openai_audio_endpoint
+        )
+        if normalized_provider_id in {tts_handler.OPENAI_PROVIDER, tts_handler.GEMINI_PROVIDER}:
+            return True
+
+        for provider in self.list_tts_provider_configs():
+            provider_record_id = self._normalize_provider_id(provider.get("id"))
+            if provider_record_id != normalized_provider_id:
+                continue
+            return bool(
+                provider.get(
+                    tts_handler.PREBUILT_VOICE_PROVIDER_FIELD,
+                    bool(provider.get("voices", [])),
+                )
+            )
+
+        return False
+
+    def list_active_prebuilt_voices(
+        self,
+        *,
+        use_remote: bool = False,
+        update_state: bool = False,
+    ) -> list[str]:
+        service = str(self.state.tts.service or "").strip()
+        if not self.tts_service_supports_prebuilt_voices(service):
+            return []
+
+        current_state_voices = self._dedupe_ordered_text(self.state.tts.tts_speakers)
+        if current_state_voices and not use_remote:
+            return current_state_voices
+
+        tts_snapshot = copy.deepcopy(self.state.tts.__dict__)
+        voices: list[str] = []
+
+        if service == "Kokoro":
+            base_url = (
+                tts_snapshot.get("external_server_url")
+                if tts_snapshot.get("use_external_server")
+                else tts_handler.KOKORO_API_BASE_URL
+            )
+            voices = tts_handler.get_kokoro_voices(base_url)
+        elif service == "Voxtral":
+            base_url = (
+                tts_snapshot.get("external_server_url")
+                if tts_snapshot.get("use_external_server")
+                else tts_handler.VOXTRAL_API_BASE_URL
+            )
+            voices = tts_handler.get_voxtral_voices(base_url)
+        elif service == "Silero":
+            voices = tts_handler.get_silero_speakers(tts_handler.SILERO_API_BASE_URL)
+        elif service in {
+            tts_handler.OPENAI_SERVICE,
+            tts_handler.GEMINI_SERVICE,
+            tts_handler.OPENAI_COMPAT_SERVICE,
+        }:
+            tts_snapshot["service"] = tts_handler.OPENAI_COMPAT_SERVICE
+            if service == tts_handler.OPENAI_SERVICE:
+                tts_snapshot["openai_audio_endpoint"] = tts_handler.OPENAI_PROVIDER
+            elif service == tts_handler.GEMINI_SERVICE:
+                tts_snapshot["openai_audio_endpoint"] = tts_handler.GEMINI_PROVIDER
+
+            if use_remote:
+                voices = tts_handler.get_openai_audio_voices(tts_snapshot)
+            else:
+                voices = tts_handler.get_openai_audio_voices_fallback(tts_snapshot)
+
+        voices = self._dedupe_ordered_text(voices)
+        if not voices:
+            return current_state_voices
+
+        if update_state:
+            with self._state_lock:
+                self.state.tts.tts_speakers = list(voices)
+                if self.state.tts.speaker not in voices:
+                    self.state.tts.speaker = voices[0]
+            self.state_changed.emit()
+
+        return voices
+
+    def _get_voice_preview_output_dir(self, ensure_exists: bool = False) -> str:
+        if self._is_named_session_active():
+            output_dir = os.path.join(
+                session_handler.get_session_path(self.state.session_name),
+                "Voice_Previews",
+            )
+        else:
+            output_dir = os.path.join(tempfile.gettempdir(), "pandrator_voice_previews")
+
+        if ensure_exists:
+            os.makedirs(output_dir, exist_ok=True)
+        return output_dir
+
+    def generate_prebuilt_voice_preview_sample(
+        self,
+        voice_name: str,
+        sample_text: str,
+    ) -> tuple[bool, str, str]:
+        normalized_voice = str(voice_name or "").strip()
+        if not normalized_voice:
+            return False, "", "Voice name is required."
+
+        normalized_text = str(sample_text or "").strip()
+        if not normalized_text:
+            return False, "", "Preview text is required."
+
+        tts_snapshot = copy.deepcopy(self.state.tts.__dict__)
+        service = str(tts_snapshot.get("service") or "").strip()
+        provider_id = str(tts_snapshot.get("openai_audio_endpoint") or "").strip()
+        if not self.tts_service_supports_prebuilt_voices(service, provider_id):
+            return False, "", f"Service '{service or 'Unknown'}' does not use pre-built voices."
+
+        tts_snapshot["speaker"] = normalized_voice
+
+        xtts_url = (
+            tts_snapshot.get("external_server_url")
+            if tts_snapshot.get("use_external_server") and service == "XTTS"
+            else tts_handler.XTTS_API_BASE_URL
+        )
+        voxcpm_url = (
+            tts_snapshot.get("external_server_url")
+            if tts_snapshot.get("use_external_server") and service == "VoxCPM"
+            else tts_handler.VOXCPM_API_BASE_URL
+        )
+        fishs2_url = (
+            tts_snapshot.get("external_server_url")
+            if tts_snapshot.get("use_external_server") and service == "FishS2"
+            else tts_handler.FISHS2_API_BASE_URL
+        )
+        voxtral_url = (
+            tts_snapshot.get("external_server_url")
+            if tts_snapshot.get("use_external_server") and service == "Voxtral"
+            else tts_handler.VOXTRAL_API_BASE_URL
+        )
+        kokoro_url = (
+            tts_snapshot.get("external_server_url")
+            if tts_snapshot.get("use_external_server") and service == "Kokoro"
+            else tts_handler.KOKORO_API_BASE_URL
+        )
+
+        audio_data = tts_handler.text_to_audio(
+            normalized_text,
+            tts_snapshot,
+            xtts_base_url=xtts_url,
+            voxcpm_base_url=voxcpm_url,
+            fishs2_base_url=fishs2_url,
+            voxtral_base_url=voxtral_url,
+            kokoro_base_url=kokoro_url,
+        )
+        if audio_data is None:
+            return False, "", "TTS generation failed for this voice."
+
+        sanitized_service = re.sub(r"[^a-zA-Z0-9]+", "-", service).strip("-").lower() or "tts"
+        sanitized_voice = re.sub(r"[^a-zA-Z0-9]+", "-", normalized_voice).strip("-").lower() or "voice"
+        output_dir = self._get_voice_preview_output_dir(ensure_exists=True)
+        output_path = os.path.join(output_dir, f"{sanitized_service}-{sanitized_voice}.wav")
+
+        try:
+            audio_data.export(output_path, format="wav")
+            return True, output_path, ""
+        except Exception as e:
+            return False, "", f"Could not save preview WAV: {e}"
+
+    def play_audio_file(self, audio_path: str) -> bool:
+        normalized_path = str(audio_path or "").strip()
+        if not normalized_path or not os.path.isfile(normalized_path):
+            self.log_message.emit("Preview file is missing and cannot be played.")
+            return False
+
+        self.stop_playback()
+        playback_handler = self._ensure_playback_handler()
+        if playback_handler is None:
+            self.log_message.emit("Audio playback is unavailable.")
+            return False
+
+        if playback_handler.play(normalized_path):
+            self.playlist_timer.start()
+            return True
+
+        self.log_message.emit(f"Failed to play preview audio: {normalized_path}")
+        return False
+
+    def set_tts_speaker_voice(self, speaker_name: str):
+        normalized_speaker = str(speaker_name or "").strip()
+        if self.state.tts.speaker == normalized_speaker:
+            return
+        self.state.tts.speaker = normalized_speaker
+        self.state_changed.emit()
+
     def list_voice_library(self) -> list[dict]:
         """Returns voice library entries with sample metadata."""
         return voice_library_handler.list_voices()
@@ -3160,6 +3378,7 @@ class AppLogic(QObject):
         api_key: str,
         models: list[str] | str | None,
         voices: list[str] | str | None,
+        supports_prebuilt_voices: bool | None = None,
     ) -> tuple[bool, str, str]:
         """Creates or updates an OpenAI-compatible TTS provider."""
         success, provider_configs, resolved_provider_id, message = tts_handler.save_provider(
@@ -3170,6 +3389,7 @@ class AppLogic(QObject):
             api_key=api_key,
             models=models,
             voices=voices,
+            supports_prebuilt_voices=supports_prebuilt_voices,
             provider_id=provider_id,
         )
         if not success:

@@ -16,6 +16,7 @@ from ..dialogs.custom_prompt_dialog import CustomPromptDialog
 from ..dialogs.metadata_dialog import MetadataDialog
 from ..dialogs.paste_text_dialog import PasteTextDialog
 from ..dialogs.review_text_dialog import ReviewTextDialog
+from ..dialogs.voice_catalog_dialog import VoiceCatalogDialog
 from ..dialogs.voice_library_dialog import VoiceLibraryDialog
 from .session_sections import (
     AdvancedTtsSettingsSection,
@@ -161,6 +162,8 @@ class SessionTab(QWidget):
         self.speaker_label = self.tts_section.speaker_label
         self.speaker_combo = self.tts_section.speaker_combo
         self.upload_voice_button = self.tts_section.upload_voice_button
+        self.browse_voices_button = self.tts_section.browse_voices_button
+        self.voice_mode_hint_label = self.tts_section.voice_mode_hint_label
         self.speed_slider = self.tts_section.speed_slider
         self.speed_label = self.tts_section.speed_label
         self.advanced_tts_checkbox = self.tts_section.advanced_tts_checkbox
@@ -305,6 +308,7 @@ class SessionTab(QWidget):
         self.speed_slider.valueChanged.connect(self._on_speed_changed)
         self.advanced_tts_checkbox.toggled.connect(self.advanced_tts_frame.setVisible)
         self.upload_voice_button.clicked.connect(self._on_upload_voice)
+        self.browse_voices_button.clicked.connect(self._on_browse_voices)
 
         self.adv_tts_temp_send_checkbox.stateChanged.connect(
             lambda: setattr(
@@ -795,8 +799,15 @@ class SessionTab(QWidget):
         for provider in cloud_providers:
             provider_id = str(provider.get("id") or "")
             provider_name = str(provider.get("name") or provider_id)
+            supports_prebuilt_voices = bool(
+                provider.get("supports_prebuilt_voices", bool(provider.get("voices", [])))
+            )
+            provider_tag = "Pre-built Voices" if supports_prebuilt_voices else "Custom Voices"
             if provider_id:
-                self.cloud_provider_combo.addItem(provider_name, provider_id)
+                self.cloud_provider_combo.addItem(
+                    f"{provider_name} ({provider_tag})",
+                    provider_id,
+                )
 
         if self.cloud_provider_combo.count() > 0:
             target_index = self.cloud_provider_combo.findData(selected_provider_id)
@@ -1055,8 +1066,39 @@ class SessionTab(QWidget):
         self.xtts_model_label.setVisible(show_model_selector)
         self.xtts_model_combo.setVisible(show_model_selector)
 
-        self.speaker_label.setText("Speaker Voice:" if is_xtts else "Voice:")
-        self.upload_voice_button.setVisible(is_xtts or is_voxcpm or is_fishs2)
+        supports_voice_library_upload = is_xtts or is_voxcpm or is_fishs2
+        supports_prebuilt_voice_catalog = self.logic.tts_service_supports_prebuilt_voices(
+            state.tts.service,
+            state.tts.openai_audio_endpoint,
+        )
+
+        if is_xtts:
+            self.xtts_model_label.setText("XTTS Model:")
+        elif supports_prebuilt_voice_catalog:
+            self.xtts_model_label.setText("Model (Pre-built Voices):")
+        else:
+            self.xtts_model_label.setText("Model:")
+
+        if supports_prebuilt_voice_catalog:
+            self.speaker_label.setText("Pre-built Voice:")
+            self.voice_mode_hint_label.setText(
+                "This service provides pre-built voices. Use Browse Voices to audition and compare voices quickly."
+            )
+        elif supports_voice_library_upload:
+            self.speaker_label.setText("Speaker Voice:")
+            self.voice_mode_hint_label.setText(
+                "This service relies on reference samples / voice cloning. Use Manage Voice Samples to upload or edit voices."
+            )
+        else:
+            self.speaker_label.setText("Voice:")
+            self.voice_mode_hint_label.setText("")
+
+        self.upload_voice_button.setText("Manage Voice Samples")
+        self.upload_voice_button.setVisible(supports_voice_library_upload)
+        self.browse_voices_button.setVisible(supports_prebuilt_voice_catalog)
+        self.voice_mode_hint_label.setVisible(
+            supports_prebuilt_voice_catalog or supports_voice_library_upload
+        )
 
         self.cloud_provider_label.setVisible(is_cloud_tts)
         self.cloud_provider_combo.setVisible(is_cloud_tts)
@@ -1114,6 +1156,7 @@ class SessionTab(QWidget):
             self.language_combo,
             self.speaker_combo,
             self.upload_voice_button,
+            self.browse_voices_button,
             self.openai_audio_instructions_edit,
             self.speed_slider,
             self.advanced_tts_checkbox,
@@ -1760,6 +1803,10 @@ class SessionTab(QWidget):
 
     def _on_upload_voice(self):
         dialog = VoiceLibraryDialog(self.logic, self)
+        dialog.exec()
+
+    def _on_browse_voices(self):
+        dialog = VoiceCatalogDialog(self.logic, self)
         dialog.exec()
 
     def _on_open_custom_prompt(self):

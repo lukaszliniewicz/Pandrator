@@ -233,6 +233,7 @@ GEMINI_MODEL_ALIASES = {
 }
 
 BUILTIN_PROVIDER_ORDER = [OPENAI_PROVIDER, GEMINI_PROVIDER]
+PREBUILT_VOICE_PROVIDER_FIELD = "supports_prebuilt_voices"
 
 
 def _read_setting(settings, key: str, default=None):
@@ -294,6 +295,7 @@ def _default_provider_configs() -> list[dict[str, object]]:
             "default_model": OPENAI_AUDIO_DEFAULT_MODEL,
             "voices": list(OPENAI_TTS_VOICES),
             "default_voice": OPENAI_AUDIO_DEFAULT_VOICE,
+            PREBUILT_VOICE_PROVIDER_FIELD: True,
         },
         {
             "id": GEMINI_PROVIDER,
@@ -307,6 +309,7 @@ def _default_provider_configs() -> list[dict[str, object]]:
             "default_model": GEMINI_AUDIO_DEFAULT_MODEL,
             "voices": list(GEMINI_TTS_VOICES),
             "default_voice": GEMINI_AUDIO_DEFAULT_VOICE,
+            PREBUILT_VOICE_PROVIDER_FIELD: True,
         },
     ]
 
@@ -371,6 +374,10 @@ def _legacy_endpoints_to_provider_configs(raw_json: str) -> list[dict[str, objec
                 "default_model": default_model,
                 "voices": voices,
                 "default_voice": default_voice,
+                PREBUILT_VOICE_PROVIDER_FIELD: _coerce_bool(
+                    item.get(PREBUILT_VOICE_PROVIDER_FIELD),
+                    True,
+                ),
             }
         )
 
@@ -414,6 +421,7 @@ def get_provider_configs(tts_settings) -> list[dict[str, object]]:
                 record["api_key"] = str(raw_provider.get("api_key") or "").strip()
                 record["provider"] = provider_key
                 record["is_custom"] = False
+                record[PREBUILT_VOICE_PROVIDER_FIELD] = True
             else:
                 if not api_base:
                     continue
@@ -460,6 +468,16 @@ def get_provider_configs(tts_settings) -> list[dict[str, object]]:
             record["default_model"] = default_model
             record["voices"] = _dedupe_ordered(voices)
             record["default_voice"] = default_voice
+            if provider_id in builtins:
+                record[PREBUILT_VOICE_PROVIDER_FIELD] = True
+            else:
+                raw_supports_prebuilt = raw_provider.get(PREBUILT_VOICE_PROVIDER_FIELD)
+                if raw_supports_prebuilt is None:
+                    raw_supports_prebuilt = raw_provider.get("has_prebuilt_voices")
+                record[PREBUILT_VOICE_PROVIDER_FIELD] = _coerce_bool(
+                    raw_supports_prebuilt,
+                    bool(record["voices"]),
+                )
 
             if provider_id in builtins:
                 builtins[provider_id] = record
@@ -502,6 +520,7 @@ def save_provider(
     api_key: str = "",
     models: list[str] | str | None = None,
     voices: list[str] | str | None = None,
+    supports_prebuilt_voices: bool | None = None,
     provider_id: str = "",
 ) -> tuple[bool, list[dict[str, object]], str, str]:
     display_name = str(provider_name or "").strip()
@@ -546,6 +565,18 @@ def save_provider(
         parsed_voices = list(_provider_voice_catalog(normalized_provider_type, default_model))
 
     default_voice = parsed_voices[0] if parsed_voices else _provider_default_voice(normalized_provider_type)
+    if normalized_provider_id in {OPENAI_PROVIDER, GEMINI_PROVIDER}:
+        provider_supports_prebuilt_voices = True
+    elif supports_prebuilt_voices is None:
+        if existing is not None:
+            provider_supports_prebuilt_voices = _coerce_bool(
+                existing.get(PREBUILT_VOICE_PROVIDER_FIELD),
+                bool(existing.get("voices", [])),
+            )
+        else:
+            provider_supports_prebuilt_voices = bool(parsed_voices)
+    else:
+        provider_supports_prebuilt_voices = bool(supports_prebuilt_voices)
 
     updated_record: dict[str, object] = {
         "id": normalized_provider_id,
@@ -559,6 +590,7 @@ def save_provider(
         "default_model": default_model,
         "voices": parsed_voices,
         "default_voice": default_voice,
+        PREBUILT_VOICE_PROVIDER_FIELD: provider_supports_prebuilt_voices,
     }
 
     if normalized_provider_id == OPENAI_PROVIDER:
