@@ -74,6 +74,10 @@ def _coerce_text(value: Any, *, trim: bool = True) -> str:
     return text.strip() if trim else text
 
 
+def _normalize_language_code(value: Any) -> str:
+    return _coerce_text(value).lower()
+
+
 def _normalize_sample_record(sample_payload: Any) -> dict[str, Any] | None:
     if not isinstance(sample_payload, dict):
         return None
@@ -135,6 +139,8 @@ def _normalize_voice_record(voice_payload: Any) -> dict[str, Any] | None:
         "id": voice_id,
         "name": voice_name,
         "notes": _coerce_text(voice_payload.get("notes"), trim=False),
+        "prompt_text": _coerce_text(voice_payload.get("prompt_text"), trim=False),
+        "language_code": _normalize_language_code(voice_payload.get("language_code")),
         "samples": normalized_samples,
         "created_at": created_at,
         "updated_at": updated_at,
@@ -294,7 +300,12 @@ def get_voice(voice_id: str) -> dict[str, Any] | None:
         return copy.deepcopy(voice)
 
 
-def create_voice(name: str, notes: str = "") -> dict[str, Any]:
+def create_voice(
+    name: str,
+    notes: str = "",
+    prompt_text: str = "",
+    language_code: str = "",
+) -> dict[str, Any]:
     normalized_name = _coerce_text(name)
     if not normalized_name:
         raise ValueError("Voice name cannot be empty.")
@@ -313,6 +324,8 @@ def create_voice(name: str, notes: str = "") -> dict[str, Any]:
             "id": f"voice_{uuid.uuid4().hex[:12]}",
             "name": normalized_name,
             "notes": _coerce_text(notes, trim=False),
+            "prompt_text": _coerce_text(prompt_text, trim=False),
+            "language_code": _normalize_language_code(language_code),
             "samples": [],
             "created_at": now,
             "updated_at": now,
@@ -325,7 +338,14 @@ def create_voice(name: str, notes: str = "") -> dict[str, Any]:
         return copy.deepcopy(voice_record)
 
 
-def update_voice(voice_id: str, *, name: str | None = None, notes: str | None = None) -> dict[str, Any]:
+def update_voice(
+    voice_id: str,
+    *,
+    name: str | None = None,
+    notes: str | None = None,
+    prompt_text: str | None = None,
+    language_code: str | None = None,
+) -> dict[str, Any]:
     with _FILE_IO_LOCK:
         payload = _load_payload_unlocked()
         voice = _find_voice_unlocked(payload, voice_id)
@@ -345,6 +365,10 @@ def update_voice(voice_id: str, *, name: str | None = None, notes: str | None = 
 
         if notes is not None:
             voice["notes"] = _coerce_text(notes, trim=False)
+        if prompt_text is not None:
+            voice["prompt_text"] = _coerce_text(prompt_text, trim=False)
+        if language_code is not None:
+            voice["language_code"] = _normalize_language_code(language_code)
 
         voice["updated_at"] = _utc_timestamp()
         _save_payload_unlocked(payload)

@@ -2786,9 +2786,20 @@ class AppLogic(QObject):
         """Returns voice library entries with sample metadata."""
         return voice_library_handler.list_voices()
 
-    def create_voice_library_voice(self, name: str, notes: str = "") -> dict:
+    def create_voice_library_voice(
+        self,
+        name: str,
+        notes: str = "",
+        prompt_text: str = "",
+        language_code: str = "",
+    ) -> dict:
         """Creates a new voice library entry."""
-        return voice_library_handler.create_voice(name, notes=notes)
+        return voice_library_handler.create_voice(
+            name,
+            notes=notes,
+            prompt_text=prompt_text,
+            language_code=language_code,
+        )
 
     def update_voice_library_voice(
         self,
@@ -2796,12 +2807,16 @@ class AppLogic(QObject):
         *,
         name: str | None = None,
         notes: str | None = None,
+        prompt_text: str | None = None,
+        language_code: str | None = None,
     ) -> dict:
         """Updates a voice library entry."""
         return voice_library_handler.update_voice(
             voice_id,
             name=name,
             notes=notes,
+            prompt_text=prompt_text,
+            language_code=language_code,
         )
 
     def delete_voice_library_voice(self, voice_id: str):
@@ -2869,6 +2884,8 @@ class AppLogic(QObject):
             samples = list(voice.get("samples") or [])
             if not samples:
                 raise ValueError("Voice library entry does not contain any samples.")
+            normalized_voice_prompt_text = str(voice.get("prompt_text") or "").strip()
+            normalized_voice_language_code = str(voice.get("language_code") or "").strip().lower()
 
             base_url = self._resolve_tts_upload_base_url(service)
 
@@ -2917,7 +2934,8 @@ class AppLogic(QObject):
                     raise ValueError("Selected sample WAV file is missing on disk.")
 
                 normalized_transcript = str(selected_sample.get("transcript") or "").strip()
-                upload_prompt_text = normalized_transcript or None
+                prompt_from_voice_entry = bool(normalized_voice_prompt_text)
+                upload_prompt_text = normalized_voice_prompt_text or normalized_transcript or None
                 upload_mode = "hifi" if (service == "VoxCPM" and upload_prompt_text) else "reference"
 
                 speaker_name = tts_handler.upload_speaker_voice(
@@ -2928,15 +2946,20 @@ class AppLogic(QObject):
                     mode=upload_mode,
                     voice_id=voice_name,
                 )
-                transcript_note = "with transcript" if upload_prompt_text else "without transcript"
+                if upload_prompt_text:
+                    prompt_note = "voice prompt" if prompt_from_voice_entry else "sample transcript"
+                else:
+                    prompt_note = "no prompt text"
                 if service == "VoxCPM":
                     self.log_message.emit(
-                        f"Uploaded VoxCPM voice: {speaker_name} ({upload_mode} mode, {transcript_note})"
+                        f"Uploaded VoxCPM voice: {speaker_name} ({upload_mode} mode, {prompt_note})"
                     )
                 else:
-                    self.log_message.emit(f"Uploaded FishS2 voice: {speaker_name} ({transcript_note})")
+                    self.log_message.emit(f"Uploaded FishS2 voice: {speaker_name} ({prompt_note})")
 
             self.state.tts.speaker = speaker_name
+            if normalized_voice_language_code:
+                self.state.tts.language = normalized_voice_language_code
             self.state_changed.emit()
             self.connect_tts_server()
             return True, speaker_name

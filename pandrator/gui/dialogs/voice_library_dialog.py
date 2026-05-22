@@ -2,10 +2,12 @@ import os
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
     QGridLayout,
+    QHeaderView,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -18,8 +20,12 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ...constants import LANGUAGE_DISPLAY_NAMES, XTTS_LANGUAGES
+
 
 VOICE_UPLOAD_SERVICES = {"XTTS", "VoxCPM", "FishS2"}
+TEXT_FILE_ENCODINGS = ("utf-8", "utf-8-sig", "cp1250", "cp1252", "latin-1")
+VOICE_LANGUAGE_DEFAULT_LABEL = "Use Current Service Language"
 
 
 class VoiceLibraryDialog(QDialog):
@@ -41,7 +47,8 @@ class VoiceLibraryDialog(QDialog):
         main_layout.setSpacing(8)
 
         self.description_label = QLabel(
-            "Save voice samples with optional transcript/notes, review durations, and upload to the active TTS service."
+            "Save voice samples with optional transcript/notes, attach a voice prompt from .txt, "
+            "review durations, and upload to the active TTS service."
         )
         self.description_label.setWordWrap(True)
         self.description_label.setObjectName("secondaryInfoLabel")
@@ -69,7 +76,10 @@ class VoiceLibraryDialog(QDialog):
         self.voice_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.voice_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.voice_table.setAlternatingRowColors(True)
-        self.voice_table.horizontalHeader().setStretchLastSection(True)
+        voice_header = self.voice_table.horizontalHeader()
+        voice_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        voice_header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        voice_header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         left_layout.addWidget(self.voice_table, 1)
 
         voice_actions_layout = QHBoxLayout()
@@ -94,6 +104,37 @@ class VoiceLibraryDialog(QDialog):
         notes_actions_layout.addStretch(1)
         left_layout.addLayout(notes_actions_layout)
 
+        left_layout.addWidget(QLabel("Voice Language"))
+        self.voice_language_combo = QComboBox(self)
+        self.voice_language_combo.addItem(VOICE_LANGUAGE_DEFAULT_LABEL, "")
+        for language_code in XTTS_LANGUAGES:
+            normalized_language_code = str(language_code or "").strip().lower()
+            if not normalized_language_code:
+                continue
+            self.voice_language_combo.addItem(
+                LANGUAGE_DISPLAY_NAMES.get(normalized_language_code, normalized_language_code.upper()),
+                normalized_language_code,
+            )
+        left_layout.addWidget(self.voice_language_combo)
+
+        left_layout.addWidget(QLabel("Upload Prompt (TXT)"))
+        self.voice_prompt_edit = QTextEdit(self)
+        self.voice_prompt_edit.setPlaceholderText(
+            "Optional prompt text used when uploading this voice to VoxCPM/FishS2."
+        )
+        self.voice_prompt_edit.setFixedHeight(100)
+        left_layout.addWidget(self.voice_prompt_edit)
+
+        prompt_actions_layout = QHBoxLayout()
+        self.load_voice_prompt_button = QPushButton("Load TXT Prompt")
+        self.save_voice_prompt_button = QPushButton("Save Prompt")
+        self.clear_voice_prompt_button = QPushButton("Clear Prompt")
+        prompt_actions_layout.addWidget(self.load_voice_prompt_button)
+        prompt_actions_layout.addWidget(self.save_voice_prompt_button)
+        prompt_actions_layout.addWidget(self.clear_voice_prompt_button)
+        prompt_actions_layout.addStretch(1)
+        left_layout.addLayout(prompt_actions_layout)
+
         right_panel = QWidget(self)
         right_layout = QVBoxLayout(right_panel)
         right_layout.setSpacing(6)
@@ -105,7 +146,11 @@ class VoiceLibraryDialog(QDialog):
         self.sample_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.sample_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.sample_table.setAlternatingRowColors(True)
-        self.sample_table.horizontalHeader().setStretchLastSection(True)
+        sample_header = self.sample_table.horizontalHeader()
+        sample_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        sample_header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        sample_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        sample_header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         self.sample_table.setWordWrap(True)
         right_layout.addWidget(self.sample_table, 1)
 
@@ -140,11 +185,16 @@ class VoiceLibraryDialog(QDialog):
         self.voice_table.itemSelectionChanged.connect(self._on_voice_selection_changed)
         self.sample_table.itemSelectionChanged.connect(self._refresh_action_state)
         self.sample_table.itemChanged.connect(self._on_sample_item_changed)
+        self.voice_prompt_edit.textChanged.connect(self._refresh_action_state)
+        self.voice_language_combo.currentIndexChanged.connect(self._on_voice_language_changed)
 
         self.add_voice_button.clicked.connect(self._on_add_voice)
         self.rename_voice_button.clicked.connect(self._on_rename_voice)
         self.delete_voice_button.clicked.connect(self._on_delete_voice)
         self.save_voice_notes_button.clicked.connect(self._on_save_voice_notes)
+        self.load_voice_prompt_button.clicked.connect(self._on_load_voice_prompt)
+        self.save_voice_prompt_button.clicked.connect(self._on_save_voice_prompt)
+        self.clear_voice_prompt_button.clicked.connect(self._on_clear_voice_prompt)
 
         self.add_sample_button.clicked.connect(self._on_add_samples)
         self.remove_sample_button.clicked.connect(self._on_remove_sample)
@@ -227,7 +277,6 @@ class VoiceLibraryDialog(QDialog):
             if preferred_voice_id and preferred_voice_id == voice_id:
                 selected_row = row
 
-        self.voice_table.resizeColumnsToContents()
         self._updating_tables = False
 
         if selected_row < 0 and self.voice_table.rowCount() > 0:
@@ -270,7 +319,6 @@ class VoiceLibraryDialog(QDialog):
             if preferred_sample_id and preferred_sample_id == sample_id:
                 selected_row = row
 
-        self.sample_table.resizeColumnsToContents()
         self._updating_tables = False
 
         if selected_row < 0 and self.sample_table.rowCount() > 0:
@@ -278,6 +326,16 @@ class VoiceLibraryDialog(QDialog):
 
         if selected_row >= 0:
             self.sample_table.selectRow(selected_row)
+
+    def _set_voice_language_combo(self, language_code: str):
+        normalized_language_code = str(language_code or "").strip().lower()
+        target_index = self.voice_language_combo.findData(normalized_language_code)
+        if target_index < 0:
+            target_index = 0
+
+        self.voice_language_combo.blockSignals(True)
+        self.voice_language_combo.setCurrentIndex(target_index)
+        self.voice_language_combo.blockSignals(False)
 
     def reload_library(self, preferred_voice_id: str = "", preferred_sample_id: str = ""):
         try:
@@ -292,8 +350,12 @@ class VoiceLibraryDialog(QDialog):
 
         if selected_voice is not None:
             self.voice_notes_edit.setPlainText(str(selected_voice.get("notes") or ""))
+            self.voice_prompt_edit.setPlainText(str(selected_voice.get("prompt_text") or ""))
+            self._set_voice_language_combo(str(selected_voice.get("language_code") or ""))
         else:
             self.voice_notes_edit.clear()
+            self.voice_prompt_edit.clear()
+            self._set_voice_language_combo("")
 
         self._refresh_action_state()
 
@@ -309,6 +371,13 @@ class VoiceLibraryDialog(QDialog):
         self.add_sample_button.setEnabled(selected_voice is not None)
         self.remove_sample_button.setEnabled(bool(selected_sample_id))
         self.voice_notes_edit.setEnabled(selected_voice is not None)
+        self.voice_language_combo.setEnabled(selected_voice is not None)
+        self.voice_prompt_edit.setEnabled(selected_voice is not None)
+        self.load_voice_prompt_button.setEnabled(selected_voice is not None)
+        self.save_voice_prompt_button.setEnabled(selected_voice is not None)
+        self.clear_voice_prompt_button.setEnabled(
+            selected_voice is not None and bool(self.voice_prompt_edit.toPlainText().strip())
+        )
 
         if service == "XTTS":
             self.upload_button.setText("Upload Voice to XTTS")
@@ -320,7 +389,7 @@ class VoiceLibraryDialog(QDialog):
             self.upload_button.setText(f"Upload Selected Sample to {service}")
             can_upload = selected_voice is not None and bool(selected_sample_id)
             self.service_hint_label.setText(
-                f"Active service: {service}. Upload uses the selected sample and includes transcript when provided."
+                f"Active service: {service}. Upload uses selected sample audio and uses saved voice prompt text when set."
             )
         else:
             self.upload_button.setText("Upload")
@@ -339,8 +408,12 @@ class VoiceLibraryDialog(QDialog):
         self._populate_sample_table(selected_voice)
         if selected_voice is None:
             self.voice_notes_edit.clear()
+            self.voice_prompt_edit.clear()
+            self._set_voice_language_combo("")
         else:
             self.voice_notes_edit.setPlainText(str(selected_voice.get("notes") or ""))
+            self.voice_prompt_edit.setPlainText(str(selected_voice.get("prompt_text") or ""))
+            self._set_voice_language_combo(str(selected_voice.get("language_code") or ""))
         self._refresh_action_state()
 
     def _on_add_voice(self):
@@ -421,6 +494,101 @@ class VoiceLibraryDialog(QDialog):
             )
         except Exception as e:
             QMessageBox.warning(self, "Voice Library", str(e))
+            return
+
+        self.reload_library(preferred_voice_id=str(selected_voice.get("id") or ""))
+
+    @staticmethod
+    def _read_text_file(file_path: str) -> str:
+        for encoding in TEXT_FILE_ENCODINGS:
+            try:
+                with open(file_path, "r", encoding=encoding) as handle:
+                    return handle.read()
+            except UnicodeDecodeError:
+                continue
+
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as handle:
+            return handle.read()
+
+    def _on_load_voice_prompt(self):
+        selected_voice = self._selected_voice()
+        if selected_voice is None:
+            return
+
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load Prompt TXT",
+            "",
+            "Text files (*.txt);;All files (*.*)",
+        )
+        if not file_path:
+            return
+
+        try:
+            prompt_text = self._read_text_file(file_path)
+            self.logic.update_voice_library_voice(
+                str(selected_voice.get("id") or ""),
+                prompt_text=prompt_text,
+            )
+        except Exception as e:
+            QMessageBox.warning(self, "Voice Library", str(e))
+            return
+
+        self.reload_library(preferred_voice_id=str(selected_voice.get("id") or ""))
+
+    def _on_save_voice_prompt(self):
+        selected_voice = self._selected_voice()
+        if selected_voice is None:
+            return
+
+        try:
+            self.logic.update_voice_library_voice(
+                str(selected_voice.get("id") or ""),
+                prompt_text=self.voice_prompt_edit.toPlainText(),
+            )
+        except Exception as e:
+            QMessageBox.warning(self, "Voice Library", str(e))
+            return
+
+        self.reload_library(preferred_voice_id=str(selected_voice.get("id") or ""))
+
+    def _on_clear_voice_prompt(self):
+        selected_voice = self._selected_voice()
+        if selected_voice is None:
+            return
+
+        try:
+            self.logic.update_voice_library_voice(
+                str(selected_voice.get("id") or ""),
+                prompt_text="",
+            )
+        except Exception as e:
+            QMessageBox.warning(self, "Voice Library", str(e))
+            return
+
+        self.reload_library(preferred_voice_id=str(selected_voice.get("id") or ""))
+
+    def _on_voice_language_changed(self, _index: int = -1):
+        if self._updating_tables:
+            return
+
+        selected_voice = self._selected_voice()
+        if selected_voice is None:
+            return
+
+        language_code = str(self.voice_language_combo.currentData() or "").strip().lower()
+        existing_language_code = str(selected_voice.get("language_code") or "").strip().lower()
+        if language_code == existing_language_code:
+            return
+
+        try:
+            self.logic.update_voice_library_voice(
+                str(selected_voice.get("id") or ""),
+                language_code=language_code,
+            )
+        except Exception as e:
+            QMessageBox.warning(self, "Voice Library", str(e))
+            self.reload_library(preferred_voice_id=str(selected_voice.get("id") or ""))
             return
 
         self.reload_library(preferred_voice_id=str(selected_voice.get("id") or ""))
