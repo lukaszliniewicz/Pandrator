@@ -2904,10 +2904,81 @@ class AppLogic(QObject):
             os.makedirs(output_dir, exist_ok=True)
         return output_dir
 
+    @staticmethod
+    def _sanitize_preview_token(raw_value: str, fallback: str) -> str:
+        normalized = re.sub(r"[^a-zA-Z0-9]+", "-", str(raw_value or "").strip()).strip("-").lower()
+        return normalized or fallback
+
+    def _build_voice_preview_path(
+        self,
+        *,
+        service: str,
+        provider_id: str,
+        language_code: str,
+        voice_name: str,
+        ensure_dir: bool,
+    ) -> str:
+        output_dir = self._get_voice_preview_output_dir(ensure_exists=ensure_dir)
+        sanitized_service = self._sanitize_preview_token(service, "tts")
+        sanitized_provider = self._sanitize_preview_token(provider_id, "provider")
+        sanitized_language = self._sanitize_preview_token(language_code, "lang")
+        sanitized_voice = self._sanitize_preview_token(voice_name, "voice")
+        return os.path.join(
+            output_dir,
+            f"{sanitized_service}-{sanitized_provider}-{sanitized_language}-{sanitized_voice}.wav",
+        )
+
+    def _build_legacy_voice_preview_path(
+        self,
+        *,
+        service: str,
+        voice_name: str,
+        ensure_dir: bool,
+    ) -> str:
+        output_dir = self._get_voice_preview_output_dir(ensure_exists=ensure_dir)
+        sanitized_service = self._sanitize_preview_token(service, "tts")
+        sanitized_voice = self._sanitize_preview_token(voice_name, "voice")
+        return os.path.join(output_dir, f"{sanitized_service}-{sanitized_voice}.wav")
+
+    def get_prebuilt_voice_preview_path(
+        self,
+        voice_name: str,
+        *,
+        language_code: str = "",
+        existing_only: bool = True,
+    ) -> str:
+        normalized_voice = str(voice_name or "").strip()
+        if not normalized_voice:
+            return ""
+
+        service = str(self.state.tts.service or "").strip()
+        provider_id = str(self.state.tts.openai_audio_endpoint or "").strip() or service
+        normalized_language_code = str(language_code or self.state.tts.language or "").strip().lower() or "default"
+
+        preview_path = self._build_voice_preview_path(
+            service=service,
+            provider_id=provider_id,
+            language_code=normalized_language_code,
+            voice_name=normalized_voice,
+            ensure_dir=not existing_only,
+        )
+        if existing_only and not os.path.isfile(preview_path):
+            legacy_path = self._build_legacy_voice_preview_path(
+                service=service,
+                voice_name=normalized_voice,
+                ensure_dir=False,
+            )
+            if os.path.isfile(legacy_path):
+                return legacy_path
+            return ""
+        return preview_path
+
     def generate_prebuilt_voice_preview_sample(
         self,
         voice_name: str,
         sample_text: str,
+        *,
+        language_code: str = "",
     ) -> tuple[bool, str, str]:
         normalized_voice = str(voice_name or "").strip()
         if not normalized_voice:
@@ -2924,6 +2995,9 @@ class AppLogic(QObject):
             return False, "", f"Service '{service or 'Unknown'}' does not use pre-built voices."
 
         tts_snapshot["speaker"] = normalized_voice
+        normalized_language_code = str(language_code or tts_snapshot.get("language") or "").strip().lower()
+        if normalized_language_code:
+            tts_snapshot["language"] = normalized_language_code
 
         xtts_url = (
             tts_snapshot.get("external_server_url")
@@ -2963,10 +3037,13 @@ class AppLogic(QObject):
         if audio_data is None:
             return False, "", "TTS generation failed for this voice."
 
-        sanitized_service = re.sub(r"[^a-zA-Z0-9]+", "-", service).strip("-").lower() or "tts"
-        sanitized_voice = re.sub(r"[^a-zA-Z0-9]+", "-", normalized_voice).strip("-").lower() or "voice"
-        output_dir = self._get_voice_preview_output_dir(ensure_exists=True)
-        output_path = os.path.join(output_dir, f"{sanitized_service}-{sanitized_voice}.wav")
+        output_path = self._build_voice_preview_path(
+            service=service,
+            provider_id=provider_id or service,
+            language_code=normalized_language_code or "default",
+            voice_name=normalized_voice,
+            ensure_dir=True,
+        )
 
         try:
             audio_data.export(output_path, format="wav")

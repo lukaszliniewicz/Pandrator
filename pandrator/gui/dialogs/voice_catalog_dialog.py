@@ -1,11 +1,14 @@
-﻿import threading
+﻿import re
+import threading
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QGridLayout,
     QHeaderView,
+    QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
@@ -15,8 +18,51 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
+from ...constants import KOKORO_LANGUAGES, LANGUAGE_DISPLAY_NAMES, VOXTRAL_LANGUAGES
+
 
 DEFAULT_PREVIEW_TEXT = "The quick brown fox jumps over the lazy dog."
+
+KOKORO_PREFIX_LANGUAGE_CODES = {
+    "a": "en",
+    "b": "en-gb",
+    "e": "es",
+    "f": "fr",
+    "h": "hi",
+    "i": "it",
+    "j": "ja",
+    "p": "pt",
+    "z": "zh-cn",
+}
+
+VOICE_GENDER_LABELS = {
+    "f": "Female",
+    "m": "Male",
+    "female": "Female",
+    "male": "Male",
+}
+
+VOXTRAL_STYLE_LABELS = {
+    "casual": "Casual",
+    "cheerful": "Cheerful",
+    "neutral": "Neutral",
+}
+
+KOKORO_OPENAI_ALIAS_VOICES = {
+    "alloy",
+    "ash",
+    "ballad",
+    "cedar",
+    "coral",
+    "echo",
+    "fable",
+    "marin",
+    "nova",
+    "onyx",
+    "sage",
+    "shimmer",
+    "verse",
+}
 
 
 class VoiceCatalogDialog(QDialog):
@@ -27,11 +73,11 @@ class VoiceCatalogDialog(QDialog):
         super().__init__(parent)
         self.logic = logic
         self._voice_rows: dict[str, int] = {}
-        self._preview_paths: dict[str, str] = {}
+        self._voice_entries: list[dict] = []
         self._generation_thread: threading.Thread | None = None
 
         self.setWindowTitle("Browse Voices")
-        self.resize(960, 680)
+        self.resize(1120, 700)
 
         self._build_ui()
         self._connect_signals()
@@ -42,7 +88,7 @@ class VoiceCatalogDialog(QDialog):
         main_layout.setSpacing(8)
 
         self.description_label = QLabel(
-            "Browse built-in voices for the active TTS service and generate fast preview samples for comparison."
+            "Browse built-in voices for the active TTS service, organize by language and gender, and generate preview samples for quick comparison."
         )
         self.description_label.setWordWrap(True)
         self.description_label.setObjectName("secondaryInfoLabel")
@@ -53,24 +99,44 @@ class VoiceCatalogDialog(QDialog):
         self.service_label.setObjectName("secondaryInfoLabel")
         main_layout.addWidget(self.service_label)
 
+        filter_layout = QHBoxLayout()
+        filter_layout.addWidget(QLabel("Language:"))
+        self.language_filter_combo = QComboBox(self)
+        filter_layout.addWidget(self.language_filter_combo, 1)
+        self.language_filter_hint = QLabel("")
+        self.language_filter_hint.setObjectName("secondaryInfoLabel")
+        self.language_filter_hint.setWordWrap(True)
+        filter_layout.addWidget(self.language_filter_hint, 2)
+        main_layout.addLayout(filter_layout)
+
         main_layout.addWidget(QLabel("Preview Text"))
         self.preview_text_edit = QTextEdit(self)
-        self.preview_text_edit.setPlaceholderText("Type sample text to render with each voice")
+        self.preview_text_edit.setPlaceholderText("Type sample text to render with selected voices")
         self.preview_text_edit.setPlainText(DEFAULT_PREVIEW_TEXT)
         self.preview_text_edit.setFixedHeight(90)
         main_layout.addWidget(self.preview_text_edit)
 
-        self.voice_table = QTableWidget(0, 3, self)
-        self.voice_table.setHorizontalHeaderLabels(["Voice", "Status", "Preview WAV"])
+        self.voice_table = QTableWidget(0, 5, self)
+        self.voice_table.setHorizontalHeaderLabels([
+            "Voice",
+            "Language",
+            "Gender",
+            "Status",
+            "Preview WAV",
+        ])
         self.voice_table.verticalHeader().setVisible(False)
         self.voice_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.voice_table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self.voice_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.voice_table.setAlternatingRowColors(True)
+        self.voice_table.setStyleSheet("QTableWidget { alternate-background-color: #3a3446; }")
+
         header = self.voice_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         main_layout.addWidget(self.voice_table, 1)
 
         actions_layout = QGridLayout()
@@ -102,6 +168,7 @@ class VoiceCatalogDialog(QDialog):
 
     def _connect_signals(self):
         self.voice_table.itemSelectionChanged.connect(self._refresh_action_state)
+        self.language_filter_combo.currentIndexChanged.connect(self._on_language_filter_changed)
 
         self.refresh_button.clicked.connect(lambda: self.reload_voices(use_remote=True))
         self.generate_selected_button.clicked.connect(self._on_generate_selected)
@@ -113,6 +180,174 @@ class VoiceCatalogDialog(QDialog):
         self.generation_finished.connect(self._on_generation_finished)
 
         self.logic.state_changed.connect(self._refresh_header)
+
+    @staticmethod
+    def _titleize_identifier(value: str) -> str:
+        tokens = [token for token in re.split(r"[_\-]+", str(value or "").strip()) if token]
+        return " ".join(token.capitalize() for token in tokens)
+
+    @staticmethod
+    def _split_weight_suffix(voice_token: str) -> tuple[str, str]:
+        trimmed = str(voice_token or "").strip()
+        weighted_match = re.fullmatch(r"(.+?)(\(\s*\d+(?:\.\d+)?\s*\))", trimmed)
+        if not weighted_match:
+            return trimmed, ""
+        return weighted_match.group(1).strip(), f" {weighted_match.group(2)}"
+
+    @staticmethod
+    def _language_label_for_service(service: str, language_code: str) -> str:
+        normalized = str(language_code or "").strip().lower()
+        if service == "Kokoro" and normalized == "en":
+            return "American English"
+        if service == "Kokoro" and normalized == "en-gb":
+            return "British English"
+        return LANGUAGE_DISPLAY_NAMES.get(normalized, str(language_code or "").strip())
+
+    @staticmethod
+    def _normalize_language_code_for_service(service: str, language_value: str) -> str:
+        normalized = str(language_value or "").strip().lower()
+        if not normalized:
+            return ""
+
+        if service == "Kokoro":
+            kokoro_aliases = {
+                "en-us": "en",
+                "pt-br": "pt",
+                "fr-fr": "fr",
+                "zh": "zh-cn",
+            }
+            normalized = kokoro_aliases.get(normalized, normalized)
+
+        return normalized
+
+    @staticmethod
+    def _parse_kokoro_voice_name(raw_name: str) -> tuple[str, str]:
+        normalized_name = str(raw_name or "").strip("_").strip()
+        if not normalized_name:
+            return "Voice", ""
+
+        version_suffix = ""
+        version_match = re.match(r"^v(\d+)_?(.*)$", normalized_name, flags=re.IGNORECASE)
+        if version_match and version_match.group(2):
+            normalized_name = version_match.group(2).strip("_").strip()
+            version_suffix = f" (v{version_match.group(1)})"
+
+        tokens = [token for token in re.split(r"[_\-]+", normalized_name) if token]
+        display_name = " ".join(token.capitalize() for token in tokens) if tokens else "Voice"
+        return display_name, version_suffix
+
+    def _kokoro_component_meta(self, voice_token: str) -> tuple[str, str, str]:
+        token_without_weight, weight_suffix = self._split_weight_suffix(voice_token)
+        prefix, separator, voice_name = token_without_weight.partition("_")
+        normalized_prefix = prefix.lower().strip()
+
+        if separator and len(normalized_prefix) == 2:
+            language_code = KOKORO_PREFIX_LANGUAGE_CODES.get(normalized_prefix[0], "")
+            gender_label = VOICE_GENDER_LABELS.get(normalized_prefix[1], "")
+            if language_code and gender_label:
+                display_name, version_suffix = self._parse_kokoro_voice_name(voice_name)
+                return f"{display_name}{version_suffix}{weight_suffix}", language_code, gender_label
+
+        if normalized_prefix in KOKORO_OPENAI_ALIAS_VOICES and not separator:
+            alias_name = self._titleize_identifier(normalized_prefix)
+            return f"{alias_name}{weight_suffix}", "en", ""
+
+        fallback_name = self._titleize_identifier(token_without_weight)
+        return (fallback_name or token_without_weight), "", ""
+
+    def _build_kokoro_voice_entry(self, voice_id: str) -> dict:
+        normalized_voice_id = str(voice_id or "").strip()
+        parts = [part.strip() for part in normalized_voice_id.split("+") if part.strip()]
+
+        if len(parts) > 1:
+            part_meta = [self._kokoro_component_meta(part) for part in parts]
+            display_label = "Blend: " + " + ".join(meta[0] for meta in part_meta)
+            language_codes = [meta[1] for meta in part_meta if meta[1]]
+            gender_labels = [meta[2] for meta in part_meta if meta[2]]
+            language_code = language_codes[0] if language_codes and all(code == language_codes[0] for code in language_codes) else ""
+            gender_label = gender_labels[0] if gender_labels and all(g == gender_labels[0] for g in gender_labels) else ""
+        else:
+            display_label, language_code, gender_label = self._kokoro_component_meta(normalized_voice_id)
+
+        language_label = self._language_label_for_service("Kokoro", language_code) if language_code else "Other"
+        return {
+            "voice_id": normalized_voice_id,
+            "display_label": display_label,
+            "language_code": language_code,
+            "language_label": language_label,
+            "gender_label": gender_label,
+        }
+
+    def _build_voxtral_voice_entry(self, voice_id: str) -> dict:
+        normalized_voice_id = str(voice_id or "").strip()
+        lowered = normalized_voice_id.lower()
+        left, separator, right = lowered.partition("_")
+
+        language_code = ""
+        language_label = "Other"
+        gender_label = ""
+        display_label = self._titleize_identifier(normalized_voice_id) or normalized_voice_id
+
+        if separator:
+            gender_label = VOICE_GENDER_LABELS.get(right, "")
+
+            if left in VOXTRAL_STYLE_LABELS:
+                language_code = "en"
+                language_label = self._language_label_for_service("Voxtral", language_code)
+                display_label = VOXTRAL_STYLE_LABELS[left]
+                if gender_label:
+                    display_label = f"{display_label} {gender_label}"
+            elif left in VOXTRAL_LANGUAGES:
+                language_code = left
+                language_label = self._language_label_for_service("Voxtral", language_code)
+                if gender_label:
+                    display_label = f"Standard {gender_label}"
+                else:
+                    display_label = "Standard"
+
+        if not language_code and left in VOXTRAL_LANGUAGES:
+            language_code = left
+            language_label = self._language_label_for_service("Voxtral", language_code)
+
+        return {
+            "voice_id": normalized_voice_id,
+            "display_label": display_label,
+            "language_code": language_code,
+            "language_label": language_label,
+            "gender_label": gender_label,
+        }
+
+    def _build_silero_voice_entry(self, voice_id: str) -> dict:
+        normalized_voice_id = str(voice_id or "").strip()
+        current_language_name = str(self.logic.state.tts.language or "").strip() or "Silero"
+        return {
+            "voice_id": normalized_voice_id,
+            "display_label": self._titleize_identifier(normalized_voice_id) or normalized_voice_id,
+            "language_code": current_language_name.lower(),
+            "language_label": current_language_name,
+            "gender_label": "",
+        }
+
+    def _build_generic_voice_entry(self, service: str, voice_id: str) -> dict:
+        normalized_voice_id = str(voice_id or "").strip()
+        current_language = self._normalize_language_code_for_service(service, str(self.logic.state.tts.language or ""))
+        language_label = self._language_label_for_service(service, current_language) if current_language else ""
+        return {
+            "voice_id": normalized_voice_id,
+            "display_label": normalized_voice_id,
+            "language_code": current_language,
+            "language_label": language_label,
+            "gender_label": "",
+        }
+
+    def _build_voice_entry(self, service: str, voice_id: str) -> dict:
+        if service == "Kokoro":
+            return self._build_kokoro_voice_entry(voice_id)
+        if service == "Voxtral":
+            return self._build_voxtral_voice_entry(voice_id)
+        if service == "Silero":
+            return self._build_silero_voice_entry(voice_id)
+        return self._build_generic_voice_entry(service, voice_id)
 
     def _refresh_header(self):
         service = str(self.logic.state.tts.service or "").strip() or "Unknown"
@@ -154,6 +389,114 @@ class VoiceCatalogDialog(QDialog):
     def _first_row_for_voice(self, voice_id: str) -> int:
         return int(self._voice_rows.get(str(voice_id or "").strip(), -1))
 
+    def _active_service(self) -> str:
+        return str(self.logic.state.tts.service or "").strip()
+
+    def _language_filter_options(self, service: str, voice_entries: list[dict]) -> list[tuple[str, str]]:
+        if service == "Kokoro":
+            return [
+                (self._language_label_for_service("Kokoro", code), code)
+                for code in KOKORO_LANGUAGES
+            ]
+
+        if service == "Voxtral":
+            present_codes = {
+                str(entry.get("language_code") or "").strip().lower()
+                for entry in voice_entries
+                if str(entry.get("language_code") or "").strip()
+            }
+            ordered_codes = [code for code in VOXTRAL_LANGUAGES if code in present_codes]
+            if "en" in present_codes and "en" not in ordered_codes:
+                ordered_codes.insert(0, "en")
+            return [
+                (self._language_label_for_service("Voxtral", code), code)
+                for code in ordered_codes
+            ]
+
+        if service == "Silero":
+            current_language_name = str(self.logic.state.tts.language or "").strip()
+            if not current_language_name:
+                return []
+            return [(current_language_name, current_language_name.lower())]
+
+        return []
+
+    def _preferred_language_filter_code(self, service: str, options: list[tuple[str, str]]) -> str:
+        if not options:
+            return ""
+
+        if service == "Silero":
+            return str(options[0][1] or "")
+
+        preferred_code = self._normalize_language_code_for_service(
+            service,
+            str(self.logic.state.tts.language or ""),
+        )
+        option_codes = {str(code or "") for _, code in options}
+        if preferred_code in option_codes:
+            return preferred_code
+        return str(options[0][1] or "")
+
+    def _configure_language_filter(self, service: str, voice_entries: list[dict]):
+        options = self._language_filter_options(service, voice_entries)
+        selected_code_before = str(self.language_filter_combo.currentData() or "")
+
+        self.language_filter_combo.blockSignals(True)
+        self.language_filter_combo.clear()
+
+        for label, code in options:
+            self.language_filter_combo.addItem(label, code)
+
+        if options:
+            selected_code = selected_code_before if selected_code_before in {code for _, code in options} else self._preferred_language_filter_code(service, options)
+            target_index = self.language_filter_combo.findData(selected_code)
+            if target_index < 0:
+                target_index = 0
+            self.language_filter_combo.setCurrentIndex(target_index)
+            self.language_filter_combo.setVisible(True)
+            self.language_filter_hint.setVisible(True)
+            if service == "Kokoro":
+                self.language_filter_hint.setText("Kokoro preview generation is limited to the selected supported language.")
+            elif service == "Voxtral":
+                self.language_filter_hint.setText("Voxtral voices are grouped by language and gender.")
+            else:
+                self.language_filter_hint.setText("Silero voices are shown for the currently selected Silero language.")
+        else:
+            self.language_filter_combo.setVisible(False)
+            self.language_filter_hint.setVisible(False)
+
+        self.language_filter_combo.blockSignals(False)
+
+    def _filtered_voice_entries(self) -> list[dict]:
+        service = self._active_service()
+        selected_code = str(self.language_filter_combo.currentData() or "").strip().lower()
+
+        entries = list(self._voice_entries)
+        if selected_code:
+            entries = [
+                entry
+                for entry in entries
+                if str(entry.get("language_code") or "").strip().lower() == selected_code
+            ]
+
+        gender_order = {"Female": 0, "Male": 1, "": 2}
+        entries.sort(
+            key=lambda entry: (
+                str(entry.get("language_label") or "").lower(),
+                gender_order.get(str(entry.get("gender_label") or ""), 99),
+                str(entry.get("display_label") or "").lower(),
+            )
+        )
+
+        if service == "Kokoro" and selected_code:
+            entries = [
+                entry
+                for entry in entries
+                if str(entry.get("language_code") or "").strip().lower() == selected_code
+            ]
+
+        return entries
+
     def reload_voices(self, *, use_remote: bool):
         if self._is_generating():
             return
@@ -163,50 +506,73 @@ class VoiceCatalogDialog(QDialog):
         if not self.logic.tts_service_supports_prebuilt_voices():
             self.voice_table.setRowCount(0)
             self._voice_rows = {}
+            self._voice_entries = []
             self.status_label.setText(
                 "Current service does not expose built-in voices. Use Manage Voice Samples for voice-cloning services."
             )
+            self._configure_language_filter(self._active_service(), [])
             self._refresh_action_state()
             return
 
+        service = self._active_service()
         voices = self.logic.list_active_prebuilt_voices(
             use_remote=use_remote,
             update_state=False,
         )
+        self._voice_entries = [self._build_voice_entry(service, voice_id) for voice_id in voices]
+        self._configure_language_filter(service, self._voice_entries)
+        self._render_voice_table()
 
-        self.voice_table.setRowCount(len(voices))
+    def _render_voice_table(self):
+        filtered_entries = self._filtered_voice_entries()
+        self.voice_table.setRowCount(len(filtered_entries))
         self._voice_rows = {}
 
-        for row, voice_id in enumerate(voices):
-            normalized_voice_id = str(voice_id or "").strip()
-            self._voice_rows[normalized_voice_id] = row
+        for row, entry in enumerate(filtered_entries):
+            voice_id = str(entry.get("voice_id") or "").strip()
+            display_label = str(entry.get("display_label") or voice_id)
+            language_code = str(entry.get("language_code") or "").strip().lower()
+            language_label = str(entry.get("language_label") or "")
+            gender_label = str(entry.get("gender_label") or "")
 
-            voice_item = QTableWidgetItem(normalized_voice_id)
-            voice_item.setData(Qt.ItemDataRole.UserRole, normalized_voice_id)
+            self._voice_rows[voice_id] = row
+
+            voice_item = QTableWidgetItem(display_label)
+            voice_item.setData(Qt.ItemDataRole.UserRole, voice_id)
+            voice_item.setToolTip(f"{display_label}\nID: {voice_id}")
             self.voice_table.setItem(row, 0, voice_item)
 
-            status_item = QTableWidgetItem("Not generated")
-            self.voice_table.setItem(row, 1, status_item)
+            language_item = QTableWidgetItem(language_label)
+            self.voice_table.setItem(row, 1, language_item)
 
-            preview_path = self._preview_paths.get(normalized_voice_id, "")
+            gender_item = QTableWidgetItem(gender_label)
+            self.voice_table.setItem(row, 2, gender_item)
+
+            preview_path = self.logic.get_prebuilt_voice_preview_path(
+                voice_id,
+                language_code=language_code,
+                existing_only=True,
+            )
+            status_item = QTableWidgetItem("Ready" if preview_path else "Not generated")
             preview_item = QTableWidgetItem(preview_path)
-            self.voice_table.setItem(row, 2, preview_item)
-
             if preview_path:
-                status_item.setText("Ready")
+                preview_item.setToolTip(preview_path)
 
-        if voices:
+            self.voice_table.setItem(row, 3, status_item)
+            self.voice_table.setItem(row, 4, preview_item)
+
+        if filtered_entries:
             current_speaker = str(self.logic.state.tts.speaker or "").strip()
             target_row = self._first_row_for_voice(current_speaker)
             if target_row < 0:
                 target_row = 0
             self.voice_table.selectRow(target_row)
             self.status_label.setText(
-                "Tip: Select one or more voices, generate previews, then click 'Use Selected Voice' to apply."
+                "Tip: Select voices, generate previews, then click 'Use Selected Voice' to apply your choice."
             )
         else:
             self.status_label.setText(
-                "No voices found. Connect to the TTS service, then click Refresh Voices."
+                "No voices available for the selected language."
             )
 
         self._refresh_action_state()
@@ -216,15 +582,29 @@ class VoiceCatalogDialog(QDialog):
         has_selection = bool(self._selected_voice_ids())
         generating = self._is_generating()
         selected_voice = self._selected_voice_id()
-        has_preview = bool(self._preview_paths.get(selected_voice, ""))
+
+        selected_row = self._first_row_for_voice(selected_voice)
+        selected_preview_path = ""
+        if selected_row >= 0:
+            preview_item = self.voice_table.item(selected_row, 4)
+            if preview_item is not None:
+                selected_preview_path = str(preview_item.text() or "").strip()
+
+        has_preview = bool(selected_preview_path)
 
         self.refresh_button.setEnabled((not generating) and self.logic.tts_service_supports_prebuilt_voices())
         self.generate_all_button.setEnabled((not generating) and has_rows)
         self.generate_selected_button.setEnabled((not generating) and has_selection)
         self.play_selected_button.setEnabled((not generating) and has_preview)
         self.use_selected_button.setEnabled((not generating) and has_selection)
+        self.language_filter_combo.setEnabled((not generating) and self.language_filter_combo.count() > 0)
         if self.close_button is not None:
             self.close_button.setEnabled(not generating)
+
+    def _on_language_filter_changed(self, _index: int = -1):
+        if self._is_generating():
+            return
+        self._render_voice_table()
 
     def _on_generate_selected(self):
         voices = self._selected_voice_ids()
@@ -249,6 +629,26 @@ class VoiceCatalogDialog(QDialog):
 
         self._start_generation(voices)
 
+    def _row_language_code(self, row: int) -> str:
+        language_item = self.voice_table.item(row, 1)
+        if language_item is None:
+            return ""
+
+        language_label = str(language_item.text() or "").strip().lower()
+        if not language_label:
+            return ""
+
+        service = self._active_service()
+        options = self._language_filter_options(service, self._voice_entries)
+        for label, code in options:
+            if str(label or "").strip().lower() == language_label:
+                return str(code or "").strip().lower()
+
+        if service == "Silero":
+            return str(self.language_filter_combo.currentData() or "").strip().lower()
+
+        return ""
+
     def _start_generation(self, voices: list[str]):
         if self._is_generating():
             return
@@ -258,24 +658,52 @@ class VoiceCatalogDialog(QDialog):
             QMessageBox.warning(self, "Voice Preview", "Preview text cannot be empty.")
             return
 
+        service = self._active_service()
+        selected_language_code = str(self.language_filter_combo.currentData() or "").strip().lower()
+
+        generation_targets: list[tuple[str, str]] = []
         for voice_id in voices:
             row = self._first_row_for_voice(voice_id)
             if row < 0:
                 continue
-            status_item = self.voice_table.item(row, 1)
+
+            language_code = self._row_language_code(row) or selected_language_code
+            if service == "Kokoro":
+                if not selected_language_code:
+                    continue
+                if language_code != selected_language_code:
+                    continue
+
+            generation_targets.append((voice_id, language_code))
+
+            status_item = self.voice_table.item(row, 3)
             if status_item is None:
                 status_item = QTableWidgetItem()
-                self.voice_table.setItem(row, 1, status_item)
+                self.voice_table.setItem(row, 3, status_item)
             status_item.setText("Generating...")
+            status_item.setToolTip("")
 
-        self.status_label.setText(f"Generating {len(voices)} preview sample(s)...")
+        if not generation_targets:
+            if service == "Kokoro":
+                QMessageBox.information(
+                    self,
+                    "Voice Preview",
+                    "No voices matched the selected Kokoro language filter.",
+                )
+            else:
+                QMessageBox.information(self, "Voice Preview", "No valid voices selected.")
+            self._refresh_action_state()
+            return
+
+        self.status_label.setText(f"Generating {len(generation_targets)} preview sample(s)...")
         self._refresh_action_state()
 
         def worker():
-            for voice_id in voices:
+            for voice_id, language_code in generation_targets:
                 success, output_path, error_message = self.logic.generate_prebuilt_voice_preview_sample(
                     voice_id,
                     preview_text,
+                    language_code=language_code,
                 )
                 self.preview_generated.emit(voice_id, success, output_path, error_message)
             self.generation_finished.emit()
@@ -289,24 +717,22 @@ class VoiceCatalogDialog(QDialog):
         if row < 0:
             return
 
-        status_item = self.voice_table.item(row, 1)
+        status_item = self.voice_table.item(row, 3)
         if status_item is None:
             status_item = QTableWidgetItem()
-            self.voice_table.setItem(row, 1, status_item)
+            self.voice_table.setItem(row, 3, status_item)
 
-        preview_item = self.voice_table.item(row, 2)
+        preview_item = self.voice_table.item(row, 4)
         if preview_item is None:
             preview_item = QTableWidgetItem()
-            self.voice_table.setItem(row, 2, preview_item)
+            self.voice_table.setItem(row, 4, preview_item)
 
         if success and output_path:
-            self._preview_paths[normalized_voice_id] = output_path
             status_item.setText("Ready")
             status_item.setToolTip("")
             preview_item.setText(output_path)
             preview_item.setToolTip(output_path)
         else:
-            self._preview_paths.pop(normalized_voice_id, None)
             status_item.setText("Failed")
             status_item.setToolTip(error_message or "Unknown error")
             preview_item.setText("")
@@ -325,7 +751,13 @@ class VoiceCatalogDialog(QDialog):
             QMessageBox.information(self, "Voice Preview", "Select a voice first.")
             return
 
-        preview_path = str(self._preview_paths.get(voice_id, "")).strip()
+        row = self._first_row_for_voice(voice_id)
+        if row < 0:
+            QMessageBox.information(self, "Voice Preview", "Select a voice first.")
+            return
+
+        preview_item = self.voice_table.item(row, 4)
+        preview_path = str(preview_item.text() if preview_item else "").strip()
         if not preview_path:
             QMessageBox.information(
                 self,

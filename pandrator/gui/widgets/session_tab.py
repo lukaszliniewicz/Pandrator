@@ -1071,6 +1071,11 @@ class SessionTab(QWidget):
             state.tts.service,
             state.tts.openai_audio_endpoint,
         )
+        modal_voice_selection_services = {"Kokoro", "Voxtral", "Silero"}
+        modal_only_prebuilt_selection = (
+            state.tts.service in modal_voice_selection_services
+            and supports_prebuilt_voice_catalog
+        )
 
         if is_xtts:
             self.xtts_model_label.setText("XTTS Model:")
@@ -1080,10 +1085,18 @@ class SessionTab(QWidget):
             self.xtts_model_label.setText("Model:")
 
         if supports_prebuilt_voice_catalog:
-            self.speaker_label.setText("Pre-built Voice:")
-            self.voice_mode_hint_label.setText(
-                "This service provides pre-built voices. Use Browse Voices to audition and compare voices quickly."
-            )
+            if modal_only_prebuilt_selection:
+                self.speaker_label.setText("Voice Selection:")
+                current_selected_voice = str(state.tts.speaker or "").strip() or "(not selected)"
+                self.voice_mode_hint_label.setText(
+                    f"This service uses modal voice selection only. Current voice: {current_selected_voice}. "
+                    "Use Browse Voices to select and audition voices."
+                )
+            else:
+                self.speaker_label.setText("Pre-built Voice:")
+                self.voice_mode_hint_label.setText(
+                    "This service provides pre-built voices. Use Browse Voices to audition and compare voices quickly."
+                )
         elif supports_voice_library_upload:
             self.speaker_label.setText("Speaker Voice:")
             self.voice_mode_hint_label.setText(
@@ -1096,6 +1109,7 @@ class SessionTab(QWidget):
         self.upload_voice_button.setText("Manage Voice Samples")
         self.upload_voice_button.setVisible(supports_voice_library_upload)
         self.browse_voices_button.setVisible(supports_prebuilt_voice_catalog)
+        self.speaker_combo.setVisible(not modal_only_prebuilt_selection)
         self.voice_mode_hint_label.setVisible(
             supports_prebuilt_voice_catalog or supports_voice_library_upload
         )
