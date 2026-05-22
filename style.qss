@@ -47,20 +47,38 @@ QLabel#sessionLifecycleLabel {
 
 QPushButton,
 QPushButton#dangerButton,
-QPushButton:hover,
-QPushButton:pressed,
-QPushButton:checked,
-QPushButton:disabled,
 QToolButton,
-QToolButton:hover,
-QToolButton:pressed,
-QToolButton:checked,
-QToolButton:disabled {
+QToolButton {
     background-color: #4d5863;
     border: 1px solid #4d5863;
     border-radius: 6px;
     color: #f1f1f1;
     padding: 5px 10px;
+}
+
+QPushButton:hover,
+QPushButton#dangerButton:hover,
+QToolButton:hover {
+    background-color: #566271;
+    border: 1px solid #566271;
+}
+
+QPushButton:pressed,
+QPushButton:checked,
+QPushButton#dangerButton:pressed,
+QPushButton#dangerButton:checked,
+QToolButton:pressed,
+QToolButton:checked {
+    background-color: #46505b;
+    border: 1px solid #46505b;
+}
+
+QPushButton:disabled,
+QPushButton#dangerButton:disabled,
+QToolButton:disabled {
+    background-color: #3f454c;
+    border: 1px solid #3f454c;
+    color: #9aa1aa;
 }
 
 QPushButton#primaryButton {
