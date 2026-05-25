@@ -111,6 +111,7 @@ KOKORO_TTS_VOICES = [
     "bm_fable",
     "bm_george",
     "bm_lewis",
+    "dm_martin",
     "ef_dora",
     "em_alex",
     "em_santa",

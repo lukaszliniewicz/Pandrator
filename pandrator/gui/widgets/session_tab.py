@@ -34,6 +34,7 @@ from .session_sections import (
 KOKORO_VOICE_LANGUAGE_GROUPS = {
     "a": "American English",
     "b": "British English",
+    "d": "German",
     "e": "Spanish",
     "f": "French",
     "h": "Hindi",
@@ -72,7 +73,12 @@ KOKORO_OPENAI_ALIAS_VOICES = {
     "verse",
 }
 
+KOKORO_NAMED_VOICE_META: dict[str, tuple[str, str]] = {
+    "martin": ("d", "m"),
+}
+
 SPEAKER_HEADING_VALUE = "__heading__"
+
 KOKORO_MISC_GROUP_ORDER = ["OpenAI Alias Voices", "Voice Blends", "Other Voices"]
 
 class SessionTab(QWidget):
@@ -1467,6 +1473,13 @@ class SessionTab(QWidget):
 
         if normalized_prefix in KOKORO_OPENAI_ALIAS_VOICES and not separator:
             return "OpenAI Alias Voices", ""
+
+        if not separator and normalized_prefix in KOKORO_NAMED_VOICE_META:
+            lang_key, gender_key = KOKORO_NAMED_VOICE_META[normalized_prefix]
+            language_label = KOKORO_VOICE_LANGUAGE_GROUPS.get(lang_key, "")
+            gender_label = VOICE_GENDER_LABELS.get(gender_key, "")
+            if language_label:
+                return language_label, gender_label
 
         return "Other Voices", ""
 

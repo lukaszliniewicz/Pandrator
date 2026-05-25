@@ -26,6 +26,7 @@ DEFAULT_PREVIEW_TEXT = "The quick brown fox jumps over the lazy dog."
 KOKORO_PREFIX_LANGUAGE_CODES = {
     "a": "en",
     "b": "en-gb",
+    "d": "de",
     "e": "es",
     "f": "fr",
     "h": "hi",
@@ -64,6 +65,10 @@ KOKORO_OPENAI_ALIAS_VOICES = {
     "verse",
 }
 
+
+KOKORO_NAMED_VOICE_META: dict[str, tuple[str, str]] = {
+    "martin": ("d", "m"),
+}
 
 class VoiceCatalogDialog(QDialog):
     preview_generated = pyqtSignal(str, bool, str, str)
@@ -251,6 +256,14 @@ class VoiceCatalogDialog(QDialog):
         if normalized_prefix in KOKORO_OPENAI_ALIAS_VOICES and not separator:
             alias_name = self._titleize_identifier(normalized_prefix)
             return f"{alias_name}{weight_suffix}", "en", ""
+
+        if not separator and normalized_prefix in KOKORO_NAMED_VOICE_META:
+            lang_key, gender_key = KOKORO_NAMED_VOICE_META[normalized_prefix]
+            language_code = KOKORO_PREFIX_LANGUAGE_CODES.get(lang_key, "")
+            gender_label = VOICE_GENDER_LABELS.get(gender_key, "")
+            if language_code:
+                display_name = self._titleize_identifier(token_without_weight) or token_without_weight
+                return f"{display_name}{weight_suffix}", language_code, gender_label
 
         fallback_name = self._titleize_identifier(token_without_weight)
         return (fallback_name or token_without_weight), "", ""
