@@ -30,7 +30,7 @@ WHISPER_LANGUAGES = [
 XTTS_LANGUAGES = ["en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko", "hi"]
 FISHS2_LANGUAGES = list(XTTS_LANGUAGES)
 VOXTRAL_LANGUAGES = ["ar", "en", "de", "es", "fr", "hi", "it", "nl", "pt"]
-KOKORO_LANGUAGES = ["en", "en-gb", "es", "fr", "hi", "it", "ja", "pt", "zh-cn"]
+KOKORO_LANGUAGES = ["en", "en-gb", "de", "es", "fr", "hi", "it", "ja", "pt", "zh-cn"]
 
 LANGUAGE_DISPLAY_NAMES = {
     "ar": "Arabic",
