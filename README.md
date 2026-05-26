@@ -5,7 +5,8 @@
 # Pandrator: a multilingual GUI audiobook, subtitle and dubbing generator with voice cloning and translation
 >[!TIP]
 >**TL;DR:**
-> - Pandrator is not an AI model itself, but a GUI framework for Text-to-Speech, subtitle generation and translation projects. It can generate audiobooks and subtitles/dubbing by leveraging several AI tools, custom workflows and algorithms. It has an installer and works on Windows out of the box. It is not necessary to set up WSL or Docker containers.
+> - Pandrator is not an AI model itself, but a GUI framework for Text-to-Speech, subtitle and translation projects. It can generate audiobooks and subtitles/dubbing by leveraging several AI tools, custom workflows and algorithms. It has an installer and works on Windows out of the box. It is not necessary to set up WSL or Docker containers.
+> - It supports a wide range of TTS models: Fish S2 Pro, Voxtral, XTTSv2, Kokoro, voxcpm2, Silero, OpenAI and Gemini, as well as custom openai compatible implementations.
 > - When installing: if you don't have a GPU, choose Kokoro or Silero. If you do have one with at least 8GB of VRAM, and it supports your language, use Voxtral. For voice cloning and a wide range of languages, use XTTS v2 (works even with 4GB GPUs and on CPU).
 > - The easiest way to use it is to download one of the precompiled **[archives](https://1drv.ms/f/s!AgSiDu9lV3iMnPFKPO5BB_c72OLjtQ?e=3fRZMG)** - simply unpack them and use the included launcher. See **[this table](#self-contained-packages)** for their contents and sizes.
 > - You can talk to me or share tips/workflows/ideas on the Discord server.
