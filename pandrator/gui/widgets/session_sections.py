@@ -86,7 +86,7 @@ class SourceFileSection(QFrame):
         layout = QHBoxLayout(self)
         layout.setSpacing(8)
 
-        self.select_file_button = QPushButton("Select File")
+        self.select_file_button = QPushButton("Add Source")
         self.paste_text_button = QPushButton("Paste or Write")
         self.download_url_button = QPushButton("Download from URL")
         self.selected_file_label = QLabel("No file selected")

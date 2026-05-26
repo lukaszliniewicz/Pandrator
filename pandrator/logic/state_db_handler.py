@@ -1631,6 +1631,61 @@ class StateDBHandler:
 
         return [dict(row) for row in rows]
 
+    def list_reusable_sources(self, limit: int = 300, include_missing: bool = False) -> list[dict[str, Any]]:
+        self._ensure_ready()
+        safe_limit = max(1, int(limit or 1))
+
+        with self._lock, self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    session_name,
+                    source_path,
+                    source_type,
+                    dubbing_mode,
+                    config_modified_at,
+                    indexed_at
+                FROM sessions
+                WHERE (trashed_at IS NULL OR trashed_at = '')
+                    AND source_path IS NOT NULL
+                    AND source_path != ''
+                ORDER BY COALESCE(config_modified_at, indexed_at) DESC, session_name ASC
+                """
+            ).fetchall()
+
+        seen_paths: set[str] = set()
+        reusable_sources: list[dict[str, Any]] = []
+        for row in rows:
+            source_path = str(row["source_path"] or "").strip()
+            if not source_path:
+                continue
+
+            absolute_path = os.path.abspath(source_path)
+            normalized_path = os.path.normcase(absolute_path)
+            if normalized_path in seen_paths:
+                continue
+
+            seen_paths.add(normalized_path)
+            file_exists = os.path.isfile(absolute_path)
+            if not include_missing and not file_exists:
+                continue
+
+            reusable_sources.append(
+                {
+                    "source_path": absolute_path,
+                    "name": os.path.basename(absolute_path) or absolute_path,
+                    "source_type": str(row["source_type"] or _source_type_from_path(absolute_path)),
+                    "session_name": str(row["session_name"] or ""),
+                    "dubbing_mode": 1 if bool(row["dubbing_mode"]) else 0,
+                    "last_used_at": str(row["config_modified_at"] or row["indexed_at"] or ""),
+                    "exists": file_exists,
+                }
+            )
+            if len(reusable_sources) >= safe_limit:
+                break
+
+        return reusable_sources
+
     def get_session_preview(self, session_name: str) -> dict[str, Any]:
         self._ensure_ready()
         if not session_name:
@@ -1968,6 +2023,10 @@ def list_sessions(search_query: str = "", include_trashed: bool = False) -> list
     return DEFAULT_HANDLER.list_sessions(search_query=search_query, include_trashed=include_trashed)
 
 
+def list_reusable_sources(limit: int = 300, include_missing: bool = False) -> list[dict[str, Any]]:
+    return DEFAULT_HANDLER.list_reusable_sources(limit=limit, include_missing=include_missing)
+
+
 def get_session_preview(session_name: str) -> dict[str, Any]:
     return DEFAULT_HANDLER.get_session_preview(session_name)
 
@@ -1996,4 +2055,3 @@ def mark_trash_path_deleted(trash_path: str):
 
 def get_trash_entries() -> list[dict[str, Any]]:
     return DEFAULT_HANDLER.get_trash_entries()
-

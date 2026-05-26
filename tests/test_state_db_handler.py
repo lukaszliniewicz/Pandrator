@@ -158,6 +158,49 @@ class StateDBHandlerTests(unittest.TestCase):
         selected_after_switch = self.handler.get_active_dubbing_artifact(session_name, ["transcribed_srt"])
         self.assertEqual(os.path.abspath(first_path), selected_after_switch)
 
+    def test_list_reusable_sources_dedupes_and_filters_missing_paths(self):
+        source_root = os.path.join(self.temp_dir.name, "source_library")
+        os.makedirs(source_root, exist_ok=True)
+
+        reusable_source_path = os.path.join(source_root, "shared_source.txt")
+        with open(reusable_source_path, "w", encoding="utf-8") as file_handle:
+            file_handle.write("Reusable source")
+        missing_source_path = os.path.join(source_root, "missing_source.txt")
+
+        session_a = "SourceSessionA"
+        session_b = "SourceSessionB"
+        session_c = "SourceSessionC"
+        self._session_dir(session_a)
+        self._session_dir(session_b)
+        self._session_dir(session_c)
+
+        payload_base = {"tts": {"service": "XTTS", "language": "en"}}
+        self.handler.save_session_config_snapshot(
+            session_name=session_a,
+            payload={**payload_base, "source_file_path": reusable_source_path},
+        )
+        self.handler.save_session_config_snapshot(
+            session_name=session_b,
+            payload={**payload_base, "source_file_path": reusable_source_path},
+        )
+        self.handler.save_session_config_snapshot(
+            session_name=session_c,
+            payload={**payload_base, "source_file_path": missing_source_path},
+        )
+
+        reusable_rows = self.handler.list_reusable_sources(limit=50, include_missing=False)
+        reusable_paths = [str(row.get("source_path") or "") for row in reusable_rows]
+        reusable_abs = os.path.abspath(reusable_source_path)
+        missing_abs = os.path.abspath(missing_source_path)
+
+        self.assertIn(reusable_abs, reusable_paths)
+        self.assertNotIn(missing_abs, reusable_paths)
+        self.assertEqual(reusable_paths.count(reusable_abs), 1)
+
+        reusable_rows_with_missing = self.handler.list_reusable_sources(limit=50, include_missing=True)
+        reusable_paths_with_missing = [str(row.get("source_path") or "") for row in reusable_rows_with_missing]
+        self.assertIn(missing_abs, reusable_paths_with_missing)
+
     def test_artifact_registration_and_preview(self):
         session_name = "ArtifactsSession"
         self._session_dir(session_name)
@@ -190,4 +233,3 @@ class StateDBHandlerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

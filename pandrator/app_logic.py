@@ -1286,6 +1286,10 @@ class AppLogic(QObject):
             include_trashed=include_trashed,
         )
 
+    def list_reusable_sources(self, limit: int = 300) -> list[dict]:
+        """Returns deduplicated source file entries that can be reused."""
+        return session_handler.list_reusable_sources(limit=limit, include_missing=False)
+
     def get_session_index_preview(self, session_name: str) -> dict:
         """Returns detailed indexed session preview (config, runs, artifacts)."""
         return session_handler.get_session_index_preview(session_name)

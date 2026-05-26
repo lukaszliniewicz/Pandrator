@@ -634,6 +634,15 @@ def list_indexed_sessions(search_query: str = "", include_trashed: bool = False)
         return []
 
 
+def list_reusable_sources(limit: int = 300, include_missing: bool = False) -> list[dict]:
+    """Lists deduplicated source files that can be reused in new sessions."""
+    try:
+        return state_db_handler.list_reusable_sources(limit=limit, include_missing=include_missing)
+    except Exception as e:
+        logging.error("Could not list reusable sources: %s", e)
+        return []
+
+
 def get_session_index_preview(session_name: str) -> dict:
     """Returns a detailed preview payload for a session from SQLite state."""
     try:

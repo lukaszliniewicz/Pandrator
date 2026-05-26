@@ -1,5 +1,6 @@
 import os
 import re
+from datetime import datetime
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QCheckBox, QFileDialog, QInputDialog, QMessageBox, QVBoxLayout, QWidget
@@ -16,6 +17,7 @@ from ..dialogs.custom_prompt_dialog import CustomPromptDialog
 from ..dialogs.metadata_dialog import MetadataDialog
 from ..dialogs.paste_text_dialog import PasteTextDialog
 from ..dialogs.review_text_dialog import ReviewTextDialog
+from ..dialogs.source_picker_dialog import SourcePickerDialog
 from ..dialogs.voice_catalog_dialog import VoiceCatalogDialog
 from ..dialogs.voice_library_dialog import VoiceLibraryDialog
 from .session_sections import (
@@ -663,6 +665,18 @@ class SessionTab(QWidget):
         hours, rem = divmod(safe_seconds, 3600)
         minutes, secs = divmod(rem, 60)
         return f"{hours:02}:{minutes:02}:{secs:02}"
+
+    @staticmethod
+    def _format_timestamp(timestamp: str) -> str:
+        normalized = str(timestamp or "").strip()
+        if not normalized:
+            return ""
+
+        try:
+            parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+            return parsed.strftime("%Y-%m-%d, %H:%M")
+        except ValueError:
+            return normalized
 
     def _on_progress_updated(self, current: int, total: int, elapsed_time: float):
         if self.progress_bar.minimum() == 0 and self.progress_bar.maximum() == 0:
@@ -1759,18 +1773,92 @@ class SessionTab(QWidget):
                 )
 
     def _on_select_file(self):
-        if not self._ensure_named_session_for_source_action("selecting a source file"):
+        if not self._ensure_named_session_for_source_action("adding a source file"):
             return
 
+        source_mode = self._prompt_source_mode()
+        if source_mode == "upload":
+            file_path = self._prompt_source_upload_path()
+        elif source_mode == "existing":
+            file_path = self._prompt_existing_source_path()
+        else:
+            return
+
+        if not file_path:
+            return
+
+        allow_pdf_crop_prompt = source_mode == "upload"
+        self._apply_source_file_selection(file_path, allow_pdf_crop_prompt=allow_pdf_crop_prompt)
+
+    def _prompt_source_mode(self) -> str:
+        chooser = QMessageBox(self)
+        chooser.setIcon(QMessageBox.Icon.Question)
+        chooser.setWindowTitle("Add Source")
+        chooser.setText("How would you like to add a source?")
+        chooser.setInformativeText(
+            "Upload a new file from disk, or reuse a source that was already indexed in previous sessions."
+        )
+        upload_button = chooser.addButton("Upload New Source", QMessageBox.ButtonRole.AcceptRole)
+        existing_button = chooser.addButton("Select Existing Source", QMessageBox.ButtonRole.ActionRole)
+        chooser.addButton(QMessageBox.StandardButton.Cancel)
+        chooser.setDefaultButton(upload_button)
+        chooser.exec()
+
+        clicked = chooser.clickedButton()
+        if clicked == upload_button:
+            return "upload"
+        if clicked == existing_button:
+            return "existing"
+        return ""
+
+    def _prompt_source_upload_path(self) -> str:
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Select Source File",
             "",
             "Supported Files (*.txt *.srt *.pdf *.epub *.docx *.mobi *.mp4 *.mkv *.webm *.avi *.mov);;All files (*.*)",
         )
-        if not file_path:
-            return
+        return str(file_path or "").strip()
 
+    def _prompt_existing_source_path(self) -> str:
+        source_rows = self.logic.list_reusable_sources(limit=500)
+        if not source_rows:
+            QMessageBox.information(
+                self,
+                "No Existing Sources",
+                "No reusable sources were found yet. Upload a source first, then it will appear here.",
+            )
+            return ""
+
+        rows_for_dialog = []
+        for row in source_rows:
+            source_path = str(row.get("source_path") or "").strip()
+            if not source_path:
+                continue
+            rows_for_dialog.append(
+                {
+                    "name": str(row.get("name") or os.path.basename(source_path)),
+                    "source_type": str(row.get("source_type") or ""),
+                    "session_name": str(row.get("session_name") or ""),
+                    "source_path": source_path,
+                    "last_used_at": self._format_timestamp(str(row.get("last_used_at") or "")),
+                }
+            )
+
+        if not rows_for_dialog:
+            QMessageBox.information(
+                self,
+                "No Existing Sources",
+                "No reusable sources were found yet. Upload a source first, then it will appear here.",
+            )
+            return ""
+
+        dialog = SourcePickerDialog(rows_for_dialog, self)
+        if not dialog.exec():
+            return ""
+        return dialog.selected_source_path()
+
+    def _apply_source_file_selection(self, file_path: str, allow_pdf_crop_prompt: bool = True):
         should_continue, reset_session = self._confirm_source_replacement(file_path)
         if not should_continue:
             return
@@ -1778,7 +1866,7 @@ class SessionTab(QWidget):
         selected_path = file_path
         selected_ext = os.path.splitext(file_path)[1].lower()
 
-        if selected_ext == ".pdf":
+        if allow_pdf_crop_prompt and selected_ext == ".pdf":
             crop_choice = QMessageBox.question(
                 self,
                 "PDF Preprocessing",
