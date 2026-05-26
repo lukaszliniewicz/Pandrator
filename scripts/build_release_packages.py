@@ -44,6 +44,11 @@ DEFAULT_SHARED_PATHS = (
     PACKAGING_LAYOUT_FILENAME,
 )
 
+DEFAULT_EXCLUDED_FILE_PREFIXES = (
+    "pandrator_state.sqlite3",
+)
+ACTIVE_EXCLUDED_FILE_PREFIXES = tuple(DEFAULT_EXCLUDED_FILE_PREFIXES)
+
 DEFAULT_COMPONENT_PATHS = {
     "xtts": ("xtts2_api",),
     "voxtral": ("voxtral-fastapi",),
@@ -339,6 +344,7 @@ def load_packaging_layout(source_root: Path) -> Dict[str, object]:
     layout = {
         "config_flags": tuple(DEFAULT_CONFIG_FLAGS),
         "shared_paths": tuple(DEFAULT_SHARED_PATHS),
+        "excluded_file_prefixes": tuple(DEFAULT_EXCLUDED_FILE_PREFIXES),
         "component_paths": {
             key: tuple(values)
             for key, values in DEFAULT_COMPONENT_PATHS.items()
@@ -352,6 +358,10 @@ def load_packaging_layout(source_root: Path) -> Dict[str, object]:
     raw_layout = load_json_file(layout_file)
     layout["config_flags"] = parse_config_flags(raw_layout.get("config_flags"))
     layout["shared_paths"] = parse_path_list(raw_layout.get("shared_paths"), DEFAULT_SHARED_PATHS)
+    layout["excluded_file_prefixes"] = parse_path_list(
+        raw_layout.get("excluded_file_prefixes"),
+        DEFAULT_EXCLUDED_FILE_PREFIXES,
+    )
 
     raw_component_paths = raw_layout.get("component_paths")
     if isinstance(raw_component_paths, dict):
@@ -523,6 +533,8 @@ def load_install_config(source_root: Path) -> Dict[str, object]:
 
 def iter_files_in_tree(root: Path) -> Iterable[Path]:
     if root.is_file():
+        if should_exclude_file(root.name):
+            return
         yield root
         return
 
@@ -531,7 +543,24 @@ def iter_files_in_tree(root: Path) -> Iterable[Path]:
         files.sort()
         current_path = Path(current_root)
         for filename in files:
+            if should_exclude_file(filename):
+                continue
             yield current_path / filename
+
+
+def should_exclude_file(filename: str, excluded_prefixes: Sequence[str] | None = None) -> bool:
+    if not filename:
+        return False
+
+    prefixes = excluded_prefixes or ACTIVE_EXCLUDED_FILE_PREFIXES
+    lowered = filename.lower()
+    for prefix in prefixes:
+        normalized_prefix = str(prefix or "").strip().lower()
+        if not normalized_prefix:
+            continue
+        if lowered.startswith(normalized_prefix):
+            return True
+    return False
 
 
 def calculate_block_signature(source_root: Path, include_paths: Sequence[str]) -> str:
@@ -548,6 +577,9 @@ def calculate_block_signature(source_root: Path, include_paths: Sequence[str]) -
             continue
 
         if source_entry.is_file():
+            if should_exclude_file(source_entry.name):
+                digest.update(b"excluded\n")
+                continue
             stat = source_entry.stat()
             digest.update(
                 f"file:{normalized}|{stat.st_size}|{stat.st_mtime_ns}\n".encode("utf-8")
@@ -595,6 +627,8 @@ def copy_directory_contents(source_dir: Path, destination_dir: Path, prefer_hard
         target_root.mkdir(parents=True, exist_ok=True)
 
         for filename in files:
+            if should_exclude_file(filename):
+                continue
             source_file = root_path / filename
             destination_file = target_root / filename
             hardlink_or_copy_file(source_file, destination_file, prefer_hardlinks)
@@ -617,6 +651,9 @@ def copy_relative_entries(
             if destination_entry.is_file():
                 destination_entry.unlink()
             copy_directory_contents(source_entry, destination_entry, prefer_hardlinks)
+            continue
+
+        if should_exclude_file(source_entry.name):
             continue
 
         if destination_entry.is_dir():
@@ -875,6 +912,7 @@ def parse_arguments() -> argparse.Namespace:
 
 
 def main() -> int:
+    global ACTIVE_EXCLUDED_FILE_PREFIXES
     args = parse_arguments()
     repo_root = Path(__file__).resolve().parents[1]
 
@@ -968,6 +1006,9 @@ def main() -> int:
 
     config_flags = tuple(layout["config_flags"])
     shared_paths = tuple(layout["shared_paths"])
+    ACTIVE_EXCLUDED_FILE_PREFIXES = tuple(
+        layout.get("excluded_file_prefixes", DEFAULT_EXCLUDED_FILE_PREFIXES)
+    )
     component_paths = dict(layout["component_paths"])
 
     stack_config = load_install_config(source_roots["stack"]) if "stack" in source_roots else {}

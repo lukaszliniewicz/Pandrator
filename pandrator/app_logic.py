@@ -23,6 +23,7 @@ from .logic import (
     text_preprocessor,
     llm_handler,
     tts_handler,
+    state_db_handler,
     voice_library_handler,
     rvc_handler,
     audio_processor,
@@ -100,6 +101,7 @@ class AppLogic(QObject):
         self._tts_connection_thread = None
         self._text_preprocessing_running = False
         self._pending_dubbing_add_to_video_request: dict[str, object] | None = None
+        self._active_dubbing_run_id: str | None = None
         self.stop_generation_flag = threading.Event()
         self.cancel_generation_flag = threading.Event()
         self._loaded_llm_model = None
@@ -130,11 +132,21 @@ class AppLogic(QObject):
         self._start_generation_requested.connect(self.start_generation)
         self._start_generation_anew_requested.connect(self.start_generation_anew)
 
+        self._initialize_state_index()
+
         logging.info("AppLogic initialized.")
 
     def set_log_file_path(self, path: str):
         """Sets the path to the log file."""
         self.log_file_path = path
+
+    def _initialize_state_index(self):
+        """Initializes SQLite state and reindexes any on-disk sessions."""
+        try:
+            state_db_handler.initialize_database()
+            state_db_handler.reindex_all_sessions()
+        except Exception as e:
+            logging.error("Failed to initialize SQLite state index: %s", e, exc_info=True)
 
     def _ensure_playback_handler(self) -> PlaybackHandler | None:
         if self.playback_handler is not None:
@@ -181,7 +193,165 @@ class AppLogic(QObject):
         """Returns True when the selected source uses dubbing workflow."""
         return self._is_dubbing_source_selected()
 
+    def _synchronize_active_dubbing_run(self) -> dict | None:
+        if not self._is_named_session_active():
+            self._active_dubbing_run_id = None
+            return None
+
+        session_name = self.state.session_name
+
+        if self._active_dubbing_run_id:
+            try:
+                run_by_id = state_db_handler.get_dubbing_run(self._active_dubbing_run_id)
+            except Exception:
+                run_by_id = None
+
+            if run_by_id and str(run_by_id.get("session_name") or "") == session_name:
+                return run_by_id
+
+        try:
+            active_run = state_db_handler.get_active_dubbing_run(session_name)
+        except Exception:
+            active_run = None
+
+        self._active_dubbing_run_id = str(active_run.get("run_id")) if active_run else None
+        return active_run
+
+    def _create_dubbing_run(
+        self,
+        set_active: bool = True,
+        force_new: bool = False,
+    ) -> dict | None:
+        if not self._is_named_session_active():
+            return None
+
+        session_name = self.state.session_name
+        source_path = str(self.state.source_file_path or "")
+        source_ext = os.path.splitext(source_path)[1].lower()
+        source_video_path = ""
+        source_srt_path = ""
+        if source_ext in {".mp4", ".mkv", ".webm", ".avi", ".mov"}:
+            source_video_path = source_path
+        elif source_ext == ".srt":
+            source_srt_path = source_path
+            source_video_path = str(self.state.dubbing.video_file_path or "")
+
+        settings_snapshot = copy.deepcopy(self.state.dubbing.__dict__)
+        settings_snapshot["llm_provider_configs"] = llm_handler.get_provider_configs(self.state.llm)
+
+        try:
+            existing_run = None if force_new else self._synchronize_active_dubbing_run()
+            if existing_run and str(existing_run.get("run_dir") or "").strip():
+                return existing_run
+
+            created_run = state_db_handler.create_dubbing_run(
+                session_name=session_name,
+                source_video_path=source_video_path,
+                source_srt_path=source_srt_path,
+                settings_snapshot=settings_snapshot,
+                set_active=set_active,
+            )
+            self._active_dubbing_run_id = str(created_run.get("run_id") or "")
+
+            if source_video_path and os.path.exists(source_video_path):
+                state_db_handler.register_dubbing_artifact(
+                    self._active_dubbing_run_id,
+                    "video_source",
+                    source_video_path,
+                    is_current=True,
+                )
+            if source_srt_path and os.path.exists(source_srt_path):
+                state_db_handler.register_dubbing_artifact(
+                    self._active_dubbing_run_id,
+                    "source_srt",
+                    source_srt_path,
+                    is_current=True,
+                )
+
+            return created_run
+        except Exception as e:
+            logging.error("Could not create dubbing run for '%s': %s", session_name, e, exc_info=True)
+            return None
+
+    def _ensure_dubbing_run_for_task(self, task: str) -> dict | None:
+        if not self._is_named_session_active():
+            return None
+
+        run = self._synchronize_active_dubbing_run()
+        task_name = str(task or "").strip().lower()
+        rollover_statuses = {"completed", "rendered", "failed"}
+        should_rollover = bool(
+            run
+            and task_name == "generate_audio"
+            and str(run.get("status") or "").strip().lower() in rollover_statuses
+        )
+
+        if run is None or should_rollover:
+            run = self._create_dubbing_run(set_active=True, force_new=should_rollover)
+
+        if not run:
+            return None
+
+        run_dir = str(run.get("run_dir") or "").strip()
+        if run_dir:
+            os.makedirs(run_dir, exist_ok=True)
+        return run
+
+    def _register_dubbing_artifact(self, role: str, path: str, is_current: bool = True):
+        run = self._synchronize_active_dubbing_run()
+        run_id = str(run.get("run_id") or "") if run else ""
+        if not run_id or not role or not path:
+            return
+
+        try:
+            state_db_handler.register_dubbing_artifact(
+                run_id=run_id,
+                role=role,
+                path=path,
+                is_current=is_current,
+            )
+        except Exception as e:
+            logging.warning(
+                "Could not register dubbing artifact '%s' at '%s': %s",
+                role,
+                path,
+                e,
+            )
+
+    def _mark_dubbing_step(self, step_key: str, status: str, detail: str = ""):
+        run = self._synchronize_active_dubbing_run()
+        run_id = str(run.get("run_id") or "") if run else ""
+        if not run_id:
+            return
+
+        try:
+            state_db_handler.record_dubbing_step(run_id, step_key, status, detail)
+            normalized_status = str(status or "").strip().lower()
+            run_status = ""
+            if normalized_status == "running":
+                run_status = "running"
+            elif normalized_status == "failed":
+                run_status = "failed"
+            elif normalized_status == "completed":
+                run_status = "completed" if step_key == "render" else "running"
+
+            if run_status:
+                state_db_handler.update_dubbing_run_status(run_id, run_status)
+        except Exception as e:
+            logging.warning("Could not record dubbing step '%s' (%s): %s", step_key, status, e)
+
     def _get_dubbing_work_dir(self, ensure_exists: bool = False) -> str:
+        run = self._synchronize_active_dubbing_run()
+        run_dir = str(run.get("run_dir") or "") if run else ""
+        if not run_dir and ensure_exists and self._is_named_session_active():
+            created_run = self._create_dubbing_run(set_active=True)
+            run_dir = str(created_run.get("run_dir") or "") if created_run else ""
+
+        if run_dir:
+            if ensure_exists:
+                os.makedirs(run_dir, exist_ok=True)
+            return run_dir
+
         staging_dir = session_handler.get_dubbing_staging_path(self.state.session_name)
         if ensure_exists:
             os.makedirs(staging_dir, exist_ok=True)
@@ -241,7 +411,17 @@ class AppLogic(QObject):
     def _resolve_dubbing_video_source(self) -> str:
         video_source = self.state.source_file_path or ""
         if os.path.splitext(video_source)[1].lower() != ".srt":
+            if video_source:
+                self._register_dubbing_artifact("video_source", video_source, is_current=True)
             return video_source
+
+        active_run = self._synchronize_active_dubbing_run()
+        if active_run:
+            run_video = str(active_run.get("source_video_path") or "").strip()
+            if run_video and os.path.exists(run_video):
+                if not self.state.dubbing.video_file_path:
+                    self.state.dubbing.video_file_path = run_video
+                return run_video
 
         discovered_video = (
             self.state.dubbing.video_file_path
@@ -249,6 +429,9 @@ class AppLogic(QObject):
         )
         if discovered_video and not self.state.dubbing.video_file_path:
             self.state.dubbing.video_file_path = discovered_video
+
+        if discovered_video:
+            self._register_dubbing_artifact("video_source", discovered_video, is_current=True)
 
         return discovered_video or ""
 
@@ -827,6 +1010,7 @@ class AppLogic(QObject):
         """Removes all persisted artifacts for the active session."""
         session_name = self.state.session_name
         session_handler.clear_session_contents(session_name)
+        self._active_dubbing_run_id = None
 
         session_dir = session_handler.get_session_path(session_name)
         os.makedirs(os.path.join(session_dir, "Sentence_wavs"), exist_ok=True)
@@ -892,6 +1076,7 @@ class AppLogic(QObject):
         self._normalize_tts_service_state(self.state.tts)
         self.normalize_dubbing_translation_state(self.state.dubbing)
         self._loaded_llm_model = None
+        self._active_dubbing_run_id = None
         session_dir = session_handler.get_session_path(self.state.session_name)
         os.makedirs(session_dir, exist_ok=True)
         sentence_wavs_dir = os.path.join(session_dir, "Sentence_wavs")
@@ -903,6 +1088,10 @@ class AppLogic(QObject):
         session_handler.save_sentences(self.state.session_name, [])
         self._persist_global_settings(force=True)
         self._persist_session_config(force=True)
+        try:
+            state_db_handler.reindex_session(session_name)
+        except Exception:
+            pass
         self.log_message.emit(f"New session created: {session_name}")
         self.state_changed.emit()
 
@@ -1003,6 +1192,8 @@ class AppLogic(QObject):
         restored_state.tts.tts_speakers = current_tts_speakers
 
         self.state = restored_state
+        active_run = self._synchronize_active_dubbing_run()
+        self._active_dubbing_run_id = str(active_run.get("run_id") or "") if active_run else None
         if self.state.tts.service in {
             tts_handler.OPENAI_SERVICE,
             tts_handler.GEMINI_SERVICE,
@@ -1013,6 +1204,10 @@ class AppLogic(QObject):
         self._loaded_llm_model = None
         self._persist_global_settings(force=True)
         self._persist_session_config(force=True)
+        try:
+            state_db_handler.reindex_session(session_name)
+        except Exception:
+            pass
         self.log_message.emit(f"Session loaded: {session_name}")
         self.state_changed.emit()
 
@@ -1038,6 +1233,7 @@ class AppLogic(QObject):
                 self._normalize_tts_service_state(self.state.tts)
                 self.normalize_dubbing_translation_state(self.state.dubbing)
                 self._loaded_llm_model = None
+                self._active_dubbing_run_id = None
                 self._last_session_config_snapshot = ""
                 self._persist_global_settings(force=True)
                 self.state_changed.emit()
@@ -1062,6 +1258,77 @@ class AppLogic(QObject):
                 self.show_error.emit("Error", f"Session folder for '{session_name}' not found.")
         else:
             self.show_error.emit("Information", "No active session folder to view.")
+
+    def open_folder_path(self, path: str):
+        """Opens a filesystem path in the OS file explorer."""
+        import platform
+
+        normalized_path = os.path.abspath(str(path or "").strip())
+        if not normalized_path or not os.path.exists(normalized_path):
+            self.show_error.emit("Error", f"Folder not found: {normalized_path or path}")
+            return
+
+        system = platform.system()
+        try:
+            if system == "Windows":
+                os.startfile(normalized_path)
+            elif system == "Darwin":
+                subprocess.Popen(["open", normalized_path])
+            else:
+                subprocess.Popen(["xdg-open", normalized_path])
+        except Exception as e:
+            self.show_error.emit("Error", f"Could not open folder: {e}")
+
+    def list_indexed_sessions(self, search_query: str = "", include_trashed: bool = False) -> list[dict]:
+        """Returns session rows from SQLite index for the Sessions tab."""
+        return session_handler.list_indexed_sessions(
+            search_query=search_query,
+            include_trashed=include_trashed,
+        )
+
+    def get_session_index_preview(self, session_name: str) -> dict:
+        """Returns detailed indexed session preview (config, runs, artifacts)."""
+        return session_handler.get_session_index_preview(session_name)
+
+    def reindex_sessions(self, session_name: str | None = None) -> list[dict]:
+        """Reindexes one or all sessions into SQLite state."""
+        if session_name:
+            preview = session_handler.reindex_session(session_name)
+            return [preview] if preview else []
+        return session_handler.reindex_all_sessions()
+
+    def move_session_to_trash(self, session_name: str, retention_days: int = 30) -> tuple[bool, str]:
+        """Moves a session directory to Outputs/.trash."""
+        if session_name == self.state.session_name and self.is_generation_or_regeneration_running():
+            return False, "Cannot trash the active session while generation/regeneration is running."
+
+        moved, details = session_handler.move_session_to_trash(session_name, retention_days=retention_days)
+        if moved and session_name == self.state.session_name:
+            current_tts_state = self.state.tts
+            provider_settings_payload = settings_handler.build_global_settings_payload(self.state)
+            self.state = AppState()
+            self.state.tts = current_tts_state
+            settings_handler.apply_global_settings_payload(self.state, provider_settings_payload)
+            self._normalize_tts_service_state(self.state.tts)
+            self.normalize_dubbing_translation_state(self.state.dubbing)
+            self._loaded_llm_model = None
+            self._active_dubbing_run_id = None
+            self._last_session_config_snapshot = ""
+            self._persist_global_settings(force=True)
+            self.state_changed.emit()
+        return moved, details
+
+    def restore_session_from_trash(self, session_name: str) -> tuple[bool, str]:
+        """Restores a trashed session."""
+        return session_handler.restore_session_from_trash(session_name)
+
+    def list_trashed_sessions(self) -> list[dict]:
+        """Lists active trash entries from SQLite."""
+        return session_handler.list_trashed_sessions()
+
+    def empty_expired_trash(self, retention_days: int = 30) -> tuple[int, list[str]]:
+        """Removes expired trash entries."""
+        return session_handler.empty_expired_trash(retention_days=retention_days)
 
 
     # --- File Handling ---
@@ -1191,12 +1458,26 @@ class AppLogic(QObject):
             source_changed = normalize_path(previous_source) != normalize_path(self.state.source_file_path)
             if source_changed:
                 self._set_processed_sentences_snapshot([])
+                self._active_dubbing_run_id = None
 
             self.state.raw_text = raw_text
             if raw_text:
                 self.log_message.emit("Text extracted successfully.")
 
             self._persist_session_config(force=True)
+            if self._is_dubbing_source_selected():
+                run = self._create_dubbing_run(set_active=True, force_new=False)
+                if run:
+                    run_id = str(run.get("run_id") or "")
+                    if ext == ".srt":
+                        self._register_dubbing_artifact("source_srt", self.state.source_file_path, is_current=True)
+                    elif ext in {".mp4", ".mkv", ".webm", ".avi", ".mov"}:
+                        self._register_dubbing_artifact("video_source", self.state.source_file_path, is_current=True)
+                    if run_id:
+                        try:
+                            state_db_handler.update_dubbing_run_status(run_id, "ready")
+                        except Exception:
+                            pass
             self.state_changed.emit()
             return True
 
@@ -1317,6 +1598,9 @@ class AppLogic(QObject):
         try:
             session_video_path = self._ensure_session_file_copy(file_path)
             self.state.dubbing.video_file_path = session_video_path
+            if self._is_named_session_active():
+                self._ensure_dubbing_run_for_task("transcribe")
+                self._register_dubbing_artifact("video_source", session_video_path, is_current=True)
             self.log_message.emit(f"Dubbing video file selected: {session_video_path}")
             self._persist_session_config(force=True)
             self.state_changed.emit()
@@ -1356,6 +1640,29 @@ class AppLogic(QObject):
 
     def _find_latest_srt(self, session_dir: str, must_not_be_equalized=False) -> str | None:
         """Finds the most recently modified SRT file in a preferred directory with session fallback."""
+        if self._is_named_session_active():
+            try:
+                preferred_roles = [
+                    "manual_timing_srt",
+                    "translated_srt",
+                    "corrected_srt",
+                    "transcribed_srt",
+                    "source_srt",
+                ]
+                if not must_not_be_equalized:
+                    preferred_roles = ["equalized_srt", *preferred_roles]
+                artifact_path = state_db_handler.get_active_dubbing_artifact(
+                    self.state.session_name,
+                    roles=preferred_roles,
+                )
+                if artifact_path and os.path.exists(artifact_path) and artifact_path.lower().endswith(".srt"):
+                    if must_not_be_equalized and artifact_path.lower().endswith("_equalized.srt"):
+                        pass
+                    else:
+                        return artifact_path
+            except Exception:
+                pass
+
         search_dirs: list[str] = []
         if session_dir:
             search_dirs.append(session_dir)
@@ -1400,6 +1707,7 @@ class AppLogic(QObject):
         """Resolves or creates an audio reference file for manual SRT boundary correction."""
         audio_file = subdub_handler.find_latest_audio_file(session_dir)
         if audio_file and os.path.exists(audio_file):
+            self._register_dubbing_artifact("manual_correction_audio", audio_file, is_current=True)
             return audio_file
 
         video_source = self._resolve_dubbing_video_source()
@@ -1407,7 +1715,10 @@ class AppLogic(QObject):
             return None
 
         self.log_message.emit("No session audio found for timing correction. Extracting audio from video...")
-        return subdub_handler.extract_audio_for_manual_correction(video_source, session_dir)
+        audio_file = subdub_handler.extract_audio_for_manual_correction(video_source, session_dir)
+        if audio_file and os.path.exists(audio_file):
+            self._register_dubbing_artifact("manual_correction_audio", audio_file, is_current=True)
+        return audio_file
 
     def _run_manual_timing_correction(self, session_dir: str):
         """Launches Subdub's GUI for manual subtitle boundary adjustment."""
@@ -1428,9 +1739,11 @@ class AppLogic(QObject):
             return
 
         self.log_message.emit(f"Opening Subdub timing editor for {srt_file}...")
+        self._mark_dubbing_step("manual_timing", "running")
         initial_mtime = os.path.getmtime(srt_file) if os.path.exists(srt_file) else 0.0
         corrected_srt = subdub_handler.open_manual_correction_gui(srt_file, audio_file, session_dir)
         if not corrected_srt or not os.path.exists(corrected_srt):
+            self._mark_dubbing_step("manual_timing", "failed", "No corrected SRT returned.")
             self.show_error.emit(
                 "Dubbing Error",
                 "Subdub timing editor did not return a valid SRT file.",
@@ -1446,8 +1759,12 @@ class AppLogic(QObject):
 
         if updated:
             self.log_message.emit(f"Timing fine-tuning complete: {corrected_srt_abs}")
+            self._register_dubbing_artifact("manual_timing_srt", corrected_srt_abs, is_current=True)
+            self._register_dubbing_artifact("transcribed_srt", corrected_srt_abs, is_current=True)
+            self._mark_dubbing_step("manual_timing", "completed")
         else:
             self.log_message.emit("Subdub timing editor closed without saving changes.")
+            self._mark_dubbing_step("manual_timing", "completed", "Closed without changes.")
 
         if os.path.splitext(self.state.source_file_path or "")[1].lower() == ".srt":
             self.state.source_file_path = corrected_srt_abs
@@ -1471,6 +1788,24 @@ class AppLogic(QObject):
 
     def _discover_latest_file_with_suffix(self, directory: str, suffix: str) -> str | None:
         """Finds the most recently modified file with a given suffix in a directory."""
+        normalized_suffix = suffix.lower()
+        if self._is_named_session_active():
+            try:
+                role_lookup = {
+                    "_speech_blocks.json": ["speech_blocks"],
+                    "_equalized.srt": ["equalized_srt"],
+                }
+                roles = role_lookup.get(normalized_suffix)
+                if roles:
+                    artifact_path = state_db_handler.get_active_dubbing_artifact(
+                        self.state.session_name,
+                        roles=roles,
+                    )
+                    if artifact_path and os.path.exists(artifact_path):
+                        return artifact_path
+            except Exception:
+                pass
+
         if not os.path.isdir(directory):
             return None
 
@@ -1532,6 +1867,7 @@ class AppLogic(QObject):
     def _import_speech_blocks_into_sentences(self, speech_blocks_file: str) -> bool:
         """Converts Subdub speech blocks JSON into Pandrator sentence JSON/state."""
         try:
+            self._register_dubbing_artifact("speech_blocks", speech_blocks_file, is_current=True)
             sentences = session_handler.import_speech_blocks_to_session(self.state.session_name, speech_blocks_file)
             if not sentences:
                 self.show_error.emit("Dubbing Error", "Speech blocks file is empty. No sentences were imported.")
@@ -1595,57 +1931,93 @@ class AppLogic(QObject):
     ):
         """The actual threaded implementation for dubbing tasks."""
         self.log_message.emit(f"Starting dubbing task: {task}")
-        session_output_dir = session_handler.get_session_path(self.state.session_name)
-        dubbing_session_dir = self._get_dubbing_work_dir(ensure_exists=True)
+        run_info = self._ensure_dubbing_run_for_task(task)
+        if run_info is None:
+            self.show_error.emit("Dubbing Error", "Could not initialize a dubbing run for this session.")
+            return
+
+        run_id = str(run_info.get("run_id") or "")
+        self._active_dubbing_run_id = run_id or self._active_dubbing_run_id
+        session_output_dir = session_handler.get_session_final_output_path(self.state.session_name)
+        dubbing_session_dir = str(run_info.get("run_dir") or self._get_dubbing_work_dir(ensure_exists=True))
+        os.makedirs(dubbing_session_dir, exist_ok=True)
         dub_settings_payload = copy.deepcopy(self.state.dubbing.__dict__)
         dub_settings_payload["llm_provider_configs"] = llm_handler.get_provider_configs(self.state.llm)
         correction_prompt = str(dub_settings_payload.get("custom_correction_prompt", ""))
+        task_name = str(task or "").strip().lower()
 
-        if task == "transcribe":
+        if task_name == "transcribe":
             video_source = self._resolve_dubbing_video_source()
 
             if not video_source or not os.path.exists(video_source):
                 self.log_message.emit("No video source found for transcription.")
+                self._mark_dubbing_step("transcribe", "failed", "No video source was available.")
                 return
 
+            self._mark_dubbing_step("transcribe", "running")
             if not subdub_handler.transcribe_video(
                 dubbing_session_dir,
                 video_source,
                 dub_settings_payload,
                 correction_prompt,
             ):
+                self._mark_dubbing_step("transcribe", "failed", "Subdub transcription failed.")
                 self.show_error.emit("Dubbing Error", "Transcription failed. Check logs for details.")
                 return
 
             transcribed_srt = self._find_latest_srt(dubbing_session_dir, must_not_be_equalized=True)
             if transcribed_srt:
+                self._register_dubbing_artifact("transcribed_srt", transcribed_srt, is_current=True)
+                self._mark_dubbing_step("transcribe", "completed")
                 self.log_message.emit(
                     "Transcription complete. Use 'Fine-Tune Timings (Subdub GUI)' to adjust subtitle boundaries."
                 )
                 self.state_changed.emit()
-        elif task == "correct":
+            else:
+                self._mark_dubbing_step("transcribe", "failed", "No transcribed SRT was found.")
+        elif task_name == "correct":
             srt_file = self._find_latest_srt(dubbing_session_dir, must_not_be_equalized=True)
             if srt_file:
-                subdub_handler.correct_subtitles(
+                self._mark_dubbing_step("correct", "running")
+                if not subdub_handler.correct_subtitles(
                     dubbing_session_dir,
                     srt_file,
                     dub_settings_payload,
                     correction_prompt,
-                )
+                ):
+                    self._mark_dubbing_step("correct", "failed", "Subdub correction failed.")
+                    self.show_error.emit("Dubbing Error", "Subtitle correction failed. Check logs for details.")
+                    return
+
+                corrected_srt = self._find_latest_srt(dubbing_session_dir, must_not_be_equalized=True)
+                if corrected_srt:
+                    self._register_dubbing_artifact("corrected_srt", corrected_srt, is_current=True)
+                self._mark_dubbing_step("correct", "completed")
             else:
                 self.log_message.emit("No SRT file found to correct.")
-        elif task == "translate":
+                self._mark_dubbing_step("correct", "failed", "No SRT file was found.")
+        elif task_name == "translate":
             srt_file = self._find_latest_srt(dubbing_session_dir, must_not_be_equalized=True)
             if srt_file:
-                subdub_handler.translate_subtitles(
+                self._mark_dubbing_step("translate", "running")
+                if not subdub_handler.translate_subtitles(
                     dubbing_session_dir,
                     srt_file,
                     dub_settings_payload,
                     correction_prompt,
-                )
+                ):
+                    self._mark_dubbing_step("translate", "failed", "Subdub translation failed.")
+                    self.show_error.emit("Dubbing Error", "Translation failed. Check logs for details.")
+                    return
+
+                translated_srt = self._find_latest_srt(dubbing_session_dir, must_not_be_equalized=True)
+                if translated_srt:
+                    self._register_dubbing_artifact("translated_srt", translated_srt, is_current=True)
+                self._mark_dubbing_step("translate", "completed")
             else:
                 self.log_message.emit("No SRT file found to translate.")
-        elif task == "generate_audio":
+                self._mark_dubbing_step("translate", "failed", "No SRT file was found.")
+        elif task_name == "generate_audio":
             self._orchestrate_dubbing_audio_generation(
                 dubbing_session_dir,
                 dub_settings_payload,
@@ -1654,9 +2026,9 @@ class AppLogic(QObject):
                 dubbed_audio_only=dubbed_audio_only,
                 auto_add_to_video=auto_add_to_video,
             )
-        elif task == "fine_tune_timings":
+        elif task_name == "fine_tune_timings":
             self._run_manual_timing_correction(dubbing_session_dir)
-        elif task == "add_to_video":
+        elif task_name == "add_to_video":
             self._orchestrate_add_to_video(
                 dubbing_session_dir,
                 session_output_dir,
@@ -1683,36 +2055,51 @@ class AppLogic(QObject):
             video_source = self._resolve_dubbing_video_source()
 
             if not video_source or not os.path.exists(video_source):
+                self._mark_dubbing_step("transcribe", "failed", "No valid video source for transcription.")
                 self.show_error.emit("Dubbing Error", "No valid video file found for transcription.")
                 return
 
+            self._mark_dubbing_step("transcribe", "running")
             if not subdub_handler.transcribe_video(session_dir, video_source, dub_settings, correction_prompt):
+                self._mark_dubbing_step("transcribe", "failed", "Subdub transcription failed.")
                 self.show_error.emit("Dubbing Error", "Transcription failed. Check logs for details.")
                 return
             srt_file = self._find_latest_srt(session_dir, must_not_be_equalized=True)
             if not srt_file:
+                self._mark_dubbing_step("transcribe", "failed", "No transcribed SRT was produced.")
                 self.show_error.emit("Dubbing Error", "Transcription did not produce an SRT file.")
                 return
+            self._register_dubbing_artifact("transcribed_srt", srt_file, is_current=True)
+            self._mark_dubbing_step("transcribe", "completed")
 
             self.log_message.emit(
                 "Transcription generated an SRT. Use 'Fine-Tune Timings (Subdub GUI)' before rerunning if you want manual boundary edits."
             )
+        else:
+            self._register_dubbing_artifact("source_srt", srt_file, is_current=True)
 
         # 2. Translate if enabled
         if bool(dub_settings.get("translation_enabled")):
             self.log_message.emit("Translation is enabled, starting translation...")
+            self._mark_dubbing_step("translate", "running")
             if not subdub_handler.translate_subtitles(session_dir, srt_file, dub_settings, correction_prompt):
+                self._mark_dubbing_step("translate", "failed", "Subdub translation failed.")
                 self.show_error.emit("Dubbing Error", "Translation failed. Check logs for details.")
                 return
             srt_file = self._find_latest_srt(session_dir, must_not_be_equalized=True) # Find the new translated file
             if not srt_file:
+                self._mark_dubbing_step("translate", "failed", "No translated SRT was produced.")
                 self.show_error.emit("Dubbing Error", "Translation did not produce a new SRT file.")
                 return
+            self._register_dubbing_artifact("translated_srt", srt_file, is_current=True)
+            self._mark_dubbing_step("translate", "completed")
         
         # 3. Generate speech blocks
         speech_blocks_snapshot = self._snapshot_speech_blocks_files(session_dir)
         self.log_message.emit("Generating speech blocks...")
+        self._mark_dubbing_step("speech_blocks", "running")
         if not subdub_handler.generate_speech_blocks(session_dir, srt_file):
+            self._mark_dubbing_step("speech_blocks", "failed", "Subdub speech-block generation failed.")
             self.show_error.emit("Dubbing Error", "Speech block generation failed.")
             return
 
@@ -1722,8 +2109,11 @@ class AppLogic(QObject):
             previous_snapshot=speech_blocks_snapshot,
         )
         if not speech_blocks_file:
+            self._mark_dubbing_step("speech_blocks", "failed", "Speech-block JSON was not detected.")
             self.show_error.emit("Dubbing Error", "Speech blocks file was not detected after generation.")
             return
+        self._register_dubbing_artifact("speech_blocks", speech_blocks_file, is_current=True)
+        self._mark_dubbing_step("speech_blocks", "completed")
 
         # 4. Convert speech blocks to Pandrator sentence JSON
         self.log_message.emit("Converting speech blocks into session sentences...")
@@ -1744,6 +2134,7 @@ class AppLogic(QObject):
         else:
             self._clear_pending_dubbing_add_to_video_request()
 
+        self._mark_dubbing_step("tts_generation", "running")
         self.start_generation()
 
     def _orchestrate_add_to_video(
@@ -1760,6 +2151,7 @@ class AppLogic(QObject):
 
         video_source = self._resolve_dubbing_video_source()
         if not video_source or not os.path.exists(video_source):
+            self._mark_dubbing_step("sync", "failed", "No valid video source for synchronization.")
             self.show_error.emit("Dubbing Error", "No valid video file found for synchronization.")
             return
 
@@ -1772,6 +2164,7 @@ class AppLogic(QObject):
                 )
 
         if not self._session_dir_has_sentence_wavs(sync_session_dir):
+            self._mark_dubbing_step("tts_generation", "failed", "No generated sentence WAVs were found.")
             self.show_error.emit(
                 "Dubbing Error",
                 "No generated sentence WAVs found for synchronization. Run 'Generate Dub Audio' first.",
@@ -1782,6 +2175,7 @@ class AppLogic(QObject):
         if not speech_blocks_file:
             srt_for_speech_blocks = self._find_latest_srt(sync_session_dir, must_not_be_equalized=True)
             if not srt_for_speech_blocks:
+                self._mark_dubbing_step("speech_blocks", "failed", "Could not find SRT for speech-block regeneration.")
                 self.show_error.emit(
                     "Dubbing Error",
                     "No SRT file found to regenerate speech blocks. Run transcription first.",
@@ -1790,7 +2184,9 @@ class AppLogic(QObject):
 
             speech_blocks_snapshot = self._snapshot_speech_blocks_files(sync_session_dir)
             self.log_message.emit("No speech blocks JSON found. Regenerating speech blocks...")
+            self._mark_dubbing_step("speech_blocks", "running")
             if not subdub_handler.generate_speech_blocks(sync_session_dir, srt_for_speech_blocks):
+                self._mark_dubbing_step("speech_blocks", "failed", "Speech-block regeneration failed.")
                 self.show_error.emit(
                     "Dubbing Error",
                     "Speech block regeneration failed. Check logs for details.",
@@ -1803,15 +2199,22 @@ class AppLogic(QObject):
                 previous_snapshot=speech_blocks_snapshot,
             )
             if not speech_blocks_file:
+                self._mark_dubbing_step("speech_blocks", "failed", "No speech-block JSON was detected after regeneration.")
                 self.show_error.emit(
                     "Dubbing Error",
                     "Speech blocks file was not detected after regeneration.",
                 )
                 return
+            self._register_dubbing_artifact("speech_blocks", speech_blocks_file, is_current=True)
+            self._mark_dubbing_step("speech_blocks", "completed")
+        else:
+            self._register_dubbing_artifact("speech_blocks", speech_blocks_file, is_current=True)
 
         # 1. Synchronize Audio
         self.log_message.emit("Synchronizing audio...")
+        self._mark_dubbing_step("sync", "running")
         if not subdub_handler.synchronize_audio(sync_session_dir, video_file=video_source):
+            self._mark_dubbing_step("sync", "failed", "Subdub synchronization failed.")
             self.show_error.emit("Dubbing Error", "Audio synchronization failed.")
             return
         
@@ -1830,15 +2233,19 @@ class AppLogic(QObject):
             synced_video_path = max(candidate_videos, key=os.path.getmtime)
 
         if not synced_video_path:
+             self._mark_dubbing_step("sync", "failed", "No synced video artifact was created.")
              self.show_error.emit("Dubbing Error", "Synced video file not found after synchronization.")
              return
         self.log_message.emit(f"Found synced video: {synced_video_path}")
+        self._register_dubbing_artifact("synced_video", synced_video_path, is_current=True)
+        self._mark_dubbing_step("sync", "completed")
 
         video_for_subtitles_path = synced_video_path
         if dubbed_audio_only:
             self.log_message.emit("Preparing dubbed-only audio output (without original mix)...")
             dubbed_audio_path = subdub_handler.find_latest_dubbed_audio_track(sync_session_dir)
             if not dubbed_audio_path:
+                self._mark_dubbing_step("sync", "failed", "No dubbed-audio track found after synchronization.")
                 self.show_error.emit(
                     "Dubbing Error",
                     "Could not find a generated dubbing audio track after synchronization.",
@@ -1851,6 +2258,7 @@ class AppLogic(QObject):
                 dubbed_audio_path,
                 dubbed_only_video_path,
             ):
+                self._mark_dubbing_step("sync", "failed", "Could not create dubbed-only intermediate video.")
                 self.show_error.emit(
                     "Dubbing Error",
                     "Failed to create a dubbed-only video track before subtitle rendering.",
@@ -1859,14 +2267,18 @@ class AppLogic(QObject):
 
             self.log_message.emit(f"Using dubbed-only audio track: {dubbed_audio_path}")
             video_for_subtitles_path = dubbed_only_video_path
+            self._register_dubbing_artifact("dubbed_only_video", dubbed_only_video_path, is_current=True)
 
         # 2. Equalize Subtitles
         srt_file = self._find_latest_srt(sync_session_dir, must_not_be_equalized=True)
         if not srt_file:
+            self._mark_dubbing_step("equalize", "failed", "No SRT found for equalization.")
             self.show_error.emit("Dubbing Error", "Cannot find SRT file to equalize.")
             return
         self.log_message.emit(f"Equalizing subtitles for {srt_file}...")
+        self._mark_dubbing_step("equalize", "running")
         if not subdub_handler.equalize_subtitles(srt_file):
+            self._mark_dubbing_step("equalize", "failed", "Subdub equalization failed.")
             self.show_error.emit("Dubbing Error", "Subtitle equalization failed.")
             return
             
@@ -1877,15 +2289,24 @@ class AppLogic(QObject):
             if os.path.exists(expected_path):
                 equalized_srt_path = expected_path
             else:
+                 self._mark_dubbing_step("equalize", "failed", "Equalized SRT artifact was not found.")
                  self.show_error.emit("Dubbing Error", "Equalized SRT file not found after equalization.")
                  return
         self.log_message.emit(f"Found equalized SRT: {equalized_srt_path}")
+        self._register_dubbing_artifact("equalized_srt", equalized_srt_path, is_current=True)
+        self._mark_dubbing_step("equalize", "completed")
 
         # 3. Add Subtitles to Video
         os.makedirs(session_output_dir, exist_ok=True)
+        active_run = self._synchronize_active_dubbing_run()
+        run_id_suffix = ""
+        if active_run:
+            run_id_value = str(active_run.get("run_id") or "").strip()
+            if run_id_value:
+                run_id_suffix = f"_{run_id_value}"
         mode_to_filename = {
-            "soft": f"{self.state.session_name}_final_softsubs.mp4",
-            "burned": f"{self.state.session_name}_final_burnedsubs.mp4",
+            "soft": f"{self.state.session_name}_final_softsubs{run_id_suffix}.mp4",
+            "burned": f"{self.state.session_name}_final_burnedsubs{run_id_suffix}.mp4",
         }
         mode_to_label = {
             "soft": "embedded as a selectable subtitle track",
@@ -1896,6 +2317,7 @@ class AppLogic(QObject):
             self.log_message.emit("Rendering both subtitle modes (soft + burned-in)...")
 
         generated_outputs: list[str] = []
+        self._mark_dubbing_step("render", "running")
         for render_mode in render_modes:
             subtitle_mode_label = mode_to_label[render_mode]
             output_video_path = os.path.join(session_output_dir, mode_to_filename[render_mode])
@@ -1908,6 +2330,7 @@ class AppLogic(QObject):
                 output_video_path,
                 subtitle_mode=render_mode,
             ):
+                self._mark_dubbing_step("render", "failed", f"Could not render {render_mode} subtitles.")
                 self.show_error.emit(
                     "Dubbing Error",
                     f"Failed to add {render_mode} subtitles to the final video.",
@@ -1915,9 +2338,12 @@ class AppLogic(QObject):
                 return
 
             generated_outputs.append(output_video_path)
+            artifact_role = "final_video_soft" if render_mode == "soft" else "final_video_burned"
+            self._register_dubbing_artifact(artifact_role, output_video_path, is_current=True)
 
         if len(generated_outputs) == 1:
             self.log_message.emit(f"Dubbing workflow finished. Final output: {generated_outputs[0]}")
+            self._mark_dubbing_step("render", "completed")
             self.dubbing_video_saved.emit(generated_outputs)
             return
 
@@ -1925,6 +2351,7 @@ class AppLogic(QObject):
             "Dubbing workflow finished. Final outputs: "
             + "; ".join(generated_outputs)
         )
+        self._mark_dubbing_step("render", "completed")
         self.dubbing_video_saved.emit(generated_outputs)
 
     def run_text_preprocessing(self):
@@ -2135,6 +2562,7 @@ class AppLogic(QObject):
         cleanup_requested = False
         post_generation_add_to_video_request: dict[str, object] | None = None
         worker_thread = threading.current_thread()
+        dubbing_workflow_active = self._is_dubbing_source_selected()
 
         try:
             # Step 1: Preprocess text if sentences don't exist
@@ -2147,6 +2575,8 @@ class AppLogic(QObject):
                 self.run_text_preprocessing()
                 if self.cancel_generation_flag.is_set():
                     cleanup_requested = True
+                    if dubbing_workflow_active:
+                        self._mark_dubbing_step("tts_generation", "failed", "Cancelled during preprocessing.")
                     self.log_message.emit("Cancellation requested during preprocessing.")
                     return
                 processed_sentences = self.get_processed_sentences_snapshot()
@@ -2166,6 +2596,10 @@ class AppLogic(QObject):
                 ext = os.path.splitext(self.state.source_file_path)[1].lower() if self.state.source_file_path else ""
                 if self._is_dubbing_source_extension(ext):
                     post_generation_add_to_video_request = self._consume_pending_dubbing_add_to_video_request()
+                    self._mark_dubbing_step("tts_generation", "completed", "All sentences were already generated.")
+                    run_dir = self._get_dubbing_work_dir(ensure_exists=False)
+                    if run_dir:
+                        self._register_dubbing_artifact("sentence_wavs_dir", os.path.join(run_dir, "Sentence_wavs"))
                 else:
                     self._clear_pending_dubbing_add_to_video_request()
                 return
@@ -2178,8 +2612,12 @@ class AppLogic(QObject):
                 if self.stop_generation_flag.is_set():
                     if self.cancel_generation_flag.is_set():
                         cleanup_requested = True
+                        if dubbing_workflow_active:
+                            self._mark_dubbing_step("tts_generation", "failed", "Cancelled by user.")
                         self.log_message.emit("Cancellation acknowledged. Cleaning up generated artifacts...")
                     else:
+                        if dubbing_workflow_active:
+                            self._mark_dubbing_step("tts_generation", "failed", "Stopped by user.")
                         self.log_message.emit("Generation stopped by user.")
                     return
 
@@ -2194,8 +2632,12 @@ class AppLogic(QObject):
                 if not success or updated_sentence is None:
                     if self.cancel_generation_flag.is_set():
                         cleanup_requested = True
+                        if dubbing_workflow_active:
+                            self._mark_dubbing_step("tts_generation", "failed", "Cancelled during sentence generation.")
                         self.log_message.emit("Generation cancelled during sentence processing. Cleaning up...")
                     else:
+                        if dubbing_workflow_active:
+                            self._mark_dubbing_step("tts_generation", "failed", f"Sentence {i+1} failed.")
                         self.show_error.emit("Generation Error", f"Failed to generate audio for sentence {i+1}. Aborting.")
                     return
 
@@ -2212,6 +2654,8 @@ class AppLogic(QObject):
 
             if self.cancel_generation_flag.is_set():
                 cleanup_requested = True
+                if dubbing_workflow_active:
+                    self._mark_dubbing_step("tts_generation", "failed", "Cancelled during finalization.")
                 self.log_message.emit("Cancellation requested during finalization. Cleaning up...")
                 return
 
@@ -2220,6 +2664,10 @@ class AppLogic(QObject):
 
             if is_dubbing_workflow:
                 post_generation_add_to_video_request = self._consume_pending_dubbing_add_to_video_request()
+                self._mark_dubbing_step("tts_generation", "completed")
+                run_dir = self._get_dubbing_work_dir(ensure_exists=False)
+                if run_dir:
+                    self._register_dubbing_artifact("sentence_wavs_dir", os.path.join(run_dir, "Sentence_wavs"))
             else:
                 self._clear_pending_dubbing_add_to_video_request()
                 self.log_message.emit("Saving final output file...")

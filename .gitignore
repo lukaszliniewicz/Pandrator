@@ -43,6 +43,8 @@ logs/*
 *.log
 *.tmp
 pandrator_settings.json
+pandrator_state.sqlite3
+pandrator_state.sqlite3.*
 
 # User-provided voices (keep repository samples)
 tts_voices/**/*.wav

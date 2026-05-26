@@ -8,6 +8,7 @@ from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtGui import QDesktopServices, QKeyEvent
 
 from .widgets.session_tab import SessionTab
+from .widgets.sessions_manager_tab import SessionsManagerTab
 from .widgets.text_processing_tab import TextProcessingTab
 from .widgets.audio_processing_tab import AudioProcessingTab
 from .widgets.providers_tab import ProvidersTab
@@ -66,6 +67,9 @@ class MainWindow(QMainWindow):
     def _create_tabs(self):
         self.session_tab = SessionTab(self.logic)
         self.tab_widget.addTab(self.session_tab, "Session")
+
+        self.sessions_manager_tab = SessionsManagerTab(self.logic)
+        self.tab_widget.addTab(self.sessions_manager_tab, "Sessions")
 
         self.text_processing_tab = TextProcessingTab(self.logic)
         self.tab_widget.addTab(self.text_processing_tab, "Text Processing")

@@ -5,13 +5,19 @@ import re
 import shutil
 import tempfile
 import threading
+from datetime import datetime, timedelta, timezone
 from dataclasses import asdict
 from typing import Any, Dict, List
 
 from ..app_state import AppState
+from . import state_db_handler
 
 OUTPUTS_DIR = "Outputs"
 DUBBING_STAGING_DIR = "_dubbing_staging"
+DUBBING_RUNS_DIR = os.path.join("dubbing", "runs")
+FINAL_OUTPUT_DIR = "final"
+TRASH_DIR_NAME = ".trash"
+DEFAULT_TRASH_RETENTION_DAYS = 30
 SESSION_CONFIG_FILENAME = "session_config.json"
 SESSION_CONFIG_VERSION = 1
 
@@ -73,6 +79,26 @@ def get_dubbing_staging_path(session_name: str) -> str:
     return os.path.join(get_session_path(session_name), DUBBING_STAGING_DIR)
 
 
+def get_dubbing_runs_root_path(session_name: str) -> str:
+    """Constructs the root path for structured dubbing runs in a session."""
+    return os.path.join(get_session_path(session_name), DUBBING_RUNS_DIR)
+
+
+def get_dubbing_run_path(session_name: str, run_id: str) -> str:
+    """Constructs the path for a concrete dubbing run."""
+    return os.path.join(get_dubbing_runs_root_path(session_name), run_id)
+
+
+def get_session_final_output_path(session_name: str) -> str:
+    """Constructs the path for final rendered videos for a session."""
+    return os.path.join(get_session_path(session_name), FINAL_OUTPUT_DIR)
+
+
+def get_trash_root_path() -> str:
+    """Constructs the shared trash root inside Outputs."""
+    return os.path.join(OUTPUTS_DIR, TRASH_DIR_NAME)
+
+
 def build_session_config_payload(state: AppState) -> Dict[str, Any]:
     """Builds a JSON-serializable state payload for session config persistence."""
     payload: Dict[str, Any] = asdict(state)
@@ -99,6 +125,7 @@ def build_session_config_payload(state: AppState) -> Dict[str, Any]:
 def save_session_config(session_name: str, state_payload: Dict[str, Any]):
     """Saves a session config payload to disk."""
     session_path = get_session_path(session_name)
+    os.makedirs(session_path, exist_ok=True)
     config_file = os.path.join(session_path, SESSION_CONFIG_FILENAME)
     config_data = {
         "version": SESSION_CONFIG_VERSION,
@@ -106,6 +133,16 @@ def save_session_config(session_name: str, state_payload: Dict[str, Any]):
     }
     with _FILE_IO_LOCK:
         _write_json_atomic(config_file, config_data)
+
+    try:
+        state_db_handler.save_session_config_snapshot(
+            session_name=session_name,
+            payload=state_payload,
+            version=SESSION_CONFIG_VERSION,
+            session_path=session_path,
+        )
+    except Exception:
+        pass
 
 
 def load_session_config(session_name: str) -> Dict[str, Any]:
@@ -117,13 +154,34 @@ def load_session_config(session_name: str) -> Dict[str, Any]:
             with open(config_file, "r", encoding="utf-8") as f:
                 config_data = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+        try:
+            db_payload = state_db_handler.load_latest_session_config_snapshot(session_name)
+            return db_payload if isinstance(db_payload, dict) else {}
+        except Exception:
+            return {}
 
     if isinstance(config_data, dict):
         if isinstance(config_data.get("state"), dict):
-            return config_data["state"]
-        return config_data
-    return {}
+            state_payload = config_data["state"]
+        else:
+            state_payload = config_data
+
+        try:
+            state_db_handler.save_session_config_snapshot(
+                session_name=session_name,
+                payload=state_payload,
+                version=SESSION_CONFIG_VERSION,
+                session_path=session_path,
+            )
+        except Exception:
+            pass
+        return state_payload
+
+    try:
+        db_payload = state_db_handler.load_latest_session_config_snapshot(session_name)
+        return db_payload if isinstance(db_payload, dict) else {}
+    except Exception:
+        return {}
 
 
 def _discover_latest_file_by_extensions(session_name: str, extensions: set[str]) -> str | None:
@@ -153,11 +211,31 @@ def discover_source_file(session_name: str) -> str | None:
 
 def discover_video_file(session_name: str) -> str | None:
     """Finds the most recently updated video file in a session directory."""
+    try:
+        run_video = state_db_handler.get_active_dubbing_artifact(
+            session_name,
+            roles=["video_source", "source_video", "synced_video", "final_video"],
+        )
+        if run_video and os.path.exists(run_video):
+            return run_video
+    except Exception:
+        pass
+
     return _discover_latest_file_by_extensions(session_name, VIDEO_FILE_EXTENSIONS)
 
 
 def discover_latest_speech_blocks_file(session_name: str) -> str | None:
     """Finds the most recently updated speech-blocks JSON file in a session directory."""
+    try:
+        active_path = state_db_handler.get_active_dubbing_artifact(
+            session_name,
+            roles=["speech_blocks"],
+        )
+        if active_path and os.path.exists(active_path):
+            return active_path
+    except Exception:
+        pass
+
     session_path = get_session_path(session_name)
     candidates: List[str] = []
     search_paths = [session_path, get_dubbing_staging_path(session_name)]
@@ -244,6 +322,15 @@ def speech_blocks_to_sentences(speech_blocks: List[Dict[str, Any]]) -> List[Dict
 def import_speech_blocks_to_session(session_name: str, speech_blocks_file: str) -> List[Dict[str, Any]]:
     """Converts speech blocks JSON to sentence JSON and persists it for a session."""
     speech_blocks = load_speech_blocks_file(speech_blocks_file)
+    try:
+        state_db_handler.update_session_speech_blocks_index(
+            session_name=session_name,
+            speech_blocks=speech_blocks,
+            speech_blocks_path=speech_blocks_file,
+        )
+    except Exception:
+        pass
+
     sentences = speech_blocks_to_sentences(speech_blocks)
     save_sentences(session_name, sentences)
     return sentences
@@ -252,6 +339,7 @@ def import_speech_blocks_to_session(session_name: str, speech_blocks_file: str) 
 def save_metadata(session_name: str, metadata: dict):
     """Saves metadata to metadata.json in the session directory."""
     session_path = get_session_path(session_name)
+    os.makedirs(session_path, exist_ok=True)
     metadata_file = os.path.join(session_path, "metadata.json")
     with _FILE_IO_LOCK:
         _write_json_atomic(metadata_file, metadata)
@@ -272,9 +360,19 @@ def load_metadata(session_name: str) -> dict:
 def save_sentences(session_name: str, sentences: List[Dict[str, Any]]):
     """Saves the list of processed sentences to a JSON file."""
     session_path = get_session_path(session_name)
+    os.makedirs(session_path, exist_ok=True)
     json_filename = os.path.join(session_path, f"{session_name}_sentences.json")
     with _FILE_IO_LOCK:
         _write_json_atomic(json_filename, sentences)
+
+    try:
+        state_db_handler.update_session_sentence_index(
+            session_name=session_name,
+            sentences=sentences,
+            sentences_path=json_filename,
+        )
+    except Exception:
+        pass
 
 
 def load_sentences(session_name: str) -> List[Dict[str, Any]]:
@@ -284,7 +382,18 @@ def load_sentences(session_name: str) -> List[Dict[str, Any]]:
     try:
         with _FILE_IO_LOCK:
             with open(json_filename, "r", encoding="utf-8") as f:
-                return json.load(f)
+                payload = json.load(f)
+        if isinstance(payload, list):
+            try:
+                state_db_handler.update_session_sentence_index(
+                    session_name=session_name,
+                    sentences=[item for item in payload if isinstance(item, dict)],
+                    sentences_path=json_filename,
+                )
+            except Exception:
+                pass
+            return payload
+        return []
     except (FileNotFoundError, json.JSONDecodeError):
         return []
 
@@ -485,6 +594,10 @@ def delete_session(session_name: str) -> bool:
         if os.path.isdir(session_path):
             shutil.rmtree(session_path)
             logging.info(f"Session '{session_name}' deleted successfully.")
+            try:
+                state_db_handler.reindex_all_sessions()
+            except Exception:
+                pass
             return True
 
         logging.warning(f"Session '{session_name}' not found for deletion.")
@@ -492,3 +605,163 @@ def delete_session(session_name: str) -> bool:
     except Exception as e:
         logging.error(f"Error deleting session '{session_name}': {e}")
         return False
+
+
+def reindex_session(session_name: str) -> dict | None:
+    """Reindexes a single session into SQLite state."""
+    try:
+        return state_db_handler.reindex_session(session_name)
+    except Exception as e:
+        logging.error("Could not reindex session '%s': %s", session_name, e)
+        return None
+
+
+def reindex_all_sessions() -> list[dict]:
+    """Reindexes all on-disk sessions into SQLite state."""
+    try:
+        return state_db_handler.reindex_all_sessions()
+    except Exception as e:
+        logging.error("Could not reindex sessions: %s", e)
+        return []
+
+
+def list_indexed_sessions(search_query: str = "", include_trashed: bool = False) -> list[dict]:
+    """Lists sessions from the SQLite state index."""
+    try:
+        return state_db_handler.list_sessions(search_query=search_query, include_trashed=include_trashed)
+    except Exception as e:
+        logging.error("Could not list indexed sessions: %s", e)
+        return []
+
+
+def get_session_index_preview(session_name: str) -> dict:
+    """Returns a detailed preview payload for a session from SQLite state."""
+    try:
+        return state_db_handler.get_session_preview(session_name)
+    except Exception as e:
+        logging.error("Could not load session preview for '%s': %s", session_name, e)
+        return {}
+
+
+def _unique_destination_path(base_path: str) -> str:
+    if not os.path.exists(base_path):
+        return base_path
+
+    parent = os.path.dirname(base_path)
+    name = os.path.basename(base_path)
+    counter = 1
+    while True:
+        candidate = os.path.join(parent, f"{name}_{counter}")
+        if not os.path.exists(candidate):
+            return candidate
+        counter += 1
+
+
+def move_session_to_trash(session_name: str, retention_days: int = DEFAULT_TRASH_RETENTION_DAYS) -> tuple[bool, str]:
+    """Moves a session directory to Outputs/.trash and records it in SQLite."""
+    session_path = get_session_path(session_name)
+    if not os.path.isdir(session_path):
+        return False, f"Session '{session_name}' was not found."
+
+    trash_root = get_trash_root_path()
+    os.makedirs(trash_root, exist_ok=True)
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    trash_name = f"{timestamp}_{session_name}"
+    trash_destination = _unique_destination_path(os.path.join(trash_root, trash_name))
+
+    try:
+        shutil.move(session_path, trash_destination)
+        state_db_handler.mark_session_trashed(
+            session_name=session_name,
+            original_path=session_path,
+            trash_path=trash_destination,
+            retention_days=retention_days,
+        )
+        return True, trash_destination
+    except Exception as e:
+        logging.error("Could not move session '%s' to trash: %s", session_name, e)
+        return False, str(e)
+
+
+def list_trashed_sessions() -> list[dict]:
+    """Returns non-restored, non-deleted trash entries from SQLite."""
+    try:
+        return state_db_handler.get_trash_entries()
+    except Exception as e:
+        logging.error("Could not list trash entries: %s", e)
+        return []
+
+
+def restore_session_from_trash(session_name: str) -> tuple[bool, str]:
+    """Restores a trashed session back into Outputs."""
+    trash_entries = list_trashed_sessions()
+    entry = next((item for item in trash_entries if item.get("session_name") == session_name), None)
+    if entry is None:
+        return False, f"Session '{session_name}' is not present in trash."
+
+    trash_path = str(entry.get("trash_path") or "")
+    if not trash_path or not os.path.exists(trash_path):
+        try:
+            state_db_handler.mark_trash_path_deleted(trash_path)
+        except Exception:
+            pass
+        return False, f"Trash path for '{session_name}' does not exist anymore."
+
+    restore_target = get_session_path(session_name)
+    if os.path.exists(restore_target):
+        return False, f"Cannot restore '{session_name}' because a session with that name already exists."
+
+    try:
+        os.makedirs(os.path.dirname(restore_target) or ".", exist_ok=True)
+        shutil.move(trash_path, restore_target)
+        state_db_handler.mark_session_restored(session_name=session_name, restored_path=restore_target)
+        state_db_handler.reindex_session(session_name)
+        return True, restore_target
+    except Exception as e:
+        logging.error("Could not restore session '%s': %s", session_name, e)
+        return False, str(e)
+
+
+def empty_expired_trash(retention_days: int = DEFAULT_TRASH_RETENTION_DAYS) -> tuple[int, list[str]]:
+    """Deletes expired trash entries and returns count with removed paths."""
+    now_utc = datetime.now(timezone.utc)
+    removed_paths: list[str] = []
+    removed_count = 0
+
+    for entry in list_trashed_sessions():
+        trash_path = str(entry.get("trash_path") or "")
+        if not trash_path:
+            continue
+
+        expires_raw = str(entry.get("expires_at") or "")
+        expires_at = None
+        if expires_raw:
+            try:
+                expires_at = datetime.fromisoformat(expires_raw)
+            except ValueError:
+                expires_at = None
+
+        if expires_at is None:
+            moved_raw = str(entry.get("moved_at") or "")
+            try:
+                moved_at = datetime.fromisoformat(moved_raw)
+                expires_at = moved_at + timedelta(days=max(1, int(retention_days)))
+            except ValueError:
+                expires_at = now_utc
+
+        if expires_at > now_utc:
+            continue
+
+        try:
+            if os.path.isdir(trash_path):
+                shutil.rmtree(trash_path)
+            elif os.path.exists(trash_path):
+                os.remove(trash_path)
+            state_db_handler.mark_trash_path_deleted(trash_path)
+            removed_paths.append(trash_path)
+            removed_count += 1
+        except Exception as e:
+            logging.error("Could not remove expired trash path '%s': %s", trash_path, e)
+
+    return removed_count, removed_paths

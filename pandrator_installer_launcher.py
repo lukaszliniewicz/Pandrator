@@ -130,6 +130,9 @@ PACKAGING_CONFIG_FLAGS = (
     'xtts_finetuning_support',
     'rvc_support',
 )
+PACKAGING_EXCLUDED_FILE_PREFIXES = (
+    'pandrator_state.sqlite3',
+)
 PACKAGING_SHARED_PATHS = (
     'Pandrator',
     'Subdub',
@@ -713,6 +716,7 @@ class PandratorInstaller(QMainWindow):
             'generated_at_utc': datetime.utcnow().isoformat(timespec='seconds') + 'Z',
             'config_flags': list(PACKAGING_CONFIG_FLAGS),
             'shared_paths': list(PACKAGING_SHARED_PATHS),
+            'excluded_file_prefixes': list(PACKAGING_EXCLUDED_FILE_PREFIXES),
             'component_paths': {
                 component: list(paths)
                 for component, paths in PACKAGING_COMPONENT_PATHS.items()
@@ -764,6 +768,48 @@ class PandratorInstaller(QMainWindow):
                 json.dump(serializable_config, f)
         except Exception as e:
             logging.warning(f"Failed to save config to {config_path}: {str(e)}")
+
+    def backup_state_database(self, pandrator_repo_path):
+        """Creates a timestamped backup of pandrator_state.sqlite3 before update."""
+        try:
+            db_prefix = 'pandrator_state.sqlite3'
+            candidate_files = []
+            for file_name in os.listdir(pandrator_repo_path):
+                if file_name.lower().startswith(db_prefix):
+                    candidate_files.append(file_name)
+
+            if not candidate_files:
+                return []
+
+            backup_root = os.path.join(pandrator_repo_path, 'db_backups')
+            os.makedirs(backup_root, exist_ok=True)
+            timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+            backup_dir = os.path.join(backup_root, timestamp)
+            os.makedirs(backup_dir, exist_ok=True)
+
+            backed_up_paths = []
+            for file_name in sorted(candidate_files):
+                source_path = os.path.join(pandrator_repo_path, file_name)
+                if not os.path.isfile(source_path):
+                    continue
+
+                destination_path = os.path.join(backup_dir, file_name)
+                try:
+                    shutil.copy2(source_path, destination_path)
+                    backed_up_paths.append(destination_path)
+                except Exception as e:
+                    logging.warning(f"Could not back up state database file {source_path}: {str(e)}")
+
+            if not backed_up_paths:
+                try:
+                    os.rmdir(backup_dir)
+                except OSError:
+                    pass
+
+            return backed_up_paths
+        except Exception as e:
+            logging.warning(f"State database backup step failed: {str(e)}")
+            return []
 
     def ensure_rvc_support_flag(self, pandrator_path, config):
         if config.get('rvc_support', False):
@@ -4454,6 +4500,16 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 )
 
             shared_pixi_path = self.get_pixi_executable(pandrator_base_path)
+
+            self.worker.update_status.emit("Backing up local state database...")
+            backup_paths = self.backup_state_database(pandrator_repo_path)
+            if backup_paths:
+                logging.info(
+                    "Backed up %d state database file(s) before update.",
+                    len(backup_paths),
+                )
+            else:
+                logging.info("No local state database files found to back up before update.")
 
             # Update Pandrator
             self.worker.update_status.emit("Updating Pandrator repository...")

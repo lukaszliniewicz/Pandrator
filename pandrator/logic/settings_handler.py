@@ -6,6 +6,7 @@ from typing import Any, Dict
 
 from ..app_state import AppState
 from . import llm_handler
+from . import state_db_handler
 from . import tts_handler
 
 GLOBAL_SETTINGS_FILENAME = "pandrator_settings.json"
@@ -207,8 +208,22 @@ def save_global_settings(payload: Dict[str, Any]):
     with _FILE_IO_LOCK:
         _write_json_atomic(get_global_settings_path(), wrapped)
 
+    try:
+        state_db_handler.save_app_settings(payload, version=GLOBAL_SETTINGS_VERSION)
+    except Exception:
+        # JSON write-through remains the primary compatibility path in v1.
+        pass
+
 
 def load_global_settings() -> Dict[str, Any]:
+    try:
+        db_payload = state_db_handler.load_latest_app_settings()
+    except Exception:
+        db_payload = {}
+
+    if isinstance(db_payload, dict) and db_payload:
+        return db_payload
+
     settings_path = get_global_settings_path()
     try:
         with _FILE_IO_LOCK:
@@ -220,7 +235,15 @@ def load_global_settings() -> Dict[str, Any]:
     if isinstance(payload, dict):
         nested = payload.get("settings")
         if isinstance(nested, dict):
+            try:
+                state_db_handler.save_app_settings(nested, version=GLOBAL_SETTINGS_VERSION)
+            except Exception:
+                pass
             return nested
+        try:
+            state_db_handler.save_app_settings(payload, version=GLOBAL_SETTINGS_VERSION)
+        except Exception:
+            pass
         return payload
 
     return {}
