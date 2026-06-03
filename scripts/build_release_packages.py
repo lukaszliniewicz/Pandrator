@@ -29,6 +29,8 @@ DEFAULT_CONFIG_FLAGS = (
     "whisperx_support",
     "xtts_finetuning_support",
     "rvc_support",
+    "voxcpm_support",
+    "fishs2_support",
 )
 
 DEFAULT_SHARED_PATHS = (
@@ -62,6 +64,8 @@ DEFAULT_COMPONENT_PATHS = {
         "easy_xtts_trainer",
         "envs/easy_xtts_trainer",
     ),
+    "voxcpm": ("voxcpm_fastapi",),
+    "fishs2": ("fishs2-cpp-fastapi",),
 }
 
 @dataclass(frozen=True)
@@ -123,6 +127,22 @@ SOURCE_PROFILES = {
             "voxtral-fastapi/run.ps1",
         ),
     ),
+    "voxcpm": SourceProfile(
+        name="voxcpm",
+        components=("voxcpm",),
+        required_markers=(
+            "Pandrator/main.py",
+            "voxcpm_fastapi/run.bat",
+        ),
+    ),
+    "fishs2": SourceProfile(
+        name="fishs2",
+        components=("fishs2",),
+        required_markers=(
+            "Pandrator/main.py",
+            "fishs2-cpp-fastapi/run.bat",
+        ),
+    ),
 }
 
 COMPONENT_CONFIG_FLAG_BY_NAME = {
@@ -134,6 +154,8 @@ COMPONENT_CONFIG_FLAG_BY_NAME = {
     "rvc": "rvc_support",
     "whisperx": "whisperx_support",
     "xtts_finetuning": "xtts_finetuning_support",
+    "voxcpm": "voxcpm_support",
+    "fishs2": "fishs2_support",
 }
 
 PACKAGE_DEFINITIONS = {
@@ -152,6 +174,16 @@ PACKAGE_DEFINITIONS = {
         archive_name="Pandrator-Voxtral",
         blocks=("core", "voxtral"),
     ),
+    "voxcpm": PackageDefinition(
+        key="voxcpm",
+        archive_name="Pandrator-VoxCPM",
+        blocks=("core", "voxcpm"),
+    ),
+    "fishs2": PackageDefinition(
+        key="fishs2",
+        archive_name="Pandrator-FishS2",
+        blocks=("core", "fishs2"),
+    ),
     "voxtral_with_rest": PackageDefinition(
         key="voxtral_with_rest",
         archive_name="Pandrator-Voxtral-XTTS-WhisperX-FineTuning-RVC",
@@ -163,6 +195,8 @@ DEFAULT_PACKAGE_ORDER = (
     "kokoro",
     "xtts_stack",
     "voxtral",
+    "voxcpm",
+    "fishs2",
     "voxtral_with_rest",
 )
 
@@ -172,6 +206,9 @@ PACKAGE_KEY_ALIASES = {
     "xtts_stack": "xtts_stack",
     "stack": "xtts_stack",
     "voxtral": "voxtral",
+    "voxcpm": "voxcpm",
+    "fishs2": "fishs2",
+    "fish": "fishs2",
     "voxtral_with_rest": "voxtral_with_rest",
     "voxtral_rest": "voxtral_with_rest",
     "voxtral_plus_rest": "voxtral_with_rest",
@@ -183,6 +220,8 @@ BLOCK_SOURCE_BY_NAME = {
     "xtts_stack": "stack",
     "kokoro": "kokoro",
     "voxtral": "voxtral",
+    "voxcpm": "voxcpm",
+    "fishs2": "fishs2",
 }
 
 
@@ -308,6 +347,14 @@ def apply_core_source_fallback(
 
     if required_source_set.issubset({"core", "voxtral"}) and source_arguments.get("voxtral"):
         source_arguments["core"] = source_arguments["voxtral"]
+        return
+
+    if required_source_set.issubset({"core", "voxcpm"}) and source_arguments.get("voxcpm"):
+        source_arguments["core"] = source_arguments["voxcpm"]
+        return
+
+    if required_source_set.issubset({"core", "fishs2"}) and source_arguments.get("fishs2"):
+        source_arguments["core"] = source_arguments["fishs2"]
 
 
 def parse_path_list(raw_values: object, fallback: Sequence[str]) -> tuple[str, ...]:
@@ -489,6 +536,8 @@ def prepare_missing_sources(
         "stack": SOURCE_PROFILES["stack"],
         "kokoro": SOURCE_PROFILES["kokoro"],
         "voxtral": SOURCE_PROFILES["voxtral"],
+        "voxcpm": SOURCE_PROFILES["voxcpm"],
+        "fishs2": SOURCE_PROFILES["fishs2"],
     }
 
     for source_name in required_source_names:
@@ -836,8 +885,8 @@ def parse_arguments() -> argparse.Namespace:
         "--only",
         default="all",
         help=(
-            "Comma-separated package selector: all, kokoro, xtts_stack, voxtral, voxtral_with_rest. "
-            "Aliases: xtts, stack, voxtral_rest."
+            "Comma-separated package selector: all, kokoro, xtts_stack, voxtral, voxcpm, fishs2, voxtral_with_rest. "
+            "Aliases: xtts, stack, voxtral_rest, fish."
         ),
     )
     parser.add_argument(
@@ -859,6 +908,16 @@ def parse_arguments() -> argparse.Namespace:
         "--voxtral-source",
         default=None,
         help="Installation with Voxtral runtime ready. Required unless --prepare-sources is used.",
+    )
+    parser.add_argument(
+        "--voxcpm-source",
+        default=None,
+        help="Installation with VoxCPM runtime ready. Required unless --prepare-sources is used.",
+    )
+    parser.add_argument(
+        "--fishs2-source",
+        default=None,
+        help="Installation with FishS2 runtime ready. Required unless --prepare-sources is used.",
     )
     parser.add_argument(
         "--prepare-sources",
@@ -945,6 +1004,8 @@ def main() -> int:
         "stack": resolve_cli_path(args.stack_source, invocation_cwd),
         "kokoro": resolve_cli_path(args.kokoro_source, invocation_cwd),
         "voxtral": resolve_cli_path(args.voxtral_source, invocation_cwd),
+        "voxcpm": resolve_cli_path(args.voxcpm_source, invocation_cwd),
+        "fishs2": resolve_cli_path(args.fishs2_source, invocation_cwd),
     }
     apply_core_source_fallback(source_arguments, required_source_names)
 
@@ -968,6 +1029,14 @@ def main() -> int:
                     source_name for source_name in required_sources_for_prepare if source_name != "core"
                 ]
             elif required_source_set.issubset({"core", "voxtral"}):
+                required_sources_for_prepare = [
+                    source_name for source_name in required_sources_for_prepare if source_name != "core"
+                ]
+            elif required_source_set.issubset({"core", "voxcpm"}):
+                required_sources_for_prepare = [
+                    source_name for source_name in required_sources_for_prepare if source_name != "core"
+                ]
+            elif required_source_set.issubset({"core", "fishs2"}):
                 required_sources_for_prepare = [
                     source_name for source_name in required_sources_for_prepare if source_name != "core"
                 ]
@@ -1008,7 +1077,7 @@ def main() -> int:
     )
 
     layout_source = None
-    for candidate_name in ("stack", "core", "kokoro", "voxtral"):
+    for candidate_name in ("stack", "core", "kokoro", "voxtral", "voxcpm", "fishs2"):
         if candidate_name in source_roots:
             layout_source = source_roots[candidate_name]
             break
@@ -1099,6 +1168,24 @@ def main() -> int:
             include_paths=tuple(component_paths["voxtral"]),
             required_markers=("voxtral-fastapi/run.ps1",),
             config_overrides={"voxtral_support": True},
+        )
+
+    if "voxcpm" in required_blocks:
+        block_definitions["voxcpm"] = BlockDefinition(
+            name="voxcpm",
+            source_root=source_roots["voxcpm"],
+            include_paths=tuple(component_paths["voxcpm"]),
+            required_markers=("voxcpm_fastapi/run.bat",),
+            config_overrides={"voxcpm_support": True},
+        )
+
+    if "fishs2" in required_blocks:
+        block_definitions["fishs2"] = BlockDefinition(
+            name="fishs2",
+            source_root=source_roots["fishs2"],
+            include_paths=tuple(component_paths["fishs2"]),
+            required_markers=("fishs2-cpp-fastapi/run.bat",),
+            config_overrides={"fishs2_support": True},
         )
 
     for block_name in required_blocks:

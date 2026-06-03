@@ -62,6 +62,7 @@ tts_voices/**/*.wav
 # IDE and OS files
 .vscode/
 .idea/
+.antigravity/
 *.code-workspace
 .DS_Store
 Thumbs.db
