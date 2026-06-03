@@ -69,6 +69,15 @@ DEFAULT_COMPONENT_PATHS = {
 }
 
 @dataclass(frozen=True)
+class ModuleDefinition:
+    key: str
+    config_flag: str | None
+    paths: tuple[str, ...]
+    markers: tuple[str, ...]
+    dependencies: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class BlockDefinition:
     name: str
     source_root: Path
@@ -77,151 +86,88 @@ class BlockDefinition:
     config_overrides: Dict[str, bool]
 
 
-@dataclass(frozen=True)
-class PackageDefinition:
-    key: str
-    archive_name: str
-    blocks: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class SourceProfile:
-    name: str
-    components: tuple[str, ...]
-    required_markers: tuple[str, ...]
-
-
-SOURCE_PROFILES = {
-    "core": SourceProfile(
-        name="core",
-        components=(),
-        required_markers=(
-            "Pandrator/main.py",
-            "envs/pandrator_installer/pixi.toml",
+MODULES = {
+    "kokoro": ModuleDefinition(
+        key="kokoro",
+        config_flag="kokoro_support",
+        paths=(
+            "Kokoro-FastAPI",
+            f"envs/{KOKORO_ENV_NAME}",
         ),
-    ),
-    "stack": SourceProfile(
-        name="stack",
-        components=("xtts", "whisperx", "xtts_finetuning", "rvc"),
-        required_markers=(
-            "Pandrator/main.py",
-            "xtts2_api/run.bat",
-            "envs/whisperx_installer/pixi.toml",
-            "easy_xtts_trainer/requirements.txt",
-        ),
-    ),
-    "kokoro": SourceProfile(
-        name="kokoro",
-        components=("kokoro",),
-        required_markers=(
-            "Pandrator/main.py",
+        markers=(
             "Kokoro-FastAPI/api/src/main.py",
             f"envs/{KOKORO_ENV_NAME}/pixi.toml",
         ),
     ),
-    "voxtral": SourceProfile(
-        name="voxtral",
-        components=("voxtral",),
-        required_markers=(
-            "Pandrator/main.py",
-            "voxtral-fastapi/run.ps1",
-        ),
-    ),
-    "voxcpm": SourceProfile(
-        name="voxcpm",
-        components=("voxcpm",),
-        required_markers=(
-            "Pandrator/main.py",
-            "voxcpm_fastapi/run.bat",
-        ),
-    ),
-    "fishs2": SourceProfile(
-        name="fishs2",
-        components=("fishs2",),
-        required_markers=(
-            "Pandrator/main.py",
-            "fishs2-cpp-fastapi/run.bat",
-        ),
-    ),
-}
-
-COMPONENT_CONFIG_FLAG_BY_NAME = {
-    "xtts": "xtts_support",
-    "xtts_cpu": "xtts_support",
-    "silero": "silero_support",
-    "voxtral": "voxtral_support",
-    "kokoro": "kokoro_support",
-    "rvc": "rvc_support",
-    "whisperx": "whisperx_support",
-    "xtts_finetuning": "xtts_finetuning_support",
-    "voxcpm": "voxcpm_support",
-    "fishs2": "fishs2_support",
-}
-
-PACKAGE_DEFINITIONS = {
-    "kokoro": PackageDefinition(
-        key="kokoro",
-        archive_name="Pandrator-Kokoro",
-        blocks=("core", "kokoro"),
-    ),
-    "xtts_stack": PackageDefinition(
-        key="xtts_stack",
-        archive_name="Pandrator-XTTS-WhisperX-FineTuning-RVC",
-        blocks=("core_rvc", "xtts_stack"),
-    ),
-    "voxtral": PackageDefinition(
+    "voxtral": ModuleDefinition(
         key="voxtral",
-        archive_name="Pandrator-Voxtral",
-        blocks=("core", "voxtral"),
+        config_flag="voxtral_support",
+        paths=("voxtral-fastapi",),
+        markers=("voxtral-fastapi/run.ps1",),
     ),
-    "voxcpm": PackageDefinition(
+    "voxcpm": ModuleDefinition(
         key="voxcpm",
-        archive_name="Pandrator-VoxCPM",
-        blocks=("core", "voxcpm"),
+        config_flag="voxcpm_support",
+        paths=("voxcpm_fastapi",),
+        markers=("voxcpm_fastapi/run.bat",),
     ),
-    "fishs2": PackageDefinition(
+    "fishs2": ModuleDefinition(
         key="fishs2",
-        archive_name="Pandrator-FishS2",
-        blocks=("core", "fishs2"),
+        config_flag="fishs2_support",
+        paths=("fishs2-cpp-fastapi",),
+        markers=("fishs2-cpp-fastapi/run.bat",),
     ),
-    "voxtral_with_rest": PackageDefinition(
-        key="voxtral_with_rest",
-        archive_name="Pandrator-Voxtral-XTTS-WhisperX-FineTuning-RVC",
-        blocks=("core_rvc", "xtts_stack", "voxtral"),
+    "xtts": ModuleDefinition(
+        key="xtts",
+        config_flag="xtts_support",
+        paths=("xtts2_api",),
+        markers=("xtts2_api/run.bat",),
+    ),
+    "silero": ModuleDefinition(
+        key="silero",
+        config_flag="silero_support",
+        paths=("envs/silero_api_server_installer",),
+        markers=("envs/silero_api_server_installer/pixi.toml",),
+    ),
+    "whisperx": ModuleDefinition(
+        key="whisperx",
+        config_flag="whisperx_support",
+        paths=("envs/whisperx_installer",),
+        markers=("envs/whisperx_installer/pixi.toml",),
+    ),
+    "xtts_finetuning": ModuleDefinition(
+        key="xtts_finetuning",
+        config_flag="xtts_finetuning_support",
+        paths=(
+            "easy_xtts_trainer",
+            "envs/easy_xtts_trainer",
+        ),
+        markers=(
+            "easy_xtts_trainer/requirements.txt",
+            "envs/easy_xtts_trainer/pixi.toml",
+        ),
+        dependencies=("whisperx", "xtts"),
+    ),
+    "rvc": ModuleDefinition(
+        key="rvc",
+        config_flag="rvc_support",
+        paths=(),  # Installed directly in core env
+        markers=(),
     ),
 }
 
-DEFAULT_PACKAGE_ORDER = (
-    "kokoro",
-    "xtts_stack",
-    "voxtral",
-    "voxcpm",
-    "fishs2",
-    "voxtral_with_rest",
-)
-
-PACKAGE_KEY_ALIASES = {
-    "kokoro": "kokoro",
-    "xtts": "xtts_stack",
-    "xtts_stack": "xtts_stack",
-    "stack": "xtts_stack",
-    "voxtral": "voxtral",
-    "voxcpm": "voxcpm",
-    "fishs2": "fishs2",
-    "fish": "fishs2",
-    "voxtral_with_rest": "voxtral_with_rest",
-    "voxtral_rest": "voxtral_with_rest",
-    "voxtral_plus_rest": "voxtral_with_rest",
-}
-
-BLOCK_SOURCE_BY_NAME = {
-    "core": "core",
-    "core_rvc": "stack",
-    "xtts_stack": "stack",
-    "kokoro": "kokoro",
-    "voxtral": "voxtral",
-    "voxcpm": "voxcpm",
-    "fishs2": "fishs2",
+PRESETS = {
+    "kokoro": ("kokoro",),
+    "xtts_stack": ("xtts_finetuning", "rvc"),
+    "xtts": ("xtts_finetuning", "rvc"),
+    "stack": ("xtts_finetuning", "rvc"),
+    "voxtral": ("voxtral",),
+    "voxcpm": ("voxcpm",),
+    "fishs2": ("fishs2",),
+    "fish": ("fishs2",),
+    "voxtral_with_rest": ("voxtral", "xtts_finetuning", "rvc"),
+    "voxtral_rest": ("voxtral", "xtts_finetuning", "rvc"),
+    "voxtral_plus_rest": ("voxtral", "xtts_finetuning", "rvc"),
 }
 
 
@@ -274,87 +220,52 @@ def resolve_path_from_base(path_value: str, base_dir: Path) -> Path:
     return path.resolve()
 
 
-def parse_selected_package_keys(only_value: str, skip_voxtral_with_rest: bool) -> tuple[str, ...]:
-    default_keys = [key for key in DEFAULT_PACKAGE_ORDER if key in PACKAGE_DEFINITIONS]
-    if skip_voxtral_with_rest and "voxtral_with_rest" in default_keys:
-        default_keys.remove("voxtral_with_rest")
+def resolve_dependencies(selected_modules: Iterable[str]) -> tuple[str, ...]:
+    resolved: list[str] = []
 
+    def visit(module_key: str):
+        if module_key in resolved:
+            return
+        if module_key not in MODULES:
+            raise RuntimeError(f"Unknown module '{module_key}'.")
+
+        module = MODULES[module_key]
+        for dep in module.dependencies:
+            visit(dep)
+        resolved.append(module_key)
+
+    for key in selected_modules:
+        visit(key)
+
+    return tuple(resolved)
+
+
+def parse_selected_modules(only_value: str) -> tuple[str, ...]:
     raw_value = str(only_value or "").strip().lower()
     if not raw_value or raw_value == "all":
-        return tuple(default_keys)
+        return resolve_dependencies(MODULES.keys())
 
-    selected_keys: list[str] = []
+    selected_keys: set[str] = set()
     for token in raw_value.split(","):
         normalized_token = token.strip().lower().replace("-", "_")
         if not normalized_token:
             continue
 
         if normalized_token == "all":
-            selected_keys.extend(default_keys)
+            selected_keys.update(MODULES.keys())
             continue
 
-        mapped_key = PACKAGE_KEY_ALIASES.get(normalized_token)
-        if mapped_key is None:
-            allowed = ", ".join(sorted(set(PACKAGE_KEY_ALIASES.keys()) | {"all"}))
+        if normalized_token in PRESETS:
+            selected_keys.update(PRESETS[normalized_token])
+        elif normalized_token in MODULES:
+            selected_keys.add(normalized_token)
+        else:
+            allowed = ", ".join(sorted(set(MODULES.keys()) | set(PRESETS.keys()) | {"all"}))
             raise RuntimeError(
-                f"Unsupported package selector '{token}'. Allowed values: {allowed}."
+                f"Unsupported module or preset '{token}'. Allowed values: {allowed}."
             )
 
-        selected_keys.append(mapped_key)
-
-    deduped_keys: list[str] = []
-    for key in selected_keys:
-        if key not in deduped_keys:
-            deduped_keys.append(key)
-
-    if not deduped_keys:
-        raise RuntimeError("No valid packages were selected.")
-
-    return tuple(deduped_keys)
-
-
-def collect_required_blocks(packages: Sequence[PackageDefinition]) -> tuple[str, ...]:
-    required_blocks: list[str] = []
-    for package in packages:
-        for block_name in package.blocks:
-            if block_name not in required_blocks:
-                required_blocks.append(block_name)
-    return tuple(required_blocks)
-
-
-def collect_required_sources(required_blocks: Sequence[str]) -> tuple[str, ...]:
-    required_sources: list[str] = []
-    for block_name in required_blocks:
-        source_name = BLOCK_SOURCE_BY_NAME.get(block_name)
-        if source_name is None:
-            raise RuntimeError(f"No source mapping configured for block '{block_name}'.")
-        if source_name not in required_sources:
-            required_sources.append(source_name)
-    return tuple(required_sources)
-
-
-def apply_core_source_fallback(
-    source_arguments: Dict[str, str | None],
-    required_source_names: Sequence[str],
-) -> None:
-    if "core" not in required_source_names or source_arguments.get("core"):
-        return
-
-    required_source_set = set(required_source_names)
-    if required_source_set.issubset({"core", "kokoro"}) and source_arguments.get("kokoro"):
-        source_arguments["core"] = source_arguments["kokoro"]
-        return
-
-    if required_source_set.issubset({"core", "voxtral"}) and source_arguments.get("voxtral"):
-        source_arguments["core"] = source_arguments["voxtral"]
-        return
-
-    if required_source_set.issubset({"core", "voxcpm"}) and source_arguments.get("voxcpm"):
-        source_arguments["core"] = source_arguments["voxcpm"]
-        return
-
-    if required_source_set.issubset({"core", "fishs2"}) and source_arguments.get("fishs2"):
-        source_arguments["core"] = source_arguments["fishs2"]
+    return resolve_dependencies(selected_keys)
 
 
 def parse_path_list(raw_values: object, fallback: Sequence[str]) -> tuple[str, ...]:
@@ -448,26 +359,6 @@ def resolve_install_root(path_value: str) -> Path:
     )
 
 
-def source_matches_profile(source_root: Path, profile: SourceProfile) -> bool:
-    for marker in profile.required_markers:
-        marker_path = source_root / Path(normalize_relative_path(marker))
-        if not marker_path.exists():
-            return False
-
-    if not profile.components:
-        return True
-
-    config = load_install_config(source_root)
-    for component in profile.components:
-        config_flag = COMPONENT_CONFIG_FLAG_BY_NAME.get(component)
-        if not config_flag:
-            continue
-        if not bool(config.get(config_flag, False)):
-            return False
-
-    return True
-
-
 def run_headless_installer(
     installer_script: Path,
     python_executable: str,
@@ -488,75 +379,69 @@ def run_headless_installer(
     subprocess.run(command, check=True, cwd=str(installer_script.parent))
 
 
-def prepare_source_profile(
-    profile: SourceProfile,
+def get_tailored_workspace_name(components: Sequence[str]) -> str:
+    h = hashlib.sha256()
+    for c in sorted(components):
+        h.update(c.encode("utf-8"))
+    return f"workspace_{h.hexdigest()[:12]}"
+
+
+def prepare_tailored_source(
+    components: Sequence[str],
     sources_root: Path,
     installer_script: Path,
     python_executable: str,
     force_prepare: bool,
 ) -> Path:
-    workspace = sources_root / profile.name
+    workspace_name = get_tailored_workspace_name(components)
+    workspace = sources_root / workspace_name
     install_root = workspace / "Pandrator"
     workspace.mkdir(parents=True, exist_ok=True)
 
-    if force_prepare and install_root.exists():
-        print(f"Removing existing prepared source: {install_root}")
-        remove_tree(install_root)
+    has_valid_source = not force_prepare and install_root.exists()
+    if has_valid_source:
+        core_markers = ("Pandrator/main.py", "envs/pandrator_installer/pixi.toml")
+        for marker in core_markers:
+            if not (install_root / Path(normalize_relative_path(marker))).exists():
+                has_valid_source = False
+                break
+        
+        if has_valid_source:
+            for component in components:
+                module = MODULES[component]
+                for marker in module.markers:
+                    if not (install_root / Path(normalize_relative_path(marker))).exists():
+                        has_valid_source = False
+                        break
 
-    if install_root.exists() and source_matches_profile(install_root, profile):
-        print(f"Reusing prepared source profile '{profile.name}': {install_root}")
+    if has_valid_source:
+        print(f"Reusing prepared source workspace: {install_root}")
         return install_root
+
+    if install_root.exists():
+        print(f"Removing existing incomplete source workspace: {install_root}")
+        remove_tree(install_root)
 
     run_headless_installer(
         installer_script=installer_script,
         python_executable=python_executable,
         workspace=workspace,
-        components=profile.components,
+        components=components,
     )
 
-    if not install_root.exists() or not source_matches_profile(install_root, profile):
-        raise RuntimeError(
-            f"Prepared source profile '{profile.name}' is incomplete at {install_root}."
-        )
+    # Double check markers
+    core_markers = ("Pandrator/main.py", "envs/pandrator_installer/pixi.toml")
+    for marker in core_markers:
+        if not (install_root / Path(normalize_relative_path(marker))).exists():
+            raise RuntimeError(f"Source workspace preparation failed. Missing core file: {marker}")
+
+    for component in components:
+        module = MODULES[component]
+        for marker in module.markers:
+            if not (install_root / Path(normalize_relative_path(marker))).exists():
+                raise RuntimeError(f"Source workspace preparation failed. Missing component '{component}' file: {marker}")
 
     return install_root
-
-
-def prepare_missing_sources(
-    source_arguments: Mapping[str, str | None],
-    required_source_names: Sequence[str],
-    sources_root: Path,
-    installer_script: Path,
-    python_executable: str,
-    force_prepare: bool,
-) -> Dict[str, Path]:
-    prepared_sources: Dict[str, Path] = {}
-    profile_lookup = {
-        "core": SOURCE_PROFILES["core"],
-        "stack": SOURCE_PROFILES["stack"],
-        "kokoro": SOURCE_PROFILES["kokoro"],
-        "voxtral": SOURCE_PROFILES["voxtral"],
-        "voxcpm": SOURCE_PROFILES["voxcpm"],
-        "fishs2": SOURCE_PROFILES["fishs2"],
-    }
-
-    for source_name in required_source_names:
-        profile = profile_lookup.get(source_name)
-        if profile is None:
-            continue
-
-        if source_arguments.get(source_name):
-            continue
-
-        prepared_sources[source_name] = prepare_source_profile(
-            profile=profile,
-            sources_root=sources_root,
-            installer_script=installer_script,
-            python_executable=python_executable,
-            force_prepare=force_prepare,
-        )
-
-    return prepared_sources
 
 
 def resolve_installer_executable(explicit_path: str | None, repo_root: Path) -> Path:
@@ -813,7 +698,6 @@ def overlay_block(cache_dir: Path, stage_root: Path, prefer_hardlinks: bool) -> 
 def apply_config_flags(
     config_path: Path,
     config_flags: Sequence[str],
-    package: PackageDefinition,
     block_definitions: Mapping[str, BlockDefinition],
 ) -> None:
     config_data: Dict[str, object] = {}
@@ -827,8 +711,7 @@ def apply_config_flags(
     for config_flag in config_flags:
         config_data[config_flag] = False
 
-    for block_name in package.blocks:
-        block = block_definitions[block_name]
+    for block in block_definitions.values():
         for key, value in block.config_overrides.items():
             config_data[key] = bool(value)
 
@@ -872,8 +755,8 @@ def format_size(num_bytes: int) -> str:
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Build Pandrator zip packages from reusable local blocks. "
-            "Each generated zip contains the installer executable and the Pandrator folder."
+            "Build custom Pandrator zip packages from reusable local modules. "
+            "The generated zip contains the installer executable and the tailored Pandrator folder."
         )
     )
     parser.add_argument(
@@ -885,49 +768,25 @@ def parse_arguments() -> argparse.Namespace:
         "--only",
         default="all",
         help=(
-            "Comma-separated package selector: all, kokoro, xtts_stack, voxtral, voxcpm, fishs2, voxtral_with_rest. "
-            "Aliases: xtts, stack, voxtral_rest, fish."
+            "Comma-separated list of components/presets to package: all, "
+            "kokoro, xtts_stack, voxtral, voxcpm, fishs2, voxtral_with_rest. "
+            "Individual modules: kokoro, voxtral, voxcpm, fishs2, xtts, silero, whisperx, xtts_finetuning, rvc."
         ),
     )
     parser.add_argument(
-        "--core-source",
+        "--source",
         default=None,
-        help="Installation with core runtime (no RVC stack). Required unless --prepare-sources is used.",
-    )
-    parser.add_argument(
-        "--stack-source",
-        default=None,
-        help="Installation with XTTS + WhisperX + XTTS fine-tuning + RVC. Required unless --prepare-sources is used.",
-    )
-    parser.add_argument(
-        "--kokoro-source",
-        default=None,
-        help="Installation with Kokoro runtime ready. Required unless --prepare-sources is used.",
-    )
-    parser.add_argument(
-        "--voxtral-source",
-        default=None,
-        help="Installation with Voxtral runtime ready. Required unless --prepare-sources is used.",
-    )
-    parser.add_argument(
-        "--voxcpm-source",
-        default=None,
-        help="Installation with VoxCPM runtime ready. Required unless --prepare-sources is used.",
-    )
-    parser.add_argument(
-        "--fishs2-source",
-        default=None,
-        help="Installation with FishS2 runtime ready. Required unless --prepare-sources is used.",
+        help="Path to pre-existing single installation root to package from. Required unless --prepare-sources is used.",
     )
     parser.add_argument(
         "--prepare-sources",
         action="store_true",
-        help="Prepare missing source installs automatically using installer headless mode.",
+        help="Prepare a customized tailored source installation automatically using installer headless mode.",
     )
     parser.add_argument(
         "--sources-root",
         default=".release_sources",
-        help="Root directory for auto-prepared source workspaces (relative to release root unless absolute).",
+        help="Root directory for auto-prepared tailored workspaces (relative to release root unless absolute).",
     )
     parser.add_argument(
         "--prepare-force",
@@ -976,9 +835,14 @@ def parse_arguments() -> argparse.Namespace:
         help="Copy files instead of hardlinking while caching/assembling blocks.",
     )
     parser.add_argument(
+        "--name",
+        default=None,
+        help="Custom name for output zip file (defaults to dynamically generated module list).",
+    )
+    parser.add_argument(
         "--skip-voxtral-with-rest",
         action="store_true",
-        help="Skip creating the combined Voxtral + XTTS/WhisperX/Fine-tuning/RVC package.",
+        help="Ignored (kept for backwards compatibility).",
     )
     return parser.parse_args()
 
@@ -994,20 +858,13 @@ def main() -> int:
     os.chdir(release_root)
     print(f"Using release root: {release_root}")
 
-    selected_package_keys = parse_selected_package_keys(args.only, args.skip_voxtral_with_rest)
-    packages = [PACKAGE_DEFINITIONS[key] for key in selected_package_keys]
-    required_blocks = collect_required_blocks(packages)
-    required_source_names = collect_required_sources(required_blocks)
+    selected_modules = parse_selected_modules(args.only)
+    print(f"Resolved modules to package: {', '.join(selected_modules) if selected_modules else 'None (Core Only)'}")
 
-    source_arguments: Dict[str, str | None] = {
-        "core": resolve_cli_path(args.core_source, invocation_cwd),
-        "stack": resolve_cli_path(args.stack_source, invocation_cwd),
-        "kokoro": resolve_cli_path(args.kokoro_source, invocation_cwd),
-        "voxtral": resolve_cli_path(args.voxtral_source, invocation_cwd),
-        "voxcpm": resolve_cli_path(args.voxcpm_source, invocation_cwd),
-        "fishs2": resolve_cli_path(args.fishs2_source, invocation_cwd),
-    }
-    apply_core_source_fallback(source_arguments, required_source_names)
+    installer_executable = resolve_installer_executable(
+        resolve_cli_path(args.installer_exe, invocation_cwd),
+        repo_root,
+    )
 
     if args.prepare_sources:
         installer_script = (
@@ -1021,177 +878,96 @@ def main() -> int:
         sources_root = resolve_path_from_base(args.sources_root, release_root)
         sources_root.mkdir(parents=True, exist_ok=True)
 
-        required_sources_for_prepare = list(required_source_names)
-        if "core" in required_sources_for_prepare and not source_arguments.get("core"):
-            required_source_set = set(required_sources_for_prepare)
-            if required_source_set.issubset({"core", "kokoro"}):
-                required_sources_for_prepare = [
-                    source_name for source_name in required_sources_for_prepare if source_name != "core"
-                ]
-            elif required_source_set.issubset({"core", "voxtral"}):
-                required_sources_for_prepare = [
-                    source_name for source_name in required_sources_for_prepare if source_name != "core"
-                ]
-            elif required_source_set.issubset({"core", "voxcpm"}):
-                required_sources_for_prepare = [
-                    source_name for source_name in required_sources_for_prepare if source_name != "core"
-                ]
-            elif required_source_set.issubset({"core", "fishs2"}):
-                required_sources_for_prepare = [
-                    source_name for source_name in required_sources_for_prepare if source_name != "core"
-                ]
-
-        prepared_sources = prepare_missing_sources(
-            source_arguments=source_arguments,
-            required_source_names=required_sources_for_prepare,
+        source_root = prepare_tailored_source(
+            components=selected_modules,
             sources_root=sources_root,
             installer_script=installer_script,
             python_executable=args.python_exe,
             force_prepare=args.prepare_force,
         )
-        for source_name, prepared_path in prepared_sources.items():
-            source_arguments[source_name] = str(prepared_path)
+    else:
+        if not args.source:
+            raise RuntimeError("Provide either --source or use --prepare-sources.")
+        source_root = resolve_install_root(str(resolve_cli_path(args.source, invocation_cwd)))
 
-    apply_core_source_fallback(source_arguments, required_source_names)
+        for component in selected_modules:
+            module = MODULES[component]
+            for marker in module.markers:
+                marker_path = source_root / Path(normalize_relative_path(marker))
+                if not marker_path.exists():
+                    raise RuntimeError(
+                        f"Source root '{source_root}' is missing required file for module '{component}': {marker}"
+                    )
 
-    missing_sources = [
-        source_name
-        for source_name in required_source_names
-        if not source_arguments.get(source_name)
-    ]
-    if missing_sources:
-        missing_display = ", ".join(sorted(missing_sources))
-        raise RuntimeError(
-            "Missing source paths for: "
-            f"{missing_display}. Provide the matching --*-source values or use --prepare-sources."
-        )
-
-    source_roots = {
-        source_name: resolve_install_root(str(source_arguments[source_name]))
-        for source_name in required_source_names
-    }
-
-    installer_executable = resolve_installer_executable(
-        resolve_cli_path(args.installer_exe, invocation_cwd),
-        repo_root,
-    )
-
-    layout_source = None
-    for candidate_name in ("stack", "core", "kokoro", "voxtral", "voxcpm", "fishs2"):
-        if candidate_name in source_roots:
-            layout_source = source_roots[candidate_name]
-            break
-    if layout_source is None:
-        raise RuntimeError("Could not determine a source for packaging layout metadata.")
-
-    layout = load_packaging_layout(layout_source)
+    layout = load_packaging_layout(source_root)
 
     config_flags = tuple(layout["config_flags"])
-    shared_paths = tuple(layout["shared_paths"])
+    shared_paths = tuple(
+        p for p in layout["shared_paths"]
+        if normalize_relative_path(p) not in (".pixi-home", ".pixi-cache")
+    )
     ACTIVE_EXCLUDED_FILE_PREFIXES = tuple(
         layout.get("excluded_file_prefixes", DEFAULT_EXCLUDED_FILE_PREFIXES)
     )
     component_paths = dict(layout["component_paths"])
 
-    stack_config = load_install_config(source_roots["stack"]) if "stack" in source_roots else {}
-    cuda_support = bool(stack_config.get("cuda_support", True))
-
-    xtts_stack_paths = tuple(
-        dict.fromkeys(
-            list(component_paths["xtts"])
-            + list(component_paths["whisperx"])
-            + list(component_paths["xtts_finetuning"])
-        )
-    )
+    cuda_support = True
+    if (source_root / "config.json").exists():
+        try:
+            config = load_install_config(source_root)
+            cuda_support = bool(config.get("cuda_support", True))
+        except Exception:
+            pass
 
     block_definitions: Dict[str, BlockDefinition] = {}
+    block_definitions["core"] = BlockDefinition(
+        name="core",
+        source_root=source_root,
+        include_paths=shared_paths,
+        required_markers=(
+            "Pandrator/main.py",
+            "envs/pandrator_installer/pixi.toml",
+        ),
+        config_overrides={},
+    )
 
-    if "core" in required_blocks:
-        block_definitions["core"] = BlockDefinition(
-            name="core",
-            source_root=source_roots["core"],
-            include_paths=shared_paths,
-            required_markers=(
-                "Pandrator/main.py",
-                "envs/pandrator_installer/pixi.toml",
-            ),
-            config_overrides={},
+    for component in selected_modules:
+        module = MODULES[component]
+        paths = module.paths
+        if component in component_paths:
+            paths = tuple(component_paths[component])
+        elif component == "xtts" and "xtts" in component_paths:
+            paths = tuple(component_paths["xtts"])
+        elif component == "voxtral" and "voxtral" in component_paths:
+            paths = tuple(component_paths["voxtral"])
+        elif component == "kokoro" and "kokoro" in component_paths:
+            paths = tuple(component_paths["kokoro"])
+        elif component == "silero" and "silero" in component_paths:
+            paths = tuple(component_paths["silero"])
+        elif component == "whisperx" and "whisperx" in component_paths:
+            paths = tuple(component_paths["whisperx"])
+        elif component == "voxcpm" and "voxcpm" in component_paths:
+            paths = tuple(component_paths["voxcpm"])
+        elif component == "fishs2" and "fishs2" in component_paths:
+            paths = tuple(component_paths["fishs2"])
+
+        overrides = {module.config_flag: True} if module.config_flag else {}
+        if component == "xtts":
+            overrides["cuda_support"] = cuda_support
+        elif component == "xtts_finetuning":
+            overrides["cuda_support"] = cuda_support
+            overrides["xtts_support"] = True
+            overrides["whisperx_support"] = True
+
+        block_definitions[component] = BlockDefinition(
+            name=component,
+            source_root=source_root,
+            include_paths=paths,
+            required_markers=module.markers,
+            config_overrides=overrides,
         )
 
-    if "core_rvc" in required_blocks:
-        block_definitions["core_rvc"] = BlockDefinition(
-            name="core_rvc",
-            source_root=source_roots["stack"],
-            include_paths=shared_paths,
-            required_markers=(
-                "Pandrator/main.py",
-                "envs/pandrator_installer/pixi.toml",
-            ),
-            config_overrides={"rvc_support": True},
-        )
-
-    if "xtts_stack" in required_blocks:
-        block_definitions["xtts_stack"] = BlockDefinition(
-            name="xtts_stack",
-            source_root=source_roots["stack"],
-            include_paths=xtts_stack_paths,
-            required_markers=(
-                "xtts2_api/run.bat",
-                "envs/whisperx_installer/pixi.toml",
-                "easy_xtts_trainer/requirements.txt",
-            ),
-            config_overrides={
-                "xtts_support": True,
-                "cuda_support": cuda_support,
-                "whisperx_support": True,
-                "xtts_finetuning_support": True,
-                "rvc_support": True,
-            },
-        )
-
-    if "kokoro" in required_blocks:
-        block_definitions["kokoro"] = BlockDefinition(
-            name="kokoro",
-            source_root=source_roots["kokoro"],
-            include_paths=tuple(component_paths["kokoro"]),
-            required_markers=(
-                "Kokoro-FastAPI/api/src/main.py",
-                f"envs/{KOKORO_ENV_NAME}/pixi.toml",
-            ),
-            config_overrides={"kokoro_support": True},
-        )
-
-    if "voxtral" in required_blocks:
-        block_definitions["voxtral"] = BlockDefinition(
-            name="voxtral",
-            source_root=source_roots["voxtral"],
-            include_paths=tuple(component_paths["voxtral"]),
-            required_markers=("voxtral-fastapi/run.ps1",),
-            config_overrides={"voxtral_support": True},
-        )
-
-    if "voxcpm" in required_blocks:
-        block_definitions["voxcpm"] = BlockDefinition(
-            name="voxcpm",
-            source_root=source_roots["voxcpm"],
-            include_paths=tuple(component_paths["voxcpm"]),
-            required_markers=("voxcpm_fastapi/run.bat",),
-            config_overrides={"voxcpm_support": True},
-        )
-
-    if "fishs2" in required_blocks:
-        block_definitions["fishs2"] = BlockDefinition(
-            name="fishs2",
-            source_root=source_roots["fishs2"],
-            include_paths=tuple(component_paths["fishs2"]),
-            required_markers=("fishs2-cpp-fastapi/run.bat",),
-            config_overrides={"fishs2_support": True},
-        )
-
-    for block_name in required_blocks:
-        block = block_definitions.get(block_name)
-        if block is None:
-            raise RuntimeError(f"Block definition is missing for '{block_name}'.")
+    for block in block_definitions.values():
         ensure_required_markers(block)
 
     cache_root = resolve_path_from_base(args.cache_dir, release_root)
@@ -1205,7 +981,7 @@ def main() -> int:
     print(f"Using output directory: {output_root}")
 
     cached_block_paths: Dict[str, Path] = {}
-    for block_name in required_blocks:
+    for block_name in block_definitions:
         block = block_definitions[block_name]
         cached_block_paths[block_name] = ensure_block_cache(
             block,
@@ -1214,36 +990,41 @@ def main() -> int:
             prefer_hardlinks=prefer_hardlinks,
         )
 
-    built_archives: list[tuple[str, Path, int]] = []
-    for package in packages:
-        print(f"Assembling package: {package.archive_name}")
-        package_stage_root = staging_root / package.archive_name
-        package_install_root = package_stage_root / "Pandrator"
+    if args.name:
+        archive_name = args.name
+    else:
+        if len(selected_modules) == 0:
+            archive_name = "Pandrator-Core"
+        else:
+            components_display = "-".join(c.replace("_", "-").title() for c in selected_modules)
+            archive_name = f"Pandrator-{components_display}"
 
-        if package_stage_root.exists():
-            remove_tree(package_stage_root)
+    print(f"Assembling package: {archive_name}")
+    package_stage_root = staging_root / archive_name
+    package_install_root = package_stage_root / "Pandrator"
 
-        package_install_root.mkdir(parents=True, exist_ok=True)
-        hardlink_or_copy_file(
-            installer_executable,
-            package_stage_root / installer_executable.name,
-            prefer_hardlinks,
-        )
+    if package_stage_root.exists():
+        remove_tree(package_stage_root)
 
-        for block_name in package.blocks:
-            overlay_block(cached_block_paths[block_name], package_install_root, prefer_hardlinks)
+    package_install_root.mkdir(parents=True, exist_ok=True)
+    hardlink_or_copy_file(
+        installer_executable,
+        package_stage_root / installer_executable.name,
+        prefer_hardlinks,
+    )
 
-        config_path = package_install_root / "config.json"
-        apply_config_flags(config_path, config_flags, package, block_definitions)
+    for block_name in block_definitions:
+        overlay_block(cached_block_paths[block_name], package_install_root, prefer_hardlinks)
 
-        archive_path = output_root / f"{package.archive_name}.zip"
-        create_zip_archive(package_stage_root, archive_path)
-        archive_size = archive_path.stat().st_size
-        built_archives.append((package.archive_name, archive_path, archive_size))
+    config_path = package_install_root / "config.json"
+    apply_config_flags(config_path, config_flags, block_definitions)
 
-    print("Built archives:")
-    for package_name, archive_path, archive_size in built_archives:
-        print(f"- {package_name}: {archive_path} ({format_size(archive_size)})")
+    archive_path = output_root / f"{archive_name}.zip"
+    create_zip_archive(package_stage_root, archive_path)
+    archive_size = archive_path.stat().st_size
+
+    print("Built archive:")
+    print(f"- {archive_name}: {archive_path} ({format_size(archive_size)})")
 
     return 0
 
