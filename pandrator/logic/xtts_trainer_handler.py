@@ -13,7 +13,7 @@ WHISPERX_ENV_NAME = 'whisperx_installer'
 WHISPERX_PIXI_EXE_ENV = 'WHISPERX_PIXI_EXE'
 WHISPERX_PIXI_MANIFEST_ENV = 'WHISPERX_PIXI_MANIFEST'
 PANDRATOR_SUBDUB_CACHE_DIR_ENV = 'PANDRATOR_SUBDUB_CACHE_DIR'
-DEFAULT_WHISPER_CACHE_ROOT = os.path.join(PROJECT_ROOT, 'cache', 'subdub')
+DEFAULT_WHISPER_CACHE_ROOT = os.path.join(PROJECT_ROOT, 'cache')
 
 
 def _deduplicate_paths(paths: list[str]) -> list[str]:
@@ -93,6 +93,7 @@ def _apply_whisper_cache_environment(env: dict[str, str]) -> None:
     _setdefault_directory_env(env, 'HUGGINGFACE_HUB_CACHE', huggingface_hub_cache)
     _setdefault_directory_env(env, 'TRANSFORMERS_CACHE', os.path.join(huggingface_root, 'transformers'))
     _setdefault_directory_env(env, 'TORCH_HOME', os.path.join(cache_root, 'torch'))
+    _setdefault_directory_env(env, 'TTS_HOME', os.path.join(cache_root, 'tts'))
 
 
 def _manifest_candidates(roots: list[str], env_name: str) -> list[str]:

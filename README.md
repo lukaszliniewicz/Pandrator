@@ -153,6 +153,7 @@ Useful flags:
 
 - `--force-refresh` to rebuild all cached blocks,
 - `--release-root` to change the working root directory,
+- `--output-dir` (or `-o`) to choose where zip archives are written,
 - `--only` to build only selected packages (for example `--only kokoro`),
 - `--skip-voxtral-with-rest` to skip the combined Voxtral + XTTS/WhisperX/RVC package,
 - `--no-hardlinks` to force plain copies,

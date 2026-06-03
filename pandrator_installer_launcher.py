@@ -2555,6 +2555,16 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         env['TEMP'] = local_temp
         env['TMPDIR'] = local_temp
 
+        # Unified Portable Model Caches
+        local_cache_root = os.path.join(pandrator_path, 'cache')
+        env['XDG_CACHE_HOME'] = local_cache_root
+        env['HF_HOME'] = os.path.join(local_cache_root, 'huggingface')
+        env['HF_HUB_CACHE'] = os.path.join(local_cache_root, 'huggingface', 'hub')
+        env['HUGGINGFACE_HUB_CACHE'] = os.path.join(local_cache_root, 'huggingface', 'hub')
+        env['TRANSFORMERS_CACHE'] = os.path.join(local_cache_root, 'huggingface', 'transformers')
+        env['TORCH_HOME'] = os.path.join(local_cache_root, 'torch')
+        env['TTS_HOME'] = os.path.join(local_cache_root, 'tts')
+
         bundled_ffmpeg_path = self.get_bundled_ffmpeg_executable(pandrator_path)
         if os.path.exists(bundled_ffmpeg_path):
             env['PANDRATOR_FFMPEG_EXE'] = bundled_ffmpeg_path
@@ -3798,6 +3808,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         self.run_command(
             command,
             cwd=voxtral_repo_path,
+            env=self.get_pixi_subprocess_env(os.path.dirname(voxtral_repo_path)),
         )
 
     def replace_files(self, repo_path, file_mappings):
@@ -5291,7 +5302,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             use_cpu=use_cpu,
             pixi_path=self.get_xtts_pixi_argument(xtts_server_path, pixi_path),
         )
-        xtts_env = os.environ.copy()
+        xtts_env = self.get_pixi_subprocess_env(os.path.dirname(xtts_server_path))
         if use_cpu:
             xtts_env['XTTS_DEVICE'] = 'cpu'
             xtts_env['XTTS_USE_DEEPSPEED'] = 'false'
@@ -5367,6 +5378,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             process = subprocess.Popen(
                 command,
                 cwd=voxcpm_server_path,
+                env=self.get_pixi_subprocess_env(os.path.dirname(voxcpm_server_path)),
                 stdout=log_handle,
                 stderr=subprocess.STDOUT,
                 **self.get_hidden_subprocess_kwargs(),
@@ -5432,6 +5444,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             process = subprocess.Popen(
                 command,
                 cwd=fishs2_server_path,
+                env=self.get_pixi_subprocess_env(os.path.dirname(fishs2_server_path)),
                 stdout=log_handle,
                 stderr=subprocess.STDOUT,
                 **self.get_hidden_subprocess_kwargs(),
@@ -5510,6 +5523,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             process = subprocess.Popen(
                 command,
                 cwd=voxtral_server_path,
+                env=self.get_pixi_subprocess_env(os.path.dirname(voxtral_server_path)),
                 stdout=log_handle,
                 stderr=subprocess.STDOUT,
                 **self.get_hidden_subprocess_kwargs(),

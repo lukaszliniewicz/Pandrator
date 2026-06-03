@@ -37,7 +37,7 @@ DEFAULT_SHARED_PATHS = (
     "bin",
     "Calibre Portable",
     ".pixi-home",
-    ".pixi-cache",
+    "cache",
     "envs/pandrator_installer",
     "config.json",
     INSTALLER_STATE_FILENAME,
@@ -226,6 +226,13 @@ def resolve_cli_path(path_value: str | None, base_dir: Path) -> str | None:
         path = base_dir / path
 
     return str(path.resolve())
+
+
+def resolve_path_from_base(path_value: str, base_dir: Path) -> Path:
+    path = Path(path_value).expanduser()
+    if not path.is_absolute():
+        path = base_dir / path
+    return path.resolve()
 
 
 def parse_selected_package_keys(only_value: str, skip_voxtral_with_rest: bool) -> tuple[str, ...]:
@@ -539,6 +546,7 @@ def iter_files_in_tree(root: Path) -> Iterable[Path]:
         return
 
     for current_root, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if not should_exclude_file(d)]
         dirs.sort()
         files.sort()
         current_path = Path(current_root)
@@ -552,8 +560,11 @@ def should_exclude_file(filename: str, excluded_prefixes: Sequence[str] | None =
     if not filename:
         return False
 
-    prefixes = excluded_prefixes or ACTIVE_EXCLUDED_FILE_PREFIXES
     lowered = filename.lower()
+    if lowered.endswith((".pyc", ".pyo", ".log")) or lowered == "__pycache__":
+        return True
+
+    prefixes = excluded_prefixes or ACTIVE_EXCLUDED_FILE_PREFIXES
     for prefix in prefixes:
         normalized_prefix = str(prefix or "").strip().lower()
         if not normalized_prefix:
@@ -619,6 +630,7 @@ def copy_directory_contents(source_dir: Path, destination_dir: Path, prefer_hard
     destination_dir.mkdir(parents=True, exist_ok=True)
 
     for current_root, dirs, files in os.walk(source_dir):
+        dirs[:] = [d for d in dirs if not should_exclude_file(d)]
         dirs.sort()
         files.sort()
         root_path = Path(current_root)
@@ -879,6 +891,7 @@ def parse_arguments() -> argparse.Namespace:
         help="Path to installer executable (defaults to dist/PandratorInstaller.exe).",
     )
     parser.add_argument(
+        "-o",
         "--output-dir",
         default="release_packages",
         help="Output directory for generated zip archives (relative to release root unless absolute).",
@@ -944,7 +957,7 @@ def main() -> int:
         if not installer_script.exists():
             raise RuntimeError(f"Installer script not found: {installer_script}")
 
-        sources_root = Path(args.sources_root).expanduser().resolve()
+        sources_root = resolve_path_from_base(args.sources_root, release_root)
         sources_root.mkdir(parents=True, exist_ok=True)
 
         required_sources_for_prepare = list(required_source_names)
@@ -1094,14 +1107,15 @@ def main() -> int:
             raise RuntimeError(f"Block definition is missing for '{block_name}'.")
         ensure_required_markers(block)
 
-    cache_root = Path(args.cache_dir).expanduser().resolve()
-    staging_root = Path(args.staging_dir).expanduser().resolve()
-    output_root = Path(args.output_dir).expanduser().resolve()
+    cache_root = resolve_path_from_base(args.cache_dir, release_root)
+    staging_root = resolve_path_from_base(args.staging_dir, release_root)
+    output_root = resolve_path_from_base(args.output_dir, release_root)
     prefer_hardlinks = not args.no_hardlinks
 
     cache_root.mkdir(parents=True, exist_ok=True)
     staging_root.mkdir(parents=True, exist_ok=True)
     output_root.mkdir(parents=True, exist_ok=True)
+    print(f"Using output directory: {output_root}")
 
     cached_block_paths: Dict[str, Path] = {}
     for block_name in required_blocks:
