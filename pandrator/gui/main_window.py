@@ -48,7 +48,7 @@ class MainWindow(QMainWindow):
         self._create_tabs()
 
         self.logic.state_changed.connect(self.update_window_title)
-        self.logic.log_message.connect(self._on_log_message)
+        self.logic.app_notification.connect(self._on_app_notification)
         self.logic.show_error.connect(self._on_show_error)
         self.logic.dubbing_video_saved.connect(self._on_dubbing_video_saved)
         self.statusBar().showMessage("Ready", 3000)
@@ -79,9 +79,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"Pandrator - {self.logic.state.session_name}")
         self.session_tab.session_name_label.setText(self.logic.state.session_name)
 
-    def _on_log_message(self, message: str):
+    def _on_app_notification(self, message: str, timeout_ms: int = 5000):
         if message:
-            self.statusBar().showMessage(message, 5000)
+            self.statusBar().showMessage(message, max(0, int(timeout_ms or 0)))
 
     def _on_show_error(self, title: str, message: str):
         self.statusBar().showMessage(f"{title}: {message}", 12000)

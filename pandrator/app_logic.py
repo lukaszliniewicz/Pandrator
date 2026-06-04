@@ -82,6 +82,7 @@ class AppLogic(QObject):
     log_message = pyqtSignal(str)
     show_error = pyqtSignal(str, str)  # title, message
     dubbing_video_saved = pyqtSignal(object)  # list[str] output paths
+    app_notification = pyqtSignal(str, int)  # message, timeout_ms
     session_activity_updated = pyqtSignal(object)  # dict payload for session activity panel
     progress_updated = pyqtSignal(int, int, float) # current, total, elapsed_time
     xtts_training_running_changed = pyqtSignal(bool)
@@ -176,6 +177,21 @@ class AppLogic(QObject):
             DEFAULT_SESSION_ACTIVITY_SNAPSHOT["tone"],
         )
 
+    def _notify_user(self, message: str, timeout_ms: int = 5000, level: str = "info"):
+        normalized_message = str(message or "").strip()
+        if not normalized_message:
+            return
+
+        normalized_level = str(level or "info").strip().lower()
+        if normalized_level == "warning":
+            logging.warning(normalized_message)
+        elif normalized_level == "error":
+            logging.error(normalized_message)
+        else:
+            logging.info(normalized_message)
+
+        self.app_notification.emit(normalized_message, max(0, int(timeout_ms or 0)))
+
     def get_session_activity_snapshot(self) -> dict[str, str]:
         with self._state_lock:
             return copy.deepcopy(self._session_activity_snapshot)
@@ -231,6 +247,19 @@ class AppLogic(QObject):
     @staticmethod
     def _is_dubbing_source_extension(extension: str) -> bool:
         return extension in {".mp4", ".mkv", ".webm", ".avi", ".mov", ".srt"}
+
+    @classmethod
+    def _build_source_loaded_notification(cls, source_name: str, extension: str) -> str:
+        normalized_name = os.path.basename(str(source_name or "").strip()) or "source"
+        normalized_extension = str(extension or "").strip().lower()
+        if normalized_extension == ".srt":
+            return (
+                f"SRT source loaded: {normalized_name}. "
+                "Use 'Fine-Tune Timings (Subdub GUI)' to adjust subtitle boundaries."
+            )
+        if cls._is_dubbing_source_extension(normalized_extension):
+            return f"Dubbing source loaded: {normalized_name}"
+        return f"Source loaded: {normalized_name}"
 
     @staticmethod
     def _normalize_subtitle_sentence_text(text: str) -> str:
@@ -1150,7 +1179,7 @@ class AppLogic(QObject):
         except Exception:
             pass
         self._reset_session_activity()
-        self.log_message.emit(f"New session created: {session_name}")
+        self._notify_user(f"New session created: {session_name}")
         self.state_changed.emit()
 
     def load_session(self, session_name: str):
@@ -1267,7 +1296,7 @@ class AppLogic(QObject):
         except Exception:
             pass
         self._reset_session_activity()
-        self.log_message.emit(f"Session loaded: {session_name}")
+        self._notify_user(f"Session loaded: {session_name}")
         self.state_changed.emit()
 
     def delete_session(self, session_name: str):
@@ -1281,7 +1310,7 @@ class AppLogic(QObject):
             return
 
         if session_handler.delete_session(session_name):
-            self.log_message.emit(f"Session '{session_name}' deleted.")
+            self._notify_user(f"Session '{session_name}' deleted.")
             # Reset state if the deleted session was the active one
             if self.state.session_name == session_name:
                 current_tts_state = self.state.tts
@@ -1406,7 +1435,7 @@ class AppLogic(QObject):
         ]
         script_path = next((candidate for candidate in script_candidates if os.path.isfile(candidate)), "")
         if not script_path:
-            self.log_message.emit("PyCropPDF not found. Continuing with the original PDF.")
+            self._notify_user("PyCropPDF not found. Continuing with the original PDF.", level="warning")
             return pdf_file_path
 
         source_dir = os.path.dirname(pdf_file_path)
@@ -1415,7 +1444,7 @@ class AppLogic(QObject):
         cropped_path = os.path.join(source_dir, cropped_filename)
 
         try:
-            self.log_message.emit("Opening PyCropPDF. Save and close it when finished.")
+            self._notify_user("Opening PyCropPDF. Save and close it when finished.")
             process = subprocess.Popen(
                 [
                     sys.executable,
@@ -1436,10 +1465,10 @@ class AppLogic(QObject):
             return pdf_file_path
 
         if os.path.exists(cropped_path) and os.path.getsize(cropped_path) > 0:
-            self.log_message.emit(f"Using cropped PDF: {cropped_path}")
+            self._notify_user(f"Using cropped PDF: {cropped_path}")
             return cropped_path
 
-        self.log_message.emit("No cropped PDF was saved. Using the original PDF.")
+        self._notify_user("No cropped PDF was saved. Using the original PDF.", level="warning")
         return pdf_file_path
 
     def select_source_file(self, file_path: str, reset_session: bool = False) -> bool:
@@ -1467,7 +1496,7 @@ class AppLogic(QObject):
                 source_path_to_load, staging_cleanup_path = self._stage_source_file_for_session_reset(file_path)
                 self._reset_active_session_for_source_change()
                 reset_applied = True
-                self.log_message.emit("Cleared existing session artifacts before loading a new source.")
+                self._notify_user("Cleared existing session artifacts before loading a new source.")
 
             session_file_path = self._ensure_session_file_copy(source_path_to_load)
             self.state.source_file_path = session_file_path
@@ -1512,10 +1541,6 @@ class AppLogic(QObject):
                 raw_text = ""
                 if ext in [".mp4", ".mkv", ".webm", ".avi", ".mov"]:
                     self.state.dubbing.video_file_path = session_file_path
-                elif ext == ".srt":
-                    self.log_message.emit(
-                        "SRT source loaded. Use 'Fine-Tune Timings (Subdub GUI)' to adjust subtitle boundaries."
-                    )
             else:
                 raise ValueError(f"Unsupported source file type: {ext or 'unknown'}")
 
@@ -1540,6 +1565,9 @@ class AppLogic(QObject):
                 )
             else:
                 self._reset_session_activity()
+
+            selected_source_name = os.path.basename(self.state.source_file_path or session_file_path)
+            self._notify_user(self._build_source_loaded_notification(selected_source_name, ext))
 
             self._persist_session_config(force=True)
             if self._is_dubbing_source_selected():
@@ -1614,7 +1642,7 @@ class AppLogic(QObject):
                 "The edited text is saved. Start generation when you're ready.",
                 "idle",
             )
-            self.log_message.emit(f"Reviewed text saved: {edited_file_path}")
+            self._notify_user(f"Reviewed text saved: {os.path.basename(edited_file_path)}")
             self._persist_session_config(force=True)
             self.state_changed.emit()
             return True
@@ -1633,7 +1661,7 @@ class AppLogic(QObject):
         self.state.pdf_preprocessed = False
         self._set_processed_sentences_snapshot([])
         self._reset_session_activity()
-        self.log_message.emit("Source file selection cleared.")
+        self._notify_user("Source file selection cleared.")
         self._persist_session_config(force=True)
         self.state_changed.emit()
 
@@ -1651,12 +1679,12 @@ class AppLogic(QObject):
         try:
             if reset_session:
                 self._reset_active_session_for_source_change()
-                self.log_message.emit("Cleared existing session artifacts before loading pasted text.")
+                self._notify_user("Cleared existing session artifacts before loading pasted text.")
 
             file_path = file_handler.save_pasted_text(text, session_dir, mark_paragraphs)
             # This re-uses the file selection logic to load the text and update the UI
             if self.select_source_file(file_path):
-                self.log_message.emit("Pasted text saved and loaded.")
+                self._notify_user("Pasted text saved and loaded.")
         except Exception as e:
             logging.error(f"Failed to save pasted text: {e}", exc_info=True)
             self.show_error.emit("Paste Error", f"Could not save pasted text: {e}")
@@ -1664,7 +1692,7 @@ class AppLogic(QObject):
     def select_cover_image(self, file_path: str):
         """Updates the cover image path in the state."""
         self.state.cover_image_path = file_path
-        self.log_message.emit(f"Cover image selected: {file_path}")
+        self._notify_user(f"Cover image selected: {os.path.basename(file_path)}")
         self._persist_session_config(force=True)
         self.state_changed.emit()
 
@@ -1684,7 +1712,7 @@ class AppLogic(QObject):
             if self._is_named_session_active():
                 self._ensure_dubbing_run_for_task("transcribe")
                 self._register_dubbing_artifact("video_source", session_video_path, is_current=True)
-            self.log_message.emit(f"Dubbing video file selected: {session_video_path}")
+            self._notify_user(f"Dubbing video selected: {os.path.basename(session_video_path)}")
             self._persist_session_config(force=True)
             self.state_changed.emit()
         except Exception as e:
@@ -1702,12 +1730,12 @@ class AppLogic(QObject):
             return
 
         def thread_target():
-            self.log_message.emit(f"Starting download from {url}...")
+            self._notify_user("Starting source download...")
             session_dir = session_handler.get_session_path(self.state.session_name)
             os.makedirs(session_dir, exist_ok=True)
             try:
                 video_path = file_handler.download_video_from_url(url, session_dir)
-                self.log_message.emit(f"Download complete: {video_path}")
+                self._notify_user(f"Download complete: {os.path.basename(video_path)}")
                 self._download_source_ready.emit(video_path, bool(reset_session))
             except Exception as e:
                 logging.error(f"Failed to download from URL: {e}", exc_info=True)
@@ -1797,6 +1825,11 @@ class AppLogic(QObject):
         if not video_source or not os.path.exists(video_source):
             return None
 
+        self._set_session_activity(
+            "Preparing timing editor",
+            "Extracting an audio reference from the selected video before opening the timing editor.",
+            "active",
+        )
         self.log_message.emit("No session audio found for timing correction. Extracting audio from video...")
         audio_file = subdub_handler.extract_audio_for_manual_correction(video_source, session_dir)
         if audio_file and os.path.exists(audio_file):
@@ -2047,7 +2080,10 @@ class AppLogic(QObject):
     ):
         """Runs a dubbing-related task like transcribe, translate, etc., in a background thread."""
         if self.is_generation_or_regeneration_running():
-            self.log_message.emit("Cannot run dubbing tasks while generation/regeneration is active.")
+            self._notify_user(
+                "Cannot run dubbing tasks while generation or regeneration is active.",
+                level="warning",
+            )
             return
 
         self.normalize_dubbing_translation_state(self.state.dubbing)
@@ -2829,17 +2865,23 @@ class AppLogic(QObject):
             return
 
         if self._is_generation_running():
-            self.log_message.emit("Generation is already running.")
+            self._notify_user("Generation is already running.", level="warning")
             self._clear_pending_dubbing_add_to_video_request()
             return
 
         if self._is_regeneration_running():
-            self.log_message.emit("Wait for sentence regeneration to finish before starting full generation.")
+            self._notify_user(
+                "Wait for sentence regeneration to finish before starting full generation.",
+                level="warning",
+            )
             self._clear_pending_dubbing_add_to_video_request()
             return
 
         if self._is_rvc_processing_running():
-            self.log_message.emit("Wait for RVC sentence processing to finish before starting full generation.")
+            self._notify_user(
+                "Wait for RVC sentence processing to finish before starting full generation.",
+                level="warning",
+            )
             self._clear_pending_dubbing_add_to_video_request()
             return
         
@@ -2870,15 +2912,21 @@ class AppLogic(QObject):
     def stop_generation(self):
         """Stops the audio generation worker thread after the current sentence."""
         if not self._is_generation_running():
-            self.log_message.emit("No generation is currently running.")
+            self._notify_user("No generation is currently running.", level="warning")
             return
 
         if self.cancel_generation_flag.is_set():
-            self.log_message.emit("Cancellation already requested. Waiting for current sentence to finish.")
+            self._notify_user(
+                "Cancellation already requested. Waiting for the current sentence to finish.",
+                level="warning",
+            )
             return
 
         if self.stop_generation_flag.is_set():
-            self.log_message.emit("Stop already requested. Waiting for current sentence to finish.")
+            self._notify_user(
+                "Stop already requested. Waiting for the current sentence to finish.",
+                level="warning",
+            )
             return
 
         self._set_session_activity(
@@ -2893,11 +2941,11 @@ class AppLogic(QObject):
     def cancel_generation(self):
         """Cancels generation and cleans up generated files."""
         if not self._is_generation_running():
-            self.log_message.emit("No generation is currently running to cancel.")
+            self._notify_user("No generation is currently running to cancel.", level="warning")
             return
 
         if self.cancel_generation_flag.is_set():
-            self.log_message.emit("Cancellation already requested. Waiting for cleanup.")
+            self._notify_user("Cancellation already requested. Waiting for cleanup.", level="warning")
             return
 
         self._set_session_activity(
@@ -3184,7 +3232,7 @@ class AppLogic(QObject):
         self.state.metadata = metadata
         try:
             session_handler.save_metadata(self.state.session_name, self.state.metadata)
-            self.log_message.emit("Metadata saved.")
+            self._notify_user("Metadata saved.")
         except Exception as e:
             self.show_error.emit("Metadata Error", f"Could not save metadata: {e}")
 
@@ -3275,7 +3323,7 @@ class AppLogic(QObject):
     def connect_tts_server(self):
         """Starts a non-blocking connect attempt for the active TTS service."""
         if self.is_tts_connection_running():
-            self.log_message.emit("TTS connection is already in progress.")
+            self._notify_user("TTS connection is already in progress.", level="warning")
             return
 
         tts_snapshot = copy.deepcopy(self.state.tts.__dict__)
@@ -3659,7 +3707,7 @@ class AppLogic(QObject):
                     log_message,
                     "success",
                 )
-                self.log_message.emit(log_message)
+                self._notify_user(log_message, timeout_ms=4000)
 
             error_message = result.get("error_message")
             if error_message:
@@ -3982,20 +4030,20 @@ class AppLogic(QObject):
     def play_audio_file(self, audio_path: str) -> bool:
         normalized_path = str(audio_path or "").strip()
         if not normalized_path or not os.path.isfile(normalized_path):
-            self.log_message.emit("Preview file is missing and cannot be played.")
+            self._notify_user("Preview file is missing and cannot be played.", level="warning")
             return False
 
         self.stop_playback()
         playback_handler = self._ensure_playback_handler()
         if playback_handler is None:
-            self.log_message.emit("Audio playback is unavailable.")
+            self._notify_user("Audio playback is unavailable.", level="warning")
             return False
 
         if playback_handler.play(normalized_path):
             self.playlist_timer.start()
             return True
 
-        self.log_message.emit(f"Failed to play preview audio: {normalized_path}")
+        self._notify_user(f"Failed to play preview audio: {os.path.basename(normalized_path)}", level="warning")
         return False
 
     def set_tts_speaker_voice(self, speaker_name: str):
@@ -4130,7 +4178,7 @@ class AppLogic(QObject):
                     service=service,
                     voice_id=voice_name,
                 )
-                self.log_message.emit(
+                self._notify_user(
                     f"Uploaded XTTS voice: {speaker_name} ({len(sample_paths)} sample(s))"
                 )
             else:
@@ -4174,11 +4222,11 @@ class AppLogic(QObject):
                 else:
                     prompt_note = "no prompt text"
                 if service == "VoxCPM":
-                    self.log_message.emit(
+                    self._notify_user(
                         f"Uploaded VoxCPM voice: {speaker_name} ({upload_mode} mode, {prompt_note})"
                     )
                 else:
-                    self.log_message.emit(f"Uploaded FishS2 voice: {speaker_name} ({prompt_note})")
+                    self._notify_user(f"Uploaded FishS2 voice: {speaker_name} ({prompt_note})")
 
             self.state.tts.speaker = speaker_name
             if normalized_voice_language_code:
@@ -4231,12 +4279,12 @@ class AppLogic(QObject):
                 mode=upload_mode,
             )
             if service == "VoxCPM":
-                self.log_message.emit(f"Uploaded VoxCPM voice: {speaker_name} ({upload_mode} mode)")
+                self._notify_user(f"Uploaded VoxCPM voice: {speaker_name} ({upload_mode} mode)")
             elif service == "FishS2":
                 transcript_note = "with transcript" if upload_prompt_text else "without transcript"
-                self.log_message.emit(f"Uploaded FishS2 voice: {speaker_name} ({transcript_note})")
+                self._notify_user(f"Uploaded FishS2 voice: {speaker_name} ({transcript_note})")
             else:
-                self.log_message.emit(f"Uploaded {service} voice: {speaker_name}")
+                self._notify_user(f"Uploaded {service} voice: {speaker_name}")
             self.state.tts.speaker = speaker_name
             self.state_changed.emit()
             self.connect_tts_server()
@@ -4440,7 +4488,7 @@ class AppLogic(QObject):
 
         connected, message = tts_handler.check_openai_audio_connection(tts_snapshot)
         if connected:
-            self.log_message.emit(message)
+            self._notify_user(message, timeout_ms=4000)
         return connected, message
 
     def discover_tts_provider_catalog(
@@ -4506,7 +4554,7 @@ class AppLogic(QObject):
         normalized_value = (key_value or "").strip()
         try:
             config_handler.save_api_key(key_name, normalized_value)
-            self.log_message.emit(f"Saved API key: {key_name}")
+            self._notify_user(f"Saved API key: {key_name}")
             return True
         except Exception as e:
             self.show_error.emit("API Key Error", f"Could not save API key {key_name}: {e}")
@@ -4519,7 +4567,10 @@ class AppLogic(QObject):
     # --- Sentence Management ---
     def update_sentence_text(self, sentence_number: str, new_text: str):
         if self._is_generation_or_regeneration_running():
-            self.log_message.emit("Cannot edit sentences while generation/regeneration/RVC processing is running.")
+            self._notify_user(
+                "Cannot edit sentences while generation, regeneration, or RVC processing is running.",
+                level="warning",
+            )
             return
 
         if session_handler.update_sentence(self.state.session_name, sentence_number, new_text):
@@ -4536,7 +4587,10 @@ class AppLogic(QObject):
 
     def mark_sentence(self, sentence_number: str, marked: bool):
         if self._is_generation_or_regeneration_running():
-            self.log_message.emit("Cannot change marked status while generation/regeneration/RVC processing is running.")
+            self._notify_user(
+                "Cannot change marked status while generation, regeneration, or RVC processing is running.",
+                level="warning",
+            )
             return
 
         if session_handler.update_sentence_marked_status(self.state.session_name, sentence_number, marked):
@@ -4549,7 +4603,10 @@ class AppLogic(QObject):
 
     def remove_sentences(self, sentence_numbers: list[str]):
         if self._is_generation_or_regeneration_running():
-            self.log_message.emit("Cannot remove sentences while generation/regeneration/RVC processing is running.")
+            self._notify_user(
+                "Cannot remove sentences while generation, regeneration, or RVC processing is running.",
+                level="warning",
+            )
             return
 
         if session_handler.remove_sentences(self.state.session_name, sentence_numbers):
@@ -4576,7 +4633,7 @@ class AppLogic(QObject):
 
         playback_handler = self._ensure_playback_handler()
         if playback_handler is None:
-            self.log_message.emit("Audio playback is unavailable.")
+            self._notify_user("Audio playback is unavailable.", level="warning")
             if not keep_playlist_state:
                 self._set_current_playing_sentence(None)
             return False
@@ -4584,7 +4641,7 @@ class AppLogic(QObject):
         wav_path = self._find_sentence_wav_path(sentence_number)
 
         if not wav_path:
-            self.log_message.emit(f"Audio file not found for sentence {sentence_number}")
+            self._notify_user(f"Audio file not found for sentence {sentence_number}.", level="warning")
             if not keep_playlist_state:
                 self._set_current_playing_sentence(None)
             return False
@@ -4594,7 +4651,7 @@ class AppLogic(QObject):
             self.playlist_timer.start()
             return True
 
-        self.log_message.emit(f"Failed to play audio for sentence {sentence_number}")
+        self._notify_user(f"Failed to play audio for sentence {sentence_number}.", level="warning")
         if not keep_playlist_state:
             self._set_current_playing_sentence(None)
         return False
@@ -4620,7 +4677,7 @@ class AppLogic(QObject):
             s for s in all_sentences if s.get('tts_generated') == 'yes'
         ]
         if not self.playlist_sentences:
-            self.log_message.emit("No generated audio to play.")
+            self._notify_user("No generated audio is available to play.", level="warning")
             return
 
         self.current_playlist_index = 0
@@ -4658,7 +4715,7 @@ class AppLogic(QObject):
         if self._play_current_playlist_item():
             self.playlist_timer.start()
         else:
-            self.log_message.emit("No playable audio found in playlist.")
+            self._notify_user("No playable audio found in playlist.", level="warning")
             self.stop_playback()
 
     def _refresh_playlist_sentences(self, last_played_sentence_number: str | None = None):
@@ -4765,7 +4822,7 @@ class AppLogic(QObject):
                     f"Final output saved to {os.path.basename(output_path)}.",
                     "success",
                 )
-                self.log_message.emit(f"Output file saved to {output_path}")
+                self._notify_user(f"Output file saved: {os.path.basename(output_path)}")
             else:
                 self._set_session_activity(
                     "Final output save failed",
@@ -4790,7 +4847,7 @@ class AppLogic(QObject):
         if self._is_named_session_active():
             self._persist_session_config(force=True)
 
-        self.log_message.emit(
+        self._notify_user(
             "Saved XTTS advanced defaults. Only parameters marked 'Send' are applied per request."
         )
 
@@ -4823,7 +4880,7 @@ class AppLogic(QObject):
     def start_xtts_training(self, settings: dict):
         """Starts the XTTS training process in a background thread."""
         if self._is_xtts_training_running():
-            self.log_message.emit("XTTS training is already running.")
+            self._notify_user("XTTS training is already running.", level="warning")
             return
 
         setup_ok, setup_message = xtts_trainer_handler.validate_training_environment()
@@ -4891,23 +4948,38 @@ class AppLogic(QObject):
     def regenerate_sentences(self, sentence_numbers: list[str]):
         """Regenerates audio for a list of sentence numbers."""
         if self._is_generation_running():
-            self.log_message.emit("Cannot regenerate sentences while full generation is running.")
+            self._notify_user(
+                "Wait for full generation to finish before regenerating selected sentences.",
+                level="warning",
+            )
             return
 
         if self._is_regeneration_running():
-            self.log_message.emit("Sentence regeneration is already running.")
+            self._notify_user("Sentence regeneration is already running.", level="warning")
             return
 
         if self._is_rvc_processing_running():
-            self.log_message.emit("Cannot regenerate sentences while RVC sentence processing is running.")
+            self._notify_user(
+                "Wait for RVC sentence processing to finish before regenerating sentences.",
+                level="warning",
+            )
             return
 
-        if not sentence_numbers:
-            self.log_message.emit("No sentence numbers provided for regeneration.")
+        normalized_numbers: list[str] = []
+        seen_numbers: set[str] = set()
+        for sentence_number in sentence_numbers:
+            normalized = str(sentence_number or "").strip()
+            if not normalized or normalized in seen_numbers:
+                continue
+            seen_numbers.add(normalized)
+            normalized_numbers.append(normalized)
+
+        if not normalized_numbers:
+            self._notify_user("Select at least one sentence to regenerate.", level="warning")
             return
 
         self.stop_playback()
-        self.regeneration_thread = self._run_threaded_task(self._regenerate_sentences_thread, sentence_numbers)
+        self.regeneration_thread = self._run_threaded_task(self._regenerate_sentences_thread, normalized_numbers)
         self.state_changed.emit()
 
     def _regenerate_sentences_thread(self, sentence_numbers: list[str]):
@@ -4915,6 +4987,15 @@ class AppLogic(QObject):
         worker_thread = threading.current_thread()
         try:
             total = len(sentence_numbers)
+            regenerated_count = 0
+            skipped_count = 0
+            start_time = time.time()
+            self.progress_updated.emit(0, max(total, 1), 0.0)
+            self._set_session_activity(
+                "Regenerating audio",
+                f"Updating {total} selected sentence(s).",
+                "active",
+            )
             self.log_message.emit(f"Starting regeneration for {total} sentence(s).")
             processed_sentences = self.get_processed_sentences_snapshot()
             sentence_index_map = {
@@ -4922,27 +5003,54 @@ class AppLogic(QObject):
                 for index, sentence in enumerate(processed_sentences)
             }
 
-            for i, num in enumerate(sentence_numbers):
-                self.log_message.emit(f"Regenerating sentence {i+1}/{total} (Number: {num})...")
+            for i, num in enumerate(sentence_numbers, start=1):
+                self._set_session_activity(
+                    "Regenerating audio",
+                    f"Rendering selected sentence {i} of {total} (Sentence {num}).",
+                    "active",
+                )
+                self.log_message.emit(f"Regenerating sentence {i}/{total} (Number: {num})...")
 
                 sentence_index = sentence_index_map.get(str(num))
                 if sentence_index is None:
                     self.log_message.emit(f"Could not find sentence {num} to regenerate.")
+                    skipped_count += 1
+                    self.progress_updated.emit(i, total, time.time() - start_time)
                     continue
 
                 sentence_dict = processed_sentences[sentence_index]
                 success, updated_sentence = self._execute_generation_for_sentence(sentence_dict)
                 if not success or updated_sentence is None:
+                    self._set_session_activity(
+                        "Regeneration failed",
+                        f"Sentence {num} could not be regenerated.",
+                        "error",
+                    )
                     self.show_error.emit("Regeneration Failed", f"Failed to regenerate audio for sentence {num}. See logs.")
-                    break # Stop on first error
+                    return
 
                 processed_sentences[sentence_index] = updated_sentence
+                regenerated_count += 1
                 self._set_processed_sentences_snapshot(processed_sentences)
                 self.state_changed.emit()
+                self.progress_updated.emit(i, total, time.time() - start_time)
 
+            summary_parts = [f"Regenerated {regenerated_count} sentence(s)."]
+            if skipped_count:
+                summary_parts.append(f"Skipped {skipped_count} unavailable sentence(s).")
+            self._set_session_activity(
+                "Regeneration finished",
+                " ".join(summary_parts),
+                "success" if skipped_count == 0 else "warning",
+            )
             self.log_message.emit("Regeneration finished.")
         except Exception as e:
             logging.error("Unexpected regeneration worker error: %s", e, exc_info=True)
+            self._set_session_activity(
+                "Regeneration failed",
+                f"Unexpected regeneration failure: {e}",
+                "error",
+            )
             self.show_error.emit("Regeneration Error", f"Unexpected regeneration failure: {e}")
         finally:
             if self.regeneration_thread is worker_thread:
@@ -4952,15 +5060,21 @@ class AppLogic(QObject):
     def process_sentences_with_rvc(self, sentence_numbers: list[str]):
         """Applies RVC to existing generated sentence WAV files without regenerating TTS."""
         if self._is_generation_running():
-            self.log_message.emit("Cannot process with RVC while full generation is running.")
+            self._notify_user(
+                "Wait for full generation to finish before starting RVC sentence processing.",
+                level="warning",
+            )
             return
 
         if self._is_regeneration_running():
-            self.log_message.emit("Cannot process with RVC while sentence regeneration is running.")
+            self._notify_user(
+                "Wait for sentence regeneration to finish before starting RVC processing.",
+                level="warning",
+            )
             return
 
         if self._is_rvc_processing_running():
-            self.log_message.emit("RVC sentence processing is already running.")
+            self._notify_user("RVC sentence processing is already running.", level="warning")
             return
 
         if not self.is_rvc_available():
@@ -4983,7 +5097,7 @@ class AppLogic(QObject):
             normalized_numbers.append(normalized)
 
         if not normalized_numbers:
-            self.log_message.emit("No valid sentence numbers were provided for RVC processing.")
+            self._notify_user("Select at least one valid sentence for RVC processing.", level="warning")
             return
 
         self.stop_playback()
@@ -5002,6 +5116,13 @@ class AppLogic(QObject):
 
         try:
             total = len(sentence_numbers)
+            start_time = time.time()
+            self.progress_updated.emit(0, max(total, 1), 0.0)
+            self._set_session_activity(
+                "Applying RVC processing",
+                f"Processing {total} selected sentence(s) with the active RVC model.",
+                "active",
+            )
             self.log_message.emit(f"Starting RVC processing for {total} sentence(s).")
             processed_sentences = self.get_processed_sentences_snapshot()
             sentence_index_map = {
@@ -5010,22 +5131,30 @@ class AppLogic(QObject):
             }
 
             for i, num in enumerate(sentence_numbers, start=1):
+                self._set_session_activity(
+                    "Applying RVC processing",
+                    f"Processing selected sentence {i} of {total} (Sentence {num}).",
+                    "active",
+                )
                 sentence_index = sentence_index_map.get(str(num))
                 if sentence_index is None:
                     self.log_message.emit(f"Skipping sentence {num}; it no longer exists.")
                     skipped_count += 1
+                    self.progress_updated.emit(i, total, time.time() - start_time)
                     continue
 
                 sentence_dict = processed_sentences[sentence_index]
                 if sentence_dict.get("tts_generated") != "yes":
                     self.log_message.emit(f"Skipping sentence {num}; no generated audio is available yet.")
                     skipped_count += 1
+                    self.progress_updated.emit(i, total, time.time() - start_time)
                     continue
 
                 wav_path = self._find_sentence_wav_path(str(num))
                 if not wav_path:
                     self.log_message.emit(f"Skipping sentence {num}; WAV file is missing.")
                     skipped_count += 1
+                    self.progress_updated.emit(i, total, time.time() - start_time)
                     continue
 
                 self.log_message.emit(f"Processing sentence {i}/{total} with RVC (Number: {num})...")
@@ -5044,12 +5173,27 @@ class AppLogic(QObject):
                     )
                     self.log_message.emit(f"Failed RVC processing for sentence {num}; see logs for details.")
                     skipped_count += 1
+                finally:
+                    self.progress_updated.emit(i, total, time.time() - start_time)
 
+            summary_parts = [f"Processed {processed_count} sentence(s)."]
+            if skipped_count:
+                summary_parts.append(f"Skipped {skipped_count} sentence(s) that were unavailable.")
+            self._set_session_activity(
+                "RVC processing finished",
+                " ".join(summary_parts),
+                "success" if skipped_count == 0 else "warning",
+            )
             self.log_message.emit(
                 f"RVC processing finished. Processed {processed_count} sentence(s), skipped {skipped_count}."
             )
         except Exception as e:
             logging.error("Unexpected RVC processing worker error: %s", e, exc_info=True)
+            self._set_session_activity(
+                "RVC processing failed",
+                f"Unexpected RVC processing failure: {e}",
+                "error",
+            )
             self.show_error.emit("RVC Processing Error", f"Unexpected RVC processing failure: {e}")
         finally:
             if self.rvc_processing_thread is worker_thread:
