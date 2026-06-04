@@ -2,7 +2,7 @@ import os
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout,
-    QTabWidget, QSplitter, QScrollArea, QMessageBox, QLabel
+    QTabWidget, QSplitter, QScrollArea, QMessageBox
 )
 from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtGui import QDesktopServices, QKeyEvent
@@ -20,8 +20,6 @@ class MainWindow(QMainWindow):
     def __init__(self, logic, parent=None):
         super().__init__(parent)
         self.logic = logic
-        self._last_training_status = ""
-        self._last_training_progress = 0
 
         self.setWindowTitle("Pandrator")
         self.resize(1600, 900)
@@ -53,16 +51,7 @@ class MainWindow(QMainWindow):
         self.logic.log_message.connect(self._on_log_message)
         self.logic.show_error.connect(self._on_show_error)
         self.logic.dubbing_video_saved.connect(self._on_dubbing_video_saved)
-        self.logic.progress_updated.connect(self._on_generation_progress_updated)
-        self.logic.xtts_training_running_changed.connect(self._on_training_running_changed)
-        self.logic.xtts_training_status_updated.connect(self._on_training_status_updated)
-        self.logic.xtts_training_progress_updated.connect(self._on_training_progress_updated)
-        self.logic.tts_connection_running_changed.connect(self._on_tts_connection_running_changed)
-
-        self.activity_status_label = QLabel("Idle")
-        self.statusBar().addPermanentWidget(self.activity_status_label)
         self.statusBar().showMessage("Ready", 3000)
-        self._refresh_activity_status()
 
     def _create_tabs(self):
         self.session_tab = SessionTab(self.logic)
@@ -89,7 +78,6 @@ class MainWindow(QMainWindow):
     def update_window_title(self):
         self.setWindowTitle(f"Pandrator - {self.logic.state.session_name}")
         self.session_tab.session_name_label.setText(self.logic.state.session_name)
-        self._refresh_activity_status()
 
     def _on_log_message(self, message: str):
         if message:
@@ -151,61 +139,6 @@ class MainWindow(QMainWindow):
                 "Open File Failed",
                 f"Could not open the saved file:\n{selected_path}",
             )
-
-    def _on_generation_progress_updated(self, current: int, total: int, _elapsed: float):
-        if total <= 0:
-            return
-
-        progress_percent = int((current / total) * 100)
-        self.activity_status_label.setText(
-            f"Generation {current}/{total} ({progress_percent}%)"
-        )
-
-    def _on_training_running_changed(self, running: bool):
-        if running:
-            self._last_training_progress = 0
-        else:
-            self._last_training_status = ""
-            self._last_training_progress = 0
-
-        self._refresh_activity_status()
-
-    def _on_training_status_updated(self, message: str):
-        self._last_training_status = message or ""
-        self._refresh_activity_status()
-
-    def _on_training_progress_updated(self, progress: int):
-        self._last_training_progress = max(0, min(100, int(progress)))
-        self._refresh_activity_status()
-
-    def _on_tts_connection_running_changed(self, running: bool):
-        if running:
-            self.activity_status_label.setText("Connecting TTS...")
-        else:
-            self._refresh_activity_status()
-
-    def _refresh_activity_status(self):
-        if self.logic.is_tts_connection_running():
-            self.activity_status_label.setText("Connecting TTS...")
-            return
-
-        if self.logic.is_xtts_training_running():
-            status = self._last_training_status or "Training in progress..."
-            if self._last_training_progress > 0:
-                self.activity_status_label.setText(f"XTTS {self._last_training_progress}% - {status}")
-            else:
-                self.activity_status_label.setText(f"XTTS - {status}")
-            return
-
-        lifecycle_status = self.logic.get_lifecycle_status()
-        if lifecycle_status == "Generating" and self.activity_status_label.text().startswith("Generation "):
-            return
-
-        if lifecycle_status == "Processing Text":
-            self.activity_status_label.setText("Processing text...")
-            return
-
-        self.activity_status_label.setText(lifecycle_status)
 
     def keyPressEvent(self, event: QKeyEvent):
         if event.key() == Qt.Key.Key_M:

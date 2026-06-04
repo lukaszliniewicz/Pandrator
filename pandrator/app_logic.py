@@ -65,6 +65,12 @@ KNOWN_LITELLM_PROVIDER_KEYS = {
     "bedrock",
 }
 
+DEFAULT_SESSION_ACTIVITY_SNAPSHOT = {
+    "headline": "Ready",
+    "detail": "Add a source and start generation when you're ready.",
+    "tone": "idle",
+}
+
 
 class AppLogic(QObject):
     """
@@ -76,6 +82,7 @@ class AppLogic(QObject):
     log_message = pyqtSignal(str)
     show_error = pyqtSignal(str, str)  # title, message
     dubbing_video_saved = pyqtSignal(object)  # list[str] output paths
+    session_activity_updated = pyqtSignal(object)  # dict payload for session activity panel
     progress_updated = pyqtSignal(int, int, float) # current, total, elapsed_time
     xtts_training_running_changed = pyqtSignal(bool)
     xtts_training_status_updated = pyqtSignal(str)
@@ -102,6 +109,7 @@ class AppLogic(QObject):
         self._text_preprocessing_running = False
         self._pending_dubbing_add_to_video_request: dict[str, object] | None = None
         self._active_dubbing_run_id: str | None = None
+        self._session_activity_snapshot = copy.deepcopy(DEFAULT_SESSION_ACTIVITY_SNAPSHOT)
         self.stop_generation_flag = threading.Event()
         self.cancel_generation_flag = threading.Event()
         self._loaded_llm_model = None
@@ -139,6 +147,53 @@ class AppLogic(QObject):
     def set_log_file_path(self, path: str):
         """Sets the path to the log file."""
         self.log_file_path = path
+
+    @staticmethod
+    def _normalize_session_activity_tone(tone: str) -> str:
+        normalized_tone = str(tone or "").strip().lower()
+        if normalized_tone not in {"idle", "active", "success", "warning", "error"}:
+            return "idle"
+        return normalized_tone
+
+    def _set_session_activity(self, headline: str, detail: str = "", tone: str = "idle"):
+        snapshot = {
+            "headline": str(headline or "").strip() or DEFAULT_SESSION_ACTIVITY_SNAPSHOT["headline"],
+            "detail": str(detail or "").strip(),
+            "tone": self._normalize_session_activity_tone(tone),
+        }
+
+        with self._state_lock:
+            if snapshot == self._session_activity_snapshot:
+                return
+            self._session_activity_snapshot = snapshot
+
+        self.session_activity_updated.emit(copy.deepcopy(snapshot))
+
+    def _reset_session_activity(self):
+        self._set_session_activity(
+            DEFAULT_SESSION_ACTIVITY_SNAPSHOT["headline"],
+            DEFAULT_SESSION_ACTIVITY_SNAPSHOT["detail"],
+            DEFAULT_SESSION_ACTIVITY_SNAPSHOT["tone"],
+        )
+
+    def get_session_activity_snapshot(self) -> dict[str, str]:
+        with self._state_lock:
+            return copy.deepcopy(self._session_activity_snapshot)
+
+    def get_active_dubbing_step_states(self) -> dict[str, str]:
+        if not self._is_named_session_active():
+            return {}
+
+        run = self._synchronize_active_dubbing_run()
+        run_id = str(run.get("run_id") or "") if run else ""
+        if not run_id:
+            return {}
+
+        return {
+            str(step.get("step_key") or ""): str(step.get("status") or "pending")
+            for step in state_db_handler.get_dubbing_steps(run_id)
+            if str(step.get("step_key") or "").strip()
+        }
 
     def _initialize_state_index(self):
         """Initializes SQLite state and reindexes any on-disk sessions."""
@@ -339,6 +394,8 @@ class AppLogic(QObject):
                 state_db_handler.update_dubbing_run_status(run_id, run_status)
         except Exception as e:
             logging.warning("Could not record dubbing step '%s' (%s): %s", step_key, status, e)
+        else:
+            self.state_changed.emit()
 
     def _get_dubbing_work_dir(self, ensure_exists: bool = False) -> str:
         run = self._synchronize_active_dubbing_run()
@@ -1092,6 +1149,7 @@ class AppLogic(QObject):
             state_db_handler.reindex_session(session_name)
         except Exception:
             pass
+        self._reset_session_activity()
         self.log_message.emit(f"New session created: {session_name}")
         self.state_changed.emit()
 
@@ -1208,6 +1266,7 @@ class AppLogic(QObject):
             state_db_handler.reindex_session(session_name)
         except Exception:
             pass
+        self._reset_session_activity()
         self.log_message.emit(f"Session loaded: {session_name}")
         self.state_changed.emit()
 
@@ -1236,6 +1295,7 @@ class AppLogic(QObject):
                 self._active_dubbing_run_id = None
                 self._last_session_config_snapshot = ""
                 self._persist_global_settings(force=True)
+                self._reset_session_activity()
                 self.state_changed.emit()
         else:
             self.show_error.emit("Error", f"Could not delete session '{session_name}'.")
@@ -1467,6 +1527,19 @@ class AppLogic(QObject):
             self.state.raw_text = raw_text
             if raw_text:
                 self.log_message.emit("Text extracted successfully.")
+                self._set_session_activity(
+                    "Source ready",
+                    "The text source is loaded. Start generation when you're ready.",
+                    "idle",
+                )
+            elif self._is_dubbing_source_selected():
+                self._set_session_activity(
+                    "Dubbing source ready",
+                    "The dubbing source is loaded. Run a dubbing step or generate dubbing audio when you're ready.",
+                    "idle",
+                )
+            else:
+                self._reset_session_activity()
 
             self._persist_session_config(force=True)
             if self._is_dubbing_source_selected():
@@ -1536,6 +1609,11 @@ class AppLogic(QObject):
             self.state.pdf_preprocessed = mark_pdf_preprocessed
             self._set_processed_sentences_snapshot([])
 
+            self._set_session_activity(
+                "Reviewed text ready",
+                "The edited text is saved. Start generation when you're ready.",
+                "idle",
+            )
             self.log_message.emit(f"Reviewed text saved: {edited_file_path}")
             self._persist_session_config(force=True)
             self.state_changed.emit()
@@ -1554,6 +1632,7 @@ class AppLogic(QObject):
         self.state.raw_text = ""
         self.state.pdf_preprocessed = False
         self._set_processed_sentences_snapshot([])
+        self._reset_session_activity()
         self.log_message.emit("Source file selection cleared.")
         self._persist_session_config(force=True)
         self.state_changed.emit()
@@ -1728,6 +1807,11 @@ class AppLogic(QObject):
         """Launches Subdub's GUI for manual subtitle boundary adjustment."""
         srt_file = self._find_latest_srt(session_dir, must_not_be_equalized=True)
         if not srt_file:
+            self._set_session_activity(
+                "Timing fine-tuning unavailable",
+                "No subtitle file was found. Run transcription first.",
+                "error",
+            )
             self.show_error.emit(
                 "Dubbing Error",
                 "No SRT file found. Select an SRT file or run transcription first.",
@@ -1736,18 +1820,33 @@ class AppLogic(QObject):
 
         audio_file = self._prepare_manual_correction_audio_file(session_dir)
         if not audio_file or not os.path.exists(audio_file):
+            self._set_session_activity(
+                "Timing fine-tuning unavailable",
+                "A matching audio reference is required before opening the timing editor.",
+                "error",
+            )
             self.show_error.emit(
                 "Dubbing Error",
                 "No audio reference found for timing correction. Select a matching video first.",
             )
             return
 
+        self._set_session_activity(
+            "Opening timing editor",
+            "Launching the Subdub timing editor for manual subtitle boundary adjustments.",
+            "active",
+        )
         self.log_message.emit(f"Opening Subdub timing editor for {srt_file}...")
         self._mark_dubbing_step("manual_timing", "running")
         initial_mtime = os.path.getmtime(srt_file) if os.path.exists(srt_file) else 0.0
         corrected_srt = subdub_handler.open_manual_correction_gui(srt_file, audio_file, session_dir)
         if not corrected_srt or not os.path.exists(corrected_srt):
             self._mark_dubbing_step("manual_timing", "failed", "No corrected SRT returned.")
+            self._set_session_activity(
+                "Timing fine-tuning failed",
+                "The timing editor did not return a valid subtitle file.",
+                "error",
+            )
             self.show_error.emit(
                 "Dubbing Error",
                 "Subdub timing editor did not return a valid SRT file.",
@@ -1762,11 +1861,21 @@ class AppLogic(QObject):
         )
 
         if updated:
+            self._set_session_activity(
+                "Timing fine-tuning complete",
+                "Updated subtitle timing is saved and ready for the next dubbing step.",
+                "success",
+            )
             self.log_message.emit(f"Timing fine-tuning complete: {corrected_srt_abs}")
             self._register_dubbing_artifact("manual_timing_srt", corrected_srt_abs, is_current=True)
             self._register_dubbing_artifact("transcribed_srt", corrected_srt_abs, is_current=True)
             self._mark_dubbing_step("manual_timing", "completed")
         else:
+            self._set_session_activity(
+                "Timing editor closed",
+                "The timing editor closed without saving subtitle changes.",
+                "warning",
+            )
             self.log_message.emit("Subdub timing editor closed without saving changes.")
             self._mark_dubbing_step("manual_timing", "completed", "Closed without changes.")
 
@@ -1874,6 +1983,11 @@ class AppLogic(QObject):
             self._register_dubbing_artifact("speech_blocks", speech_blocks_file, is_current=True)
             sentences = session_handler.import_speech_blocks_to_session(self.state.session_name, speech_blocks_file)
             if not sentences:
+                self._set_session_activity(
+                    "Preparing sentence list failed",
+                    "The generated speech blocks file was empty.",
+                    "error",
+                )
                 self.show_error.emit("Dubbing Error", "Speech blocks file is empty. No sentences were imported.")
                 return False
 
@@ -1885,16 +1999,36 @@ class AppLogic(QObject):
             )
             return True
         except FileNotFoundError:
+            self._set_session_activity(
+                "Preparing sentence list failed",
+                "The speech blocks file could not be found after generation.",
+                "error",
+            )
             self.show_error.emit("Dubbing Error", "Speech blocks file was not found after generation.")
             return False
         except json.JSONDecodeError as e:
+            self._set_session_activity(
+                "Preparing sentence list failed",
+                f"Speech blocks JSON could not be parsed: {e}",
+                "error",
+            )
             self.show_error.emit("Dubbing Error", f"Speech blocks JSON could not be parsed: {e}")
             return False
         except ValueError as e:
+            self._set_session_activity(
+                "Preparing sentence list failed",
+                f"Speech blocks format is invalid: {e}",
+                "error",
+            )
             self.show_error.emit("Dubbing Error", f"Speech blocks format is invalid: {e}")
             return False
         except Exception as e:
             logging.error(f"Failed to import speech blocks from '{speech_blocks_file}': {e}", exc_info=True)
+            self._set_session_activity(
+                "Preparing sentence list failed",
+                f"Could not import speech blocks: {e}",
+                "error",
+            )
             self.show_error.emit("Dubbing Error", f"Could not import speech blocks: {e}")
             return False
 
@@ -1937,6 +2071,11 @@ class AppLogic(QObject):
         self.log_message.emit(f"Starting dubbing task: {task}")
         run_info = self._ensure_dubbing_run_for_task(task)
         if run_info is None:
+            self._set_session_activity(
+                "Dubbing task failed",
+                "The app could not initialize a dubbing run for the active session.",
+                "error",
+            )
             self.show_error.emit("Dubbing Error", "Could not initialize a dubbing run for this session.")
             return
 
@@ -1951,9 +2090,19 @@ class AppLogic(QObject):
         task_name = str(task or "").strip().lower()
 
         if task_name == "transcribe":
+            self._set_session_activity(
+                "Transcribing subtitles",
+                "Extracting subtitle timings and text from the selected video.",
+                "active",
+            )
             video_source = self._resolve_dubbing_video_source()
 
             if not video_source or not os.path.exists(video_source):
+                self._set_session_activity(
+                    "Transcription failed",
+                    "No valid video source was available for transcription.",
+                    "error",
+                )
                 self.log_message.emit("No video source found for transcription.")
                 self._mark_dubbing_step("transcribe", "failed", "No video source was available.")
                 return
@@ -1966,6 +2115,11 @@ class AppLogic(QObject):
                 correction_prompt,
             ):
                 self._mark_dubbing_step("transcribe", "failed", "Subdub transcription failed.")
+                self._set_session_activity(
+                    "Transcription failed",
+                    "Subdub could not transcribe the selected video.",
+                    "error",
+                )
                 self.show_error.emit("Dubbing Error", "Transcription failed. Check logs for details.")
                 return
 
@@ -1973,15 +2127,30 @@ class AppLogic(QObject):
             if transcribed_srt:
                 self._register_dubbing_artifact("transcribed_srt", transcribed_srt, is_current=True)
                 self._mark_dubbing_step("transcribe", "completed")
+                self._set_session_activity(
+                    "Transcription complete",
+                    "Subtitle text is ready. Use Fine-Tune Timings if you want manual boundary edits.",
+                    "success",
+                )
                 self.log_message.emit(
                     "Transcription complete. Use 'Fine-Tune Timings (Subdub GUI)' to adjust subtitle boundaries."
                 )
                 self.state_changed.emit()
             else:
+                self._set_session_activity(
+                    "Transcription failed",
+                    "No subtitle file was produced after transcription.",
+                    "error",
+                )
                 self._mark_dubbing_step("transcribe", "failed", "No transcribed SRT was found.")
         elif task_name == "correct":
             srt_file = self._find_latest_srt(dubbing_session_dir, must_not_be_equalized=True)
             if srt_file:
+                self._set_session_activity(
+                    "Correcting subtitles",
+                    "Using the configured correction workflow to clean up subtitle text.",
+                    "active",
+                )
                 self._mark_dubbing_step("correct", "running")
                 if not subdub_handler.correct_subtitles(
                     dubbing_session_dir,
@@ -1990,6 +2159,11 @@ class AppLogic(QObject):
                     correction_prompt,
                 ):
                     self._mark_dubbing_step("correct", "failed", "Subdub correction failed.")
+                    self._set_session_activity(
+                        "Subtitle correction failed",
+                        "Subdub could not correct the selected subtitle file.",
+                        "error",
+                    )
                     self.show_error.emit("Dubbing Error", "Subtitle correction failed. Check logs for details.")
                     return
 
@@ -1997,12 +2171,27 @@ class AppLogic(QObject):
                 if corrected_srt:
                     self._register_dubbing_artifact("corrected_srt", corrected_srt, is_current=True)
                 self._mark_dubbing_step("correct", "completed")
+                self._set_session_activity(
+                    "Subtitle correction complete",
+                    "Corrected subtitles are ready for translation or audio generation.",
+                    "success",
+                )
             else:
+                self._set_session_activity(
+                    "Subtitle correction unavailable",
+                    "No subtitle file was found to correct.",
+                    "error",
+                )
                 self.log_message.emit("No SRT file found to correct.")
                 self._mark_dubbing_step("correct", "failed", "No SRT file was found.")
         elif task_name == "translate":
             srt_file = self._find_latest_srt(dubbing_session_dir, must_not_be_equalized=True)
             if srt_file:
+                self._set_session_activity(
+                    "Translating subtitles",
+                    "Creating translated subtitle text with the selected provider and model.",
+                    "active",
+                )
                 self._mark_dubbing_step("translate", "running")
                 if not subdub_handler.translate_subtitles(
                     dubbing_session_dir,
@@ -2011,6 +2200,11 @@ class AppLogic(QObject):
                     correction_prompt,
                 ):
                     self._mark_dubbing_step("translate", "failed", "Subdub translation failed.")
+                    self._set_session_activity(
+                        "Translation failed",
+                        "Subdub could not translate the selected subtitle file.",
+                        "error",
+                    )
                     self.show_error.emit("Dubbing Error", "Translation failed. Check logs for details.")
                     return
 
@@ -2018,7 +2212,17 @@ class AppLogic(QObject):
                 if translated_srt:
                     self._register_dubbing_artifact("translated_srt", translated_srt, is_current=True)
                 self._mark_dubbing_step("translate", "completed")
+                self._set_session_activity(
+                    "Translation complete",
+                    "Translated subtitles are ready for speech-block generation.",
+                    "success",
+                )
             else:
+                self._set_session_activity(
+                    "Translation unavailable",
+                    "No subtitle file was found to translate.",
+                    "error",
+                )
                 self.log_message.emit("No SRT file found to translate.")
                 self._mark_dubbing_step("translate", "failed", "No SRT file was found.")
         elif task_name == "generate_audio":
@@ -2055,10 +2259,20 @@ class AppLogic(QObject):
         # 1. Transcribe if no SRT exists
         srt_file = self._find_latest_srt(session_dir, must_not_be_equalized=True)
         if not srt_file:
+            self._set_session_activity(
+                "Transcribing subtitles",
+                "No subtitle file was found, so the app is transcribing the source video first.",
+                "active",
+            )
             self.log_message.emit("No SRT file found, starting transcription...")
             video_source = self._resolve_dubbing_video_source()
 
             if not video_source or not os.path.exists(video_source):
+                self._set_session_activity(
+                    "Transcription failed",
+                    "A valid video source is required before dubbing audio can be generated.",
+                    "error",
+                )
                 self._mark_dubbing_step("transcribe", "failed", "No valid video source for transcription.")
                 self.show_error.emit("Dubbing Error", "No valid video file found for transcription.")
                 return
@@ -2084,15 +2298,30 @@ class AppLogic(QObject):
 
         # 2. Translate if enabled
         if bool(dub_settings.get("translation_enabled")):
+            self._set_session_activity(
+                "Translating subtitles",
+                "Translation is enabled, so the subtitle text is being translated now.",
+                "active",
+            )
             self.log_message.emit("Translation is enabled, starting translation...")
             self._mark_dubbing_step("translate", "running")
             if not subdub_handler.translate_subtitles(session_dir, srt_file, dub_settings, correction_prompt):
                 self._mark_dubbing_step("translate", "failed", "Subdub translation failed.")
+                self._set_session_activity(
+                    "Translation failed",
+                    "The subtitle translation step did not complete successfully.",
+                    "error",
+                )
                 self.show_error.emit("Dubbing Error", "Translation failed. Check logs for details.")
                 return
             srt_file = self._find_latest_srt(session_dir, must_not_be_equalized=True) # Find the new translated file
             if not srt_file:
                 self._mark_dubbing_step("translate", "failed", "No translated SRT was produced.")
+                self._set_session_activity(
+                    "Translation failed",
+                    "Translation completed without producing a new subtitle file.",
+                    "error",
+                )
                 self.show_error.emit("Dubbing Error", "Translation did not produce a new SRT file.")
                 return
             self._register_dubbing_artifact("translated_srt", srt_file, is_current=True)
@@ -2100,10 +2329,20 @@ class AppLogic(QObject):
         
         # 3. Generate speech blocks
         speech_blocks_snapshot = self._snapshot_speech_blocks_files(session_dir)
+        self._set_session_activity(
+            "Building speech blocks",
+            "Turning subtitles into speech blocks that can be imported as session sentences.",
+            "active",
+        )
         self.log_message.emit("Generating speech blocks...")
         self._mark_dubbing_step("speech_blocks", "running")
         if not subdub_handler.generate_speech_blocks(session_dir, srt_file):
             self._mark_dubbing_step("speech_blocks", "failed", "Subdub speech-block generation failed.")
+            self._set_session_activity(
+                "Speech-block generation failed",
+                "Subdub could not generate speech blocks from the subtitle file.",
+                "error",
+            )
             self.show_error.emit("Dubbing Error", "Speech block generation failed.")
             return
 
@@ -2114,12 +2353,22 @@ class AppLogic(QObject):
         )
         if not speech_blocks_file:
             self._mark_dubbing_step("speech_blocks", "failed", "Speech-block JSON was not detected.")
+            self._set_session_activity(
+                "Speech-block generation failed",
+                "The expected speech-block JSON file was not detected after generation.",
+                "error",
+            )
             self.show_error.emit("Dubbing Error", "Speech blocks file was not detected after generation.")
             return
         self._register_dubbing_artifact("speech_blocks", speech_blocks_file, is_current=True)
         self._mark_dubbing_step("speech_blocks", "completed")
 
         # 4. Convert speech blocks to Pandrator sentence JSON
+        self._set_session_activity(
+            "Preparing sentence list",
+            "Importing speech blocks into the session so sentence audio generation can begin.",
+            "active",
+        )
         self.log_message.emit("Converting speech blocks into session sentences...")
         if not self._import_speech_blocks_into_sentences(speech_blocks_file):
             return
@@ -2132,11 +2381,21 @@ class AppLogic(QObject):
                 subtitle_mode=subtitle_mode,
                 dubbed_audio_only=dubbed_audio_only,
             )
+            self._set_session_activity(
+                "Generating dubbing audio",
+                "Sentence audio generation is starting now. Final video rendering will begin automatically afterward.",
+                "active",
+            )
             self.log_message.emit(
                 "Auto-continue enabled: the app will render the final video right after generation completes."
             )
         else:
             self._clear_pending_dubbing_add_to_video_request()
+            self._set_session_activity(
+                "Generating dubbing audio",
+                "Sentence audio generation is starting now. You will be able to review and regenerate lines afterward.",
+                "active",
+            )
 
         self._mark_dubbing_step("tts_generation", "running")
         self.start_generation()
@@ -2156,6 +2415,11 @@ class AppLogic(QObject):
         video_source = self._resolve_dubbing_video_source()
         if not video_source or not os.path.exists(video_source):
             self._mark_dubbing_step("sync", "failed", "No valid video source for synchronization.")
+            self._set_session_activity(
+                "Video rendering failed",
+                "A valid video source is required before synchronization can begin.",
+                "error",
+            )
             self.show_error.emit("Dubbing Error", "No valid video file found for synchronization.")
             return
 
@@ -2169,6 +2433,11 @@ class AppLogic(QObject):
 
         if not self._session_dir_has_sentence_wavs(sync_session_dir):
             self._mark_dubbing_step("tts_generation", "failed", "No generated sentence WAVs were found.")
+            self._set_session_activity(
+                "Video rendering unavailable",
+                "Generate dubbing audio first so sentence WAV files are available for synchronization.",
+                "error",
+            )
             self.show_error.emit(
                 "Dubbing Error",
                 "No generated sentence WAVs found for synchronization. Run 'Generate Dub Audio' first.",
@@ -2179,6 +2448,11 @@ class AppLogic(QObject):
         if not speech_blocks_file:
             srt_for_speech_blocks = self._find_latest_srt(sync_session_dir, must_not_be_equalized=True)
             if not srt_for_speech_blocks:
+                self._set_session_activity(
+                    "Video rendering unavailable",
+                    "A subtitle file is required before speech blocks can be rebuilt for synchronization.",
+                    "error",
+                )
                 self._mark_dubbing_step("speech_blocks", "failed", "Could not find SRT for speech-block regeneration.")
                 self.show_error.emit(
                     "Dubbing Error",
@@ -2187,10 +2461,20 @@ class AppLogic(QObject):
                 return
 
             speech_blocks_snapshot = self._snapshot_speech_blocks_files(sync_session_dir)
+            self._set_session_activity(
+                "Rebuilding speech blocks",
+                "No speech-block JSON was found, so the app is regenerating it before synchronization.",
+                "active",
+            )
             self.log_message.emit("No speech blocks JSON found. Regenerating speech blocks...")
             self._mark_dubbing_step("speech_blocks", "running")
             if not subdub_handler.generate_speech_blocks(sync_session_dir, srt_for_speech_blocks):
                 self._mark_dubbing_step("speech_blocks", "failed", "Speech-block regeneration failed.")
+                self._set_session_activity(
+                    "Speech-block regeneration failed",
+                    "The app could not rebuild speech blocks for synchronization.",
+                    "error",
+                )
                 self.show_error.emit(
                     "Dubbing Error",
                     "Speech block regeneration failed. Check logs for details.",
@@ -2204,6 +2488,11 @@ class AppLogic(QObject):
             )
             if not speech_blocks_file:
                 self._mark_dubbing_step("speech_blocks", "failed", "No speech-block JSON was detected after regeneration.")
+                self._set_session_activity(
+                    "Speech-block regeneration failed",
+                    "No rebuilt speech-block JSON file was detected after regeneration.",
+                    "error",
+                )
                 self.show_error.emit(
                     "Dubbing Error",
                     "Speech blocks file was not detected after regeneration.",
@@ -2215,10 +2504,20 @@ class AppLogic(QObject):
             self._register_dubbing_artifact("speech_blocks", speech_blocks_file, is_current=True)
 
         # 1. Synchronize Audio
+        self._set_session_activity(
+            "Synchronizing audio",
+            "Aligning generated sentence audio to the source video timing.",
+            "active",
+        )
         self.log_message.emit("Synchronizing audio...")
         self._mark_dubbing_step("sync", "running")
         if not subdub_handler.synchronize_audio(sync_session_dir, video_file=video_source):
             self._mark_dubbing_step("sync", "failed", "Subdub synchronization failed.")
+            self._set_session_activity(
+                "Audio synchronization failed",
+                "Subdub could not align the generated audio to the source video.",
+                "error",
+            )
             self.show_error.emit("Dubbing Error", "Audio synchronization failed.")
             return
         
@@ -2238,6 +2537,11 @@ class AppLogic(QObject):
 
         if not synced_video_path:
              self._mark_dubbing_step("sync", "failed", "No synced video artifact was created.")
+             self._set_session_activity(
+                 "Audio synchronization failed",
+                 "No synchronized video artifact was created after synchronization finished.",
+                 "error",
+             )
              self.show_error.emit("Dubbing Error", "Synced video file not found after synchronization.")
              return
         self.log_message.emit(f"Found synced video: {synced_video_path}")
@@ -2250,6 +2554,11 @@ class AppLogic(QObject):
             dubbed_audio_path = subdub_handler.find_latest_dubbed_audio_track(sync_session_dir)
             if not dubbed_audio_path:
                 self._mark_dubbing_step("sync", "failed", "No dubbed-audio track found after synchronization.")
+                self._set_session_activity(
+                    "Dubbed-only export failed",
+                    "No dubbed-audio track was found after synchronization.",
+                    "error",
+                )
                 self.show_error.emit(
                     "Dubbing Error",
                     "Could not find a generated dubbing audio track after synchronization.",
@@ -2263,6 +2572,11 @@ class AppLogic(QObject):
                 dubbed_only_video_path,
             ):
                 self._mark_dubbing_step("sync", "failed", "Could not create dubbed-only intermediate video.")
+                self._set_session_activity(
+                    "Dubbed-only export failed",
+                    "The app could not create the dubbed-only intermediate video.",
+                    "error",
+                )
                 self.show_error.emit(
                     "Dubbing Error",
                     "Failed to create a dubbed-only video track before subtitle rendering.",
@@ -2277,12 +2591,27 @@ class AppLogic(QObject):
         srt_file = self._find_latest_srt(sync_session_dir, must_not_be_equalized=True)
         if not srt_file:
             self._mark_dubbing_step("equalize", "failed", "No SRT found for equalization.")
+            self._set_session_activity(
+                "Subtitle equalization failed",
+                "A subtitle file is required before equalization can begin.",
+                "error",
+            )
             self.show_error.emit("Dubbing Error", "Cannot find SRT file to equalize.")
             return
+        self._set_session_activity(
+            "Equalizing subtitles",
+            "Balancing subtitle timing and line breaks before final video rendering.",
+            "active",
+        )
         self.log_message.emit(f"Equalizing subtitles for {srt_file}...")
         self._mark_dubbing_step("equalize", "running")
         if not subdub_handler.equalize_subtitles(srt_file):
             self._mark_dubbing_step("equalize", "failed", "Subdub equalization failed.")
+            self._set_session_activity(
+                "Subtitle equalization failed",
+                "Subdub could not equalize the subtitle file.",
+                "error",
+            )
             self.show_error.emit("Dubbing Error", "Subtitle equalization failed.")
             return
             
@@ -2294,6 +2623,11 @@ class AppLogic(QObject):
                 equalized_srt_path = expected_path
             else:
                  self._mark_dubbing_step("equalize", "failed", "Equalized SRT artifact was not found.")
+                 self._set_session_activity(
+                     "Subtitle equalization failed",
+                     "The equalized subtitle file was not found after equalization completed.",
+                     "error",
+                 )
                  self.show_error.emit("Dubbing Error", "Equalized SRT file not found after equalization.")
                  return
         self.log_message.emit(f"Found equalized SRT: {equalized_srt_path}")
@@ -2321,6 +2655,11 @@ class AppLogic(QObject):
             self.log_message.emit("Rendering both subtitle modes (soft + burned-in)...")
 
         generated_outputs: list[str] = []
+        self._set_session_activity(
+            "Rendering final video",
+            "Combining the synchronized audio and equalized subtitles into the final video output.",
+            "active",
+        )
         self._mark_dubbing_step("render", "running")
         for render_mode in render_modes:
             subtitle_mode_label = mode_to_label[render_mode]
@@ -2335,6 +2674,11 @@ class AppLogic(QObject):
                 subtitle_mode=render_mode,
             ):
                 self._mark_dubbing_step("render", "failed", f"Could not render {render_mode} subtitles.")
+                self._set_session_activity(
+                    "Final video rendering failed",
+                    f"The app could not render the {render_mode} subtitle variant.",
+                    "error",
+                )
                 self.show_error.emit(
                     "Dubbing Error",
                     f"Failed to add {render_mode} subtitles to the final video.",
@@ -2346,11 +2690,21 @@ class AppLogic(QObject):
             self._register_dubbing_artifact(artifact_role, output_video_path, is_current=True)
 
         if len(generated_outputs) == 1:
+            self._set_session_activity(
+                "Dubbing complete",
+                "The final dubbed video is ready.",
+                "success",
+            )
             self.log_message.emit(f"Dubbing workflow finished. Final output: {generated_outputs[0]}")
             self._mark_dubbing_step("render", "completed")
             self.dubbing_video_saved.emit(generated_outputs)
             return
 
+        self._set_session_activity(
+            "Dubbing complete",
+            f"The final dubbed video set is ready ({len(generated_outputs)} files).",
+            "success",
+        )
         self.log_message.emit(
             "Dubbing workflow finished. Final outputs: "
             + "; ".join(generated_outputs)
@@ -2377,14 +2731,29 @@ class AppLogic(QObject):
             "tts_service": self.state.tts.service
         }
         
+        self._set_session_activity(
+            "Processing text",
+            "Preparing the source text into sentence-sized generation units.",
+            "active",
+        )
         self._set_text_preprocessing_running(True)
         try:
             processed_sentences = text_preprocessor.preprocess_text(self.state.raw_text, settings)
             self._set_processed_sentences_snapshot(processed_sentences)
+            self._set_session_activity(
+                "Text processing complete",
+                f"Prepared {len(processed_sentences)} sentence(s) for generation.",
+                "success",
+            )
             self.log_message.emit("Text preprocessing complete.")
             self.state_changed.emit()
         except Exception as e:
             logging.error(f"Text preprocessing failed: {e}", exc_info=True)
+            self._set_session_activity(
+                "Text processing failed",
+                str(e),
+                "error",
+            )
             self.show_error.emit("Preprocessing Error", str(e))
         finally:
             self._set_text_preprocessing_running(False)
@@ -2483,6 +2852,11 @@ class AppLogic(QObject):
         self.stop_playback()
         self._persist_session_config(force=True)
 
+        self._set_session_activity(
+            "Preparing generation",
+            "Starting the audio generation workflow in the background.",
+            "active",
+        )
         self.log_message.emit("Starting audio generation process...")
         self.stop_generation_flag.clear()
         self.cancel_generation_flag.clear()
@@ -2507,6 +2881,11 @@ class AppLogic(QObject):
             self.log_message.emit("Stop already requested. Waiting for current sentence to finish.")
             return
 
+        self._set_session_activity(
+            "Stopping generation",
+            "The current sentence will finish before generation stops.",
+            "warning",
+        )
         self.log_message.emit("Stopping generation after current sentence...")
         self.stop_generation_flag.set()
         self.state_changed.emit()
@@ -2521,6 +2900,11 @@ class AppLogic(QObject):
             self.log_message.emit("Cancellation already requested. Waiting for cleanup.")
             return
 
+        self._set_session_activity(
+            "Cancelling generation",
+            "The app will clean up generated sentence audio after the current sentence finishes.",
+            "warning",
+        )
         self.log_message.emit("Cancelling generation after current sentence and scheduling cleanup...")
         self.cancel_generation_flag.set()
         self.stop_generation_flag.set()
@@ -2532,6 +2916,11 @@ class AppLogic(QObject):
             self.log_message.emit("Cleanup deferred until generation reaches a safe stop point.")
             return
 
+        self._set_session_activity(
+            "Cleaning up cancelled generation",
+            "Removing sentence JSON and generated WAV files from the cancelled run.",
+            "warning",
+        )
         self.log_message.emit("Cleaning up cancelled generation files...")
         session_path = session_handler.get_session_path(self.state.session_name)
         
@@ -2559,6 +2948,11 @@ class AppLogic(QObject):
         self._set_processed_sentences_snapshot([], persist=False)
         self.state_changed.emit()
         self.progress_updated.emit(0, 1, 0.0)
+        self._set_session_activity(
+            "Generation cancelled",
+            "Cleanup is complete. You can start again whenever you're ready.",
+            "warning",
+        )
         self.log_message.emit("Cleanup complete.")
 
     def _generation_thread_worker(self):
@@ -2596,6 +2990,11 @@ class AppLogic(QObject):
 
             total_sentences = len(processed_sentences)
             if start_index >= total_sentences:
+                self._set_session_activity(
+                    "Audio generation already complete",
+                    f"All {total_sentences} sentence(s) already have generated audio.",
+                    "success",
+                )
                 self.log_message.emit("All sentences have already been generated.")
                 ext = os.path.splitext(self.state.source_file_path)[1].lower() if self.state.source_file_path else ""
                 if self._is_dubbing_source_extension(ext):
@@ -2608,6 +3007,11 @@ class AppLogic(QObject):
                     self._clear_pending_dubbing_add_to_video_request()
                 return
 
+            self._set_session_activity(
+                "Generating audio",
+                f"Starting from sentence {start_index + 1} of {total_sentences}.",
+                "active",
+            )
             self.log_message.emit(f"Starting generation from sentence {start_index + 1}...")
             sentence_times = []
             start_time = time.time()
@@ -2618,10 +3022,20 @@ class AppLogic(QObject):
                         cleanup_requested = True
                         if dubbing_workflow_active:
                             self._mark_dubbing_step("tts_generation", "failed", "Cancelled by user.")
+                        self._set_session_activity(
+                            "Cancelling generation",
+                            "Cancellation was acknowledged. Cleaning up generated artifacts next.",
+                            "warning",
+                        )
                         self.log_message.emit("Cancellation acknowledged. Cleaning up generated artifacts...")
                     else:
                         if dubbing_workflow_active:
                             self._mark_dubbing_step("tts_generation", "failed", "Stopped by user.")
+                        self._set_session_activity(
+                            "Generation stopped",
+                            "The run stopped after the current sentence as requested.",
+                            "warning",
+                        )
                         self.log_message.emit("Generation stopped by user.")
                     return
 
@@ -2630,6 +3044,11 @@ class AppLogic(QObject):
                     continue
 
                 sentence_start_time = time.time()
+                self._set_session_activity(
+                    "Generating audio",
+                    f"Rendering sentence {i + 1} of {total_sentences}.",
+                    "active",
+                )
                 self.log_message.emit(f"Generating sentence {i+1}/{total_sentences}...")
 
                 success, updated_sentence = self._execute_generation_for_sentence(sentence_dict)
@@ -2638,10 +3057,20 @@ class AppLogic(QObject):
                         cleanup_requested = True
                         if dubbing_workflow_active:
                             self._mark_dubbing_step("tts_generation", "failed", "Cancelled during sentence generation.")
+                        self._set_session_activity(
+                            "Cancelling generation",
+                            f"Generation was cancelled while working on sentence {i + 1}. Cleanup will run next.",
+                            "warning",
+                        )
                         self.log_message.emit("Generation cancelled during sentence processing. Cleaning up...")
                     else:
                         if dubbing_workflow_active:
                             self._mark_dubbing_step("tts_generation", "failed", f"Sentence {i+1} failed.")
+                        self._set_session_activity(
+                            "Generation failed",
+                            f"Sentence {i + 1} could not be generated.",
+                            "error",
+                        )
                         self.show_error.emit("Generation Error", f"Failed to generate audio for sentence {i+1}. Aborting.")
                     return
 
@@ -2660,6 +3089,11 @@ class AppLogic(QObject):
                 cleanup_requested = True
                 if dubbing_workflow_active:
                     self._mark_dubbing_step("tts_generation", "failed", "Cancelled during finalization.")
+                self._set_session_activity(
+                    "Cancelling generation",
+                    "Cancellation was requested during finalization. Cleanup will run next.",
+                    "warning",
+                )
                 self.log_message.emit("Cancellation requested during finalization. Cleaning up...")
                 return
 
@@ -2672,8 +3106,25 @@ class AppLogic(QObject):
                 run_dir = self._get_dubbing_work_dir(ensure_exists=False)
                 if run_dir:
                     self._register_dubbing_artifact("sentence_wavs_dir", os.path.join(run_dir, "Sentence_wavs"))
+                if post_generation_add_to_video_request:
+                    self._set_session_activity(
+                        "Audio generation complete",
+                        "Dubbing audio is ready. The app is starting final video rendering automatically.",
+                        "success",
+                    )
+                else:
+                    self._set_session_activity(
+                        "Audio generation complete",
+                        "Dubbing sentence audio is ready for review, regeneration, or final rendering.",
+                        "success",
+                    )
             else:
                 self._clear_pending_dubbing_add_to_video_request()
+                self._set_session_activity(
+                    "Saving final output",
+                    "Joining generated sentence audio into the final output file.",
+                    "active",
+                )
                 self.log_message.emit("Saving final output file...")
                 output_format = self.state.audio_processing.output_format
                 output_path = os.path.join(
@@ -2683,6 +3134,11 @@ class AppLogic(QObject):
                 self.save_output(output_path)
         except Exception as e:
             logging.error("Unhandled generation worker error: %s", e, exc_info=True)
+            self._set_session_activity(
+                "Generation failed",
+                f"Unexpected generation failure: {e}",
+                "error",
+            )
             self.show_error.emit("Generation Error", f"Unexpected generation failure: {e}")
         finally:
             if cleanup_requested:
@@ -2703,6 +3159,11 @@ class AppLogic(QObject):
                 )
                 dubbed_audio_only = bool(
                     post_generation_add_to_video_request.get("dubbed_audio_only")
+                )
+                self._set_session_activity(
+                    "Rendering final video",
+                    "Auto-continue is enabled, so video rendering is starting immediately after audio generation.",
+                    "active",
                 )
                 self.log_message.emit(
                     "Starting automatic video rendering for the generated dubbing audio..."
@@ -2820,6 +3281,11 @@ class AppLogic(QObject):
         tts_snapshot = copy.deepcopy(self.state.tts.__dict__)
         requested_service = tts_snapshot.get("service") or self.state.tts.service
 
+        self._set_session_activity(
+            f"Connecting to {requested_service}",
+            "Checking the selected TTS service and refreshing its available models and voices.",
+            "active",
+        )
         self.log_message.emit(f"Connecting to {requested_service} service...")
         self.tts_connection_running_changed.emit(True)
 
@@ -3188,10 +3654,20 @@ class AppLogic(QObject):
 
             log_message = result.get("log_message")
             if log_message:
+                self._set_session_activity(
+                    f"Connected to {requested_service}",
+                    log_message,
+                    "success",
+                )
                 self.log_message.emit(log_message)
 
             error_message = result.get("error_message")
             if error_message:
+                self._set_session_activity(
+                    f"Connection failed for {requested_service}",
+                    error_message,
+                    "error",
+                )
                 self.show_error.emit(result.get("error_title") or "Connection Error", error_message)
 
             self.state_changed.emit()
@@ -4284,10 +4760,25 @@ class AppLogic(QObject):
                 cover_image_path=self.state.cover_image_path
             )
             if success:
+                self._set_session_activity(
+                    "Audio generation complete",
+                    f"Final output saved to {os.path.basename(output_path)}.",
+                    "success",
+                )
                 self.log_message.emit(f"Output file saved to {output_path}")
             else:
+                self._set_session_activity(
+                    "Final output save failed",
+                    "The sentence audio was generated, but the final output file could not be saved.",
+                    "error",
+                )
                 self.show_error.emit("Save Error", "Failed to save the output file. Check logs for details.")
         except Exception as e:
+            self._set_session_activity(
+                "Final output save failed",
+                str(e),
+                "error",
+            )
             self.show_error.emit("Save Error", f"An unexpected error occurred: {e}")
 
     def save_xtts_settings(self):

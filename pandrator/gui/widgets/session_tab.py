@@ -96,6 +96,7 @@ class SessionTab(QWidget):
         self._bind_section_widgets()
 
         self._connect_signals()
+        self._apply_session_activity(self.logic.get_session_activity_snapshot())
         self.update_ui_from_state()
         self.logic.state_changed.connect(self.update_ui_from_state)
         self.logic.tts_connection_running_changed.connect(
@@ -275,6 +276,7 @@ class SessionTab(QWidget):
         self.stop_button = self.generation_section.stop_button
         self.cancel_button = self.generation_section.cancel_button
         self.progress_bar = self.generation_section.progress_bar
+        self.task_status_panel = self.generation_section.task_status_panel
         self.remaining_time_label = self.generation_section.remaining_time_label
 
     def _connect_signals(self):
@@ -284,6 +286,7 @@ class SessionTab(QWidget):
         self._connect_dubbing_signals()
         self._connect_generation_signals()
         self.logic.progress_updated.connect(self._on_progress_updated)
+        self.logic.session_activity_updated.connect(self._on_session_activity_updated)
 
     def _connect_session_signals(self):
         self.new_session_button.clicked.connect(self._on_new_session)
@@ -769,6 +772,22 @@ class SessionTab(QWidget):
     def _on_tts_connection_running_changed(self, _running: bool):
         self.update_ui_from_state()
 
+    def _on_session_activity_updated(self, payload: dict):
+        self._apply_session_activity(payload)
+
+    def _apply_session_activity(self, payload: dict | None = None):
+        snapshot = payload if isinstance(payload, dict) else self.logic.get_session_activity_snapshot()
+        self.task_status_panel.set_activity(
+            snapshot.get("headline", "Ready"),
+            snapshot.get("detail", ""),
+            snapshot.get("tone", "idle"),
+        )
+
+    def _update_task_status_panel(self):
+        show_dubbing_stages = self.logic.is_dubbing_mode_active()
+        stage_states = self.logic.get_active_dubbing_step_states() if show_dubbing_stages else {}
+        self.task_status_panel.set_dubbing_stage_states(stage_states, visible=show_dubbing_stages)
+
     def _set_button_accent(self, button, accent_active: bool):
         if bool(button.property("accentActive")) == accent_active:
             return
@@ -784,6 +803,7 @@ class SessionTab(QWidget):
         state = self.logic.state
         self._update_lifecycle_indicator()
         self._update_generation_progress_indicator()
+        self._update_task_status_panel()
         self._update_session_state(state)
         self._update_source_state(state)
         self._update_tts_state(state)

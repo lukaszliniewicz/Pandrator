@@ -689,6 +689,100 @@ class OutputOptionsSection(QFrame):
         layout.addStretch()
 
 
+class TaskStatusPanel(QFrame):
+    DUBBING_STAGE_DEFINITIONS = (
+        ("transcribe", "Transcribe"),
+        ("correct", "Correct"),
+        ("translate", "Translate"),
+        ("speech_blocks", "Speech Blocks"),
+        ("tts_generation", "Generate Audio"),
+        ("sync", "Sync"),
+        ("equalize", "Equalize"),
+        ("render", "Render"),
+    )
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("taskStatusFrame")
+        self._stage_badges: dict[str, QLabel] = {}
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+
+        self.title_label = QLabel("Ready")
+        title_font = QFont()
+        title_font.setPointSize(11)
+        title_font.setBold(True)
+        self.title_label.setFont(title_font)
+        self.title_label.setObjectName("taskStatusTitleLabel")
+        layout.addWidget(self.title_label)
+
+        self.detail_label = QLabel("Add a source and start generation when you're ready.")
+        self.detail_label.setWordWrap(True)
+        self.detail_label.setObjectName("taskStatusDetailLabel")
+        layout.addWidget(self.detail_label)
+
+        self.stage_heading_label = QLabel("Dubbing Stages")
+        self.stage_heading_label.setObjectName("taskStatusMetaLabel")
+        layout.addWidget(self.stage_heading_label)
+
+        self.stage_badges_frame = QFrame()
+        self.stage_badges_frame.setObjectName("taskStageGridFrame")
+        stage_layout = QGridLayout(self.stage_badges_frame)
+        stage_layout.setContentsMargins(0, 0, 0, 0)
+        stage_layout.setHorizontalSpacing(6)
+        stage_layout.setVerticalSpacing(6)
+        layout.addWidget(self.stage_badges_frame)
+
+        for index, (stage_key, stage_label) in enumerate(self.DUBBING_STAGE_DEFINITIONS):
+            badge = QLabel(stage_label)
+            badge.setObjectName("taskStageBadge")
+            badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            badge.setProperty("stepState", "pending")
+            stage_layout.addWidget(badge, index // 4, index % 4)
+            self._stage_badges[stage_key] = badge
+
+        self.set_activity("Ready", "Add a source and start generation when you're ready.", "idle")
+        self.set_dubbing_stage_states({}, visible=False)
+
+    def set_activity(self, headline: str, detail: str = "", tone: str = "idle"):
+        self.title_label.setText(str(headline or "").strip() or "Ready")
+        normalized_detail = str(detail or "").strip()
+        self.detail_label.setText(normalized_detail)
+        self.detail_label.setVisible(bool(normalized_detail))
+
+        normalized_tone = str(tone or "idle").strip().lower()
+        if normalized_tone not in {"idle", "active", "success", "warning", "error"}:
+            normalized_tone = "idle"
+
+        if self.property("activityTone") != normalized_tone:
+            self.setProperty("activityTone", normalized_tone)
+            style = self.style()
+            if style is not None:
+                style.unpolish(self)
+                style.polish(self)
+            self.update()
+
+    def set_dubbing_stage_states(self, stage_states: dict[str, str], visible: bool):
+        self.stage_heading_label.setVisible(bool(visible))
+        self.stage_badges_frame.setVisible(bool(visible))
+
+        normalized_states = stage_states if isinstance(stage_states, dict) else {}
+        for stage_key, badge in self._stage_badges.items():
+            state = str(normalized_states.get(stage_key) or "pending").strip().lower()
+            if state not in {"pending", "running", "completed", "failed"}:
+                state = "pending"
+
+            if badge.property("stepState") != state:
+                badge.setProperty("stepState", state)
+                style = badge.style()
+                if style is not None:
+                    style.unpolish(badge)
+                    style.polish(badge)
+                badge.update()
+
+
 class GenerationSection(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -717,14 +811,17 @@ class GenerationSection(QFrame):
         self.progress_bar.setFormat("0.00%")
         layout.addWidget(self.progress_bar, 1, 0, 1, 4)
 
+        self.task_status_panel = TaskStatusPanel()
+        layout.addWidget(self.task_status_panel, 2, 0, 1, 4)
+
         self.remaining_time_label = QLabel("N/A")
         self.remaining_time_label.setObjectName("secondaryInfoLabel")
         layout.addWidget(
             QLabel("Estimated Remaining Time:"),
-            2,
+            3,
             0,
             1,
             3,
             alignment=Qt.AlignmentFlag.AlignRight,
         )
-        layout.addWidget(self.remaining_time_label, 2, 3)
+        layout.addWidget(self.remaining_time_label, 3, 3)

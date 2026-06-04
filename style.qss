@@ -26,11 +26,72 @@ QFrame#rowFrame {
     padding: 0;
 }
 
+QFrame#taskStatusFrame {
+    background-color: #25282d;
+    border: 1px solid #4d5863;
+    border-radius: 8px;
+}
+
+QFrame#taskStatusFrame[activityTone="active"] {
+    border: 1px solid #9b7dd1;
+}
+
+QFrame#taskStatusFrame[activityTone="success"] {
+    border: 1px solid #4e8a73;
+}
+
+QFrame#taskStatusFrame[activityTone="warning"] {
+    border: 1px solid #b48a52;
+}
+
+QFrame#taskStatusFrame[activityTone="error"] {
+    border: 1px solid #b96767;
+}
+
 QLabel#sessionSectionLabel,
 QLabel#sessionNameLabel,
 QLabel#secondaryInfoLabel,
 QLabel#subSectionLabel {
     color: #f1f1f1;
+}
+
+QLabel#taskStatusTitleLabel {
+    color: #f1f1f1;
+}
+
+QLabel#taskStatusDetailLabel {
+    color: #cfd5dd;
+}
+
+QLabel#taskStatusMetaLabel {
+    color: #9aa1aa;
+    font-weight: bold;
+}
+
+QLabel#taskStageBadge {
+    background-color: #343a40;
+    border: 1px solid #4d5863;
+    border-radius: 10px;
+    color: #aab1bb;
+    padding: 3px 8px;
+}
+
+QLabel#taskStageBadge[stepState="running"] {
+    background-color: #5d4f7f;
+    border: 1px solid #ab90db;
+    color: #f8f4ff;
+}
+
+QLabel#taskStageBadge[stepState="completed"] {
+    background-color: #335b4d;
+    border: 1px solid #4e8a73;
+    color: #edfdf5;
+}
+
+QLabel#taskStageBadge[stepState="failed"] {
+    background-color: #6a3a3a;
+    border: 1px solid #b96767;
+    color: #fff1f1;
 }
 
 QLabel#sessionSectionLabel {

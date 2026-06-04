@@ -1118,6 +1118,24 @@ class StateDBHandler:
 
         return dict(row) if row else None
 
+    def get_dubbing_steps(self, run_id: str) -> list[dict[str, Any]]:
+        self._ensure_ready()
+        if not run_id:
+            return []
+
+        with self._lock, self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT step_key, status, started_at, finished_at, detail
+                FROM dubbing_steps
+                WHERE run_id = ?
+                ORDER BY id ASC
+                """,
+                (run_id,),
+            ).fetchall()
+
+        return [dict(row) for row in rows]
+
     def set_active_dubbing_run(self, session_name: str, run_id: str):
         self._ensure_ready()
         if not session_name or not run_id:
@@ -1965,6 +1983,10 @@ def get_active_dubbing_run(session_name: str) -> dict[str, Any] | None:
 
 def get_dubbing_run(run_id: str) -> dict[str, Any] | None:
     return DEFAULT_HANDLER.get_dubbing_run(run_id)
+
+
+def get_dubbing_steps(run_id: str) -> list[dict[str, Any]]:
+    return DEFAULT_HANDLER.get_dubbing_steps(run_id)
 
 
 def set_active_dubbing_run(session_name: str, run_id: str):

@@ -158,6 +158,27 @@ class StateDBHandlerTests(unittest.TestCase):
         selected_after_switch = self.handler.get_active_dubbing_artifact(session_name, ["transcribed_srt"])
         self.assertEqual(os.path.abspath(first_path), selected_after_switch)
 
+    def test_get_dubbing_steps_returns_initialized_and_updated_step_states(self):
+        session_name = "DubbingSteps"
+        self._session_dir(session_name)
+
+        run = self.handler.create_dubbing_run(session_name=session_name, set_active=True)
+        steps = self.handler.get_dubbing_steps(run["run_id"])
+
+        self.assertTrue(steps)
+        self.assertTrue(all(step["status"] == "pending" for step in steps))
+
+        self.handler.record_dubbing_step(run["run_id"], "transcribe", "running", "Starting")
+        self.handler.record_dubbing_step(run["run_id"], "translate", "completed", "Done")
+
+        updated_steps = {
+            step["step_key"]: step
+            for step in self.handler.get_dubbing_steps(run["run_id"])
+        }
+        self.assertEqual(updated_steps["transcribe"]["status"], "running")
+        self.assertEqual(updated_steps["translate"]["status"], "completed")
+        self.assertEqual(updated_steps["translate"]["detail"], "Done")
+
     def test_list_reusable_sources_dedupes_and_filters_missing_paths(self):
         source_root = os.path.join(self.temp_dir.name, "source_library")
         os.makedirs(source_root, exist_ok=True)
