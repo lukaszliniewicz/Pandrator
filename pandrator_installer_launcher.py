@@ -579,6 +579,9 @@ class PandratorInstaller(QMainWindow):
         buttons_layout.addWidget(self.open_log_button)
         
         layout.addLayout(buttons_layout)
+
+        for checkbox in self.install_tab.findChildren(QCheckBox):
+            checkbox.stateChanged.connect(self.update_install_button_state)
         
         # Add stretch to push everything to the top
         layout.addStretch()
@@ -921,10 +924,16 @@ class PandratorInstaller(QMainWindow):
 
         # Update launch and install buttons state
         self.launch_button.setEnabled(pandrator_installed)
-        self.install_button.setEnabled(True)
+        self.update_install_button_state()
         self.update_button.setEnabled(pandrator_installed)
 
         self.update_backend_runtime_controls()
+
+    def update_install_button_state(self):
+        has_selected_component = any(
+            checkbox.isChecked() for checkbox in self.install_tab.findChildren(QCheckBox)
+        )
+        self.install_button.setEnabled(has_selected_component)
 
     def update_whisperx_checkbox(self):
         """Update WhisperX checkbox when XTTS Fine-tuning is toggled"""
@@ -1176,7 +1185,7 @@ class PandratorInstaller(QMainWindow):
         pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
         pandrator_installed = os.path.exists(pandrator_path)
 
-        self.install_button.setEnabled(True)
+        self.update_install_button_state()
         self.update_button.setEnabled(pandrator_installed)
         self.launch_button.setEnabled(pandrator_installed)
         self.update_status("Backend stopped. You can launch another backend without closing Pandrator.")
@@ -1187,7 +1196,7 @@ class PandratorInstaller(QMainWindow):
         pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
         pandrator_installed = os.path.exists(pandrator_path)
 
-        self.install_button.setEnabled(True)
+        self.update_install_button_state()
         self.update_button.setEnabled(pandrator_installed)
         self.launch_button.setEnabled(pandrator_installed)
         self.update_backend_runtime_controls()
