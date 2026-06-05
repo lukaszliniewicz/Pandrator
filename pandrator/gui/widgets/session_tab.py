@@ -1948,7 +1948,7 @@ class SessionTab(QWidget):
         return "cancel"
 
     def _run_source_cleaning_review(self, source_path_hint: str, selected_ext: str) -> str:
-        dialog = SourceCleaningDialog(self.logic, source_path_hint=source_path_hint, parent=self, auto_run=True)
+        dialog = SourceCleaningDialog(self.logic, source_path_hint=source_path_hint, parent=self)
         if not dialog.exec():
             return "cancel"
 

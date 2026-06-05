@@ -134,7 +134,6 @@ class VoiceCatalogDialog(QDialog):
         self.voice_table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self.voice_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.voice_table.setAlternatingRowColors(True)
-        self.voice_table.setStyleSheet("QTableWidget { alternate-background-color: #3a3446; }")
 
         header = self.voice_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)

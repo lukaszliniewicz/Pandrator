@@ -27,25 +27,25 @@ QFrame#rowFrame {
 }
 
 QFrame#taskStatusFrame {
-    background-color: #25282d;
-    border: 1px solid #4d5863;
-    border-radius: 8px;
+    background-color: transparent;
+    border: none;
+    border-radius: 0;
 }
 
 QFrame#taskStatusFrame[activityTone="active"] {
-    border: 1px solid #9b7dd1;
+    border: none;
 }
 
 QFrame#taskStatusFrame[activityTone="success"] {
-    border: 1px solid #4e8a73;
+    border: none;
 }
 
 QFrame#taskStatusFrame[activityTone="warning"] {
-    border: 1px solid #b48a52;
+    border: none;
 }
 
 QFrame#taskStatusFrame[activityTone="error"] {
-    border: 1px solid #b96767;
+    border: none;
 }
 
 QLabel#sessionSectionLabel,
@@ -178,6 +178,10 @@ QStatusBar {
     background-color: #2d2d30;
     border: 1px solid #4d5863;
     color: #f1f1f1;
+}
+
+QAbstractItemView {
+    alternate-background-color: #3a3446;
 }
 
 QScrollArea#leftPaneScrollArea,

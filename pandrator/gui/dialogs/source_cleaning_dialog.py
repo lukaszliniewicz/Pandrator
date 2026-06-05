@@ -1,7 +1,7 @@
 import json
 import threading
 
-from PyQt6.QtCore import QTimer, pyqtSignal
+from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -27,7 +27,7 @@ class SourceCleaningDialog(QDialog):
     status_updated = pyqtSignal(str)
     cleaning_finished = pyqtSignal(object)
 
-    def __init__(self, logic, source_path_hint: str = "", parent=None, auto_run: bool = True):
+    def __init__(self, logic, source_path_hint: str = "", parent=None):
         super().__init__(parent)
         self.logic = logic
         self.source_path_hint = source_path_hint
@@ -35,7 +35,6 @@ class SourceCleaningDialog(QDialog):
         self._result: dict | None = None
         self._running = False
         self._worker_thread: threading.Thread | None = None
-        self._auto_run = auto_run
 
         self.setWindowTitle("LLM Source Cleaning Review")
         self.resize(1100, 820)
@@ -44,9 +43,6 @@ class SourceCleaningDialog(QDialog):
         self._connect_signals()
         self._populate_model_combo()
         self._set_running(False)
-
-        if self._auto_run:
-            QTimer.singleShot(0, self._start_cleaning)
 
     def _build_layout(self):
         layout = QVBoxLayout(self)
@@ -73,7 +69,7 @@ class SourceCleaningDialog(QDialog):
         layout.addLayout(controls)
 
         status_row = QHBoxLayout()
-        self.status_label = QLabel("Ready.")
+        self.status_label = QLabel("Choose a model and click Run LLM Cleaning when ready.")
         self.status_label.setWordWrap(True)
         status_row.addWidget(self.status_label, 1)
         self.progress_bar = QProgressBar()

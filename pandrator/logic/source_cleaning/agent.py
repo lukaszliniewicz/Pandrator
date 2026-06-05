@@ -131,24 +131,87 @@ def parse_json_command(response: str) -> tuple[dict[str, Any], str]:
     if not raw:
         return {}, "Empty LLM response."
 
-    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, flags=re.DOTALL)
-    if fenced:
-        raw = fenced.group(1).strip()
-    elif not raw.startswith("{"):
-        start = raw.find("{")
-        end = raw.rfind("}")
-        if start >= 0 and end > start:
-            raw = raw[start : end + 1]
+    candidates, error = _extract_json_command_candidates(raw)
+    for candidate in candidates:
+        if str(candidate.get("action") or "").strip():
+            return candidate, ""
+
+    if candidates:
+        return candidates[0], ""
+
+    logging.debug("Could not parse source-cleaning command: %s", raw)
+    return {}, error or "Could not find a JSON command object."
+
+
+def _extract_json_command_candidates(raw: str) -> tuple[list[dict[str, Any]], str]:
+    segments = re.findall(r"```(?:json)?\s*(.*?)\s*```", raw, flags=re.DOTALL | re.IGNORECASE)
+    if not segments:
+        segments = [raw]
+
+    candidates: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for segment in segments:
+        segment_candidates, error = _parse_json_objects_from_text(segment)
+        candidates.extend(segment_candidates)
+        if error:
+            errors.append(error)
+
+    if candidates:
+        return candidates, ""
+    return [], errors[-1] if errors else "No JSON object found."
+
+
+def _parse_json_objects_from_text(text: str) -> tuple[list[dict[str, Any]], str]:
+    decoder = json.JSONDecoder()
+    stripped = str(text or "").strip()
+    if not stripped:
+        return [], "Empty JSON segment."
+
+    candidates: list[dict[str, Any]] = []
+    errors: list[str] = []
 
     try:
-        payload = json.loads(raw)
+        payload = json.loads(stripped)
     except json.JSONDecodeError as e:
-        logging.debug("Could not parse source-cleaning command: %s", raw)
-        return {}, f"Invalid JSON command: {e}"
+        errors.append(f"Invalid JSON command: {e}")
+    else:
+        candidates.extend(_coerce_json_command_candidates(payload))
+        if candidates:
+            return candidates, ""
 
-    if not isinstance(payload, dict):
-        return {}, "JSON command must be an object."
-    return payload, ""
+    for start in _json_object_start_indices(stripped):
+        try:
+            payload, _end = decoder.raw_decode(stripped[start:])
+        except json.JSONDecodeError as e:
+            errors.append(f"Invalid JSON command: {e}")
+            continue
+        candidates.extend(_coerce_json_command_candidates(payload))
+
+    return _dedupe_command_candidates(candidates), errors[-1] if errors else ""
+
+
+def _json_object_start_indices(text: str) -> list[int]:
+    return [match.start() for match in re.finditer(r"\{", text)]
+
+
+def _coerce_json_command_candidates(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, dict):
+        return [payload]
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    return []
+
+
+def _dedupe_command_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = json.dumps(candidate, sort_keys=True, ensure_ascii=False)
+        if key in seen:
+            continue
+        deduped.append(candidate)
+        seen.add(key)
+    return deduped
 
 
 def _execute_tool_action(tools: SourceCleaningTools, command: dict[str, Any]) -> dict[str, Any] | list[dict[str, Any]]:
@@ -171,6 +234,24 @@ def _execute_tool_action(tools: SourceCleaningTools, command: dict[str, Any]) ->
                 text=str(arguments.get("text") or ""),
                 occurrence=int(arguments.get("occurrence") or 1),
                 context_blocks=int(arguments.get("context_blocks") or 2),
+            )
+        if action == "preview_raw_markup_range":
+            return tools.preview_raw_markup_range(
+                start_line=int(arguments.get("start_line") or 1),
+                end_line=int(arguments.get("end_line") or arguments.get("start_line") or 1),
+                max_blocks=int(arguments.get("max_blocks") or 30),
+            )
+        if action == "list_epub_selectors":
+            return tools.list_epub_selectors(
+                min_count=int(arguments.get("min_count") or 2),
+                max_items=int(arguments.get("max_items") or 80),
+            )
+        if action == "preview_selector":
+            selector = arguments.get("selector")
+            return tools.preview_selector(
+                selector=selector if isinstance(selector, dict) else {},
+                max_blocks=int(arguments.get("max_blocks") or 30),
+                include_raw_markup=bool(arguments.get("include_raw_markup", False)),
             )
         if action == "list_repeated_lines":
             return tools.list_repeated_lines(

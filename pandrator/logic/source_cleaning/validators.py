@@ -27,6 +27,7 @@ def validate_cleaning_result(
     cleaned_blocks = len([line for line in result.cleaned_text.splitlines() if line.strip()])
     deleted_blocks = len(result.deleted_block_ids)
     chapter_count = result.report.get("chapter_count", 0)
+    nav_title_count = len(document.nav_titles)
     deletion_ratio = (deleted_blocks / original_blocks) if original_blocks else 0.0
 
     report.stats.update(
@@ -36,6 +37,7 @@ def validate_cleaning_result(
             "deleted_blocks": deleted_blocks,
             "deletion_ratio": round(deletion_ratio, 4),
             "chapter_count": chapter_count,
+            "nav_title_count": nav_title_count,
             "applied_operation_count": len(result.applied_operations),
             "skipped_operation_count": len(result.skipped_operations),
         }
@@ -52,6 +54,16 @@ def validate_cleaning_result(
 
     if original_blocks >= 40 and not chapter_count:
         report.warnings.append("No chapter markers were added for a book-length source.")
+
+    if original_blocks >= 300 and chapter_count == 1:
+        report.warnings.append(
+            "Only one chapter marker was added for a long source; review heading candidates before accepting."
+        )
+
+    if nav_title_count >= 4 and chapter_count < min(3, nav_title_count):
+        report.warnings.append(
+            f"Only {chapter_count} chapter marker(s) were added despite {nav_title_count} EPUB navigation title(s)."
+        )
 
     if _contains_toc_like_section(result.cleaned_text):
         report.warnings.append("Cleaned text may still contain a table-of-contents-like section.")

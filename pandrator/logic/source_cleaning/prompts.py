@@ -21,6 +21,7 @@ Core rules:
 - Work across languages. Do not rely only on English words like "chapter" or "contents".
 - Treat EPUB classes/ids as hints, not truth; many are non-semantic.
 - Use previews and markup inspection before deleting substantial text.
+- Prefer selector-based cleanup over long block_id lists when a whole TOC/nav/license/notes section shares href, class, id, tag, role, or text pattern.
 - Mark real chapter/part/opening section headings with [[Chapter]] via mark_chapter operations.
 - Remove non-audiobook material: TOC-as-list, copyright boilerplate, ads, image alt text, captions, running headers/footers, page numbers, and optional notes.
 - Preserve narrative prose unless there is strong evidence it should not be read aloud.
@@ -35,6 +36,9 @@ Inspection command schema:
 {{"action":"preview","arguments":{{"around_hit_id":"hit:1","before":5,"after":8}}}}
 {{"action":"inspect_block","arguments":{{"block_id":"..."}}}}
 {{"action":"get_epub_markup_for_text","arguments":{{"text":"chapter title","occurrence":1,"context_blocks":2}}}}
+{{"action":"preview_raw_markup_range","arguments":{{"start_line":1,"end_line":20,"max_blocks":20}}}}
+{{"action":"list_epub_selectors","arguments":{{"min_count":2,"max_items":80}}}}
+{{"action":"preview_selector","arguments":{{"selector":{{"href":"toc.xhtml"}},"max_blocks":30,"include_raw_markup":true}}}}
 {{"action":"list_repeated_lines","arguments":{{"min_repeats":3}}}}
 {{"action":"find_heading_candidates","arguments":{{"max_candidates":80}}}}
 {{"action":"find_footnote_candidates","arguments":{{"max_candidates":80}}}}
@@ -49,6 +53,8 @@ Final command schema:
     {{"op":"set_metadata","title":"...","author":"...","language":"..."}},
     {{"op":"delete_range","start_line":1,"end_line":12,"reason":"copyright boilerplate"}},
     {{"op":"delete_blocks","block_ids":["..."],"reason":"image alt text"}},
+    {{"op":"delete_by_selector","selector":{{"href":"toc.xhtml"}},"reason":"EPUB navigation/TOC document, confirmed by preview_selector"}},
+    {{"op":"delete_by_selector","selector":{{"class":"footnote"}},"reason":"footnote class, confirmed by preview_selector"}},
     {{"op":"mark_chapter","block_id":"...","title":"Chapter title"}},
     {{"op":"replace_range","start_line":10,"end_line":10,"replacement":"small OCR fix","reason":"small OCR fix"}}
   ]

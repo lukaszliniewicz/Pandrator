@@ -142,6 +142,56 @@ class SourceCleaningTests(unittest.TestCase):
         epub.write_epub(epub_path, book)
         return epub_path
 
+    def _write_large_toc_epub_fixture(self) -> str:
+        epub_path = os.path.join(self.temp_dir.name, "Large Toc.epub")
+
+        book = epub.EpubBook()
+        book.set_identifier("fixture-large-toc")
+        book.set_title("Large Toc")
+        book.set_language("en")
+        book.add_author("Example Author")
+
+        chapter = epub.EpubHtml(title="Body", file_name="body.xhtml", lang="en")
+        chapter.content = """
+        <html>
+          <body>
+            <h1>Chapter One</h1>
+            <p>The story begins here.</p>
+            <h1>Chapter Two</h1>
+            <p>The story continues here.</p>
+          </body>
+        </html>
+        """
+
+        toc_items = "\n".join(
+            f'<li class="toc-line"><a href="body.xhtml#c{index}">Chapter {index}</a></li>'
+            for index in range(1, 41)
+        )
+        toc = epub.EpubHtml(title="Contents", file_name="toc.xhtml", lang="en")
+        toc.content = f"""
+        <html>
+          <body>
+            <nav id="toc" class="pg-toc">
+              <h1>Contents</h1>
+              <ol>{toc_items}</ol>
+            </nav>
+          </body>
+        </html>
+        """
+
+        book.add_item(chapter)
+        book.add_item(toc)
+        book.add_item(epub.EpubNcx())
+        book.add_item(epub.EpubNav())
+        book.toc = (
+            epub.Link("body.xhtml#c1", "Chapter One", "chapter-one"),
+            epub.Link("body.xhtml#c2", "Chapter Two", "chapter-two"),
+        )
+        book.spine = ["nav", toc, chapter]
+
+        epub.write_epub(epub_path, book)
+        return epub_path
+
     def test_epub_index_preserves_metadata_markup_and_nonsemantic_blocks(self):
         epub_path = self._write_epub_fixture()
 
@@ -227,6 +277,41 @@ class SourceCleaningTests(unittest.TestCase):
         self.assertNotIn("Figure 1.", result.cleaned_text)
         self.assertNotIn("endnote-like", result.cleaned_text)
         self.assertIn("The narrator returns to the road.", result.cleaned_text)
+
+    def test_selector_tools_preview_and_delete_entire_epub_toc(self):
+        epub_path = self._write_large_toc_epub_fixture()
+
+        document = build_source_document(epub_path)
+        tools = SourceCleaningTools(document)
+        selectors = tools.list_epub_selectors(min_count=2)
+        href_selectors = selectors["selectors"]["href"]
+        toc_selector = {"href": "toc.xhtml"}
+        toc_preview = tools.preview_selector(toc_selector, max_blocks=5, include_raw_markup=True)
+        raw_range = tools.preview_raw_markup_range(
+            start_line=toc_preview["first_line"],
+            end_line=toc_preview["last_line"],
+            max_blocks=5,
+        )
+
+        self.assertIn(toc_selector, [item["selector"] for item in href_selectors])
+        self.assertGreaterEqual(toc_preview["matched_blocks"], 40)
+        self.assertTrue(any("raw_markup" in block for block in toc_preview["blocks"]))
+        self.assertTrue(any("raw_markup" in block for block in raw_range["blocks"]))
+
+        result = apply_cleaning_operations(
+            document,
+            [
+                {
+                    "op": "delete_by_selector",
+                    "selector": toc_selector,
+                    "reason": "complete TOC document confirmed by selector preview",
+                }
+            ],
+        )
+
+        self.assertNotIn("Chapter 40", result.cleaned_text)
+        self.assertIn("The story begins here.", result.cleaned_text)
+        self.assertEqual(result.applied_operations[0]["details"]["deleted_blocks"], toc_preview["matched_blocks"])
 
     def test_tools_search_preview_repeated_lines_and_footnotes(self):
         text = "\f".join(
@@ -446,6 +531,30 @@ class SourceCleaningTests(unittest.TestCase):
         self.assertEqual(len(result.operations), 2)
         self.assertAlmostEqual(result.confidence, 0.82)
 
+    def test_agent_dispatches_selector_preview_tool(self):
+        document = build_source_document_from_text(
+            "\n".join(["Contents", "Chapter One", "Story."]),
+            filename="sample.pdf",
+        )
+        responses = iter(
+            [
+                '{"action":"preview_selector","arguments":{"selector":{"text_regex":"Chapter"},"max_blocks":5}}',
+                '{"action":"finish","summary":"done","confidence":0.5,"operations":[]}',
+            ]
+        )
+
+        def fake_completion(**_kwargs):
+            return next(responses)
+
+        result = run_source_cleaning_agent(
+            document,
+            config=SourceCleaningAgentConfig(max_iterations=3),
+            completion_func=fake_completion,
+        )
+
+        self.assertEqual(result.tool_trace[0]["action"], "preview_selector")
+        self.assertEqual(result.tool_trace[0]["observation"]["matched_blocks"], 1)
+
     def test_parse_json_command_extracts_fenced_json(self):
         command, error = parse_json_command(
             "Here is the command:\n```json\n{\"action\":\"find_metadata_candidates\",\"arguments\":{}}\n```"
@@ -453,6 +562,23 @@ class SourceCleaningTests(unittest.TestCase):
 
         self.assertFalse(error)
         self.assertEqual(command["action"], "find_metadata_candidates")
+
+    def test_parse_json_command_accepts_extra_text_and_adjacent_objects(self):
+        command, error = parse_json_command(
+            '{"action":"search","arguments":{"query":"chapter"}}\n'
+            '{"action":"find_heading_candidates","arguments":{"max_candidates":20}}'
+        )
+
+        self.assertFalse(error)
+        self.assertEqual(command["action"], "search")
+
+        command_with_tail, tail_error = parse_json_command(
+            '```json\n{"action":"preview","arguments":{"start_line":1,"end_line":5}}\n```\n'
+            "I will inspect this before deciding."
+        )
+
+        self.assertFalse(tail_error)
+        self.assertEqual(command_with_tail["action"], "preview")
 
     def test_validator_warns_about_high_deletion_and_missing_chapters(self):
         document = build_source_document_from_text(
@@ -470,6 +596,23 @@ class SourceCleaningTests(unittest.TestCase):
         joined_warnings = "\n".join(validation.warnings)
         self.assertIn("deletion ratio", joined_warnings.lower())
         self.assertIn("No chapter markers", joined_warnings)
+
+    def test_validator_warns_about_suspiciously_low_chapter_count(self):
+        document = build_source_document_from_text(
+            "\n".join(["Chapter One"] + [f"line {index}" for index in range(2, 401)]),
+            filename="sample.pdf",
+        )
+        document.nav_titles = ["Chapter One", "Chapter Two", "Chapter Three", "Chapter Four"]
+        result = apply_cleaning_operations(
+            document,
+            [{"op": "mark_chapter", "start_line": 1, "title": "Chapter One"}],
+        )
+
+        validation = validate_cleaning_result(document, result, remove_footnotes=False)
+
+        joined_warnings = "\n".join(validation.warnings)
+        self.assertIn("Only one chapter marker", joined_warnings)
+        self.assertIn("EPUB navigation title", joined_warnings)
 
     def test_app_logic_source_cleaning_writes_augmented_artifacts_without_network(self):
         outputs_dir = os.path.join(self.temp_dir.name, "Outputs")

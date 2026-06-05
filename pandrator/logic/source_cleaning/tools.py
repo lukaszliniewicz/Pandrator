@@ -6,6 +6,7 @@ from collections import defaultdict
 from typing import Any
 
 from .models import SearchHit, SourceBlock, SourceDocument
+from .selectors import blocks_matching_selector, selector_supported_keys
 
 
 class SourceCleaningTools:
@@ -153,6 +154,81 @@ class SourceCleaningTools:
             "selected_occurrence": index + 1,
             "target": target.to_dict(),
             "context": [block.to_dict() for block in all_blocks[start:end]],
+        }
+
+    def preview_raw_markup_range(
+        self,
+        start_line: int,
+        end_line: int,
+        max_blocks: int = 30,
+    ) -> dict[str, Any]:
+        if self.document.source_type != "epub":
+            return {"error": "Raw markup preview is only available for EPUB sources."}
+
+        blocks = self.document.blocks_in_line_range(int(start_line), int(end_line))
+        return {
+            "start_line": int(start_line),
+            "end_line": int(end_line),
+            "matched_blocks": len(blocks),
+            "blocks": [self._raw_markup_block(block) for block in blocks[:max(1, int(max_blocks))]],
+            "truncated": len(blocks) > max(1, int(max_blocks)),
+        }
+
+    def list_epub_selectors(
+        self,
+        min_count: int = 2,
+        max_items: int = 80,
+    ) -> dict[str, Any]:
+        grouped: dict[str, dict[str, list[SourceBlock]]] = {
+            "href": defaultdict(list),
+            "tag": defaultdict(list),
+            "class": defaultdict(list),
+            "element_id": defaultdict(list),
+            "role": defaultdict(list),
+        }
+
+        for block in self.document.blocks:
+            if block.href:
+                grouped["href"][block.href].append(block)
+            if block.tag:
+                grouped["tag"][block.tag].append(block)
+            if block.element_id:
+                grouped["element_id"][block.element_id].append(block)
+            for class_name in block.classes:
+                grouped["class"][class_name].append(block)
+            for role in block.role_candidates:
+                grouped["role"][role].append(block)
+
+        return {
+            "supported_selector_keys": selector_supported_keys(),
+            "selectors": {
+                kind: self._selector_group_rows(kind, values, min_count, max_items)
+                for kind, values in grouped.items()
+            },
+        }
+
+    def preview_selector(
+        self,
+        selector: dict[str, Any],
+        max_blocks: int = 30,
+        include_raw_markup: bool = False,
+    ) -> dict[str, Any]:
+        matches = blocks_matching_selector(self.document.blocks, selector)
+        blocks = matches[:max(1, int(max_blocks))]
+        return {
+            "selector": selector,
+            "matched_blocks": len(matches),
+            "first_line": matches[0].line_start if matches else None,
+            "last_line": matches[-1].line_end if matches else None,
+            "hrefs": _dedupe_values(block.href for block in matches if block.href),
+            "tags": _dedupe_values(block.tag for block in matches if block.tag),
+            "classes": _dedupe_values(class_name for block in matches for class_name in block.classes),
+            "roles": _dedupe_values(role for block in matches for role in block.role_candidates),
+            "blocks": [
+                self._raw_markup_block(block) if include_raw_markup else self._preview_block(block)
+                for block in blocks
+            ],
+            "truncated": len(matches) > len(blocks),
         }
 
     def list_repeated_lines(self, min_repeats: int = 3, max_length: int = 120) -> list[dict[str, Any]]:
@@ -333,6 +409,41 @@ class SourceCleaningTools:
             "element_id": block.element_id,
             "role_candidates": block.role_candidates,
         }
+
+    @staticmethod
+    def _raw_markup_block(block: SourceBlock) -> dict[str, Any]:
+        payload = SourceCleaningTools._preview_block(block)
+        payload["raw_markup"] = block.raw_markup
+        payload["dom_path"] = block.dom_path
+        payload["attributes"] = block.attributes
+        return payload
+
+    @staticmethod
+    def _selector_group_rows(
+        kind: str,
+        values: dict[str, list[SourceBlock]],
+        min_count: int,
+        max_items: int,
+    ) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for value, blocks in values.items():
+            if len(blocks) < min_count:
+                continue
+            selector_key = "class" if kind == "class" else kind
+            rows.append(
+                {
+                    "selector": {selector_key: value},
+                    "value": value,
+                    "count": len(blocks),
+                    "first_line": blocks[0].line_start,
+                    "last_line": blocks[-1].line_end,
+                    "sample_texts": [block.text for block in blocks[:5]],
+                    "hrefs": _dedupe_values(block.href for block in blocks if block.href),
+                }
+            )
+
+        rows.sort(key=lambda item: (-int(item["count"]), str(item["value"]).lower()))
+        return rows[:max(1, int(max_items))]
 
 
 def _parse_plain_query(query: str) -> list[str]:

@@ -6,6 +6,7 @@ import os
 from typing import Any
 
 from .models import CleaningResult, SourceBlock, SourceDocument
+from .selectors import blocks_matching_selector, selector_summary
 
 
 ALLOWED_METADATA_KEYS = {
@@ -82,6 +83,31 @@ def apply_cleaning_operations(
             if missing:
                 details["missing_block_ids"] = missing
             applied.append(_applied(index, operation, details))
+            continue
+
+        if op == "delete_by_selector":
+            selector = operation.get("selector")
+            if not isinstance(selector, dict) or not selector:
+                skipped.append({"index": index, "operation": operation, "reason": "selector object required"})
+                continue
+            targets = blocks_matching_selector(document.blocks, selector)
+            if not targets:
+                skipped.append({"index": index, "operation": operation, "reason": "selector matched no blocks"})
+                continue
+            for block in targets:
+                deleted_block_ids.add(block.block_id)
+            applied.append(
+                _applied(
+                    index,
+                    operation,
+                    {
+                        "deleted_blocks": len(targets),
+                        "selector": selector_summary(selector),
+                        "first_line": targets[0].line_start,
+                        "last_line": targets[-1].line_end,
+                    },
+                )
+            )
             continue
 
         if op == "mark_chapter":
@@ -239,6 +265,8 @@ def _resolve_operation_block(document: SourceDocument, operation: dict[str, Any]
     line = operation.get("line")
     if line is None:
         line = operation.get("line_start")
+    if line is None:
+        line = operation.get("start_line")
     if line is None:
         return None
 
