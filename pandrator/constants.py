@@ -32,6 +32,52 @@ FISHS2_LANGUAGES = list(XTTS_LANGUAGES)
 VOXTRAL_LANGUAGES = ["ar", "en", "de", "es", "fr", "hi", "it", "nl", "pt"]
 KOKORO_LANGUAGES = ["en", "en-gb", "de", "es", "fr", "hi", "it", "ja", "pt", "zh-cn"]
 
+KOKORO_PREFIX_LANGUAGE_CODES = {
+    "a": "en",
+    "b": "en-gb",
+    "d": "de",
+    "e": "es",
+    "f": "fr",
+    "h": "hi",
+    "i": "it",
+    "j": "ja",
+    "p": "pt",
+    "z": "zh-cn",
+}
+
+KOKORO_VOICE_LANGUAGE_GROUPS = {
+    "a": "American English",
+    "b": "British English",
+    "d": "German",
+    "e": "Spanish",
+    "f": "French",
+    "h": "Hindi",
+    "i": "Italian",
+    "j": "Japanese",
+    "p": "Portuguese",
+    "z": "Chinese (Simplified)",
+}
+
+KOKORO_OPENAI_ALIAS_VOICES = {
+    "alloy",
+    "ash",
+    "ballad",
+    "cedar",
+    "coral",
+    "echo",
+    "fable",
+    "marin",
+    "nova",
+    "onyx",
+    "sage",
+    "shimmer",
+    "verse",
+}
+
+KOKORO_NAMED_VOICE_META: dict[str, tuple[str, str]] = {
+    "martin": ("d", "m"),
+}
+
 LANGUAGE_DISPLAY_NAMES = {
     "ar": "Arabic",
     "cs": "Czech",

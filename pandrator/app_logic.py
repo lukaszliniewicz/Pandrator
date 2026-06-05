@@ -1059,6 +1059,9 @@ class AppLogic(QObject):
         service_lower = service.lower()
         endpoint = str(target_state.openai_audio_endpoint or "").strip()
         target_state.provider_configs = tts_handler.get_provider_configs(target_state)
+        target_state.kokoro_default_voices = self._normalize_kokoro_default_voices(
+            getattr(target_state, "kokoro_default_voices", {})
+        )
         available_provider_ids = [
             str(item.get("id") or "").strip()
             for item in target_state.provider_configs
@@ -3555,6 +3558,112 @@ class AppLogic(QObject):
             self.show_error.emit("Metadata Error", f"Could not save metadata: {e}")
 
     # --- TTS ---
+    @staticmethod
+    def _normalize_kokoro_default_voices(raw_defaults) -> dict[str, str]:
+        if not isinstance(raw_defaults, dict):
+            return {}
+
+        normalized_defaults: dict[str, str] = {}
+        for language_value, voice_value in raw_defaults.items():
+            language_code = tts_handler.normalize_kokoro_language_code(language_value)
+            voice_name = str(voice_value or "").strip()
+            if language_code and voice_name:
+                normalized_defaults[language_code] = voice_name
+        return normalized_defaults
+
+    @staticmethod
+    def _match_catalog_voice(voice_name: str, speaker_catalog: list[str] | None) -> str:
+        normalized_voice = str(voice_name or "").strip()
+        if not normalized_voice:
+            return ""
+        if not speaker_catalog:
+            return normalized_voice
+
+        for catalog_voice in speaker_catalog:
+            if str(catalog_voice or "").strip().lower() == normalized_voice.lower():
+                return str(catalog_voice or "").strip()
+        return ""
+
+    @classmethod
+    def _preferred_kokoro_voice_for_language(
+        cls,
+        language_code: str,
+        speaker_catalog: list[str] | None,
+        current_speaker: str = "",
+        default_voices: dict | None = None,
+    ) -> str:
+        normalized_language = tts_handler.normalize_kokoro_language_code(language_code)
+        if not normalized_language:
+            return ""
+
+        normalized_defaults = cls._normalize_kokoro_default_voices(default_voices)
+        default_voice = normalized_defaults.get(normalized_language, "")
+        matched_default = cls._match_catalog_voice(default_voice, speaker_catalog)
+        if matched_default:
+            return matched_default
+
+        current_voice = str(current_speaker or "").strip()
+        if (
+            current_voice
+            and tts_handler.infer_kokoro_voice_language_code(current_voice) == normalized_language
+        ):
+            matched_current = cls._match_catalog_voice(current_voice, speaker_catalog)
+            if matched_current:
+                return matched_current
+
+        for speaker in speaker_catalog or []:
+            normalized_speaker = str(speaker or "").strip()
+            if (
+                normalized_speaker
+                and tts_handler.infer_kokoro_voice_language_code(normalized_speaker) == normalized_language
+            ):
+                return normalized_speaker
+
+        return default_voice if default_voice and not speaker_catalog else ""
+
+    def _sync_kokoro_language_from_voice(self, speaker_name: str) -> bool:
+        if self.state.tts.service != "Kokoro":
+            return False
+
+        language_code = tts_handler.infer_kokoro_voice_language_code(speaker_name)
+        if not language_code or self.state.tts.language == language_code:
+            return False
+
+        self.state.tts.language = language_code
+        return True
+
+    def save_kokoro_default_voice(
+        self,
+        speaker_name: str,
+        language_code: str = "",
+    ) -> tuple[bool, str]:
+        if self.state.tts.service != "Kokoro":
+            return False, "Kokoro defaults can only be saved while Kokoro is the active TTS service."
+
+        normalized_speaker = str(speaker_name or "").strip()
+        if not normalized_speaker:
+            return False, "Select a Kokoro voice first."
+
+        inferred_language = tts_handler.infer_kokoro_voice_language_code(normalized_speaker)
+        normalized_language = inferred_language or tts_handler.normalize_kokoro_language_code(language_code)
+        if not normalized_language:
+            return False, "Could not identify the language for this Kokoro voice."
+
+        defaults = self._normalize_kokoro_default_voices(self.state.tts.kokoro_default_voices)
+        defaults[normalized_language] = normalized_speaker
+        self.state.tts.kokoro_default_voices = defaults
+        self.state.tts.speaker = normalized_speaker
+        self.state.tts.language = normalized_language
+
+        self._persist_global_settings(force=True)
+        if self._is_named_session_active():
+            self._persist_session_config(force=True)
+
+        message = f"Saved {normalized_speaker} as the Kokoro default for {normalized_language}."
+        self._notify_user(message)
+        self.state_changed.emit()
+        return True, message
+
     def populate_cloud_tts_catalogs(
         self,
         use_remote: bool = False,
@@ -3868,7 +3977,15 @@ class AppLogic(QObject):
                 speakers = tts_handler.get_kokoro_voices(base_url)
 
                 default_model = tts_handler.KOKORO_DEFAULT_MODEL
-                default_voice = tts_handler.KOKORO_DEFAULT_VOICE
+                default_voice = (
+                    self._preferred_kokoro_voice_for_language(
+                        str(tts_snapshot.get("language") or ""),
+                        speakers,
+                        current_speaker=str(tts_snapshot.get("speaker") or ""),
+                        default_voices=tts_snapshot.get("kokoro_default_voices"),
+                    )
+                    or tts_handler.KOKORO_DEFAULT_VOICE
+                )
 
                 selected_model = (tts_snapshot.get("xtts_model") or "").strip()
                 if models:
@@ -3879,10 +3996,18 @@ class AppLogic(QObject):
 
                 selected_speaker = (tts_snapshot.get("speaker") or "").strip()
                 if speakers:
-                    if selected_speaker not in speakers:
+                    matched_selected_speaker = self._match_catalog_voice(selected_speaker, speakers)
+                    if matched_selected_speaker:
+                        selected_speaker = matched_selected_speaker
+                    else:
                         selected_speaker = default_voice if default_voice in speakers else speakers[0]
                 elif not selected_speaker:
                     selected_speaker = default_voice
+
+                selected_language = (
+                    tts_handler.infer_kokoro_voice_language_code(selected_speaker)
+                    or tts_handler.normalize_kokoro_language_code(tts_snapshot.get("language"))
+                )
 
                 result["updates"] = {
                     "tts_models": models,
@@ -3890,6 +4015,8 @@ class AppLogic(QObject):
                     "xtts_model": selected_model,
                     "speaker": selected_speaker,
                 }
+                if selected_language:
+                    result["updates"]["language"] = selected_language
                 result["log_message"] = (
                     f"Connected to Kokoro server ({len(models)} model(s), {len(speakers)} voice(s))."
                 )
@@ -4073,6 +4200,16 @@ class AppLogic(QObject):
         self.state.tts.language = language_name
         if self.state.tts.service == "Silero":
             self.connect_tts_server()
+        elif self.state.tts.service == "Kokoro":
+            preferred_voice = self._preferred_kokoro_voice_for_language(
+                language_name,
+                self.state.tts.tts_speakers,
+                current_speaker=self.state.tts.speaker,
+                default_voices=self.state.tts.kokoro_default_voices,
+            )
+            if preferred_voice:
+                self.state.tts.speaker = preferred_voice
+            self.state_changed.emit()
         else:
             self.state_changed.emit()
 
@@ -4180,7 +4317,18 @@ class AppLogic(QObject):
             with self._state_lock:
                 self.state.tts.tts_speakers = list(voices)
                 if self.state.tts.speaker not in voices:
-                    self.state.tts.speaker = voices[0]
+                    if service == "Kokoro":
+                        preferred_voice = self._preferred_kokoro_voice_for_language(
+                            self.state.tts.language,
+                            voices,
+                            current_speaker=self.state.tts.speaker,
+                            default_voices=self.state.tts.kokoro_default_voices,
+                        )
+                        self.state.tts.speaker = preferred_voice or voices[0]
+                    else:
+                        self.state.tts.speaker = voices[0]
+                if service == "Kokoro":
+                    self._sync_kokoro_language_from_voice(self.state.tts.speaker)
             self.state_changed.emit()
 
         return voices
@@ -4366,7 +4514,8 @@ class AppLogic(QObject):
 
     def set_tts_speaker_voice(self, speaker_name: str):
         normalized_speaker = str(speaker_name or "").strip()
-        if self.state.tts.speaker == normalized_speaker:
+        language_changed = self._sync_kokoro_language_from_voice(normalized_speaker)
+        if self.state.tts.speaker == normalized_speaker and not language_changed:
             return
         self.state.tts.speaker = normalized_speaker
         self.state_changed.emit()

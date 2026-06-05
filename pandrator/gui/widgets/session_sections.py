@@ -492,6 +492,152 @@ class AdvancedTtsSettingsSection(QFrame):
 
         layout.addWidget(self.voxcpm_advanced_settings_frame)
 
+        self.fishs2_advanced_settings_frame = QFrame()
+        self.fishs2_advanced_settings_frame.setObjectName("subGroupFrame")
+        fishs2_layout = QGridLayout(self.fishs2_advanced_settings_frame)
+        fishs2_layout.setHorizontalSpacing(10)
+        fishs2_layout.setVerticalSpacing(8)
+
+        def _format_fishs2_tooltip(title: str, lines: list[str], note: str = "") -> str:
+            tooltip = f"<b>{title}</b><br><br>"
+            tooltip += "<br>".join(f"- {line}" for line in lines)
+            if note:
+                tooltip += f"<br><br><i>{note}</i>"
+            return tooltip
+
+        self.fishs2_advanced_hint_label = QLabel(
+            "FishS2 controls tune chunking, sampling, latency, and prosody."
+        )
+        self.fishs2_advanced_hint_label.setWordWrap(True)
+        self.fishs2_advanced_hint_label.setObjectName("secondaryInfoLabel")
+        fishs2_layout.addWidget(self.fishs2_advanced_hint_label, 0, 0, 1, 2)
+        self.fishs2_advanced_hint_label.setToolTip(
+            _format_fishs2_tooltip(
+                "FishS2 Advanced Settings",
+                [
+                    "Temperature and top-p affect variation and diversity.",
+                    "Chunk length and latency trade first response time against quality.",
+                    "Prosody volume is sent in the Fish prosody object.",
+                ],
+            )
+        )
+
+        self.fishs2_temperature_spinbox = QDoubleSpinBox()
+        self.fishs2_temperature_spinbox.setDecimals(2)
+        self.fishs2_temperature_spinbox.setRange(0.0, 1.0)
+        self.fishs2_temperature_spinbox.setSingleStep(0.05)
+        self.fishs2_temperature_label = QLabel("Temperature:")
+        fishs2_layout.addWidget(self.fishs2_temperature_label, 1, 0)
+        fishs2_layout.addWidget(self.fishs2_temperature_spinbox, 1, 1)
+        _apply_tooltip(
+            [self.fishs2_temperature_label, self.fishs2_temperature_spinbox],
+            _format_fishs2_tooltip(
+                "Temperature",
+                [
+                    "Controls expressiveness/randomness.",
+                    "Lower values are more consistent; higher values are more varied.",
+                    "Range: 0.0 to 1.0 (default: 0.7).",
+                ],
+            ),
+        )
+
+        self.fishs2_top_p_spinbox = QDoubleSpinBox()
+        self.fishs2_top_p_spinbox.setDecimals(2)
+        self.fishs2_top_p_spinbox.setRange(0.0, 1.0)
+        self.fishs2_top_p_spinbox.setSingleStep(0.05)
+        self.fishs2_top_p_label = QLabel("Top P:")
+        fishs2_layout.addWidget(self.fishs2_top_p_label, 2, 0)
+        fishs2_layout.addWidget(self.fishs2_top_p_spinbox, 2, 1)
+        _apply_tooltip(
+            [self.fishs2_top_p_label, self.fishs2_top_p_spinbox],
+            _format_fishs2_tooltip(
+                "Top P",
+                [
+                    "Controls nucleus sampling diversity.",
+                    "Lower values narrow choices; higher values allow more variation.",
+                    "Range: 0.0 to 1.0 (default: 0.7).",
+                ],
+            ),
+        )
+
+        self.fishs2_chunk_length_spinbox = QSpinBox()
+        self.fishs2_chunk_length_spinbox.setRange(100, 300)
+        self.fishs2_chunk_length_label = QLabel("Chunk Length:")
+        fishs2_layout.addWidget(self.fishs2_chunk_length_label, 3, 0)
+        fishs2_layout.addWidget(self.fishs2_chunk_length_spinbox, 3, 1)
+        _apply_tooltip(
+            [self.fishs2_chunk_length_label, self.fishs2_chunk_length_spinbox],
+            _format_fishs2_tooltip(
+                "Chunk Length",
+                [
+                    "Characters per generation chunk.",
+                    "Smaller chunks can respond sooner; larger chunks can improve continuity.",
+                    "Range: 100 to 300 (default: 200).",
+                ],
+            ),
+        )
+
+        self.fishs2_latency_combo = QComboBox()
+        self.fishs2_latency_combo.addItems(["balanced", "normal"])
+        self.fishs2_latency_label = QLabel("Latency:")
+        fishs2_layout.addWidget(self.fishs2_latency_label, 4, 0)
+        fishs2_layout.addWidget(self.fishs2_latency_combo, 4, 1)
+        _apply_tooltip(
+            [self.fishs2_latency_label, self.fishs2_latency_combo],
+            _format_fishs2_tooltip(
+                "Latency",
+                [
+                    "balanced is faster and is the documented default.",
+                    "normal favors quality over latency.",
+                ],
+            ),
+        )
+
+        self.fishs2_normalize_checkbox = QCheckBox("Normalize Text")
+        fishs2_layout.addWidget(self.fishs2_normalize_checkbox, 5, 0, 1, 2)
+        self.fishs2_normalize_checkbox.setToolTip(
+            _format_fishs2_tooltip(
+                "Normalize Text",
+                [
+                    "Enables Fish text normalization before synthesis.",
+                    "Useful for numbers, punctuation, and symbols.",
+                ],
+            )
+        )
+
+        self.fishs2_prosody_volume_spinbox = QDoubleSpinBox()
+        self.fishs2_prosody_volume_spinbox.setDecimals(1)
+        self.fishs2_prosody_volume_spinbox.setRange(-20.0, 20.0)
+        self.fishs2_prosody_volume_spinbox.setSingleStep(0.5)
+        self.fishs2_prosody_volume_label = QLabel("Prosody Volume (dB):")
+        fishs2_layout.addWidget(self.fishs2_prosody_volume_label, 6, 0)
+        fishs2_layout.addWidget(self.fishs2_prosody_volume_spinbox, 6, 1)
+        _apply_tooltip(
+            [self.fishs2_prosody_volume_label, self.fishs2_prosody_volume_spinbox],
+            _format_fishs2_tooltip(
+                "Prosody Volume",
+                [
+                    "Output volume adjustment in decibels.",
+                    "Positive values increase volume; negative values decrease it.",
+                    "Range: -20.0 to 20.0 (default: 0.0).",
+                ],
+            ),
+        )
+
+        self.fishs2_normalize_loudness_checkbox = QCheckBox("Normalize Loudness")
+        fishs2_layout.addWidget(self.fishs2_normalize_loudness_checkbox, 7, 0, 1, 2)
+        self.fishs2_normalize_loudness_checkbox.setToolTip(
+            _format_fishs2_tooltip(
+                "Normalize Loudness",
+                [
+                    "Adds normalize_loudness to Fish prosody settings.",
+                    "Helps keep sentence loudness more consistent.",
+                ],
+            )
+        )
+
+        layout.addWidget(self.fishs2_advanced_settings_frame)
+
         self.voxtral_advanced_settings_frame = QFrame()
         self.voxtral_advanced_settings_frame.setObjectName("subGroupFrame")
         voxtral_layout = QGridLayout(self.voxtral_advanced_settings_frame)

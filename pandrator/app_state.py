@@ -177,6 +177,14 @@ class TTSSettings:
     voxcpm_retry_badcase_ratio_threshold: float = 6.0
     voxcpm_min_len: int = 2
     voxcpm_max_len: int = 4096
+    fishs2_temperature: float = 0.7
+    fishs2_top_p: float = 0.7
+    fishs2_chunk_length: int = 200
+    fishs2_latency: str = "balanced"
+    fishs2_normalize: bool = True
+    fishs2_prosody_volume: float = 0.0
+    fishs2_normalize_loudness: bool = True
+    kokoro_default_voices: Dict[str, str] = field(default_factory=lambda: {"en": "af_heart"})
     voxtral_max_frames: int = 1024
     voxtral_euler_steps: int = 8
     voxtral_chunk: bool = False

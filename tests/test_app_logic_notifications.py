@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+from pandrator.app_state import AppState
 from pandrator.app_logic import AppLogic
 
 
@@ -58,6 +59,34 @@ class _LogicHarness:
 
     def cancel_regeneration(self):
         return AppLogic.cancel_regeneration(self)
+
+
+class _KokoroLogicHarness:
+    def __init__(self):
+        self.state = AppState()
+        self.state.tts.service = "Kokoro"
+        self.state_changed = _DummySignal()
+        self.notifications = []
+        self.persist_global_calls = 0
+        self.persist_session_calls = 0
+
+    def _sync_kokoro_language_from_voice(self, speaker_name):
+        return AppLogic._sync_kokoro_language_from_voice(self, speaker_name)
+
+    def _normalize_kokoro_default_voices(self, raw_defaults):
+        return AppLogic._normalize_kokoro_default_voices(raw_defaults)
+
+    def _persist_global_settings(self, force=False):
+        self.persist_global_calls += 1
+
+    def _persist_session_config(self, force=False):
+        self.persist_session_calls += 1
+
+    def _is_named_session_active(self):
+        return True
+
+    def _notify_user(self, message, timeout_ms=5000, level="info"):
+        self.notifications.append((message, timeout_ms, level))
 
 
 class AppLogicNotificationTests(unittest.TestCase):
@@ -137,6 +166,40 @@ class AppLogicNotificationTests(unittest.TestCase):
 
         self.assertTrue(harness.cancel_regeneration_flag.is_set())
         self.assertEqual([], harness.notifications)
+
+    def test_kokoro_preferred_voice_uses_language_default(self):
+        selected = AppLogic._preferred_kokoro_voice_for_language(
+            "ja",
+            ["af_heart", "jf_alpha"],
+            current_speaker="af_heart",
+            default_voices={"ja": "jf_alpha"},
+        )
+
+        self.assertEqual(selected, "jf_alpha")
+
+    def test_kokoro_speaker_selection_syncs_language(self):
+        harness = _KokoroLogicHarness()
+        harness.state.tts.language = "en"
+
+        AppLogic.set_tts_speaker_voice(harness, "jf_alpha")
+
+        self.assertEqual(harness.state.tts.speaker, "jf_alpha")
+        self.assertEqual(harness.state.tts.language, "ja")
+        self.assertEqual([()], harness.state_changed.calls)
+
+    def test_save_kokoro_default_voice_persists_language_mapping(self):
+        harness = _KokoroLogicHarness()
+
+        success, message = AppLogic.save_kokoro_default_voice(harness, "bf_alice")
+
+        self.assertTrue(success)
+        self.assertIn("bf_alice", message)
+        self.assertEqual(harness.state.tts.kokoro_default_voices["en-gb"], "bf_alice")
+        self.assertEqual(harness.state.tts.speaker, "bf_alice")
+        self.assertEqual(harness.state.tts.language, "en-gb")
+        self.assertEqual(1, harness.persist_global_calls)
+        self.assertEqual(1, harness.persist_session_calls)
+        self.assertEqual([()], harness.state_changed.calls)
 
     def test_regeneration_worker_stops_after_cancellation_request(self):
         harness = _LogicHarness()

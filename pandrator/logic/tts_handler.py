@@ -9,6 +9,12 @@ from contextlib import ExitStack
 import requests
 from pydub import AudioSegment
 
+from ..constants import (
+    KOKORO_NAMED_VOICE_META,
+    KOKORO_OPENAI_ALIAS_VOICES,
+    KOKORO_PREFIX_LANGUAGE_CODES,
+)
+
 _litellm_speech = None
 _litellm_speech_import_attempted = False
 
@@ -43,6 +49,7 @@ SILERO_API_BASE_URL = "http://127.0.0.1:8001"
 
 # Kokoro default URLs
 KOKORO_API_BASE_URL = "http://127.0.0.1:8880"
+TTS_GENERATION_TIMEOUT_SECONDS = 300
 
 XTTS_OPENAI_PLACEHOLDER_API_KEY = "sk-placeholder"
 XTTS_DEFAULT_MODEL = "tts_models/multilingual/multi-dataset/xtts_v2"
@@ -70,6 +77,13 @@ FISHS2_MODEL_ALIASES = [
 ]
 FISHS2_DEFAULT_VOICE = "default"
 FISHS2_UPLOAD_FILE_PURPOSE = "user_data"
+FISHS2_DEFAULT_TEMPERATURE = 0.7
+FISHS2_DEFAULT_TOP_P = 0.7
+FISHS2_DEFAULT_CHUNK_LENGTH = 200
+FISHS2_DEFAULT_LATENCY = "balanced"
+FISHS2_DEFAULT_NORMALIZE = True
+FISHS2_DEFAULT_PROSODY_VOLUME = 0.0
+FISHS2_DEFAULT_NORMALIZE_LOUDNESS = True
 VOXTRAL_DEFAULT_MODEL = "auto"
 VOXTRAL_DEFAULT_VOICE = "casual_female"
 VOXTRAL_INSTRUCTIONS_PREFIX = "voxtral_options:"
@@ -139,6 +153,71 @@ KOKORO_TTS_VOICES = [
     "zm_yunxia",
     "zm_yunyang",
 ]
+
+
+def normalize_kokoro_language_code(language_value: str | None) -> str:
+    normalized = str(language_value or "").strip().lower()
+    if not normalized:
+        return ""
+
+    aliases = {
+        "en-us": "en",
+        "pt-br": "pt",
+        "fr-fr": "fr",
+        "zh": "zh-cn",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def _strip_kokoro_weight_suffix(voice_token: str) -> str:
+    trimmed = str(voice_token or "").strip()
+    weighted_match = re.fullmatch(r"(.+?)(\(\s*\d+(?:\.\d+)?\s*\))", trimmed)
+    if not weighted_match:
+        return trimmed
+    return weighted_match.group(1).strip()
+
+
+def _infer_kokoro_voice_component_language_code(voice_token: str) -> str:
+    token_without_weight = _strip_kokoro_weight_suffix(voice_token)
+    prefix, separator, _ = token_without_weight.partition("_")
+    normalized_prefix = prefix.lower().strip()
+
+    if separator and len(normalized_prefix) == 2:
+        return KOKORO_PREFIX_LANGUAGE_CODES.get(normalized_prefix[0], "")
+
+    if normalized_prefix in KOKORO_OPENAI_ALIAS_VOICES and not separator:
+        return "en"
+
+    if not separator and normalized_prefix in KOKORO_NAMED_VOICE_META:
+        lang_key, _gender_key = KOKORO_NAMED_VOICE_META[normalized_prefix]
+        return KOKORO_PREFIX_LANGUAGE_CODES.get(lang_key, "")
+
+    return ""
+
+
+def infer_kokoro_voice_language_code(voice_id: str | None) -> str:
+    normalized_voice_id = str(voice_id or "").strip()
+    if not normalized_voice_id:
+        return ""
+
+    parts = [part.strip() for part in normalized_voice_id.split("+") if part.strip()]
+    if not parts:
+        return ""
+
+    language_codes = [
+        _infer_kokoro_voice_component_language_code(part)
+        for part in parts
+    ]
+    language_codes = [code for code in language_codes if code]
+    if not language_codes:
+        return ""
+
+    first_language = language_codes[0]
+    if all(code == first_language for code in language_codes):
+        return first_language
+
+    return ""
+
 OPENAI_AUDIO_DEFAULT_MODEL = "gpt-4o-mini-tts"
 OPENAI_AUDIO_DEFAULT_VOICE = "alloy"
 GEMINI_AUDIO_DEFAULT_MODEL = "gemini-3.1-flash-tts-preview"
@@ -913,6 +992,58 @@ def _build_voxcpm_options(tts_settings: dict) -> dict[str, object]:
         "retry_badcase_ratio_threshold": retry_badcase_ratio_threshold,
         "min_len": min_len,
         "max_len": max_len,
+    }
+
+
+def _build_fishs2_options(tts_settings: dict) -> dict[str, object]:
+    temperature = _coerce_float(
+        tts_settings.get("fishs2_temperature"),
+        FISHS2_DEFAULT_TEMPERATURE,
+    )
+    temperature = min(1.0, max(0.0, temperature))
+
+    top_p = _coerce_float(
+        tts_settings.get("fishs2_top_p"),
+        FISHS2_DEFAULT_TOP_P,
+    )
+    top_p = min(1.0, max(0.0, top_p))
+
+    chunk_length = _coerce_int(
+        tts_settings.get("fishs2_chunk_length"),
+        FISHS2_DEFAULT_CHUNK_LENGTH,
+    )
+    chunk_length = min(300, max(100, chunk_length))
+
+    latency = str(tts_settings.get("fishs2_latency") or FISHS2_DEFAULT_LATENCY).strip().lower()
+    if latency not in {"normal", "balanced"}:
+        latency = FISHS2_DEFAULT_LATENCY
+
+    speed = _coerce_float(tts_settings.get("speed"), 1.0)
+    speed = min(2.0, max(0.5, speed))
+
+    volume = _coerce_float(
+        tts_settings.get("fishs2_prosody_volume"),
+        FISHS2_DEFAULT_PROSODY_VOLUME,
+    )
+    volume = min(20.0, max(-20.0, volume))
+
+    return {
+        "temperature": temperature,
+        "top_p": top_p,
+        "chunk_length": chunk_length,
+        "latency": latency,
+        "normalize": _coerce_bool(
+            tts_settings.get("fishs2_normalize"),
+            FISHS2_DEFAULT_NORMALIZE,
+        ),
+        "prosody": {
+            "speed": speed,
+            "volume": volume,
+            "normalize_loudness": _coerce_bool(
+                tts_settings.get("fishs2_normalize_loudness"),
+                FISHS2_DEFAULT_NORMALIZE_LOUDNESS,
+            ),
+        },
     }
 
 
@@ -2517,7 +2648,7 @@ def _request_xtts_audio(text: str, tts_settings: dict, xtts_base_url: str) -> re
             speech_url,
             headers=_openai_auth_headers(),
             json=payload,
-            timeout=120,
+            timeout=TTS_GENERATION_TIMEOUT_SECONDS,
         )
         if _should_try_next_openai_candidate(response.status_code):
             last_response = response
@@ -2589,7 +2720,7 @@ def _request_voxcpm_audio(text: str, tts_settings: dict, voxcpm_base_url: str) -
             speech_url,
             headers=_openai_auth_headers(api_key),
             json=payload,
-            timeout=120,
+            timeout=TTS_GENERATION_TIMEOUT_SECONDS,
         )
 
         if (
@@ -2606,7 +2737,7 @@ def _request_voxcpm_audio(text: str, tts_settings: dict, voxcpm_base_url: str) -
                 speech_url,
                 headers=_openai_auth_headers(api_key),
                 json=hifi_payload,
-                timeout=120,
+                timeout=TTS_GENERATION_TIMEOUT_SECONDS,
             )
 
         if _should_try_next_openai_candidate(response.status_code):
@@ -2626,14 +2757,17 @@ def _build_fishs2_payload(text: str, tts_settings: dict) -> dict:
         fallback=FISHS2_DEFAULT_MODEL,
     )
     voice = str(tts_settings.get("speaker") or "").strip() or FISHS2_DEFAULT_VOICE
+    fishs2_options = _build_fishs2_options(tts_settings)
+    prosody = fishs2_options.get("prosody") if isinstance(fishs2_options.get("prosody"), dict) else {}
 
     payload = {
         "model": model,
         "input": text,
         "voice": voice,
         "response_format": "wav",
-        "speed": 1.0,
+        "speed": prosody.get("speed", 1.0),
     }
+    payload.update(fishs2_options)
 
     instructions = str(tts_settings.get("openai_audio_instructions") or "").strip()
     if instructions:
@@ -2653,7 +2787,7 @@ def _request_fishs2_audio(text: str, tts_settings: dict, fishs2_base_url: str) -
             speech_url,
             headers=_openai_auth_headers(api_key),
             json=payload,
-            timeout=120,
+            timeout=TTS_GENERATION_TIMEOUT_SECONDS,
         )
 
         if _should_try_next_openai_candidate(response.status_code):
@@ -2714,7 +2848,7 @@ def _request_voxtral_audio(text: str, tts_settings: dict, voxtral_base_url: str)
             speech_url,
             headers=_openai_auth_headers(api_key),
             json=payload,
-            timeout=120,
+            timeout=TTS_GENERATION_TIMEOUT_SECONDS,
         )
         if _should_try_next_openai_candidate(response.status_code):
             last_response = response
@@ -2738,7 +2872,7 @@ def _request_kokoro_audio(text: str, tts_settings: dict, kokoro_base_url: str) -
             speech_url,
             headers=_openai_auth_headers(api_key),
             json=payload,
-            timeout=120,
+            timeout=TTS_GENERATION_TIMEOUT_SECONDS,
         )
         if _should_try_next_openai_candidate(response.status_code):
             last_response = response
@@ -2899,7 +3033,7 @@ def _request_openai_compatible_audio(text: str, tts_settings: dict) -> requests.
             speech_url,
             headers=_openai_auth_headers(api_key),
             json=payload,
-            timeout=120,
+            timeout=TTS_GENERATION_TIMEOUT_SECONDS,
         )
         if _should_try_next_openai_candidate(response.status_code):
             last_response = response
@@ -2974,7 +3108,7 @@ def text_to_audio(
                 response = requests.post(
                     f"{normalized_silero_base_url}/tts/generate",
                     json=data,
-                    timeout=120,
+                    timeout=TTS_GENERATION_TIMEOUT_SECONDS,
                 )
             else:
                 raise ValueError(f"Unsupported TTS service: {service}")

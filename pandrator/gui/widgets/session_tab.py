@@ -8,6 +8,9 @@ from PyQt6.QtWidgets import QCheckBox, QFileDialog, QInputDialog, QMessageBox, Q
 from ...constants import (
     FISHS2_LANGUAGES,
     KOKORO_LANGUAGES,
+    KOKORO_NAMED_VOICE_META,
+    KOKORO_OPENAI_ALIAS_VOICES,
+    KOKORO_VOICE_LANGUAGE_GROUPS,
     LANGUAGE_DISPLAY_NAMES,
     SILERO_LANGUAGES,
     VOXTRAL_LANGUAGES,
@@ -34,19 +37,6 @@ from .session_sections import (
 )
 
 
-KOKORO_VOICE_LANGUAGE_GROUPS = {
-    "a": "American English",
-    "b": "British English",
-    "d": "German",
-    "e": "Spanish",
-    "f": "French",
-    "h": "Hindi",
-    "i": "Italian",
-    "j": "Japanese",
-    "p": "Portuguese",
-    "z": "Chinese (Simplified)",
-}
-
 VOICE_GENDER_LABELS = {
     "f": "Female",
     "m": "Male",
@@ -58,26 +48,6 @@ VOXTRAL_STYLE_LABELS = {
     "casual": "Casual",
     "cheerful": "Cheerful",
     "neutral": "Neutral",
-}
-
-KOKORO_OPENAI_ALIAS_VOICES = {
-    "alloy",
-    "ash",
-    "ballad",
-    "cedar",
-    "coral",
-    "echo",
-    "fable",
-    "marin",
-    "nova",
-    "onyx",
-    "sage",
-    "shimmer",
-    "verse",
-}
-
-KOKORO_NAMED_VOICE_META: dict[str, tuple[str, str]] = {
-    "martin": ("d", "m"),
 }
 
 SPEAKER_HEADING_VALUE = "__heading__"
@@ -186,6 +156,7 @@ class SessionTab(QWidget):
         # Advanced TTS controls
         self.xtts_advanced_settings_frame = self.advanced_tts_frame.xtts_advanced_settings_frame
         self.voxcpm_advanced_settings_frame = self.advanced_tts_frame.voxcpm_advanced_settings_frame
+        self.fishs2_advanced_settings_frame = self.advanced_tts_frame.fishs2_advanced_settings_frame
         self.voxtral_advanced_settings_frame = self.advanced_tts_frame.voxtral_advanced_settings_frame
         self.xtts_send_hint_label = self.advanced_tts_frame.xtts_send_hint_label
         self.adv_tts_temp_send_checkbox = self.advanced_tts_frame.adv_tts_temp_send_checkbox
@@ -232,6 +203,15 @@ class SessionTab(QWidget):
         )
         self.voxcpm_min_len_spinbox = self.advanced_tts_frame.voxcpm_min_len_spinbox
         self.voxcpm_max_len_spinbox = self.advanced_tts_frame.voxcpm_max_len_spinbox
+        self.fishs2_temperature_spinbox = self.advanced_tts_frame.fishs2_temperature_spinbox
+        self.fishs2_top_p_spinbox = self.advanced_tts_frame.fishs2_top_p_spinbox
+        self.fishs2_chunk_length_spinbox = self.advanced_tts_frame.fishs2_chunk_length_spinbox
+        self.fishs2_latency_combo = self.advanced_tts_frame.fishs2_latency_combo
+        self.fishs2_normalize_checkbox = self.advanced_tts_frame.fishs2_normalize_checkbox
+        self.fishs2_prosody_volume_spinbox = self.advanced_tts_frame.fishs2_prosody_volume_spinbox
+        self.fishs2_normalize_loudness_checkbox = (
+            self.advanced_tts_frame.fishs2_normalize_loudness_checkbox
+        )
         self.voxtral_max_frames_spinbox = self.advanced_tts_frame.voxtral_max_frames_spinbox
         self.voxtral_euler_steps_spinbox = self.advanced_tts_frame.voxtral_euler_steps_spinbox
         self.voxtral_chunk_checkbox = self.advanced_tts_frame.voxtral_chunk_checkbox
@@ -514,6 +494,36 @@ class SessionTab(QWidget):
         )
         self.voxcpm_max_len_spinbox.valueChanged.connect(
             lambda v: setattr(self.logic.state.tts, "voxcpm_max_len", v)
+        )
+
+        self.fishs2_temperature_spinbox.valueChanged.connect(
+            lambda v: setattr(self.logic.state.tts, "fishs2_temperature", v)
+        )
+        self.fishs2_top_p_spinbox.valueChanged.connect(
+            lambda v: setattr(self.logic.state.tts, "fishs2_top_p", v)
+        )
+        self.fishs2_chunk_length_spinbox.valueChanged.connect(
+            lambda v: setattr(self.logic.state.tts, "fishs2_chunk_length", v)
+        )
+        self.fishs2_latency_combo.currentTextChanged.connect(
+            lambda t: setattr(self.logic.state.tts, "fishs2_latency", t)
+        )
+        self.fishs2_normalize_checkbox.stateChanged.connect(
+            lambda: setattr(
+                self.logic.state.tts,
+                "fishs2_normalize",
+                self.fishs2_normalize_checkbox.isChecked(),
+            )
+        )
+        self.fishs2_prosody_volume_spinbox.valueChanged.connect(
+            lambda v: setattr(self.logic.state.tts, "fishs2_prosody_volume", v)
+        )
+        self.fishs2_normalize_loudness_checkbox.stateChanged.connect(
+            lambda: setattr(
+                self.logic.state.tts,
+                "fishs2_normalize_loudness",
+                self.fishs2_normalize_loudness_checkbox.isChecked(),
+            )
         )
 
         self.voxtral_max_frames_spinbox.valueChanged.connect(
@@ -977,6 +987,13 @@ class SessionTab(QWidget):
         )
         self.voxcpm_min_len_spinbox.setValue(tts_state.voxcpm_min_len)
         self.voxcpm_max_len_spinbox.setValue(tts_state.voxcpm_max_len)
+        self.fishs2_temperature_spinbox.setValue(tts_state.fishs2_temperature)
+        self.fishs2_top_p_spinbox.setValue(tts_state.fishs2_top_p)
+        self.fishs2_chunk_length_spinbox.setValue(tts_state.fishs2_chunk_length)
+        self.fishs2_latency_combo.setCurrentText(tts_state.fishs2_latency)
+        self.fishs2_normalize_checkbox.setChecked(tts_state.fishs2_normalize)
+        self.fishs2_prosody_volume_spinbox.setValue(tts_state.fishs2_prosody_volume)
+        self.fishs2_normalize_loudness_checkbox.setChecked(tts_state.fishs2_normalize_loudness)
         self.voxtral_max_frames_spinbox.setValue(tts_state.voxtral_max_frames)
         self.voxtral_euler_steps_spinbox.setValue(tts_state.voxtral_euler_steps)
         self.voxtral_chunk_checkbox.setChecked(tts_state.voxtral_chunk)
@@ -1084,10 +1101,12 @@ class SessionTab(QWidget):
         is_model_based_tts = is_xtts or is_voxcpm or is_fishs2 or is_voxtral or is_kokoro or is_cloud_tts
         show_xtts_advanced_settings = self.logic.should_show_xtts_advanced_settings()
         show_voxcpm_advanced_settings = is_voxcpm
+        show_fishs2_advanced_settings = is_fishs2
         show_voxtral_advanced_settings = is_voxtral
         show_advanced_tts_controls = (
             show_xtts_advanced_settings
             or show_voxcpm_advanced_settings
+            or show_fishs2_advanced_settings
             or show_voxtral_advanced_settings
         )
         show_openai_instructions = is_cloud_tts and not show_xtts_advanced_settings
@@ -1112,9 +1131,13 @@ class SessionTab(QWidget):
             "Advanced Voxtral Settings"
             if show_voxtral_advanced_settings
             else (
-                "Advanced VoxCPM Settings"
-                if show_voxcpm_advanced_settings
-                else "Advanced XTTS Settings"
+                "Advanced FishS2 Settings"
+                if show_fishs2_advanced_settings
+                else (
+                    "Advanced VoxCPM Settings"
+                    if show_voxcpm_advanced_settings
+                    else "Advanced XTTS Settings"
+                )
             )
         )
         self.advanced_tts_checkbox.setVisible(show_advanced_tts_controls)
@@ -1146,10 +1169,16 @@ class SessionTab(QWidget):
             if modal_only_prebuilt_selection:
                 self.speaker_label.setText("Voice Selection:")
                 current_selected_voice = str(state.tts.speaker or "").strip() or "(not selected)"
-                self.voice_mode_hint_label.setText(
-                    f"This service uses modal voice selection only. Current voice: {current_selected_voice}. "
-                    "Use Browse Voices to select and audition voices."
-                )
+                if is_kokoro:
+                    self.voice_mode_hint_label.setText(
+                        f"Current voice: {current_selected_voice}. "
+                        "Use Browse Voices to select, audition, or save defaults per language."
+                    )
+                else:
+                    self.voice_mode_hint_label.setText(
+                        f"This service uses modal voice selection only. Current voice: {current_selected_voice}. "
+                        "Use Browse Voices to select and audition voices."
+                    )
             else:
                 self.speaker_label.setText("Pre-built Voice:")
                 self.voice_mode_hint_label.setText(
@@ -1180,6 +1209,7 @@ class SessionTab(QWidget):
         self.adv_tts_apply_button.setVisible(is_xtts)
         self.xtts_advanced_settings_frame.setVisible(show_xtts_advanced_settings)
         self.voxcpm_advanced_settings_frame.setVisible(show_voxcpm_advanced_settings)
+        self.fishs2_advanced_settings_frame.setVisible(show_fishs2_advanced_settings)
         self.voxtral_advanced_settings_frame.setVisible(show_voxtral_advanced_settings)
         self.advanced_tts_frame.setVisible(
             show_advanced_tts_controls and self.advanced_tts_checkbox.isChecked()
@@ -1272,6 +1302,13 @@ class SessionTab(QWidget):
             self.voxcpm_retry_badcase_ratio_threshold_spinbox,
             self.voxcpm_min_len_spinbox,
             self.voxcpm_max_len_spinbox,
+            self.fishs2_temperature_spinbox,
+            self.fishs2_top_p_spinbox,
+            self.fishs2_chunk_length_spinbox,
+            self.fishs2_latency_combo,
+            self.fishs2_normalize_checkbox,
+            self.fishs2_prosody_volume_spinbox,
+            self.fishs2_normalize_loudness_checkbox,
             self.voxtral_max_frames_spinbox,
             self.voxtral_euler_steps_spinbox,
             self.voxtral_chunk_checkbox,
@@ -1402,7 +1439,10 @@ class SessionTab(QWidget):
     def _on_speaker_selected(self, _text: str):
         speaker_value = self._combo_backend_value(self.speaker_combo)
         if speaker_value or not self.speaker_combo.currentText().strip():
-            setattr(self.logic.state.tts, "speaker", speaker_value)
+            if self.logic.state.tts.service == "Kokoro":
+                self.logic.set_tts_speaker_voice(speaker_value)
+            else:
+                setattr(self.logic.state.tts, "speaker", speaker_value)
 
     @staticmethod
     def _combo_backend_value(combo) -> str:

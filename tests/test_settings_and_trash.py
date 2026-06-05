@@ -4,6 +4,7 @@ import sqlite3
 import tempfile
 import unittest
 
+from pandrator.app_state import AppState
 from pandrator.logic import session_handler, settings_handler, state_db_handler
 
 
@@ -56,6 +57,30 @@ class SettingsAndTrashTests(unittest.TestCase):
 
         db_loaded = state_db_handler.load_latest_app_settings()
         self.assertEqual(db_loaded["llm"]["default_model"], payload["llm"]["default_model"])
+
+    def test_kokoro_default_voice_settings_normalize_language_keys(self):
+        state = AppState()
+
+        settings_handler.apply_global_settings_payload(
+            state,
+            {
+                "tts": {
+                    "kokoro_default_voices": {
+                        "en-us": "af_bella",
+                        "JA": "jf_alpha",
+                        "empty": "",
+                    }
+                }
+            },
+        )
+
+        self.assertEqual(
+            state.tts.kokoro_default_voices,
+            {
+                "en": "af_bella",
+                "ja": "jf_alpha",
+            },
+        )
 
     def test_move_restore_and_expired_trash(self):
         session_name = "TrashMe"

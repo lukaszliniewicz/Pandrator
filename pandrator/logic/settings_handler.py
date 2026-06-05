@@ -16,6 +16,7 @@ APP_ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 TTS_GLOBAL_STR_FIELDS = (
     "openai_audio_endpoint",
     "openai_audio_instructions",
+    "fishs2_latency",
 )
 TTS_GLOBAL_FLOAT_FIELDS = (
     "temperature",
@@ -24,6 +25,9 @@ TTS_GLOBAL_FLOAT_FIELDS = (
     "top_p",
     "voxcpm_cfg_value",
     "voxcpm_retry_badcase_ratio_threshold",
+    "fishs2_temperature",
+    "fishs2_top_p",
+    "fishs2_prosody_volume",
 )
 TTS_GLOBAL_INT_FIELDS = (
     "top_k",
@@ -37,6 +41,7 @@ TTS_GLOBAL_INT_FIELDS = (
     "voxcpm_retry_badcase_max_times",
     "voxcpm_min_len",
     "voxcpm_max_len",
+    "fishs2_chunk_length",
 )
 TTS_GLOBAL_BOOL_FIELDS = (
     "do_sample",
@@ -45,6 +50,8 @@ TTS_GLOBAL_BOOL_FIELDS = (
     "voxcpm_normalize",
     "voxcpm_denoise",
     "voxcpm_retry_badcase",
+    "fishs2_normalize",
+    "fishs2_normalize_loudness",
     "xtts_send_temperature",
     "xtts_send_length_penalty",
     "xtts_send_repetition_penalty",
@@ -65,12 +72,17 @@ TTS_GLOBAL_LIST_FIELDS = (
     "provider_configs",
 )
 
+TTS_GLOBAL_DICT_FIELDS = (
+    "kokoro_default_voices",
+)
+
 TTS_GLOBAL_FIELDS = (
     *TTS_GLOBAL_STR_FIELDS,
     *TTS_GLOBAL_FLOAT_FIELDS,
     *TTS_GLOBAL_INT_FIELDS,
     *TTS_GLOBAL_BOOL_FIELDS,
     *TTS_GLOBAL_LIST_FIELDS,
+    *TTS_GLOBAL_DICT_FIELDS,
 )
 
 _FILE_IO_LOCK = threading.RLock()
@@ -196,6 +208,21 @@ def apply_global_settings_payload(state: AppState, payload: Dict[str, Any]):
                 continue
             current = getattr(state.tts, field_name)
             setattr(state.tts, field_name, _coerce_bool(tts_payload[field_name], current))
+
+        for field_name in TTS_GLOBAL_DICT_FIELDS:
+            if field_name not in tts_payload or not isinstance(tts_payload[field_name], dict):
+                continue
+
+            if field_name == "kokoro_default_voices":
+                normalized_defaults: Dict[str, str] = {}
+                for language_value, voice_value in tts_payload[field_name].items():
+                    language_code = tts_handler.normalize_kokoro_language_code(language_value)
+                    voice_name = str(voice_value or "").strip()
+                    if language_code and voice_name:
+                        normalized_defaults[language_code] = voice_name
+                setattr(state.tts, field_name, normalized_defaults)
+            else:
+                setattr(state.tts, field_name, dict(tts_payload[field_name]))
 
         state.tts.provider_configs = tts_handler.get_provider_configs(state.tts)
 

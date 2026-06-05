@@ -18,23 +18,18 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
-from ...constants import KOKORO_LANGUAGES, LANGUAGE_DISPLAY_NAMES, VOXTRAL_LANGUAGES
+from ...constants import (
+    KOKORO_LANGUAGES,
+    KOKORO_NAMED_VOICE_META,
+    KOKORO_OPENAI_ALIAS_VOICES,
+    KOKORO_PREFIX_LANGUAGE_CODES,
+    LANGUAGE_DISPLAY_NAMES,
+    VOXTRAL_LANGUAGES,
+)
+from ...logic import tts_handler
 
 
 DEFAULT_PREVIEW_TEXT = "The quick brown fox jumps over the lazy dog."
-
-KOKORO_PREFIX_LANGUAGE_CODES = {
-    "a": "en",
-    "b": "en-gb",
-    "d": "de",
-    "e": "es",
-    "f": "fr",
-    "h": "hi",
-    "i": "it",
-    "j": "ja",
-    "p": "pt",
-    "z": "zh-cn",
-}
 
 VOICE_GENDER_LABELS = {
     "f": "Female",
@@ -47,27 +42,6 @@ VOXTRAL_STYLE_LABELS = {
     "casual": "Casual",
     "cheerful": "Cheerful",
     "neutral": "Neutral",
-}
-
-KOKORO_OPENAI_ALIAS_VOICES = {
-    "alloy",
-    "ash",
-    "ballad",
-    "cedar",
-    "coral",
-    "echo",
-    "fable",
-    "marin",
-    "nova",
-    "onyx",
-    "sage",
-    "shimmer",
-    "verse",
-}
-
-
-KOKORO_NAMED_VOICE_META: dict[str, tuple[str, str]] = {
-    "martin": ("d", "m"),
 }
 
 class VoiceCatalogDialog(QDialog):
@@ -150,10 +124,12 @@ class VoiceCatalogDialog(QDialog):
         self.generate_all_button = QPushButton("Generate All")
         self.play_selected_button = QPushButton("Play Selected")
         self.use_selected_button = QPushButton("Use Selected Voice")
+        self.save_default_button = QPushButton("Save as Language Default")
 
         actions_layout.addWidget(self.refresh_button, 0, 0)
         actions_layout.addWidget(self.generate_selected_button, 0, 1)
         actions_layout.addWidget(self.generate_all_button, 0, 2)
+        actions_layout.addWidget(self.save_default_button, 1, 0)
         actions_layout.addWidget(self.play_selected_button, 1, 1)
         actions_layout.addWidget(self.use_selected_button, 1, 2)
 
@@ -179,6 +155,7 @@ class VoiceCatalogDialog(QDialog):
         self.generate_all_button.clicked.connect(self._on_generate_all)
         self.play_selected_button.clicked.connect(self._on_play_selected)
         self.use_selected_button.clicked.connect(self._on_use_selected_voice)
+        self.save_default_button.clicked.connect(self._on_save_default_voice)
 
         self.preview_generated.connect(self._on_preview_generated)
         self.generation_finished.connect(self._on_generation_finished)
@@ -398,6 +375,22 @@ class VoiceCatalogDialog(QDialog):
         voices = self._selected_voice_ids()
         return voices[0] if voices else ""
 
+    def _selected_voice_language_code(self) -> str:
+        voice_id = self._selected_voice_id()
+        if not voice_id:
+            return ""
+
+        row = self._first_row_for_voice(voice_id)
+        if row >= 0:
+            language_code = self._row_language_code(row)
+            if language_code:
+                return language_code
+
+        if self._active_service() == "Kokoro":
+            return tts_handler.infer_kokoro_voice_language_code(voice_id)
+
+        return ""
+
     def _first_row_for_voice(self, voice_id: str) -> int:
         return int(self._voice_rows.get(str(voice_id or "").strip(), -1))
 
@@ -594,6 +587,8 @@ class VoiceCatalogDialog(QDialog):
         has_selection = bool(self._selected_voice_ids())
         generating = self._is_generating()
         selected_voice = self._selected_voice_id()
+        selected_language_code = self._selected_voice_language_code()
+        service = self._active_service()
 
         selected_row = self._first_row_for_voice(selected_voice)
         selected_preview_path = ""
@@ -609,6 +604,13 @@ class VoiceCatalogDialog(QDialog):
         self.generate_selected_button.setEnabled((not generating) and has_selection)
         self.play_selected_button.setEnabled((not generating) and has_preview)
         self.use_selected_button.setEnabled((not generating) and has_selection)
+        self.save_default_button.setVisible(service == "Kokoro")
+        self.save_default_button.setEnabled(
+            (not generating)
+            and has_selection
+            and service == "Kokoro"
+            and bool(selected_language_code)
+        )
         self.language_filter_combo.setEnabled((not generating) and self.language_filter_combo.count() > 0)
         if self.close_button is not None:
             self.close_button.setEnabled(not generating)
@@ -789,6 +791,23 @@ class VoiceCatalogDialog(QDialog):
 
         self.logic.set_tts_speaker_voice(voice_id)
         self.status_label.setText(f"Selected voice: {voice_id}")
+
+    def _on_save_default_voice(self):
+        voice_id = self._selected_voice_id()
+        if not voice_id:
+            QMessageBox.information(self, "Voice Preview", "Select a voice first.")
+            return
+
+        language_code = self._selected_voice_language_code()
+        success, message = self.logic.save_kokoro_default_voice(
+            voice_id,
+            language_code=language_code,
+        )
+        if not success:
+            QMessageBox.warning(self, "Kokoro Default Voice", message)
+            return
+
+        self.status_label.setText(message)
 
     def closeEvent(self, event):
         if self._is_generating():
