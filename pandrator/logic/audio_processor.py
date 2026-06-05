@@ -25,14 +25,25 @@ def save_output(
     output_format: str,
     bitrate: str,
     metadata: dict,
-    cover_image_path: str | None
+    cover_image_path: str | None,
+    sentence_wavs_dir: str | None = None,
+    sentence_numbers: list[str] | None = None,
 ) -> bool:
     """
     Concatenates sentence WAVs, saves to the specified format,
     and applies metadata and cover art.
     """
     session_dir = os.path.join("Outputs", session_name)
-    sentence_wavs_dir = os.path.join(session_dir, "Sentence_wavs")
+    if sentence_wavs_dir is None:
+        sentence_wavs_dir = os.path.join(session_dir, "Sentence_wavs")
+
+    sentence_number_filter = None
+    if sentence_numbers is not None:
+        sentence_number_filter = {
+            str(sentence_number)
+            for sentence_number in sentence_numbers
+            if str(sentence_number or "").strip()
+        }
     
     json_path = os.path.join(session_dir, f"{session_name}_sentences.json")
     if not os.path.exists(json_path):
@@ -48,6 +59,9 @@ def save_output(
 
     for sentence_dict in processed_sentences:
         sentence_number = sentence_dict.get("sentence_number")
+        if sentence_number_filter is not None and str(sentence_number) not in sentence_number_filter:
+            continue
+
         wav_filename = os.path.join(sentence_wavs_dir, f"{session_name}_sentence_{sentence_number}.wav")
         if os.path.exists(wav_filename):
             wav_files.append(wav_filename)

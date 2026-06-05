@@ -44,6 +44,7 @@ class _LifecycleHarness:
         self.regeneration_running = False
         self.rvc_running = False
         self.cancel_generation_flag = threading.Event()
+        self.cancel_regeneration_flag = threading.Event()
         self.stop_generation_flag = threading.Event()
 
     def _is_generation_running(self):
@@ -175,6 +176,13 @@ class SessionStatusFlowTests(unittest.TestCase):
             ),
             (
                 {
+                    "regeneration_running": True,
+                },
+                {"regeneration_cancel": True},
+                "Cancelling",
+            ),
+            (
+                {
                     "rvc_running": True,
                 },
                 {},
@@ -194,9 +202,12 @@ class SessionStatusFlowTests(unittest.TestCase):
                 harness.regeneration_running = flags.get("regeneration_running", False)
                 harness.rvc_running = flags.get("rvc_running", False)
                 harness.cancel_generation_flag.clear()
+                harness.cancel_regeneration_flag.clear()
                 harness.stop_generation_flag.clear()
                 if events.get("cancel"):
                     harness.cancel_generation_flag.set()
+                if events.get("regeneration_cancel"):
+                    harness.cancel_regeneration_flag.set()
                 if events.get("stop"):
                     harness.stop_generation_flag.set()
 
@@ -282,6 +293,26 @@ class SessionStatusFlowTests(unittest.TestCase):
                 SessionTab._update_lifecycle_indicator(harness)
 
                 self.assertEqual(expected_label, label.text)
+
+    def test_session_tab_update_cancel_button_text_matches_active_audio_workflow(self):
+        class _ButtonRecorder:
+            def __init__(self):
+                self.text = None
+
+            def setText(self, text):
+                self.text = text
+
+        button = _ButtonRecorder()
+        logic = SimpleNamespace(is_regeneration_running=lambda: True)
+        harness = SimpleNamespace(logic=logic, cancel_button=button)
+
+        SessionTab._update_cancel_button_text(harness)
+        self.assertEqual("Cancel Regeneration", button.text)
+
+        logic = SimpleNamespace(is_regeneration_running=lambda: False)
+        harness = SimpleNamespace(logic=logic, cancel_button=button)
+        SessionTab._update_cancel_button_text(harness)
+        self.assertEqual("Cancel Generation", button.text)
 
 
 if __name__ == "__main__":

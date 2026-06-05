@@ -2,7 +2,7 @@ from functools import partial
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QFrame, QLabel, QPushButton, QTableWidget,
-    QHBoxLayout, QTableWidgetItem, QMenu,
+    QHBoxLayout, QTableWidgetItem, QMenu, QComboBox,
     QAbstractItemView, QMessageBox, QFileDialog, QHeaderView
 )
 from PyQt6.QtGui import QFont, QColor
@@ -13,6 +13,7 @@ class GeneratedSentencesWidget(QWidget):
         super().__init__(parent)
         self.logic = logic
         self._table_update_in_progress = False
+        self._audio_variant_update_in_progress = False
         self._highlight_color = QColor("#9b7dd1")
         self._inline_edit_triggers = (
             QAbstractItemView.EditTrigger.DoubleClicked
@@ -30,8 +31,10 @@ class GeneratedSentencesWidget(QWidget):
         main_layout.addWidget(label)
 
         main_layout.addWidget(self._create_playback_frame())
+        main_layout.addWidget(self._create_audio_variant_frame())
         
-        main_layout.addWidget(QLabel("All Sentences"))
+        self.all_sentences_label = QLabel("All Sentences")
+        main_layout.addWidget(self.all_sentences_label)
         self.sentences_list = QTableWidget()
         self.sentences_list.setColumnCount(2)
         self.sentences_list.setHorizontalHeaderLabels(["#", "Sentence"])
@@ -100,32 +103,48 @@ class GeneratedSentencesWidget(QWidget):
         layout.addWidget(self.save_output_button)
         return frame
 
+    def _create_audio_variant_frame(self):
+        frame = QFrame()
+        frame.setObjectName("rowFrame")
+        layout = QHBoxLayout(frame)
+        self.audio_variant_combo = QComboBox()
+        self.audio_variant_combo.currentIndexChanged.connect(self._on_audio_variant_selected)
+
+        layout.addWidget(QLabel("Audio Version:"))
+        layout.addWidget(self.audio_variant_combo, 1)
+        return frame
+
     def _create_actions_frame(self):
         frame = QFrame()
         frame.setObjectName("rowFrame")
         layout = QHBoxLayout(frame)
-        self.regenerate_selected_button = QPushButton("Regenerate Selected")
-        self.regenerate_marked_button = QPushButton("Regenerate Marked")
-        self.regenerate_all_button = QPushButton("Regenerate All")
-        self.rvc_selected_button = QPushButton("RVC Selected")
-        self.rvc_all_button = QPushButton("RVC All")
+        self.regenerate_button = QPushButton("Regenerate")
+        self.regenerate_menu = QMenu(self.regenerate_button)
+        regenerate_all_action = self.regenerate_menu.addAction("All")
+        regenerate_selected_action = self.regenerate_menu.addAction("Selected")
+        regenerate_marked_action = self.regenerate_menu.addAction("Marked")
+        self.regenerate_button.setMenu(self.regenerate_menu)
+        self.rvc_button = QPushButton("RVC")
+        self.rvc_menu = QMenu(self.rvc_button)
+        rvc_all_action = self.rvc_menu.addAction("All")
+        rvc_selected_action = self.rvc_menu.addAction("Selected")
+        rvc_marked_action = self.rvc_menu.addAction("Marked")
+        self.rvc_button.setMenu(self.rvc_menu)
         self.remove_button = QPushButton("Remove Selected")
         self.edit_button = QPushButton("Edit Selected")
         
-        self.regenerate_selected_button.clicked.connect(self._on_regenerate_selected)
-        self.regenerate_marked_button.clicked.connect(self._on_regenerate_marked)
-        self.regenerate_all_button.clicked.connect(self._on_regenerate_all)
-        self.rvc_selected_button.clicked.connect(self._on_rvc_selected)
-        self.rvc_all_button.clicked.connect(self._on_rvc_all)
+        regenerate_all_action.triggered.connect(self._on_regenerate_all)
+        regenerate_selected_action.triggered.connect(self._on_regenerate_selected)
+        regenerate_marked_action.triggered.connect(self._on_regenerate_marked)
+        rvc_all_action.triggered.connect(self._on_rvc_all)
+        rvc_selected_action.triggered.connect(self._on_rvc_selected)
+        rvc_marked_action.triggered.connect(self._on_rvc_marked)
         self.remove_button.clicked.connect(self._on_remove)
         self.edit_button.clicked.connect(self._on_edit)
 
         layout.addStretch()
-        layout.addWidget(self.regenerate_selected_button)
-        layout.addWidget(self.regenerate_marked_button)
-        layout.addWidget(self.regenerate_all_button)
-        layout.addWidget(self.rvc_selected_button)
-        layout.addWidget(self.rvc_all_button)
+        layout.addWidget(self.regenerate_button)
+        layout.addWidget(self.rvc_button)
         layout.addWidget(self.remove_button)
         layout.addWidget(self.edit_button)
         return frame
@@ -225,6 +244,40 @@ class GeneratedSentencesWidget(QWidget):
             self.sentences_list.clearSelection()
             self.sentences_list.blockSignals(False)
 
+    def _update_audio_variant_combo(self):
+        variants = self.logic.list_audio_variants()
+        active_variant_id = self.logic.get_active_audio_variant_id()
+
+        self._audio_variant_update_in_progress = True
+        self.audio_variant_combo.blockSignals(True)
+        try:
+            self.audio_variant_combo.clear()
+            active_index = 0
+            for index, variant in enumerate(variants):
+                variant_id = str(variant.get("id") or "")
+                self.audio_variant_combo.addItem(str(variant.get("label") or variant_id), variant_id)
+                if variant_id == active_variant_id:
+                    active_index = index
+
+            if self.audio_variant_combo.count():
+                self.audio_variant_combo.setCurrentIndex(active_index)
+        finally:
+            self.audio_variant_combo.blockSignals(False)
+            self._audio_variant_update_in_progress = False
+
+        active_is_source = active_variant_id == "source"
+        self.all_sentences_label.setText("All Sentences" if active_is_source else "Converted Sentences")
+
+    def _on_audio_variant_selected(self, _index: int):
+        if self._audio_variant_update_in_progress:
+            return
+
+        variant_id = self.audio_variant_combo.currentData()
+        if not variant_id:
+            return
+
+        self.logic.set_active_audio_variant(str(variant_id))
+
     def _get_selected_rows_and_table(self) -> tuple[list[int], QTableWidget | None]:
         source_table = None
         if self.sentences_list.selectedItems():
@@ -254,11 +307,17 @@ class GeneratedSentencesWidget(QWidget):
         return sentence_numbers
 
     def _filter_generated_sentence_numbers(self, sentence_numbers: list[str]) -> list[str]:
-        available_numbers = {
-            str(sentence.get("sentence_number"))
-            for sentence in self.logic.get_processed_sentences_snapshot()
-            if sentence.get("sentence_number") is not None and sentence.get("tts_generated") == "yes"
-        }
+        if hasattr(self.logic, "get_source_audio_sentence_numbers"):
+            available_numbers = {
+                str(sentence_number)
+                for sentence_number in self.logic.get_source_audio_sentence_numbers()
+            }
+        else:
+            available_numbers = {
+                str(sentence.get("sentence_number"))
+                for sentence in self.logic.get_processed_sentences_snapshot()
+                if sentence.get("sentence_number") is not None and sentence.get("tts_generated") == "yes"
+            }
 
         return [
             str(sentence_number)
@@ -447,14 +506,12 @@ class GeneratedSentencesWidget(QWidget):
         generation_busy = generation_running or regeneration_running or rvc_processing_running
         rvc_available = self.logic.is_rvc_available()
 
-        self.regenerate_selected_button.setEnabled(not generation_busy)
-        self.regenerate_marked_button.setEnabled(not generation_busy)
-        self.regenerate_all_button.setEnabled(not generation_busy)
-        self.rvc_selected_button.setEnabled((not generation_busy) and rvc_available)
-        self.rvc_all_button.setEnabled((not generation_busy) and rvc_available)
+        self.regenerate_button.setEnabled(not generation_busy)
+        self.rvc_button.setEnabled((not generation_busy) and rvc_available)
         self.remove_button.setEnabled(not generation_busy)
         self.edit_button.setEnabled(not generation_busy)
 
+        self.audio_variant_combo.setEnabled(not generation_busy)
         self.save_output_button.setEnabled(not generation_busy)
 
         context_policy = (
@@ -577,6 +634,21 @@ class GeneratedSentencesWidget(QWidget):
         sentence_numbers = self._sentence_numbers_from_rows(source_table, selected_rows)
         self._process_sentence_numbers_with_rvc(sentence_numbers)
 
+    def _on_rvc_marked(self):
+        marked_sentences = [
+            s for s in self.logic.get_processed_sentences_snapshot() if s.get("marked")
+        ]
+        if not marked_sentences:
+            QMessageBox.information(self, "No Marked Sentences", "There are no sentences marked for RVC processing.")
+            return
+
+        sentence_numbers = [
+            str(sentence.get("sentence_number"))
+            for sentence in marked_sentences
+            if sentence.get("sentence_number") is not None
+        ]
+        self._process_sentence_numbers_with_rvc(sentence_numbers)
+
     def _on_rvc_all(self):
         sentences = self.logic.get_processed_sentences_snapshot()
         if not sentences:
@@ -607,9 +679,13 @@ class GeneratedSentencesWidget(QWidget):
 
     def update_ui_from_state(self):
         self._apply_lifecycle_action_states()
+        self._update_audio_variant_combo()
 
         selected_numbers, source_name = self._capture_selection_snapshot()
-        sentences = self.logic.get_processed_sentences_snapshot()
+        if hasattr(self.logic, "get_audio_variant_sentences_snapshot"):
+            sentences = self.logic.get_audio_variant_sentences_snapshot()
+        else:
+            sentences = self.logic.get_processed_sentences_snapshot()
         playing_sentence_number = self.logic.get_current_playing_sentence_number()
         all_row_data = [
             self._build_sentence_row_data(sentence, playing_sentence_number)

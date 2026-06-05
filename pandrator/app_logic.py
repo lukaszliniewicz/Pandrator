@@ -27,6 +27,7 @@ from .logic import (
     state_db_handler,
     voice_library_handler,
     rvc_handler,
+    audio_variant_handler,
     audio_processor,
     subdub_handler,
     xtts_trainer_handler,
@@ -73,6 +74,12 @@ DEFAULT_SESSION_ACTIVITY_SNAPSHOT = {
 }
 
 
+def _export_audio_segment(audio_data: AudioSegment, output_path: str, output_format: str = "wav"):
+    exported_file = audio_data.export(output_path, format=output_format)
+    if hasattr(exported_file, "close"):
+        exported_file.close()
+
+
 class AppLogic(QObject):
     """
     Main controller for the application.
@@ -114,6 +121,7 @@ class AppLogic(QObject):
         self._session_activity_snapshot = copy.deepcopy(DEFAULT_SESSION_ACTIVITY_SNAPSHOT)
         self.stop_generation_flag = threading.Event()
         self.cancel_generation_flag = threading.Event()
+        self.cancel_regeneration_flag = threading.Event()
         self._loaded_llm_model = None
         self.log_file_path = ""
 
@@ -468,13 +476,167 @@ class AppLogic(QObject):
                 candidates.append(path)
         return candidates
 
-    def _find_sentence_wav_path(self, sentence_number: str) -> str:
+    def _get_audio_variant_base_dir(self, ensure_exists: bool = False) -> str:
+        if self._is_dubbing_source_selected():
+            return self._get_dubbing_work_dir(ensure_exists=ensure_exists)
+
+        session_dir = session_handler.get_session_path(self.state.session_name)
+        if ensure_exists:
+            os.makedirs(session_dir, exist_ok=True)
+        return session_dir
+
+    def _find_source_sentence_wav_path(self, sentence_number: str) -> str:
         wav_filename = f"{self.state.session_name}_sentence_{sentence_number}.wav"
         for wavs_dir in self._get_candidate_sentence_wavs_dirs():
             candidate_path = os.path.join(wavs_dir, wav_filename)
             if os.path.exists(candidate_path):
                 return candidate_path
         return ""
+
+    def _find_sentence_wav_path(self, sentence_number: str, variant_id: str | None = None) -> str:
+        normalized_variant_id = str(
+            variant_id or getattr(self.state, "active_audio_variant_id", audio_variant_handler.SOURCE_VARIANT_ID)
+        ).strip() or audio_variant_handler.SOURCE_VARIANT_ID
+
+        if normalized_variant_id == audio_variant_handler.SOURCE_VARIANT_ID:
+            return self._find_source_sentence_wav_path(sentence_number)
+
+        base_dir = self._get_audio_variant_base_dir(ensure_exists=False)
+        candidate_path = audio_variant_handler.variant_sentence_path(
+            base_dir,
+            normalized_variant_id,
+            self.state.session_name,
+            str(sentence_number),
+        )
+        return candidate_path if os.path.isfile(candidate_path) else ""
+
+    def _source_available_sentence_numbers(self, sentences: list[dict] | None = None) -> list[str]:
+        source_sentences = sentences if sentences is not None else self.get_processed_sentences_snapshot()
+        numbers: list[str] = []
+        for sentence in source_sentences:
+            sentence_number = sentence.get("sentence_number")
+            if sentence_number is None or sentence.get("tts_generated") != "yes":
+                continue
+            if self._find_source_sentence_wav_path(str(sentence_number)):
+                numbers.append(str(sentence_number))
+        return numbers
+
+    @staticmethod
+    def _format_audio_variant_count(count: int, total: int) -> str:
+        return f"{count}/{total}" if total else str(count)
+
+    def _format_rvc_variant_label(self, record: dict, count: int, total: int) -> str:
+        model_name = str(record.get("model_name") or "Unknown model").strip()
+        settings_hash = str(record.get("settings_hash") or "").strip()
+        short_hash = settings_hash[:6]
+        count_label = self._format_audio_variant_count(count, total)
+        if short_hash:
+            return f"RVC: {model_name} ({count_label}, {short_hash})"
+        return f"RVC: {model_name} ({count_label})"
+
+    def list_audio_variants(self) -> list[dict]:
+        sentences = self.get_processed_sentences_snapshot()
+        total_sentences = len(sentences)
+        source_numbers = self._source_available_sentence_numbers(sentences)
+        source_count = len(source_numbers)
+        denominator = source_count or total_sentences
+
+        variants: list[dict] = [
+            {
+                "id": audio_variant_handler.SOURCE_VARIANT_ID,
+                "kind": "source",
+                "label": f"Original ({self._format_audio_variant_count(source_count, total_sentences)})",
+                "model_name": "",
+                "settings_hash": "",
+                "sentence_numbers": source_numbers,
+                "count": source_count,
+                "total": total_sentences,
+            }
+        ]
+
+        base_dir = self._get_audio_variant_base_dir(ensure_exists=False)
+        if os.path.isdir(os.path.join(base_dir, audio_variant_handler.VARIANTS_DIR_NAME)):
+            for record in audio_variant_handler.list_rvc_variants(base_dir, self.state.session_name):
+                sentence_numbers = list(record.get("sentence_numbers") or [])
+                count = len(sentence_numbers)
+                variants.append(
+                    {
+                        **record,
+                        "label": self._format_rvc_variant_label(record, count, denominator),
+                        "sentence_numbers": sentence_numbers,
+                        "count": count,
+                        "total": denominator,
+                    }
+                )
+
+        available_ids = {str(variant.get("id") or "") for variant in variants}
+        active_variant_id = str(
+            getattr(self.state, "active_audio_variant_id", audio_variant_handler.SOURCE_VARIANT_ID)
+            or audio_variant_handler.SOURCE_VARIANT_ID
+        )
+        if active_variant_id not in available_ids:
+            self.state.active_audio_variant_id = audio_variant_handler.SOURCE_VARIANT_ID
+            active_variant_id = audio_variant_handler.SOURCE_VARIANT_ID
+
+        for variant in variants:
+            variant["is_active"] = str(variant.get("id") or "") == active_variant_id
+
+        return variants
+
+    def get_active_audio_variant_id(self) -> str:
+        variants = self.list_audio_variants()
+        active = next((variant for variant in variants if variant.get("is_active")), None)
+        return str((active or {}).get("id") or audio_variant_handler.SOURCE_VARIANT_ID)
+
+    def set_active_audio_variant(self, variant_id: str):
+        normalized_variant_id = str(variant_id or audio_variant_handler.SOURCE_VARIANT_ID).strip()
+        if not normalized_variant_id:
+            normalized_variant_id = audio_variant_handler.SOURCE_VARIANT_ID
+
+        available_ids = {str(variant.get("id") or "") for variant in self.list_audio_variants()}
+        if normalized_variant_id not in available_ids:
+            self._notify_user("That audio version is no longer available.", level="warning")
+            normalized_variant_id = audio_variant_handler.SOURCE_VARIANT_ID
+
+        if getattr(self.state, "active_audio_variant_id", audio_variant_handler.SOURCE_VARIANT_ID) == normalized_variant_id:
+            return
+
+        self.stop_playback()
+        self.state.active_audio_variant_id = normalized_variant_id
+        self._persist_session_config(force=True)
+        self.state_changed.emit()
+
+    def get_audio_variant_sentences_snapshot(self) -> list[dict]:
+        sentences = self.get_processed_sentences_snapshot()
+        active_variant_id = self.get_active_audio_variant_id()
+        if active_variant_id == audio_variant_handler.SOURCE_VARIANT_ID:
+            return sentences
+
+        variant = next(
+            (
+                record
+                for record in self.list_audio_variants()
+                if str(record.get("id") or "") == active_variant_id
+            ),
+            None,
+        )
+        if variant is None:
+            return sentences
+
+        available_numbers = {str(number) for number in list(variant.get("sentence_numbers") or [])}
+        visible_sentences: list[dict] = []
+        for sentence in sentences:
+            sentence_number = sentence.get("sentence_number")
+            if sentence_number is None or str(sentence_number) not in available_numbers:
+                continue
+
+            visible_sentence = copy.deepcopy(sentence)
+            visible_sentence["tts_generated"] = "yes"
+            visible_sentences.append(visible_sentence)
+        return visible_sentences
+
+    def get_source_audio_sentence_numbers(self) -> list[str]:
+        return self._source_available_sentence_numbers()
 
     def _session_dir_has_sentence_wavs(self, session_dir: str) -> bool:
         """Returns True when a session folder contains generated sentence WAVs."""
@@ -651,6 +813,8 @@ class AppLogic(QObject):
             return "Processing Text"
 
         if self._is_regeneration_running():
+            if self.cancel_regeneration_flag.is_set():
+                return "Cancelling"
             return "Regenerating"
 
         if self._is_rvc_processing_running():
@@ -1106,6 +1270,7 @@ class AppLogic(QObject):
         self.state.source_file_path = ""
         self.state.raw_text = ""
         self.state.pdf_preprocessed = False
+        self.state.active_audio_variant_id = audio_variant_handler.SOURCE_VARIANT_ID
         self.state.cover_image_path = None
         self.state.dubbing.video_file_path = ""
         self.state.metadata = {"title": "", "album": "", "artist": "", "genre": "", "language": ""}
@@ -1282,6 +1447,7 @@ class AppLogic(QObject):
         self.state = restored_state
         active_run = self._synchronize_active_dubbing_run()
         self._active_dubbing_run_id = str(active_run.get("run_id") or "") if active_run else None
+        self.get_active_audio_variant_id()
         if self.state.tts.service in {
             tts_handler.OPENAI_SERVICE,
             tts_handler.GEMINI_SERVICE,
@@ -2918,6 +3084,7 @@ class AppLogic(QObject):
                 )
                 return None
 
+        self._clear_audio_variants()
         reset_sentences: list[dict] = []
         for sentence in processed_sentences:
             reset_sentence = copy.deepcopy(sentence)
@@ -3036,6 +3203,10 @@ class AppLogic(QObject):
 
     def cancel_generation(self):
         """Cancels generation and cleans up generated files."""
+        if self._is_regeneration_running():
+            self.cancel_regeneration()
+            return
+
         if not self._is_generation_running():
             self._notify_user("No generation is currently running to cancel.", level="warning")
             return
@@ -3052,6 +3223,28 @@ class AppLogic(QObject):
         self.log_message.emit("Cancelling generation after current sentence and scheduling cleanup...")
         self.cancel_generation_flag.set()
         self.stop_generation_flag.set()
+        self.state_changed.emit()
+
+    def cancel_regeneration(self):
+        """Cancels sentence regeneration after the current sentence finishes."""
+        if not self._is_regeneration_running():
+            self._notify_user("No sentence regeneration is currently running to cancel.", level="warning")
+            return
+
+        if self.cancel_regeneration_flag.is_set():
+            self._notify_user(
+                "Regeneration cancellation already requested. Waiting for the current sentence to finish.",
+                level="warning",
+            )
+            return
+
+        self._set_session_activity(
+            "Cancelling regeneration",
+            "The current sentence will finish before the remaining regeneration queue stops.",
+            "warning",
+        )
+        self.log_message.emit("Cancelling regeneration after current sentence...")
+        self.cancel_regeneration_flag.set()
         self.state_changed.emit()
 
     def _cleanup_cancelled_generation(self):
@@ -3089,6 +3282,7 @@ class AppLogic(QObject):
         if self._is_dubbing_source_selected() and not wavs_cleanup_failed:
             os.makedirs(self._get_primary_sentence_wavs_dir(ensure_exists=False), exist_ok=True)
 
+        self._clear_audio_variants()
         self._set_processed_sentences_snapshot([], persist=False)
         self.state_changed.emit()
         self.progress_updated.emit(0, 1, 0.0)
@@ -4644,6 +4838,62 @@ class AppLogic(QObject):
         self.state_changed.emit()
         return model_name
 
+    def _invalidate_audio_variants_for_sentences(self, sentence_numbers: list[str]):
+        base_dir = self._get_audio_variant_base_dir(ensure_exists=False)
+        variants_dir = os.path.join(base_dir, audio_variant_handler.VARIANTS_DIR_NAME)
+        if not os.path.isdir(variants_dir):
+            return
+
+        audio_variant_handler.remove_variant_sentences(
+            base_dir,
+            self.state.session_name,
+            [str(number) for number in sentence_numbers],
+        )
+        self.get_active_audio_variant_id()
+        self._persist_session_config(force=True)
+
+    def _clear_audio_variants(self):
+        base_dir = self._get_audio_variant_base_dir(ensure_exists=False)
+        audio_variant_handler.remove_all_variants(base_dir)
+        self.state.active_audio_variant_id = audio_variant_handler.SOURCE_VARIANT_ID
+
+    def _process_source_wav_to_rvc_variant(
+        self,
+        sentence_number: str,
+        rvc_settings: dict,
+        source_wav_path: str | None = None,
+    ) -> str | None:
+        model_name = str(rvc_settings.get("rvc_model") or "").strip()
+        if not model_name:
+            self.log_message.emit("Skipping RVC variant creation; no RVC model is selected.")
+            return None
+
+        source_path = source_wav_path or self._find_source_sentence_wav_path(str(sentence_number))
+        if not source_path or not os.path.isfile(source_path):
+            self.log_message.emit(f"Skipping RVC variant for sentence {sentence_number}; source WAV is missing.")
+            return None
+
+        base_dir = self._get_audio_variant_base_dir(ensure_exists=True)
+        target_path = audio_variant_handler.rvc_variant_sentence_path(
+            base_dir,
+            rvc_settings,
+            self.state.session_name,
+            str(sentence_number),
+            ensure_dir=True,
+        )
+
+        with open(source_path, "rb") as source_file:
+            source_audio = AudioSegment.from_file(source_file, format="wav")
+        converted_audio = rvc_handler.process_with_rvc(source_audio, rvc_settings)
+        _export_audio_segment(converted_audio, target_path)
+
+        record = audio_variant_handler.register_rvc_variant_sentence(
+            base_dir,
+            rvc_settings,
+            str(sentence_number),
+        )
+        return str(record.get("id") or "")
+
     # --- Config/API Keys ---
     def save_api_key(self, key_name: str, key_value: str) -> bool:
         """Saves an API key and returns success state."""
@@ -4706,6 +4956,7 @@ class AppLogic(QObject):
             return
 
         if session_handler.remove_sentences(self.state.session_name, sentence_numbers):
+            self._clear_audio_variants()
             # Reload is necessary here because of re-numbering
             self.load_session(self.state.session_name)
 
@@ -4768,7 +5019,7 @@ class AppLogic(QObject):
     def play_playlist(self, start_sentence_number: str | None = None):
         """Starts playing the processed sentences as a playlist."""
         self.stop_playback()
-        all_sentences = self.get_processed_sentences_snapshot()
+        all_sentences = self.get_audio_variant_sentences_snapshot()
         self.playlist_sentences = [
             s for s in all_sentences if s.get('tts_generated') == 'yes'
         ]
@@ -4816,7 +5067,7 @@ class AppLogic(QObject):
 
     def _refresh_playlist_sentences(self, last_played_sentence_number: str | None = None):
         """Rebuilds playlist from generated sentences and keeps playback position stable."""
-        all_sentences = self.get_processed_sentences_snapshot()
+        all_sentences = self.get_audio_variant_sentences_snapshot()
         self.playlist_sentences = [
             sentence for sentence in all_sentences if sentence.get('tts_generated') == 'yes'
         ]
@@ -4904,13 +5155,44 @@ class AppLogic(QObject):
     # --- Output Generation ---
     def save_output(self, output_path: str):
         try:
+            active_variant_id = self.get_active_audio_variant_id()
+            active_variant = next(
+                (
+                    variant
+                    for variant in self.list_audio_variants()
+                    if str(variant.get("id") or "") == active_variant_id
+                ),
+                None,
+            )
+            sentence_wavs_dir = None
+            sentence_numbers = None
+            variant_label = "Original"
+
+            if active_variant_id != audio_variant_handler.SOURCE_VARIANT_ID and active_variant is not None:
+                base_dir = self._get_audio_variant_base_dir(ensure_exists=False)
+                sentence_wavs_dir = audio_variant_handler.variant_wavs_dir(base_dir, active_variant_id)
+                sentence_numbers = [str(number) for number in list(active_variant.get("sentence_numbers") or [])]
+                variant_label = str(active_variant.get("label") or "RVC version")
+
+                total = int(active_variant.get("total") or 0)
+                count = len(sentence_numbers)
+                if total and count < total:
+                    self._notify_user(
+                        "Active RVC version is partial; exporting converted segments only.",
+                        level="warning",
+                    )
+            elif self._is_dubbing_source_selected():
+                sentence_wavs_dir = self._get_primary_sentence_wavs_dir(ensure_exists=False)
+
             success = audio_processor.save_output(
                 session_name=self.state.session_name,
                 output_path=output_path,
                 output_format=self.state.audio_processing.output_format,
                 bitrate=self.state.audio_processing.bitrate,
                 metadata=self.state.metadata,
-                cover_image_path=self.state.cover_image_path
+                cover_image_path=self.state.cover_image_path,
+                sentence_wavs_dir=sentence_wavs_dir,
+                sentence_numbers=sentence_numbers,
             )
             if success:
                 self._set_session_activity(
@@ -4918,7 +5200,12 @@ class AppLogic(QObject):
                     f"Final output saved to {os.path.basename(output_path)}.",
                     "success",
                 )
-                self._notify_user(f"Output file saved: {os.path.basename(output_path)}")
+                if active_variant_id == audio_variant_handler.SOURCE_VARIANT_ID:
+                    self._notify_user(f"Output file saved: {os.path.basename(output_path)}")
+                else:
+                    self._notify_user(
+                        f"Output file saved from {variant_label}: {os.path.basename(output_path)}"
+                    )
             else:
                 self._set_session_activity(
                     "Final output save failed",
@@ -5075,6 +5362,7 @@ class AppLogic(QObject):
             return
 
         self.stop_playback()
+        self.cancel_regeneration_flag.clear()
         self.regeneration_thread = self._run_threaded_task(self._regenerate_sentences_thread, normalized_numbers)
         self.state_changed.emit()
 
@@ -5085,6 +5373,7 @@ class AppLogic(QObject):
             total = len(sentence_numbers)
             regenerated_count = 0
             skipped_count = 0
+            cancelled = False
             start_time = time.time()
             self.progress_updated.emit(0, max(total, 1), 0.0)
             self._set_session_activity(
@@ -5100,6 +5389,11 @@ class AppLogic(QObject):
             }
 
             for i, num in enumerate(sentence_numbers, start=1):
+                if self.cancel_regeneration_flag.is_set():
+                    cancelled = True
+                    self.log_message.emit("Regeneration cancellation acknowledged. Stopping remaining queue...")
+                    break
+
                 self._set_session_activity(
                     "Regenerating audio",
                     f"Rendering selected sentence {i} of {total} (Sentence {num}).",
@@ -5131,15 +5425,31 @@ class AppLogic(QObject):
                 self.state_changed.emit()
                 self.progress_updated.emit(i, total, time.time() - start_time)
 
+                if self.cancel_regeneration_flag.is_set() and i < total:
+                    cancelled = True
+                    self.log_message.emit(
+                        "Current regeneration finished after cancellation request. Stopping remaining queue..."
+                    )
+                    break
+
             summary_parts = [f"Regenerated {regenerated_count} sentence(s)."]
             if skipped_count:
                 summary_parts.append(f"Skipped {skipped_count} unavailable sentence(s).")
-            self._set_session_activity(
-                "Regeneration finished",
-                " ".join(summary_parts),
-                "success" if skipped_count == 0 else "warning",
-            )
-            self.log_message.emit("Regeneration finished.")
+            summary_message = " ".join(summary_parts)
+            if cancelled:
+                self._set_session_activity(
+                    "Regeneration cancelled",
+                    summary_message,
+                    "warning",
+                )
+                self.log_message.emit("Regeneration cancelled.")
+            else:
+                self._set_session_activity(
+                    "Regeneration finished",
+                    summary_message,
+                    "success" if skipped_count == 0 else "warning",
+                )
+                self.log_message.emit("Regeneration finished.")
         except Exception as e:
             logging.error("Unexpected regeneration worker error: %s", e, exc_info=True)
             self._set_session_activity(
@@ -5151,6 +5461,7 @@ class AppLogic(QObject):
         finally:
             if self.regeneration_thread is worker_thread:
                 self.regeneration_thread = None
+            self.cancel_regeneration_flag.clear()
             self.state_changed.emit()
 
     def process_sentences_with_rvc(self, sentence_numbers: list[str]):
@@ -5209,6 +5520,7 @@ class AppLogic(QObject):
         worker_thread = threading.current_thread()
         processed_count = 0
         skipped_count = 0
+        target_variant_id = audio_variant_handler.rvc_variant_id_for_settings(rvc_settings)
 
         try:
             total = len(sentence_numbers)
@@ -5216,7 +5528,7 @@ class AppLogic(QObject):
             self.progress_updated.emit(0, max(total, 1), 0.0)
             self._set_session_activity(
                 "Applying RVC processing",
-                f"Processing {total} selected sentence(s) with the active RVC model.",
+                f"Processing {total} selected sentence(s) into an RVC audio version.",
                 "active",
             )
             self.log_message.emit(f"Starting RVC processing for {total} sentence(s).")
@@ -5246,8 +5558,8 @@ class AppLogic(QObject):
                     self.progress_updated.emit(i, total, time.time() - start_time)
                     continue
 
-                wav_path = self._find_sentence_wav_path(str(num))
-                if not wav_path:
+                source_wav_path = self._find_source_sentence_wav_path(str(num))
+                if not source_wav_path:
                     self.log_message.emit(f"Skipping sentence {num}; WAV file is missing.")
                     skipped_count += 1
                     self.progress_updated.emit(i, total, time.time() - start_time)
@@ -5256,10 +5568,16 @@ class AppLogic(QObject):
                 self.log_message.emit(f"Processing sentence {i}/{total} with RVC (Number: {num})...")
 
                 try:
-                    source_audio = AudioSegment.from_wav(wav_path)
-                    converted_audio = rvc_handler.process_with_rvc(source_audio, rvc_settings)
-                    converted_audio.export(wav_path, format="wav")
-                    processed_count += 1
+                    created_variant_id = self._process_source_wav_to_rvc_variant(
+                        str(num),
+                        rvc_settings,
+                        source_wav_path=source_wav_path,
+                    )
+                    if created_variant_id:
+                        target_variant_id = created_variant_id
+                        processed_count += 1
+                    else:
+                        skipped_count += 1
                 except Exception as e:
                     logging.error(
                         "Failed RVC post-processing for sentence %s: %s",
@@ -5271,6 +5589,10 @@ class AppLogic(QObject):
                     skipped_count += 1
                 finally:
                     self.progress_updated.emit(i, total, time.time() - start_time)
+
+            if processed_count and target_variant_id:
+                self.state.active_audio_variant_id = target_variant_id
+                self._persist_session_config(force=True)
 
             summary_parts = [f"Processed {processed_count} sentence(s)."]
             if skipped_count:
@@ -5396,15 +5718,11 @@ class AppLogic(QObject):
             if not audio_data:
                 return False, None
 
-            # 3. RVC
-            if self.state.rvc.enable_rvc:
-                audio_data = rvc_handler.process_with_rvc(audio_data, self.state.rvc.__dict__)
-
-            # 4. Fade
+            # 3. Fade
             if self.state.audio_processing.enable_fade:
                 audio_data = audio_processor.apply_fade(audio_data, self.state.audio_processing.fade_in_duration, self.state.audio_processing.fade_out_duration)
             
-            # 5. Add Silence
+            # 4. Add Silence
             if not self._is_dubbing_source_selected():
                 silence_to_add = 0
                 if updated_sentence.get("paragraph", "no") == "yes":
@@ -5415,12 +5733,24 @@ class AppLogic(QObject):
                 if silence_to_add > 0:
                     audio_data += AudioSegment.silent(duration=silence_to_add)
 
-            # 6. Save WAV
+            # 5. Save original/source WAV
             session_name = self.state.session_name
             num = updated_sentence['sentence_number']
             wavs_dir = self._get_primary_sentence_wavs_dir(ensure_exists=True)
             wav_path = os.path.join(wavs_dir, f"{session_name}_sentence_{num}.wav")
-            audio_data.export(wav_path, format="wav")
+            _export_audio_segment(audio_data, wav_path)
+            self._invalidate_audio_variants_for_sentences([str(num)])
+
+            # 6. Optionally create/update the matching RVC variant from source audio.
+            if self.state.rvc.enable_rvc:
+                rvc_settings = copy.deepcopy(self.state.rvc.__dict__)
+                rvc_variant_id = self._process_source_wav_to_rvc_variant(
+                    str(num),
+                    rvc_settings,
+                    source_wav_path=wav_path,
+                )
+                if rvc_variant_id:
+                    self.state.active_audio_variant_id = rvc_variant_id
 
             updated_sentence['tts_generated'] = 'yes'
             return True, updated_sentence

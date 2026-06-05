@@ -259,6 +259,7 @@ class AppState:
     pdf_preprocessed: bool = False
     raw_text: str = ""
     processed_sentences: List[Dict[str, Any]] = field(default_factory=list)
+    active_audio_variant_id: str = "source"
     metadata: Dict[str, str] = field(default_factory=dict)
     cover_image_path: str | None = None
     text_processing: TextProcessingSettings = field(default_factory=TextProcessingSettings)

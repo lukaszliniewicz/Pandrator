@@ -651,7 +651,14 @@ class SessionTab(QWidget):
         self.start_button.clicked.connect(self._on_start_generation_clicked)
         self.resume_button.clicked.connect(self.logic.start_generation)
         self.stop_button.clicked.connect(self.logic.stop_generation)
-        self.cancel_button.clicked.connect(self.logic.cancel_generation)
+        self.cancel_button.clicked.connect(self._on_cancel_audio_workflow_clicked)
+
+    def _on_cancel_audio_workflow_clicked(self):
+        if self.logic.is_regeneration_running():
+            self.logic.cancel_regeneration()
+            return
+
+        self.logic.cancel_generation()
 
     def _has_resumable_generation_progress(self) -> bool:
         return self.logic.has_resumable_generation_progress()
@@ -752,6 +759,12 @@ class SessionTab(QWidget):
         }
         self.lifecycle_status_label.setText(labels.get(status, status))
 
+    def _update_cancel_button_text(self):
+        if self.logic.is_regeneration_running():
+            self.cancel_button.setText("Cancel Regeneration")
+        else:
+            self.cancel_button.setText("Cancel Generation")
+
     def _update_generation_progress_indicator(self):
         if self.logic.is_text_preprocessing_running():
             if self.progress_bar.minimum() != 0 or self.progress_bar.maximum() != 0:
@@ -803,6 +816,7 @@ class SessionTab(QWidget):
     def update_ui_from_state(self):
         state = self.logic.state
         self._update_lifecycle_indicator()
+        self._update_cancel_button_text()
         self._update_generation_progress_indicator()
         self._update_task_status_panel()
         self._update_session_state(state)
@@ -1052,7 +1066,9 @@ class SessionTab(QWidget):
         generation_busy = generation_running or regeneration_running or rvc_processing_running
         tts_connecting = self.logic.is_tts_connection_running()
         stop_requested = self.logic.stop_generation_flag.is_set()
-        cancel_requested = self.logic.cancel_generation_flag.is_set()
+        generation_cancel_requested = self.logic.cancel_generation_flag.is_set()
+        regeneration_cancel_requested = self.logic.cancel_regeneration_flag.is_set()
+        cancel_requested = generation_cancel_requested or regeneration_cancel_requested
 
         is_xtts = state.tts.service == "XTTS"
         is_voxcpm = state.tts.service == "VoxCPM"
@@ -1187,7 +1203,10 @@ class SessionTab(QWidget):
         self.stop_button.setEnabled(
             generation_running and not stop_requested and not cancel_requested
         )
-        self.cancel_button.setEnabled(generation_running and not cancel_requested)
+        self.cancel_button.setEnabled(
+            (generation_running and not generation_cancel_requested)
+            or (regeneration_running and not regeneration_cancel_requested)
+        )
 
         session_controls_enabled = not generation_busy
         for widget in (

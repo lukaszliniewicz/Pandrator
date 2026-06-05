@@ -56,7 +56,7 @@ class AudioProcessingTab(QWidget):
         frame.setObjectName("groupFrame")
         layout = QGridLayout(frame)
         
-        self.enable_rvc_checkbox = QCheckBox("Enable RVC")
+        self.enable_rvc_checkbox = QCheckBox("Create RVC version during generation")
         self.rvc_model_combo = QComboBox()
         self.refresh_rvc_button = QPushButton("Refresh Models")
         self.upload_rvc_button = QPushButton("Upload New Model")
@@ -103,7 +103,7 @@ class AudioProcessingTab(QWidget):
 
         if not self.logic.is_rvc_available():
             frame.setEnabled(False)
-            self.enable_rvc_checkbox.setText("Enable RVC (Not Available)")
+            self.enable_rvc_checkbox.setText("Create RVC version during generation (Not Available)")
 
         return frame
 

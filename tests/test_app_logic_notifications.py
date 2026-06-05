@@ -1,3 +1,5 @@
+import copy
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -18,14 +20,20 @@ class _LogicHarness:
         self.notifications = []
         self.state_changed = _DummySignal()
         self.show_error = _DummySignal()
+        self.log_message = _DummySignal()
+        self.progress_updated = _DummySignal()
         self.regeneration_thread = None
         self.rvc_processing_thread = None
+        self.cancel_regeneration_flag = threading.Event()
         self.stop_playback_calls = 0
         self.playlist_active = False
         self.playlist_sentences = []
         self.current_playlist_index = 0
         self.timer_started = False
         self.playlist_timer = SimpleNamespace(start=self._start_playlist_timer)
+        self.session_activity_calls = []
+        self.processed_sentences = []
+        self.state = SimpleNamespace(session_name="Demo Session", active_audio_variant_id="source")
 
     def _notify_user(self, message, timeout_ms=5000, level="info"):
         self.notifications.append((message, timeout_ms, level))
@@ -35,6 +43,21 @@ class _LogicHarness:
 
     def _start_playlist_timer(self):
         self.timer_started = True
+
+    def _set_session_activity(self, headline, detail, tone):
+        self.session_activity_calls.append((headline, detail, tone))
+
+    def get_processed_sentences_snapshot(self):
+        return copy.deepcopy(self.processed_sentences)
+
+    def get_audio_variant_sentences_snapshot(self):
+        return self.get_processed_sentences_snapshot()
+
+    def _set_processed_sentences_snapshot(self, sentences):
+        self.processed_sentences = copy.deepcopy(sentences)
+
+    def cancel_regeneration(self):
+        return AppLogic.cancel_regeneration(self)
 
 
 class AppLogicNotificationTests(unittest.TestCase):
@@ -80,6 +103,70 @@ class AppLogicNotificationTests(unittest.TestCase):
         self.assertEqual(
             [("Select at least one sentence to regenerate.", 5000, "warning")],
             harness.notifications,
+        )
+
+    def test_cancel_regeneration_sets_flag_and_updates_activity(self):
+        harness = _LogicHarness()
+        harness._is_regeneration_running = lambda: True
+
+        AppLogic.cancel_regeneration(harness)
+
+        self.assertTrue(harness.cancel_regeneration_flag.is_set())
+        self.assertEqual(
+            [
+                (
+                    "Cancelling regeneration",
+                    "The current sentence will finish before the remaining regeneration queue stops.",
+                    "warning",
+                )
+            ],
+            harness.session_activity_calls,
+        )
+        self.assertEqual(
+            [("Cancelling regeneration after current sentence...",)],
+            harness.log_message.calls,
+        )
+        self.assertEqual([()], harness.state_changed.calls)
+
+    def test_cancel_generation_delegates_to_regeneration_when_needed(self):
+        harness = _LogicHarness()
+        harness._is_generation_running = lambda: False
+        harness._is_regeneration_running = lambda: True
+
+        AppLogic.cancel_generation(harness)
+
+        self.assertTrue(harness.cancel_regeneration_flag.is_set())
+        self.assertEqual([], harness.notifications)
+
+    def test_regeneration_worker_stops_after_cancellation_request(self):
+        harness = _LogicHarness()
+        harness.processed_sentences = [
+            {"sentence_number": "1", "text": "First"},
+            {"sentence_number": "2", "text": "Second"},
+        ]
+        harness.regeneration_thread = threading.current_thread()
+        executed_numbers = []
+
+        def execute_generation(sentence_dict):
+            executed_numbers.append(sentence_dict["sentence_number"])
+            if sentence_dict["sentence_number"] == "1":
+                harness.cancel_regeneration_flag.set()
+            updated = dict(sentence_dict)
+            updated["tts_generated"] = "yes"
+            return True, updated
+
+        harness._execute_generation_for_sentence = execute_generation
+
+        AppLogic._regenerate_sentences_thread(harness, ["1", "2"])
+
+        self.assertEqual(["1"], executed_numbers)
+        self.assertEqual("yes", harness.processed_sentences[0]["tts_generated"])
+        self.assertNotIn("tts_generated", harness.processed_sentences[1])
+        self.assertEqual(None, harness.regeneration_thread)
+        self.assertFalse(harness.cancel_regeneration_flag.is_set())
+        self.assertIn(
+            ("Regeneration cancelled", "Regenerated 1 sentence(s).", "warning"),
+            harness.session_activity_calls,
         )
 
     def test_process_sentences_with_rvc_warns_when_selection_is_empty(self):
