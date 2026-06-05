@@ -13,6 +13,7 @@ import re
 import traceback
 import tempfile
 import ctypes
+import platform
 import winreg
 import argparse
 import shlex
@@ -44,6 +45,12 @@ PANDRATOR_PYTHON_VERSION = '3.11'
 SILERO_PYTHON_VERSION = '3.10'
 KOKORO_PYTHON_VERSION = '3.11'
 KOKORO_ENV_NAME = 'kokoro_api_server_installer'
+KOKORO_GPU_SUPPORT_CONFIG_FLAG = 'kokoro_gpu_support'
+KOKORO_TORCH_BASE_VERSION = '2.8.0'
+KOKORO_GPU_TORCH_VERSION_X86_64 = f'{KOKORO_TORCH_BASE_VERSION}+cu126'
+KOKORO_GPU_TORCH_VERSION_ARM64 = f'{KOKORO_TORCH_BASE_VERSION}+cu129'
+KOKORO_GPU_TORCH_INDEX_URL_X86_64 = 'https://download.pytorch.org/whl/cu126'
+KOKORO_GPU_TORCH_INDEX_URL_ARM64 = 'https://download.pytorch.org/whl/cu129'
 XTTS_FINETUNING_PYTHON_VERSION = '3.13'
 PYQT6_RUNTIME_PIN = 'PyQt6==6.7.1'
 PYQT6_SIP_RUNTIME_SPEC = 'PyQt6-sip>=13.8,<14'
@@ -126,6 +133,7 @@ PACKAGING_CONFIG_FLAGS = (
     'silero_support',
     'voxtral_support',
     'kokoro_support',
+    KOKORO_GPU_SUPPORT_CONFIG_FLAG,
     'whisperx_support',
     'xtts_finetuning_support',
     'rvc_support',
@@ -342,6 +350,7 @@ class PandratorInstaller(QMainWindow):
         self.silero_var = False
         self.voxtral_var = False
         self.kokoro_var = False
+        self.kokoro_cpu_var = False
         self.rvc_var = False
         self.whisperx_var = False
         self.xtts_finetuning_var = False
@@ -355,6 +364,7 @@ class PandratorInstaller(QMainWindow):
         self.launch_fishs2_var = False
         self.launch_voxtral_var = False
         self.launch_kokoro_var = False
+        self.kokoro_cpu_launch_var = False
         self.launch_silero_var = False
 
         # Initialize process attributes
@@ -542,6 +552,9 @@ class PandratorInstaller(QMainWindow):
 
         self.kokoro_checkbox = QCheckBox("Kokoro")
         engines_layout.addWidget(self.kokoro_checkbox)
+
+        self.kokoro_cpu_checkbox = QCheckBox("Kokoro CPU only")
+        engines_layout.addWidget(self.kokoro_cpu_checkbox)
         
         components_layout.addLayout(engines_layout)
         
@@ -579,6 +592,15 @@ class PandratorInstaller(QMainWindow):
         buttons_layout.addWidget(self.open_log_button)
         
         layout.addLayout(buttons_layout)
+
+        self.bind_mutually_exclusive_install_options(
+            self.xtts_checkbox,
+            self.xtts_cpu_checkbox,
+        )
+        self.bind_mutually_exclusive_install_options(
+            self.kokoro_checkbox,
+            self.kokoro_cpu_checkbox,
+        )
 
         for checkbox in self.install_tab.findChildren(QCheckBox):
             checkbox.stateChanged.connect(self.update_install_button_state)
@@ -627,9 +649,18 @@ class PandratorInstaller(QMainWindow):
         self.launch_voxtral_checkbox = QCheckBox("Voxtral")
         launch_layout.addWidget(self.launch_voxtral_checkbox)
 
-        # Kokoro checkbox
+        # Kokoro options
+        kokoro_frame = QWidget()
+        kokoro_layout = QGridLayout(kokoro_frame)
+        kokoro_layout.setContentsMargins(0, 0, 0, 0)
+
         self.launch_kokoro_checkbox = QCheckBox("Kokoro")
-        launch_layout.addWidget(self.launch_kokoro_checkbox)
+        kokoro_layout.addWidget(self.launch_kokoro_checkbox, 0, 0)
+
+        self.kokoro_cpu_launch_checkbox = QCheckBox("Use CPU")
+        kokoro_layout.addWidget(self.kokoro_cpu_launch_checkbox, 0, 1)
+
+        launch_layout.addWidget(kokoro_frame)
         
         # Silero checkbox
         self.launch_silero_checkbox = QCheckBox("Silero")
@@ -893,8 +924,17 @@ class PandratorInstaller(QMainWindow):
 
         # Kokoro
         kokoro_support = config.get('kokoro_support', False)
+        kokoro_gpu_support = config.get(KOKORO_GPU_SUPPORT_CONFIG_FLAG, False)
         set_widget_state(self.kokoro_checkbox, not kokoro_support, False)
+        set_widget_state(self.kokoro_cpu_checkbox, not kokoro_support, False)
         set_widget_state(self.launch_kokoro_checkbox, kokoro_support, False)
+        if kokoro_support:
+            if kokoro_gpu_support:
+                set_widget_state(self.kokoro_cpu_launch_checkbox, True, False)
+            else:
+                set_widget_state(self.kokoro_cpu_launch_checkbox, False, True)
+        else:
+            set_widget_state(self.kokoro_cpu_launch_checkbox, False, False)
 
         # Silero
         silero_support = config.get('silero_support', False)
@@ -928,6 +968,31 @@ class PandratorInstaller(QMainWindow):
         self.update_button.setEnabled(pandrator_installed)
 
         self.update_backend_runtime_controls()
+
+    def bind_mutually_exclusive_install_options(self, primary_checkbox, secondary_checkbox):
+        primary_checkbox.stateChanged.connect(
+            lambda state, other=secondary_checkbox: self._handle_mutually_exclusive_install_option(
+                state,
+                other,
+            )
+        )
+        secondary_checkbox.stateChanged.connect(
+            lambda state, other=primary_checkbox: self._handle_mutually_exclusive_install_option(
+                state,
+                other,
+            )
+        )
+
+    def _handle_mutually_exclusive_install_option(self, state, other_checkbox):
+        if state != Qt.CheckState.Checked.value:
+            return
+
+        if other_checkbox.isChecked():
+            other_checkbox.blockSignals(True)
+            other_checkbox.setChecked(False)
+            other_checkbox.blockSignals(False)
+
+        self.update_install_button_state()
 
     def update_install_button_state(self):
         has_selected_component = any(
@@ -1348,6 +1413,7 @@ class PandratorInstaller(QMainWindow):
         self.silero_var = self.silero_checkbox.isChecked()
         self.voxtral_var = self.voxtral_checkbox.isChecked()
         self.kokoro_var = self.kokoro_checkbox.isChecked()
+        self.kokoro_cpu_var = self.kokoro_cpu_checkbox.isChecked()
         self.rvc_var = self.rvc_checkbox.isChecked()
         self.whisperx_var = self.whisperx_checkbox.isChecked()
         self.xtts_finetuning_var = self.xtts_finetuning_checkbox.isChecked()
@@ -1358,7 +1424,7 @@ class PandratorInstaller(QMainWindow):
             (self.fishs2_var and not installed_components['fishs2']) or
             (self.silero_var and not installed_components['silero']) or
             (self.voxtral_var and not installed_components['voxtral']) or
-            (self.kokoro_var and not installed_components['kokoro']) or
+            ((self.kokoro_var or self.kokoro_cpu_var) and not installed_components['kokoro']) or
             (self.rvc_var and not installed_components['rvc']) or
             (self.whisperx_var and not installed_components['whisperx']) or
             (self.xtts_finetuning_var and not installed_components['xtts_finetuning'])
@@ -1410,6 +1476,7 @@ class PandratorInstaller(QMainWindow):
             'silero',
             'voxtral',
             'kokoro',
+            'kokoro_cpu',
             'rvc',
             'whisperx',
             'xtts_finetuning',
@@ -1428,6 +1495,9 @@ class PandratorInstaller(QMainWindow):
         if 'xtts' in selected_components and 'xtts_cpu' in selected_components:
             raise ValueError("Select either 'xtts' or 'xtts_cpu' for headless installation, not both.")
 
+        if 'kokoro' in selected_components and 'kokoro_cpu' in selected_components:
+            raise ValueError("Select either 'kokoro' or 'kokoro_cpu' for headless installation, not both.")
+
         if 'xtts_finetuning' in selected_components and 'whisperx' not in selected_components:
             logging.info("Headless mode: enabling WhisperX because XTTS fine-tuning depends on it.")
             selected_components.add('whisperx')
@@ -1440,6 +1510,7 @@ class PandratorInstaller(QMainWindow):
         self.silero_checkbox.setChecked('silero' in selected_components)
         self.voxtral_checkbox.setChecked('voxtral' in selected_components)
         self.kokoro_checkbox.setChecked('kokoro' in selected_components)
+        self.kokoro_cpu_checkbox.setChecked('kokoro_cpu' in selected_components)
         self.rvc_checkbox.setChecked('rvc' in selected_components)
         self.xtts_finetuning_checkbox.setChecked('xtts_finetuning' in selected_components)
         self.whisperx_checkbox.setChecked('whisperx' in selected_components)
@@ -2244,10 +2315,47 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         finally:
             shutil.rmtree(temp_root, ignore_errors=True)
 
-    def get_kokoro_runtime_env(self, pandrator_path, kokoro_repo_path):
+    def get_kokoro_torch_install_options(self, use_gpu=False):
+        if not use_gpu:
+            return f'torch=={KOKORO_TORCH_BASE_VERSION}', None
+
+        machine = platform.machine().lower()
+        if machine in {'arm64', 'aarch64'}:
+            return f'torch=={KOKORO_GPU_TORCH_VERSION_ARM64}', KOKORO_GPU_TORCH_INDEX_URL_ARM64
+
+        if machine not in {'amd64', 'x86_64'}:
+            logging.warning(
+                "Unknown architecture '%s' for Kokoro GPU install; defaulting to x86_64 CUDA wheels.",
+                machine,
+            )
+
+        return f'torch=={KOKORO_GPU_TORCH_VERSION_X86_64}', KOKORO_GPU_TORCH_INDEX_URL_X86_64
+
+    def get_kokoro_required_package_specs(self, use_gpu=False):
+        torch_spec, _ = self.get_kokoro_torch_install_options(use_gpu=use_gpu)
+        return (torch_spec,)
+
+    def install_pytorch_for_kokoro(self, pandrator_path, env_name, use_gpu=False):
+        torch_spec, index_url = self.get_kokoro_torch_install_options(use_gpu=use_gpu)
+        command = ['python', '-m', 'pip', 'install', '--upgrade', '--force-reinstall', torch_spec]
+        if index_url:
+            command.extend(['--index-url', index_url])
+
+        logging.info(
+            "Installing PyTorch for Kokoro in %s (%s mode)...",
+            env_name,
+            'GPU' if use_gpu else 'CPU',
+        )
+        self.run_pixi_in_env(
+            pandrator_path,
+            env_name,
+            command,
+        )
+
+    def get_kokoro_runtime_env(self, pandrator_path, kokoro_repo_path, use_gpu=False):
         env = self.get_pixi_subprocess_env(pandrator_path)
         env['PYTHONUTF8'] = '1'
-        env['USE_GPU'] = 'false'
+        env['USE_GPU'] = 'true' if use_gpu else 'false'
         env['USE_ONNX'] = 'false'
         env['MODEL_DIR'] = 'src/models'
         env['VOICES_DIR'] = 'src/voices/v1_0'
@@ -2263,7 +2371,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
         return env
 
-    def is_kokoro_runtime_ready(self, pandrator_path, kokoro_repo_path):
+    def is_kokoro_runtime_ready(self, pandrator_path, kokoro_repo_path, use_gpu=False):
         manifest_path = self.get_pixi_manifest_path(pandrator_path, KOKORO_ENV_NAME)
         model_path = os.path.join(
             kokoro_repo_path,
@@ -2273,7 +2381,19 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             'v1_0',
             'kokoro-v1_0.pth',
         )
-        return os.path.exists(manifest_path) and os.path.exists(model_path)
+        if not os.path.exists(manifest_path) or not os.path.exists(model_path):
+            return False
+
+        kokoro_needs_sync, kokoro_reason = self.component_needs_package_sync(
+            pandrator_path,
+            KOKORO_ENV_NAME,
+            self.get_kokoro_required_package_specs(use_gpu=use_gpu),
+        )
+        if kokoro_needs_sync:
+            logging.info("Kokoro runtime requires package sync because %s", kokoro_reason)
+            return False
+
+        return True
 
     def get_bundled_wheels_directories(self, pandrator_path):
         candidate_directories = [
@@ -2396,8 +2516,24 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         logging.error("Kokoro server failed to come online within the specified attempts.")
         return False
 
-    def install_kokoro_api_server(self, pandrator_path, kokoro_repo_path, env_name=KOKORO_ENV_NAME):
-        logging.info(f"Bootstrapping Kokoro API server in {kokoro_repo_path}...")
+    def install_kokoro_api_server(
+        self,
+        pandrator_path,
+        kokoro_repo_path,
+        env_name=KOKORO_ENV_NAME,
+        use_gpu=False,
+        runtime_use_gpu=None,
+    ):
+        if runtime_use_gpu is None:
+            runtime_use_gpu = use_gpu
+
+        install_extra = 'gpu' if use_gpu else 'cpu'
+        logging.info(
+            "Bootstrapping Kokoro API server in %s (%s install, %s launch)...",
+            kokoro_repo_path,
+            install_extra.upper(),
+            'GPU' if runtime_use_gpu else 'CPU',
+        )
         main_path = os.path.join(kokoro_repo_path, 'api', 'src', 'main.py')
         if not os.path.exists(main_path):
             raise FileNotFoundError(f"Kokoro API entrypoint not found at: {main_path}")
@@ -2426,7 +2562,8 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 cwd=kokoro_repo_path,
             )
 
-        editable_install_command = ['python', '-m', 'pip', 'install', '-e', '.[cpu]']
+        _, kokoro_torch_index_url = self.get_kokoro_torch_install_options(use_gpu=use_gpu)
+        editable_install_command = ['python', '-m', 'pip', 'install', '--upgrade', '-e', f'.[{install_extra}]']
         wheels_directories = self.get_bundled_wheels_directories(pandrator_path)
         if wheels_directories:
             for wheels_directory in wheels_directories:
@@ -2439,11 +2576,19 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                     bundled_wheel_directory,
                 )
 
+        if kokoro_torch_index_url:
+            editable_install_command.extend(['--extra-index-url', kokoro_torch_index_url])
+
         self.run_pixi_in_env(
             pandrator_path,
             env_name,
             editable_install_command,
             cwd=kokoro_repo_path,
+        )
+        self.install_pytorch_for_kokoro(
+            pandrator_path,
+            env_name,
+            use_gpu=use_gpu,
         )
 
         self.run_pixi_in_env(
@@ -2459,7 +2604,12 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
         process = None
         try:
-            process = self.run_kokoro_api_server(pandrator_path, env_name, kokoro_repo_path)
+            process = self.run_kokoro_api_server(
+                pandrator_path,
+                env_name,
+                kokoro_repo_path,
+                use_gpu=runtime_use_gpu,
+            )
             if not self.check_kokoro_server_online(
                 'http://127.0.0.1:8880/health',
                 max_attempts=180,
@@ -2483,9 +2633,13 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 if hasattr(process, 'log_handle') and process.log_handle:
                     process.log_handle.close()
 
-    def run_kokoro_api_server(self, pandrator_path, env_name, kokoro_server_path):
+    def run_kokoro_api_server(self, pandrator_path, env_name, kokoro_server_path, use_gpu=False):
         """Run the Kokoro API server in a dedicated Pixi environment."""
-        logging.info(f"Running Kokoro API server from {kokoro_server_path}...")
+        logging.info(
+            "Running Kokoro API server from %s (%s mode)...",
+            kokoro_server_path,
+            'GPU' if use_gpu else 'CPU',
+        )
 
         if self.is_port_in_use(8880):
             error_msg = "Kokoro server cannot be started because port 8880 is already in use."
@@ -2513,7 +2667,11 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             ],
         )
 
-        kokoro_env = self.get_kokoro_runtime_env(pandrator_path, kokoro_server_path)
+        kokoro_env = self.get_kokoro_runtime_env(
+            pandrator_path,
+            kokoro_server_path,
+            use_gpu=use_gpu,
+        )
         log_handle = open(kokoro_log_file, 'a', encoding='utf-8')
         try:
             process = subprocess.Popen(
@@ -4200,6 +4358,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         silero_var = self.silero_checkbox.isChecked()
         voxtral_var = self.voxtral_checkbox.isChecked()
         kokoro_var = self.kokoro_checkbox.isChecked()
+        kokoro_cpu_var = self.kokoro_cpu_checkbox.isChecked()
         rvc_var = self.rvc_checkbox.isChecked()
         whisperx_var = self.whisperx_checkbox.isChecked()
         xtts_finetuning_var = self.xtts_finetuning_checkbox.isChecked()
@@ -4301,7 +4460,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             if voxtral_var and not os.path.exists(voxtral_repo_path):
                 self.clone_repo(VOXTRAL_API_REPO_URL, voxtral_repo_path)
 
-            if kokoro_var and not os.path.exists(kokoro_repo_path):
+            if (kokoro_var or kokoro_cpu_var) and not os.path.exists(kokoro_repo_path):
                 self.clone_repo(KOKORO_API_REPO_URL, kokoro_repo_path)
 
             if needs_pandrator_environment:
@@ -4361,7 +4520,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 self.worker.update_status.emit("Bootstrapping Voxtral API server...")
                 self.install_voxtral_api_server(voxtral_repo_path)
 
-            if kokoro_var:
+            if kokoro_var or kokoro_cpu_var:
                 self.worker.update_progress.emit(0.9)
                 self.worker.update_status.emit("Creating Kokoro Pixi environment...")
                 self.create_pixi_env(pandrator_path, KOKORO_ENV_NAME, KOKORO_PYTHON_VERSION)
@@ -4372,6 +4531,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                     pandrator_path,
                     kokoro_repo_path,
                     env_name=KOKORO_ENV_NAME,
+                    use_gpu=kokoro_var,
                 )
 
             if rvc_var:
@@ -4421,7 +4581,10 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             config['fishs2_support'] = config.get('fishs2_support', False) or fishs2_var
             config['silero_support'] = config.get('silero_support', False) or silero_var
             config['voxtral_support'] = config.get('voxtral_support', False) or voxtral_var
-            config['kokoro_support'] = config.get('kokoro_support', False) or kokoro_var
+            config['kokoro_support'] = config.get('kokoro_support', False) or kokoro_var or kokoro_cpu_var
+            config[KOKORO_GPU_SUPPORT_CONFIG_FLAG] = (
+                config.get(KOKORO_GPU_SUPPORT_CONFIG_FLAG, False) or kokoro_var
+            )
             config['whisperx_support'] = config.get('whisperx_support', False) or whisperx_var
             config['xtts_finetuning_support'] = config.get('xtts_finetuning_support', False) or xtts_finetuning_var
             config['rvc_support'] = config.get('rvc_support', False) or rvc_var
@@ -4492,6 +4655,9 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         kokoro_repo_path = os.path.join(pandrator_base_path, KOKORO_API_REPO_DIRNAME)
         easy_xtts_trainer_path = os.path.join(pandrator_base_path, 'easy_xtts_trainer')
         config = self.load_install_config(pandrator_base_path, detect_rvc=True)
+        if KOKORO_GPU_SUPPORT_CONFIG_FLAG not in config:
+            config[KOKORO_GPU_SUPPORT_CONFIG_FLAG] = False
+            self.save_install_config(pandrator_base_path, config)
 
         pandrator_env_missing = not os.path.exists(self.get_pixi_manifest_path(pandrator_base_path, 'pandrator_installer'))
         silero_env_missing = not os.path.exists(self.get_pixi_manifest_path(pandrator_base_path, 'silero_api_server_installer'))
@@ -4696,6 +4862,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                     self.install_voxtral_api_server(voxtral_repo_path)
 
             if config.get('kokoro_support', False):
+                kokoro_gpu_support = config.get(KOKORO_GPU_SUPPORT_CONFIG_FLAG, False)
                 if os.path.exists(kokoro_repo_path):
                     self.worker.update_status.emit("Updating Kokoro API server repository...")
                     self.pull_repo(kokoro_repo_path)
@@ -4707,12 +4874,17 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                     self.worker.update_status.emit("Creating Kokoro Pixi environment...")
                     self.create_pixi_env(pandrator_base_path, KOKORO_ENV_NAME, KOKORO_PYTHON_VERSION)
 
-                if kokoro_env_missing or not self.is_kokoro_runtime_ready(pandrator_base_path, kokoro_repo_path):
+                if kokoro_env_missing or not self.is_kokoro_runtime_ready(
+                    pandrator_base_path,
+                    kokoro_repo_path,
+                    use_gpu=kokoro_gpu_support,
+                ):
                     self.worker.update_status.emit("Bootstrapping Kokoro API server...")
                     self.install_kokoro_api_server(
                         pandrator_base_path,
                         kokoro_repo_path,
                         env_name=KOKORO_ENV_NAME,
+                        use_gpu=kokoro_gpu_support,
                     )
 
             whisperx_required = config.get('whisperx_support', False) or config.get('xtts_finetuning_support', False)
@@ -4859,6 +5031,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         self.launch_fishs2_var = self.launch_fishs2_checkbox.isChecked()
         self.launch_voxtral_var = self.launch_voxtral_checkbox.isChecked()
         self.launch_kokoro_var = self.launch_kokoro_checkbox.isChecked()
+        self.kokoro_cpu_launch_var = self.kokoro_cpu_launch_checkbox.isChecked()
         self.launch_silero_var = self.launch_silero_checkbox.isChecked()
 
         selected_backend_keys = self._selected_launch_backend_keys()
@@ -4895,6 +5068,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 "Pixi runtime not found. Run Install or Update to migrate this installation."
             )
 
+        install_config = self.load_install_config(pandrator_path)
         shared_pixi_path = self.get_pixi_executable(pandrator_path)
 
         selected_backend_keys = self._selected_launch_backend_keys()
@@ -5115,6 +5289,8 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             else:
                 self.worker.update_status.emit("Starting Kokoro server...")
                 kokoro_server_path = os.path.join(pandrator_path, KOKORO_API_REPO_DIRNAME)
+                kokoro_gpu_support = install_config.get(KOKORO_GPU_SUPPORT_CONFIG_FLAG, False)
+                kokoro_launch_gpu = kokoro_gpu_support and not self.kokoro_cpu_launch_var
                 logging.info(f"Kokoro server path: {kokoro_server_path}")
 
                 if not os.path.exists(kokoro_server_path):
@@ -5123,13 +5299,19 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                     logging.error(error_msg)
                     raise FileNotFoundError(error_msg)
 
-                if not self.is_kokoro_runtime_ready(pandrator_path, kokoro_server_path):
+                if not self.is_kokoro_runtime_ready(
+                    pandrator_path,
+                    kokoro_server_path,
+                    use_gpu=kokoro_gpu_support,
+                ):
                     self.worker.update_status.emit("Preparing Kokoro runtime...")
                     self.create_pixi_env(pandrator_path, KOKORO_ENV_NAME, KOKORO_PYTHON_VERSION)
                     self.install_kokoro_api_server(
                         pandrator_path,
                         kokoro_server_path,
                         env_name=KOKORO_ENV_NAME,
+                        use_gpu=kokoro_gpu_support,
+                        runtime_use_gpu=kokoro_launch_gpu,
                     )
 
                 try:
@@ -5137,6 +5319,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                         pandrator_path,
                         KOKORO_ENV_NAME,
                         kokoro_server_path,
+                        use_gpu=kokoro_launch_gpu,
                     )
                 except Exception as e:
                     error_msg = f"Failed to start Kokoro server: {str(e)}"
@@ -5925,7 +6108,7 @@ def parse_launcher_cli_args(argv=None):
         default='',
         help=(
             'Comma-separated component list for headless mode: '
-            'xtts,xtts_cpu,voxcpm,fishs2,silero,voxtral,kokoro,rvc,whisperx,xtts_finetuning'
+            'xtts,xtts_cpu,voxcpm,fishs2,silero,voxtral,kokoro,kokoro_cpu,rvc,whisperx,xtts_finetuning'
         ),
     )
     parser.add_argument(

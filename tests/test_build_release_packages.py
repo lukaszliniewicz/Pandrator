@@ -36,7 +36,7 @@ class BuildReleasePackagesTests(unittest.TestCase):
     def test_parse_selected_modules_all(self):
         # 'all' should resolve all modules
         resolved = build_release_packages.parse_selected_modules("all")
-        self.assertEqual(set(resolved), set(build_release_packages.MODULES.keys()))
+        self.assertEqual(set(resolved), set(build_release_packages.ALL_MODULE_KEYS))
 
     def test_parse_selected_modules_preset(self):
         # 'stack' preset maps to ('xtts_finetuning', 'rvc'), which expands to dependencies
@@ -47,6 +47,13 @@ class BuildReleasePackagesTests(unittest.TestCase):
         # Comma-separated list with mixed case and dashes
         resolved = build_release_packages.parse_selected_modules("Kokoro, RVC, whisperx")
         self.assertEqual(set(resolved), {"kokoro", "rvc", "whisperx"})
+
+    def test_parse_selected_modules_kokoro_cpu(self):
+        resolved = build_release_packages.parse_selected_modules("kokoro_cpu")
+        self.assertEqual(resolved, ("kokoro_cpu",))
+
+    def test_default_config_flags_include_kokoro_gpu_support(self):
+        self.assertIn("kokoro_gpu_support", build_release_packages.DEFAULT_CONFIG_FLAGS)
 
     def test_parse_selected_modules_invalid(self):
         with self.assertRaises(RuntimeError):

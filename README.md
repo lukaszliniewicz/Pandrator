@@ -171,6 +171,8 @@ For automation, the launcher also supports headless installation:
 
 ```powershell
 python pandrator_installer_launcher.py --headless-install --workspace "D:/pandrator-builds/core" --components "kokoro"
+# or CPU-only Kokoro:
+python pandrator_installer_launcher.py --headless-install --workspace "D:/pandrator-builds/core" --components "kokoro_cpu"
 ```
 
 > [!NOTE]
@@ -182,7 +184,7 @@ You can install components incrementally (during first setup or later):
 - XTTS2 API (`XTTS` GPU or `XTTS CPU only`)
 - FishS2 API (`FishS2`)
 - Voxtral API (`Voxtral`, GPU only)
-- Kokoro API (`Kokoro`)
+- Kokoro API (`Kokoro` GPU or `Kokoro CPU only`)
 - Silero API
 - Optional tools: RVC Python, WhisperX, Easy XTTS Trainer
 
@@ -201,7 +203,7 @@ Launch tab options:
 - `XTTS` (+ `Use CPU`, `DeepSpeed`)
 - `FishS2`
 - `Voxtral`
-- `Kokoro`
+- `Kokoro` (+ `Use CPU` when GPU support is installed)
 - `Silero`
 
 If a local TTS server is launched from the launcher, Pandrator is auto-started with the matching connect flag (`-connect -xtts`, `-connect -fishs2`, `-connect -voxtral`, `-connect -kokoro`, `-connect -silero`).
@@ -291,13 +293,15 @@ Please refer to the repositories linked under [Dependencies](#dependencies) for 
 
 8. (Optional) Install Kokoro API:
 
-   ```
-   git clone https://github.com/remsky/Kokoro-FastAPI.git
-   cd Kokoro-FastAPI
-   python -m pip install -e .[cpu]
-   python docker/scripts/download_model.py --output api/src/models/v1_0
-   cd ..
-   ```
+    ```
+    git clone https://github.com/remsky/Kokoro-FastAPI.git
+    cd Kokoro-FastAPI
+    python -m pip install -e .[cpu]
+    # or for NVIDIA GPU support, use the upstream GPU extra and CUDA wheel index:
+    # python -m pip install -e .[gpu] --extra-index-url https://download.pytorch.org/whl/cu126
+    python docker/scripts/download_model.py --output api/src/models/v1_0
+    cd ..
+    ```
 
 9. (Optional) Install Silero API:
 
@@ -362,10 +366,12 @@ Please refer to the repositories linked under [Dependencies](#dependencies) for 
 
 6. Run Kokoro API (if installed):
 
-   ```
-   cd Kokoro-FastAPI
-   python -m uvicorn api.src.main:app --host 127.0.0.1 --port 8880
-   ```
+    ```
+    cd Kokoro-FastAPI
+    set USE_GPU=false
+    # or set USE_GPU=true if installed with GPU support
+    python -m uvicorn api.src.main:app --host 127.0.0.1 --port 8880
+    ```
 
 7. Run Silero API (if installed):
 

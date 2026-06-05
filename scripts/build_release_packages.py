@@ -26,6 +26,7 @@ DEFAULT_CONFIG_FLAGS = (
     "silero_support",
     "voxtral_support",
     "kokoro_support",
+    "kokoro_gpu_support",
     "whisperx_support",
     "xtts_finetuning_support",
     "rvc_support",
@@ -99,6 +100,18 @@ MODULES = {
             f"envs/{KOKORO_ENV_NAME}/pixi.toml",
         ),
     ),
+    "kokoro_cpu": ModuleDefinition(
+        key="kokoro_cpu",
+        config_flag="kokoro_support",
+        paths=(
+            "Kokoro-FastAPI",
+            f"envs/{KOKORO_ENV_NAME}",
+        ),
+        markers=(
+            "Kokoro-FastAPI/api/src/main.py",
+            f"envs/{KOKORO_ENV_NAME}/pixi.toml",
+        ),
+    ),
     "voxtral": ModuleDefinition(
         key="voxtral",
         config_flag="voxtral_support",
@@ -158,6 +171,7 @@ MODULES = {
 
 PRESETS = {
     "kokoro": ("kokoro",),
+    "kokoro_cpu": ("kokoro_cpu",),
     "xtts_stack": ("xtts_finetuning", "rvc"),
     "xtts": ("xtts_finetuning", "rvc"),
     "stack": ("xtts_finetuning", "rvc"),
@@ -169,6 +183,7 @@ PRESETS = {
     "voxtral_rest": ("voxtral", "xtts_finetuning", "rvc"),
     "voxtral_plus_rest": ("voxtral", "xtts_finetuning", "rvc"),
 }
+ALL_MODULE_KEYS = tuple(key for key in MODULES.keys() if key != "kokoro_cpu")
 
 
 def normalize_relative_path(path: str) -> str:
@@ -243,7 +258,7 @@ def resolve_dependencies(selected_modules: Iterable[str]) -> tuple[str, ...]:
 def parse_selected_modules(only_value: str) -> tuple[str, ...]:
     raw_value = str(only_value or "").strip().lower()
     if not raw_value or raw_value == "all":
-        return resolve_dependencies(MODULES.keys())
+        return resolve_dependencies(ALL_MODULE_KEYS)
 
     selected_keys: set[str] = set()
     for token in raw_value.split(","):
@@ -252,7 +267,7 @@ def parse_selected_modules(only_value: str) -> tuple[str, ...]:
             continue
 
         if normalized_token == "all":
-            selected_keys.update(MODULES.keys())
+            selected_keys.update(ALL_MODULE_KEYS)
             continue
 
         if normalized_token in PRESETS:
@@ -769,8 +784,8 @@ def parse_arguments() -> argparse.Namespace:
         default="all",
         help=(
             "Comma-separated list of components/presets to package: all, "
-            "kokoro, xtts_stack, voxtral, voxcpm, fishs2, voxtral_with_rest. "
-            "Individual modules: kokoro, voxtral, voxcpm, fishs2, xtts, silero, whisperx, xtts_finetuning, rvc."
+            "kokoro, kokoro_cpu, xtts_stack, voxtral, voxcpm, fishs2, voxtral_with_rest. "
+            "Individual modules: kokoro, kokoro_cpu, voxtral, voxcpm, fishs2, xtts, silero, whisperx, xtts_finetuning, rvc."
         ),
     )
     parser.add_argument(
@@ -912,10 +927,12 @@ def main() -> int:
     component_paths = dict(layout["component_paths"])
 
     cuda_support = True
+    kokoro_gpu_support = False
     if (source_root / "config.json").exists():
         try:
             config = load_install_config(source_root)
             cuda_support = bool(config.get("cuda_support", True))
+            kokoro_gpu_support = bool(config.get("kokoro_gpu_support", False))
         except Exception:
             pass
 
@@ -940,7 +957,7 @@ def main() -> int:
             paths = tuple(component_paths["xtts"])
         elif component == "voxtral" and "voxtral" in component_paths:
             paths = tuple(component_paths["voxtral"])
-        elif component == "kokoro" and "kokoro" in component_paths:
+        elif component in {"kokoro", "kokoro_cpu"} and "kokoro" in component_paths:
             paths = tuple(component_paths["kokoro"])
         elif component == "silero" and "silero" in component_paths:
             paths = tuple(component_paths["silero"])
@@ -954,6 +971,10 @@ def main() -> int:
         overrides = {module.config_flag: True} if module.config_flag else {}
         if component == "xtts":
             overrides["cuda_support"] = cuda_support
+        elif component == "kokoro":
+            overrides["kokoro_gpu_support"] = kokoro_gpu_support
+        elif component == "kokoro_cpu":
+            overrides["kokoro_gpu_support"] = False
         elif component == "xtts_finetuning":
             overrides["cuda_support"] = cuda_support
             overrides["xtts_support"] = True
