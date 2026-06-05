@@ -555,6 +555,7 @@ class PandratorInstaller(QMainWindow):
 
         self.kokoro_cpu_checkbox = QCheckBox("Kokoro CPU only")
         engines_layout.addWidget(self.kokoro_cpu_checkbox)
+        engines_layout.addStretch()
         
         components_layout.addLayout(engines_layout)
         
@@ -623,17 +624,18 @@ class PandratorInstaller(QMainWindow):
         
         # XTTS options
         xtts_frame = QWidget()
-        xtts_layout = QGridLayout(xtts_frame)
+        xtts_layout = QHBoxLayout(xtts_frame)
         xtts_layout.setContentsMargins(0, 0, 0, 0)
-        
+
         self.launch_xtts_checkbox = QCheckBox("XTTS")
-        xtts_layout.addWidget(self.launch_xtts_checkbox, 0, 0)
-        
+        xtts_layout.addWidget(self.launch_xtts_checkbox)
+
         self.xtts_cpu_launch_checkbox = QCheckBox("Use CPU")
-        xtts_layout.addWidget(self.xtts_cpu_launch_checkbox, 0, 1)
+        xtts_layout.addWidget(self.xtts_cpu_launch_checkbox)
         
         self.deepspeed_checkbox = QCheckBox("Turn off DeepSpeed")
-        xtts_layout.addWidget(self.deepspeed_checkbox, 0, 2)
+        xtts_layout.addWidget(self.deepspeed_checkbox)
+        xtts_layout.addStretch()
         
         launch_layout.addWidget(xtts_frame)
 
@@ -651,14 +653,15 @@ class PandratorInstaller(QMainWindow):
 
         # Kokoro options
         kokoro_frame = QWidget()
-        kokoro_layout = QGridLayout(kokoro_frame)
+        kokoro_layout = QHBoxLayout(kokoro_frame)
         kokoro_layout.setContentsMargins(0, 0, 0, 0)
 
         self.launch_kokoro_checkbox = QCheckBox("Kokoro")
-        kokoro_layout.addWidget(self.launch_kokoro_checkbox, 0, 0)
+        kokoro_layout.addWidget(self.launch_kokoro_checkbox)
 
         self.kokoro_cpu_launch_checkbox = QCheckBox("Use CPU")
-        kokoro_layout.addWidget(self.kokoro_cpu_launch_checkbox, 0, 1)
+        kokoro_layout.addWidget(self.kokoro_cpu_launch_checkbox)
+        kokoro_layout.addStretch()
 
         launch_layout.addWidget(kokoro_frame)
         

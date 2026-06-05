@@ -12,11 +12,16 @@ from typing import Any
 
 
 STATE_DB_FILENAME = "pandrator_state.sqlite3"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 OUTPUTS_DIRNAME = "Outputs"
 TRASH_DIRNAME = ".trash"
 SESSION_CONFIG_FILENAME = "session_config.json"
+DUBBING_STAGING_DIRNAME = "_dubbing_staging"
+DUBBING_RUNS_DIR = os.path.join("dubbing", "runs")
+AUDIO_VARIANTS_DIRNAME = "Audio_Variants"
+SENTENCE_WAVS_DIRNAME = "Sentence_wavs"
+SOURCE_AUDIO_VERSION_ID = "source"
 
 SOURCE_TEXT_EXTENSIONS = {".txt", ".pdf", ".epub", ".docx", ".mobi"}
 SOURCE_VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".avi", ".mov"}
@@ -96,6 +101,48 @@ def _walk_directory_size(path: str) -> int:
             except OSError:
                 continue
     return total_size
+
+
+def _file_size(path: str) -> int:
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return 0
+
+
+def _relative_path(path: str, root: str) -> str:
+    try:
+        return os.path.relpath(path, root)
+    except ValueError:
+        return path
+
+
+def _source_display_path_from_payload(payload: dict[str, Any], source_path: str) -> str:
+    for key in ("source_display_path", "original_source_file_path", "display_source_path"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value
+    return source_path
+
+
+def _source_display_name_from_path(path: str) -> str:
+    normalized = str(path or "").strip()
+    if not normalized:
+        return ""
+    return os.path.basename(normalized.rstrip("/\\")) or normalized
+
+
+def _sentence_sort_key(value: Any) -> tuple[int, Any]:
+    text = str(value or "")
+    try:
+        return (0, int(text))
+    except ValueError:
+        return (1, text.lower())
+
+
+def _dedupe_sentence_numbers(values: list[Any]) -> list[str]:
+    normalized = {str(value) for value in values if str(value or "").strip()}
+    return sorted(normalized, key=_sentence_sort_key)
 
 
 def _normalize_for_search(value: Any) -> str:
@@ -186,6 +233,8 @@ class StateDBHandler:
                 session_path TEXT NOT NULL,
                 source_type TEXT,
                 source_path TEXT,
+                source_display_name TEXT,
+                source_display_path TEXT,
                 tts_service TEXT,
                 language TEXT,
                 dubbing_mode INTEGER NOT NULL DEFAULT 0,
@@ -200,6 +249,9 @@ class StateDBHandler:
                 final_output_status TEXT,
                 dubbing_status TEXT,
                 artifact_count INTEGER NOT NULL DEFAULT 0,
+                audio_version_count INTEGER NOT NULL DEFAULT 0,
+                audio_version_size_bytes INTEGER NOT NULL DEFAULT 0,
+                audio_version_summary TEXT,
                 config_modified_at TEXT,
                 indexed_at TEXT NOT NULL,
                 trashed_at TEXT,
@@ -209,7 +261,7 @@ class StateDBHandler:
             CREATE INDEX IF NOT EXISTS idx_sessions_modified
                 ON sessions(config_modified_at DESC);
             CREATE INDEX IF NOT EXISTS idx_sessions_search
-                ON sessions(session_name, source_type, status, final_output_status, dubbing_status);
+                ON sessions(session_name, source_type, source_display_name, status, final_output_status, dubbing_status);
 
             CREATE TABLE IF NOT EXISTS session_config_snapshots (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -293,6 +345,28 @@ class StateDBHandler:
             CREATE INDEX IF NOT EXISTS idx_dubbing_artifacts_role
                 ON dubbing_artifacts(run_id, role, is_current, modified_at DESC);
 
+            CREATE TABLE IF NOT EXISTS session_audio_versions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_name TEXT NOT NULL,
+                variant_id TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'source',
+                label TEXT,
+                model_name TEXT,
+                settings_hash TEXT,
+                sentence_count INTEGER NOT NULL DEFAULT 0,
+                total_sentences INTEGER NOT NULL DEFAULT 0,
+                size_bytes INTEGER NOT NULL DEFAULT 0,
+                relative_dir TEXT,
+                partial INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT,
+                updated_at TEXT NOT NULL,
+                UNIQUE(session_name, variant_id),
+                FOREIGN KEY(session_name) REFERENCES sessions(session_name) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_session_audio_versions_session
+                ON session_audio_versions(session_name, kind, updated_at DESC);
+
             CREATE TABLE IF NOT EXISTS trash_entries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_name TEXT NOT NULL,
@@ -309,12 +383,58 @@ class StateDBHandler:
             """
         )
 
+    def _table_columns(self, connection: sqlite3.Connection, table_name: str) -> set[str]:
+        rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+        return {str(row["name"]) for row in rows}
+
+    def _ensure_column(self, connection: sqlite3.Connection, table_name: str, column_definition: str):
+        column_name = column_definition.split()[0]
+        if column_name in self._table_columns(connection, table_name):
+            return
+        connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_definition}")
+
+    def _ensure_schema_compatibility(self, connection: sqlite3.Connection):
+        self._ensure_column(connection, "sessions", "source_display_name TEXT")
+        self._ensure_column(connection, "sessions", "source_display_path TEXT")
+        self._ensure_column(connection, "sessions", "audio_version_count INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column(connection, "sessions", "audio_version_size_bytes INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column(connection, "sessions", "audio_version_summary TEXT")
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS session_audio_versions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_name TEXT NOT NULL,
+                variant_id TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'source',
+                label TEXT,
+                model_name TEXT,
+                settings_hash TEXT,
+                sentence_count INTEGER NOT NULL DEFAULT 0,
+                total_sentences INTEGER NOT NULL DEFAULT 0,
+                size_bytes INTEGER NOT NULL DEFAULT 0,
+                relative_dir TEXT,
+                partial INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT,
+                updated_at TEXT NOT NULL,
+                UNIQUE(session_name, variant_id),
+                FOREIGN KEY(session_name) REFERENCES sessions(session_name) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_session_audio_versions_session
+                ON session_audio_versions(session_name, kind, updated_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_sessions_search
+                ON sessions(session_name, source_type, source_display_name, status, final_output_status, dubbing_status);
+            """
+        )
+
     def _initialize_connection(self, connection: sqlite3.Connection):
         connection.execute("PRAGMA journal_mode = WAL")
         version_row = connection.execute("PRAGMA user_version").fetchone()
         current_version = _safe_int(version_row[0], 0) if version_row else 0
+        self._create_schema(connection)
+        self._ensure_schema_compatibility(connection)
         if current_version < SCHEMA_VERSION:
-            self._create_schema(connection)
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def initialize_database(self):
@@ -650,6 +770,7 @@ class StateDBHandler:
                     session_name,
                 ),
             )
+            self._refresh_session_audio_summary(connection, session_name, session_path)
 
     def update_session_speech_blocks_index(
         self,
@@ -783,6 +904,289 @@ class StateDBHandler:
             ),
         )
 
+    def _session_audio_base_dirs(
+        self,
+        connection: sqlite3.Connection,
+        session_name: str,
+        session_path: str,
+    ) -> list[str]:
+        candidates = [
+            session_path,
+            os.path.join(session_path, DUBBING_STAGING_DIRNAME),
+        ]
+
+        run_rows = connection.execute(
+            """
+            SELECT run_dir
+            FROM dubbing_runs
+            WHERE session_name = ?
+            ORDER BY active DESC, updated_at DESC
+            """,
+            (session_name,),
+        ).fetchall()
+        for row in run_rows:
+            run_dir = str(row["run_dir"] or "").strip()
+            if run_dir:
+                candidates.append(run_dir)
+
+        runs_root = os.path.join(session_path, DUBBING_RUNS_DIR)
+        if os.path.isdir(runs_root):
+            try:
+                for name in os.listdir(runs_root):
+                    candidates.append(os.path.join(runs_root, name))
+            except OSError:
+                pass
+
+        unique_dirs: list[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            normalized = os.path.abspath(str(candidate or "").strip())
+            if not normalized or normalized in seen or not os.path.isdir(normalized):
+                continue
+            seen.add(normalized)
+            unique_dirs.append(normalized)
+        return unique_dirs
+
+    def _scan_sentence_wavs_dir(self, wavs_dir: str, session_name: str) -> tuple[list[str], int]:
+        if not os.path.isdir(wavs_dir):
+            return [], 0
+
+        pattern = re.compile(
+            rf"^{re.escape(session_name)}_sentence_(?P<number>.+)\.wav$",
+            re.IGNORECASE,
+        )
+        sentence_numbers: list[str] = []
+        size_bytes = 0
+        try:
+            for file_name in os.listdir(wavs_dir):
+                file_path = os.path.join(wavs_dir, file_name)
+                if not os.path.isfile(file_path):
+                    continue
+                match = pattern.match(file_name)
+                if not match:
+                    continue
+                sentence_numbers.append(match.group("number"))
+                size_bytes += _file_size(file_path)
+        except OSError:
+            return [], 0
+        return _dedupe_sentence_numbers(sentence_numbers), size_bytes
+
+    def _scan_source_audio_version(
+        self,
+        connection: sqlite3.Connection,
+        session_name: str,
+        session_path: str,
+        total_sentences: int,
+    ) -> dict[str, Any] | None:
+        sentence_numbers: list[str] = []
+        size_bytes = 0
+        seen_dirs: set[str] = set()
+        for base_dir in self._session_audio_base_dirs(connection, session_name, session_path):
+            wavs_dir = os.path.join(base_dir, SENTENCE_WAVS_DIRNAME)
+            normalized = os.path.abspath(wavs_dir)
+            if normalized in seen_dirs:
+                continue
+            seen_dirs.add(normalized)
+            numbers, dir_size = self._scan_sentence_wavs_dir(wavs_dir, session_name)
+            sentence_numbers.extend(numbers)
+            size_bytes += dir_size
+
+        sentence_count = len(_dedupe_sentence_numbers(sentence_numbers))
+        if sentence_count <= 0 and total_sentences <= 0:
+            return None
+
+        return {
+            "variant_id": SOURCE_AUDIO_VERSION_ID,
+            "kind": "source",
+            "label": "Original",
+            "model_name": "",
+            "settings_hash": "",
+            "sentence_count": sentence_count,
+            "total_sentences": total_sentences,
+            "size_bytes": size_bytes,
+            "relative_dir": SENTENCE_WAVS_DIRNAME,
+            "partial": 1 if total_sentences and sentence_count < total_sentences else 0,
+            "created_at": "",
+            "updated_at": _utc_now_iso(),
+        }
+
+    def _scan_rvc_audio_versions(
+        self,
+        connection: sqlite3.Connection,
+        session_name: str,
+        session_path: str,
+        total_sentences: int,
+    ) -> list[dict[str, Any]]:
+        try:
+            from . import audio_variant_handler
+        except Exception as error:
+            logging.warning("Could not import audio variant handler for session indexing: %s", error)
+            return []
+
+        merged: dict[str, dict[str, Any]] = {}
+        for base_dir in self._session_audio_base_dirs(connection, session_name, session_path):
+            variants_dir = os.path.join(base_dir, AUDIO_VARIANTS_DIRNAME)
+            if not os.path.isdir(variants_dir):
+                continue
+
+            for record in audio_variant_handler.list_rvc_variants(base_dir, session_name, prune_missing=False):
+                variant_id = str(record.get("id") or "").strip()
+                if not variant_id:
+                    continue
+
+                wavs_dir = audio_variant_handler.variant_wavs_dir(base_dir, variant_id)
+                sentence_numbers = list(record.get("sentence_numbers") or [])
+                size_bytes = _walk_directory_size(wavs_dir)
+                relative_dir = _relative_path(wavs_dir, session_path)
+                existing = merged.get(variant_id)
+                if existing is None:
+                    merged[variant_id] = {
+                        "variant_id": variant_id,
+                        "kind": str(record.get("kind") or "rvc"),
+                        "label": str(record.get("label") or variant_id),
+                        "model_name": str(record.get("model_name") or ""),
+                        "settings_hash": str(record.get("settings_hash") or ""),
+                        "sentence_numbers": list(sentence_numbers),
+                        "sentence_count": len(_dedupe_sentence_numbers(sentence_numbers)),
+                        "total_sentences": total_sentences,
+                        "size_bytes": size_bytes,
+                        "relative_dir": relative_dir,
+                        "partial": 0,
+                        "created_at": str(record.get("created_at") or ""),
+                        "updated_at": str(record.get("updated_at") or _utc_now_iso()),
+                    }
+                    continue
+
+                existing["sentence_numbers"] = _dedupe_sentence_numbers(
+                    list(existing.get("sentence_numbers") or []) + sentence_numbers
+                )
+                existing["sentence_count"] = len(existing["sentence_numbers"])
+                existing["size_bytes"] = int(existing.get("size_bytes") or 0) + size_bytes
+
+        versions: list[dict[str, Any]] = []
+        for record in merged.values():
+            sentence_count = int(record.get("sentence_count") or 0)
+            record["partial"] = 1 if total_sentences and sentence_count < total_sentences else 0
+            record.pop("sentence_numbers", None)
+            versions.append(record)
+        return sorted(versions, key=lambda item: (str(item.get("kind") or ""), str(item.get("label") or "")))
+
+    @staticmethod
+    def _audio_version_summary(versions: list[dict[str, Any]]) -> str:
+        if not versions:
+            return "No audio"
+
+        rvc_versions = [item for item in versions if str(item.get("kind") or "").lower() == "rvc"]
+        if not rvc_versions:
+            return "Original"
+
+        partial_count = sum(1 for item in rvc_versions if _safe_int(item.get("partial"), 0) > 0)
+        rvc_text = f"{len(rvc_versions)} RVC" if len(rvc_versions) != 1 else "1 RVC"
+        summary = f"Original + {rvc_text}"
+        if partial_count:
+            summary += f" ({partial_count} partial)"
+        return summary
+
+    def _refresh_session_audio_summary(
+        self,
+        connection: sqlite3.Connection,
+        session_name: str,
+        session_path: str,
+    ):
+        payload_row = connection.execute(
+            """
+            SELECT sentences_count, generated_sentences
+            FROM session_payload_index
+            WHERE session_name = ?
+            """,
+            (session_name,),
+        ).fetchone()
+        session_row = connection.execute(
+            """
+            SELECT total_sentences, generated_sentences
+            FROM sessions
+            WHERE session_name = ?
+            """,
+            (session_name,),
+        ).fetchone()
+
+        total_sentences = (
+            _safe_int(payload_row["sentences_count"], 0)
+            if payload_row
+            else _safe_int(session_row["total_sentences"], 0) if session_row else 0
+        )
+        source_version = self._scan_source_audio_version(connection, session_name, session_path, total_sentences)
+        versions = []
+        if source_version is not None:
+            versions.append(source_version)
+        versions.extend(self._scan_rvc_audio_versions(connection, session_name, session_path, total_sentences))
+
+        now_iso = _utc_now_iso()
+        connection.execute("DELETE FROM session_audio_versions WHERE session_name = ?", (session_name,))
+        for version in versions:
+            connection.execute(
+                """
+                INSERT INTO session_audio_versions (
+                    session_name,
+                    variant_id,
+                    kind,
+                    label,
+                    model_name,
+                    settings_hash,
+                    sentence_count,
+                    total_sentences,
+                    size_bytes,
+                    relative_dir,
+                    partial,
+                    created_at,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_name,
+                    str(version.get("variant_id") or ""),
+                    str(version.get("kind") or ""),
+                    str(version.get("label") or ""),
+                    str(version.get("model_name") or ""),
+                    str(version.get("settings_hash") or ""),
+                    _safe_int(version.get("sentence_count"), 0),
+                    _safe_int(version.get("total_sentences"), total_sentences),
+                    _safe_int(version.get("size_bytes"), 0),
+                    str(version.get("relative_dir") or ""),
+                    1 if _safe_int(version.get("partial"), 0) > 0 else 0,
+                    str(version.get("created_at") or ""),
+                    str(version.get("updated_at") or now_iso),
+                ),
+            )
+
+        connection.execute(
+            """
+            UPDATE sessions
+            SET audio_version_count = ?,
+                audio_version_size_bytes = ?,
+                audio_version_summary = ?,
+                indexed_at = ?
+            WHERE session_name = ?
+            """,
+            (
+                len(versions),
+                sum(_safe_int(version.get("size_bytes"), 0) for version in versions),
+                self._audio_version_summary(versions),
+                now_iso,
+                session_name,
+            ),
+        )
+
+    def refresh_session_audio_summary(self, session_name: str):
+        self._ensure_ready()
+        if not session_name:
+            return
+
+        session_path = os.path.join(self.outputs_root, session_name)
+        with self._lock, self._connection() as connection:
+            self._ensure_session_row(connection, session_name, session_path)
+            self._refresh_session_audio_summary(connection, session_name, session_path)
+
     def save_session_config_snapshot(
         self,
         session_name: str,
@@ -800,6 +1204,8 @@ class StateDBHandler:
         indexed_at = _utc_now_iso()
 
         source_path = str(payload.get("source_file_path") or "").strip()
+        source_display_path = _source_display_path_from_payload(payload, source_path)
+        source_display_name = _source_display_name_from_path(source_display_path)
         source_type = _source_type_from_path(source_path)
         tts_payload = payload.get("tts", {}) if isinstance(payload.get("tts"), dict) else {}
         tts_service = str(tts_payload.get("service") or "").strip()
@@ -883,6 +1289,8 @@ class StateDBHandler:
                 SET session_path = ?,
                     source_type = ?,
                     source_path = ?,
+                    source_display_name = ?,
+                    source_display_path = ?,
                     tts_service = ?,
                     language = ?,
                     dubbing_mode = ?,
@@ -900,6 +1308,8 @@ class StateDBHandler:
                     resolved_session_path,
                     source_type,
                     source_path,
+                    source_display_name,
+                    source_display_path,
                     tts_service,
                     language,
                     dubbing_mode,
@@ -916,6 +1326,7 @@ class StateDBHandler:
             )
 
             self._refresh_session_artifact_summary(connection, session_name)
+            self._refresh_session_audio_summary(connection, session_name, resolved_session_path)
 
     def load_latest_session_config_snapshot(self, session_name: str) -> dict[str, Any]:
         self._ensure_ready()
@@ -1560,6 +1971,7 @@ class StateDBHandler:
         )
 
         self.import_legacy_session_run(session_name, session_path)
+        self.refresh_session_audio_summary(session_name)
         preview = self.get_session_preview(session_name)
         return preview
 
@@ -1622,13 +2034,16 @@ class StateDBHandler:
                         "LOWER(session_name) LIKE ?",
                         "LOWER(source_type) LIKE ?",
                         "LOWER(source_path) LIKE ?",
+                        "LOWER(source_display_name) LIKE ?",
+                        "LOWER(source_display_path) LIKE ?",
                         "LOWER(status) LIKE ?",
                         "LOWER(final_output_status) LIKE ?",
                         "LOWER(dubbing_status) LIKE ?",
+                        "LOWER(audio_version_summary) LIKE ?",
                     ]
                 ) + ")"
             )
-            params.extend([like_query] * 6)
+            params.extend([like_query] * 9)
 
         where_clause = ""
         if filters:
@@ -1659,6 +2074,8 @@ class StateDBHandler:
                 SELECT
                     session_name,
                     source_path,
+                    source_display_path,
+                    source_display_name,
                     source_type,
                     dubbing_mode,
                     config_modified_at,
@@ -1675,10 +2092,11 @@ class StateDBHandler:
         reusable_sources: list[dict[str, Any]] = []
         for row in rows:
             source_path = str(row["source_path"] or "").strip()
+            display_path = str(row["source_display_path"] or "").strip() or source_path
             if not source_path:
                 continue
 
-            absolute_path = os.path.abspath(source_path)
+            absolute_path = os.path.abspath(display_path)
             normalized_path = os.path.normcase(absolute_path)
             if normalized_path in seen_paths:
                 continue
@@ -1691,7 +2109,8 @@ class StateDBHandler:
             reusable_sources.append(
                 {
                     "source_path": absolute_path,
-                    "name": os.path.basename(absolute_path) or absolute_path,
+                    "name": str(row["source_display_name"] or os.path.basename(absolute_path) or absolute_path),
+                    "internal_source_path": os.path.abspath(source_path),
                     "source_type": str(row["source_type"] or _source_type_from_path(absolute_path)),
                     "session_name": str(row["session_name"] or ""),
                     "dubbing_mode": 1 if bool(row["dubbing_mode"]) else 0,
@@ -1770,6 +2189,33 @@ class StateDBHandler:
                 run_dict["artifacts"] = [dict(artifact_row) for artifact_row in artifact_rows]
                 runs_payload.append(run_dict)
 
+            audio_version_rows = connection.execute(
+                """
+                SELECT *
+                FROM session_audio_versions
+                WHERE session_name = ?
+                ORDER BY
+                    CASE WHEN variant_id = ? THEN 0 ELSE 1 END,
+                    kind ASC,
+                    updated_at DESC,
+                    label ASC
+                """,
+                (session_name, SOURCE_AUDIO_VERSION_ID),
+            ).fetchall()
+
+            trash_row = connection.execute(
+                """
+                SELECT *
+                FROM trash_entries
+                WHERE session_name = ?
+                    AND restored_at IS NULL
+                    AND deleted_at IS NULL
+                ORDER BY moved_at DESC
+                LIMIT 1
+                """,
+                (session_name,),
+            ).fetchone()
+
         config_payload: dict[str, Any] = {}
         if config_row is not None:
             try:
@@ -1787,6 +2233,8 @@ class StateDBHandler:
             "payload_index": payload_dict,
             "config": config_payload,
             "runs": runs_payload,
+            "audio_versions": [dict(row) for row in audio_version_rows],
+            "trash_entry": dict(trash_row) if trash_row else {},
         }
 
     def get_trash_entries(self) -> list[dict[str, Any]]:
@@ -1867,7 +2315,7 @@ class StateDBHandler:
                 ),
             )
 
-    def mark_session_restored(self, session_name: str, restored_path: str):
+    def mark_session_restored(self, session_name: str, restored_path: str, trash_path: str = ""):
         self._ensure_ready()
         now_iso = _utc_now_iso()
         with self._lock, self._connection() as connection:
@@ -1883,14 +2331,24 @@ class StateDBHandler:
                 """,
                 (restored_path, now_iso, session_name),
             )
-            connection.execute(
-                """
-                UPDATE trash_entries
-                SET restored_at = ?
-                WHERE session_name = ? AND restored_at IS NULL AND deleted_at IS NULL
-                """,
-                (now_iso, session_name),
-            )
+            if trash_path:
+                connection.execute(
+                    """
+                    UPDATE trash_entries
+                    SET restored_at = ?
+                    WHERE trash_path = ? AND restored_at IS NULL AND deleted_at IS NULL
+                    """,
+                    (now_iso, trash_path),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE trash_entries
+                    SET restored_at = ?
+                    WHERE session_name = ? AND restored_at IS NULL AND deleted_at IS NULL
+                    """,
+                    (now_iso, session_name),
+                )
 
     def mark_trash_path_deleted(self, trash_path: str):
         self._ensure_ready()
@@ -1903,6 +2361,14 @@ class StateDBHandler:
                 WHERE trash_path = ?
                 """,
                 (now_iso, trash_path),
+            )
+            connection.execute(
+                """
+                DELETE FROM sessions
+                WHERE trash_path = ?
+                    AND trashed_at IS NOT NULL
+                """,
+                (trash_path,),
             )
 
 
@@ -2053,6 +2519,10 @@ def get_session_preview(session_name: str) -> dict[str, Any]:
     return DEFAULT_HANDLER.get_session_preview(session_name)
 
 
+def refresh_session_audio_summary(session_name: str):
+    DEFAULT_HANDLER.refresh_session_audio_summary(session_name)
+
+
 def mark_session_trashed(
     session_name: str,
     original_path: str,
@@ -2067,8 +2537,12 @@ def mark_session_trashed(
     )
 
 
-def mark_session_restored(session_name: str, restored_path: str):
-    DEFAULT_HANDLER.mark_session_restored(session_name=session_name, restored_path=restored_path)
+def mark_session_restored(session_name: str, restored_path: str, trash_path: str = ""):
+    DEFAULT_HANDLER.mark_session_restored(
+        session_name=session_name,
+        restored_path=restored_path,
+        trash_path=trash_path,
+    )
 
 
 def mark_trash_path_deleted(trash_path: str):

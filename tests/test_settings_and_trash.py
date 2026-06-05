@@ -106,7 +106,35 @@ class SettingsAndTrashTests(unittest.TestCase):
         self.assertFalse(restored)
         self.assertIn("already exists", message.lower())
 
+    def test_permanently_delete_trashed_session_removes_index_row(self):
+        session_name = "DeleteFromTrash"
+        session_path = session_handler.get_session_path(session_name)
+        os.makedirs(session_path, exist_ok=True)
+        with open(os.path.join(session_path, "data.txt"), "w", encoding="utf-8") as file_handle:
+            file_handle.write("data")
+
+        moved, trash_path = session_handler.move_session_to_trash(session_name, retention_days=1)
+        self.assertTrue(moved)
+        self.assertTrue(os.path.exists(trash_path))
+
+        deleted, deleted_path = session_handler.permanently_delete_trashed_session(
+            session_name=session_name,
+            trash_path=trash_path,
+        )
+        self.assertTrue(deleted)
+        self.assertEqual(os.path.abspath(deleted_path), os.path.abspath(trash_path))
+        self.assertFalse(os.path.exists(trash_path))
+
+        rows = state_db_handler.list_sessions(include_trashed=True)
+        self.assertNotIn(session_name, {row["session_name"] for row in rows})
+
+        with sqlite3.connect(state_db_handler.get_db_path()) as connection:
+            deleted_at = connection.execute(
+                "SELECT deleted_at FROM trash_entries WHERE trash_path = ?",
+                (trash_path,),
+            ).fetchone()[0]
+        self.assertTrue(deleted_at)
+
 
 if __name__ == "__main__":
     unittest.main()
-

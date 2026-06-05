@@ -256,6 +256,7 @@ class DubbingSettings:
 class AppState:
     session_name: str = "Untitled Session"
     source_file_path: str = ""
+    source_display_path: str = ""
     pdf_preprocessed: bool = False
     raw_text: str = ""
     processed_sentences: List[Dict[str, Any]] = field(default_factory=list)

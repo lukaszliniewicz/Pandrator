@@ -5,6 +5,7 @@ import tempfile
 import unittest
 
 from pandrator.logic.state_db_handler import StateDBHandler
+from pandrator.logic import audio_variant_handler
 
 
 class StateDBHandlerTests(unittest.TestCase):
@@ -40,6 +41,7 @@ class StateDBHandlerTests(unittest.TestCase):
             "dubbing_runs",
             "dubbing_steps",
             "dubbing_artifacts",
+            "session_audio_versions",
             "trash_entries",
         }
         self.assertTrue(expected_tables.issubset(tables))
@@ -221,6 +223,72 @@ class StateDBHandlerTests(unittest.TestCase):
         reusable_rows_with_missing = self.handler.list_reusable_sources(limit=50, include_missing=True)
         reusable_paths_with_missing = [str(row.get("source_path") or "") for row in reusable_rows_with_missing]
         self.assertIn(missing_abs, reusable_paths_with_missing)
+
+    def test_session_source_display_and_audio_versions_are_indexed(self):
+        session_name = "AudioVersionSession"
+        session_dir = self._session_dir(session_name)
+        source_docx = os.path.join(session_dir, "Novel Source.docx")
+        internal_txt = os.path.join(session_dir, "Novel Source.txt")
+        with open(source_docx, "wb") as file_handle:
+            file_handle.write(b"docx")
+        with open(internal_txt, "w", encoding="utf-8") as file_handle:
+            file_handle.write("text")
+
+        sentences = [
+            {"sentence_number": "1", "original_sentence": "One", "tts_generated": "yes"},
+            {"sentence_number": "2", "original_sentence": "Two", "tts_generated": "yes"},
+        ]
+        sentences_path = os.path.join(session_dir, f"{session_name}_sentences.json")
+        with open(sentences_path, "w", encoding="utf-8") as file_handle:
+            json.dump(sentences, file_handle)
+        self.handler.update_session_sentence_index(session_name, sentences, sentences_path)
+
+        source_wavs_dir = os.path.join(session_dir, "Sentence_wavs")
+        os.makedirs(source_wavs_dir, exist_ok=True)
+        with open(os.path.join(source_wavs_dir, f"{session_name}_sentence_1.wav"), "wb") as file_handle:
+            file_handle.write(b"source-one")
+        with open(os.path.join(source_wavs_dir, f"{session_name}_sentence_2.wav"), "wb") as file_handle:
+            file_handle.write(b"source-two")
+
+        rvc_settings = {"rvc_model": "Bright Voice", "pitch": 0}
+        rvc_path = audio_variant_handler.rvc_variant_sentence_path(
+            session_dir,
+            rvc_settings,
+            session_name,
+            "1",
+            ensure_dir=True,
+        )
+        with open(rvc_path, "wb") as file_handle:
+            file_handle.write(b"rvc-one")
+        audio_variant_handler.register_rvc_variant_sentence(session_dir, rvc_settings, "1")
+
+        self.handler.save_session_config_snapshot(
+            session_name=session_name,
+            payload={
+                "session_name": session_name,
+                "source_file_path": internal_txt,
+                "source_display_path": source_docx,
+                "tts": {"service": "XTTS", "language": "en"},
+            },
+            session_path=session_dir,
+        )
+
+        row = next(item for item in self.handler.list_sessions() if item["session_name"] == session_name)
+        self.assertEqual(row["source_display_name"], "Novel Source.docx")
+        self.assertEqual(os.path.abspath(row["source_display_path"]), os.path.abspath(source_docx))
+        self.assertEqual(row["audio_version_count"], 2)
+        self.assertIn("RVC", row["audio_version_summary"])
+        self.assertIn("partial", row["audio_version_summary"])
+
+        preview = self.handler.get_session_preview(session_name)
+        versions = preview["audio_versions"]
+        version_ids = {version["variant_id"] for version in versions}
+        self.assertIn("source", version_ids)
+        rvc_versions = [version for version in versions if version["kind"] == "rvc"]
+        self.assertEqual(len(rvc_versions), 1)
+        self.assertEqual(rvc_versions[0]["model_name"], "Bright Voice")
+        self.assertEqual(rvc_versions[0]["sentence_count"], 1)
+        self.assertEqual(rvc_versions[0]["total_sentences"], 2)
 
     def test_artifact_registration_and_preview(self):
         session_name = "ArtifactsSession"

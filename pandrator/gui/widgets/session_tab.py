@@ -831,13 +831,14 @@ class SessionTab(QWidget):
         self.session_name_label.setText(state.session_name)
 
     def _update_source_state(self, state):
-        if state.source_file_path:
-            filename = state.source_file_path.split("/")[-1].split("\\")[-1]
-            self.selected_file_label.setText(
-                filename if len(filename) < 25 else f"...{filename[-22:]}"
-            )
+        display_path = getattr(state, "source_display_path", "") or state.source_file_path
+        if display_path:
+            filename = display_path.split("/")[-1].split("\\")[-1]
+            self.selected_file_label.setText(filename)
+            self.selected_file_label.setToolTip(display_path)
         else:
             self.selected_file_label.setText("No file selected")
+            self.selected_file_label.setToolTip("")
 
     def _update_tts_state(self, state):
         tts_state = state.tts

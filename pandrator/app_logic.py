@@ -1234,7 +1234,8 @@ class AppLogic(QObject):
             return False
 
         selected_abs = os.path.abspath(selected_file_path) if selected_file_path else ""
-        current_abs = os.path.abspath(self.state.source_file_path) if self.state.source_file_path else ""
+        current_display_path = self.state.source_display_path or self.state.source_file_path
+        current_abs = os.path.abspath(current_display_path) if current_display_path else ""
         if selected_abs and current_abs and os.path.normcase(current_abs) == os.path.normcase(selected_abs):
             return False
 
@@ -1268,6 +1269,7 @@ class AppLogic(QObject):
 
         self.stop_playback()
         self.state.source_file_path = ""
+        self.state.source_display_path = ""
         self.state.raw_text = ""
         self.state.pdf_preprocessed = False
         self.state.active_audio_variant_id = audio_variant_handler.SOURCE_VARIANT_ID
@@ -1416,10 +1418,23 @@ class AppLogic(QObject):
             if os.path.exists(relative_source):
                 restored_state.source_file_path = os.path.abspath(relative_source)
 
+        if restored_state.source_display_path and not os.path.isabs(restored_state.source_display_path):
+            relative_display_source = os.path.join(
+                session_handler.get_session_path(session_name),
+                restored_state.source_display_path,
+            )
+            if os.path.exists(relative_display_source):
+                restored_state.source_display_path = os.path.abspath(relative_display_source)
+
         if not restored_state.source_file_path or not os.path.exists(restored_state.source_file_path):
             discovered_source = session_handler.discover_source_file(session_name)
             if discovered_source:
                 restored_state.source_file_path = discovered_source
+                if not restored_state.source_display_path:
+                    restored_state.source_display_path = discovered_source
+
+        if not restored_state.source_display_path:
+            restored_state.source_display_path = restored_state.source_file_path
 
         if restored_state.source_file_path and not restored_state.raw_text:
             restored_state.raw_text = self._try_load_raw_text_for_source(
@@ -1468,12 +1483,11 @@ class AppLogic(QObject):
 
     def delete_session(self, session_name: str):
         """Deletes a session from disk."""
-        if session_name == self.state.session_name and self._is_generation_running():
-            self.show_error.emit("Error", "Stop or cancel generation before deleting the active session.")
-            return
-
-        if session_name == self.state.session_name and self._is_regeneration_running():
-            self.show_error.emit("Error", "Wait for sentence regeneration to finish before deleting the active session.")
+        if session_name == self.state.session_name and self.is_generation_or_regeneration_running():
+            self.show_error.emit(
+                "Error",
+                "Stop or wait for generation, regeneration, or RVC processing before deleting the active session.",
+            )
             return
 
         if session_handler.delete_session(session_name):
@@ -1578,9 +1592,9 @@ class AppLogic(QObject):
             self.state_changed.emit()
         return moved, details
 
-    def restore_session_from_trash(self, session_name: str) -> tuple[bool, str]:
+    def restore_session_from_trash(self, session_name: str, trash_path: str = "") -> tuple[bool, str]:
         """Restores a trashed session."""
-        return session_handler.restore_session_from_trash(session_name)
+        return session_handler.restore_session_from_trash(session_name, trash_path=trash_path)
 
     def list_trashed_sessions(self) -> list[dict]:
         """Lists active trash entries from SQLite."""
@@ -1589,6 +1603,13 @@ class AppLogic(QObject):
     def empty_expired_trash(self, retention_days: int = 30) -> tuple[int, list[str]]:
         """Removes expired trash entries."""
         return session_handler.empty_expired_trash(retention_days=retention_days)
+
+    def permanently_delete_trashed_session(self, session_name: str = "", trash_path: str = "") -> tuple[bool, str]:
+        """Permanently removes a selected trashed session."""
+        return session_handler.permanently_delete_trashed_session(
+            session_name=session_name,
+            trash_path=trash_path,
+        )
 
 
     # --- File Handling ---
@@ -1650,6 +1671,7 @@ class AppLogic(QObject):
 
         normalize_path = lambda path: os.path.normcase(os.path.abspath(path)) if path else ""
         previous_source = self.state.source_file_path
+        previous_display_source = self.state.source_display_path
         previous_raw_text = self.state.raw_text
         previous_pdf_preprocessed = self.state.pdf_preprocessed
         previous_dubbing_video = self.state.dubbing.video_file_path
@@ -1667,6 +1689,7 @@ class AppLogic(QObject):
 
             session_file_path = self._ensure_session_file_copy(source_path_to_load)
             self.state.source_file_path = session_file_path
+            self.state.source_display_path = session_file_path
             self.state.pdf_preprocessed = False
             self.log_message.emit(f"Source file selected: {session_file_path}")
 
@@ -1733,7 +1756,7 @@ class AppLogic(QObject):
             else:
                 self._reset_session_activity()
 
-            selected_source_name = os.path.basename(self.state.source_file_path or session_file_path)
+            selected_source_name = os.path.basename(self.state.source_display_path or self.state.source_file_path or session_file_path)
             self._notify_user(self._build_source_loaded_notification(selected_source_name, ext))
 
             self._persist_session_config(force=True)
@@ -1756,6 +1779,7 @@ class AppLogic(QObject):
         except Exception as e:
             if reset_applied:
                 self.state.source_file_path = ""
+                self.state.source_display_path = ""
                 self.state.raw_text = ""
                 self.state.pdf_preprocessed = False
                 self.state.dubbing.video_file_path = ""
@@ -1764,6 +1788,7 @@ class AppLogic(QObject):
                 self.state_changed.emit()
             else:
                 self.state.source_file_path = previous_source
+                self.state.source_display_path = previous_display_source
                 self.state.raw_text = previous_raw_text
                 self.state.pdf_preprocessed = previous_pdf_preprocessed
                 self.state.dubbing.video_file_path = previous_dubbing_video
@@ -1895,6 +1920,7 @@ class AppLogic(QObject):
                 f.write(reviewed_text)
 
             self.state.source_file_path = edited_file_path
+            self.state.source_display_path = edited_file_path
             self.state.raw_text = reviewed_text
             self.state.pdf_preprocessed = mark_pdf_preprocessed
             self._set_processed_sentences_snapshot([])
@@ -1919,6 +1945,7 @@ class AppLogic(QObject):
             return
 
         self.state.source_file_path = ""
+        self.state.source_display_path = ""
         self.state.raw_text = ""
         self.state.pdf_preprocessed = False
         self._set_processed_sentences_snapshot([])
@@ -2176,6 +2203,7 @@ class AppLogic(QObject):
 
         if os.path.splitext(self.state.source_file_path or "")[1].lower() == ".srt":
             self.state.source_file_path = corrected_srt_abs
+            self.state.source_display_path = corrected_srt_abs
             self._persist_session_config(force=True)
 
         self.state_changed.emit()

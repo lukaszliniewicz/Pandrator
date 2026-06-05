@@ -702,13 +702,35 @@ def list_trashed_sessions() -> list[dict]:
         return []
 
 
-def restore_session_from_trash(session_name: str) -> tuple[bool, str]:
+def _is_path_inside(child_path: str, parent_path: str) -> bool:
+    try:
+        child_abs = os.path.abspath(child_path)
+        parent_abs = os.path.abspath(parent_path)
+        return os.path.commonpath([child_abs, parent_abs]) == parent_abs
+    except ValueError:
+        return False
+
+
+def restore_session_from_trash(session_name: str, trash_path: str = "") -> tuple[bool, str]:
     """Restores a trashed session back into Outputs."""
     trash_entries = list_trashed_sessions()
-    entry = next((item for item in trash_entries if item.get("session_name") == session_name), None)
+    normalized_trash_path = os.path.normcase(os.path.abspath(trash_path)) if trash_path else ""
+    entry = None
+    if normalized_trash_path:
+        entry = next(
+            (
+                item
+                for item in trash_entries
+                if os.path.normcase(os.path.abspath(str(item.get("trash_path") or ""))) == normalized_trash_path
+            ),
+            None,
+        )
+    if entry is None:
+        entry = next((item for item in trash_entries if item.get("session_name") == session_name), None)
     if entry is None:
         return False, f"Session '{session_name}' is not present in trash."
 
+    session_name = str(entry.get("session_name") or session_name)
     trash_path = str(entry.get("trash_path") or "")
     if not trash_path or not os.path.exists(trash_path):
         try:
@@ -724,11 +746,55 @@ def restore_session_from_trash(session_name: str) -> tuple[bool, str]:
     try:
         os.makedirs(os.path.dirname(restore_target) or ".", exist_ok=True)
         shutil.move(trash_path, restore_target)
-        state_db_handler.mark_session_restored(session_name=session_name, restored_path=restore_target)
+        state_db_handler.mark_session_restored(
+            session_name=session_name,
+            restored_path=restore_target,
+            trash_path=trash_path,
+        )
         state_db_handler.reindex_session(session_name)
         return True, restore_target
     except Exception as e:
         logging.error("Could not restore session '%s': %s", session_name, e)
+        return False, str(e)
+
+
+def permanently_delete_trashed_session(session_name: str = "", trash_path: str = "") -> tuple[bool, str]:
+    """Permanently deletes a selected trash entry."""
+    trash_entries = list_trashed_sessions()
+    normalized_trash_path = os.path.normcase(os.path.abspath(trash_path)) if trash_path else ""
+    entry = None
+    if normalized_trash_path:
+        entry = next(
+            (
+                item
+                for item in trash_entries
+                if os.path.normcase(os.path.abspath(str(item.get("trash_path") or ""))) == normalized_trash_path
+            ),
+            None,
+        )
+    if entry is None and session_name:
+        entry = next((item for item in trash_entries if item.get("session_name") == session_name), None)
+
+    if entry is None:
+        return False, "The selected trash entry was not found."
+
+    selected_trash_path = str(entry.get("trash_path") or "").strip()
+    if not selected_trash_path:
+        return False, "The selected trash entry has no filesystem path."
+
+    trash_root = get_trash_root_path()
+    if not _is_path_inside(selected_trash_path, trash_root):
+        return False, f"Refusing to delete a path outside the trash folder: {selected_trash_path}"
+
+    try:
+        if os.path.isdir(selected_trash_path):
+            shutil.rmtree(selected_trash_path)
+        elif os.path.exists(selected_trash_path):
+            os.remove(selected_trash_path)
+        state_db_handler.mark_trash_path_deleted(selected_trash_path)
+        return True, selected_trash_path
+    except Exception as e:
+        logging.error("Could not permanently delete trash path '%s': %s", selected_trash_path, e)
         return False, str(e)
 
 

@@ -91,12 +91,13 @@ class SourceFileSection(QFrame):
         self.download_url_button = QPushButton("Download from URL")
         self.selected_file_label = QLabel("No file selected")
         self.selected_file_label.setObjectName("secondaryInfoLabel")
+        self.selected_file_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.selected_file_label.setMinimumWidth(180)
 
         layout.addWidget(self.select_file_button)
         layout.addWidget(self.paste_text_button)
         layout.addWidget(self.download_url_button)
-        layout.addStretch()
-        layout.addWidget(self.selected_file_label)
+        layout.addWidget(self.selected_file_label, 1)
 
 
 class TtsSettingsSection(QFrame):
