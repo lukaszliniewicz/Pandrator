@@ -879,6 +879,52 @@ def _extract_choice_content(response_data: Any) -> str:
     return str(content or "")
 
 
+def chat_completion(
+    messages: list[dict[str, Any]],
+    model_name: str | None = None,
+    llm_settings: Any | None = None,
+    max_tokens: int = 2000,
+    temperature: float = 0.2,
+) -> str:
+    """Runs a LiteLLM chat completion using Pandrator's configured providers."""
+    completion, _ = _get_litellm_clients()
+    if completion is None:
+        logging.error("LiteLLM is not installed. Please install the 'litellm' package.")
+        return ""
+
+    try:
+        resolved_model, request_overrides = _resolve_model_request(model_name, llm_settings)
+    except ValueError as e:
+        logging.error("Could not resolve LLM model '%s': %s", model_name, e)
+        return ""
+
+    timeout_setting = _read_setting(llm_settings, "request_timeout_seconds", 180)
+    try:
+        request_timeout = max(10, int(timeout_setting))
+    except (TypeError, ValueError):
+        request_timeout = 180
+
+    request_payload: dict[str, Any] = {
+        "model": resolved_model,
+        "messages": messages,
+        "max_tokens": max(256, int(max_tokens)),
+        "temperature": float(temperature),
+        "timeout": request_timeout,
+    }
+    request_payload.update(request_overrides)
+
+    logging.info("LiteLLM chat request model=%s", resolved_model)
+    try:
+        response = completion(**request_payload)
+        content = _extract_choice_content(response)
+        if not content:
+            logging.warning("LiteLLM returned an empty chat response body.")
+        return content
+    except Exception as e:
+        logging.error("LiteLLM chat request failed: %s", e)
+        return ""
+
+
 def load_model(model_name: str, llm_settings: Any | None = None) -> bool:
     """LiteLLM calls are stateless; this validates model configuration only."""
     try:

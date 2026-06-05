@@ -22,6 +22,7 @@ from .logic import (
     file_handler,
     text_preprocessor,
     llm_handler,
+    source_cleaning,
     tts_handler,
     state_db_handler,
     voice_library_handler,
@@ -1613,6 +1614,101 @@ class AppLogic(QObject):
                         os.remove(staging_cleanup_path)
                 except OSError as cleanup_error:
                     logging.warning("Could not remove temporary source staging path '%s': %s", staging_cleanup_path, cleanup_error)
+
+    def run_source_cleaning(
+        self,
+        source_path_hint: str = "",
+        remove_footnotes: bool = False,
+        model_name: str | None = None,
+        progress_callback=None,
+    ) -> dict:
+        """Runs the source-cleaning agent without mutating session state."""
+        if not self.state.raw_text:
+            raise ValueError("No extracted source text is available for cleaning.")
+
+        if not self._is_named_session_active():
+            raise ValueError("Please create or load a session before cleaning source text.")
+
+        def emit_progress(message: str):
+            if progress_callback is not None:
+                progress_callback(message)
+            self.log_message.emit(message)
+
+        hint_path = os.path.abspath(str(source_path_hint or "").strip()) if source_path_hint else ""
+        state_path = os.path.abspath(str(self.state.source_file_path or "").strip()) if self.state.source_file_path else ""
+        source_path = hint_path if hint_path and os.path.exists(hint_path) else state_path
+        source_ext = os.path.splitext(source_path)[1].lower() if source_path else ""
+
+        emit_progress("Building structured source index...")
+        if source_ext == ".epub":
+            document = source_cleaning.build_source_document(source_path)
+        elif source_ext == ".pdf":
+            document = source_cleaning.build_source_document(
+                source_path,
+                extracted_text=self.state.raw_text,
+            )
+        else:
+            from .logic.source_cleaning.pdf_text_adapter import build_source_document_from_text
+
+            document = build_source_document_from_text(
+                self.state.raw_text,
+                source_path=state_path or source_path,
+                filename=os.path.basename(state_path or source_path or "source.txt"),
+            )
+
+        session_dir = session_handler.get_session_path(self.state.session_name)
+        output_dir = os.path.join(session_dir, "_source_cleaning")
+        resolved_model = str(model_name or "default").strip() or "default"
+
+        agent_config = source_cleaning.SourceCleaningAgentConfig(
+            model_name=resolved_model,
+            remove_footnotes=remove_footnotes,
+        )
+        emit_progress("Running source-cleaning LLM loop...")
+        agent_result = source_cleaning.run_source_cleaning_agent(
+            document,
+            llm_settings=self.state.llm,
+            config=agent_config,
+            progress_callback=emit_progress,
+        )
+
+        emit_progress("Applying proposed cleaning operations...")
+        cleaning_result = source_cleaning.apply_cleaning_operations(
+            document,
+            agent_result.operations,
+            default_metadata=self.state.metadata,
+        )
+        validation = source_cleaning.validate_cleaning_result(
+            document,
+            cleaning_result,
+            remove_footnotes=remove_footnotes,
+        )
+
+        cleaning_result.report["agent"] = agent_result.to_dict()
+        cleaning_result.report["validation"] = validation.to_dict()
+        cleaning_result.report["artifacts_dir"] = output_dir
+        source_cleaning.write_cleaning_artifacts(
+            document,
+            agent_result.operations,
+            cleaning_result,
+            output_dir,
+        )
+
+        emit_progress("Source-cleaning pass finished.")
+        return {
+            "success": not validation.errors,
+            "cleaned_text": cleaning_result.cleaned_text,
+            "metadata": cleaning_result.metadata,
+            "diff": cleaning_result.diff_text,
+            "report": cleaning_result.report,
+            "validation": validation.to_dict(),
+            "operations": agent_result.operations,
+            "applied_operations": cleaning_result.applied_operations,
+            "skipped_operations": cleaning_result.skipped_operations,
+            "warnings": agent_result.warnings + validation.warnings + cleaning_result.warnings,
+            "artifacts_dir": output_dir,
+            "agent": agent_result.to_dict(),
+        }
 
     def apply_reviewed_text(self, reviewed_text: str, mark_pdf_preprocessed: bool = False) -> bool:
         """Persists reviewed/edited text and switches the source to the edited file."""
