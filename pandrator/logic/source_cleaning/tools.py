@@ -94,6 +94,7 @@ class SourceCleaningTools:
         before: int | None = None,
         after: int | None = None,
         around_hit_id: str | None = None,
+        max_blocks: int = 16,
     ) -> dict[str, Any]:
         if around_hit_id:
             hit = self._last_hits.get(str(around_hit_id))
@@ -118,11 +119,24 @@ class SourceCleaningTools:
 
         start = max(1, start)
         end = max(start, end)
-        blocks = self.document.blocks_in_line_range(start, end)
+        matches = self.document.blocks_in_line_range(start, end)
+        limit = min(30, max(1, int(max_blocks)))
+        blocks = _representative_blocks(matches, limit)
         return {
             "start_line": start,
             "end_line": end,
+            "matched_blocks": len(matches),
+            "returned_blocks": len(blocks),
+            "tag_counts": dict(Counter(str(block.tag or "<none>") for block in matches).most_common(12)),
+            "role_counts": dict(
+                Counter(role for block in matches for role in block.role_candidates).most_common(12)
+            ),
+            "class_counts": dict(
+                Counter(class_name for block in matches for class_name in block.classes).most_common(12)
+            ),
+            "hrefs": _dedupe_values(block.href for block in matches if block.href),
             "blocks": [self._preview_block(block) for block in blocks],
+            "truncated": len(matches) > len(blocks),
         }
 
     def inspect_block(self, block_id: str) -> dict[str, Any]:
@@ -712,7 +726,7 @@ class SourceCleaningTools:
             "block_id": block.block_id,
             "line_start": block.line_start,
             "line_end": block.line_end,
-            "text": block.text,
+            "text": _short_text(block.text, max_chars=500),
             "href": block.href,
             "page": block.page,
             "tag": block.tag,

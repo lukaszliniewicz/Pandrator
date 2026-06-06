@@ -530,6 +530,25 @@ class SourceCleaningTests(unittest.TestCase):
         self.assertIn("Chapter One", heading_texts)
         self.assertIn("Chapter Two", heading_texts)
 
+    def test_preview_caps_large_ranges_and_returns_structural_summary(self):
+        document = build_source_document_from_text(
+            "\n".join(f"Line {index}" for index in range(1, 101)),
+            filename="large-preview.txt",
+        )
+
+        preview = SourceCleaningTools(document).preview(
+            start_line=1,
+            end_line=100,
+            max_blocks=10,
+        )
+
+        self.assertEqual(preview["matched_blocks"], 100)
+        self.assertEqual(preview["returned_blocks"], 10)
+        self.assertTrue(preview["truncated"])
+        self.assertEqual(preview["blocks"][0]["line_start"], 1)
+        self.assertEqual(preview["blocks"][-1]["line_start"], 100)
+        self.assertEqual(preview["tag_counts"]["<none>"], 100)
+
     def test_pdf_fixture_detects_page_numbers_repeated_headers_and_removes_them(self):
         text = "\f".join(
             [
@@ -801,7 +820,7 @@ class SourceCleaningTests(unittest.TestCase):
         self.assertEqual(len(result.finish_reviews), 2)
         self.assertEqual(cleaned.cleaned_text, "The story begins.")
 
-    def test_long_source_requires_inspection_and_exact_operation_evaluation(self):
+    def test_long_source_requires_inspection_then_auto_evaluates_finish(self):
         document = build_source_document_from_text(
             "\n".join(f"Line {index}" for index in range(1, 51)),
             filename="long-source.txt",
@@ -812,23 +831,99 @@ class SourceCleaningTests(unittest.TestCase):
             [
                 '{"action":"finish","summary":"too soon","confidence":0.2,"operations":' + operations_json + "}",
                 '{"action":"inspect_document_structure","arguments":{"max_documents":10}}',
-                '{"action":"evaluate_operations","arguments":{"operations":' + operations_json + "}}",
                 '{"action":"finish","summary":"inspected and evaluated","confidence":0.8,"operations":'
                 + operations_json
                 + "}",
             ]
         )
-
         result = run_source_cleaning_agent(
             document,
-            config=SourceCleaningAgentConfig(max_iterations=5, max_finish_reviews=0),
+            config=SourceCleaningAgentConfig(max_iterations=4, max_finish_reviews=0),
             completion_func=lambda **_kwargs: next(responses),
         )
 
         actions = [item["action"] for item in result.tool_trace]
-        self.assertEqual(actions, ["workflow_review", "inspect_document_structure", "evaluate_operations"])
+        self.assertEqual(actions, ["workflow_review", "inspect_document_structure"])
         self.assertEqual(result.operations, operations)
         self.assertEqual(result.summary, "inspected and evaluated")
+
+    def test_long_source_batch_inspection_reduces_turns_and_satisfies_workflow(self):
+        document = build_source_document_from_text(
+            "\n".join(f"Line {index}" for index in range(1, 101)),
+            filename="long-source.txt",
+        )
+        operations = [{"op": "mark_chapter", "start_line": 1, "title": "Line 1"}]
+        operations_json = json.dumps(operations)
+        responses = iter(
+            [
+                (
+                    '{"action":"batch","arguments":{"commands":['
+                    '{"action":"preview","arguments":{"start_line":1,"end_line":100,"max_blocks":8}},'
+                    '{"action":"regex_search","arguments":{"pattern":"^Line (1|100)$","max_hits":5}}'
+                    "]}}"
+                ),
+                '{"action":"finish","summary":"batched and evaluated","confidence":0.8,"operations":'
+                + operations_json
+                + "}",
+            ]
+        )
+        request_messages = []
+
+        def fake_completion(**kwargs):
+            request_messages.append(kwargs["messages"])
+            return next(responses)
+
+        result = run_source_cleaning_agent(
+            document,
+            config=SourceCleaningAgentConfig(max_iterations=4, max_finish_reviews=0),
+            completion_func=fake_completion,
+        )
+
+        self.assertEqual(result.iterations, 2)
+        self.assertEqual(result.operations, operations)
+        batch = result.tool_trace[0]["observation"]
+        self.assertEqual(batch["executed_commands"], 2)
+        self.assertEqual(batch["results"][0]["observation"]["returned_blocks"], 8)
+        batch_feedback = request_messages[1][-1]["content"]
+        self.assertNotIn("<truncated>", batch_feedback)
+        self.assertIn('"action": "preview"', batch_feedback)
+        self.assertIn('"action": "regex_search"', batch_feedback)
+
+    def test_agent_compacts_older_tool_turns_into_bounded_evidence_ledger(self):
+        document = build_source_document_from_text(
+            "\n".join(f"Line {index} " + ("narrative " * 20) for index in range(1, 101)),
+            filename="long-source.txt",
+        )
+        responses = iter(
+            [
+                '{"action":"preview","arguments":{"start_line":1,"end_line":100,"max_blocks":16}}',
+                '{"action":"preview","arguments":{"start_line":1,"end_line":50,"max_blocks":16}}',
+                '{"action":"preview","arguments":{"start_line":51,"end_line":100,"max_blocks":16}}',
+                '{"action":"preview","arguments":{"start_line":20,"end_line":80,"max_blocks":16}}',
+                '{"action":"finish","summary":"done","confidence":0.5,"operations":[]}',
+            ]
+        )
+        request_sizes = []
+
+        def fake_completion(**kwargs):
+            request_sizes.append(sum(len(str(item.get("content") or "")) for item in kwargs["messages"]))
+            return next(responses)
+
+        result = run_source_cleaning_agent(
+            document,
+            config=SourceCleaningAgentConfig(
+                max_iterations=5,
+                require_verified_finish_for_long_sources=False,
+                recent_detailed_turns=1,
+                max_evidence_ledger_chars=1800,
+                max_finish_reviews=0,
+            ),
+            completion_func=fake_completion,
+        )
+
+        self.assertEqual(len(request_sizes), 5)
+        self.assertLess(max(request_sizes), request_sizes[0] + 16000)
+        self.assertEqual(result.llm_usage["max_request_context_chars"], max(request_sizes))
 
     def test_long_source_does_not_accept_unverified_finish_at_iteration_limit(self):
         document = build_source_document_from_text(
@@ -914,6 +1009,14 @@ class SourceCleaningTests(unittest.TestCase):
 
         self.assertEqual(command, {})
         self.assertIn("non-empty action", error)
+
+    def test_parse_json_command_infers_finish_for_complete_final_payload(self):
+        command, error = parse_json_command(
+            '{"summary":"done","confidence":0.9,"operations":[{"op":"delete_range","start_line":1,"end_line":2}]}'
+        )
+
+        self.assertFalse(error)
+        self.assertEqual(command["action"], "finish")
 
     def test_litellm_response_metadata_extracts_usage_and_hidden_cost(self):
         class _FakeResponse:

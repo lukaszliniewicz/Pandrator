@@ -22,7 +22,9 @@ Core rules:
 - Do not assume standard EPUB structure. Books may use semantic headings, arbitrary classes/ids, plain paragraphs, blockquotes, spans, formatting-only markup, inaccurate navigation, or very large multi-section documents.
 - Treat navigation, tags, classes, ids, roles, text patterns, and position as independent evidence. Confirm important actions with a second signal or a preview.
 - Use previews and markup inspection before deleting substantial text.
-- Keep inspections efficient: preview 5-10 representative blocks first, and request raw markup only when plain structural metadata is insufficient.
+- Keep inspections efficient: batch independent inspections, preview representative blocks, and request raw markup only when plain structural metadata is insufficient.
+- Prefer one batch action containing several independent inspections over several consecutive single-tool turns. Do not batch an inspection that depends on a previous result.
+- The initial source overview already contains deterministic structure, cleanup, and chapter hypotheses. Use it to choose targeted previews instead of rediscovering the same facts.
 - Prefer selector-based cleanup over long block_id lists when a whole TOC/nav/license/notes section shares href, class, id, tag, role, or text pattern.
 - Selectors may combine href, href_regex, tag, class/classes, element_id, element_id_regex, role/roles, text_regex, start_line/end_line, and exclusion fields.
 - Inspect every distinct TOC variant. EPUBs often contain both an inline contents list and a separate navigation document; removing one does not remove the other.
@@ -34,17 +36,18 @@ Core rules:
 - Mark real chapter/part/opening section headings with [[Chapter]] via mark_chapter or mark_chapters_by_selector operations.
 - Remove non-audiobook material: TOC-as-list, copyright boilerplate, ads, image alt text, captions, running headers/footers, page numbers, and optional notes.
 - Preserve narrative prose unless there is strong evidence it should not be read aloud.
-- Before finish, call evaluate_operations with the exact proposed operations. Correct any skipped operations, destructive removals, missing chapter markers, or remaining unwanted sections it reports.
+- Finish is automatically evaluated by deterministic guards. Call evaluate_operations only when you want feedback before committing to a finish proposal.
 - {footnote_policy}
 
 You must answer every turn with one JSON object and no prose.
 
 Inspection command schema:
+{{"action":"batch","arguments":{{"commands":[{{"action":"preview","arguments":{{"start_line":1,"end_line":30,"max_blocks":12}}}},{{"action":"preview_selector","arguments":{{"selector":{{"class":"toc"}},"max_blocks":8}}}}]}}}}
 {{"action":"inspect_document_structure","arguments":{{"max_documents":30,"scope":{{"start_line":1,"end_line":500}}}}}}
 {{"action":"inspect_navigation","arguments":{{"max_entries":80,"max_matches_per_entry":5}}}}
 {{"action":"search","arguments":{{"query":"text OR other text","mode":"plain","case_sensitive":false,"max_hits":20}}}}
 {{"action":"regex_search","arguments":{{"pattern":"...","flags":"i","max_hits":20}}}}
-{{"action":"preview","arguments":{{"start_line":1,"end_line":20}}}}
+{{"action":"preview","arguments":{{"start_line":1,"end_line":20,"max_blocks":12}}}}
 {{"action":"preview","arguments":{{"around_hit_id":"hit:1","before":5,"after":8}}}}
 {{"action":"inspect_block","arguments":{{"block_id":"..."}}}}
 {{"action":"get_epub_markup_for_text","arguments":{{"text":"chapter title","occurrence":1,"context_blocks":2}}}}
@@ -113,10 +116,10 @@ def build_initial_user_prompt(
         "filename": document.filename,
         "language_hint": document.language,
         "block_count": len(document.blocks),
-        "metadata_candidates": document.metadata_candidates,
+        "metadata_candidates": _compact_metadata_candidates(document.metadata_candidates),
         "nav_titles_preview": document.nav_titles[:20],
         "source_overview": source_overview or {},
-        "warnings": document.warnings,
+        "warnings": [_short_text(item) for item in document.warnings[:20]],
         "first_blocks": first_blocks,
         "last_blocks": last_blocks,
     }
@@ -134,3 +137,20 @@ def _short_text(text: str, max_chars: int = 240) -> str:
     if len(normalized) <= max_chars:
         return normalized
     return normalized[: max_chars - 3] + "..."
+
+
+def _compact_metadata_candidates(candidates: dict) -> dict:
+    compact: dict[str, list[dict]] = {}
+    for key, values in candidates.items():
+        if not isinstance(values, list):
+            continue
+        compact[str(key)] = [
+            {
+                field: _short_text(value) if field == "value" else value
+                for field, value in candidate.items()
+                if field in {"value", "source", "confidence"}
+            }
+            for candidate in values[:5]
+            if isinstance(candidate, dict)
+        ]
+    return compact

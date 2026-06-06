@@ -40,6 +40,9 @@ class SourceCleaningAgentConfig:
     model_name: str = "default"
     max_iterations: int = 30
     max_tool_result_chars: int = 12000
+    max_evidence_ledger_chars: int = 10000
+    recent_detailed_turns: int = 1
+    max_batch_commands: int = 8
     max_tokens: int = 2200
     temperature: float = 0.2
     remove_footnotes: bool = False
@@ -76,12 +79,15 @@ def run_source_cleaning_agent(
     completion = completion_func or llm_handler.chat_completion_with_metadata
     tools = SourceCleaningTools(document)
     result = SourceCleaningAgentResult()
-    source_overview = tools.inspect_document_structure(max_documents=12)
+    source_overview = {
+        "structure": tools.inspect_document_structure(max_documents=10),
+        "cleanup_hypotheses": tools.analyze_cleanup_structure(max_candidates=6),
+        "chapter_hypotheses": tools.analyze_chapter_structure(max_candidates=4),
+    }
     finish_review_attempts = 0
     inspection_actions: set[str] = set()
-    evaluated_operations_key = ""
 
-    messages: list[dict[str, Any]] = [
+    base_messages: list[dict[str, Any]] = [
         {"role": "system", "content": build_system_prompt(resolved_config.remove_footnotes)},
         {
             "role": "user",
@@ -91,35 +97,49 @@ def run_source_cleaning_agent(
             ),
         },
     ]
+    conversation_turns: list[dict[str, str]] = []
 
     for iteration in range(1, resolved_config.max_iterations + 1):
         result.iterations = iteration
         _emit(progress_callback, f"Source cleaning LLM step {iteration}/{resolved_config.max_iterations}...")
+        request_messages = _build_completion_messages(
+            base_messages,
+            conversation_turns,
+            recent_detailed_turns=resolved_config.recent_detailed_turns,
+            max_evidence_ledger_chars=resolved_config.max_evidence_ledger_chars,
+        )
         completion_response = completion(
-            messages=messages,
+            messages=request_messages,
             model_name=resolved_config.model_name,
             llm_settings=llm_settings,
             max_tokens=resolved_config.max_tokens,
             temperature=resolved_config.temperature,
         )
         response, call_metadata = _normalize_completion_response(completion_response)
-        _record_llm_call(result, iteration, call_metadata)
+        _record_llm_call(
+            result,
+            iteration,
+            call_metadata,
+            request_context_chars=sum(len(str(message.get("content") or "")) for message in request_messages),
+        )
         if not response:
             result.warnings.append("LLM returned an empty response.")
             break
 
         command, parse_error = parse_json_command(response)
-        messages.append({"role": "assistant", "content": response})
         if parse_error:
             result.warnings.append(parse_error)
-            messages.append(
-                {
-                    "role": "user",
-                    "content": (
-                        "Your previous response was not valid JSON. "
-                        "Return exactly one JSON object using an allowed action."
-                    ),
-                }
+            correction = (
+                "Your previous response was not valid JSON. "
+                "Return exactly one JSON object using an allowed action."
+            )
+            _append_conversation_turn(
+                conversation_turns,
+                response,
+                correction,
+                action="parse_error",
+                arguments={},
+                observation={"error": parse_error},
             )
             continue
 
@@ -130,16 +150,11 @@ def run_source_cleaning_agent(
                 for operation in command.get("operations", [])
                 if isinstance(operation, dict)
             ]
-            proposed_operations_key = _operations_key(proposed_operations)
             workflow_gaps: list[str] = []
             if resolved_config.require_verified_finish_for_long_sources and len(document.blocks) >= 40:
                 if not inspection_actions:
                     workflow_gaps.append(
                         "Use at least one inspection tool chosen from the source structure before finishing."
-                    )
-                if evaluated_operations_key != proposed_operations_key:
-                    workflow_gaps.append(
-                        "Call evaluate_operations with the exact final operations before finishing."
                     )
             if workflow_gaps:
                 observation = {"accepted": False, "workflow_gaps": workflow_gaps}
@@ -152,15 +167,21 @@ def run_source_cleaning_agent(
                     }
                 )
                 if iteration < resolved_config.max_iterations:
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "The proposal is not ready to finish:\n"
-                                + _json_dumps_truncated(observation, resolved_config.max_tool_result_chars)
-                                + "\n\nContinue with the required inspection/evaluation command."
-                            ),
-                        }
+                    feedback = (
+                        "The proposal is not ready to finish:\n"
+                        + _json_dumps_truncated(observation, resolved_config.max_tool_result_chars)
+                        + "\n\nContinue with the required inspection/evaluation command."
+                    )
+                    _append_conversation_turn(
+                        conversation_turns,
+                        response,
+                        feedback,
+                        action="workflow_review",
+                        arguments={
+                            "proposed_operation_count": len(proposed_operations),
+                            "proposed_operations": proposed_operations,
+                        },
+                        observation=observation,
                     )
                     continue
                 result.raw_final_command = command
@@ -188,16 +209,22 @@ def run_source_cleaning_agent(
                         "observation": finish_review,
                     }
                 )
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            "Finish review rejected the proposal because cleanup or chapter marking appears incomplete.\n"
-                            + _json_dumps_truncated(finish_review, resolved_config.max_tool_result_chars)
-                            + "\n\nInspect the remaining cleanup groups and any repeated chapter selector, then submit "
-                            "a corrected finish command. Remove complete confirmed sections, not only their headings."
-                        ),
-                    }
+                feedback = (
+                    "Finish review rejected the proposal because cleanup or chapter marking appears incomplete.\n"
+                    + _json_dumps_truncated(finish_review, resolved_config.max_tool_result_chars)
+                    + "\n\nInspect the remaining cleanup groups and any repeated chapter selector, then submit "
+                    "a corrected finish command. Remove complete confirmed sections, not only their headings."
+                )
+                _append_conversation_turn(
+                    conversation_turns,
+                    response,
+                    feedback,
+                    action="finish_review",
+                    arguments={
+                        "proposed_operation_count": len(proposed_operations),
+                        "proposed_operations": proposed_operations,
+                    },
+                    observation=finish_review,
                 )
                 continue
 
@@ -224,11 +251,19 @@ def run_source_cleaning_agent(
                 proposed_operations,
                 remove_footnotes=resolved_config.remove_footnotes,
             )
-            evaluated_operations_key = _operations_key(proposed_operations)
         else:
-            observation = _execute_tool_action(tools, command)
+            observation = _execute_tool_action(
+                tools,
+                command,
+                max_batch_commands=resolved_config.max_batch_commands,
+            )
             if action in _INSPECTION_ACTIONS:
                 inspection_actions.add(action)
+            if action == "batch":
+                for batch_command in _batch_commands(command, resolved_config.max_batch_commands):
+                    batch_action = str(batch_command.get("action") or "").strip()
+                    if batch_action in _INSPECTION_ACTIONS:
+                        inspection_actions.add(batch_action)
         trace_item = {
             "iteration": iteration,
             "action": action,
@@ -236,15 +271,19 @@ def run_source_cleaning_agent(
             "observation": observation,
         }
         result.tool_trace.append(trace_item)
-        messages.append(
-            {
-                "role": "user",
-                "content": (
-                    "Tool result:\n"
-                    + _json_dumps_truncated(observation, resolved_config.max_tool_result_chars)
-                    + "\n\nChoose the next inspection command or finish with operations."
-                ),
-            }
+        model_observation = _observation_for_model(action, observation)
+        feedback = (
+            "Tool result:\n"
+            + _json_dumps_truncated(model_observation, resolved_config.max_tool_result_chars)
+            + "\n\nChoose the next inspection command, batch independent inspections, or finish with operations."
+        )
+        _append_conversation_turn(
+            conversation_turns,
+            response,
+            feedback,
+            action=action,
+            arguments=trace_item["arguments"],
+            observation=observation,
         )
 
     if not result.summary:
@@ -263,6 +302,13 @@ def parse_json_command(response: str) -> tuple[dict[str, Any], str]:
     for candidate in candidates:
         if str(candidate.get("action") or "").strip():
             return candidate, ""
+        if (
+            isinstance(candidate.get("operations"), list)
+            and "confidence" in candidate
+        ):
+            inferred = dict(candidate)
+            inferred["action"] = "finish"
+            return inferred, ""
 
     if candidates:
         return {}, "JSON command must include a non-empty action."
@@ -342,13 +388,53 @@ def _dedupe_command_candidates(candidates: list[dict[str, Any]]) -> list[dict[st
     return deduped
 
 
-def _execute_tool_action(tools: SourceCleaningTools, command: dict[str, Any]) -> dict[str, Any] | list[dict[str, Any]]:
+def _execute_tool_action(
+    tools: SourceCleaningTools,
+    command: dict[str, Any],
+    max_batch_commands: int = 8,
+) -> dict[str, Any] | list[dict[str, Any]]:
     action = str(command.get("action") or "").strip()
     arguments = command.get("arguments")
     if not isinstance(arguments, dict):
         arguments = {}
 
     try:
+        if action == "batch":
+            commands = _batch_commands(command, max_batch_commands)
+            results: list[dict[str, Any]] = []
+            for index, batch_command in enumerate(commands, start=1):
+                batch_action = str(batch_command.get("action") or "").strip()
+                batch_arguments = (
+                    batch_command.get("arguments")
+                    if isinstance(batch_command.get("arguments"), dict)
+                    else {}
+                )
+                if batch_action in {"batch", "finish", "propose_operations", "evaluate_operations"}:
+                    batch_observation: Any = {
+                        "error": f"Action '{batch_action}' is not allowed inside a batch."
+                    }
+                else:
+                    batch_observation = _execute_tool_action(
+                        tools,
+                        batch_command,
+                        max_batch_commands=0,
+                    )
+                results.append(
+                    {
+                        "index": index,
+                        "action": batch_action,
+                        "arguments": batch_arguments,
+                        "observation": batch_observation,
+                    }
+                )
+            raw_commands = arguments.get("commands")
+            raw_count = len(raw_commands) if isinstance(raw_commands, list) else 0
+            return {
+                "requested_commands": raw_count,
+                "executed_commands": len(results),
+                "commands_truncated": raw_count > len(results),
+                "results": results,
+            }
         if action == "inspect_document_structure":
             return tools.inspect_document_structure(
                 max_documents=int(arguments.get("max_documents") or 30),
@@ -364,7 +450,12 @@ def _execute_tool_action(tools: SourceCleaningTools, command: dict[str, Any]) ->
         if action == "regex_search":
             return tools.regex_search(**_filter_kwargs(arguments, {"pattern", "flags", "scope", "max_hits"}))
         if action == "preview":
-            return tools.preview(**_filter_kwargs(arguments, {"start_line", "end_line", "before", "after", "around_hit_id"}))
+            return tools.preview(
+                **_filter_kwargs(
+                    arguments,
+                    {"start_line", "end_line", "before", "after", "around_hit_id", "max_blocks"},
+                )
+            )
         if action == "inspect_block":
             return tools.inspect_block(str(arguments.get("block_id") or ""))
         if action == "get_epub_markup_for_text":
@@ -413,6 +504,21 @@ def _execute_tool_action(tools: SourceCleaningTools, command: dict[str, Any]) ->
     return {"error": f"Unknown source-cleaning action: {action}"}
 
 
+def _batch_commands(command: dict[str, Any], max_batch_commands: int) -> list[dict[str, Any]]:
+    arguments = command.get("arguments")
+    if not isinstance(arguments, dict):
+        return []
+    commands = arguments.get("commands")
+    if not isinstance(commands, list):
+        return []
+    limit = max(0, int(max_batch_commands))
+    return [
+        item
+        for item in commands[:limit]
+        if isinstance(item, dict)
+    ]
+
+
 def _filter_kwargs(arguments: dict[str, Any], allowed: set[str]) -> dict[str, Any]:
     return {key: value for key, value in arguments.items() if key in allowed}
 
@@ -456,7 +562,12 @@ def _normalize_completion_response(response: Any) -> tuple[str, dict[str, Any]]:
     }
 
 
-def _record_llm_call(result: SourceCleaningAgentResult, iteration: int, metadata: dict[str, Any]):
+def _record_llm_call(
+    result: SourceCleaningAgentResult,
+    iteration: int,
+    metadata: dict[str, Any],
+    request_context_chars: int = 0,
+):
     usage = metadata.get("usage") if isinstance(metadata.get("usage"), dict) else {}
     cost = _optional_float(metadata.get("cost"))
     call = {
@@ -466,11 +577,20 @@ def _record_llm_call(result: SourceCleaningAgentResult, iteration: int, metadata
         "cost_usd": cost,
         "cost_source": str(metadata.get("cost_source") or ""),
         "response_id": str(metadata.get("response_id") or ""),
+        "request_context_chars": max(0, int(request_context_chars)),
     }
     result.llm_calls.append(call)
 
     totals = result.llm_usage
     totals["call_count"] = int(totals.get("call_count") or 0) + 1
+    totals["request_context_chars_total"] = (
+        int(totals.get("request_context_chars_total") or 0) + call["request_context_chars"]
+    )
+    totals["max_request_context_chars"] = max(
+        int(totals.get("max_request_context_chars") or 0),
+        call["request_context_chars"],
+    )
+    totals["last_request_context_chars"] = call["request_context_chars"]
     if usage:
         totals["usage_available_calls"] = int(totals.get("usage_available_calls") or 0) + 1
     else:
@@ -505,6 +625,151 @@ def _record_llm_call(result: SourceCleaningAgentResult, iteration: int, metadata
         models.append(model)
 
 
+def _append_conversation_turn(
+    turns: list[dict[str, str]],
+    assistant_content: str,
+    user_content: str,
+    *,
+    action: str,
+    arguments: dict[str, Any],
+    observation: Any,
+):
+    summary_payload = {
+        "action": action,
+        "arguments": _compact_for_ledger(arguments),
+        "observation": _compact_for_ledger(observation),
+    }
+    turns.append(
+        {
+            "assistant": assistant_content,
+            "user": user_content,
+            "summary": json.dumps(summary_payload, ensure_ascii=False, separators=(",", ":")),
+        }
+    )
+
+
+def _build_completion_messages(
+    base_messages: list[dict[str, Any]],
+    turns: list[dict[str, str]],
+    *,
+    recent_detailed_turns: int,
+    max_evidence_ledger_chars: int,
+) -> list[dict[str, Any]]:
+    messages = [dict(message) for message in base_messages]
+    detailed_count = max(0, int(recent_detailed_turns))
+    older_turns = turns[:-detailed_count] if detailed_count else turns
+    recent_turns = turns[-detailed_count:] if detailed_count else []
+
+    if older_turns:
+        summaries = [
+            f"{index}. {turn['summary']}"
+            for index, turn in enumerate(older_turns, start=1)
+        ]
+        ledger = "\n".join(summaries)
+        ledger = _truncate_middle(ledger, max(1000, int(max_evidence_ledger_chars)))
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "Evidence ledger from earlier tool turns. Treat it as established context; "
+                    "request a fresh preview only when the compact evidence is insufficient.\n"
+                    + ledger
+                ),
+            }
+        )
+
+    for turn in recent_turns:
+        messages.append({"role": "assistant", "content": turn["assistant"]})
+        messages.append({"role": "user", "content": turn["user"]})
+    return messages
+
+
+def _compact_for_ledger(
+    value: Any,
+    key: str = "",
+    depth: int = 0,
+    *,
+    string_limit: int = 220,
+    block_list_limit: int = 4,
+) -> Any:
+    if depth >= 7:
+        return "<nested data omitted>"
+    if isinstance(value, str):
+        return value if len(value) <= string_limit else value[: max(0, string_limit - 3)] + "..."
+    if isinstance(value, dict):
+        compact: dict[str, Any] = {}
+        for item_key, item_value in value.items():
+            if item_key in {"raw_markup", "dom_path", "attributes", "context"}:
+                continue
+            compact[str(item_key)] = _compact_for_ledger(
+                item_value,
+                key=str(item_key),
+                depth=depth + 1,
+                string_limit=string_limit,
+                block_list_limit=block_list_limit,
+            )
+        return compact
+    if isinstance(value, list):
+        if key in {"operations", "proposed_operations"}:
+            limit = 20
+        elif key in {"blocks", "matches", "documents", "likely_chapters", "entries"}:
+            limit = block_list_limit
+        else:
+            limit = 8
+        if len(value) <= limit:
+            return [
+                _compact_for_ledger(
+                    item,
+                    depth=depth + 1,
+                    string_limit=string_limit,
+                    block_list_limit=block_list_limit,
+                )
+                for item in value
+            ]
+        head_count = (limit + 1) // 2
+        tail_count = limit - head_count
+        compact_items = [
+            _compact_for_ledger(
+                item,
+                depth=depth + 1,
+                string_limit=string_limit,
+                block_list_limit=block_list_limit,
+            )
+            for item in value[:head_count]
+        ]
+        compact_items.append({"omitted_items": len(value) - limit})
+        compact_items.extend(
+            _compact_for_ledger(
+                item,
+                depth=depth + 1,
+                string_limit=string_limit,
+                block_list_limit=block_list_limit,
+            )
+            for item in value[-tail_count:]
+        )
+        return compact_items
+    return value
+
+
+def _observation_for_model(action: str, observation: Any) -> Any:
+    if action == "batch":
+        return _compact_for_ledger(
+            observation,
+            string_limit=140,
+            block_list_limit=2,
+        )
+    return observation
+
+
+def _truncate_middle(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    marker = "\n... <older evidence compacted> ...\n"
+    head_chars = max_chars // 3
+    tail_chars = max_chars - head_chars - len(marker)
+    return text[:head_chars] + marker + text[-max(0, tail_chars):]
+
+
 def _review_finish_command(
     document: SourceDocument,
     operations: list[dict[str, Any]],
@@ -528,25 +793,32 @@ def _review_finish_command(
         for block in document.blocks
         if block.block_id not in deleted_ids
     ]
-    return {
+    tools = SourceCleaningTools(document)
+    chapter_structure = tools.analyze_chapter_structure(max_candidates=6)
+    remaining_cleanup = tools.analyze_cleanup_structure(
+        max_candidates=8,
+        scope={"block_ids": retained_ids},
+    )
+    review = {
         "accepted": not blocking_warnings,
         "blocking_warnings": blocking_warnings,
         "advisory_warnings": advisory_warnings,
         "validation_stats": validation.stats,
-        "chapter_structure": SourceCleaningTools(document).analyze_chapter_structure(max_candidates=6),
-        "remaining_document_structure": SourceCleaningTools(document).inspect_document_structure(
-            max_documents=20,
-            scope={"block_ids": retained_ids},
-        ),
-        "remaining_cleanup_structure": SourceCleaningTools(document).analyze_cleanup_structure(
-            max_candidates=8,
-            scope={"block_ids": retained_ids},
-        ),
+        "chapter_structure": {
+            "nav_title_count": chapter_structure.get("nav_title_count"),
+            "likely_chapter_count": chapter_structure.get("likely_chapter_count"),
+            "numbered_heading_count": chapter_structure.get("numbered_heading_count"),
+            "selector_suggestions": chapter_structure.get("selector_suggestions", []),
+        },
+        "remaining_cleanup_structure": remaining_cleanup,
     }
-
-
-def _operations_key(operations: list[dict[str, Any]]) -> str:
-    return json.dumps(operations, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    if blocking_warnings:
+        review["remaining_document_structure"] = tools.inspect_document_structure(
+            max_documents=8,
+            scope={"block_ids": retained_ids},
+        )
+        review["chapter_structure"]["likely_chapters"] = chapter_structure.get("likely_chapters", [])
+    return review
 
 
 def _optional_float(value: Any) -> float | None:
