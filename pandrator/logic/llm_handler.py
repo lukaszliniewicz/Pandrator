@@ -93,11 +93,18 @@ def _get_litellm_clients() -> tuple[Any, Any]:
     if not _litellm_import_attempted:
         _litellm_import_attempted = True
         try:
+            import litellm
             from litellm import completion as litellm_completion
             from litellm.utils import get_valid_models as litellm_get_valid_models
         except Exception as e:  # pragma: no cover - runtime dependency guard
             logging.debug("LiteLLM import failed: %s", e)
         else:
+            # Drop unsupported parameters (e.g. reasoning_effort on non-reasoning models)
+            # silently instead of raising UnsupportedParamsError.
+            try:
+                litellm.drop_params = True
+            except Exception:
+                pass
             _litellm_completion = litellm_completion
             _litellm_get_valid_models = litellm_get_valid_models
 
@@ -1013,6 +1020,13 @@ def chat_completion_with_metadata(
     }
     request_payload.update(request_overrides)
 
+    # Inject reasoning_effort when the caller has configured one.
+    # litellm.drop_params=True ensures this is silently ignored for models that
+    # don't support it (e.g. Ollama, older OpenAI, non-reasoning Gemini models).
+    reasoning_effort = str(_read_setting(llm_settings, "reasoning_effort", "") or "").strip()
+    if reasoning_effort in ("low", "medium", "high"):
+        request_payload["reasoning_effort"] = reasoning_effort
+
     logging.info("LiteLLM chat request model=%s", resolved_model)
     try:
         response = completion(**request_payload)
@@ -1091,6 +1105,11 @@ def _make_api_request(
         "timeout": request_timeout,
     }
     request_payload.update(request_overrides)
+
+    # Inject reasoning_effort (silently dropped for unsupported models via drop_params=True).
+    reasoning_effort = str(_read_setting(llm_settings, "reasoning_effort", "") or "").strip()
+    if reasoning_effort in ("low", "medium", "high"):
+        request_payload["reasoning_effort"] = reasoning_effort
 
     logging.info("LiteLLM request model=%s", resolved_model)
     logging.debug("LiteLLM request payload: %s", request_payload)

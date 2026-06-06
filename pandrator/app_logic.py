@@ -1859,6 +1859,7 @@ class AppLogic(QObject):
         remove_footnotes: bool = False,
         model_name: str | None = None,
         max_iterations: int | None = None,
+        reasoning_effort: str | None = None,
         progress_callback=None,
         stop_event=None,
     ) -> dict:
@@ -1903,6 +1904,14 @@ class AppLogic(QObject):
         output_dir = os.path.join(session_dir, "_source_cleaning")
         resolved_model = str(model_name or "default").strip() or "default"
 
+        # Build an llm_settings view that reflects any per-run reasoning_effort
+        # override.  We copy rather than mutate so the global state stays clean.
+        llm_settings_for_run = self.state.llm
+        if reasoning_effort is not None:
+            import copy as _copy
+            llm_settings_for_run = _copy.copy(self.state.llm)
+            llm_settings_for_run.reasoning_effort = str(reasoning_effort).strip()
+
         pipeline_config = source_cleaning.SourceCleaningPipelineConfig(
             model_name=resolved_model,
             remove_footnotes=remove_footnotes,
@@ -1911,7 +1920,7 @@ class AppLogic(QObject):
         emit_progress("Running source-cleaning pipeline...")
         pipeline_result = source_cleaning.run_cleaning_pipeline(
             document,
-            llm_settings=self.state.llm,
+            llm_settings=llm_settings_for_run,
             config=pipeline_config,
             progress_callback=emit_progress,
             stop_event=stop_event,

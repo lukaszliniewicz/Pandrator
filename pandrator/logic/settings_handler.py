@@ -145,6 +145,7 @@ def build_global_settings_payload(state: AppState) -> Dict[str, Any]:
             "default_model": state.llm.default_model,
             "provider_configs": state.llm.provider_configs,
             "request_timeout_seconds": state.llm.request_timeout_seconds,
+            "reasoning_effort": str(getattr(state.llm, "reasoning_effort", "") or ""),
         },
         "tts": tts_payload,
         "source_cleaning": {
@@ -177,6 +178,11 @@ def apply_global_settings_payload(state: AppState, payload: Dict[str, Any]):
                 state.llm.request_timeout_seconds = max(10, int(timeout_value))
         except (TypeError, ValueError):
             pass
+
+        raw_reasoning_effort = llm_payload.get("reasoning_effort", "")
+        if isinstance(raw_reasoning_effort, str) and raw_reasoning_effort in ("", "low", "medium", "high"):
+            if hasattr(state.llm, "reasoning_effort"):
+                state.llm.reasoning_effort = raw_reasoning_effort
 
         llm_handler.normalize_llm_settings(state.llm)
 

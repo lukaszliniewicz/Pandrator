@@ -33,6 +33,8 @@ class SourceCleaningDialog(QDialog):
     _MIN_MAX_ITERATIONS = 5
     _MAX_MAX_ITERATIONS = 250
     _DEFAULT_MAX_ITERATIONS = 53
+    _REASONING_EFFORT_OPTIONS = ["", "low", "medium", "high"]  # "" = don't send
+    _REASONING_EFFORT_LABELS = ["None (model default)", "Low", "Medium", "High"]
 
     def _load_max_iterations(self) -> int:
         cleaning_settings = getattr(self.logic.state, "source_cleaning", None)
@@ -57,6 +59,25 @@ class SourceCleaningDialog(QDialog):
             except Exception as e:  # noqa: BLE001 - persistence is best-effort on dialog close
                 logging.getLogger(__name__).warning(
                     "Failed to persist source cleaning max_iterations: %s", e
+                )
+
+    def _load_reasoning_effort(self) -> str:
+        """Returns the current globally-configured reasoning_effort value."""
+        return str(getattr(self.logic.state.llm, "reasoning_effort", "") or "")
+
+    def _save_reasoning_effort(self) -> None:
+        """Persists the combo box selection back to LLMSettings."""
+        index = self.reasoning_effort_combo.currentIndex()
+        value = self._REASONING_EFFORT_OPTIONS[index] if 0 <= index < len(self._REASONING_EFFORT_OPTIONS) else ""
+        if hasattr(self.logic.state.llm, "reasoning_effort"):
+            self.logic.state.llm.reasoning_effort = value
+        persist = getattr(self.logic, "_persist_global_settings", None)
+        if callable(persist):
+            try:
+                persist()
+            except Exception as e:  # noqa: BLE001
+                logging.getLogger(__name__).warning(
+                    "Failed to persist LLM reasoning_effort: %s", e
                 )
 
     def __init__(self, logic, source_path_hint: str = "", parent=None):
@@ -97,6 +118,22 @@ class SourceCleaningDialog(QDialog):
 
         self.remove_footnotes_checkbox = QCheckBox("Remove Footnotes/Endnotes")
         controls.addWidget(self.remove_footnotes_checkbox)
+
+        controls.addWidget(QLabel("Reasoning:"))
+        self.reasoning_effort_combo = QComboBox()
+        self.reasoning_effort_combo.addItems(self._REASONING_EFFORT_LABELS)
+        self.reasoning_effort_combo.setToolTip(
+            "Reasoning effort sent to the LLM for each cleaning turn.\n"
+            "'None' omits the parameter — the model uses its own default.\n"
+            "Low/Medium/High map to reasoning_effort=low/medium/high.\n"
+            "LiteLLM translates this for each provider and silently ignores it\n"
+            "for models that don't support it (e.g. Ollama, basic OpenAI models)."
+        )
+        # Initialise from global LLM settings
+        effort_value = self._load_reasoning_effort()
+        effort_index = self._REASONING_EFFORT_OPTIONS.index(effort_value) if effort_value in self._REASONING_EFFORT_OPTIONS else 0
+        self.reasoning_effort_combo.setCurrentIndex(effort_index)
+        controls.addWidget(self.reasoning_effort_combo)
 
         self.run_button = QPushButton("Run LLM Cleaning")
         controls.addWidget(self.run_button)
@@ -214,6 +251,7 @@ class SourceCleaningDialog(QDialog):
         self.stop_button.setEnabled(running)
         self.model_combo.setEnabled(not running)
         self.remove_footnotes_checkbox.setEnabled(not running)
+        self.reasoning_effort_combo.setEnabled(not running)
         self.max_iterations_spinbox.setEnabled(not running)
         self.text_edit.setReadOnly(running)
         self.add_chapter_button.setEnabled(not running)
@@ -259,6 +297,15 @@ class SourceCleaningDialog(QDialog):
         max_iterations = int(self.max_iterations_spinbox.value())
         stop_event = self._stop_event
 
+        # Save reasoning_effort selection to global settings before running.
+        self._save_reasoning_effort()
+        effort_index = self.reasoning_effort_combo.currentIndex()
+        reasoning_effort = (
+            self._REASONING_EFFORT_OPTIONS[effort_index]
+            if 0 <= effort_index < len(self._REASONING_EFFORT_OPTIONS)
+            else ""
+        )
+
         def worker():
             try:
                 result = self.logic.run_source_cleaning(
@@ -266,6 +313,7 @@ class SourceCleaningDialog(QDialog):
                     remove_footnotes=remove_footnotes,
                     model_name=model_name,
                     max_iterations=max_iterations,
+                    reasoning_effort=reasoning_effort,
                     progress_callback=self.status_updated.emit,
                     stop_event=stop_event,
                 )
@@ -376,6 +424,7 @@ class SourceCleaningDialog(QDialog):
             )
             return
         self._save_max_iterations()
+        self._save_reasoning_effort()
         super().closeEvent(event)
 
     def choice(self) -> str:
