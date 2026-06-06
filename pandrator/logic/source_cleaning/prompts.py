@@ -19,20 +19,29 @@ Core rules:
 - Do not rewrite the whole book.
 - Do not invent metadata. Use evidence from filename, EPUB metadata, title pages, or source text.
 - Work across languages. Do not rely only on English words like "chapter" or "contents".
-- Treat EPUB classes/ids as hints, not truth; many are non-semantic.
+- Do not assume standard EPUB structure. Books may use semantic headings, arbitrary classes/ids, plain paragraphs, blockquotes, spans, formatting-only markup, inaccurate navigation, or very large multi-section documents.
+- Treat navigation, tags, classes, ids, roles, text patterns, and position as independent evidence. Confirm important actions with a second signal or a preview.
 - Use previews and markup inspection before deleting substantial text.
+- Keep inspections efficient: preview 5-10 representative blocks first, and request raw markup only when plain structural metadata is insufficient.
 - Prefer selector-based cleanup over long block_id lists when a whole TOC/nav/license/notes section shares href, class, id, tag, role, or text pattern.
-- Selectors may combine href/tag/class/id/role/text_regex and exclude_hrefs/exclude_tags/exclude_classes/exclude_roles.
+- Selectors may combine href, href_regex, tag, class/classes, element_id, element_id_regex, role/roles, text_regex, start_line/end_line, and exclusion fields.
+- Inspect every distinct TOC variant. EPUBs often contain both an inline contents list and a separate navigation document; removing one does not remove the other.
+- When removing boilerplate or a license, remove the complete confirmed section/document. Deleting only its heading is not sufficient.
+- Preserve the book's real title/byline and closing markers such as "THE END" unless there is strong evidence they are unwanted duplicates. Avoid broad ranges that cross into them.
+- Calibrate confidence to verified completeness; do not claim near-certain confidence while cleanup candidate groups remain uninspected or only section headings were deleted.
 - Before finishing a book-length source, inspect chapter structure and verify chapter-marker completeness against navigation titles and likely heading candidates.
 - Do not mark only the first/last examples of a repeated chapter pattern. Preview the full selector and use mark_chapters_by_selector when it safely covers the complete narrative heading set.
 - Mark real chapter/part/opening section headings with [[Chapter]] via mark_chapter or mark_chapters_by_selector operations.
 - Remove non-audiobook material: TOC-as-list, copyright boilerplate, ads, image alt text, captions, running headers/footers, page numbers, and optional notes.
 - Preserve narrative prose unless there is strong evidence it should not be read aloud.
+- Before finish, call evaluate_operations with the exact proposed operations. Correct any skipped operations, destructive removals, missing chapter markers, or remaining unwanted sections it reports.
 - {footnote_policy}
 
 You must answer every turn with one JSON object and no prose.
 
 Inspection command schema:
+{{"action":"inspect_document_structure","arguments":{{"max_documents":30,"scope":{{"start_line":1,"end_line":500}}}}}}
+{{"action":"inspect_navigation","arguments":{{"max_entries":80,"max_matches_per_entry":5}}}}
 {{"action":"search","arguments":{{"query":"text OR other text","mode":"plain","case_sensitive":false,"max_hits":20}}}}
 {{"action":"regex_search","arguments":{{"pattern":"...","flags":"i","max_hits":20}}}}
 {{"action":"preview","arguments":{{"start_line":1,"end_line":20}}}}
@@ -45,8 +54,10 @@ Inspection command schema:
 {{"action":"list_repeated_lines","arguments":{{"min_repeats":3}}}}
 {{"action":"find_heading_candidates","arguments":{{"max_candidates":80}}}}
 {{"action":"analyze_chapter_structure","arguments":{{"max_candidates":80}}}}
+{{"action":"analyze_cleanup_structure","arguments":{{"max_candidates":20}}}}
 {{"action":"find_footnote_candidates","arguments":{{"max_candidates":80}}}}
 {{"action":"find_metadata_candidates","arguments":{{}}}}
+{{"action":"evaluate_operations","arguments":{{"operations":[{{"op":"delete_range","start_line":1,"end_line":5,"reason":"confirmed front matter"}}]}}}}
 
 Final command schema:
 {{
@@ -69,33 +80,33 @@ Final command schema:
 
 def build_initial_user_prompt(
     document: SourceDocument,
-    chapter_structure: dict | None = None,
+    source_overview: dict | None = None,
 ) -> str:
     first_blocks = [
         {
             "block_id": block.block_id,
             "line": block.line_start,
-            "text": block.text,
+            "text": _short_text(block.text),
             "href": block.href,
             "page": block.page,
             "tag": block.tag,
             "classes": block.classes,
             "roles": block.role_candidates,
         }
-        for block in document.blocks[:35]
+        for block in document.blocks[:12]
     ]
     last_blocks = [
         {
             "block_id": block.block_id,
             "line": block.line_start,
-            "text": block.text,
+            "text": _short_text(block.text),
             "href": block.href,
             "page": block.page,
             "tag": block.tag,
             "classes": block.classes,
             "roles": block.role_candidates,
         }
-        for block in document.blocks[-20:]
+        for block in document.blocks[-8:]
     ]
     summary = {
         "source_type": document.source_type,
@@ -103,16 +114,23 @@ def build_initial_user_prompt(
         "language_hint": document.language,
         "block_count": len(document.blocks),
         "metadata_candidates": document.metadata_candidates,
-        "nav_titles_preview": document.nav_titles[:40],
-        "chapter_structure": chapter_structure or {},
+        "nav_titles_preview": document.nav_titles[:20],
+        "source_overview": source_overview or {},
         "warnings": document.warnings,
         "first_blocks": first_blocks,
         "last_blocks": last_blocks,
     }
     return (
         "Inspect this source and prepare it for audiobook/TTS cleanup. "
-        "Start by gathering enough evidence with tools. The chapter-structure summary is an initial "
-        "deterministic hint; preview selectors before using them. "
+        "Start by choosing inspection tools based on the source overview. Do not assume the source uses "
+        "semantic headings or accurate navigation. "
         "When ready, call finish with targeted operations.\n\n"
         + json.dumps(summary, ensure_ascii=False, indent=2)
     )
+
+
+def _short_text(text: str, max_chars: int = 240) -> str:
+    normalized = " ".join(str(text or "").split())
+    if len(normalized) <= max_chars:
+        return normalized
+    return normalized[: max_chars - 3] + "..."

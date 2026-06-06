@@ -38,7 +38,8 @@ def build_source_document(epub_path: str) -> SourceDocument:
     filename = os.path.basename(epub_path)
     metadata_candidates = _extract_metadata_candidates(book, filename)
     language = _first_metadata_value(metadata_candidates, "language")
-    nav_titles = _extract_nav_titles(book)
+    navigation_entries = _extract_navigation_entries(book)
+    nav_titles = _dedupe([str(entry.get("title") or "") for entry in navigation_entries])
 
     document = SourceDocument(
         source_type="epub",
@@ -47,17 +48,16 @@ def build_source_document(epub_path: str) -> SourceDocument:
         metadata_candidates=metadata_candidates,
         language=language,
         nav_titles=nav_titles,
+        navigation_entries=navigation_entries,
     )
 
     line_number = 1
     source_index = 0
-    for item in book.get_items():
-        if item.get_type() != ebooklib.ITEM_DOCUMENT:
-            continue
-
+    for item in _ordered_document_items(book):
         href = item.get_name()
         content = item.get_content().decode("utf-8", errors="ignore")
         soup = BeautifulSoup(content, "html.parser")
+        item_block_count = 0
         for tag in _iter_textual_tags(soup):
             for text, attributes, raw_markup, role_candidates in _extract_tag_text_entries(tag):
                 if not text:
@@ -81,9 +81,75 @@ def build_source_document(epub_path: str) -> SourceDocument:
                     raw_markup=raw_markup,
                 )
                 document.blocks.append(block)
+                item_block_count += 1
                 line_number += 1
 
+        if item_block_count == 0:
+            fallback_text = _normalize_text(soup.get_text(" ", strip=True))
+            if fallback_text:
+                source_index += 1
+                document.blocks.append(
+                    SourceBlock(
+                        block_id=f"epub:{href}:{source_index}",
+                        text=fallback_text,
+                        line_start=line_number,
+                        line_end=line_number,
+                        source_index=source_index,
+                        href=href,
+                        tag="document",
+                        role_candidates=[],
+                        raw_markup=str(soup),
+                    )
+                )
+                document.warnings.append(
+                    f"Document '{href}' had no recognized block markup; indexed its complete text as one fallback block."
+                )
+                line_number += 1
+
+    if not document.blocks:
+        document.warnings.append("EPUB parsing produced no text blocks.")
+
     return document
+
+
+def _ordered_document_items(book: epub.EpubBook) -> list[Any]:
+    documents = [
+        item
+        for item in book.get_items()
+        if item.get_type() == ebooklib.ITEM_DOCUMENT
+    ]
+    by_id = {
+        str(item.get_id() or ""): item
+        for item in documents
+        if str(item.get_id() or "")
+    }
+    ordered: list[Any] = []
+    seen_names: set[str] = set()
+
+    for spine_entry in getattr(book, "spine", []) or []:
+        item_id = spine_entry[0] if isinstance(spine_entry, (list, tuple)) else spine_entry
+        item = by_id.get(str(item_id or ""))
+        if item is None:
+            try:
+                item = book.get_item_with_id(str(item_id or ""))
+            except Exception:
+                item = None
+        if item is None or item.get_type() != ebooklib.ITEM_DOCUMENT:
+            continue
+        name = str(item.get_name() or "")
+        if name in seen_names:
+            continue
+        ordered.append(item)
+        seen_names.add(name)
+
+    for item in documents:
+        name = str(item.get_name() or "")
+        if name in seen_names:
+            continue
+        ordered.append(item)
+        seen_names.add(name)
+
+    return ordered
 
 
 def _extract_metadata_candidates(book: epub.EpubBook, filename: str) -> dict[str, list[dict[str, Any]]]:
@@ -156,29 +222,49 @@ def _first_metadata_value(candidates: dict[str, list[dict[str, Any]]], key: str)
     return str(values[0].get("value") or "")
 
 
-def _extract_nav_titles(book: epub.EpubBook) -> list[str]:
-    titles: list[str] = []
+def _extract_navigation_entries(book: epub.EpubBook) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
 
-    def visit(item: Any):
+    def visit(item: Any, depth: int = 0):
+        if (
+            isinstance(item, tuple)
+            and len(item) == 2
+            and not isinstance(item[0], (list, tuple))
+            and isinstance(item[1], (list, tuple))
+        ):
+            visit(item[0], depth)
+            visit(item[1], depth + 1)
+            return
         if isinstance(item, (list, tuple)):
             for child in item:
-                visit(child)
+                visit(child, depth)
             return
 
         title = getattr(item, "title", "")
         if title:
-            titles.append(_normalize_text(str(title)))
+            href = str(getattr(item, "href", "") or "")
+            href_path, separator, fragment = href.partition("#")
+            entries.append(
+                {
+                    "order": len(entries) + 1,
+                    "depth": depth,
+                    "title": _normalize_text(str(title)),
+                    "href": href,
+                    "href_path": href_path,
+                    "fragment": fragment if separator else "",
+                }
+            )
 
         subitems = getattr(item, "subitems", None)
         if subitems:
-            visit(subitems)
+            visit(subitems, depth + 1)
 
     try:
         visit(book.toc)
     except Exception:
         return []
 
-    return _dedupe([title for title in titles if title])
+    return entries
 
 
 def _iter_textual_tags(soup: BeautifulSoup):

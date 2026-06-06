@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
+import posixpath
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from typing import Any
+from urllib.parse import unquote
 
 from .models import SearchHit, SourceBlock, SourceDocument
 from .selectors import blocks_matching_selector, selector_supported_keys
@@ -129,6 +131,173 @@ class SourceCleaningTools:
             return {"error": f"Block not found: {block_id}"}
         return block.to_dict()
 
+    def inspect_document_structure(
+        self,
+        max_documents: int = 30,
+        scope: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Returns a compact, language-agnostic inventory of the parsed source."""
+        scoped_blocks = self._scoped_blocks(scope)
+        grouped: dict[str, list[SourceBlock]] = defaultdict(list)
+        for block in scoped_blocks:
+            grouped[str(block.href or "<no-href>")].append(block)
+
+        documents: list[dict[str, Any]] = []
+        for href, blocks in grouped.items():
+            tag_counts = Counter(str(block.tag or "<none>") for block in blocks)
+            role_counts = Counter(role for block in blocks for role in block.role_candidates)
+            class_counts = Counter(class_name for block in blocks for class_name in block.classes)
+            documents.append(
+                {
+                    "href": href,
+                    "block_count": len(blocks),
+                    "text_chars": sum(len(block.text) for block in blocks),
+                    "first_line": blocks[0].line_start,
+                    "last_line": blocks[-1].line_end,
+                    "tag_counts": dict(tag_counts.most_common(12)),
+                    "role_counts": dict(role_counts.most_common(12)),
+                    "class_counts": dict(class_counts.most_common(12)),
+                    "first_texts": [_short_text(block.text, max_chars=120) for block in blocks[:2]],
+                    "last_texts": [_short_text(block.text, max_chars=120) for block in blocks[-2:]],
+                }
+            )
+
+        documents.sort(key=lambda item: int(item["first_line"]))
+        global_tags = Counter(str(block.tag or "<none>") for block in scoped_blocks)
+        global_roles = Counter(role for block in scoped_blocks for role in block.role_candidates)
+        global_classes = Counter(class_name for block in scoped_blocks for class_name in block.classes)
+        heading_tag_count = sum(
+            count
+            for tag, count in global_tags.items()
+            if tag.lower() in {"h1", "h2", "h3", "h4", "h5", "h6"}
+        )
+        navigation_entries = self.document.navigation_entries
+        navigation_with_fragments = sum(bool(entry.get("fragment")) for entry in navigation_entries)
+        diagnostics: list[str] = []
+        if self.document.source_type.startswith("epub") and not heading_tag_count:
+            diagnostics.append(
+                "No semantic h1-h6 headings were parsed; inspect navigation, text patterns, nearby ranges, and raw markup."
+            )
+        if navigation_entries and not navigation_with_fragments:
+            diagnostics.append(
+                "Navigation entries do not contain fragment targets; use them as section hints, not exact block locations."
+            )
+        diagnostics.extend(self.document.warnings)
+
+        return {
+            "source_type": self.document.source_type,
+            "filename": self.document.filename,
+            "block_count": len(scoped_blocks),
+            "text_chars": sum(len(block.text) for block in scoped_blocks),
+            "document_count": len(documents),
+            "navigation_entry_count": len(navigation_entries),
+            "navigation_entries_with_fragments": navigation_with_fragments,
+            "heading_tag_count": heading_tag_count,
+            "global_tag_counts": dict(global_tags.most_common(20)),
+            "global_role_counts": dict(global_roles.most_common(20)),
+            "global_class_counts": dict(global_classes.most_common(20)),
+            "documents": documents[: max(1, int(max_documents))],
+            "documents_truncated": len(documents) > max(1, int(max_documents)),
+            "diagnostics": diagnostics,
+        }
+
+    def inspect_navigation(
+        self,
+        max_entries: int = 80,
+        max_matches_per_entry: int = 5,
+    ) -> dict[str, Any]:
+        """Maps navigation labels and targets to likely parsed blocks."""
+        entries = self.document.navigation_entries or [
+            {"order": index, "depth": 0, "title": title, "href": "", "href_path": "", "fragment": ""}
+            for index, title in enumerate(self.document.nav_titles, start=1)
+        ]
+        normalized_blocks: list[tuple[SourceBlock, str]] = [
+            (block, _normalize_for_navigation(block.text))
+            for block in self.document.blocks
+        ]
+        blocks_by_title: dict[str, list[SourceBlock]] = defaultdict(list)
+        blocks_by_href: dict[str, list[SourceBlock]] = defaultdict(list)
+        blocks_by_element_id: dict[str, list[SourceBlock]] = defaultdict(list)
+        normalized_by_block_id: dict[str, str] = {}
+        for block, normalized in normalized_blocks:
+            normalized_by_block_id[block.block_id] = normalized
+            if normalized:
+                blocks_by_title[normalized].append(block)
+            normalized_href = _normalize_href_path(block.href)
+            if normalized_href:
+                blocks_by_href[normalized_href].append(block)
+            normalized_element_id = unquote(str(block.element_id or ""))
+            if normalized_element_id:
+                blocks_by_element_id[normalized_element_id].append(block)
+
+        rows: list[dict[str, Any]] = []
+        for entry in entries[: max(1, int(max_entries))]:
+            title = str(entry.get("title") or "")
+            normalized_title = _normalize_for_navigation(title)
+            href_path = _normalize_href_path(
+                entry.get("href_path") or str(entry.get("href") or "").split("#", 1)[0]
+            )
+            fragment = unquote(str(entry.get("fragment") or ""))
+            exact_matches = list(blocks_by_title.get(normalized_title, []))
+            fragment_matches = list(blocks_by_element_id.get(fragment, []))
+            same_document = list(blocks_by_href.get(href_path, []))
+            title_prefix_matches = [
+                block
+                for block in same_document
+                if _navigation_titles_overlap(
+                    normalized_title,
+                    normalized_by_block_id.get(block.block_id, ""),
+                )
+            ]
+            numbered_matches: list[SourceBlock] = []
+            number_match = re.search(r"\b(\d+|[ivxlcdm]+)\b", title, flags=re.IGNORECASE)
+            if number_match and same_document:
+                number = re.escape(number_match.group(1))
+                numbered_matches = [
+                    block
+                    for block in same_document
+                    if re.match(rf"^[\s\u200b]*{number}[\s.():\-]", block.text, flags=re.IGNORECASE)
+                ]
+            candidates = _dedupe_blocks(
+                fragment_matches + exact_matches + title_prefix_matches + numbered_matches
+            )
+            rows.append(
+                {
+                    **dict(entry),
+                    "same_document_block_count": len(same_document),
+                    "match_count": len(candidates),
+                    "matches": [
+                        {
+                            **self._preview_block(block),
+                            "match_reasons": _navigation_match_reasons(
+                                block,
+                                normalized_title,
+                                href_path,
+                                fragment,
+                                exact_matches,
+                                title_prefix_matches,
+                                numbered_matches,
+                            ),
+                        }
+                        for block in candidates[: max(1, int(max_matches_per_entry))]
+                    ],
+                    "matches_truncated": len(candidates) > max(1, int(max_matches_per_entry)),
+                }
+            )
+
+        entries_with_matches = sum(bool(row["match_count"]) for row in rows)
+        return {
+            "navigation_entry_count": len(entries),
+            "returned_entry_count": len(rows),
+            "returned_entries_with_matches": entries_with_matches,
+            "returned_entries_without_matches": len(rows) - entries_with_matches,
+            "entries": rows,
+            "entries_truncated": len(entries) > max(1, int(max_entries)),
+            "guidance": (
+                "Navigation is evidence, not ground truth. Preview candidate ranges and markup before marking or deleting."
+            ),
+        }
+
     def get_epub_markup_for_text(
         self,
         text: str,
@@ -221,10 +390,14 @@ class SourceCleaningTools:
         include_raw_markup: bool = False,
     ) -> dict[str, Any]:
         matches = blocks_matching_selector(self.document.blocks, selector)
-        blocks = matches[:max(1, int(max_blocks))]
+        requested_limit = max(1, int(max_blocks))
+        effective_limit = min(requested_limit, 12 if include_raw_markup else 30)
+        blocks = _representative_blocks(matches, effective_limit)
         return {
             "selector": selector,
             "matched_blocks": len(matches),
+            "returned_blocks": len(blocks),
+            "requested_max_blocks": requested_limit,
             "first_line": matches[0].line_start if matches else None,
             "last_line": matches[-1].line_end if matches else None,
             "hrefs": _dedupe_values(block.href for block in matches if block.href),
@@ -361,6 +534,88 @@ class SourceCleaningTools:
             ),
         }
 
+    def analyze_cleanup_structure(
+        self,
+        max_candidates: int = 20,
+        scope: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Summarizes structured TOC and boilerplate groups that merit inspection."""
+        blocks = self._scoped_blocks(scope)
+        toc_blocks = [block for block in blocks if "toc" in block.role_candidates]
+        copyright_blocks = [block for block in blocks if "copyright" in block.role_candidates]
+        grouped_hrefs: dict[str, list[SourceBlock]] = defaultdict(list)
+        grouped_classes: dict[str, list[SourceBlock]] = defaultdict(list)
+        for block in blocks:
+            if block.href:
+                grouped_hrefs[block.href].append(block)
+            for class_name in block.classes:
+                grouped_classes[class_name].append(block)
+
+        candidates: list[dict[str, Any]] = []
+        seen: set[str] = set()
+
+        def add_candidate(selector: dict[str, Any], matched: list[SourceBlock], reasons: list[str]):
+            if len(matched) < 2:
+                return
+            key = repr(sorted(selector.items()))
+            if key in seen:
+                return
+            seen.add(key)
+            candidates.append(
+                {
+                    "selector": selector,
+                    "matched_blocks": len(matched),
+                    "first_line": matched[0].line_start,
+                    "last_line": matched[-1].line_end,
+                    "reasons": reasons,
+                    "sample_texts": [_short_text(block.text) for block in matched[:5]],
+                }
+            )
+
+        if len(toc_blocks) >= 4:
+            add_candidate({"role": "toc"}, toc_blocks, ["structured_toc_or_navigation"])
+
+        for class_name, class_blocks in grouped_classes.items():
+            class_toc_count = sum("toc" in block.role_candidates for block in class_blocks)
+            if class_toc_count >= 4 and class_toc_count >= len(class_blocks) * 0.7:
+                add_candidate(
+                    {"class": class_name},
+                    class_blocks,
+                    ["class_is_predominantly_toc"],
+                )
+
+        strong_boilerplate_blocks: set[str] = set()
+        for href, href_blocks in grouped_hrefs.items():
+            href_toc_count = sum("toc" in block.role_candidates for block in href_blocks)
+            href_copyright_count = sum("copyright" in block.role_candidates for block in href_blocks)
+            href_strong_markers = sum(_has_strong_boilerplate_marker(block.text) for block in href_blocks)
+            strong_marker_ratio = href_strong_markers / len(href_blocks)
+            reasons: list[str] = []
+            if href_toc_count >= 4 and href_toc_count >= len(href_blocks) * 0.7:
+                reasons.append("document_is_predominantly_toc")
+            if href_strong_markers >= 2 and strong_marker_ratio >= 0.1:
+                reasons.append("document_contains_repeated_license_or_boilerplate_markers")
+            if href_copyright_count >= 3 and href_strong_markers and strong_marker_ratio >= 0.05:
+                reasons.append("document_contains_many_copyright_blocks")
+            if reasons:
+                add_candidate({"href": href}, href_blocks, reasons)
+                if any("license" in reason or "copyright" in reason or "boilerplate" in reason for reason in reasons):
+                    strong_boilerplate_blocks.update(block.block_id for block in href_blocks)
+
+        candidates.sort(key=lambda item: (-int(item["matched_blocks"]), int(item["first_line"])))
+        return {
+            "scoped_block_count": len(blocks),
+            "toc_block_count": len(toc_blocks),
+            "copyright_block_count": len(copyright_blocks),
+            "likely_boilerplate_block_count": len(strong_boilerplate_blocks),
+            "candidate_groups": candidates[: max(1, int(max_candidates))],
+            "candidate_groups_truncated": len(candidates) > max(1, int(max_candidates)),
+            "guidance": (
+                "Preview each candidate group. Remove every confirmed TOC variant and the complete "
+                "boilerplate/license section, not only its heading."
+            ),
+        }
+
     def find_footnote_candidates(self, max_candidates: int = 100) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
         for block in self.document.blocks:
@@ -430,7 +685,7 @@ class SourceCleaningTools:
             blocks = [block for block in blocks if block.page == int(page)]
 
         block_ids = set(scope.get("block_ids") or [])
-        if block_ids:
+        if "block_ids" in scope:
             blocks = [block for block in blocks if block.block_id in block_ids]
 
         return blocks
@@ -576,6 +831,62 @@ def _normalize_for_repeat_detection(text: str) -> str:
     return normalized
 
 
+def _normalize_for_navigation(text: str) -> str:
+    normalized = str(text or "").replace("\u200b", " ").casefold()
+    normalized = re.sub(r"[^\w]+", " ", normalized, flags=re.UNICODE)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _normalize_href_path(value: Any) -> str:
+    normalized = unquote(str(value or "").split("#", 1)[0]).replace("\\", "/").strip()
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return posixpath.normpath(normalized) if normalized else ""
+
+
+def _navigation_titles_overlap(nav_title: str, block_title: str) -> bool:
+    if not nav_title or not block_title or nav_title == block_title:
+        return False
+    shorter = min(len(nav_title), len(block_title))
+    if shorter < 8:
+        return False
+    return nav_title.startswith(block_title + " ") or block_title.startswith(nav_title + " ")
+
+
+def _dedupe_blocks(blocks: list[SourceBlock]) -> list[SourceBlock]:
+    deduped: list[SourceBlock] = []
+    seen: set[str] = set()
+    for block in blocks:
+        if block.block_id in seen:
+            continue
+        deduped.append(block)
+        seen.add(block.block_id)
+    return deduped
+
+
+def _navigation_match_reasons(
+    block: SourceBlock,
+    normalized_title: str,
+    href_path: str,
+    fragment: str,
+    exact_matches: list[SourceBlock],
+    title_prefix_matches: list[SourceBlock],
+    numbered_matches: list[SourceBlock],
+) -> list[str]:
+    reasons: list[str] = []
+    if fragment and unquote(str(block.element_id or "")) == fragment:
+        reasons.append("fragment_target")
+    if normalized_title and block in exact_matches:
+        reasons.append("normalized_title_match")
+    if block in title_prefix_matches:
+        reasons.append("normalized_title_prefix_match")
+    if block in numbered_matches:
+        reasons.append("numbered_prefix_in_target_document")
+    if href_path and _normalize_href_path(block.href) == href_path:
+        reasons.append("same_document")
+    return reasons
+
+
 def _snippet(text: str, match_text: str, radius: int = 80) -> str:
     lowered = text.lower()
     match_lowered = str(match_text or "").lower()
@@ -587,6 +898,13 @@ def _snippet(text: str, match_text: str, radius: int = 80) -> str:
     prefix = "..." if start > 0 else ""
     suffix = "..." if end < len(text) else ""
     return f"{prefix}{text[start:end]}{suffix}"
+
+
+def _short_text(text: str, max_chars: int = 180) -> str:
+    normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(normalized) <= max_chars:
+        return normalized
+    return normalized[: max_chars - 3] + "..."
 
 
 def _looks_like_numbered_heading(text: str) -> bool:
@@ -631,6 +949,21 @@ def _looks_like_boilerplate_heading(text: str) -> bool:
     )
 
 
+def _has_strong_boilerplate_marker(text: str) -> bool:
+    lowered = _normalize_for_repeat_detection(text)
+    return any(
+        marker in lowered
+        for marker in (
+            "project gutenberg",
+            "full license",
+            "terms of use",
+            "redistributing project gutenberg",
+            "all rights reserved",
+            "isbn",
+        )
+    )
+
+
 def _numeric_id_pattern(value: str) -> str:
     parts = re.split(r"(\d+)", str(value or ""))
     return "^" + "".join(r"\d+" if part.isdigit() else re.escape(part) for part in parts) + "$"
@@ -645,3 +978,11 @@ def _dedupe_values(values) -> list[Any]:
         deduped.append(value)
         seen.add(value)
     return deduped
+
+
+def _representative_blocks(blocks: list[SourceBlock], limit: int) -> list[SourceBlock]:
+    if len(blocks) <= limit:
+        return blocks
+    head_count = (limit + 1) // 2
+    tail_count = limit - head_count
+    return blocks[:head_count] + blocks[-tail_count:] if tail_count else blocks[:head_count]

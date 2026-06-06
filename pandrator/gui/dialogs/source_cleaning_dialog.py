@@ -42,6 +42,7 @@ class SourceCleaningDialog(QDialog):
         self._build_layout()
         self._connect_signals()
         self._populate_model_combo()
+        self._show_raw_source_preview()
         self._set_running(False)
 
     def _build_layout(self):
@@ -134,6 +135,7 @@ class SourceCleaningDialog(QDialog):
         self.manual_button.clicked.connect(self._manual_review)
         self.cancel_button.clicked.connect(self._cancel_import)
         self.add_chapter_button.clicked.connect(self._insert_chapter_marker)
+        self.text_edit.textChanged.connect(self._refresh_action_state)
         self.status_updated.connect(self._on_status_updated)
         self.cleaning_finished.connect(self._on_cleaning_finished)
 
@@ -158,21 +160,39 @@ class SourceCleaningDialog(QDialog):
         self.run_button.setEnabled(not running)
         self.model_combo.setEnabled(not running)
         self.remove_footnotes_checkbox.setEnabled(not running)
-        self.accept_button.setEnabled((not running) and bool(self._result) and bool(self.text_edit.toPlainText().strip()))
+        self.text_edit.setReadOnly(running)
+        self.add_chapter_button.setEnabled(not running)
         self.manual_button.setEnabled(not running)
         self.cancel_button.setEnabled(not running)
+        self._refresh_action_state()
         if running:
             self.progress_bar.setRange(0, 0)
         else:
             self.progress_bar.setRange(0, 100)
             self.progress_bar.setValue(0)
 
+    def _refresh_action_state(self):
+        has_reviewable_result = self._result is not None
+        has_text = bool(self.text_edit.toPlainText().strip())
+        self.accept_button.setEnabled((not self._running) and has_reviewable_result and has_text)
+
+    def _show_raw_source_preview(self):
+        raw_text = str(getattr(self.logic.state, "raw_text", "") or "")
+        self.text_edit.setPlainText(raw_text)
+        self.text_edit.moveCursor(QTextCursor.MoveOperation.Start)
+        self.tabs.setTabText(0, "Source Preview")
+        if raw_text:
+            self.status_label.setText(
+                f"Parsed source preview: {len(raw_text):,} characters. Choose a model and run LLM cleaning."
+            )
+        else:
+            self.status_label.setText("No extracted source preview is available.")
+
     def _start_cleaning(self):
         if self._running:
             return
 
         self._result = None
-        self.text_edit.clear()
         self.diff_edit.clear()
         self.report_edit.clear()
         self.status_label.setText("Starting source-cleaning loop...")
@@ -205,7 +225,7 @@ class SourceCleaningDialog(QDialog):
 
     def _on_cleaning_finished(self, result: object):
         payload = result if isinstance(result, dict) else {"success": False, "error": "Invalid cleaning result."}
-        self._result = payload if payload.get("cleaned_text") else None
+        self._result = None if payload.get("error") else payload
         self._set_running(False)
 
         if payload.get("error"):
@@ -217,6 +237,8 @@ class SourceCleaningDialog(QDialog):
         cleaned_text = str(payload.get("cleaned_text") or "")
         self.text_edit.setPlainText(cleaned_text)
         self.text_edit.moveCursor(QTextCursor.MoveOperation.Start)
+        self.tabs.setTabText(0, "Cleaned Text")
+        self._refresh_action_state()
         self.diff_edit.setPlainText(str(payload.get("diff") or ""))
         self._populate_metadata(payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {})
         self.report_edit.setPlainText(
@@ -257,9 +279,16 @@ class SourceCleaningDialog(QDialog):
         cursor.insertText("[[Chapter]]")
 
     def _accept_cleaned_text(self):
-        if not self.text_edit.toPlainText().strip():
+        edited_text = self.text_edit.toPlainText()
+        if not edited_text.strip():
             QMessageBox.warning(self, "Source Cleaning", "Cleaned text is empty.")
             return
+        if self._result is None:
+            QMessageBox.warning(self, "Source Cleaning", "Run source cleaning before accepting the result.")
+            return
+        original_text = str(self._result.get("cleaned_text") or "")
+        self._result["cleaned_text"] = edited_text
+        self._result["user_edited"] = edited_text != original_text
         self._choice = "accept"
         self.accept()
 

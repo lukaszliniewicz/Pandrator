@@ -57,6 +57,7 @@ class SourceDocument:
     metadata_candidates: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     language: str = ""
     nav_titles: list[str] = field(default_factory=list)
+    navigation_entries: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -78,6 +79,11 @@ class SourceDocument:
             metadata_candidates=dict(payload.get("metadata_candidates") or {}),
             language=str(payload.get("language") or ""),
             nav_titles=list(payload.get("nav_titles") or []),
+            navigation_entries=[
+                dict(entry)
+                for entry in payload.get("navigation_entries", [])
+                if isinstance(entry, dict)
+            ],
             warnings=list(payload.get("warnings") or []),
         )
 

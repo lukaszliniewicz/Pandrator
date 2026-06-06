@@ -10,7 +10,33 @@ def build_source_document(source_path: str, extracted_text: str | None = None) -
     """Dispatches source indexing by type."""
     ext = os.path.splitext(source_path)[1].lower()
     if ext == ".epub":
-        return epub_adapter.build_source_document(source_path)
+        try:
+            document = epub_adapter.build_source_document(source_path)
+        except Exception as error:
+            if extracted_text is None:
+                raise
+            document = pdf_text_adapter.build_source_document_from_text(
+                extracted_text or "",
+                source_path=source_path,
+                filename=os.path.basename(source_path),
+            )
+            document.source_type = "epub_text_fallback"
+            document.warnings.append(f"Structured EPUB indexing failed; using extracted text fallback: {error}")
+            return document
+        if document.blocks or extracted_text is None:
+            return document
+        fallback = pdf_text_adapter.build_source_document_from_text(
+            extracted_text or "",
+            source_path=source_path,
+            filename=os.path.basename(source_path),
+        )
+        fallback.source_type = "epub_text_fallback"
+        fallback.metadata_candidates = document.metadata_candidates or fallback.metadata_candidates
+        fallback.language = document.language
+        fallback.nav_titles = document.nav_titles
+        fallback.navigation_entries = document.navigation_entries
+        fallback.warnings = document.warnings + ["Structured EPUB indexing was empty; using extracted text fallback."]
+        return fallback
     if ext == ".pdf":
         if extracted_text is None:
             from .. import file_handler

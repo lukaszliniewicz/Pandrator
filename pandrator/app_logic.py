@@ -1835,7 +1835,10 @@ class AppLogic(QObject):
 
         emit_progress("Building structured source index...")
         if source_ext == ".epub":
-            document = source_cleaning.build_source_document(source_path)
+            document = source_cleaning.build_source_document(
+                source_path,
+                extracted_text=self.state.raw_text,
+            )
         elif source_ext == ".pdf":
             document = source_cleaning.build_source_document(
                 source_path,
@@ -1891,7 +1894,7 @@ class AppLogic(QObject):
 
         emit_progress("Source-cleaning pass finished.")
         return {
-            "success": not validation.errors,
+            "success": not validation.errors and not validation.blocking_warnings,
             "cleaned_text": cleaning_result.cleaned_text,
             "metadata": cleaning_result.metadata,
             "diff": cleaning_result.diff_text,

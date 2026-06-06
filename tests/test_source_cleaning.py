@@ -144,6 +144,28 @@ class SourceCleaningTests(unittest.TestCase):
         epub.write_epub(epub_path, book)
         return epub_path
 
+    def _write_out_of_order_manifest_epub_fixture(self) -> str:
+        epub_path = os.path.join(self.temp_dir.name, "Spine Order.epub")
+
+        book = epub.EpubBook()
+        book.set_identifier("fixture-spine-order")
+        book.set_title("Spine Order")
+        book.set_language("en")
+
+        second = epub.EpubHtml(title="Second", file_name="second.xhtml", lang="en")
+        second.content = "<html><body><p>Second in reading order.</p></body></html>"
+        first = epub.EpubHtml(title="First", file_name="first.xhtml", lang="en")
+        first.content = "<html><body><p>First in reading order.</p></body></html>"
+
+        book.add_item(second)
+        book.add_item(first)
+        book.add_item(epub.EpubNcx())
+        book.add_item(epub.EpubNav())
+        book.spine = ["nav", first, second]
+
+        epub.write_epub(epub_path, book)
+        return epub_path
+
     def _write_large_toc_epub_fixture(self) -> str:
         epub_path = os.path.join(self.temp_dir.name, "Large Toc.epub")
 
@@ -205,6 +227,7 @@ class SourceCleaningTests(unittest.TestCase):
         self.assertEqual(document.metadata_candidates["title"][0]["value"], "Strange Book")
         self.assertEqual(document.metadata_candidates["author"][0]["value"], "Example Author")
         self.assertIn("Rozdzial pierwszy", document.nav_titles)
+        self.assertEqual(document.navigation_entries[0]["href_path"], "chapter01.xhtml")
 
         block_texts = [block.text for block in document.blocks]
         self.assertIn("Rozdzial pierwszy", block_texts)
@@ -222,6 +245,49 @@ class SourceCleaningTests(unittest.TestCase):
             for occurrence in range(1, markup["match_count"] + 1)
         ]
         self.assertTrue(any("class=\"x7\"" in raw_markup for raw_markup in occurrence_markups))
+
+    def test_epub_index_uses_spine_reading_order_before_manifest_order(self):
+        document = build_source_document(self._write_out_of_order_manifest_epub_fixture())
+        narrative_blocks = [
+            block.text
+            for block in document.blocks
+            if "reading order" in block.text
+        ]
+
+        self.assertEqual(
+            narrative_blocks,
+            ["First in reading order.", "Second in reading order."],
+        )
+
+    def test_structure_and_navigation_tools_handle_nonsemantic_epub_headings(self):
+        epub_path = self._write_epub_fixture()
+        document = build_source_document(epub_path)
+        tools = SourceCleaningTools(document)
+
+        overview = tools.inspect_document_structure(scope={"href": "chapter01.xhtml"})
+        navigation = tools.inspect_navigation()
+
+        self.assertEqual(overview["heading_tag_count"], 0)
+        self.assertTrue(any("No semantic h1-h6" in item for item in overview["diagnostics"]))
+        first_entry = next(item for item in navigation["entries"] if item["title"] == "Rozdzial pierwszy")
+        self.assertGreaterEqual(first_entry["match_count"], 1)
+        self.assertIn(
+            "normalized_title_match",
+            first_entry["matches"][0]["match_reasons"],
+        )
+
+    def test_epub_index_falls_back_to_extracted_text_after_structured_parser_failure(self):
+        epub_path = self._write_epub_fixture()
+
+        with patch(
+            "pandrator.logic.source_cleaning.indexer.epub_adapter.build_source_document",
+            side_effect=ValueError("broken package"),
+        ):
+            document = build_source_document(epub_path, extracted_text="Fallback title\nFallback narration.")
+
+        self.assertEqual(document.source_type, "epub_text_fallback")
+        self.assertEqual(len(document.blocks), 2)
+        self.assertTrue(any("Structured EPUB indexing failed" in item for item in document.warnings))
 
     def test_single_file_multilingual_epub_finds_cjk_heading_candidates(self):
         epub_path = self._write_single_file_multilingual_epub_fixture()
@@ -289,6 +355,7 @@ class SourceCleaningTests(unittest.TestCase):
         href_selectors = selectors["selectors"]["href"]
         toc_selector = {"href": "toc.xhtml"}
         toc_preview = tools.preview_selector(toc_selector, max_blocks=5, include_raw_markup=True)
+        capped_preview = tools.preview_selector(toc_selector, max_blocks=40, include_raw_markup=True)
         raw_range = tools.preview_raw_markup_range(
             start_line=toc_preview["first_line"],
             end_line=toc_preview["last_line"],
@@ -299,6 +366,8 @@ class SourceCleaningTests(unittest.TestCase):
         self.assertGreaterEqual(toc_preview["matched_blocks"], 40)
         self.assertTrue(any("raw_markup" in block for block in toc_preview["blocks"]))
         self.assertTrue(any("raw_markup" in block for block in raw_range["blocks"]))
+        self.assertEqual(capped_preview["returned_blocks"], 12)
+        self.assertEqual(capped_preview["blocks"][-1]["text"], "Chapter 40")
 
         result = apply_cleaning_operations(
             document,
@@ -378,6 +447,34 @@ class SourceCleaningTests(unittest.TestCase):
         self.assertEqual(analysis["numbered_heading_count"], 2)
         self.assertEqual(analysis["selector_suggestions"][0]["matched_blocks"], 2)
         self.assertEqual(analysis["selector_suggestions"][0]["likely_chapter_matches"], 2)
+
+    def test_cleanup_structure_finds_inline_toc_and_complete_license_document(self):
+        document = SourceDocument(
+            source_type="epub",
+            source_path="sample.epub",
+            filename="sample.epub",
+            blocks=[
+                SourceBlock("title", "Sample Book", 1, 1, href="body.xhtml", tag="h1", role_candidates=["heading"]),
+                SourceBlock("toc-1", "Chapter I", 2, 2, href="body.xhtml", tag="p", classes=["toc"], role_candidates=["toc"]),
+                SourceBlock("toc-2", "Chapter II", 3, 3, href="body.xhtml", tag="p", classes=["toc"], role_candidates=["toc"]),
+                SourceBlock("toc-3", "Chapter III", 4, 4, href="body.xhtml", tag="p", classes=["toc"], role_candidates=["toc"]),
+                SourceBlock("toc-4", "Chapter IV", 5, 5, href="body.xhtml", tag="p", classes=["toc"], role_candidates=["toc"]),
+                SourceBlock("body", "The story begins.", 6, 6, href="body.xhtml", tag="p"),
+                SourceBlock("license-1", "START: FULL LICENSE", 7, 7, href="license.xhtml", tag="div"),
+                SourceBlock("license-2", "THE FULL PROJECT GUTENBERG LICENSE", 8, 8, href="license.xhtml", tag="h2"),
+                SourceBlock("license-3", "Project Gutenberg terms of use", 9, 9, href="license.xhtml", tag="div"),
+                SourceBlock("license-4", "Redistributing Project Gutenberg works", 10, 10, href="license.xhtml", tag="div"),
+            ],
+        )
+
+        analysis = SourceCleaningTools(document).analyze_cleanup_structure()
+        selectors = [item["selector"] for item in analysis["candidate_groups"]]
+
+        self.assertIn({"class": "toc"}, selectors)
+        self.assertIn({"href": "license.xhtml"}, selectors)
+        self.assertNotIn({"href": "body.xhtml"}, selectors)
+        self.assertEqual(analysis["toc_block_count"], 4)
+        self.assertEqual(analysis["likely_boilerplate_block_count"], 4)
 
     def test_tools_search_preview_repeated_lines_and_footnotes(self):
         text = "\f".join(
@@ -665,6 +762,93 @@ class SourceCleaningTests(unittest.TestCase):
         self.assertIn("finish_review", [item["action"] for item in result.tool_trace])
         self.assertEqual(cleaned.report["chapter_count"], 4)
 
+    def test_agent_rejects_finish_with_remaining_toc_and_license(self):
+        document = SourceDocument(
+            source_type="epub",
+            source_path="sample.epub",
+            filename="sample.epub",
+            blocks=[
+                SourceBlock("toc-1", "Chapter I", 1, 1, href="body.xhtml", classes=["toc"], role_candidates=["toc"]),
+                SourceBlock("toc-2", "Chapter II", 2, 2, href="body.xhtml", classes=["toc"], role_candidates=["toc"]),
+                SourceBlock("toc-3", "Chapter III", 3, 3, href="body.xhtml", classes=["toc"], role_candidates=["toc"]),
+                SourceBlock("toc-4", "Chapter IV", 4, 4, href="body.xhtml", classes=["toc"], role_candidates=["toc"]),
+                SourceBlock("body", "The story begins.", 5, 5, href="body.xhtml"),
+                SourceBlock("license-1", "START: FULL LICENSE", 6, 6, href="license.xhtml"),
+                SourceBlock("license-2", "THE FULL PROJECT GUTENBERG LICENSE", 7, 7, href="license.xhtml"),
+                SourceBlock("license-3", "Project Gutenberg terms of use", 8, 8, href="license.xhtml"),
+                SourceBlock("license-4", "Redistributing Project Gutenberg works", 9, 9, href="license.xhtml"),
+            ],
+        )
+        responses = iter(
+            [
+                '{"action":"finish","summary":"done","confidence":0.8,"operations":[]}',
+                (
+                    '{"action":"finish","summary":"complete cleanup","confidence":0.9,"operations":['
+                    '{"op":"delete_by_selector","selector":{"role":"toc"},"reason":"all TOC variants"},'
+                    '{"op":"delete_by_selector","selector":{"href":"license.xhtml"},"reason":"complete license document"}'
+                    "]}"
+                ),
+            ]
+        )
+
+        result = run_source_cleaning_agent(
+            document,
+            config=SourceCleaningAgentConfig(max_iterations=3),
+            completion_func=lambda **_kwargs: next(responses),
+        )
+        cleaned = apply_cleaning_operations(document, result.operations)
+
+        self.assertEqual(len(result.finish_reviews), 2)
+        self.assertEqual(cleaned.cleaned_text, "The story begins.")
+
+    def test_long_source_requires_inspection_and_exact_operation_evaluation(self):
+        document = build_source_document_from_text(
+            "\n".join(f"Line {index}" for index in range(1, 51)),
+            filename="long-source.txt",
+        )
+        operations = [{"op": "mark_chapter", "start_line": 1, "title": "Line 1"}]
+        operations_json = json.dumps(operations)
+        responses = iter(
+            [
+                '{"action":"finish","summary":"too soon","confidence":0.2,"operations":' + operations_json + "}",
+                '{"action":"inspect_document_structure","arguments":{"max_documents":10}}',
+                '{"action":"evaluate_operations","arguments":{"operations":' + operations_json + "}}",
+                '{"action":"finish","summary":"inspected and evaluated","confidence":0.8,"operations":'
+                + operations_json
+                + "}",
+            ]
+        )
+
+        result = run_source_cleaning_agent(
+            document,
+            config=SourceCleaningAgentConfig(max_iterations=5, max_finish_reviews=0),
+            completion_func=lambda **_kwargs: next(responses),
+        )
+
+        actions = [item["action"] for item in result.tool_trace]
+        self.assertEqual(actions, ["workflow_review", "inspect_document_structure", "evaluate_operations"])
+        self.assertEqual(result.operations, operations)
+        self.assertEqual(result.summary, "inspected and evaluated")
+
+    def test_long_source_does_not_accept_unverified_finish_at_iteration_limit(self):
+        document = build_source_document_from_text(
+            "\n".join(f"Line {index}" for index in range(1, 51)),
+            filename="long-source.txt",
+        )
+
+        result = run_source_cleaning_agent(
+            document,
+            config=SourceCleaningAgentConfig(max_iterations=1),
+            completion_func=lambda **_kwargs: (
+                '{"action":"finish","summary":"too soon","confidence":0.2,'
+                '"operations":[{"op":"delete_range","start_line":1,"end_line":20}]}'
+            ),
+        )
+
+        self.assertFalse(result.operations)
+        self.assertEqual(result.tool_trace[0]["action"], "workflow_review")
+        self.assertTrue(any("inspection tool" in warning for warning in result.warnings))
+
     def test_agent_aggregates_litellm_usage_and_cost(self):
         document = build_source_document_from_text("Title\nNarration.", filename="sample.pdf")
         responses = iter(
@@ -696,6 +880,7 @@ class SourceCleaningTests(unittest.TestCase):
         self.assertEqual(result.llm_usage["prompt_tokens"], 240)
         self.assertEqual(result.llm_usage["completion_tokens"], 30)
         self.assertEqual(result.llm_usage["total_tokens"], 270)
+        self.assertEqual(result.llm_usage["uncached_prompt_tokens"], 240)
         self.assertAlmostEqual(result.llm_usage["cost_usd"], 0.003)
         self.assertEqual(result.llm_usage["cost_available_calls"], 2)
 
@@ -769,6 +954,7 @@ class SourceCleaningTests(unittest.TestCase):
         joined_warnings = "\n".join(validation.warnings)
         self.assertIn("deletion ratio", joined_warnings.lower())
         self.assertIn("No chapter markers", joined_warnings)
+        self.assertFalse(validation.blocking_warnings)
 
     def test_validator_warns_about_suspiciously_low_chapter_count(self):
         document = build_source_document_from_text(
@@ -786,6 +972,42 @@ class SourceCleaningTests(unittest.TestCase):
         joined_warnings = "\n".join(validation.warnings)
         self.assertIn("Only one chapter marker", joined_warnings)
         self.assertIn("EPUB navigation title", joined_warnings)
+
+    def test_validator_warns_about_remaining_structured_cleanup_and_removed_bookends(self):
+        document = SourceDocument(
+            source_type="epub",
+            source_path="sample.epub",
+            filename="sample.epub",
+            metadata_candidates={"title": [{"value": "Sample Book"}]},
+            blocks=[
+                SourceBlock("title", "Sample Book", 1, 1, href="body.xhtml", tag="h1", role_candidates=["heading"]),
+                SourceBlock("toc-1", "Chapter I", 2, 2, href="body.xhtml", tag="p", classes=["toc"], role_candidates=["toc"]),
+                SourceBlock("toc-2", "Chapter II", 3, 3, href="body.xhtml", tag="p", classes=["toc"], role_candidates=["toc"]),
+                SourceBlock("toc-3", "Chapter III", 4, 4, href="body.xhtml", tag="p", classes=["toc"], role_candidates=["toc"]),
+                SourceBlock("toc-4", "Chapter IV", 5, 5, href="body.xhtml", tag="p", classes=["toc"], role_candidates=["toc"]),
+                SourceBlock("body", "The story begins.", 6, 6, href="body.xhtml", tag="p"),
+                SourceBlock("end", "THE END", 7, 7, href="body.xhtml", tag="h3", role_candidates=["heading"]),
+                SourceBlock("license-1", "START: FULL LICENSE", 8, 8, href="license.xhtml", tag="div"),
+                SourceBlock("license-2", "THE FULL PROJECT GUTENBERG LICENSE", 9, 9, href="license.xhtml", tag="h2"),
+                SourceBlock("license-3", "Project Gutenberg terms of use", 10, 10, href="license.xhtml", tag="div"),
+                SourceBlock("license-4", "Redistributing Project Gutenberg works", 11, 11, href="license.xhtml", tag="div"),
+            ],
+        )
+        result = apply_cleaning_operations(
+            document,
+            [
+                {"op": "delete_blocks", "block_ids": ["title", "end"], "reason": "bad broad cleanup"},
+            ],
+        )
+
+        validation = validate_cleaning_result(document, result)
+        joined_warnings = "\n".join(validation.warnings).lower()
+
+        self.assertIn("structured toc/navigation", joined_warnings)
+        self.assertIn("boilerplate/license", joined_warnings)
+        self.assertIn("book title heading", joined_warnings)
+        self.assertIn("narrative closing marker", joined_warnings)
+        self.assertEqual(validation.blocking_warnings, validation.warnings)
 
     def test_app_logic_source_cleaning_writes_augmented_artifacts_without_network(self):
         outputs_dir = os.path.join(self.temp_dir.name, "Outputs")
@@ -863,6 +1085,48 @@ class SourceCleaningTests(unittest.TestCase):
         self.assertIn("validation", report)
         self.assertEqual(report["agent"]["summary"], "Fixture cleaning plan.")
         self.assertEqual(report["chapter_count"], 1)
+
+    def test_source_cleaning_dialog_accepts_and_returns_user_edited_cleaned_text(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PyQt6.QtWidgets import QApplication
+
+        from pandrator.gui.dialogs.source_cleaning_dialog import SourceCleaningDialog
+
+        app = QApplication.instance() or QApplication([])
+        logic = SimpleNamespace(
+            state=SimpleNamespace(
+                raw_text="Raw source preview",
+                llm=SimpleNamespace(default_model="default"),
+            ),
+            list_llm_models=lambda: ["default"],
+        )
+        dialog = SourceCleaningDialog(logic)
+
+        self.assertFalse(dialog.accept_button.isEnabled())
+
+        dialog._on_cleaning_finished(
+            {
+                "success": True,
+                "cleaned_text": "Generated cleaned text",
+                "metadata": {},
+                "warnings": [],
+            }
+        )
+        self.assertTrue(dialog.accept_button.isEnabled())
+
+        dialog.text_edit.clear()
+        self.assertFalse(dialog.accept_button.isEnabled())
+
+        dialog.text_edit.setPlainText("User edited cleaned text")
+        self.assertTrue(dialog.accept_button.isEnabled())
+        dialog._accept_cleaned_text()
+
+        data = dialog.get_data()
+        self.assertEqual(dialog.choice(), "accept")
+        self.assertEqual(data["text"], "User edited cleaned text")
+        self.assertEqual(data["result"]["cleaned_text"], "User edited cleaned text")
+        self.assertTrue(data["result"]["user_edited"])
+        app.processEvents()
 
 
 if __name__ == "__main__":
