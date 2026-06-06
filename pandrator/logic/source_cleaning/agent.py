@@ -219,11 +219,13 @@ def run_source_cleaning_agent(
                 result.warnings.extend(workflow_gaps)
                 break
 
-            # For chapter_marking and the legacy full pass, run the completeness
-            # review. Deletion-only phases accept the proposal immediately.
-            _run_finish_review = resolved_config.phase_name in {"full", "chapter_marking"}
+            # For chapter_marking and the legacy full pass, run the chapter-completeness
+            # review. For the boilerplate phase, run a lightweight boilerplate finish
+            # review. Other deletion-only phases accept proposals immediately.
+            _run_chapter_review = resolved_config.phase_name in {"full", "chapter_marking"}
+            _run_boilerplate_review = resolved_config.phase_name == "boilerplate"
 
-            if _run_finish_review:
+            if _run_chapter_review:
                 finish_review = _review_finish_command(
                     document,
                     proposed_operations,
@@ -263,6 +265,45 @@ def run_source_cleaning_agent(
                         observation=finish_review,
                     )
                     continue
+            elif _run_boilerplate_review:
+                boilerplate_review = _review_boilerplate_finish(document, proposed_operations)
+                result.finish_reviews.append(boilerplate_review)
+                blocking_warnings = boilerplate_review.get("blocking_warnings") or []
+                if (
+                    blocking_warnings
+                    and finish_review_attempts < resolved_config.max_finish_reviews
+                    and iteration < resolved_config.max_iterations
+                ):
+                    finish_review_attempts += 1
+                    result.tool_trace.append(
+                        {
+                            "iteration": iteration,
+                            "action": "boilerplate_finish_review",
+                            "arguments": {"proposed_operation_count": len(proposed_operations)},
+                            "observation": boilerplate_review,
+                        }
+                    )
+                    feedback = (
+                        "Boilerplate finish review detected likely remaining boilerplate.\n"
+                        + _json_dumps_truncated(boilerplate_review, resolved_config.max_tool_result_chars)
+                        + "\n\nCheck BOTH the first 2–3 documents (front-matter preamble, copyright notice, "
+                        "licensing statements) AND the last 2–3 documents (end-matter, publisher notes, "
+                        "digitization credits). Preview any flagged candidate groups, then submit a corrected "
+                        "finish command. Delete complete confirmed sections, not only their headings."
+                    )
+                    _append_conversation_turn(
+                        conversation_turns,
+                        response,
+                        feedback,
+                        action="boilerplate_finish_review",
+                        arguments={
+                            "proposed_operation_count": len(proposed_operations),
+                            "proposed_operations": proposed_operations,
+                        },
+                        observation=boilerplate_review,
+                    )
+                    continue
+                blocking_warnings = boilerplate_review.get("blocking_warnings") or []
             else:
                 blocking_warnings = []
 

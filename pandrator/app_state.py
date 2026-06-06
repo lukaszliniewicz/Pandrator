@@ -267,7 +267,7 @@ class DubbingSettings:
 
 @dataclass
 class SourceCleaningSettings:
-    max_iterations: int = 30
+    max_iterations: int = 53
 
 @dataclass
 class AppState:

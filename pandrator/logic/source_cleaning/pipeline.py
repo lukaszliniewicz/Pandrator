@@ -146,6 +146,17 @@ def run_cleaning_pipeline(
 
         working_doc = _filtered_document(document, accumulated_deleted_ids)
 
+        # Finish review budget per phase:
+        #   chapter_marking → 2 chapter-completeness reviews
+        #   boilerplate     → 1 lightweight boilerplate scan
+        #   all others      → accept proposals directly (0 reviews)
+        if phase_name == "chapter_marking":
+            phase_max_finish_reviews = 2
+        elif phase_name == "boilerplate":
+            phase_max_finish_reviews = 1
+        else:
+            phase_max_finish_reviews = 0
+
         agent_config = SourceCleaningAgentConfig(
             model_name=resolved.model_name,
             phase_name=phase_name,
@@ -163,9 +174,7 @@ def run_cleaning_pipeline(
                 phase_name,
                 frozenset({"structure", "cleanup_hypotheses", "chapter_hypotheses"}),
             ),
-            # Finish review (chapter-completeness check) only runs for the
-            # chapter_marking phase; deletion phases accept proposals directly.
-            max_finish_reviews=2 if phase_name == "chapter_marking" else 0,
+            max_finish_reviews=phase_max_finish_reviews,
             require_verified_finish_for_long_sources=(phase_name == "chapter_marking"),
         )
 

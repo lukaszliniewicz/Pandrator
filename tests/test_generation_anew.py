@@ -122,7 +122,7 @@ class GenerationAnewTests(unittest.TestCase):
     def test_reset_generation_progress_resets_flags_if_settings_not_changed(self):
         harness = LogicTestHarness()
         harness.state.processed_sentences = [
-            {"sentence_number": "1", "tts_generated": "yes"},
+            {"sentence_number": "1", "tts_generated": "yes", "processed_sentence": "Modified text"},
         ]
         settings = {
             "pdf_preprocessed": False,
@@ -142,6 +142,7 @@ class GenerationAnewTests(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(len(harness.state.processed_sentences), 1)
         self.assertEqual(harness.state.processed_sentences[0]["tts_generated"], "no")
+        self.assertNotIn("processed_sentence", harness.state.processed_sentences[0])
         self.assertTrue(harness.progress_updated.emitted)
         self.assertEqual(harness.progress_updated.args, [0, 1, 0.0])
 

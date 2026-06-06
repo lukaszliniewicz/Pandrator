@@ -233,11 +233,15 @@ def _boilerplate_system_prompt(remove_footnotes: bool = False) -> str:
         "\n"
         "WHAT TO DELETE:\n"
         "- Copyright notices and publisher rights statements\n"
-        "- License text (e.g. Project Gutenberg license, Creative Commons terms of use)\n"
+        "- License text and terms of use (any license, any edition)\n"
         "- Publisher colophon and edition/ISBN pages\n"
         '- "Also by this author" or "Other books in this series" advertisement pages\n'
         "- Publisher catalogue pages and back-of-book advertisements\n"
-        "- Author biography pages that are clearly promotional ad copy (not narrative)"
+        "- Author biography pages that are clearly promotional ad copy (not narrative)\n"
+        "- Preamble disclaimers about the digital or printed edition of the book\n"
+        '- "Produced by", "Digitized by", or "Transcribed by" volunteer credits\n'
+        "- Donation solicitations or distribution notices from any digitization project\n"
+        "- Title/author/edition headers that appear as isolated duplicate blocks at the very start\n"
         + footnote_line
         + "\n"
         "\n"
@@ -248,6 +252,14 @@ def _boilerplate_system_prompt(remove_footnotes: bool = False) -> str:
         "- Epigraphs and quotations that open chapters\n"
         "- Forewords, prefaces, or introductions that are authored narrative text\n"
         "- Dedications longer than 2–3 lines (treat as narrative)\n"
+        "\n"
+        "SEARCH STRATEGY — check BOTH ends:\n"
+        "1. Inspect the FIRST 2–3 documents / first 40–60 blocks for front-matter boilerplate\n"
+        "   (copyright page, preamble, licensing statement, edition notice).\n"
+        "2. Inspect the LAST 2–3 documents / last 40–60 blocks for end-matter boilerplate\n"
+        "   (colophon, advertisements, digitization credits, donation notices).\n"
+        "3. Use analyze_cleanup_structure to find candidate groups anywhere in the document.\n"
+        "4. Confirm with preview before deleting.\n"
         "\n"
         "Rules:\n"
         "- Confirm a section with preview before proposing deletion.\n"
@@ -262,7 +274,7 @@ def _boilerplate_system_prompt(remove_footnotes: bool = False) -> str:
         '{"action":"inspect_document_structure","arguments":{"max_documents":20}}\n'
         '{"action":"preview_selector","arguments":{"selector":{"href":"copyright.xhtml"},"max_blocks":15}}\n'
         '{"action":"analyze_cleanup_structure","arguments":{"max_candidates":15}}\n'
-        '{"action":"search","arguments":{"query":"copyright OR rights reserved OR ISBN OR published by","mode":"plain","case_sensitive":false,"max_hits":15}}\n'
+        '{"action":"search","arguments":{"query":"copyright OR rights reserved OR ISBN OR published by OR produced by OR digitized by","mode":"plain","case_sensitive":false,"max_hits":15}}\n'
         '{"action":"regex_search","arguments":{"pattern":"...","flags":"i","max_hits":20}}\n'
         '{"action":"batch","arguments":{"commands":[...]}}'
         + footnote_tool
@@ -275,7 +287,7 @@ def _boilerplate_system_prompt(remove_footnotes: bool = False) -> str:
         '  "confidence": 0.85,\n'
         '  "operations": [\n'
         '    {"op":"delete_by_selector","selector":{"href":"copyright.xhtml"},"reason":"publisher copyright page, confirmed by preview"},\n'
-        '    {"op":"delete_range","start_line":5,"end_line":18,"reason":"Project Gutenberg license preamble, confirmed by preview"}\n'
+        '    {"op":"delete_range","start_line":5,"end_line":18,"reason":"preamble/licensing statement, confirmed by preview"}\n'
         "  ]\n"
         "}\n"
         "\n"
@@ -322,7 +334,9 @@ def _boilerplate_user_prompt(
     }
     parts = [
         "Identify and delete boilerplate/copyright content that should not be read aloud. "
-        "Preview suspected sections before deleting.\n\n"
+        "Check BOTH the first 2–3 documents (copyright, preamble, licensing) AND the last "
+        "2–3 documents (colophon, ads, digitization credits). "
+        "Use analyze_cleanup_structure for a complete scan, and preview sections before deleting.\n\n"
         + json.dumps(summary, ensure_ascii=False, indent=2)
     ]
     if previous_phase_summaries:

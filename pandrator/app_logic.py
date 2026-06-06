@@ -3187,6 +3187,7 @@ class AppLogic(QObject):
         for sentence in processed_sentences:
             reset_sentence = copy.deepcopy(sentence)
             reset_sentence["tts_generated"] = "no"
+            reset_sentence.pop("processed_sentence", None)
             reset_sentences.append(reset_sentence)
 
         self._set_processed_sentences_snapshot(reset_sentences)
