@@ -120,6 +120,31 @@ def apply_cleaning_operations(
             applied.append(_applied(index, operation, {"block_id": block.block_id, "title": title}))
             continue
 
+        if op == "mark_chapters_by_selector":
+            selector = operation.get("selector")
+            if not isinstance(selector, dict) or not selector:
+                skipped.append({"index": index, "operation": operation, "reason": "selector object required"})
+                continue
+            targets = blocks_matching_selector(document.blocks, selector)
+            if not targets:
+                skipped.append({"index": index, "operation": operation, "reason": "selector matched no blocks"})
+                continue
+            for block in targets:
+                chapter_marks[block.block_id] = block.text.strip()
+            applied.append(
+                _applied(
+                    index,
+                    operation,
+                    {
+                        "marked_chapters": len(targets),
+                        "selector": selector_summary(selector),
+                        "first_line": targets[0].line_start,
+                        "last_line": targets[-1].line_end,
+                    },
+                )
+            )
+            continue
+
         if op == "replace_range":
             start_line = operation.get("start_line")
             end_line = operation.get("end_line")

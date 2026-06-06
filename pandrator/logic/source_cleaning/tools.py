@@ -9,6 +9,13 @@ from .models import SearchHit, SourceBlock, SourceDocument
 from .selectors import blocks_matching_selector, selector_supported_keys
 
 
+NUMBERED_HEADING_PATTERN = (
+    r"^((chapter|part|book|section)\s+)?"
+    r"([ivxlcdm]+|\d+|[\u4e00-\u4e5d\u5341\u767e\u5343]+)"
+    r"([\.:)\- ]|$)"
+)
+
+
 class SourceCleaningTools:
     """Deterministic inspection helpers intended for an LLM tool loop."""
 
@@ -305,6 +312,55 @@ class SourceCleaningTools:
         candidates.sort(key=lambda item: (-float(item["score"]), int(item["line"])))
         return candidates[:max_candidates]
 
+    def analyze_chapter_structure(self, max_candidates: int = 60) -> dict[str, Any]:
+        """Summarizes likely chapter headings and reusable selectors."""
+        heading_candidates = self.find_heading_candidates(max_candidates=max(1, len(self.document.blocks)))
+        normalized_nav_titles = {
+            _normalize_for_repeat_detection(title)
+            for title in self.document.nav_titles
+            if str(title or "").strip()
+        }
+        likely_chapters: list[dict[str, Any]] = []
+        numbered_blocks: list[SourceBlock] = []
+
+        for candidate in heading_candidates:
+            block = self.document.block_by_id(str(candidate.get("block_id") or ""))
+            if block is None or _is_non_chapter_block(block):
+                continue
+
+            text = block.text.strip()
+            numbered = _looks_like_numbered_heading(text)
+            nav_match = _normalize_for_repeat_detection(text) in normalized_nav_titles
+            explicit_heading = "heading" in block.role_candidates
+            if numbered and (explicit_heading or self.document.source_type != "epub"):
+                evidence = "numbered_heading"
+                numbered_blocks.append(block)
+            elif nav_match and explicit_heading and not _looks_like_boilerplate_heading(text):
+                evidence = "epub_nav_heading"
+            else:
+                continue
+
+            item = dict(candidate)
+            item["chapter_evidence"] = evidence
+            likely_chapters.append(item)
+
+        likely_chapters.sort(key=lambda item: int(item["line"]))
+        selector_suggestions = self._chapter_selector_suggestions(numbered_blocks)
+        limit = max(1, int(max_candidates))
+        return {
+            "nav_title_count": len(self.document.nav_titles),
+            "heading_candidate_count": len(heading_candidates),
+            "likely_chapter_count": len(likely_chapters),
+            "numbered_heading_count": len(numbered_blocks),
+            "likely_chapters": likely_chapters[:limit],
+            "likely_chapters_truncated": len(likely_chapters) > limit,
+            "selector_suggestions": selector_suggestions,
+            "guidance": (
+                "Preview a suggested selector, then use mark_chapters_by_selector when it matches "
+                "the complete narrative heading set without TOC/nav entries."
+            ),
+        }
+
     def find_footnote_candidates(self, max_candidates: int = 100) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
         for block in self.document.blocks:
@@ -445,6 +501,62 @@ class SourceCleaningTools:
         rows.sort(key=lambda item: (-int(item["count"]), str(item["value"]).lower()))
         return rows[:max(1, int(max_items))]
 
+    def _chapter_selector_suggestions(self, numbered_blocks: list[SourceBlock]) -> list[dict[str, Any]]:
+        if len(numbered_blocks) < 2:
+            return []
+
+        selectors: list[dict[str, Any]] = []
+        if sum(1 for block in numbered_blocks if "heading" in block.role_candidates) >= 2:
+            selectors.append({"role": "heading", "text_regex": NUMBERED_HEADING_PATTERN})
+
+        grouped_tags: dict[str, list[SourceBlock]] = defaultdict(list)
+        grouped_classes: dict[str, list[SourceBlock]] = defaultdict(list)
+        grouped_id_patterns: dict[str, list[SourceBlock]] = defaultdict(list)
+        for block in numbered_blocks:
+            if block.tag:
+                grouped_tags[block.tag].append(block)
+            for class_name in block.classes:
+                grouped_classes[class_name].append(block)
+            if block.element_id:
+                grouped_id_patterns[_numeric_id_pattern(block.element_id)].append(block)
+
+        for tag, blocks in grouped_tags.items():
+            if len(blocks) >= 2:
+                selectors.append({"tag": tag, "text_regex": NUMBERED_HEADING_PATTERN})
+        for class_name, blocks in grouped_classes.items():
+            if len(blocks) >= 2:
+                selectors.append({"class": class_name, "text_regex": NUMBERED_HEADING_PATTERN})
+        for id_pattern, blocks in grouped_id_patterns.items():
+            if len(blocks) >= 2:
+                selectors.append({"element_id_regex": id_pattern, "text_regex": NUMBERED_HEADING_PATTERN})
+
+        suggestions: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        numbered_ids = {block.block_id for block in numbered_blocks}
+        for selector in selectors:
+            key = repr(sorted(selector.items()))
+            if key in seen:
+                continue
+            seen.add(key)
+            matches = blocks_matching_selector(self.document.blocks, selector)
+            likely_matches = [block for block in matches if block.block_id in numbered_ids]
+            suggestions.append(
+                {
+                    "selector": selector,
+                    "matched_blocks": len(matches),
+                    "likely_chapter_matches": len(likely_matches),
+                    "sample_texts": [block.text for block in matches[:5]],
+                }
+            )
+
+        suggestions.sort(
+            key=lambda item: (
+                -int(item["likely_chapter_matches"]),
+                int(item["matched_blocks"]) - int(item["likely_chapter_matches"]),
+            )
+        )
+        return suggestions[:10]
+
 
 def _parse_plain_query(query: str) -> list[str]:
     raw = str(query or "").strip()
@@ -479,6 +591,8 @@ def _snippet(text: str, match_text: str, radius: int = 80) -> str:
 
 def _looks_like_numbered_heading(text: str) -> bool:
     stripped = text.strip()
+    if re.match(NUMBERED_HEADING_PATTERN, stripped, flags=re.IGNORECASE):
+        return True
     return bool(
         re.match(
             r"^((chapter|part|book|section)\s+)?([ivxlcdm]+|\d+|[一二三四五六七八九十百千]+)([\.:)\- ]|$)",
@@ -486,6 +600,40 @@ def _looks_like_numbered_heading(text: str) -> bool:
             flags=re.IGNORECASE,
         )
     )
+
+
+def _is_non_chapter_block(block: SourceBlock) -> bool:
+    excluded_roles = {
+        "toc",
+        "copyright",
+        "page_number",
+        "caption",
+        "image_alt",
+        "footnote",
+        "footnote_candidate",
+        "side_note",
+    }
+    return bool(excluded_roles.intersection(block.role_candidates))
+
+
+def _looks_like_boilerplate_heading(text: str) -> bool:
+    lowered = _normalize_for_repeat_detection(text)
+    return any(
+        marker in lowered
+        for marker in (
+            "contents",
+            "table of contents",
+            "copyright",
+            "license",
+            "project gutenberg",
+            "the end",
+        )
+    )
+
+
+def _numeric_id_pattern(value: str) -> str:
+    parts = re.split(r"(\d+)", str(value or ""))
+    return "^" + "".join(r"\d+" if part.isdigit() else re.escape(part) for part in parts) + "$"
 
 
 def _dedupe_values(values) -> list[Any]:

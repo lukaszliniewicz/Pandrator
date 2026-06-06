@@ -8,11 +8,13 @@ from unittest.mock import patch
 from ebooklib import epub
 
 from pandrator.app_logic import AppLogic
-from pandrator.logic import session_handler
+from pandrator.logic import llm_handler, session_handler
 from pandrator.logic.source_cleaning import (
     SourceCleaningAgentConfig,
     SourceCleaningAgentResult,
     SourceCleaningTools,
+    SourceBlock,
+    SourceDocument,
     apply_cleaning_operations,
     build_source_document,
     run_source_cleaning_agent,
@@ -313,6 +315,70 @@ class SourceCleaningTests(unittest.TestCase):
         self.assertIn("The story begins here.", result.cleaned_text)
         self.assertEqual(result.applied_operations[0]["details"]["deleted_blocks"], toc_preview["matched_blocks"])
 
+    def test_bulk_chapter_marking_supports_selector_exclusions(self):
+        epub_path = self._write_large_toc_epub_fixture()
+        document = build_source_document(epub_path)
+        selector = {"tag": "h1", "exclude_hrefs": ["toc.xhtml"]}
+
+        preview = SourceCleaningTools(document).preview_selector(selector)
+        result = apply_cleaning_operations(
+            document,
+            [
+                {
+                    "op": "mark_chapters_by_selector",
+                    "selector": selector,
+                    "reason": "body chapter headings, excluding the TOC document",
+                }
+            ],
+        )
+
+        self.assertEqual(preview["matched_blocks"], 2)
+        self.assertEqual(result.report["chapter_count"], 2)
+        self.assertIn("[[Chapter]]Chapter One", result.cleaned_text)
+        self.assertIn("[[Chapter]]Chapter Two", result.cleaned_text)
+        self.assertNotIn("[[Chapter]]Contents", result.cleaned_text)
+
+    def test_chapter_structure_analysis_suggests_complete_narrative_selector(self):
+        document = SourceDocument(
+            source_type="epub",
+            source_path="sample.epub",
+            filename="sample.epub",
+            nav_titles=["Chapter I", "Chapter II"],
+            blocks=[
+                SourceBlock(
+                    block_id="toc-1",
+                    text="Chapter I",
+                    line_start=1,
+                    line_end=1,
+                    tag="p",
+                    classes=["toc"],
+                    role_candidates=["toc", "heading_candidate"],
+                ),
+                SourceBlock(
+                    block_id="chapter-1",
+                    text="Chapter I",
+                    line_start=2,
+                    line_end=2,
+                    tag="h2",
+                    role_candidates=["heading", "heading_candidate"],
+                ),
+                SourceBlock(
+                    block_id="chapter-2",
+                    text="Chapter II",
+                    line_start=3,
+                    line_end=3,
+                    tag="h2",
+                    role_candidates=["heading", "heading_candidate"],
+                ),
+            ],
+        )
+
+        analysis = SourceCleaningTools(document).analyze_chapter_structure()
+
+        self.assertEqual(analysis["numbered_heading_count"], 2)
+        self.assertEqual(analysis["selector_suggestions"][0]["matched_blocks"], 2)
+        self.assertEqual(analysis["selector_suggestions"][0]["likely_chapter_matches"], 2)
+
     def test_tools_search_preview_repeated_lines_and_footnotes(self):
         text = "\f".join(
             [
@@ -555,6 +621,84 @@ class SourceCleaningTests(unittest.TestCase):
         self.assertEqual(result.tool_trace[0]["action"], "preview_selector")
         self.assertEqual(result.tool_trace[0]["observation"]["matched_blocks"], 1)
 
+    def test_agent_rejects_incomplete_chapter_finish_then_accepts_bulk_selector(self):
+        document = build_source_document_from_text(
+            "\n".join(
+                [
+                    "Chapter I",
+                    "Story one.",
+                    "Chapter II",
+                    "Story two.",
+                    "Chapter III",
+                    "Story three.",
+                    "Chapter IV",
+                    "Story four.",
+                ]
+            ),
+            filename="sample.pdf",
+        )
+        first_chapter = next(block for block in document.blocks if block.text == "Chapter I")
+        responses = iter(
+            [
+                (
+                    '{"action":"finish","summary":"sampled chapters","confidence":0.5,"operations":['
+                    '{"op":"mark_chapter","block_id":"' + first_chapter.block_id + '","title":"Chapter I"}'
+                    "]}"
+                ),
+                (
+                    '{"action":"finish","summary":"complete chapter pattern","confidence":0.9,"operations":['
+                    '{"op":"mark_chapters_by_selector","selector":{"text_regex":"^Chapter [IV]+$"},'
+                    '"reason":"all narrative chapter headings"}'
+                    "]}"
+                ),
+            ]
+        )
+
+        result = run_source_cleaning_agent(
+            document,
+            config=SourceCleaningAgentConfig(max_iterations=3),
+            completion_func=lambda **_kwargs: next(responses),
+        )
+        cleaned = apply_cleaning_operations(document, result.operations)
+
+        self.assertEqual(len(result.finish_reviews), 2)
+        self.assertIn("finish_review", [item["action"] for item in result.tool_trace])
+        self.assertEqual(cleaned.report["chapter_count"], 4)
+
+    def test_agent_aggregates_litellm_usage_and_cost(self):
+        document = build_source_document_from_text("Title\nNarration.", filename="sample.pdf")
+        responses = iter(
+            [
+                llm_handler.ChatCompletionResult(
+                    content='{"action":"find_metadata_candidates","arguments":{}}',
+                    model="openai/test-model",
+                    usage={"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
+                    cost=0.001,
+                    cost_source="litellm_hidden_params",
+                ),
+                llm_handler.ChatCompletionResult(
+                    content='{"action":"finish","summary":"done","confidence":0.8,"operations":[]}',
+                    model="openai/test-model",
+                    usage={"prompt_tokens": 140, "completion_tokens": 10, "total_tokens": 150},
+                    cost=0.002,
+                    cost_source="litellm_hidden_params",
+                ),
+            ]
+        )
+
+        result = run_source_cleaning_agent(
+            document,
+            config=SourceCleaningAgentConfig(max_iterations=3),
+            completion_func=lambda **_kwargs: next(responses),
+        )
+
+        self.assertEqual(result.llm_usage["call_count"], 2)
+        self.assertEqual(result.llm_usage["prompt_tokens"], 240)
+        self.assertEqual(result.llm_usage["completion_tokens"], 30)
+        self.assertEqual(result.llm_usage["total_tokens"], 270)
+        self.assertAlmostEqual(result.llm_usage["cost_usd"], 0.003)
+        self.assertEqual(result.llm_usage["cost_available_calls"], 2)
+
     def test_parse_json_command_extracts_fenced_json(self):
         command, error = parse_json_command(
             "Here is the command:\n```json\n{\"action\":\"find_metadata_candidates\",\"arguments\":{}}\n```"
@@ -579,6 +723,35 @@ class SourceCleaningTests(unittest.TestCase):
 
         self.assertFalse(tail_error)
         self.assertEqual(command_with_tail["action"], "preview")
+
+    def test_parse_json_command_rejects_object_without_action(self):
+        command, error = parse_json_command('{"summary":"missing action","operations":[]}')
+
+        self.assertEqual(command, {})
+        self.assertIn("non-empty action", error)
+
+    def test_litellm_response_metadata_extracts_usage_and_hidden_cost(self):
+        class _FakeResponse:
+            _hidden_params = {"response_cost": 0.0123}
+
+            def model_dump(self, mode=None):
+                return {
+                    "id": "response-1",
+                    "model": "openai/test-model",
+                    "choices": [{"message": {"content": "hello"}}],
+                    "usage": {
+                        "prompt_tokens": 11,
+                        "completion_tokens": 4,
+                        "total_tokens": 15,
+                    },
+                }
+
+        result = llm_handler._extract_chat_completion_result(_FakeResponse())
+
+        self.assertEqual(result.content, "hello")
+        self.assertEqual(result.usage["total_tokens"], 15)
+        self.assertAlmostEqual(result.cost, 0.0123)
+        self.assertEqual(result.cost_source, "litellm_hidden_params")
 
     def test_validator_warns_about_high_deletion_and_missing_chapters(self):
         document = build_source_document_from_text(
@@ -686,6 +859,7 @@ class SourceCleaningTests(unittest.TestCase):
             report = json.load(file_handle)
 
         self.assertIn("agent", report)
+        self.assertIn("llm_usage", report)
         self.assertIn("validation", report)
         self.assertEqual(report["agent"]["summary"], "Fixture cleaning plan.")
         self.assertEqual(report["chapter_count"], 1)

@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 DEFAULT_LITELLM_MODEL = "openai/gpt-5.4-mini"
@@ -72,6 +73,19 @@ NON_TEXT_MODEL_KEYWORDS = (
 _litellm_completion = None
 _litellm_get_valid_models = None
 _litellm_import_attempted = False
+
+
+@dataclass
+class ChatCompletionResult:
+    content: str = ""
+    model: str = ""
+    usage: dict[str, Any] = field(default_factory=dict)
+    cost: float | None = None
+    cost_source: str = ""
+    response_id: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 def _get_litellm_clients() -> tuple[Any, Any]:
@@ -879,24 +893,111 @@ def _extract_choice_content(response_data: Any) -> str:
     return str(content or "")
 
 
-def chat_completion(
+def _response_payload(response_data: Any) -> dict[str, Any]:
+    if response_data is None:
+        return {}
+    if isinstance(response_data, dict):
+        return response_data
+    if hasattr(response_data, "model_dump"):
+        try:
+            payload = response_data.model_dump(mode="json")
+        except TypeError:
+            payload = response_data.model_dump()
+        return payload if isinstance(payload, dict) else {}
+    if hasattr(response_data, "dict"):
+        payload = response_data.dict()
+        return payload if isinstance(payload, dict) else {}
+    return {}
+
+
+def _coerce_optional_float(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_response_cost(response_data: Any, payload: dict[str, Any]) -> tuple[float | None, str]:
+    hidden_params = getattr(response_data, "_hidden_params", None)
+    if not isinstance(hidden_params, dict):
+        hidden_params = payload.get("_hidden_params")
+    if not isinstance(hidden_params, dict):
+        hidden_params = {}
+
+    response_cost = _coerce_optional_float(hidden_params.get("response_cost"))
+    if response_cost is not None:
+        return response_cost, "litellm_hidden_params"
+
+    usage = payload.get("usage")
+    if isinstance(usage, dict):
+        usage_cost = _coerce_optional_float(usage.get("cost"))
+        if usage_cost is not None:
+            return usage_cost, "response_usage"
+
+    header_sources = [
+        getattr(response_data, "_response_headers", None),
+        hidden_params.get("additional_headers"),
+    ]
+    for headers in header_sources:
+        if not isinstance(headers, dict):
+            continue
+        normalized_headers = {str(key).lower(): value for key, value in headers.items()}
+        for key in (
+            "x-litellm-response-cost",
+            "llm_provider-x-litellm-response-cost",
+        ):
+            header_cost = _coerce_optional_float(normalized_headers.get(key))
+            if header_cost is not None:
+                return header_cost, "litellm_response_header"
+
+    try:
+        from litellm import completion_cost
+
+        calculated_cost = _coerce_optional_float(completion_cost(completion_response=response_data))
+    except Exception:
+        calculated_cost = None
+    if calculated_cost is not None:
+        return calculated_cost, "litellm_completion_cost"
+
+    return None, ""
+
+
+def _extract_chat_completion_result(response_data: Any, requested_model: str = "") -> ChatCompletionResult:
+    payload = _response_payload(response_data)
+    usage = payload.get("usage")
+    if not isinstance(usage, dict):
+        usage = {}
+    cost, cost_source = _extract_response_cost(response_data, payload)
+    return ChatCompletionResult(
+        content=_extract_choice_content(response_data),
+        model=str(payload.get("model") or requested_model or ""),
+        usage=usage,
+        cost=cost,
+        cost_source=cost_source,
+        response_id=str(payload.get("id") or ""),
+    )
+
+
+def chat_completion_with_metadata(
     messages: list[dict[str, Any]],
     model_name: str | None = None,
     llm_settings: Any | None = None,
     max_tokens: int = 2000,
     temperature: float = 0.2,
-) -> str:
-    """Runs a LiteLLM chat completion using Pandrator's configured providers."""
+) -> ChatCompletionResult:
+    """Runs a LiteLLM chat completion and preserves usage/cost metadata."""
     completion, _ = _get_litellm_clients()
     if completion is None:
         logging.error("LiteLLM is not installed. Please install the 'litellm' package.")
-        return ""
+        return ChatCompletionResult()
 
     try:
         resolved_model, request_overrides = _resolve_model_request(model_name, llm_settings)
     except ValueError as e:
         logging.error("Could not resolve LLM model '%s': %s", model_name, e)
-        return ""
+        return ChatCompletionResult()
 
     timeout_setting = _read_setting(llm_settings, "request_timeout_seconds", 180)
     try:
@@ -916,13 +1017,31 @@ def chat_completion(
     logging.info("LiteLLM chat request model=%s", resolved_model)
     try:
         response = completion(**request_payload)
-        content = _extract_choice_content(response)
-        if not content:
+        result = _extract_chat_completion_result(response, requested_model=resolved_model)
+        if not result.content:
             logging.warning("LiteLLM returned an empty chat response body.")
-        return content
+        return result
     except Exception as e:
         logging.error("LiteLLM chat request failed: %s", e)
-        return ""
+        return ChatCompletionResult(model=resolved_model)
+
+
+def chat_completion(
+    messages: list[dict[str, Any]],
+    model_name: str | None = None,
+    llm_settings: Any | None = None,
+    max_tokens: int = 2000,
+    temperature: float = 0.2,
+) -> str:
+    """Runs a LiteLLM chat completion using Pandrator's configured providers."""
+    result = chat_completion_with_metadata(
+        messages=messages,
+        model_name=model_name,
+        llm_settings=llm_settings,
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
+    return result.content
 
 
 def load_model(model_name: str, llm_settings: Any | None = None) -> bool:

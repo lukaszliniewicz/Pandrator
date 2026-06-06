@@ -1879,6 +1879,7 @@ class AppLogic(QObject):
         )
 
         cleaning_result.report["agent"] = agent_result.to_dict()
+        cleaning_result.report["llm_usage"] = agent_result.llm_usage
         cleaning_result.report["validation"] = validation.to_dict()
         cleaning_result.report["artifacts_dir"] = output_dir
         source_cleaning.write_cleaning_artifacts(
@@ -1902,6 +1903,7 @@ class AppLogic(QObject):
             "warnings": agent_result.warnings + validation.warnings + cleaning_result.warnings,
             "artifacts_dir": output_dir,
             "agent": agent_result.to_dict(),
+            "llm_usage": agent_result.llm_usage,
         }
 
     def apply_reviewed_text(self, reviewed_text: str, mark_pdf_preprocessed: bool = False) -> bool:

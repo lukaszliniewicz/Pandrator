@@ -22,7 +22,10 @@ Core rules:
 - Treat EPUB classes/ids as hints, not truth; many are non-semantic.
 - Use previews and markup inspection before deleting substantial text.
 - Prefer selector-based cleanup over long block_id lists when a whole TOC/nav/license/notes section shares href, class, id, tag, role, or text pattern.
-- Mark real chapter/part/opening section headings with [[Chapter]] via mark_chapter operations.
+- Selectors may combine href/tag/class/id/role/text_regex and exclude_hrefs/exclude_tags/exclude_classes/exclude_roles.
+- Before finishing a book-length source, inspect chapter structure and verify chapter-marker completeness against navigation titles and likely heading candidates.
+- Do not mark only the first/last examples of a repeated chapter pattern. Preview the full selector and use mark_chapters_by_selector when it safely covers the complete narrative heading set.
+- Mark real chapter/part/opening section headings with [[Chapter]] via mark_chapter or mark_chapters_by_selector operations.
 - Remove non-audiobook material: TOC-as-list, copyright boilerplate, ads, image alt text, captions, running headers/footers, page numbers, and optional notes.
 - Preserve narrative prose unless there is strong evidence it should not be read aloud.
 - {footnote_policy}
@@ -41,6 +44,7 @@ Inspection command schema:
 {{"action":"preview_selector","arguments":{{"selector":{{"href":"toc.xhtml"}},"max_blocks":30,"include_raw_markup":true}}}}
 {{"action":"list_repeated_lines","arguments":{{"min_repeats":3}}}}
 {{"action":"find_heading_candidates","arguments":{{"max_candidates":80}}}}
+{{"action":"analyze_chapter_structure","arguments":{{"max_candidates":80}}}}
 {{"action":"find_footnote_candidates","arguments":{{"max_candidates":80}}}}
 {{"action":"find_metadata_candidates","arguments":{{}}}}
 
@@ -56,13 +60,17 @@ Final command schema:
     {{"op":"delete_by_selector","selector":{{"href":"toc.xhtml"}},"reason":"EPUB navigation/TOC document, confirmed by preview_selector"}},
     {{"op":"delete_by_selector","selector":{{"class":"footnote"}},"reason":"footnote class, confirmed by preview_selector"}},
     {{"op":"mark_chapter","block_id":"...","title":"Chapter title"}},
+    {{"op":"mark_chapters_by_selector","selector":{{"role":"heading","text_regex":"^CHAPTER\\\\s+[IVXLCDM]+\\\\."}},"reason":"complete narrative chapter pattern, confirmed by preview_selector"}},
     {{"op":"replace_range","start_line":10,"end_line":10,"replacement":"small OCR fix","reason":"small OCR fix"}}
   ]
 }}
 """.strip()
 
 
-def build_initial_user_prompt(document: SourceDocument) -> str:
+def build_initial_user_prompt(
+    document: SourceDocument,
+    chapter_structure: dict | None = None,
+) -> str:
     first_blocks = [
         {
             "block_id": block.block_id,
@@ -96,13 +104,15 @@ def build_initial_user_prompt(document: SourceDocument) -> str:
         "block_count": len(document.blocks),
         "metadata_candidates": document.metadata_candidates,
         "nav_titles_preview": document.nav_titles[:40],
+        "chapter_structure": chapter_structure or {},
         "warnings": document.warnings,
         "first_blocks": first_blocks,
         "last_blocks": last_blocks,
     }
     return (
         "Inspect this source and prepare it for audiobook/TTS cleanup. "
-        "Start by gathering enough evidence with tools. "
+        "Start by gathering enough evidence with tools. The chapter-structure summary is an initial "
+        "deterministic hint; preview selectors before using them. "
         "When ready, call finish with targeted operations.\n\n"
         + json.dumps(summary, ensure_ascii=False, indent=2)
     )

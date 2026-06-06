@@ -16,6 +16,10 @@ SUPPORTED_SELECTOR_KEYS = {
     "element_id_regex",
     "role",
     "roles",
+    "exclude_hrefs",
+    "exclude_tags",
+    "exclude_classes",
+    "exclude_roles",
     "text_regex",
     "start_line",
     "end_line",
@@ -78,6 +82,22 @@ def block_matches_selector(block: SourceBlock, selector: dict[str, Any]) -> bool
         if not required_roles.issubset(set(block.role_candidates)):
             return False
 
+    excluded_hrefs = {str(item) for item in _coerce_list(selector.get("exclude_hrefs"))}
+    if excluded_hrefs and str(block.href or "") in excluded_hrefs:
+        return False
+
+    excluded_tags = {str(item).lower() for item in _coerce_list(selector.get("exclude_tags"))}
+    if excluded_tags and str(block.tag or "").lower() in excluded_tags:
+        return False
+
+    excluded_classes = {str(item) for item in _coerce_list(selector.get("exclude_classes"))}
+    if excluded_classes.intersection(block.classes):
+        return False
+
+    excluded_roles = {str(item) for item in _coerce_list(selector.get("exclude_roles"))}
+    if excluded_roles.intersection(block.role_candidates):
+        return False
+
     text_regex = selector.get("text_regex")
     if text_regex and not _safe_search(str(text_regex), block.text):
         return False
@@ -102,6 +122,8 @@ def selector_summary(selector: dict[str, Any]) -> dict[str, Any]:
 
 
 def _coerce_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
     if isinstance(value, list):
         return value
     if isinstance(value, tuple):

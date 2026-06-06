@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from .models import CleaningResult, SourceDocument
+from .tools import SourceCleaningTools
 
 
 @dataclass
@@ -28,6 +29,9 @@ def validate_cleaning_result(
     deleted_blocks = len(result.deleted_block_ids)
     chapter_count = result.report.get("chapter_count", 0)
     nav_title_count = len(document.nav_titles)
+    chapter_structure = SourceCleaningTools(document).analyze_chapter_structure(max_candidates=1)
+    likely_chapter_count = int(chapter_structure.get("likely_chapter_count") or 0)
+    numbered_heading_count = int(chapter_structure.get("numbered_heading_count") or 0)
     deletion_ratio = (deleted_blocks / original_blocks) if original_blocks else 0.0
 
     report.stats.update(
@@ -38,6 +42,8 @@ def validate_cleaning_result(
             "deletion_ratio": round(deletion_ratio, 4),
             "chapter_count": chapter_count,
             "nav_title_count": nav_title_count,
+            "likely_chapter_count": likely_chapter_count,
+            "numbered_heading_count": numbered_heading_count,
             "applied_operation_count": len(result.applied_operations),
             "skipped_operation_count": len(result.skipped_operations),
         }
@@ -63,6 +69,14 @@ def validate_cleaning_result(
     if nav_title_count >= 4 and chapter_count < min(3, nav_title_count):
         report.warnings.append(
             f"Only {chapter_count} chapter marker(s) were added despite {nav_title_count} EPUB navigation title(s)."
+        )
+
+    expected_chapter_count = max(likely_chapter_count, numbered_heading_count)
+    completeness_floor = max(2, int(expected_chapter_count * 0.6))
+    if expected_chapter_count >= 4 and chapter_count < completeness_floor:
+        report.warnings.append(
+            f"Only {chapter_count} chapter marker(s) were added despite "
+            f"{expected_chapter_count} likely narrative heading(s)."
         )
 
     if _contains_toc_like_section(result.cleaned_text):
