@@ -1008,7 +1008,6 @@ def chat_completion_with_metadata(
     request_payload: dict[str, Any] = {
         "model": resolved_model,
         "messages": messages,
-        "max_tokens": max(256, int(max_tokens)),
         "temperature": float(temperature),
         "timeout": request_timeout,
     }
@@ -1088,7 +1087,6 @@ def _make_api_request(
     request_payload: dict[str, Any] = {
         "model": resolved_model,
         "messages": [{"role": "user", "content": f"{user_prompt}{sanitized_text}"}],
-        "max_tokens": 1500,
         "temperature": 0.4,
         "timeout": request_timeout,
     }
