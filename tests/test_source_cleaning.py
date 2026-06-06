@@ -1157,12 +1157,12 @@ class SourceCleaningTests(unittest.TestCase):
 
         with patch.object(session_handler, "OUTPUTS_DIR", outputs_dir):
             with patch(
-                "pandrator.app_logic.source_cleaning.run_source_cleaning_agent",
+                "pandrator.logic.source_cleaning.pipeline.run_source_cleaning_agent",
                 return_value=fake_agent_result,
             ) as run_agent:
                 result = AppLogic.run_source_cleaning(harness, model_name="default")
 
-        run_agent.assert_called_once()
+        self.assertEqual(run_agent.call_count, 5)
         self.assertTrue(result["success"])
         self.assertIn("[[Chapter]]Chapter One", result["cleaned_text"])
         self.assertNotIn("Copyright", result["cleaned_text"])
@@ -1183,10 +1183,10 @@ class SourceCleaningTests(unittest.TestCase):
         with open(os.path.join(artifacts_dir, "cleaning_report.json"), "r", encoding="utf-8") as file_handle:
             report = json.load(file_handle)
 
-        self.assertIn("agent", report)
+        self.assertIn("pipeline", report)
         self.assertIn("llm_usage", report)
         self.assertIn("validation", report)
-        self.assertEqual(report["agent"]["summary"], "Fixture cleaning plan.")
+        self.assertEqual(len(report["pipeline"]["phases"]), 5)
         self.assertEqual(report["chapter_count"], 1)
 
     def test_source_cleaning_dialog_accepts_and_returns_user_edited_cleaned_text(self):

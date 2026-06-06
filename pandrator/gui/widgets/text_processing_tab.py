@@ -31,14 +31,25 @@ class TextProcessingTab(QWidget):
         main_layout.addWidget(self._create_group_label("LLM Processing"))
         main_layout.addWidget(self._create_llm_processing_frame())
 
-        main_layout.addWidget(self._create_group_label("First Prompt"))
-        main_layout.addWidget(self._create_prompt_frame("first_prompt"))
+        self.combined_label = self._create_group_label("LLM Prompt")
+        self.combined_frame = self._create_prompt_frame("combined_prompt")
+        main_layout.addWidget(self.combined_label)
+        main_layout.addWidget(self.combined_frame)
 
-        main_layout.addWidget(self._create_group_label("Second Prompt"))
-        main_layout.addWidget(self._create_prompt_frame("second_prompt"))
+        self.first_label = self._create_group_label("Stage 1 Prompt")
+        self.first_frame = self._create_prompt_frame("first_prompt")
+        main_layout.addWidget(self.first_label)
+        main_layout.addWidget(self.first_frame)
 
-        main_layout.addWidget(self._create_group_label("Third Prompt"))
-        main_layout.addWidget(self._create_prompt_frame("third_prompt"))
+        self.second_label = self._create_group_label("Stage 2 Prompt")
+        self.second_frame = self._create_prompt_frame("second_prompt")
+        main_layout.addWidget(self.second_label)
+        main_layout.addWidget(self.second_frame)
+
+        self.third_label = self._create_group_label("Stage 3 Prompt")
+        self.third_frame = self._create_prompt_frame("third_prompt")
+        main_layout.addWidget(self.third_label)
+        main_layout.addWidget(self.third_frame)
 
         self._connect_signals()
         self.update_ui_from_state()
@@ -82,6 +93,7 @@ class TextProcessingTab(QWidget):
 
         self.enable_llm_checkbox = QCheckBox("Enable LLM Processing")
         self.load_models_button = QPushButton("Refresh Built-in Models")
+        self.use_multi_stage_checkbox = QCheckBox("Divide into Multiple Stages")
 
         self.default_llm_model_combo = QComboBox()
         self.default_llm_model_combo.setEditable(True)
@@ -100,12 +112,13 @@ class TextProcessingTab(QWidget):
 
         layout.addWidget(self.enable_llm_checkbox, 0, 0)
         layout.addWidget(self.load_models_button, 0, 1, 1, 2)
+        layout.addWidget(self.use_multi_stage_checkbox, 1, 0, 1, 3)
 
-        layout.addWidget(QLabel("Default LiteLLM Model:"), 1, 0)
-        layout.addWidget(self.default_llm_model_combo, 1, 1, 1, 2)
+        layout.addWidget(QLabel("Default LiteLLM Model:"), 2, 0)
+        layout.addWidget(self.default_llm_model_combo, 2, 1, 1, 2)
 
-        layout.addWidget(self.providers_hint, 2, 0, 1, 3)
-        layout.addWidget(self.llm_feedback_label, 3, 0, 1, 3)
+        layout.addWidget(self.providers_hint, 3, 0, 1, 3)
+        layout.addWidget(self.llm_feedback_label, 4, 0, 1, 3)
 
         return frame
 
@@ -186,9 +199,10 @@ class TextProcessingTab(QWidget):
         )
         self.load_models_button.clicked.connect(self._on_load_llm_models)
         self.default_llm_model_combo.currentTextChanged.connect(self._on_default_model_changed)
+        self.use_multi_stage_checkbox.stateChanged.connect(self._on_use_multi_stage_changed)
 
         # Prompts
-        for key in ["first_prompt", "second_prompt", "third_prompt"]:
+        for key in ["combined_prompt", "first_prompt", "second_prompt", "third_prompt"]:
             getattr(self, f"{key}_edit").textChanged.connect(
                 lambda key=key: self._on_prompt_changed(key)
             )
@@ -205,6 +219,21 @@ class TextProcessingTab(QWidget):
     def _set_feedback(self, message: str, is_error: bool = False):
         self.llm_feedback_label.setText(message)
         self.llm_feedback_label.setStyleSheet("")
+
+    def _update_prompt_visibility(self):
+        use_multi = self.logic.state.llm.use_multi_stage
+        self.combined_label.setVisible(not use_multi)
+        self.combined_frame.setVisible(not use_multi)
+        self.first_label.setVisible(use_multi)
+        self.first_frame.setVisible(use_multi)
+        self.second_label.setVisible(use_multi)
+        self.second_frame.setVisible(use_multi)
+        self.third_label.setVisible(use_multi)
+        self.third_frame.setVisible(use_multi)
+
+    def _on_use_multi_stage_changed(self):
+        self.logic.state.llm.use_multi_stage = self.use_multi_stage_checkbox.isChecked()
+        self._update_prompt_visibility()
 
     def _update_model_dropdowns(self):
         models = self.logic.list_llm_models()
@@ -224,7 +253,7 @@ class TextProcessingTab(QWidget):
         self.default_llm_model_combo.setCurrentText(configured_default)
         self.default_llm_model_combo.blockSignals(False)
 
-        for key in ["first_prompt", "second_prompt", "third_prompt"]:
+        for key in ["combined_prompt", "first_prompt", "second_prompt", "third_prompt"]:
             combo = getattr(self, f"{key}_model_combo")
             target_model = getattr(llm_state, key).model or "default"
             combo.blockSignals(True)
@@ -270,10 +299,16 @@ class TextProcessingTab(QWidget):
         # LLM Settings
         llm_state = self.logic.state.llm
         self.enable_llm_checkbox.setChecked(llm_state.processing_enabled)
+
+        self.use_multi_stage_checkbox.blockSignals(True)
+        self.use_multi_stage_checkbox.setChecked(llm_state.use_multi_stage)
+        self.use_multi_stage_checkbox.blockSignals(False)
+
+        self._update_prompt_visibility()
         self._update_model_dropdowns()
 
         # Prompts
-        for key in ["first_prompt", "second_prompt", "third_prompt"]:
+        for key in ["combined_prompt", "first_prompt", "second_prompt", "third_prompt"]:
             prompt_state = getattr(llm_state, key)
             prompt_edit = getattr(self, f"{key}_edit")
             if prompt_edit.toPlainText() != prompt_state.prompt_text:

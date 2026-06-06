@@ -1408,6 +1408,16 @@ class AppLogic(QObject):
             settings_handler.build_global_settings_payload(self.state),
         )
         self._apply_saved_state(restored_state, saved_state_payload)
+        if isinstance(saved_state_payload, dict):
+            llm_payload = saved_state_payload.get("llm")
+            if isinstance(llm_payload, dict):
+                has_enabled_legacy = False
+                for p_key in ("second_prompt", "third_prompt"):
+                    p_dict = llm_payload.get(p_key)
+                    if isinstance(p_dict, dict) and p_dict.get("enabled", False):
+                        has_enabled_legacy = True
+                if has_enabled_legacy:
+                    restored_state.llm.use_multi_stage = True
         llm_handler.normalize_llm_settings(restored_state.llm)
         self._normalize_tts_service_state(restored_state.tts)
         self.normalize_dubbing_translation_state(restored_state.dubbing)
@@ -4845,23 +4855,90 @@ class AppLogic(QObject):
         self.state_changed.emit()
         return status_lines
 
-    def save_llm_custom_provider(
+    # --- TTS Providers ---
+    def list_tts_provider_configs(self) -> list[dict]:
+        """Returns normalized provider configuration for cloud TTS UI."""
+        provider_configs = tts_handler.get_provider_configs(self.state.tts)
+        if provider_configs != self.state.tts.provider_configs:
+            self.state.tts.provider_configs = provider_configs
+        return copy.deepcopy(provider_configs)
+
+    def should_show_xtts_advanced_settings(self) -> bool:
+        """Returns whether XTTS advanced controls should be visible in the UI."""
+        return tts_handler.should_show_xtts_advanced_settings(self.state.tts.__dict__)
+
+    # --- LLM ---
+    def list_llm_models(self) -> list[str]:
+        """Returns a list of available LLM models."""
+        return llm_handler.list_models(self.state.llm)
+
+    def list_llm_provider_configs(self) -> list[dict]:
+        """Returns normalized provider configuration for LLM settings UI."""
+        provider_configs = llm_handler.get_provider_configs(self.state.llm)
+        if provider_configs != self.state.llm.provider_configs:
+            self.state.llm.provider_configs = provider_configs
+        return copy.deepcopy(provider_configs)
+
+    def save_llm_provider(
         self,
+        provider_id: str,
         provider_name: str,
+        provider_key: str,
         api_base: str,
         api_key: str,
         models: list[str] | str | None,
-        provider_key: str = "openai",
     ) -> tuple[bool, str, str]:
-        """Backward-compatible wrapper for custom LLM provider creation."""
-        return self.save_llm_provider(
-            provider_id="",
+        """Creates or updates an LLM provider."""
+        current_configs = llm_handler.get_provider_configs(self.state.llm)
+        normalized_provider_id = str(provider_id or "").strip()
+        existing_provider = next(
+            (
+                provider
+                for provider in current_configs
+                if str(provider.get("id") or "") == normalized_provider_id
+            ),
+            None,
+        )
+
+        if existing_provider is not None:
+            success, provider_configs, message = llm_handler.update_provider(
+                self.state.llm,
+                provider_id=normalized_provider_id,
+                provider_name=provider_name,
+                provider_key=provider_key,
+                api_base=api_base,
+                api_key=api_key,
+                models=models,
+            )
+            if success:
+                self.state.llm.provider_configs = provider_configs
+                self.normalize_dubbing_translation_state(self.state.dubbing)
+                self.state_changed.emit()
+                return True, normalized_provider_id, ""
+            return False, "", message
+
+        success, provider_configs, resolved_provider_id, message = llm_handler.save_custom_provider(
+            self.state.llm,
             provider_name=provider_name,
             provider_key=provider_key,
             api_base=api_base,
             api_key=api_key,
             models=models,
         )
+        if success:
+            self.state.llm.provider_configs = provider_configs
+            self.normalize_dubbing_translation_state(self.state.dubbing)
+            self.state_changed.emit()
+            return True, resolved_provider_id, ""
+        return False, "", message
+
+    def refresh_llm_builtin_models(self) -> list[str]:
+        """Uses LiteLLM to refresh model catalogs for built-in providers."""
+        provider_configs, status_lines = llm_handler.refresh_builtin_provider_models(self.state.llm)
+        self.state.llm.provider_configs = provider_configs
+        self.normalize_dubbing_translation_state(self.state.dubbing)
+        self.state_changed.emit()
+        return status_lines
 
     def remove_llm_provider(self, provider_name_or_id: str) -> tuple[bool, str]:
         """Removes a custom LLM provider."""
@@ -4877,7 +4954,7 @@ class AppLogic(QObject):
                 if str(self.state.llm.default_model or "").startswith(removed_prefix):
                     self.state.llm.default_model = llm_handler.DEFAULT_LITELLM_MODEL
 
-                for prompt_key in ("first_prompt", "second_prompt", "third_prompt"):
+                for prompt_key in ("combined_prompt", "first_prompt", "second_prompt", "third_prompt"):
                     prompt_state = getattr(self.state.llm, prompt_key)
                     if str(prompt_state.model or "").startswith(removed_prefix):
                         prompt_state.model = "default"
@@ -5809,11 +5886,16 @@ class AppLogic(QObject):
         """Runs the configured LLM prompt chain on a text and returns (text, prompt_count)."""
         processed_text = text
         prompts_ran = 0
-        prompts_to_run = [
-            self.state.llm.first_prompt,
-            self.state.llm.second_prompt,
-            self.state.llm.third_prompt,
-        ]
+        if self.state.llm.use_multi_stage:
+            prompts_to_run = [
+                self.state.llm.first_prompt,
+                self.state.llm.second_prompt,
+                self.state.llm.third_prompt,
+            ]
+        else:
+            prompts_to_run = [
+                self.state.llm.combined_prompt,
+            ]
 
         for prompt_settings in prompts_to_run:
             if not (prompt_settings.enabled and prompt_settings.prompt_text):

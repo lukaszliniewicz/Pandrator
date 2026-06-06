@@ -231,6 +231,11 @@ class LLMSettings:
     default_model: str = "openai/gpt-5.4-mini"
     provider_configs: List[Dict[str, Any]] = field(default_factory=default_llm_provider_configs)
     request_timeout_seconds: int = 180
+    use_multi_stage: bool = False
+    combined_prompt: PromptSettings = field(default_factory=lambda: PromptSettings(
+        prompt_text="Your task is to preprocess and clean the sentence(s) you are given to optimize them for text-to-speech (TTS) synthesis.\n\nPlease perform the following adjustments:\n1. Spell out abbreviations and titles (e.g., Prof. to Professor, Dr. to Doctor, et. al. to et alia, etc. to et cetera).\n2. Convert Roman numerals to English words (e.g., Section III to Section Three, Chapter V to Chapter Five).\n3. Correct any punctuation errors, misspelled words, or OCR artifacts (e.g., remove out-of-place page numbers).\n4. Spell difficult foreign, non-English words phonetically so that an English TTS voice can pronounce them naturally.\n\nDon't change anything else and output ONLY the complete processed text. Include ABSOLUTELY NO comments, NO acknowledgments, NO explanations, and NO notes.\n\nThis is your text: ",
+        enabled=True
+    ))
     first_prompt: PromptSettings = field(default_factory=lambda: PromptSettings(
         prompt_text="Your task is to spell out abbreviations and titles and convert Roman numerals to English words in the sentence(s) you are given. For example: Prof. to Professor, Dr. to Doctor, et. al. to et alia, etc. to et cetera, Section III to Section Three, Chapter V to Chapter Five and so on. Don't change ANYTHING ELSE and output ONLY the complete processed text. If no adjustments are necessary, just output the sentence(s) without changing or appending ANYTHING. Include ABSOLUTELY NO comments, NO acknowledgments, NO explanations, NO notes and so on. This is your text: ",
         enabled=True

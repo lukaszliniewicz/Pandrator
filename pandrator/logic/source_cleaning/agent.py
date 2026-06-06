@@ -860,6 +860,64 @@ def _review_finish_command(
     return review
 
 
+def _review_boilerplate_finish(
+    document: SourceDocument,
+    operations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Lightweight finish review for the boilerplate phase.
+
+    Applies proposed operations speculatively, then checks whether the
+    remaining blocks still contain boilerplate candidate groups.  Deliberately
+    generic — does not match on any specific publisher or project name.
+    """
+    cleaning_result = apply_cleaning_operations(document, operations)
+    deleted_ids = set(cleaning_result.deleted_block_ids)
+    retained_ids = [
+        block.block_id
+        for block in document.blocks
+        if block.block_id not in deleted_ids
+    ]
+    tools = SourceCleaningTools(document)
+    remaining_cleanup = tools.analyze_cleanup_structure(
+        max_candidates=8,
+        scope={"block_ids": retained_ids},
+    )
+
+    blocking_warnings: list[str] = []
+    candidate_groups = remaining_cleanup.get("candidate_groups") or []
+    remaining_boilerplate = int(remaining_cleanup.get("likely_boilerplate_block_count") or 0)
+    remaining_copyright = int(remaining_cleanup.get("copyright_block_count") or 0)
+
+    if candidate_groups:
+        blocking_warnings.append(
+            f"{len(candidate_groups)} boilerplate/copyright candidate group(s) remain unreviewed. "
+            "Inspect the candidate groups and delete any confirmed boilerplate. "
+            "Check both the beginning and the end of the document."
+        )
+    elif remaining_boilerplate >= 3:
+        blocking_warnings.append(
+            f"~{remaining_boilerplate} likely boilerplate block(s) remain. "
+            "Check the beginning of the document for a front-matter preamble."
+        )
+    elif remaining_copyright >= 5:
+        blocking_warnings.append(
+            f"{remaining_copyright} copyright-tagged block(s) remain. "
+            "Verify they are narrative epigraphs rather than publisher boilerplate."
+        )
+
+    return {
+        "accepted": not blocking_warnings,
+        "blocking_warnings": blocking_warnings,
+        "remaining_cleanup": {
+            "likely_boilerplate_block_count": remaining_boilerplate,
+            "copyright_block_count": remaining_copyright,
+            "candidate_groups": candidate_groups[:4],
+        },
+    }
+
+
+
+
 def _optional_float(value: Any) -> float | None:
     if value is None or isinstance(value, bool):
         return None
