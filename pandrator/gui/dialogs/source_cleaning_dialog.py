@@ -1,6 +1,7 @@
 import json
 import logging
 import threading
+from threading import Event
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtGui import QTextCursor
@@ -29,9 +30,9 @@ class SourceCleaningDialog(QDialog):
     status_updated = pyqtSignal(str)
     cleaning_finished = pyqtSignal(object)
 
-    _MIN_MAX_ITERATIONS = 1
-    _MAX_MAX_ITERATIONS = 100
-    _DEFAULT_MAX_ITERATIONS = 30
+    _MIN_MAX_ITERATIONS = 5
+    _MAX_MAX_ITERATIONS = 250
+    _DEFAULT_MAX_ITERATIONS = 53
 
     def _load_max_iterations(self) -> int:
         cleaning_settings = getattr(self.logic.state, "source_cleaning", None)
@@ -66,6 +67,7 @@ class SourceCleaningDialog(QDialog):
         self._result: dict | None = None
         self._running = False
         self._worker_thread: threading.Thread | None = None
+        self._stop_event: Event = Event()
 
         self.setWindowTitle("LLM Source Cleaning Review")
         self.resize(1100, 820)
@@ -96,18 +98,28 @@ class SourceCleaningDialog(QDialog):
         self.remove_footnotes_checkbox = QCheckBox("Remove Footnotes/Endnotes")
         controls.addWidget(self.remove_footnotes_checkbox)
 
-        controls.addWidget(QLabel("Max Iterations:"))
-        self.max_iterations_spinbox = QSpinBox()
-        self.max_iterations_spinbox.setRange(1, 100)
-        self.max_iterations_spinbox.setValue(self._load_max_iterations())
-        self.max_iterations_spinbox.setToolTip(
-            "Maximum number of LLM/tool turns the cleaning agent is allowed to take."
-        )
-        controls.addWidget(self.max_iterations_spinbox)
-
         self.run_button = QPushButton("Run LLM Cleaning")
         controls.addWidget(self.run_button)
+
+        self.stop_button = QPushButton("Stop")
+        self.stop_button.setToolTip("Request the cleaning agent to stop after the current LLM turn.")
+        controls.addWidget(self.stop_button)
         layout.addLayout(controls)
+
+        iterations_row = QHBoxLayout()
+        iterations_row.addWidget(QLabel("Max Turns:"))
+        self.max_iterations_spinbox = QSpinBox()
+        self.max_iterations_spinbox.setRange(self._MIN_MAX_ITERATIONS, self._MAX_MAX_ITERATIONS)
+        self.max_iterations_spinbox.setValue(self._load_max_iterations())
+        self.max_iterations_spinbox.setToolTip(
+            "Total LLM turns across all 5 cleaning phases (metadata, navigation, "
+            "boilerplate, repeated elements, chapter marking). "
+            "The budget is distributed proportionally — the default of 53 gives each phase a "
+            "focused allocation. Increase for complex or long documents."
+        )
+        iterations_row.addWidget(self.max_iterations_spinbox)
+        iterations_row.addStretch(1)
+        layout.addLayout(iterations_row)
 
         status_row = QHBoxLayout()
         self.status_label = QLabel("Choose a model and click Run LLM Cleaning when ready.")
@@ -171,6 +183,7 @@ class SourceCleaningDialog(QDialog):
 
     def _connect_signals(self):
         self.run_button.clicked.connect(self._start_cleaning)
+        self.stop_button.clicked.connect(self._stop_cleaning)
         self.accept_button.clicked.connect(self._accept_cleaned_text)
         self.manual_button.clicked.connect(self._manual_review)
         self.cancel_button.clicked.connect(self._cancel_import)
@@ -198,6 +211,7 @@ class SourceCleaningDialog(QDialog):
     def _set_running(self, running: bool):
         self._running = running
         self.run_button.setEnabled(not running)
+        self.stop_button.setEnabled(running)
         self.model_combo.setEnabled(not running)
         self.remove_footnotes_checkbox.setEnabled(not running)
         self.max_iterations_spinbox.setEnabled(not running)
@@ -234,6 +248,7 @@ class SourceCleaningDialog(QDialog):
             return
 
         self._result = None
+        self._stop_event.clear()
         self.diff_edit.clear()
         self.report_edit.clear()
         self.status_label.setText("Starting source-cleaning loop...")
@@ -242,6 +257,7 @@ class SourceCleaningDialog(QDialog):
         remove_footnotes = self.remove_footnotes_checkbox.isChecked()
         model_name = self.model_combo.currentText().strip() or "default"
         max_iterations = int(self.max_iterations_spinbox.value())
+        stop_event = self._stop_event
 
         def worker():
             try:
@@ -251,6 +267,7 @@ class SourceCleaningDialog(QDialog):
                     model_name=model_name,
                     max_iterations=max_iterations,
                     progress_callback=self.status_updated.emit,
+                    stop_event=stop_event,
                 )
             except Exception as e:
                 result = {
@@ -262,6 +279,12 @@ class SourceCleaningDialog(QDialog):
 
         self._worker_thread = threading.Thread(target=worker, daemon=True)
         self._worker_thread.start()
+
+    def _stop_cleaning(self):
+        if self._running:
+            self._stop_event.set()
+            self.stop_button.setEnabled(False)
+            self.status_label.setText("Stop requested — waiting for the current LLM turn to finish...")
 
     def _on_status_updated(self, message: str):
         self.status_label.setText(str(message or "Working..."))
@@ -349,7 +372,7 @@ class SourceCleaningDialog(QDialog):
             QMessageBox.information(
                 self,
                 "Source Cleaning Running",
-                "Please wait for source cleaning to finish before closing this dialog.",
+                "Please wait for source cleaning to finish (or click Stop) before closing this dialog.",
             )
             return
         self._save_max_iterations()

@@ -1816,6 +1816,7 @@ class AppLogic(QObject):
         model_name: str | None = None,
         max_iterations: int | None = None,
         progress_callback=None,
+        stop_event=None,
     ) -> dict:
         """Runs the source-cleaning agent without mutating session state."""
         if not self.state.raw_text:
@@ -1858,23 +1859,24 @@ class AppLogic(QObject):
         output_dir = os.path.join(session_dir, "_source_cleaning")
         resolved_model = str(model_name or "default").strip() or "default"
 
-        agent_config = source_cleaning.SourceCleaningAgentConfig(
+        pipeline_config = source_cleaning.SourceCleaningPipelineConfig(
             model_name=resolved_model,
             remove_footnotes=remove_footnotes,
-            max_iterations=int(max_iterations) if max_iterations is not None else 30,
+            total_max_iterations=int(max_iterations) if max_iterations is not None else 53,
         )
-        emit_progress("Running source-cleaning LLM loop...")
-        agent_result = source_cleaning.run_source_cleaning_agent(
+        emit_progress("Running source-cleaning pipeline...")
+        pipeline_result = source_cleaning.run_cleaning_pipeline(
             document,
             llm_settings=self.state.llm,
-            config=agent_config,
+            config=pipeline_config,
             progress_callback=emit_progress,
+            stop_event=stop_event,
         )
 
         emit_progress("Applying proposed cleaning operations...")
         cleaning_result = source_cleaning.apply_cleaning_operations(
             document,
-            agent_result.operations,
+            pipeline_result.all_operations,
             default_metadata=self.state.metadata,
         )
         validation = source_cleaning.validate_cleaning_result(
@@ -1883,18 +1885,18 @@ class AppLogic(QObject):
             remove_footnotes=remove_footnotes,
         )
 
-        cleaning_result.report["agent"] = agent_result.to_dict()
-        cleaning_result.report["llm_usage"] = agent_result.llm_usage
+        cleaning_result.report["pipeline"] = pipeline_result.to_dict()
+        cleaning_result.report["llm_usage"] = pipeline_result.llm_usage
         cleaning_result.report["validation"] = validation.to_dict()
         cleaning_result.report["artifacts_dir"] = output_dir
         source_cleaning.write_cleaning_artifacts(
             document,
-            agent_result.operations,
+            pipeline_result.all_operations,
             cleaning_result,
             output_dir,
         )
 
-        emit_progress("Source-cleaning pass finished.")
+        emit_progress("Source-cleaning pipeline finished.")
         return {
             "success": not validation.errors and not validation.blocking_warnings,
             "cleaned_text": cleaning_result.cleaned_text,
@@ -1902,14 +1904,15 @@ class AppLogic(QObject):
             "diff": cleaning_result.diff_text,
             "report": cleaning_result.report,
             "validation": validation.to_dict(),
-            "operations": agent_result.operations,
+            "operations": pipeline_result.all_operations,
             "applied_operations": cleaning_result.applied_operations,
             "skipped_operations": cleaning_result.skipped_operations,
-            "warnings": agent_result.warnings + validation.warnings + cleaning_result.warnings,
+            "warnings": pipeline_result.warnings + validation.warnings + cleaning_result.warnings,
             "artifacts_dir": output_dir,
-            "agent": agent_result.to_dict(),
-            "llm_usage": agent_result.llm_usage,
+            "pipeline": pipeline_result.to_dict(),
+            "llm_usage": pipeline_result.llm_usage,
         }
+
 
     def apply_reviewed_text(self, reviewed_text: str, mark_pdf_preprocessed: bool = False) -> bool:
         """Persists reviewed/edited text and switches the source to the edited file."""

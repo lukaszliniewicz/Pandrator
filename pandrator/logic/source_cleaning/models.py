@@ -132,3 +132,35 @@ class CleaningResult:
     deleted_block_ids: list[str]
     diff_text: str
     report: dict[str, Any]
+
+
+@dataclass
+class PhaseResult:
+    """Outcome of a single pipeline phase."""
+
+    phase_name: str
+    phase_description: str
+    operations: list[dict[str, Any]] = field(default_factory=list)
+    iterations: int = 0
+    warnings: list[str] = field(default_factory=list)
+    llm_usage: dict[str, Any] = field(default_factory=dict)
+    stopped: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class PipelineResult:
+    """Aggregated outcome of the full multi-phase cleaning pipeline."""
+
+    phases: list[PhaseResult] = field(default_factory=list)
+    all_operations: list[dict[str, Any]] = field(default_factory=list)
+    total_iterations: int = 0
+    warnings: list[str] = field(default_factory=list)
+    llm_usage: dict[str, Any] = field(default_factory=dict)
+    stopped: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+

@@ -38,6 +38,7 @@ _INSPECTION_ACTIONS = {
 @dataclass
 class SourceCleaningAgentConfig:
     model_name: str = "default"
+    phase_name: str = "full"
     max_iterations: int = 30
     max_tool_result_chars: int = 12000
     max_evidence_ledger_chars: int = 10000
@@ -48,6 +49,12 @@ class SourceCleaningAgentConfig:
     remove_footnotes: bool = False
     max_finish_reviews: int = 2
     require_verified_finish_for_long_sources: bool = True
+    # Phase-pipeline extensions
+    allowed_op_types: frozenset | None = None  # None = all ops permitted
+    previous_phase_summaries: list = field(default_factory=list)
+    source_overview_components: frozenset = field(
+        default_factory=lambda: frozenset({"structure", "cleanup_hypotheses", "chapter_hypotheses"})
+    )
 
 
 @dataclass
@@ -73,27 +80,39 @@ def run_source_cleaning_agent(
     config: SourceCleaningAgentConfig | None = None,
     completion_func: CompletionFunc | None = None,
     progress_callback: ProgressCallback | None = None,
+    stop_event=None,
 ) -> SourceCleaningAgentResult:
     """Runs a JSON-command LLM loop over deterministic source-cleaning tools."""
     resolved_config = config or SourceCleaningAgentConfig()
     completion = completion_func or llm_handler.chat_completion_with_metadata
     tools = SourceCleaningTools(document)
     result = SourceCleaningAgentResult()
-    source_overview = {
-        "structure": tools.inspect_document_structure(max_documents=10),
-        "cleanup_hypotheses": tools.analyze_cleanup_structure(max_candidates=6),
-        "chapter_hypotheses": tools.analyze_chapter_structure(max_candidates=4),
-    }
+
+    # Build only the source-overview components needed for this phase
+    source_overview: dict[str, Any] = {}
+    components = resolved_config.source_overview_components
+    if "structure" in components:
+        source_overview["structure"] = tools.inspect_document_structure(max_documents=10)
+    if "cleanup_hypotheses" in components:
+        source_overview["cleanup_hypotheses"] = tools.analyze_cleanup_structure(max_candidates=6)
+    if "chapter_hypotheses" in components:
+        source_overview["chapter_hypotheses"] = tools.analyze_chapter_structure(max_candidates=4)
+
     finish_review_attempts = 0
     inspection_actions: set[str] = set()
 
     base_messages: list[dict[str, Any]] = [
-        {"role": "system", "content": build_system_prompt(resolved_config.remove_footnotes)},
+        {"role": "system", "content": build_system_prompt(
+            resolved_config.remove_footnotes,
+            phase_name=resolved_config.phase_name,
+        )},
         {
             "role": "user",
             "content": build_initial_user_prompt(
                 document,
                 source_overview=source_overview,
+                phase_name=resolved_config.phase_name,
+                previous_phase_summaries=list(resolved_config.previous_phase_summaries or []),
             ),
         },
     ]
@@ -101,6 +120,10 @@ def run_source_cleaning_agent(
 
     for iteration in range(1, resolved_config.max_iterations + 1):
         result.iterations = iteration
+        if stop_event is not None and stop_event.is_set():
+            _emit(progress_callback, "Source cleaning stopped by user request.")
+            result.warnings.append("Stopped by user request.")
+            break
         _emit(progress_callback, f"Source cleaning LLM step {iteration}/{resolved_config.max_iterations}...")
         request_messages = _build_completion_messages(
             base_messages,
@@ -150,6 +173,14 @@ def run_source_cleaning_agent(
                 for operation in command.get("operations", [])
                 if isinstance(operation, dict)
             ]
+
+            # Filter to ops allowed for this phase
+            if resolved_config.allowed_op_types is not None:
+                proposed_operations = [
+                    op for op in proposed_operations
+                    if str(op.get("op") or "").strip() in resolved_config.allowed_op_types
+                ]
+
             workflow_gaps: list[str] = []
             if resolved_config.require_verified_finish_for_long_sources and len(document.blocks) >= 40:
                 if not inspection_actions:
@@ -188,45 +219,52 @@ def run_source_cleaning_agent(
                 result.warnings.extend(workflow_gaps)
                 break
 
-            finish_review = _review_finish_command(
-                document,
-                proposed_operations,
-                remove_footnotes=resolved_config.remove_footnotes,
-            )
-            result.finish_reviews.append(finish_review)
-            blocking_warnings = finish_review.get("blocking_warnings") or []
-            if (
-                blocking_warnings
-                and finish_review_attempts < resolved_config.max_finish_reviews
-                and iteration < resolved_config.max_iterations
-            ):
-                finish_review_attempts += 1
-                result.tool_trace.append(
-                    {
-                        "iteration": iteration,
-                        "action": "finish_review",
-                        "arguments": {"proposed_operation_count": len(proposed_operations)},
-                        "observation": finish_review,
-                    }
+            # For chapter_marking and the legacy full pass, run the completeness
+            # review. Deletion-only phases accept the proposal immediately.
+            _run_finish_review = resolved_config.phase_name in {"full", "chapter_marking"}
+
+            if _run_finish_review:
+                finish_review = _review_finish_command(
+                    document,
+                    proposed_operations,
+                    remove_footnotes=resolved_config.remove_footnotes,
                 )
-                feedback = (
-                    "Finish review rejected the proposal because cleanup or chapter marking appears incomplete.\n"
-                    + _json_dumps_truncated(finish_review, resolved_config.max_tool_result_chars)
-                    + "\n\nInspect the remaining cleanup groups and any repeated chapter selector, then submit "
-                    "a corrected finish command. Remove complete confirmed sections, not only their headings."
-                )
-                _append_conversation_turn(
-                    conversation_turns,
-                    response,
-                    feedback,
-                    action="finish_review",
-                    arguments={
-                        "proposed_operation_count": len(proposed_operations),
-                        "proposed_operations": proposed_operations,
-                    },
-                    observation=finish_review,
-                )
-                continue
+                result.finish_reviews.append(finish_review)
+                blocking_warnings = finish_review.get("blocking_warnings") or []
+                if (
+                    blocking_warnings
+                    and finish_review_attempts < resolved_config.max_finish_reviews
+                    and iteration < resolved_config.max_iterations
+                ):
+                    finish_review_attempts += 1
+                    result.tool_trace.append(
+                        {
+                            "iteration": iteration,
+                            "action": "finish_review",
+                            "arguments": {"proposed_operation_count": len(proposed_operations)},
+                            "observation": finish_review,
+                        }
+                    )
+                    feedback = (
+                        "Finish review rejected the proposal because cleanup or chapter marking appears incomplete.\n"
+                        + _json_dumps_truncated(finish_review, resolved_config.max_tool_result_chars)
+                        + "\n\nInspect the remaining cleanup groups and any repeated chapter selector, then submit "
+                        "a corrected finish command. Remove complete confirmed sections, not only their headings."
+                    )
+                    _append_conversation_turn(
+                        conversation_turns,
+                        response,
+                        feedback,
+                        action="finish_review",
+                        arguments={
+                            "proposed_operation_count": len(proposed_operations),
+                            "proposed_operations": proposed_operations,
+                        },
+                        observation=finish_review,
+                    )
+                    continue
+            else:
+                blocking_warnings = []
 
             result.operations = proposed_operations
             result.summary = str(command.get("summary") or "").strip()
@@ -236,6 +274,7 @@ def run_source_cleaning_agent(
                 result.warnings.extend(str(item) for item in blocking_warnings)
             _emit(progress_callback, "Source cleaning LLM proposed operations.")
             return result
+
 
         if action == "evaluate_operations":
             evaluation_arguments = command.get("arguments")
