@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QFrame,
     QGridLayout,
+    QHBoxLayout,
     QLabel,
     QPushButton,
     QSpinBox,
@@ -50,6 +51,8 @@ class TextProcessingTab(QWidget):
         self.third_frame = self._create_prompt_frame("third_prompt")
         main_layout.addWidget(self.third_label)
         main_layout.addWidget(self.third_frame)
+
+        main_layout.addStretch(1)
 
         self._connect_signals()
         self.update_ui_from_state()
@@ -125,21 +128,38 @@ class TextProcessingTab(QWidget):
     def _create_prompt_frame(self, prompt_key):
         frame = QFrame()
         frame.setObjectName("groupFrame")
-        layout = QGridLayout(frame)
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
 
         prompt_edit = QTextEdit()
-        prompt_edit.setFixedHeight(100)
+        prompt_edit.setMinimumHeight(120)
+        prompt_edit.setPlaceholderText("Enter LLM prompt text here...")
+
+        options_widget = QWidget()
+        options_layout = QHBoxLayout(options_widget)
+        options_layout.setContentsMargins(0, 0, 0, 0)
+        options_layout.setSpacing(16)
+
         enable_checkbox = QCheckBox("Enable Prompt")
         evaluate_checkbox = QCheckBox("Enable Evaluation")
+        options_layout.addWidget(enable_checkbox)
+        options_layout.addWidget(evaluate_checkbox)
+
+        options_layout.addStretch(1)
+
+        model_label = QLabel("Model:")
         model_combo = QComboBox()
         model_combo.addItem("default")
         model_combo.setEditable(True)
+        model_combo.setMinimumWidth(180)
+        model_combo.setMaximumWidth(250)
 
-        layout.addWidget(prompt_edit, 0, 0, 1, 2)
-        layout.addWidget(enable_checkbox, 1, 0)
-        layout.addWidget(evaluate_checkbox, 1, 1)
-        layout.addWidget(QLabel("Model:"), 2, 0)
-        layout.addWidget(model_combo, 2, 1)
+        options_layout.addWidget(model_label)
+        options_layout.addWidget(model_combo)
+
+        layout.addWidget(prompt_edit, 1)
+        layout.addWidget(options_widget)
 
         setattr(self, f"{prompt_key}_edit", prompt_edit)
         setattr(self, f"{prompt_key}_enable_checkbox", enable_checkbox)
