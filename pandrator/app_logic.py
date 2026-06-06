@@ -783,6 +783,40 @@ class AppLogic(QObject):
 
         return False
 
+    def has_any_generation_progress(self) -> bool:
+        """Returns True if there is at least one sentence with generated audio."""
+        with self._state_lock:
+            return any(s.get("tts_generated") == "yes" for s in self.state.processed_sentences)
+
+    def _have_preprocessing_settings_changed(self) -> bool:
+        """Checks if current preprocessing settings differ from the ones stored in metadata."""
+        current_settings = {
+            "pdf_preprocessed": self.state.pdf_preprocessed,
+            "source_file": self.state.source_file_path,
+            "disable_paragraph_detection": self.state.text_processing.disable_paragraph_detection,
+            "language": self.state.tts.language,
+            "max_sentence_length": self.state.text_processing.max_sentence_length,
+            "enable_sentence_splitting": self.state.text_processing.enable_sentence_splitting,
+            "enable_sentence_appending": self.state.text_processing.enable_sentence_appending,
+            "remove_diacritics": self.state.text_processing.remove_diacritics,
+            "remove_quotation_marks": self.state.text_processing.remove_quotation_marks,
+            "tts_service": self.state.tts.service
+        }
+
+        saved_settings_str = self.state.metadata.get("preprocessing_settings")
+        if not saved_settings_str:
+            return True
+
+        try:
+            saved_settings = json.loads(saved_settings_str)
+            for key, val in current_settings.items():
+                if saved_settings.get(key) != val:
+                    return True
+            return False
+        except Exception:
+            return True
+
+
     def get_processed_sentences_snapshot(self) -> list[dict]:
         """Returns a thread-safe snapshot of processed sentences."""
         with self._state_lock:
@@ -3095,6 +3129,12 @@ class AppLogic(QObject):
                 "success",
             )
             self.log_message.emit("Text preprocessing complete.")
+            self.state.metadata["preprocessing_settings"] = json.dumps(settings, sort_keys=True)
+            if self.state.session_name and self.state.session_name != "Untitled Session":
+                try:
+                    session_handler.save_metadata(self.state.session_name, self.state.metadata)
+                except Exception as e:
+                    logging.warning(f"Could not save preprocessing settings metadata: {e}")
             self.state_changed.emit()
         except Exception as e:
             logging.error(f"Text preprocessing failed: {e}", exc_info=True)
@@ -3136,6 +3176,13 @@ class AppLogic(QObject):
                 return None
 
         self._clear_audio_variants()
+
+        if self._have_preprocessing_settings_changed():
+            self._set_processed_sentences_snapshot([])
+            self.progress_updated.emit(0, 1, 0.0)
+            self.state_changed.emit()
+            return True
+
         reset_sentences: list[dict] = []
         for sentence in processed_sentences:
             reset_sentence = copy.deepcopy(sentence)

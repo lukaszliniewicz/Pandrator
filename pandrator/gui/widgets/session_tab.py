@@ -674,8 +674,16 @@ class SessionTab(QWidget):
         return self.logic.has_resumable_generation_progress()
 
     def _on_start_generation_clicked(self):
-        if self._has_resumable_generation_progress():
-            self.logic.start_generation_anew()
+        if self.logic.has_any_generation_progress():
+            reply = QMessageBox.question(
+                self,
+                "Start Generation Anew",
+                "All generated audio will be permanently removed, and generation will start anew.\n\nDo you want to continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self.logic.start_generation_anew()
             return
 
         self.logic.start_generation()
