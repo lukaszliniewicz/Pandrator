@@ -1,4 +1,5 @@
 import json
+import logging
 import threading
 
 from PyQt6.QtCore import pyqtSignal
@@ -15,6 +16,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
+    QSpinBox,
     QPushButton,
     QTabWidget,
     QTextEdit,
@@ -26,6 +28,35 @@ from PyQt6.QtWidgets import (
 class SourceCleaningDialog(QDialog):
     status_updated = pyqtSignal(str)
     cleaning_finished = pyqtSignal(object)
+
+    _MIN_MAX_ITERATIONS = 1
+    _MAX_MAX_ITERATIONS = 100
+    _DEFAULT_MAX_ITERATIONS = 30
+
+    def _load_max_iterations(self) -> int:
+        cleaning_settings = getattr(self.logic.state, "source_cleaning", None)
+        try:
+            value = int(getattr(cleaning_settings, "max_iterations", self._DEFAULT_MAX_ITERATIONS))
+        except (TypeError, ValueError):
+            value = self._DEFAULT_MAX_ITERATIONS
+        return max(self._MIN_MAX_ITERATIONS, min(value, self._MAX_MAX_ITERATIONS))
+
+    def _save_max_iterations(self) -> None:
+        cleaning_settings = getattr(self.logic.state, "source_cleaning", None)
+        if cleaning_settings is None:
+            return
+        new_value = max(self._MIN_MAX_ITERATIONS, min(int(self.max_iterations_spinbox.value()), self._MAX_MAX_ITERATIONS))
+        if getattr(cleaning_settings, "max_iterations", None) == new_value:
+            return
+        cleaning_settings.max_iterations = new_value
+        persist = getattr(self.logic, "_persist_global_settings", None)
+        if callable(persist):
+            try:
+                persist()
+            except Exception as e:  # noqa: BLE001 - persistence is best-effort on dialog close
+                logging.getLogger(__name__).warning(
+                    "Failed to persist source cleaning max_iterations: %s", e
+                )
 
     def __init__(self, logic, source_path_hint: str = "", parent=None):
         super().__init__(parent)
@@ -64,6 +95,15 @@ class SourceCleaningDialog(QDialog):
 
         self.remove_footnotes_checkbox = QCheckBox("Remove Footnotes/Endnotes")
         controls.addWidget(self.remove_footnotes_checkbox)
+
+        controls.addWidget(QLabel("Max Iterations:"))
+        self.max_iterations_spinbox = QSpinBox()
+        self.max_iterations_spinbox.setRange(1, 100)
+        self.max_iterations_spinbox.setValue(self._load_max_iterations())
+        self.max_iterations_spinbox.setToolTip(
+            "Maximum number of LLM/tool turns the cleaning agent is allowed to take."
+        )
+        controls.addWidget(self.max_iterations_spinbox)
 
         self.run_button = QPushButton("Run LLM Cleaning")
         controls.addWidget(self.run_button)
@@ -160,6 +200,7 @@ class SourceCleaningDialog(QDialog):
         self.run_button.setEnabled(not running)
         self.model_combo.setEnabled(not running)
         self.remove_footnotes_checkbox.setEnabled(not running)
+        self.max_iterations_spinbox.setEnabled(not running)
         self.text_edit.setReadOnly(running)
         self.add_chapter_button.setEnabled(not running)
         self.manual_button.setEnabled(not running)
@@ -200,6 +241,7 @@ class SourceCleaningDialog(QDialog):
 
         remove_footnotes = self.remove_footnotes_checkbox.isChecked()
         model_name = self.model_combo.currentText().strip() or "default"
+        max_iterations = int(self.max_iterations_spinbox.value())
 
         def worker():
             try:
@@ -207,6 +249,7 @@ class SourceCleaningDialog(QDialog):
                     source_path_hint=self.source_path_hint,
                     remove_footnotes=remove_footnotes,
                     model_name=model_name,
+                    max_iterations=max_iterations,
                     progress_callback=self.status_updated.emit,
                 )
             except Exception as e:
@@ -309,6 +352,7 @@ class SourceCleaningDialog(QDialog):
                 "Please wait for source cleaning to finish before closing this dialog.",
             )
             return
+        self._save_max_iterations()
         super().closeEvent(event)
 
     def choice(self) -> str:

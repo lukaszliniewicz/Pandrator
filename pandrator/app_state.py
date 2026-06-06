@@ -261,6 +261,10 @@ class DubbingSettings:
     video_file_path: str = ""
 
 @dataclass
+class SourceCleaningSettings:
+    max_iterations: int = 30
+
+@dataclass
 class AppState:
     session_name: str = "Untitled Session"
     source_file_path: str = ""
@@ -277,3 +281,4 @@ class AppState:
     audio_processing: AudioProcessingSettings = field(default_factory=AudioProcessingSettings)
     llm: LLMSettings = field(default_factory=LLMSettings)
     dubbing: DubbingSettings = field(default_factory=DubbingSettings)
+    source_cleaning: SourceCleaningSettings = field(default_factory=SourceCleaningSettings)

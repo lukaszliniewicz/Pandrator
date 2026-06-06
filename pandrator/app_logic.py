@@ -1814,6 +1814,7 @@ class AppLogic(QObject):
         source_path_hint: str = "",
         remove_footnotes: bool = False,
         model_name: str | None = None,
+        max_iterations: int | None = None,
         progress_callback=None,
     ) -> dict:
         """Runs the source-cleaning agent without mutating session state."""
@@ -1860,6 +1861,7 @@ class AppLogic(QObject):
         agent_config = source_cleaning.SourceCleaningAgentConfig(
             model_name=resolved_model,
             remove_footnotes=remove_footnotes,
+            max_iterations=int(max_iterations) if max_iterations is not None else 30,
         )
         emit_progress("Running source-cleaning LLM loop...")
         agent_result = source_cleaning.run_source_cleaning_agent(

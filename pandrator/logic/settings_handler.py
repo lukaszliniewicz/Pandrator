@@ -13,6 +13,10 @@ GLOBAL_SETTINGS_FILENAME = "pandrator_settings.json"
 GLOBAL_SETTINGS_VERSION = 2
 APP_ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
+SOURCE_CLEANING_MIN_ITERATIONS = 1
+SOURCE_CLEANING_MAX_ITERATIONS = 100
+SOURCE_CLEANING_DEFAULT_ITERATIONS = 30
+
 TTS_GLOBAL_STR_FIELDS = (
     "openai_audio_endpoint",
     "openai_audio_instructions",
@@ -143,6 +147,9 @@ def build_global_settings_payload(state: AppState) -> Dict[str, Any]:
             "request_timeout_seconds": state.llm.request_timeout_seconds,
         },
         "tts": tts_payload,
+        "source_cleaning": {
+            "max_iterations": int(getattr(state.source_cleaning, "max_iterations", SOURCE_CLEANING_DEFAULT_ITERATIONS)),
+        },
     }
 
 
@@ -225,6 +232,17 @@ def apply_global_settings_payload(state: AppState, payload: Dict[str, Any]):
                 setattr(state.tts, field_name, dict(tts_payload[field_name]))
 
         state.tts.provider_configs = tts_handler.get_provider_configs(state.tts)
+
+    source_cleaning_payload = payload.get("source_cleaning")
+    if isinstance(source_cleaning_payload, dict):
+        raw_iterations = source_cleaning_payload.get("max_iterations", SOURCE_CLEANING_DEFAULT_ITERATIONS)
+        try:
+            iterations = int(raw_iterations)
+        except (TypeError, ValueError):
+            iterations = SOURCE_CLEANING_DEFAULT_ITERATIONS
+        iterations = max(SOURCE_CLEANING_MIN_ITERATIONS, min(iterations, SOURCE_CLEANING_MAX_ITERATIONS))
+        if hasattr(state, "source_cleaning"):
+            state.source_cleaning.max_iterations = iterations
 
 
 def save_global_settings(payload: Dict[str, Any]):

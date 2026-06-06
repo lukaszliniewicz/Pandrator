@@ -38,7 +38,7 @@ _INSPECTION_ACTIONS = {
 @dataclass
 class SourceCleaningAgentConfig:
     model_name: str = "default"
-    max_iterations: int = 14
+    max_iterations: int = 30
     max_tool_result_chars: int = 12000
     max_tokens: int = 2200
     temperature: float = 0.2

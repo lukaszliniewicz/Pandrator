@@ -1090,6 +1090,7 @@ class SourceCleaningTests(unittest.TestCase):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         from PyQt6.QtWidgets import QApplication
 
+        from pandrator.app_state import SourceCleaningSettings
         from pandrator.gui.dialogs.source_cleaning_dialog import SourceCleaningDialog
 
         app = QApplication.instance() or QApplication([])
@@ -1097,6 +1098,7 @@ class SourceCleaningTests(unittest.TestCase):
             state=SimpleNamespace(
                 raw_text="Raw source preview",
                 llm=SimpleNamespace(default_model="default"),
+                source_cleaning=SourceCleaningSettings(),
             ),
             list_llm_models=lambda: ["default"],
         )
