@@ -159,6 +159,7 @@ def build_global_settings_payload(state: AppState) -> Dict[str, Any]:
         },
         "text_processing": {
             "remove_footnotes": _coerce_bool(getattr(state.text_processing, "remove_footnotes", False), False),
+            "filter_citations": _coerce_bool(getattr(state.text_processing, "filter_citations", True), True),
         },
     }
 
@@ -284,6 +285,9 @@ def apply_global_settings_payload(state: AppState, payload: Dict[str, Any]):
         if "remove_footnotes" in text_processing_payload:
             if hasattr(state, "text_processing"):
                 state.text_processing.remove_footnotes = _coerce_bool(text_processing_payload["remove_footnotes"], False)
+        if "filter_citations" in text_processing_payload:
+            if hasattr(state, "text_processing"):
+                state.text_processing.filter_citations = _coerce_bool(text_processing_payload["filter_citations"], True)
 
 
 def save_global_settings(payload: Dict[str, Any]):

@@ -801,7 +801,8 @@ class AppLogic(QObject):
             "remove_diacritics": self.state.text_processing.remove_diacritics,
             "remove_quotation_marks": self.state.text_processing.remove_quotation_marks,
             "tts_service": self.state.tts.service,
-            "remove_footnotes": self.state.text_processing.remove_footnotes
+            "remove_footnotes": self.state.text_processing.remove_footnotes,
+            "filter_citations": self.state.text_processing.filter_citations
         }
 
         saved_settings_str = self.state.metadata.get("preprocessing_settings")
@@ -1337,6 +1338,7 @@ class AppLogic(QObject):
                 return file_handler.extract_text_from_epub(
                     source_path,
                     remove_footnotes=self.state.text_processing.remove_footnotes,
+                    filter_citations=self.state.text_processing.filter_citations,
                 )
             if ext == ".pdf":
                 return file_handler.extract_text_from_pdf(source_path)
@@ -1760,6 +1762,7 @@ class AppLogic(QObject):
                 raw_text = file_handler.extract_text_from_epub(
                     session_file_path,
                     remove_footnotes=self.state.text_processing.remove_footnotes,
+                    filter_citations=self.state.text_processing.filter_citations,
                 )
                 converted_txt_path = os.path.join(
                     session_path,
@@ -1869,6 +1872,7 @@ class AppLogic(QObject):
         self,
         source_path_hint: str = "",
         remove_footnotes: bool = False,
+        filter_citations: bool = True,
         model_name: str | None = None,
         max_iterations: int | None = None,
         reasoning_effort: str | None = None,
@@ -1927,6 +1931,7 @@ class AppLogic(QObject):
         pipeline_config = source_cleaning.SourceCleaningPipelineConfig(
             model_name=resolved_model,
             remove_footnotes=remove_footnotes,
+            filter_citations=filter_citations,
             total_max_iterations=int(max_iterations) if max_iterations is not None else 53,
         )
         emit_progress("Running source-cleaning pipeline...")
@@ -3133,7 +3138,8 @@ class AppLogic(QObject):
             "remove_diacritics": self.state.text_processing.remove_diacritics,
             "remove_quotation_marks": self.state.text_processing.remove_quotation_marks,
             "tts_service": self.state.tts.service,
-            "remove_footnotes": self.state.text_processing.remove_footnotes
+            "remove_footnotes": self.state.text_processing.remove_footnotes,
+            "filter_citations": self.state.text_processing.filter_citations
         }
         
         self._set_session_activity(

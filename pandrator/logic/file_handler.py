@@ -113,10 +113,10 @@ def _extract_chapter_text(html_content, all_html_content=""):
 
     return chapter_text
 
-def extract_text_from_epub(epub_path: str, remove_footnotes: bool = False) -> str:
+def extract_text_from_epub(epub_path: str, remove_footnotes: bool = False, filter_citations: bool = True) -> str:
     """Extracts and combines text from all documents in an EPUB file using robust heuristics."""
     from .source_cleaning.deterministic import extract_clean_epub
-    return extract_clean_epub(epub_path, remove_footnotes=remove_footnotes)
+    return extract_clean_epub(epub_path, remove_footnotes=remove_footnotes, filter_citations=filter_citations)
 
 def extract_text_from_pdf(pdf_path: str) -> str:
     """Extracts raw text from a PDF file."""

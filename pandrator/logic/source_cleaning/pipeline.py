@@ -96,6 +96,8 @@ class SourceCleaningPipelineConfig:
 
     model_name: str = "default"
     remove_footnotes: bool = False
+    filter_citations: bool = True
+
     # Total LLM turns across all phases; distributed proportionally
     total_max_iterations: int = 53
     max_tokens: int = 2200
@@ -168,6 +170,7 @@ def run_cleaning_pipeline(
             recent_detailed_turns=resolved.recent_detailed_turns,
             max_batch_commands=resolved.max_batch_commands,
             remove_footnotes=resolved.remove_footnotes,
+            filter_citations=resolved.filter_citations,
             allowed_op_types=_PHASE_ALLOWED_OPS.get(phase_name),
             previous_phase_summaries=list(previous_summaries),
             source_overview_components=_PHASE_OVERVIEW_COMPONENTS.get(

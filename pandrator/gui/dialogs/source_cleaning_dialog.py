@@ -121,6 +121,17 @@ class SourceCleaningDialog(QDialog):
             self.remove_footnotes_checkbox.setChecked(self.logic.state.text_processing.remove_footnotes)
         controls.addWidget(self.remove_footnotes_checkbox)
 
+        self.filter_citations_checkbox = QCheckBox("Filter Citations")
+        if hasattr(self.logic.state, "text_processing") and hasattr(self.logic.state.text_processing, "filter_citations"):
+            self.filter_citations_checkbox.setChecked(self.logic.state.text_processing.filter_citations)
+        else:
+            self.filter_citations_checkbox.setChecked(True)
+        self.filter_citations_checkbox.setEnabled(not self.remove_footnotes_checkbox.isChecked())
+        self.remove_footnotes_checkbox.stateChanged.connect(
+            lambda: self.filter_citations_checkbox.setEnabled(not self.remove_footnotes_checkbox.isChecked())
+        )
+        controls.addWidget(self.filter_citations_checkbox)
+
         controls.addWidget(QLabel("Reasoning:"))
         self.reasoning_effort_combo = QComboBox()
         self.reasoning_effort_combo.addItems(self._REASONING_EFFORT_LABELS)
@@ -253,6 +264,7 @@ class SourceCleaningDialog(QDialog):
         self.stop_button.setEnabled(running)
         self.model_combo.setEnabled(not running)
         self.remove_footnotes_checkbox.setEnabled(not running)
+        self.filter_citations_checkbox.setEnabled(not running and not self.remove_footnotes_checkbox.isChecked())
         self.reasoning_effort_combo.setEnabled(not running)
         self.max_iterations_spinbox.setEnabled(not running)
         self.text_edit.setReadOnly(running)
@@ -295,6 +307,7 @@ class SourceCleaningDialog(QDialog):
         self._set_running(True)
 
         remove_footnotes = self.remove_footnotes_checkbox.isChecked()
+        filter_citations = self.filter_citations_checkbox.isChecked()
         model_name = self.model_combo.currentText().strip() or "default"
         max_iterations = int(self.max_iterations_spinbox.value())
         stop_event = self._stop_event
@@ -313,6 +326,7 @@ class SourceCleaningDialog(QDialog):
                 result = self.logic.run_source_cleaning(
                     source_path_hint=self.source_path_hint,
                     remove_footnotes=remove_footnotes,
+                    filter_citations=filter_citations,
                     model_name=model_name,
                     max_iterations=max_iterations,
                     reasoning_effort=reasoning_effort,

@@ -47,6 +47,7 @@ class SourceCleaningAgentConfig:
     max_tokens: int = 2200
     temperature: float = 0.2
     remove_footnotes: bool = False
+    filter_citations: bool = True
     max_finish_reviews: int = 2
     require_verified_finish_for_long_sources: bool = True
     # Phase-pipeline extensions

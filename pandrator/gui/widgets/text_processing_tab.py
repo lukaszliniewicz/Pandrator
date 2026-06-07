@@ -90,6 +90,7 @@ class TextProcessingTab(QWidget):
         self.remove_quotation_marks_checkbox = QCheckBox("Remove Quotation Marks")
         self.disable_paragraph_detection_checkbox = QCheckBox("Disable Paragraph Detection")
         self.remove_footnotes_checkbox = QCheckBox("Remove Footnotes/Endnotes")
+        self.filter_citations_checkbox = QCheckBox("Filter Bibliographic Citations")
 
         layout.addWidget(self.split_sentences_checkbox, 0, 0)
         layout.addWidget(QLabel("Max Sentence Length:"), 1, 0)
@@ -99,6 +100,7 @@ class TextProcessingTab(QWidget):
         layout.addWidget(self.remove_quotation_marks_checkbox, 4, 0)
         layout.addWidget(self.disable_paragraph_detection_checkbox, 5, 0)
         layout.addWidget(self.remove_footnotes_checkbox, 6, 0)
+        layout.addWidget(self.filter_citations_checkbox, 7, 0)
 
         return frame
 
@@ -244,10 +246,20 @@ class TextProcessingTab(QWidget):
             )
         )
         self.remove_footnotes_checkbox.stateChanged.connect(
+            lambda: (
+                setattr(
+                    self.logic.state.text_processing,
+                    "remove_footnotes",
+                    self.remove_footnotes_checkbox.isChecked(),
+                ),
+                self.filter_citations_checkbox.setEnabled(not self.remove_footnotes_checkbox.isChecked())
+            )
+        )
+        self.filter_citations_checkbox.stateChanged.connect(
             lambda: setattr(
                 self.logic.state.text_processing,
-                "remove_footnotes",
-                self.remove_footnotes_checkbox.isChecked(),
+                "filter_citations",
+                self.filter_citations_checkbox.isChecked(),
             )
         )
 
@@ -401,6 +413,8 @@ class TextProcessingTab(QWidget):
         self.remove_quotation_marks_checkbox.setChecked(tp_state.remove_quotation_marks)
         self.disable_paragraph_detection_checkbox.setChecked(tp_state.disable_paragraph_detection)
         self.remove_footnotes_checkbox.setChecked(tp_state.remove_footnotes)
+        self.filter_citations_checkbox.setChecked(getattr(tp_state, "filter_citations", True))
+        self.filter_citations_checkbox.setEnabled(not tp_state.remove_footnotes)
 
         # LLM Settings
         llm_state = self.logic.state.llm

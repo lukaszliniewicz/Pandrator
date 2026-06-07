@@ -80,7 +80,9 @@ class GenerationAnewTests(unittest.TestCase):
             "enable_sentence_appending": True,
             "remove_diacritics": False,
             "remove_quotation_marks": False,
-            "tts_service": "XTTS"
+            "tts_service": "XTTS",
+            "remove_footnotes": False,
+            "filter_citations": True
         }
         harness.state.metadata = {"preprocessing_settings": json.dumps(settings)}
         self.assertFalse(harness._have_preprocessing_settings_changed())
@@ -97,7 +99,9 @@ class GenerationAnewTests(unittest.TestCase):
             "enable_sentence_appending": True,
             "remove_diacritics": False,
             "remove_quotation_marks": False,
-            "tts_service": "XTTS"
+            "tts_service": "XTTS",
+            "remove_footnotes": False,
+            "filter_citations": True
         }
         harness.state.metadata = {"preprocessing_settings": json.dumps(settings)}
 
@@ -134,7 +138,9 @@ class GenerationAnewTests(unittest.TestCase):
             "enable_sentence_appending": True,
             "remove_diacritics": False,
             "remove_quotation_marks": False,
-            "tts_service": "XTTS"
+            "tts_service": "XTTS",
+            "remove_footnotes": False,
+            "filter_citations": True
         }
         harness.state.metadata = {"preprocessing_settings": json.dumps(settings)}
 

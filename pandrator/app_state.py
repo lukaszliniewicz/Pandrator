@@ -127,6 +127,8 @@ class TextProcessingSettings:
     remove_quotation_marks: bool = False
     disable_paragraph_detection: bool = False
     remove_footnotes: bool = False
+    filter_citations: bool = True
+
 
 @dataclass
 class TTSSettings:

@@ -6,7 +6,7 @@ from . import boilerplate
 from . import chapters
 from . import footnotes
 
-def extract_clean_epub(epub_path: str, remove_footnotes: bool = False) -> str:
+def extract_clean_epub(epub_path: str, remove_footnotes: bool = False, filter_citations: bool = True) -> str:
     """
     Extracts, filters, and formats text from an EPUB file.
     Performs deterministic removal of TOCs, front/end boilerplate,
@@ -15,6 +15,9 @@ def extract_clean_epub(epub_path: str, remove_footnotes: bool = False) -> str:
     structure = parser.unpack_epub_structure(epub_path)
     spine = structure["spine"]
     parsed_docs = structure["parsed_documents"]
+    
+    # Detect language of the book
+    detected_lang = footnotes.detect_book_language(structure.get("metadata", {}), parsed_docs)
     
     # 1. Classify spine documents to filter out TOC, boilerplate, and footnote files
     total_spine_files = len(spine)
@@ -57,7 +60,7 @@ def extract_clean_epub(epub_path: str, remove_footnotes: bool = False) -> str:
         # Check if this document has any headings detected
         has_headings = False
         for idx_in_doc, block in enumerate(blocks):
-            if chapters.is_chapter_block(block, idx_in_doc):
+            if chapters.is_chapter_block(block, idx_in_doc, lang=detected_lang):
                 has_headings = True
                 break
                 
@@ -118,7 +121,7 @@ def extract_clean_epub(epub_path: str, remove_footnotes: bool = False) -> str:
                     matched_title = global_toc[frag_key]
                     break
                     
-            is_ch = chapters.is_chapter_block(block, idx_in_doc)
+            is_ch = chapters.is_chapter_block(block, idx_in_doc, lang=detected_lang)
             
             if matched_title:
                 if not matched_title.startswith("[[Chapter]]"):
@@ -138,6 +141,8 @@ def extract_clean_epub(epub_path: str, remove_footnotes: bool = False) -> str:
             parsed_docs,
             repositioned_block_ids,
             remove_footnotes=remove_footnotes,
+            filter_citations=filter_citations,
+            detected_lang=detected_lang,
             backlink_map=backlink_map
         )
         
