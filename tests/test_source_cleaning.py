@@ -1206,8 +1206,7 @@ class SourceCleaningTests(unittest.TestCase):
             list_llm_models=lambda: ["default"],
         )
         dialog = SourceCleaningDialog(logic)
-
-        self.assertFalse(dialog.accept_button.isEnabled())
+        self.assertTrue(dialog.accept_button.isEnabled())
 
         dialog._on_cleaning_finished(
             {
@@ -1232,6 +1231,64 @@ class SourceCleaningTests(unittest.TestCase):
         self.assertEqual(data["result"]["cleaned_text"], "User edited cleaned text")
         self.assertTrue(data["result"]["user_edited"])
         app.processEvents()
+
+    @patch("pandrator.logic.source_cleaning.epub_adapter.epub.read_epub")
+    @patch("pandrator.logic.source_cleaning.deterministic.parser.unpack_epub_structure")
+    def test_epub_adapter_pre_annotations(self, mock_unpack, mock_read_epub):
+        from unittest.mock import MagicMock
+        
+        # Setup mock book
+        import ebooklib
+        mock_item = MagicMock()
+        mock_item.get_name.return_value = "text/chap1.xhtml"
+        mock_item.get_type.return_value = ebooklib.ITEM_DOCUMENT
+        mock_item.get_id.return_value = "chap1"
+        mock_item.get_content.return_value = b"<html><body><h1>Chapter 1</h1><p class='footnote'>Footnote text</p></body></html>"
+        
+        mock_book = MagicMock()
+        mock_book.get_items.return_value = [mock_item]
+        mock_book.spine = [("chap1", "yes")]
+        mock_read_epub.return_value = mock_book
+        
+        # Setup mock unpacked EPUB structure
+        mock_unpack.return_value = {
+            "spine": [
+                {"href": "text/chap1.xhtml", "media_type": "application/xhtml+xml", "linear": "yes"},
+                {"href": "text/notes.xhtml", "media_type": "application/xhtml+xml", "linear": "no"}
+            ],
+            "parsed_documents": {
+                "text/chap1.xhtml": {
+                    "size": 100,
+                    "blocks": [{"tag": "h1", "text": "Chapter 1", "classes": []}]
+                },
+                "text/notes.xhtml": {
+                    "size": 500,
+                    "blocks": []
+                }
+            }
+        }
+        
+        from pandrator.logic.source_cleaning.epub_adapter import build_source_document
+        doc = build_source_document("dummy.epub")
+        
+        # Verify the blocks got their deterministic roles
+        self.assertTrue(len(doc.blocks) > 0)
+        # Find chapter block
+        chapter_block = next((b for b in doc.blocks if b.tag == "h1"), None)
+        self.assertIsNotNone(chapter_block)
+        self.assertIn("deterministic_chapter", chapter_block.role_candidates)
+
+    def test_extract_deterministic_clean_text_pdf_fallback(self):
+        from pandrator.app_logic import AppLogic
+        from pandrator.app_state import AppState
+        
+        logic = AppLogic()
+        logic.state = AppState()
+        logic.state.raw_text = "Standard extracted text"
+        
+        # Calling extract_deterministic_clean_text with non-existent file path should fall back to state.raw_text
+        text = logic.extract_deterministic_clean_text("non_existent.epub", remove_footnotes=True, filter_citations=True)
+        self.assertEqual(text, "Standard extracted text")
 
 
 if __name__ == "__main__":

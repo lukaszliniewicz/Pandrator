@@ -140,6 +140,7 @@ WHAT NOT TO DELETE:
 - Short "See also" references within prose
 
 Rules:
+- Blocks/documents pre-annotated with `deterministic_toc` in their roles should be prioritized. Audit them for correctness and delete them if they represent TOC/navigation sections.
 - Confirm suspected TOC sections with preview_selector or preview before deleting.
 - Prefer delete_by_selector for document-scope (href) or class-scope targets.
 - Use delete_range only for confirmed inline TOC sections you have previewed.
@@ -262,6 +263,7 @@ def _boilerplate_system_prompt(remove_footnotes: bool = False) -> str:
         "4. Confirm with preview before deleting.\n"
         "\n"
         "Rules:\n"
+        "- Blocks/documents pre-annotated with `deterministic_boilerplate` or `deterministic_footnote` in their roles should be prioritized. Audit them for correctness and delete them if they represent boilerplate/copyright or footnotes/endnotes.\n"
         "- Confirm a section with preview before proposing deletion.\n"
         "- Prefer delete_by_selector (href or class) for complete boilerplate documents.\n"
         "- Use delete_range for inline boilerplate sections in otherwise narrative documents.\n"
@@ -444,6 +446,7 @@ WHAT NOT TO MARK:
 - Blank lines or ornamental separators
 
 Rules:
+- Blocks pre-annotated with `deterministic_chapter` in their roles should be prioritized. Audit them for correctness and mark them as chapters.
 - Use analyze_chapter_structure first to understand the heading pattern.
 - Before finishing, verify your proposed operations cover all likely chapters.
 - Use mark_chapters_by_selector when a selector cleanly covers the complete heading set without false positives.

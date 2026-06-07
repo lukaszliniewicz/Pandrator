@@ -1868,6 +1868,41 @@ class AppLogic(QObject):
                 except OSError as cleanup_error:
                     logging.warning("Could not remove temporary source staging path '%s': %s", staging_cleanup_path, cleanup_error)
 
+    def extract_deterministic_clean_text(
+        self,
+        file_path: str,
+        remove_footnotes: bool,
+        filter_citations: bool,
+    ) -> str:
+        """Deterministically extracts and cleans text from the specified file on-demand."""
+        hint_path = os.path.abspath(str(file_path or "").strip()) if file_path else ""
+        state_path = os.path.abspath(str(self.state.source_file_path or "").strip()) if self.state.source_file_path else ""
+        source_path = hint_path if hint_path and os.path.exists(hint_path) else state_path
+        
+        if not source_path or not os.path.exists(source_path):
+            return self.state.raw_text or ""
+            
+        source_ext = os.path.splitext(source_path)[1].lower()
+        if source_ext == ".epub":
+            return file_handler.extract_text_from_epub(
+                source_path,
+                remove_footnotes=remove_footnotes,
+                filter_citations=filter_citations,
+            )
+        elif source_ext == ".pdf":
+            return file_handler.extract_text_from_pdf(source_path)
+        elif source_ext == ".txt":
+            with open(source_path, "r", encoding="utf-8") as f:
+                return f.read()
+        elif source_ext in [".docx", ".mobi"]:
+            import tempfile
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmp_txt = os.path.join(tmpdir, "extracted.txt")
+                if file_handler.convert_doc_to_text(source_path, tmp_txt):
+                    with open(tmp_txt, "r", encoding="utf-8") as f:
+                        return f.read()
+        return self.state.raw_text or ""
+
     def run_source_cleaning(
         self,
         source_path_hint: str = "",
@@ -1878,9 +1913,11 @@ class AppLogic(QObject):
         reasoning_effort: str | None = None,
         progress_callback=None,
         stop_event=None,
+        extracted_text: str | None = None,
     ) -> dict:
         """Runs the source-cleaning agent without mutating session state."""
-        if not self.state.raw_text:
+        source_raw = extracted_text if extracted_text is not None else self.state.raw_text
+        if not source_raw:
             raise ValueError("No extracted source text is available for cleaning.")
 
         if not self._is_named_session_active():
@@ -1900,18 +1937,18 @@ class AppLogic(QObject):
         if source_ext == ".epub":
             document = source_cleaning.build_source_document(
                 source_path,
-                extracted_text=self.state.raw_text,
+                extracted_text=source_raw,
             )
         elif source_ext == ".pdf":
             document = source_cleaning.build_source_document(
                 source_path,
-                extracted_text=self.state.raw_text,
+                extracted_text=source_raw,
             )
         else:
             from .logic.source_cleaning.pdf_text_adapter import build_source_document_from_text
 
             document = build_source_document_from_text(
-                self.state.raw_text,
+                source_raw,
                 source_path=state_path or source_path,
                 filename=os.path.basename(state_path or source_path or "source.txt"),
             )

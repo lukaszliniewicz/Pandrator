@@ -53,8 +53,49 @@ def build_source_document(epub_path: str) -> SourceDocument:
 
     line_number = 1
     source_index = 0
+
+    from pandrator.logic.source_cleaning.deterministic.parser import unpack_epub_structure
+    from pandrator.logic.source_cleaning.deterministic import toc, footnotes, boilerplate, chapters
+
+    try:
+        structure = unpack_epub_structure(epub_path)
+    except Exception:
+        structure = {}
+
+    spine = structure.get("spine", [])
+    parsed_documents = structure.get("parsed_documents", {})
+    total_spine_files = len(spine)
+
+    def norm_href(h: str) -> str:
+        return str(h or "").lower().replace("\\", "/").strip()
+
+    toc_files = set()
+    footnote_files = set()
+    front_bp_files = set()
+    end_bp_files = set()
+
+    for idx, spine_item in enumerate(spine):
+        sp_href = spine_item["href"]
+        nh = norm_href(sp_href)
+        parsed_doc = parsed_documents.get(sp_href, {})
+        size = parsed_doc.get("size", 0)
+
+        # 1. Check TOC
+        if toc.is_toc_file(sp_href, parsed_doc, spine):
+            toc_files.add(nh)
+        # 2. Check Footnotes
+        elif footnotes.is_footnote_file(sp_href, size):
+            footnote_files.add(nh)
+        # 3. Check Front Boilerplate
+        elif boilerplate.is_front_boilerplate(idx, total_spine_files, size, sp_href):
+            front_bp_files.add(nh)
+        # 4. Check End Boilerplate
+        elif boilerplate.is_end_boilerplate(idx, total_spine_files, sp_href):
+            end_bp_files.add(nh)
+
     for item in _ordered_document_items(book):
         href = item.get_name()
+        nh = norm_href(href)
         content = item.get_content().decode("utf-8", errors="ignore")
         soup = BeautifulSoup(content, "html.parser")
         item_block_count = 0
@@ -65,6 +106,23 @@ def build_source_document(epub_path: str) -> SourceDocument:
 
                 source_index += 1
                 block_id = f"epub:{href}:{source_index}"
+
+                block_roles = list(role_candidates)
+                if nh in toc_files:
+                    block_roles.append("deterministic_toc")
+                if nh in footnote_files:
+                    block_roles.append("deterministic_footnote")
+                if nh in front_bp_files or nh in end_bp_files:
+                    block_roles.append("deterministic_boilerplate")
+
+                block_dict = {
+                    "tag": tag.name,
+                    "text": text,
+                    "classes": _normalize_classes(tag.get("class", []))
+                }
+                if chapters.is_chapter_block(block_dict, item_block_count, language or "en"):
+                    block_roles.append("deterministic_chapter")
+
                 block = SourceBlock(
                     block_id=block_id,
                     text=text,
@@ -77,7 +135,7 @@ def build_source_document(epub_path: str) -> SourceDocument:
                     element_id=str(tag.get("id") or "") or None,
                     dom_path=_build_dom_path(tag),
                     attributes=attributes,
-                    role_candidates=_dedupe(role_candidates + _infer_role_candidates(tag, text, href)),
+                    role_candidates=_dedupe(block_roles + _infer_role_candidates(tag, text, href)),
                     raw_markup=raw_markup,
                 )
                 document.blocks.append(block)
@@ -88,6 +146,13 @@ def build_source_document(epub_path: str) -> SourceDocument:
             fallback_text = _normalize_text(soup.get_text(" ", strip=True))
             if fallback_text:
                 source_index += 1
+                block_roles = []
+                if nh in toc_files:
+                    block_roles.append("deterministic_toc")
+                if nh in footnote_files:
+                    block_roles.append("deterministic_footnote")
+                if nh in front_bp_files or nh in end_bp_files:
+                    block_roles.append("deterministic_boilerplate")
                 document.blocks.append(
                     SourceBlock(
                         block_id=f"epub:{href}:{source_index}",
@@ -97,7 +162,7 @@ def build_source_document(epub_path: str) -> SourceDocument:
                         source_index=source_index,
                         href=href,
                         tag="document",
-                        role_candidates=[],
+                        role_candidates=_dedupe(block_roles),
                         raw_markup=str(soup),
                     )
                 )

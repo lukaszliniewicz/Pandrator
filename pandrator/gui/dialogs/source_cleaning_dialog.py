@@ -97,6 +97,7 @@ class SourceCleaningDialog(QDialog):
         self._connect_signals()
         self._populate_model_combo()
         self._show_raw_source_preview()
+        self._populate_metadata(getattr(self.logic.state, "metadata", {}) or {})
         self._set_running(False)
 
     def _build_layout(self):
@@ -127,9 +128,9 @@ class SourceCleaningDialog(QDialog):
         else:
             self.filter_citations_checkbox.setChecked(True)
         self.filter_citations_checkbox.setEnabled(not self.remove_footnotes_checkbox.isChecked())
-        self.remove_footnotes_checkbox.stateChanged.connect(
-            lambda: self.filter_citations_checkbox.setEnabled(not self.remove_footnotes_checkbox.isChecked())
-        )
+        
+        self.remove_footnotes_checkbox.stateChanged.connect(self._on_deterministic_settings_changed)
+        self.filter_citations_checkbox.stateChanged.connect(self._on_deterministic_settings_changed)
         controls.addWidget(self.filter_citations_checkbox)
 
         controls.addWidget(QLabel("Reasoning:"))
@@ -224,10 +225,8 @@ class SourceCleaningDialog(QDialog):
         buttons = QHBoxLayout()
         buttons.addStretch(1)
         self.accept_button = QPushButton("Accept Cleaned Text")
-        self.manual_button = QPushButton("Manual Review Raw Text")
         self.cancel_button = QPushButton("Cancel Import")
         buttons.addWidget(self.accept_button)
-        buttons.addWidget(self.manual_button)
         buttons.addWidget(self.cancel_button)
         layout.addLayout(buttons)
 
@@ -235,7 +234,6 @@ class SourceCleaningDialog(QDialog):
         self.run_button.clicked.connect(self._start_cleaning)
         self.stop_button.clicked.connect(self._stop_cleaning)
         self.accept_button.clicked.connect(self._accept_cleaned_text)
-        self.manual_button.clicked.connect(self._manual_review)
         self.cancel_button.clicked.connect(self._cancel_import)
         self.add_chapter_button.clicked.connect(self._insert_chapter_marker)
         self.text_edit.textChanged.connect(self._refresh_action_state)
@@ -269,7 +267,6 @@ class SourceCleaningDialog(QDialog):
         self.max_iterations_spinbox.setEnabled(not running)
         self.text_edit.setReadOnly(running)
         self.add_chapter_button.setEnabled(not running)
-        self.manual_button.setEnabled(not running)
         self.cancel_button.setEnabled(not running)
         self._refresh_action_state()
         if running:
@@ -279,9 +276,8 @@ class SourceCleaningDialog(QDialog):
             self.progress_bar.setValue(0)
 
     def _refresh_action_state(self):
-        has_reviewable_result = self._result is not None
         has_text = bool(self.text_edit.toPlainText().strip())
-        self.accept_button.setEnabled((not self._running) and has_reviewable_result and has_text)
+        self.accept_button.setEnabled((not self._running) and has_text)
 
     def _show_raw_source_preview(self):
         raw_text = str(getattr(self.logic.state, "raw_text", "") or "")
@@ -332,6 +328,7 @@ class SourceCleaningDialog(QDialog):
                     reasoning_effort=reasoning_effort,
                     progress_callback=self.status_updated.emit,
                     stop_event=stop_event,
+                    extracted_text=self.text_edit.toPlainText(),
                 )
             except Exception as e:
                 result = {
@@ -408,22 +405,66 @@ class SourceCleaningDialog(QDialog):
         cursor = self.text_edit.textCursor()
         cursor.insertText("[[Chapter]]")
 
+    def _on_deterministic_settings_changed(self):
+        is_remove_checked = self.remove_footnotes_checkbox.isChecked()
+        self.filter_citations_checkbox.setEnabled(not is_remove_checked)
+        
+        if self._running:
+            return
+            
+        remove_footnotes = is_remove_checked
+        filter_citations = self.filter_citations_checkbox.isChecked()
+        
+        self.status_label.setText("Refreshing deterministic text preview...")
+        self.progress_bar.setRange(0, 0)
+        
+        try:
+            text = self.logic.extract_deterministic_clean_text(
+                self.source_path_hint,
+                remove_footnotes=remove_footnotes,
+                filter_citations=filter_citations
+            )
+            self.text_edit.setPlainText(text)
+            self.tabs.setTabText(0, "Source Preview")
+            self.status_label.setText(f"Preview refreshed: {len(text):,} characters.")
+        except Exception as e:
+            self.status_label.setText(f"Failed to refresh preview: {e}")
+        finally:
+            self.progress_bar.setRange(0, 100)
+            self.progress_bar.setValue(0)
+            self._refresh_action_state()
+
     def _accept_cleaned_text(self):
         edited_text = self.text_edit.toPlainText()
         if not edited_text.strip():
             QMessageBox.warning(self, "Source Cleaning", "Cleaned text is empty.")
             return
         if self._result is None:
-            QMessageBox.warning(self, "Source Cleaning", "Run source cleaning before accepting the result.")
-            return
-        original_text = str(self._result.get("cleaned_text") or "")
-        self._result["cleaned_text"] = edited_text
-        self._result["user_edited"] = edited_text != original_text
+            self._result = {
+                "success": True,
+                "cleaned_text": edited_text,
+                "user_edited": True,
+                "metadata": {
+                    "title": self.title_edit.text(),
+                    "album": self.album_edit.text(),
+                    "artist": self.artist_edit.text(),
+                    "genre": self.genre_edit.text(),
+                    "language": self.language_edit.text(),
+                }
+            }
+        else:
+            original_text = str(self._result.get("cleaned_text") or "")
+            self._result["cleaned_text"] = edited_text
+            self._result["user_edited"] = edited_text != original_text
+            self._result["metadata"] = {
+                "title": self.title_edit.text(),
+                "album": self.album_edit.text(),
+                "artist": self.artist_edit.text(),
+                "genre": self.genre_edit.text(),
+                "language": self.language_edit.text(),
+            }
+            
         self._choice = "accept"
-        self.accept()
-
-    def _manual_review(self):
-        self._choice = "manual"
         self.accept()
 
     def _cancel_import(self):

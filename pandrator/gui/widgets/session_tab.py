@@ -19,7 +19,6 @@ from ...constants import (
 from ..dialogs.custom_prompt_dialog import CustomPromptDialog
 from ..dialogs.metadata_dialog import MetadataDialog
 from ..dialogs.paste_text_dialog import PasteTextDialog
-from ..dialogs.review_text_dialog import ReviewTextDialog
 from ..dialogs.source_picker_dialog import SourcePickerDialog
 from ..dialogs.source_cleaning_dialog import SourceCleaningDialog
 from ..dialogs.voice_catalog_dialog import VoiceCatalogDialog
@@ -1975,45 +1974,9 @@ class SessionTab(QWidget):
 
         reviewable_extensions = {".pdf", ".epub", ".docx", ".mobi"}
         if selected_ext in reviewable_extensions and self.logic.state.raw_text:
-            if selected_ext in {".pdf", ".epub"}:
-                review_mode = self._prompt_source_review_mode(selected_ext)
-                if review_mode == "cancel":
-                    self.logic.clear_source_file_selection()
-                    return
-                if review_mode == "llm":
-                    cleaning_choice = self._run_source_cleaning_review(selected_path, selected_ext)
-                    if cleaning_choice == "accept":
-                        return
-                    if cleaning_choice == "cancel":
-                        self.logic.clear_source_file_selection()
-                        return
-
-            if not self._run_manual_source_review(selected_ext):
+            cleaning_choice = self._run_source_cleaning_review(selected_path, selected_ext)
+            if cleaning_choice != "accept":
                 self.logic.clear_source_file_selection()
-
-    def _prompt_source_review_mode(self, selected_ext: str) -> str:
-        chooser = QMessageBox(self)
-        chooser.setIcon(QMessageBox.Icon.Question)
-        chooser.setWindowTitle("Review Extracted Text")
-        chooser.setText("How would you like to review this extracted source?")
-        chooser.setInformativeText(
-            "LLM cleaning can inspect the source with search/preview tools, mark chapters, suggest metadata, "
-            "and remove non-audiobook fragments before you review the diff."
-        )
-        llm_button = chooser.addButton("LLM Clean + Review", QMessageBox.ButtonRole.AcceptRole)
-        manual_button = chooser.addButton("Manual Review", QMessageBox.ButtonRole.ActionRole)
-        cancel_button = chooser.addButton(QMessageBox.StandardButton.Cancel)
-        chooser.setDefaultButton(llm_button)
-        chooser.exec()
-
-        clicked = chooser.clickedButton()
-        if clicked == llm_button:
-            return "llm"
-        if clicked == manual_button:
-            return "manual"
-        if clicked == cancel_button:
-            return "cancel"
-        return "cancel"
 
     def _run_source_cleaning_review(self, source_path_hint: str, selected_ext: str) -> str:
         dialog = SourceCleaningDialog(self.logic, source_path_hint=source_path_hint, parent=self)
@@ -2032,26 +1995,10 @@ class SessionTab(QWidget):
                     self.logic.save_metadata(metadata)
                 return "accept"
             return "cancel"
-        if choice == "manual":
-            return "manual"
         return "cancel"
-
-    def _run_manual_source_review(self, selected_ext: str) -> bool:
-        review_dialog = ReviewTextDialog(self.logic.state.raw_text, self)
-        if not review_dialog.exec():
-            return False
-
-        review_data = review_dialog.get_data()
-        return self.logic.apply_reviewed_text(
-            review_data["text"],
-            mark_pdf_preprocessed=(selected_ext == ".pdf"),
-        )
 
     def _on_metadata(self):
         metadata_to_edit = self.logic.state.metadata.copy()
-        if not metadata_to_edit.get("album"):
-            metadata_to_edit["album"] = self.logic.state.session_name
-
         dialog = MetadataDialog(metadata_to_edit, self)
         if dialog.exec():
             new_metadata = dialog.get_metadata()
