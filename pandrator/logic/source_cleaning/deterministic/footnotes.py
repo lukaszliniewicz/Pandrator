@@ -233,3 +233,19 @@ def reposition_footnotes_in_document(
         cleaned_lines.append("".join(final_sentences))
         
     return cleaned_lines
+
+def is_footnote_file(href: str, size: int) -> bool:
+    """
+    Determines if a file in the spine is a dedicated footnote/endnote container file.
+    """
+    name_lower = os.path.basename(href).lower()
+    # Matches _fn01, -fn, _footnote, _endnote, etc.
+    if re.search(r'[_.-](?:fn|footnote|endnote)(?:\d+)?\b', name_lower):
+        return True
+    base_name = os.path.splitext(name_lower)[0]
+    if base_name in ('fn', 'footnote', 'notes', 'endnotes') or re.match(r'^(?:fn|footnote|notes|endnotes)\d+$', base_name):
+        return True
+    # For _notes, only match if size is small (< 15000 bytes) or if it starts with 'notes'
+    if re.search(r'[_.-]notes(?:\d+)?\b', name_lower) and size < 15000:
+        return True
+    return False

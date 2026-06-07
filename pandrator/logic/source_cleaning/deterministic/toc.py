@@ -17,20 +17,30 @@ def is_toc_file(href: str, parsed_doc: dict, spine: list[dict]) -> bool:
     if any(w in ['toc', 'contents', 'nav', 'navigation'] for w in words):
         return True
         
-    # Gather anchors in this document
+    # Gather anchors in this document and calculate word metrics
     blocks = parsed_doc.get("blocks", [])
     anchors = []
-    word_count = 0
+    total_words = 0
+    link_words = 0
+    
+    from .footnotes import is_footnote_ref
+    spine_hrefs = {item["href"].lower() for item in spine}
     
     for block in blocks:
-        word_count += len(block.get("text", "").split())
+        text = block.get("text", "")
+        words = text.split()
+        total_words += len(words)
+        
         for part in block.get("parts", []):
             if part.get("type") == "anchor":
                 anchors.append(part)
+                if not is_footnote_ref(part):
+                    content = part.get("content", "")
+                    link_words += len(content.split())
+                    
+    link_word_ratio = link_words / max(1, total_words)
                 
     # 2. Count internal hyperlinks pointing to other spine files
-    from .footnotes import is_footnote_ref
-    spine_hrefs = {item["href"].lower() for item in spine}
     num_spine_links = 0
     unique_targets = set()
     for a in anchors:
@@ -56,12 +66,71 @@ def is_toc_file(href: str, parsed_doc: dict, spine: list[dict]) -> bool:
     # 3. Apply Heuristics
     num_unique_targets = len(unique_targets)
     
+    # Enforce link word ratio check to prevent regular chapters with cross-references from being classified as TOC
+    if link_word_ratio < 0.3:
+        return False
+        
     # High unique target files count (real TOC links to many files)
     if num_unique_targets > 8:
         return True
         
     # High unique target files count with high density of links pointing to them
-    if num_unique_targets > 4 and (num_spine_links / max(1, word_count)) > 0.08:
+    if num_unique_targets > 4 and (num_spine_links / max(1, total_words)) > 0.08:
         return True
         
     return False
+
+def build_global_toc_map(structure: dict) -> dict[str, str]:
+    """
+    Builds a global TOC map from the parsed structure.
+    Maps:
+      - filename (lowercase, e.g. 'text/chap1.html') -> title
+      - filename#fragment (lowercase, e.g. 'text/chap1.html#sec1') -> title
+    """
+    toc_map = {}
+    spine = structure.get("spine", [])
+    parsed_docs = structure.get("parsed_documents", {})
+    
+    # 1. Incorporate NCX TOC mapping if available
+    ncx_toc = structure.get("ncx_toc", {})
+    for src, title in ncx_toc.items():
+        src_lower = src.lower().replace("\\", "/").strip()
+        if src_lower and title:
+            toc_map[src_lower] = title
+            if "#" in src_lower:
+                base = src_lower.split("#")[0]
+                if base not in toc_map:
+                    toc_map[base] = title
+
+    # 2. Extract anchors from all HTML files in spine classified as TOC
+    for idx, item in enumerate(spine):
+        href = item["href"]
+        if href not in parsed_docs:
+            continue
+        doc = parsed_docs[href]
+        
+        # Check if classified as TOC
+        if is_toc_file(href, doc, spine):
+            blocks = doc.get("blocks", [])
+            for block in blocks:
+                for part in block.get("parts", []):
+                    if part.get("type") == "anchor":
+                        h = part.get("href", "")
+                        title = part.get("content", "").strip()
+                        if h and title:
+                            # Resolve path relative to the TOC file's directory
+                            target_file = h.split("#")[0].strip()
+                            frag = h.split("#")[1].strip() if "#" in h else ""
+                            
+                            curr_dir = os.path.dirname(href)
+                            resolved_file = os.path.normpath(os.path.join(curr_dir, target_file)).replace("\\", "/")
+                            resolved_href = resolved_file.lower()
+                            if frag:
+                                resolved_href += f"#{frag.lower()}"
+                                
+                            toc_map[resolved_href] = title
+                            base_lower = resolved_file.lower()
+                            if base_lower not in toc_map:
+                                toc_map[base_lower] = title
+                                
+    return toc_map

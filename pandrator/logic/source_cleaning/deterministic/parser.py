@@ -56,10 +56,13 @@ class EPUBHTMLParser(HTMLParser):
         # Track anchor tags stack to support nested tags inside anchor
         self.anchor_stack = []
         self.current_block_nested_ids = []
+        self.pending_ids = []
 
     def handle_starttag(self, tag, attrs):
         attr_dict = dict(attrs)
         id_val = attr_dict.get("id", "")
+        if not id_val and tag == "a" and "name" in attr_dict:
+            id_val = attr_dict["name"]
         class_val = attr_dict.get("class", "")
         href_val = attr_dict.get("href", "")
         epub_type = attr_dict.get("epub:type", "")
@@ -80,7 +83,19 @@ class EPUBHTMLParser(HTMLParser):
             self.current_block_id = id_val
             self.current_block_classes = [c for c in class_val.split() if c] if class_val else []
             self.current_parts = []
-            self.current_block_nested_ids = []
+            
+            # Copy pending IDs to this new block and clear the pending list
+            self.current_block_nested_ids = list(self.pending_ids)
+            self.pending_ids = []
+            if id_val:
+                self.current_block_nested_ids.append(id_val)
+        else:
+            # If we are not in a block, store the ID in pending
+            if id_val:
+                if self.current_block_tag is not None:
+                    self.current_block_nested_ids.append(id_val)
+                else:
+                    self.pending_ids.append(id_val)
             
         # Anchor tag start
         if tag == "a" and href_val:
@@ -93,10 +108,6 @@ class EPUBHTMLParser(HTMLParser):
                 "accumulator": []
             }
             self.anchor_stack.append(anchor_info)
-            
-        # If an ID is defined and we have a block, map the ID
-        if id_val and self.current_block_tag is not None:
-            self.current_block_nested_ids.append(id_val)
 
     def handle_data(self, data):
         if self.current_block_tag is not None:
@@ -292,8 +303,49 @@ def unpack_epub_structure(epub_path: str) -> dict:
             doc_struct = parse_single_document(z, opf_dir, href)
             parsed_docs[href] = doc_struct
             
+        # Parse NCX TOC mapping if available
+        ncx_toc = {}
+        ncx_href = None
+        for item_id, item in manifest.items():
+            if item.get("media_type") == "application/x-dtbncx+xml":
+                ncx_href = item["href"]
+                break
+        if ncx_href:
+            ncx_zip_path = os.path.normpath(os.path.join(opf_dir, ncx_href)).replace("\\", "/")
+            ncx_match = None
+            for name in z.namelist():
+                if name.lower() == ncx_zip_path.lower():
+                    ncx_match = name
+                    break
+            if ncx_match:
+                try:
+                    ncx_data = z.read(ncx_match)
+                    ncx_root = ET.fromstring(ncx_data)
+                    ncx_dir = os.path.dirname(ncx_href)
+                    
+                    def parse_navpoint(elem):
+                        src_elem = find_elem(elem, "content")
+                        label_elem = find_elem(elem, "text")
+                        if src_elem is not None and "src" in src_elem.attrib:
+                            src = urllib.parse.unquote(src_elem.attrib["src"])
+                            title = ""
+                            if label_elem is not None:
+                                title = (label_elem.text or "").strip()
+                            if src and title:
+                                resolved_href = os.path.normpath(os.path.join(ncx_dir, src)).replace("\\", "/")
+                                ncx_toc[resolved_href] = title
+                        for child in elem:
+                            if child.tag.split("}")[-1] == "navPoint":
+                                parse_navpoint(child)
+                                
+                    for nav_point in find_all_elems(ncx_root, "navPoint"):
+                        parse_navpoint(nav_point)
+                except Exception as e:
+                    pass
+            
         return {
             "metadata": metadata,
             "spine": spine_items,
-            "parsed_documents": parsed_docs
+            "parsed_documents": parsed_docs,
+            "ncx_toc": ncx_toc
         }
