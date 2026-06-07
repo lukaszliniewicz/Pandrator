@@ -42,6 +42,9 @@ class SettingsAndTrashTests(unittest.TestCase):
                 "openai_audio_endpoint": "openai",
                 "provider_configs": [{"id": "openai", "api_key": "another-secret"}],
             },
+            "text_processing": {
+                "remove_footnotes": True,
+            },
         }
 
         settings_handler.save_global_settings(payload)
@@ -51,12 +54,29 @@ class SettingsAndTrashTests(unittest.TestCase):
         with open(json_path, "r", encoding="utf-8") as file_handle:
             wrapped = json.load(file_handle)
         self.assertEqual(wrapped["settings"]["llm"]["default_model"], payload["llm"]["default_model"])
+        self.assertEqual(wrapped["settings"]["text_processing"]["remove_footnotes"], True)
 
         loaded = settings_handler.load_global_settings()
         self.assertEqual(loaded["tts"]["openai_audio_endpoint"], payload["tts"]["openai_audio_endpoint"])
+        self.assertEqual(loaded["text_processing"]["remove_footnotes"], True)
 
         db_loaded = state_db_handler.load_latest_app_settings()
         self.assertEqual(db_loaded["llm"]["default_model"], payload["llm"]["default_model"])
+        self.assertEqual(db_loaded["text_processing"]["remove_footnotes"], True)
+
+    def test_apply_global_settings_payload_applies_remove_footnotes(self):
+        state = AppState()
+        self.assertFalse(state.text_processing.remove_footnotes)
+
+        settings_handler.apply_global_settings_payload(
+            state,
+            {
+                "text_processing": {
+                    "remove_footnotes": True
+                }
+            }
+        )
+        self.assertTrue(state.text_processing.remove_footnotes)
 
     def test_kokoro_default_voice_settings_normalize_language_keys(self):
         state = AppState()

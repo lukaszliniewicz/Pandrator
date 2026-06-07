@@ -126,6 +126,7 @@ class TextProcessingSettings:
     remove_diacritics: bool = False
     remove_quotation_marks: bool = False
     disable_paragraph_detection: bool = False
+    remove_footnotes: bool = False
 
 @dataclass
 class TTSSettings:

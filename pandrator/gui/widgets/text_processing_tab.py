@@ -89,6 +89,7 @@ class TextProcessingTab(QWidget):
         self.remove_diacritics_checkbox = QCheckBox("Remove Diacritics")
         self.remove_quotation_marks_checkbox = QCheckBox("Remove Quotation Marks")
         self.disable_paragraph_detection_checkbox = QCheckBox("Disable Paragraph Detection")
+        self.remove_footnotes_checkbox = QCheckBox("Remove Footnotes/Endnotes")
 
         layout.addWidget(self.split_sentences_checkbox, 0, 0)
         layout.addWidget(QLabel("Max Sentence Length:"), 1, 0)
@@ -97,6 +98,7 @@ class TextProcessingTab(QWidget):
         layout.addWidget(self.remove_diacritics_checkbox, 3, 0)
         layout.addWidget(self.remove_quotation_marks_checkbox, 4, 0)
         layout.addWidget(self.disable_paragraph_detection_checkbox, 5, 0)
+        layout.addWidget(self.remove_footnotes_checkbox, 6, 0)
 
         return frame
 
@@ -239,6 +241,13 @@ class TextProcessingTab(QWidget):
                 self.logic.state.text_processing,
                 "disable_paragraph_detection",
                 self.disable_paragraph_detection_checkbox.isChecked(),
+            )
+        )
+        self.remove_footnotes_checkbox.stateChanged.connect(
+            lambda: setattr(
+                self.logic.state.text_processing,
+                "remove_footnotes",
+                self.remove_footnotes_checkbox.isChecked(),
             )
         )
 
@@ -391,6 +400,7 @@ class TextProcessingTab(QWidget):
         self.remove_diacritics_checkbox.setChecked(tp_state.remove_diacritics)
         self.remove_quotation_marks_checkbox.setChecked(tp_state.remove_quotation_marks)
         self.disable_paragraph_detection_checkbox.setChecked(tp_state.disable_paragraph_detection)
+        self.remove_footnotes_checkbox.setChecked(tp_state.remove_footnotes)
 
         # LLM Settings
         llm_state = self.logic.state.llm

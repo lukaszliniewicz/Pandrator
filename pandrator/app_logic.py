@@ -800,7 +800,8 @@ class AppLogic(QObject):
             "enable_sentence_appending": self.state.text_processing.enable_sentence_appending,
             "remove_diacritics": self.state.text_processing.remove_diacritics,
             "remove_quotation_marks": self.state.text_processing.remove_quotation_marks,
-            "tts_service": self.state.tts.service
+            "tts_service": self.state.tts.service,
+            "remove_footnotes": self.state.text_processing.remove_footnotes
         }
 
         saved_settings_str = self.state.metadata.get("preprocessing_settings")
@@ -810,7 +811,12 @@ class AppLogic(QObject):
         try:
             saved_settings = json.loads(saved_settings_str)
             for key, val in current_settings.items():
-                if saved_settings.get(key) != val:
+                saved_val = saved_settings.get(key)
+                if saved_val is None:
+                    if isinstance(val, bool) and not val:
+                        continue
+                    return True
+                if saved_val != val:
                     return True
             return False
         except Exception:
@@ -1328,7 +1334,10 @@ class AppLogic(QObject):
                 with open(source_path, "r", encoding="utf-8") as f:
                     return f.read()
             if ext == ".epub":
-                return file_handler.extract_text_from_epub(source_path)
+                return file_handler.extract_text_from_epub(
+                    source_path,
+                    remove_footnotes=self.state.text_processing.remove_footnotes,
+                )
             if ext == ".pdf":
                 return file_handler.extract_text_from_pdf(source_path)
             if ext in [".docx", ".mobi"]:
@@ -1748,7 +1757,10 @@ class AppLogic(QObject):
                 with open(session_file_path, "r", encoding="utf-8") as f:
                     raw_text = f.read()
             elif ext == ".epub":
-                raw_text = file_handler.extract_text_from_epub(session_file_path)
+                raw_text = file_handler.extract_text_from_epub(
+                    session_file_path,
+                    remove_footnotes=self.state.text_processing.remove_footnotes,
+                )
                 converted_txt_path = os.path.join(
                     session_path,
                     f"{os.path.splitext(os.path.basename(session_file_path))[0]}.txt",
@@ -3120,7 +3132,8 @@ class AppLogic(QObject):
             "enable_sentence_appending": self.state.text_processing.enable_sentence_appending,
             "remove_diacritics": self.state.text_processing.remove_diacritics,
             "remove_quotation_marks": self.state.text_processing.remove_quotation_marks,
-            "tts_service": self.state.tts.service
+            "tts_service": self.state.tts.service,
+            "remove_footnotes": self.state.text_processing.remove_footnotes
         }
         
         self._set_session_activity(

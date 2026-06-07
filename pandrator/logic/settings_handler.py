@@ -157,6 +157,9 @@ def build_global_settings_payload(state: AppState) -> Dict[str, Any]:
         "source_cleaning": {
             "max_iterations": int(getattr(state.source_cleaning, "max_iterations", SOURCE_CLEANING_DEFAULT_ITERATIONS)),
         },
+        "text_processing": {
+            "remove_footnotes": _coerce_bool(getattr(state.text_processing, "remove_footnotes", False), False),
+        },
     }
 
 
@@ -275,6 +278,12 @@ def apply_global_settings_payload(state: AppState, payload: Dict[str, Any]):
         iterations = max(SOURCE_CLEANING_MIN_ITERATIONS, min(iterations, SOURCE_CLEANING_MAX_ITERATIONS))
         if hasattr(state, "source_cleaning"):
             state.source_cleaning.max_iterations = iterations
+
+    text_processing_payload = payload.get("text_processing")
+    if isinstance(text_processing_payload, dict):
+        if "remove_footnotes" in text_processing_payload:
+            if hasattr(state, "text_processing"):
+                state.text_processing.remove_footnotes = _coerce_bool(text_processing_payload["remove_footnotes"], False)
 
 
 def save_global_settings(payload: Dict[str, Any]):

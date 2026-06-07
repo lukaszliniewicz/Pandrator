@@ -117,6 +117,8 @@ class SourceCleaningDialog(QDialog):
         controls.addWidget(self.model_combo, 1)
 
         self.remove_footnotes_checkbox = QCheckBox("Remove Footnotes/Endnotes")
+        if hasattr(self.logic.state, "text_processing") and hasattr(self.logic.state.text_processing, "remove_footnotes"):
+            self.remove_footnotes_checkbox.setChecked(self.logic.state.text_processing.remove_footnotes)
         controls.addWidget(self.remove_footnotes_checkbox)
 
         controls.addWidget(QLabel("Reasoning:"))
