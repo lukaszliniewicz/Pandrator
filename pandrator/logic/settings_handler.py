@@ -146,6 +146,12 @@ def build_global_settings_payload(state: AppState) -> Dict[str, Any]:
             "provider_configs": state.llm.provider_configs,
             "request_timeout_seconds": state.llm.request_timeout_seconds,
             "reasoning_effort": str(getattr(state.llm, "reasoning_effort", "") or ""),
+            "prompts": {
+                "combined": state.llm.combined_prompt.__dict__,
+                "first": state.llm.first_prompt.__dict__,
+                "second": state.llm.second_prompt.__dict__,
+                "third": state.llm.third_prompt.__dict__,
+            }
         },
         "tts": tts_payload,
         "source_cleaning": {
@@ -183,6 +189,26 @@ def apply_global_settings_payload(state: AppState, payload: Dict[str, Any]):
         if isinstance(raw_reasoning_effort, str) and raw_reasoning_effort in ("", "low", "medium", "high"):
             if hasattr(state.llm, "reasoning_effort"):
                 state.llm.reasoning_effort = raw_reasoning_effort
+
+        prompts_payload = llm_payload.get("prompts", {})
+        if isinstance(prompts_payload, dict):
+            for key, attr_name in [
+                ("combined", "combined_prompt"),
+                ("first", "first_prompt"),
+                ("second", "second_prompt"),
+                ("third", "third_prompt"),
+            ]:
+                prompt_data = prompts_payload.get(key)
+                if isinstance(prompt_data, dict):
+                    prompt_obj = getattr(state.llm, attr_name)
+                    if "prompt_text" in prompt_data:
+                        prompt_obj.prompt_text = str(prompt_data["prompt_text"])
+                    if "enabled" in prompt_data:
+                        prompt_obj.enabled = _coerce_bool(prompt_data["enabled"], prompt_obj.enabled)
+                    if "evaluation_enabled" in prompt_data:
+                        prompt_obj.evaluation_enabled = _coerce_bool(prompt_data["evaluation_enabled"], prompt_obj.evaluation_enabled)
+                    if "model" in prompt_data:
+                        prompt_obj.model = str(prompt_data["model"])
 
         llm_handler.normalize_llm_settings(state.llm)
 

@@ -52,6 +52,17 @@ class TextProcessingTab(QWidget):
         main_layout.addWidget(self.third_label)
         main_layout.addWidget(self.third_frame)
 
+        # Prompt Management Buttons
+        prompt_buttons_layout = QHBoxLayout()
+        self.save_prompts_button = QPushButton("Save Prompts as Default")
+        self.save_prompts_button.setToolTip("Save the current prompts app-wide so they are loaded automatically for new sessions.")
+        self.restore_prompts_button = QPushButton("Restore Default Prompts")
+        self.restore_prompts_button.setToolTip("Restore all prompts to their factory defaults.")
+        prompt_buttons_layout.addWidget(self.save_prompts_button)
+        prompt_buttons_layout.addWidget(self.restore_prompts_button)
+        prompt_buttons_layout.addStretch(1)
+        main_layout.addLayout(prompt_buttons_layout)
+
         main_layout.addStretch(1)
 
         self._connect_signals()
@@ -262,6 +273,9 @@ class TextProcessingTab(QWidget):
                 lambda _, key=key: self._on_prompt_setting_changed(key)
             )
 
+        self.save_prompts_button.clicked.connect(self._on_save_prompts_as_default)
+        self.restore_prompts_button.clicked.connect(self._on_restore_default_prompts)
+
     def _set_feedback(self, message: str, is_error: bool = False):
         self.llm_feedback_label.setText(message)
         self.llm_feedback_label.setStyleSheet("")
@@ -345,6 +359,28 @@ class TextProcessingTab(QWidget):
         prompt_state.enabled = getattr(self, f"{key}_enable_checkbox").isChecked()
         prompt_state.evaluation_enabled = getattr(self, f"{key}_evaluate_checkbox").isChecked()
         prompt_state.model = getattr(self, f"{key}_model_combo").currentText().strip() or "default"
+
+    def _on_save_prompts_as_default(self):
+        persist = getattr(self.logic, "_persist_global_settings", None)
+        if callable(persist):
+            try:
+                persist(force=True)
+                self._set_feedback("Prompts successfully saved as default.", is_error=False)
+            except Exception as e:
+                self._set_feedback(f"Failed to save default prompts: {e}", is_error=True)
+
+    def _on_restore_default_prompts(self):
+        from ..app_state import LLMSettings
+        defaults = LLMSettings()
+        for key in ["combined_prompt", "first_prompt", "second_prompt", "third_prompt"]:
+            default_prompt = getattr(defaults, key)
+            current_prompt = getattr(self.logic.state.llm, key)
+            current_prompt.prompt_text = default_prompt.prompt_text
+            current_prompt.enabled = default_prompt.enabled
+            current_prompt.evaluation_enabled = default_prompt.evaluation_enabled
+            current_prompt.model = default_prompt.model
+        self.update_ui_from_state()
+        self._on_save_prompts_as_default()
 
     def update_ui_from_state(self):
         # General Settings
