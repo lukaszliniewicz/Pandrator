@@ -228,6 +228,7 @@ class PromptSettings:
 @dataclass
 class LLMSettings:
     processing_enabled: bool = False
+    concurrent_calls: int = 1
     default_model: str = "openai/gpt-5.4-mini"
     provider_configs: List[Dict[str, Any]] = field(default_factory=default_llm_provider_configs)
     request_timeout_seconds: int = 180

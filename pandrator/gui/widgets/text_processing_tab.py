@@ -96,6 +96,11 @@ class TextProcessingTab(QWidget):
 
         self.enable_llm_checkbox = QCheckBox("Enable LLM Processing")
         self.load_models_button = QPushButton("Refresh Built-in Models")
+        
+        self.concurrent_calls_spinbox = QSpinBox()
+        self.concurrent_calls_spinbox.setRange(1, 20)
+        self.concurrent_calls_spinbox.setToolTip("Number of concurrent LLM API calls.")
+
         self.use_multi_stage_checkbox = QCheckBox("Divide into Multiple Stages")
 
         self.default_llm_model_combo = QComboBox()
@@ -125,16 +130,20 @@ class TextProcessingTab(QWidget):
 
         layout.addWidget(self.enable_llm_checkbox, 0, 0)
         layout.addWidget(self.load_models_button, 0, 1, 1, 2)
-        layout.addWidget(self.use_multi_stage_checkbox, 1, 0, 1, 3)
+        
+        layout.addWidget(QLabel("Concurrent Calls:"), 1, 0)
+        layout.addWidget(self.concurrent_calls_spinbox, 1, 1)
 
-        layout.addWidget(QLabel("Default LiteLLM Model:"), 2, 0)
-        layout.addWidget(self.default_llm_model_combo, 2, 1, 1, 2)
+        layout.addWidget(self.use_multi_stage_checkbox, 2, 0, 1, 3)
 
-        layout.addWidget(QLabel("Reasoning Effort:"), 3, 0)
-        layout.addWidget(self.reasoning_effort_combo, 3, 1)
+        layout.addWidget(QLabel("Default LiteLLM Model:"), 3, 0)
+        layout.addWidget(self.default_llm_model_combo, 3, 1, 1, 2)
 
-        layout.addWidget(self.providers_hint, 4, 0, 1, 3)
-        layout.addWidget(self.llm_feedback_label, 5, 0, 1, 3)
+        layout.addWidget(QLabel("Reasoning Effort:"), 4, 0)
+        layout.addWidget(self.reasoning_effort_combo, 4, 1)
+
+        layout.addWidget(self.providers_hint, 5, 0, 1, 3)
+        layout.addWidget(self.llm_feedback_label, 6, 0, 1, 3)
 
         return frame
 
@@ -229,6 +238,9 @@ class TextProcessingTab(QWidget):
                 "processing_enabled",
                 self.enable_llm_checkbox.isChecked(),
             )
+        )
+        self.concurrent_calls_spinbox.valueChanged.connect(
+            lambda value: setattr(self.logic.state.llm, "concurrent_calls", value)
         )
         self.load_models_button.clicked.connect(self._on_load_llm_models)
         self.default_llm_model_combo.currentTextChanged.connect(self._on_default_model_changed)
@@ -347,6 +359,10 @@ class TextProcessingTab(QWidget):
         # LLM Settings
         llm_state = self.logic.state.llm
         self.enable_llm_checkbox.setChecked(llm_state.processing_enabled)
+
+        self.concurrent_calls_spinbox.blockSignals(True)
+        self.concurrent_calls_spinbox.setValue(llm_state.concurrent_calls)
+        self.concurrent_calls_spinbox.blockSignals(False)
 
         self.use_multi_stage_checkbox.blockSignals(True)
         self.use_multi_stage_checkbox.setChecked(llm_state.use_multi_stage)

@@ -3462,74 +3462,124 @@ class AppLogic(QObject):
             sentence_times = []
             start_time = time.time()
 
-            for i in range(start_index, total_sentences):
-                if self.stop_generation_flag.is_set():
-                    if self.cancel_generation_flag.is_set():
-                        cleanup_requested = True
-                        if dubbing_workflow_active:
-                            self._mark_dubbing_step("tts_generation", "failed", "Cancelled by user.")
-                        self._set_session_activity(
-                            "Cancelling generation",
-                            "Cancellation was acknowledged. Cleaning up generated artifacts next.",
-                            "warning",
-                        )
-                        self.log_message.emit("Cancellation acknowledged. Cleaning up generated artifacts...")
-                    else:
-                        if dubbing_workflow_active:
-                            self._mark_dubbing_step("tts_generation", "failed", "Stopped by user.")
-                        self._set_session_activity(
-                            "Generation stopped",
-                            "The run stopped after the current sentence as requested.",
-                            "warning",
-                        )
-                        self.log_message.emit("Generation stopped by user.")
-                    return
+            def llm_worker(index: int, sentence_dict: dict) -> tuple[int, bool, dict]:
+                """Runs only the LLM processing for a single sentence."""
+                try:
+                    updated_sentence = copy.deepcopy(sentence_dict)
+                    text_source_key = "processed_sentence" if updated_sentence.get("processed_sentence") else "original_sentence"
+                    text_to_process = str(updated_sentence.get(text_source_key) or "")
+                    is_dubbing_sentence = self._is_dubbing_source_selected()
+                    if is_dubbing_sentence:
+                        text_to_process = self._normalize_subtitle_sentence_text(text_to_process)
+                        updated_sentence[text_source_key] = text_to_process
 
-                sentence_dict = processed_sentences[i]
-                if sentence_dict.get("tts_generated") == "yes":
-                    continue
+                    if not text_to_process.strip():
+                        return index, True, updated_sentence
 
-                sentence_start_time = time.time()
-                self._set_session_activity(
-                    "Generating audio",
-                    f"Rendering sentence {i + 1} of {total_sentences}.",
-                    "active",
-                )
-                self.log_message.emit(f"Generating sentence {i+1}/{total_sentences}...")
+                    processed_text, _ = self._run_llm_processing(text_to_process)
+                    if is_dubbing_sentence:
+                        processed_text = self._normalize_subtitle_sentence_text(processed_text)
+                    updated_sentence['processed_sentence'] = processed_text
+                    return index, True, updated_sentence
+                except Exception as e:
+                    logging.error(f"Failed LLM processing for sentence {sentence_dict.get('sentence_number')}: {e}", exc_info=True)
+                    return index, False, sentence_dict
 
-                success, updated_sentence = self._execute_generation_for_sentence(sentence_dict)
-                if not success or updated_sentence is None:
-                    if self.cancel_generation_flag.is_set():
-                        cleanup_requested = True
-                        if dubbing_workflow_active:
-                            self._mark_dubbing_step("tts_generation", "failed", "Cancelled during sentence generation.")
-                        self._set_session_activity(
-                            "Cancelling generation",
-                            f"Generation was cancelled while working on sentence {i + 1}. Cleanup will run next.",
-                            "warning",
-                        )
-                        self.log_message.emit("Generation cancelled during sentence processing. Cleaning up...")
-                    else:
-                        if dubbing_workflow_active:
-                            self._mark_dubbing_step("tts_generation", "failed", f"Sentence {i+1} failed.")
-                        self._set_session_activity(
-                            "Generation failed",
-                            f"Sentence {i + 1} could not be generated.",
-                            "error",
-                        )
-                        self.show_error.emit("Generation Error", f"Failed to generate audio for sentence {i+1}. Aborting.")
-                    return
+            use_parallel_llm = self.state.llm.processing_enabled and self.state.llm.concurrent_calls > 1
+            llm_executor = None
+            llm_futures = {}
 
-                processed_sentences[i] = updated_sentence
-                self._set_processed_sentences_snapshot(processed_sentences)
-                self.state_changed.emit()
+            if use_parallel_llm:
+                import concurrent.futures
+                llm_executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.state.llm.concurrent_calls)
+                for i in range(start_index, total_sentences):
+                    sentence_dict = processed_sentences[i]
+                    if sentence_dict.get("tts_generated") == "yes":
+                        continue
+                    future = llm_executor.submit(llm_worker, i, sentence_dict)
+                    llm_futures[i] = future
 
-                sentence_end_time = time.time()
-                sentence_times.append(sentence_end_time - sentence_start_time)
-                elapsed = sentence_end_time - start_time
-                self.progress_updated.emit(i + 1, total_sentences, elapsed)
+            try:
+                for i in range(start_index, total_sentences):
+                    if self.stop_generation_flag.is_set():
+                        if self.cancel_generation_flag.is_set():
+                            cleanup_requested = True
+                            if dubbing_workflow_active:
+                                self._mark_dubbing_step("tts_generation", "failed", "Cancelled by user.")
+                            self._set_session_activity(
+                                "Cancelling generation",
+                                "Cancellation was acknowledged. Cleaning up generated artifacts next.",
+                                "warning",
+                            )
+                            self.log_message.emit("Cancellation acknowledged. Cleaning up generated artifacts...")
+                        else:
+                            if dubbing_workflow_active:
+                                self._mark_dubbing_step("tts_generation", "failed", "Stopped by user.")
+                            self._set_session_activity(
+                                "Generation stopped",
+                                "The run stopped after the current sentence as requested.",
+                                "warning",
+                            )
+                            self.log_message.emit("Generation stopped by user.")
+                        return
 
-            self.log_message.emit("Audio generation finished.")
+                    sentence_dict = processed_sentences[i]
+                    if sentence_dict.get("tts_generated") == "yes":
+                        continue
+
+                    skip_llm = False
+                    if use_parallel_llm:
+                        future = llm_futures.get(i)
+                        if future:
+                            _, llm_success, updated_sentence_from_llm = future.result()
+                            if llm_success:
+                                sentence_dict = updated_sentence_from_llm
+                                skip_llm = True
+
+                    sentence_start_time = time.time()
+                    self._set_session_activity(
+                        "Generating audio",
+                        f"Rendering sentence {i + 1} of {total_sentences}.",
+                        "active",
+                    )
+                    self.log_message.emit(f"Generating sentence {i+1}/{total_sentences}...")
+
+                    success, updated_sentence = self._execute_generation_for_sentence(sentence_dict, skip_llm=skip_llm)
+                    if not success or updated_sentence is None:
+                        if self.cancel_generation_flag.is_set():
+                            cleanup_requested = True
+                            if dubbing_workflow_active:
+                                self._mark_dubbing_step("tts_generation", "failed", "Cancelled during sentence generation.")
+                            self._set_session_activity(
+                                "Cancelling generation",
+                                f"Generation was cancelled while working on sentence {i + 1}. Cleanup will run next.",
+                                "warning",
+                            )
+                            self.log_message.emit("Generation cancelled during sentence processing. Cleaning up...")
+                        else:
+                            if dubbing_workflow_active:
+                                self._mark_dubbing_step("tts_generation", "failed", f"Sentence {i+1} failed.")
+                            self._set_session_activity(
+                                "Generation failed",
+                                f"Sentence {i + 1} could not be generated.",
+                                "error",
+                            )
+                            self.show_error.emit("Generation Error", f"Failed to generate audio for sentence {i+1}. Aborting.")
+                        return
+
+                    processed_sentences[i] = updated_sentence
+                    self._set_processed_sentences_snapshot(processed_sentences)
+                    self.state_changed.emit()
+
+                    sentence_end_time = time.time()
+                    sentence_times.append(sentence_end_time - sentence_start_time)
+                    elapsed = sentence_end_time - start_time
+                    self.progress_updated.emit(i + 1, total_sentences, elapsed)
+
+                self.log_message.emit("Audio generation finished.")
+            finally:
+                if llm_executor:
+                    llm_executor.shutdown(wait=False, cancel_futures=True)
 
             if self.cancel_generation_flag.is_set():
                 cleanup_requested = True
@@ -5982,7 +6032,7 @@ class AppLogic(QObject):
 
         return processed_text, prompts_ran
 
-    def _execute_generation_for_sentence(self, sentence_dict: dict) -> tuple[bool, dict | None]:
+    def _execute_generation_for_sentence(self, sentence_dict: dict, skip_llm: bool = False) -> tuple[bool, dict | None]:
         """Runs the full generation pipeline (LLM, TTS, RVC, fade) for a single sentence."""
         try:
             updated_sentence = copy.deepcopy(sentence_dict)
@@ -5997,7 +6047,7 @@ class AppLogic(QObject):
                 return True, updated_sentence  # Skip empty sentences
 
             # 1. LLM Processing
-            if self.state.llm.processing_enabled:
+            if self.state.llm.processing_enabled and not skip_llm:
                 processed_text, _ = self._run_llm_processing(text_to_process)
                 if is_dubbing_sentence:
                     processed_text = self._normalize_subtitle_sentence_text(processed_text)
