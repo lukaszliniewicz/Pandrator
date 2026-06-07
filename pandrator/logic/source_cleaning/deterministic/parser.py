@@ -46,17 +46,21 @@ class EPUBHTMLParser(HTMLParser):
         # Tag stack to track parents: (tag_name, class_val, id_val)
         self.tag_stack = []
         
+        # Block-level tag stack to track nested blocks
+        self.block_stack = []
+        
         # Current block accumulator
-        self.current_block = None
         self.current_block_tag = None
+        self.current_block_id = ""
+        self.current_block_classes = []
+        self.current_block_nested_ids = []
+        self.pending_ids = []
         
         # Accumulating plain text vs anchor elements inside block
         self.current_parts = []
         
         # Track anchor tags stack to support nested tags inside anchor
         self.anchor_stack = []
-        self.current_block_nested_ids = []
-        self.pending_ids = []
 
     def handle_starttag(self, tag, attrs):
         attr_dict = dict(attrs)
@@ -79,16 +83,23 @@ class EPUBHTMLParser(HTMLParser):
             # If there's an existing block, close it
             self._close_current_block()
             
+            block_info = {
+                "tag": tag,
+                "id": id_val,
+                "classes": [c for c in class_val.split() if c] if class_val else [],
+                "nested_ids": list(self.pending_ids)
+            }
+            if id_val:
+                block_info["nested_ids"].append(id_val)
+                
+            self.block_stack.append(block_info)
+            self.pending_ids = []
+            
             self.current_block_tag = tag
             self.current_block_id = id_val
-            self.current_block_classes = [c for c in class_val.split() if c] if class_val else []
+            self.current_block_classes = block_info["classes"]
+            self.current_block_nested_ids = block_info["nested_ids"]
             self.current_parts = []
-            
-            # Copy pending IDs to this new block and clear the pending list
-            self.current_block_nested_ids = list(self.pending_ids)
-            self.pending_ids = []
-            if id_val:
-                self.current_block_nested_ids.append(id_val)
         else:
             # If we are not in a block, store the ID in pending
             if id_val:
@@ -141,8 +152,27 @@ class EPUBHTMLParser(HTMLParser):
             })
             
         # Block tag end
-        if self.current_block_tag == tag:
-            self._close_current_block()
+        block_tags = {"p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "dd", "dt", "blockquote", "aside", "section", "article"}
+        if tag in block_tags:
+            tag_index = -1
+            for idx in range(len(self.block_stack) - 1, -1, -1):
+                if self.block_stack[idx]["tag"] == tag:
+                    tag_index = idx
+                    break
+                    
+            if tag_index != -1:
+                self._close_current_block()
+                self.block_stack = self.block_stack[:tag_index]
+                if self.block_stack:
+                    parent = self.block_stack[-1]
+                    self.current_block_tag = parent["tag"]
+                    self.current_block_id = parent["id"]
+                    self.current_block_classes = parent["classes"]
+                    self.current_block_nested_ids = parent["nested_ids"]
+                    self.current_parts = []
+                else:
+                    self.current_block_tag = None
+                    self.current_parts = []
             
         if self.tag_stack:
             self.tag_stack.pop()
@@ -161,8 +191,12 @@ class EPUBHTMLParser(HTMLParser):
             else:
                 parts_clean.append(p)
                 
+        # Collapse whitespaces inside each part
+        for p in parts_clean:
+            p["content"] = re.sub(r'\s+', ' ', p["content"])
+            
         # Build plain text representation
-        plain_text = "".join(p["content"] for p in parts_clean).strip()
+        plain_text = re.sub(r'\s+', ' ', "".join(p["content"] for p in parts_clean)).strip()
         
         # Only save block if it contains actual content or has anchors/ids
         if plain_text or self.current_block_id or self.current_block_nested_ids or any(p["type"] == "anchor" for p in parts_clean):
