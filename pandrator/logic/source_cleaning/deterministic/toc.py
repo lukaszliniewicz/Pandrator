@@ -9,8 +9,12 @@ def is_toc_file(href: str, parsed_doc: dict, spine: list[dict]) -> bool:
     """
     name_lower = href.lower()
     
-    # 1. Explicit filename checks
-    if any(x in name_lower for x in ["toc", "contents", "nav"]):
+    # 1. Explicit filename checks (word-tokenized to prevent false positives like 'anavenger' or 'apinkstocking')
+    import re
+    base_name = os.path.splitext(os.path.basename(name_lower))[0]
+    clean_name = re.sub(r'[^a-z]', ' ', base_name)
+    words = clean_name.split()
+    if any(w in ['toc', 'contents', 'nav', 'navigation'] for w in words):
         return True
         
     # Gather anchors in this document

@@ -22,8 +22,19 @@ def is_footnote_ref(anchor: dict) -> bool:
         
     # Naming convention heuristics
     keywords = ["fn", "footnote", "note", "ref"]
-    if re.search(r"(?:^|_)fn\d+|footnote|(?<!\w)note\d+", frag):
+    
+    # 1. Check if the target file name itself points to a notes file (e.g. notes.htm) and has a number in fragment
+    target_file = os.path.basename(href.split("#")[0]).lower()
+    if any(k in target_file for k in ["note", "fn"]) and re.search(r"\d+", frag):
         return True
+        
+    # 2. Match standard note/footnote patterns in fragment or ID (supporting fn, en, nr, ref followed by digits)
+    if re.search(r"(?:^|_)(?:fn|en|nr|ref)\d+|footnote|(?<!\w)note\d+", frag):
+        return True
+    if re.search(r"(?:^|_)(?:fn|en|nr|ref)\d+|footnote|(?<!\w)note\d+", id_val):
+        return True
+        
+    # 3. Class/ID keyword matching
     if any(k in cls for k in keywords):
         return True
     if any(k in id_val for k in keywords):
@@ -40,13 +51,33 @@ def clean_footnote_text(text: str) -> str:
 
 def split_sentences_regex(text: str) -> list[str]:
     """
-    Fast regex-based sentence splitter that handles common abbreviations.
+    Fast sentence splitter that handles common abbreviations without look-behind errors.
     """
-    sentence_end = re.compile(
-        r'(?<!\b(?:Mr|St|Dr|Mrs|Ms|Jr|Sr|Prof|Gen|Capt|Col|Lt|M|Mlle|Mme|vs|ca|eg|ie|etc|rozdzia|rozdz))\b(?<=[.!?])\s+(?=[A-Z\u0100-\u017f\u0400-\u04ff\u4e00-\u9fff])'
-    )
-    sentences = sentence_end.split(text)
-    return [s.strip() for s in sentences if s.strip()]
+    pattern = re.compile(r'([.!?])\s+(?=[A-Z\u0100-\u017f\u0400-\u04ff\u4e00-\u9fff])')
+    abbreviations = {
+        "mr", "st", "dr", "mrs", "ms", "jr", "sr", "prof", "gen", "capt", "col", "lt", 
+        "m", "mlle", "mme", "vs", "ca", "eg", "ie", "etc", "rozdzia", "rozdz"
+    }
+    
+    sentences = []
+    last_idx = 0
+    
+    for match in pattern.finditer(text):
+        split_idx = match.start(1) + 1
+        prev_text = text[max(0, split_idx-15):split_idx-1]
+        words = re.findall(r'\b\w+\b$', prev_text)
+        if words:
+            prev_word = words[0].lower()
+            if prev_word in abbreviations:
+                continue
+                
+        sentences.append(text[last_idx:match.end()].strip())
+        last_idx = match.end()
+        
+    if last_idx < len(text):
+        sentences.append(text[last_idx:].strip())
+        
+    return [s for s in sentences if s]
 
 def build_backlink_map(parsed_documents: dict) -> dict[tuple[str, str], dict]:
     """
