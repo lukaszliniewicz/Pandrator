@@ -33,7 +33,7 @@ KNOWN_CHAPTER_CLASSES = {
 EXPLICIT_CHAPTER_WORDS = (
     r"chapter|ch|part|section|book|volume|vol|rozdział|rozdz|część|cz|księga|tom|"
     r"kapitel|kap|teil|abschnitt|band|hoofdstuk|hst|deel|capítulo|cap|sección|sezione|"
-    r"chapitre|chap|tome|secção|seção|livro|fejezet|fej|rész|szakasz|kötet|глава|гл|часть|книга|अध्याय|खण्ड|सर्ग|appendix"
+    r"chapitre|chap|tome|secção|seção|livro|fejezet|fej|rész|szakasz|kötet|глава|гл|часть|ч|книга|кн|том|т|अध्याय|खण्ड|सर्ग|appendix"
 )
 NUMERIC_WORDS = (
     r"[0-9]+|[I|V|X|L|C|D|M]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
@@ -49,9 +49,10 @@ NUMERIC_WORDS = (
 STANDALONE_CHAPTER_WORDS = (
     r"prologue|epilogue|preface|foreword|introduction|afterword|acknowledgements|acknowledgment|contents|table\s+of\s+contents|"
     r"wstęp|posłowie|podziękowania|spis\s+treści|prolog|epilog|vorwort|nachwort|danksagung|einleitung|inhaltsverzeichnis|"
-    r"inleiding|nawoord|dankwoord|inhoud|prólogo|epílogo|introducción|prefacio|agradecimientos|contenido|indice|"
-    r"introduzione|prefazione|ringraziamenti|préface|avant-propos|remerciements|bevezetés|előszó|utószó|köszönetnyilvánítás|tartalom|"
-    r"введение|предисловие|послесловие|благодарности|содержание|भूमika|प्रस्तावना"
+    r"inleiding|nawoord|dankwoord|inhoud|inhoudsopgave|prólogo|epílogo|introducción|prefacio|agradecimientos|contenido|indice|"
+    r"introduzione|prefazione|ringraziamenti|préface|avant-propos|remerciements|table\s+des\s+matières|sommaire|"
+    r"bevezetés|előszó|utószó|köszönetnyilvánítás|tartalom|введение|предисловие|послесловие|благодарности|"
+    r"содержание|оглавление|भूमिका|प्रस्तावना|आभार|विषय-सूची"
 )
 
 EXPLICIT_CHAPTER_RE = re.compile(r"^(?:(?:" + EXPLICIT_CHAPTER_WORDS + r")\s+(?:" + NUMERIC_WORDS + r"))\b", re.IGNORECASE)
@@ -76,8 +77,8 @@ def is_chapter_block(block: dict, idx_in_doc: int, lang: str = "en") -> bool:
     if any(cls.lower() in KNOWN_CHAPTER_CLASSES for cls in classes):
         return True
         
-    # 3. First-3-paragraphs text scanner matching chapter prefixes
-    if idx_in_doc < 3 and len(text) < 60:
+    # 3. Text scanner matching chapter prefixes (safe anywhere for CJK, first-3-paragraphs for alphabetical)
+    if (lang in ("zh", "ja") or idx_in_doc < 3) and len(text) < 60:
         regex = get_chapter_regex(lang)
         if regex.match(text):
             return True
