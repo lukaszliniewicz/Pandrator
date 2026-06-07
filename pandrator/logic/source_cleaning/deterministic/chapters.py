@@ -29,6 +29,34 @@ KNOWN_CHAPTER_CLASSES = {
     "h1", "h2", "h3", "heading", "chapter", "title", "header", "chapter-number", "chapternum"
 }
 
+# Expanded explicit chapter patterns with numbers/words for deep checks
+EXPLICIT_CHAPTER_WORDS = (
+    r"chapter|ch|part|section|book|volume|vol|rozdział|rozdz|część|cz|księga|tom|"
+    r"kapitel|kap|teil|abschnitt|band|hoofdstuk|hst|deel|capítulo|cap|sección|sezione|"
+    r"chapitre|chap|tome|secção|seção|livro|fejezet|fej|rész|szakasz|kötet|глава|гл|часть|книга|अध्याय|खण्ड|सर्ग|appendix"
+)
+NUMERIC_WORDS = (
+    r"[0-9]+|[I|V|X|L|C|D|M]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
+    r"first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth|"
+    r"jeden|dwa|trzy|cztery|pięć|sześć|siedem|osiem|dziewięć|dziesięć|pierwszy|drugi|trzeci|czwarty|piąty|"
+    r"ein|zwei|drei|vier|fünf|sechs|sieben|acht|neun|zehn|erste|zweite|dritte|vierte|fünfte|"
+    r"een|twee|drie|vier|vijf|zes|zeven|acht|negen|tien|eerste|tweede|derde|vierde|vijfde|"
+    r"uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|primo|segundo|tercero|cuarto|quinto|"
+    r"un|deux|trois|quatre|cinq|six|sept|huit|neuf|dix|premier|second|troisième|quatrième|cinquième|"
+    r"egy|két|három|négy|öt|hat|hét|nyolc|kilenc|tíz|első|második|harmadik|negyedik|ötödik|"
+    r"один|два|три|четыре|пять|шесть|семь|восемь|девять|десять|первый|второй|третий|четвертый|пятый"
+)
+STANDALONE_CHAPTER_WORDS = (
+    r"prologue|epilogue|preface|foreword|introduction|afterword|acknowledgements|acknowledgment|contents|table\s+of\s+contents|"
+    r"wstęp|posłowie|podziękowania|spis\s+treści|prolog|epilog|vorwort|nachwort|danksagung|einleitung|inhaltsverzeichnis|"
+    r"inleiding|nawoord|dankwoord|inhoud|prólogo|epílogo|introducción|prefacio|agradecimientos|contenido|indice|"
+    r"introduzione|prefazione|ringraziamenti|préface|avant-propos|remerciements|bevezetés|előszó|utószó|köszönetnyilvánítás|tartalom|"
+    r"введение|предисловие|послесловие|благодарности|содержание|भूमika|प्रस्तावना"
+)
+
+EXPLICIT_CHAPTER_RE = re.compile(r"^(?:(?:" + EXPLICIT_CHAPTER_WORDS + r")\s+(?:" + NUMERIC_WORDS + r"))\b", re.IGNORECASE)
+STANDALONE_CHAPTER_RE = re.compile(r"^(?:" + STANDALONE_CHAPTER_WORDS + r")\b", re.IGNORECASE)
+
 def is_chapter_block(block: dict, idx_in_doc: int, lang: str = "en") -> bool:
     """
     Checks if a block is a chapter heading, tailored to the book's language.
@@ -52,6 +80,13 @@ def is_chapter_block(block: dict, idx_in_doc: int, lang: str = "en") -> bool:
     if idx_in_doc < 3 and len(text) < 60:
         regex = get_chapter_regex(lang)
         if regex.match(text):
+            return True
+            
+    # 4. Deep document chapter keyword checks (safe anywhere in the document if short and explicit)
+    if len(text) < 80:
+        if EXPLICIT_CHAPTER_RE.match(text):
+            return True
+        if STANDALONE_CHAPTER_RE.match(text):
             return True
             
     return False
