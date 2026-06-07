@@ -44,8 +44,11 @@ def is_toc_file(href: str, parsed_doc: dict, spine: list[dict]) -> bool:
         # If fragment only (e.g. href="#chapter1"), it points to the current file
         if not target_file:
             continue
+        # Resolve target path relative to current document's directory in the archive
+        curr_dir = os.path.dirname(href)
+        resolved_target = os.path.normpath(os.path.join(curr_dir, target_file)).replace("\\", "/")
+        target_lower = resolved_target.lower()
         # Check if the target is in the spine and is not the current file itself
-        target_lower = target_file.lower()
         if target_lower in spine_hrefs and target_lower != name_lower:
             num_spine_links += 1
             unique_targets.add(target_lower)
