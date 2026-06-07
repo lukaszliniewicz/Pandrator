@@ -85,8 +85,15 @@ def is_chapter_block(block: dict, idx_in_doc: int, lang: str = "en") -> bool:
             
     # 4. Deep document chapter keyword checks (safe anywhere in the document if short and explicit)
     if len(text) < 80:
-        if EXPLICIT_CHAPTER_RE.match(text):
-            return True
+        match = EXPLICIT_CHAPTER_RE.match(text)
+        if match:
+            remainder = text[match.end():].strip()
+            if not remainder:
+                return True
+            else:
+                first_char = remainder[0]
+                if first_char in '.:;,-—~' or first_char.isupper() or first_char.isdigit():
+                    return True
         if STANDALONE_CHAPTER_RE.match(text):
             return True
             

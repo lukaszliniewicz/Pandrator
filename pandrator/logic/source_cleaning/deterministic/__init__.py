@@ -57,6 +57,48 @@ def extract_clean_epub(epub_path: str, remove_footnotes: bool = False, filter_ci
         doc = parsed_docs[doc_href]
         blocks = doc["blocks"]
         
+        # Detect and strip inline TOC lists (e.g. at start of content files)
+        import re
+        TOC_HEADER_RE = re.compile(
+            r"^(?:tableofcontents|contents|spistre\u015bci|spistresci|inhoud|inhaltsverzeichnis|"
+            r"tabledesmati\u00e8res|tabledesmatieres|inhoudsopgave|sommaire|"
+            r"\u043e\u0433\u043b\u0430\u0432\u043b\u0435\u043d\u0438\u0435|\u0441\u043e\u0434\u0435\u0440\u0436\u0430\u043d\u0438\u0435|\u0935\u093f\u0937\u092f-\u0938\u0942\u091a\u0940)$",
+            re.IGNORECASE
+        )
+        
+        toc_start_idx = None
+        in_inline_toc = False
+        last_heading_idx = None
+        to_remove = set()
+        
+        for idx, block in enumerate(blocks):
+            text = block.get("text", "").strip()
+            if not text:
+                continue
+                
+            is_ch = chapters.is_chapter_block(block, idx, lang=detected_lang)
+            no_space_text = re.sub(r"\s+", "", text)
+            
+            if not in_inline_toc and TOC_HEADER_RE.match(no_space_text):
+                in_inline_toc = True
+                toc_start_idx = idx
+                continue
+                
+            if in_inline_toc:
+                if is_ch:
+                    last_heading_idx = idx
+                elif len(text) > 80:
+                    in_inline_toc = False
+                    if last_heading_idx is not None:
+                        for r_idx in range(toc_start_idx, last_heading_idx):
+                            to_remove.add(r_idx)
+                    else:
+                        for r_idx in range(toc_start_idx, idx):
+                            to_remove.add(r_idx)
+                            
+        if to_remove:
+            blocks = [b for idx, b in enumerate(blocks) if idx not in to_remove]
+            
         # Check if this document has any headings detected
         has_headings = False
         for idx_in_doc, block in enumerate(blocks):
