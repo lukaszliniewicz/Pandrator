@@ -25,9 +25,13 @@ def is_toc_file(href: str, parsed_doc: dict, spine: list[dict]) -> bool:
                 anchors.append(part)
                 
     # 2. Count internal hyperlinks pointing to other spine files
+    from .footnotes import is_footnote_ref
     spine_hrefs = {item["href"].lower() for item in spine}
     num_spine_links = 0
+    unique_targets = set()
     for a in anchors:
+        if is_footnote_ref(a):
+            continue
         h = a.get("href", "")
         if not h:
             continue
@@ -40,14 +44,17 @@ def is_toc_file(href: str, parsed_doc: dict, spine: list[dict]) -> bool:
         target_lower = target_file.lower()
         if target_lower in spine_hrefs and target_lower != name_lower:
             num_spine_links += 1
+            unique_targets.add(target_lower)
             
     # 3. Apply Heuristics
-    # High link count ceiling (large chapter summaries can have low density but high link count)
-    if num_spine_links > 8:
+    num_unique_targets = len(unique_targets)
+    
+    # High unique target files count (real TOC links to many files)
+    if num_unique_targets > 8:
         return True
         
-    # High link density relative to text length
-    if num_spine_links > 4 and (num_spine_links / max(1, word_count)) > 0.08:
+    # High unique target files count with high density of links pointing to them
+    if num_unique_targets > 4 and (num_spine_links / max(1, word_count)) > 0.08:
         return True
         
     return False

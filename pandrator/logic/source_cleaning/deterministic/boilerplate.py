@@ -27,7 +27,7 @@ def is_end_boilerplate(idx: int, total_spine_files: int, href: str) -> bool:
     if idx > total_spine_files - 5 or (idx / max(1, total_spine_files)) > 0.75:
         # Calibre split-file recovery: ignore index_split pages
         if "index_split" not in name_lower:
-            keywords = ["index", "biblio", "bibliography", "about", "ads", "advertisement", "colophon"]
+            keywords = ["index", "biblio", "bibliography", "about", "ads", "advertisement", "colophon", "copyright", "copy"]
             if any(x in name_lower for x in keywords):
                 return True
                 

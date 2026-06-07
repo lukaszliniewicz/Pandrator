@@ -20,11 +20,14 @@ CJK_PATTERN = (
     r'プロローグ|エピローグ|楔子|前言|序幕|尾声|尾聲|序|跋|序章|終章|まえがき|あとがき|后记|後記|引言|绪论|緒論)'
 )
 
-NUM_PATTERN = r'^(?:[0-9]+|[I|V|X|L|C|D|M]+)\b'
+NUM_PATTERN = r'^(?:[0-9]{1,3}|[I|V|X|L|C|D|M]+)\b'
 
 COMBINED_REGEX = re.compile(f"{WORD_PATTERN}|{CJK_PATTERN}|{NUM_PATTERN}", re.IGNORECASE)
 
-KNOWN_CHAPTER_CLASSES = {"ct", "cn", "chap", "chtitle", "chap_no", "ch-title", "partno", "chapter-title"}
+KNOWN_CHAPTER_CLASSES = {
+    "ct", "cn", "chap", "chtitle", "chap_no", "ch-title", "partno", "chapter-title",
+    "h1", "h2", "h3", "heading", "chapter", "title", "header", "chapter-number", "chapternum"
+}
 
 def is_chapter_block(block: dict, idx_in_doc: int) -> bool:
     """

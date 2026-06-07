@@ -20,7 +20,7 @@ NUMBERED_HEADING_PATTERN = (
     r"księgi|wstęp|posłowie|livre|tome|préface|avant-propos|vorwort|nachwort|prefacio|"
     r"introducción|prefácio|introdução|posfácio|deel|inleiding|nawoord|bevezetés|"
     r"előszó|utószó|parathënie|pasthënie)\s+)?"
-    r"([ivxlcdm]+|\d+|[\u4e00-\u4e5d\u5341\u767e\u5343]+)"
+    r"([ivxlcdm]+|\d{1,3}|[\u4e00-\u4e5d\u5341\u767e\u5343]+)"
     r"([\.:)\- ]|$)"
 )
 
