@@ -12,7 +12,14 @@ from .selectors import blocks_matching_selector, selector_supported_keys
 
 
 NUMBERED_HEADING_PATTERN = (
-    r"^((chapter|part|book|section)\s+)?"
+    r"^((?:chapter|ch|rozdział|rozdz|chapitre|chap|kapitel|kap|capítulo|cap|"
+    r"secção|seção|hoofdstuk|hst|fejezet|fej|kapitull|part|section|sectie|część|cz|"
+    r"partie|teil|abschnitt|parte|sección|rész|szakasz|pjesë|seksion|volume|vol|tom|t|"
+    r"band|bd|buch|libro|livro|boek|kötet|köt|könyv|vëllim|vël|libër|prologue|epilogue|"
+    r"prolog|epilog|épilogue|prólogo|epílogo|proloog|epiloog|prologus|epilogus|księga|"
+    r"księgi|wstęp|posłowie|livre|tome|préface|avant-propos|vorwort|nachwort|prefacio|"
+    r"introducción|prefácio|introdução|posfácio|deel|inleiding|nawoord|bevezetés|"
+    r"előszó|utószó|parathënie|pasthënie)\s+)?"
     r"([ivxlcdm]+|\d+|[\u4e00-\u4e5d\u5341\u767e\u5343]+)"
     r"([\.:)\- ]|$)"
 )
@@ -927,7 +934,7 @@ def _looks_like_numbered_heading(text: str) -> bool:
         return True
     return bool(
         re.match(
-            r"^((chapter|part|book|section)\s+)?([ivxlcdm]+|\d+|[一二三四五六七八九十百千]+)([\.:)\- ]|$)",
+            r"^(?:プロローグ|エピローグ|楔子|前言|序幕|尾声|尾聲|序|跋|序章|終章|まえがき|あとがき|后记|後記|引言|绪论|緒論)$",
             stripped,
             flags=re.IGNORECASE,
         )

@@ -114,25 +114,9 @@ def _extract_chapter_text(html_content, all_html_content=""):
     return chapter_text
 
 def extract_text_from_epub(epub_path: str) -> str:
-    """Extracts and combines text from all documents in an EPUB file."""
-    import ebooklib
-    from ebooklib import epub
-
-    book = epub.read_epub(epub_path)
-    chapters = []
-    all_html_content = ""
-    for item in book.get_items():
-        if item.get_type() == ebooklib.ITEM_DOCUMENT:
-            all_html_content += item.get_content().decode('utf-8', errors='ignore')
-
-    for item in book.get_items():
-        if item.get_type() == ebooklib.ITEM_DOCUMENT:
-            filename = item.get_name()
-            if "cover" not in filename.lower() and "toc" not in filename.lower():
-                content = item.get_content().decode('utf-8', errors='ignore')
-                chapters.append(_extract_chapter_text(content, all_html_content))
-
-    return "\n\n".join(chapters)
+    """Extracts and combines text from all documents in an EPUB file using robust heuristics."""
+    from .source_cleaning.deterministic import extract_clean_epub
+    return extract_clean_epub(epub_path, remove_footnotes=False)
 
 def extract_text_from_pdf(pdf_path: str) -> str:
     """Extracts raw text from a PDF file."""
