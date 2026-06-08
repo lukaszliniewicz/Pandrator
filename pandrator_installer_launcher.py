@@ -1,6 +1,7 @@
 import os
 import subprocess
 import logging
+import concurrent.futures
 import time
 import shutil
 import hashlib
@@ -745,6 +746,52 @@ class PandratorInstaller(QMainWindow):
     def clear_log_view(self):
         if hasattr(self, 'log_view'):
             self.log_view.clear()
+
+    def execute_concurrently(self, tasks, max_workers=8):
+        """Execute multiple callables concurrently and log errors if they fail.
+        
+        tasks: dict of {task_name: (callable_fn, args, kwargs)} or {task_name: callable_fn}
+        """
+        task_names = ", ".join(tasks.keys())
+        logging.info(f"Starting concurrent tasks: {task_names}")
+        if hasattr(self, 'worker') and self.worker is not None:
+            self.worker.update_status.emit(f"Running concurrent tasks: {task_names}...")
+            
+        results = {}
+        errors = {}
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_name = {}
+            for name, task in tasks.items():
+                if isinstance(task, tuple):
+                    fn, args, kwargs = task
+                else:
+                    fn, args, kwargs = task, (), {}
+                
+                def wrapped_fn(fn=fn, args=args, kwargs=kwargs, name=name):
+                    logging.info(f"[{name}] Started")
+                    res = fn(*args, **kwargs)
+                    logging.info(f"[{name}] Completed successfully")
+                    return res
+                    
+                future = executor.submit(wrapped_fn)
+                future_to_name[future] = name
+                
+            for future in concurrent.futures.as_completed(future_to_name):
+                name = future_to_name[future]
+                try:
+                    results[name] = future.result()
+                except Exception as e:
+                    logging.error(f"[{name}] Failed: {str(e)}")
+                    logging.error(traceback.format_exc())
+                    errors[name] = e
+                    
+        if errors:
+            first_error_name = list(errors.keys())[0]
+            first_error = errors[first_error_name]
+            raise RuntimeError(f"Concurrent task '{first_error_name}' failed: {str(first_error)}") from first_error
+            
+        return results
 
     # Utility functions
     def get_packaging_layout(self):
@@ -4395,76 +4442,73 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 os.makedirs(pandrator_path, exist_ok=True)
                 if is_admin:
                     self.set_permissive_permissions(pandrator_path)
+                  # Phase 1: Concurrently download dependencies and clone top-level repos
+            concurrent_tasks = {}
             
-            self.worker.update_progress.emit(0.1)
-            self.worker.update_status.emit("Installing Chocolatey...")
-            if is_admin:
-                self.install_chocolatey()
-            else:
-                self.worker.update_status.emit("Skipping Chocolatey installation (requires admin)")
-                logging.warning("Skipping Chocolatey installation (requires admin)")
-
-            self.worker.update_progress.emit(0.2)
-            self.worker.update_status.emit("Installing dependencies...")
-            try:
-                if not is_admin:
-                    self.worker.update_status.emit("Checking for Calibre...")
-
-                dependencies_ok = self.install_dependencies(
-                    pandrator_path,
-                    allow_system_install=is_admin,
-                )
-                if not dependencies_ok:
-                    logging.warning(
-                        "Calibre is unavailable. DOCX/MOBI conversion will require manual setup."
+            # Calibre installation task
+            def install_calibre_task():
+                try:
+                    if not is_admin:
+                        logging.info("[Calibre Setup] Checking for Calibre...")
+                    dependencies_ok = self.install_dependencies(
+                        pandrator_path,
+                        allow_system_install=is_admin,
                     )
-            except Exception as e:
-                logging.error(f"Error during dependency installation: {str(e)}")
-                self.show_calibre_installation_message()
-
-            self.worker.update_progress.emit(0.35)
-            self.worker.update_status.emit("Installing Pixi...")
-            if not self.check_pixi(pandrator_path):
-                self.install_pixi(pandrator_path)
-                if is_admin:
-                    self.set_permissive_permissions(os.path.join(pandrator_path, 'bin'))
+                    if not dependencies_ok:
+                        logging.warning(
+                            "[Calibre Setup] Calibre is unavailable. DOCX/MOBI conversion will require manual setup."
+                        )
+                except Exception as e:
+                    logging.error(f"[Calibre Setup] Error during dependency installation: {str(e)}")
+                    self.show_calibre_installation_message()
+            
+            concurrent_tasks["Calibre Setup"] = install_calibre_task
+            
+            # Pixi installation task
+            def install_pixi_task():
+                if not self.check_pixi(pandrator_path):
+                    self.install_pixi(pandrator_path)
+                    if is_admin:
+                        self.set_permissive_permissions(os.path.join(pandrator_path, 'bin'))
+            
+            concurrent_tasks["Pixi Setup"] = install_pixi_task
+            
+            # FFmpeg installation task
+            def install_ffmpeg_task():
+                if not self.ensure_bundled_ffmpeg_with_subtitles(pandrator_path):
+                    logging.warning(
+                        "[FFmpeg Setup] Bundled FFmpeg with subtitle burning support could not be prepared. "
+                        "Soft subtitles will still work."
+                    )
+            
+            concurrent_tasks["FFmpeg Setup"] = install_ffmpeg_task
+            
+            # Git repositories tasks
+            if pandrator_var or not pandrator_already_installed or pandrator_repo_missing:
+                concurrent_tasks["Clone Pandrator"] = (self.clone_repo, (PANDRATOR_REPO_URL, pandrator_repo_path), {})
+            if pandrator_var or not pandrator_already_installed or subdub_repo_missing:
+                concurrent_tasks["Clone Subdub"] = (self.clone_repo, (SUBDUB_REPO_URL, subdub_repo_path), {})
+            if (xtts_var or xtts_cpu_var) and not os.path.exists(xtts_repo_path):
+                concurrent_tasks["Clone XTTS"] = (self.clone_repo, (XTTS_API_REPO_URL, xtts_repo_path), {})
+            if voxcpm_var and not os.path.exists(voxcpm_repo_path):
+                concurrent_tasks["Clone VoxCPM"] = (self.clone_repo, (VOXCPM_API_REPO_URL, voxcpm_repo_path), {})
+            if fishs2_var and not os.path.exists(fishs2_repo_path):
+                concurrent_tasks["Clone FishS2"] = (self.clone_repo, (FISHS2_API_REPO_URL, fishs2_repo_path), {})
+            if voxtral_var and not os.path.exists(voxtral_repo_path):
+                concurrent_tasks["Clone Voxtral"] = (self.clone_repo, (VOXTRAL_API_REPO_URL, voxtral_repo_path), {})
+            if (kokoro_var or kokoro_cpu_var) and not os.path.exists(kokoro_repo_path):
+                concurrent_tasks["Clone Kokoro"] = (self.clone_repo, (KOKORO_API_REPO_URL, kokoro_repo_path), {})
+            if xtts_finetuning_var and not os.path.exists(easy_xtts_trainer_path):
+                concurrent_tasks["Clone XTTS Trainer"] = (self.clone_repo, (EASY_XTTS_TRAINER_REPO_URL, easy_xtts_trainer_path), {})
+                
+            self.execute_concurrently(concurrent_tasks, max_workers=8)
 
             if not self.check_pixi(pandrator_path):
                 self.worker.update_status.emit("Pixi installation failed")
                 logging.error("Pixi installation failed")
                 return
 
-            self.worker.update_status.emit("Checking bundled FFmpeg subtitle support...")
-            if not self.ensure_bundled_ffmpeg_with_subtitles(pandrator_path):
-                logging.warning(
-                    "Bundled FFmpeg with subtitle burning support could not be prepared. "
-                    "Soft subtitles will still work."
-                )
-
             shared_pixi_path = self.get_pixi_executable(pandrator_path)
-            
-            self.worker.update_progress.emit(0.45)
-            self.worker.update_status.emit("Cloning repositories...")
-            
-            if pandrator_var or not pandrator_already_installed or pandrator_repo_missing:
-                self.clone_repo(PANDRATOR_REPO_URL, pandrator_repo_path)
-            if pandrator_var or not pandrator_already_installed or subdub_repo_missing:
-                self.clone_repo(SUBDUB_REPO_URL, subdub_repo_path)
-
-            if (xtts_var or xtts_cpu_var) and not os.path.exists(xtts_repo_path):
-                self.clone_repo(XTTS_API_REPO_URL, xtts_repo_path)
-
-            if voxcpm_var and not os.path.exists(voxcpm_repo_path):
-                self.clone_repo(VOXCPM_API_REPO_URL, voxcpm_repo_path)
-
-            if fishs2_var and not os.path.exists(fishs2_repo_path):
-                self.clone_repo(FISHS2_API_REPO_URL, fishs2_repo_path)
-
-            if voxtral_var and not os.path.exists(voxtral_repo_path):
-                self.clone_repo(VOXTRAL_API_REPO_URL, voxtral_repo_path)
-
-            if (kokoro_var or kokoro_cpu_var) and not os.path.exists(kokoro_repo_path):
-                self.clone_repo(KOKORO_API_REPO_URL, kokoro_repo_path)
 
             if needs_pandrator_environment:
                 self.worker.update_progress.emit(0.6)
@@ -4483,10 +4527,30 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 
                 self.install_subdub_requirements(pandrator_path, 'pandrator_installer', subdub_repo_path)
 
+            # Bootstrapping
+            kokoro_bootstrap_future = None
+            bootstrap_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            
+            if kokoro_var or kokoro_cpu_var:
+                self.worker.update_progress.emit(0.85)
+                self.worker.update_status.emit("Creating Kokoro Pixi environment...")
+                self.create_pixi_env(pandrator_path, KOKORO_ENV_NAME, KOKORO_PYTHON_VERSION)
+                
+                def kokoro_bootstrap_task():
+                    logging.info("[Bootstrap: Kokoro] Starting Kokoro API server bootstrap in background...")
+                    self.install_kokoro_api_server(
+                        pandrator_path,
+                        kokoro_repo_path,
+                        env_name=KOKORO_ENV_NAME,
+                        use_gpu=kokoro_var,
+                    )
+                    logging.info("[Bootstrap: Kokoro] Kokoro API server bootstrap completed.")
+                    
+                kokoro_bootstrap_future = bootstrap_executor.submit(kokoro_bootstrap_task)
+
             if xtts_var or xtts_cpu_var:
                 self.worker.update_progress.emit(0.8)
                 self.worker.update_status.emit("Bootstrapping XTTS2 API server (temporary startup)...")
-                self.worker.update_progress.emit(0.9)
                 self.install_xtts_api_server(
                     xtts_repo_path,
                     use_cpu=xtts_cpu_var,
@@ -4522,20 +4586,6 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 self.worker.update_progress.emit(0.9)
                 self.worker.update_status.emit("Bootstrapping Voxtral API server...")
                 self.install_voxtral_api_server(voxtral_repo_path)
-
-            if kokoro_var or kokoro_cpu_var:
-                self.worker.update_progress.emit(0.9)
-                self.worker.update_status.emit("Creating Kokoro Pixi environment...")
-                self.create_pixi_env(pandrator_path, KOKORO_ENV_NAME, KOKORO_PYTHON_VERSION)
-
-                self.worker.update_progress.emit(0.95)
-                self.worker.update_status.emit("Bootstrapping Kokoro API server...")
-                self.install_kokoro_api_server(
-                    pandrator_path,
-                    kokoro_repo_path,
-                    env_name=KOKORO_ENV_NAME,
-                    use_gpu=kokoro_var,
-                )
 
             if rvc_var:
                 self.worker.update_progress.emit(0.8)
@@ -4573,6 +4623,11 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
                 self.worker.update_status.emit("Installing PyTorch for XTTS Fine-tuning...")
                 self.install_pytorch_for_xtts_finetuning(pandrator_path, 'easy_xtts_trainer')
+
+            if kokoro_bootstrap_future is not None:
+                self.worker.update_status.emit("Waiting for Kokoro API server bootstrap to complete...")
+                kokoro_bootstrap_future.result()
+                bootstrap_executor.shutdown()
 
             # Create or update config file
             config = self.load_install_config(pandrator_path)
@@ -4672,21 +4727,89 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         try:
             self.configure_tls_certificates()
 
-            self.worker.update_status.emit("Installing Pixi...")
-            if not self.check_pixi(pandrator_base_path):
-                self.install_pixi(pandrator_base_path)
-                if is_admin:
-                    self.set_permissive_permissions(os.path.join(pandrator_base_path, 'bin'))
+            # Phase 1: Concurrently pull/clone all top-level repos and check calibre/ffmpeg/pixi
+            update_tasks = {}
+            
+            # Calibre task
+            def update_calibre_task():
+                self.install_dependencies(pandrator_base_path, allow_system_install=is_admin)
+                
+            update_tasks["Calibre Check"] = update_calibre_task
+            
+            # Pixi task
+            def update_pixi_task():
+                if not self.check_pixi(pandrator_base_path):
+                    self.install_pixi(pandrator_base_path)
+                    if is_admin:
+                        self.set_permissive_permissions(os.path.join(pandrator_base_path, 'bin'))
+                        
+            update_tasks["Pixi Check"] = update_pixi_task
+            
+            # FFmpeg task
+            def update_ffmpeg_task():
+                if not self.ensure_bundled_ffmpeg_with_subtitles(pandrator_base_path):
+                    logging.warning(
+                        "[FFmpeg Check] Bundled FFmpeg with subtitle burning support could not be prepared during update. "
+                        "Soft subtitles will still work."
+                    )
+                    
+            update_tasks["FFmpeg Check"] = update_ffmpeg_task
+            
+            # Git repos tasks
+            # Pandrator
+            update_tasks["Update Pandrator"] = (self.pull_repo, (pandrator_repo_path,), {})
+            
+            # Subdub
+            if os.path.exists(subdub_repo_path):
+                update_tasks["Update Subdub"] = (self.pull_repo, (subdub_repo_path,), {})
+            else:
+                update_tasks["Clone Subdub"] = (self.clone_repo, (SUBDUB_REPO_URL, subdub_repo_path), {})
+                
+            # XTTS
+            if config.get('xtts_support', False):
+                if os.path.exists(xtts_repo_path):
+                    update_tasks["Update XTTS"] = (self.pull_repo, (xtts_repo_path,), {})
+                else:
+                    update_tasks["Clone XTTS"] = (self.clone_repo, (XTTS_API_REPO_URL, xtts_repo_path), {})
+                    
+            # VoxCPM
+            if config.get('voxcpm_support', False):
+                if os.path.exists(voxcpm_repo_path):
+                    update_tasks["Update VoxCPM"] = (self.pull_repo, (voxcpm_repo_path,), {})
+                else:
+                    update_tasks["Clone VoxCPM"] = (self.clone_repo, (VOXCPM_API_REPO_URL, voxcpm_repo_path), {})
+                    
+            # FishS2
+            if config.get('fishs2_support', False):
+                if os.path.exists(fishs2_repo_path):
+                    update_tasks["Update FishS2"] = (self.pull_repo, (fishs2_repo_path,), {})
+                else:
+                    update_tasks["Clone FishS2"] = (self.clone_repo, (FISHS2_API_REPO_URL, fishs2_repo_path), {})
+                    
+            # Voxtral
+            if config.get('voxtral_support', False):
+                if os.path.exists(voxtral_repo_path):
+                    update_tasks["Update Voxtral"] = (self.pull_repo, (voxtral_repo_path,), {})
+                else:
+                    update_tasks["Clone Voxtral"] = (self.clone_repo, (VOXTRAL_API_REPO_URL, voxtral_repo_path), {})
+                    
+            # Kokoro
+            if config.get('kokoro_support', False):
+                if os.path.exists(kokoro_repo_path):
+                    update_tasks["Update Kokoro"] = (self.pull_repo, (kokoro_repo_path,), {})
+                else:
+                    update_tasks["Clone Kokoro"] = (self.clone_repo, (KOKORO_API_REPO_URL, kokoro_repo_path), {})
+                    
+            # easy_xtts_trainer
+            if os.path.exists(easy_xtts_trainer_path):
+                update_tasks["Update XTTS Trainer"] = (self.pull_repo, (easy_xtts_trainer_path,), {})
+            elif config.get('xtts_finetuning_support', False):
+                update_tasks["Clone XTTS Trainer"] = (self.clone_repo, (EASY_XTTS_TRAINER_REPO_URL, easy_xtts_trainer_path), {})
+                
+            self.execute_concurrently(update_tasks, max_workers=8)
 
             if not self.check_pixi(pandrator_base_path):
                 raise FileNotFoundError("Pixi installation failed during update.")
-
-            self.worker.update_status.emit("Checking bundled FFmpeg subtitle support...")
-            if not self.ensure_bundled_ffmpeg_with_subtitles(pandrator_base_path):
-                logging.warning(
-                    "Bundled FFmpeg with subtitle burning support could not be prepared during update. "
-                    "Soft subtitles will still work."
-                )
 
             shared_pixi_path = self.get_pixi_executable(pandrator_base_path)
 
@@ -4700,11 +4823,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             else:
                 logging.info("No local state database files found to back up before update.")
 
-            # Update Pandrator
-            self.worker.update_status.emit("Updating Pandrator repository...")
-            logging.info(f"Updating Pandrator in: {pandrator_repo_path}")
-            self.pull_repo(pandrator_repo_path)
-
+            # Setup environments
             self.worker.update_status.emit("Checking Pandrator environment...")
             self.create_pixi_env(pandrator_base_path, 'pandrator_installer', PANDRATOR_PYTHON_VERSION)
             self.add_pixi_conda_package(pandrator_base_path, 'pandrator_installer', 'ffmpeg')
@@ -4761,14 +4880,6 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 logging.warning(f"PyCropPDF requirements file not found at: {pycroppdf_requirements_file}")
 
             # Update Subdub
-            if os.path.exists(subdub_repo_path):
-                self.worker.update_status.emit("Updating Subdub repository...")
-                logging.info(f"Updating Subdub in: {subdub_repo_path}")
-                self.pull_repo(subdub_repo_path)
-            else:
-                self.worker.update_status.emit("Cloning Subdub repository...")
-                self.clone_repo(SUBDUB_REPO_URL, subdub_repo_path)
-
             self.worker.update_status.emit("Checking Subdub dependencies...")
             self.install_subdub_requirements(pandrator_base_path, 'pandrator_installer', subdub_repo_path)
 
@@ -4788,14 +4899,35 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 else:
                     logging.info(f"Skipping RVC reinstall: {rvc_reason}")
 
-            if config.get('xtts_support', False):
-                if os.path.exists(xtts_repo_path):
-                    self.worker.update_status.emit("Updating XTTS2 API server repository...")
-                    self.pull_repo(xtts_repo_path)
-                else:
-                    self.worker.update_status.emit("Cloning XTTS2 API server repository...")
-                    self.clone_repo(XTTS_API_REPO_URL, xtts_repo_path)
+            # Concurrently bootstrap Kokoro in background if it needs bootstrapping
+            kokoro_bootstrap_future = None
+            bootstrap_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
+            if config.get('kokoro_support', False):
+                kokoro_gpu_support = config.get(KOKORO_GPU_SUPPORT_CONFIG_FLAG, False)
+                if kokoro_env_missing:
+                    self.worker.update_status.emit("Creating Kokoro Pixi environment...")
+                    self.create_pixi_env(pandrator_base_path, KOKORO_ENV_NAME, KOKORO_PYTHON_VERSION)
+
+                if kokoro_env_missing or not self.is_kokoro_runtime_ready(
+                    pandrator_base_path,
+                    kokoro_repo_path,
+                    use_gpu=kokoro_gpu_support,
+                ):
+                    def kokoro_update_bootstrap_task():
+                        logging.info("[Bootstrap: Kokoro] Starting Kokoro API server bootstrap in background (update)...")
+                        self.install_kokoro_api_server(
+                            pandrator_base_path,
+                            kokoro_repo_path,
+                            env_name=KOKORO_ENV_NAME,
+                            use_gpu=kokoro_gpu_support,
+                        )
+                        logging.info("[Bootstrap: Kokoro] Kokoro API server bootstrap completed.")
+                        
+                    kokoro_bootstrap_future = bootstrap_executor.submit(kokoro_update_bootstrap_task)
+
+            # Main thread bootstraps port 8020 API servers
+            if config.get('xtts_support', False):
                 if not self.is_xtts_runtime_ready(xtts_repo_path):
                     self.worker.update_status.emit("Bootstrapping XTTS2 API server (temporary startup)...")
                     self.install_xtts_api_server(
@@ -4805,13 +4937,6 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                     )
 
             if config.get('voxcpm_support', False):
-                if os.path.exists(voxcpm_repo_path):
-                    self.worker.update_status.emit("Updating VoxCPM API server repository...")
-                    self.pull_repo(voxcpm_repo_path)
-                else:
-                    self.worker.update_status.emit("Cloning VoxCPM API server repository...")
-                    self.clone_repo(VOXCPM_API_REPO_URL, voxcpm_repo_path)
-
                 if not self.is_voxcpm_runtime_ready(voxcpm_repo_path):
                     self.worker.update_status.emit("Bootstrapping VoxCPM API server...")
                     self.install_voxcpm_api_server(
@@ -4820,13 +4945,6 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                     )
 
             if config.get('fishs2_support', False):
-                if os.path.exists(fishs2_repo_path):
-                    self.worker.update_status.emit("Updating FishS2 API server repository...")
-                    self.pull_repo(fishs2_repo_path)
-                else:
-                    self.worker.update_status.emit("Cloning FishS2 API server repository...")
-                    self.clone_repo(FISHS2_API_REPO_URL, fishs2_repo_path)
-
                 if not self.is_fishs2_runtime_ready(fishs2_repo_path):
                     self.worker.update_status.emit("Bootstrapping FishS2 API server...")
                     self.install_fishs2_api_server(
@@ -4853,42 +4971,9 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                     logging.info(f"Skipping Silero reinstall: {silero_reason}")
 
             if config.get('voxtral_support', False):
-                if os.path.exists(voxtral_repo_path):
-                    self.worker.update_status.emit("Updating Voxtral API server repository...")
-                    self.pull_repo(voxtral_repo_path)
-                else:
-                    self.worker.update_status.emit("Cloning Voxtral API server repository...")
-                    self.clone_repo(VOXTRAL_API_REPO_URL, voxtral_repo_path)
-
                 if not self.is_voxtral_runtime_ready(voxtral_repo_path):
                     self.worker.update_status.emit("Bootstrapping Voxtral API server...")
                     self.install_voxtral_api_server(voxtral_repo_path)
-
-            if config.get('kokoro_support', False):
-                kokoro_gpu_support = config.get(KOKORO_GPU_SUPPORT_CONFIG_FLAG, False)
-                if os.path.exists(kokoro_repo_path):
-                    self.worker.update_status.emit("Updating Kokoro API server repository...")
-                    self.pull_repo(kokoro_repo_path)
-                else:
-                    self.worker.update_status.emit("Cloning Kokoro API server repository...")
-                    self.clone_repo(KOKORO_API_REPO_URL, kokoro_repo_path)
-
-                if kokoro_env_missing:
-                    self.worker.update_status.emit("Creating Kokoro Pixi environment...")
-                    self.create_pixi_env(pandrator_base_path, KOKORO_ENV_NAME, KOKORO_PYTHON_VERSION)
-
-                if kokoro_env_missing or not self.is_kokoro_runtime_ready(
-                    pandrator_base_path,
-                    kokoro_repo_path,
-                    use_gpu=kokoro_gpu_support,
-                ):
-                    self.worker.update_status.emit("Bootstrapping Kokoro API server...")
-                    self.install_kokoro_api_server(
-                        pandrator_base_path,
-                        kokoro_repo_path,
-                        env_name=KOKORO_ENV_NAME,
-                        use_gpu=kokoro_gpu_support,
-                    )
 
             whisperx_required = config.get('whisperx_support', False) or config.get('xtts_finetuning_support', False)
             if whisperx_required:
@@ -4982,6 +5067,11 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 self.install_pytorch_for_xtts_finetuning(pandrator_base_path, 'easy_xtts_trainer')
             else:
                 logging.info("easy XTTS trainer not installed, skipping update.")
+
+            if kokoro_bootstrap_future is not None:
+                self.worker.update_status.emit("Waiting for Kokoro API server bootstrap to complete...")
+                kokoro_bootstrap_future.result()
+                bootstrap_executor.shutdown()
 
             self.write_packaging_layout(pandrator_base_path)
 
