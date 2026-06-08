@@ -635,7 +635,7 @@ def is_footnote_file(href: str, size: int) -> bool:
     Determines if a file in the spine is a dedicated footnote/endnote container file.
     """
     name_lower = os.path.basename(href).lower()
-    if re.search(r'[_.-](?:fn|footnote|endnote|przypis)(?:\d+)?\b', name_lower):
+    if re.search(r'[_.-](?:fns?|footnotes?|endnotes?|przypisy?)(?:\d+)?\b', name_lower):
         return True
     base_name = os.path.splitext(name_lower)[0]
     if base_name in ('fn', 'footnote', 'notes', 'endnotes', 'przypisy', 'przypis') or re.match(r'^(?:fn|footnote|notes|endnotes|przypisy|przypis)\d+$', base_name):

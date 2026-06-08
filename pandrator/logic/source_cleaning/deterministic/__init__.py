@@ -131,6 +131,7 @@ def extract_clean_epub(epub_path: str, remove_footnotes: bool = False, filter_ci
             
         # Format chapter headings
         formatted_blocks = []
+        last_chapter_title_norm = ""
         
         # Inject recovered title block if found
         if not has_headings and recovered_title:
@@ -144,6 +145,7 @@ def extract_clean_epub(epub_path: str, remove_footnotes: bool = False, filter_ci
                 "block_index": -1
             }
             formatted_blocks.append(heading_block)
+            last_chapter_title_norm = re.sub(r"\s+", "", recovered_title).lower()
             
         for idx_in_doc, block in enumerate(blocks):
             block_copy = block.copy()
@@ -165,14 +167,34 @@ def extract_clean_epub(epub_path: str, remove_footnotes: bool = False, filter_ci
                     
             is_ch = chapters.is_chapter_block(block, idx_in_doc, lang=detected_lang)
             
-            if matched_title:
-                if not matched_title.startswith("[[Chapter]]"):
-                    block_copy["text"] = f"[[Chapter]]{matched_title}"
-            elif is_ch:
+            if is_ch:
                 title = block.get("text", "").strip()
+                if matched_title:
+                    title = matched_title
                 if title:
                     if not title.startswith("[[Chapter]]"):
                         block_copy["text"] = f"[[Chapter]]{title}"
+                    last_chapter_title_norm = re.sub(r"\s+", "", title).lower()
+            elif matched_title:
+                # TOC matches a non-heading block (e.g. a paragraph).
+                # To prevent content loss, do NOT replace the paragraph's text.
+                # Instead, insert a new heading block before it, but only if it's not a duplicate.
+                matched_title_norm = re.sub(r"\s+", "", matched_title).lower()
+                if matched_title_norm != last_chapter_title_norm:
+                    new_heading_title = matched_title
+                    if not new_heading_title.startswith("[[Chapter]]"):
+                        new_heading_title = f"[[Chapter]]{new_heading_title}"
+                    heading_block = {
+                        "tag": "h1",
+                        "id": "",
+                        "classes": ["chapter"],
+                        "parts": [{"type": "text", "content": matched_title}],
+                        "text": new_heading_title,
+                        "href": doc_href,
+                        "block_index": -1
+                    }
+                    formatted_blocks.append(heading_block)
+                    last_chapter_title_norm = matched_title_norm
                         
             formatted_blocks.append(block_copy)
             
