@@ -192,4 +192,19 @@ def extract_clean_epub(epub_path: str, remove_footnotes: bool = False, filter_ci
         if chapter_text:
             extracted_chapters.append(chapter_text)
             
-    return "\n\n".join(extracted_chapters)
+    full_text = "\n\n".join(extracted_chapters)
+    
+    # Strip Project Gutenberg boilerplate automatically if start/end markers are present
+    import re
+    start_pattern = re.compile(r"\*\*\*\s*START OF (?:THE|THIS) PROJECT GUTENBERG EBOOK.*?\*\*\*", re.IGNORECASE)
+    end_pattern = re.compile(r"\*\*\*\s*END OF (?:THE|THIS) PROJECT GUTENBERG EBOOK.*?\*\*\*", re.IGNORECASE)
+    
+    start_match = start_pattern.search(full_text)
+    if start_match:
+        full_text = full_text[start_match.end():].strip()
+        
+    end_match = end_pattern.search(full_text)
+    if end_match:
+        full_text = full_text[:end_match.start()].strip()
+        
+    return full_text
