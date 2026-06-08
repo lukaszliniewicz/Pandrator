@@ -319,6 +319,72 @@ class StateDBHandlerTests(unittest.TestCase):
         }
         self.assertTrue(set(artifacts.keys()).issubset(artifact_roles))
 
+    def test_list_reusable_sources_original_and_edited_with_relocation(self):
+        import shutil
+        outputs_root = os.path.join(self.temp_dir.name, "Outputs")
+        session_name = "RelocatedSession"
+        session_dir = os.path.join(outputs_root, session_name)
+        os.makedirs(session_dir, exist_ok=True)
+
+        original_file = os.path.join(session_dir, "original_book.epub")
+        edited_file = os.path.join(session_dir, "original_book_edited.txt")
+
+        with open(original_file, "w") as f:
+            f.write("original epub content")
+        with open(edited_file, "w") as f:
+            f.write("cleaned text content")
+
+        payload = {
+            "session_name": session_name,
+            "source_file_path": edited_file,
+            "source_display_path": edited_file,
+            "original_source_file_path": original_file,
+            "tts": {"service": "XTTS", "language": "en"},
+        }
+        self.handler.save_session_config_snapshot(
+            session_name=session_name,
+            payload=payload,
+            session_path=session_dir,
+        )
+
+        sources = self.handler.list_reusable_sources(limit=50, include_missing=False)
+        paths = {os.path.normcase(os.path.abspath(s["source_path"])) for s in sources}
+        self.assertEqual(len(sources), 2)
+        self.assertIn(os.path.normcase(os.path.abspath(original_file)), paths)
+        self.assertIn(os.path.normcase(os.path.abspath(edited_file)), paths)
+
+        names = {s["name"] for s in sources}
+        self.assertTrue(any("Original" in name for name in names))
+        self.assertTrue(any("Edited" in name for name in names))
+
+        new_session_name = "RelocatedSession"
+        new_app_root = tempfile.TemporaryDirectory()
+        self.addCleanup(new_app_root.cleanup)
+        new_outputs_root = os.path.join(new_app_root.name, "Outputs")
+        new_session_dir = os.path.join(new_outputs_root, new_session_name)
+        os.makedirs(new_session_dir, exist_ok=True)
+
+        new_original_file = os.path.join(new_session_dir, "original_book.epub")
+        new_edited_file = os.path.join(new_session_dir, "original_book_edited.txt")
+
+        with open(new_original_file, "w") as f:
+            f.write("original epub content relocated")
+        with open(new_edited_file, "w") as f:
+            f.write("cleaned text content relocated")
+
+        old_db_path = self.handler.db_path
+        new_db_path = os.path.join(new_app_root.name, "pandrator_state.sqlite3")
+        shutil.copy2(old_db_path, new_db_path)
+
+        new_handler = StateDBHandler(app_root=new_app_root.name)
+        new_handler.initialize_database()
+
+        new_sources = new_handler.list_reusable_sources(limit=50, include_missing=False)
+        new_paths = {os.path.normcase(os.path.abspath(s["source_path"])) for s in new_sources}
+        self.assertEqual(len(new_sources), 2)
+        self.assertIn(os.path.normcase(os.path.abspath(new_original_file)), new_paths)
+        self.assertIn(os.path.normcase(os.path.abspath(new_edited_file)), new_paths)
+
 
 if __name__ == "__main__":
     unittest.main()

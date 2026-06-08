@@ -235,6 +235,7 @@ class StateDBHandler:
                 source_path TEXT,
                 source_display_name TEXT,
                 source_display_path TEXT,
+                original_source_file_path TEXT,
                 tts_service TEXT,
                 language TEXT,
                 dubbing_mode INTEGER NOT NULL DEFAULT 0,
@@ -396,6 +397,7 @@ class StateDBHandler:
     def _ensure_schema_compatibility(self, connection: sqlite3.Connection):
         self._ensure_column(connection, "sessions", "source_display_name TEXT")
         self._ensure_column(connection, "sessions", "source_display_path TEXT")
+        self._ensure_column(connection, "sessions", "original_source_file_path TEXT")
         self._ensure_column(connection, "sessions", "audio_version_count INTEGER NOT NULL DEFAULT 0")
         self._ensure_column(connection, "sessions", "audio_version_size_bytes INTEGER NOT NULL DEFAULT 0")
         self._ensure_column(connection, "sessions", "audio_version_summary TEXT")
@@ -1206,6 +1208,9 @@ class StateDBHandler:
         source_path = str(payload.get("source_file_path") or "").strip()
         source_display_path = _source_display_path_from_payload(payload, source_path)
         source_display_name = _source_display_name_from_path(source_display_path)
+        original_source_file_path = str(payload.get("original_source_file_path") or "").strip()
+        if not original_source_file_path:
+            original_source_file_path = source_path
         source_type = _source_type_from_path(source_path)
         tts_payload = payload.get("tts", {}) if isinstance(payload.get("tts"), dict) else {}
         tts_service = str(tts_payload.get("service") or "").strip()
@@ -1291,6 +1296,7 @@ class StateDBHandler:
                     source_path = ?,
                     source_display_name = ?,
                     source_display_path = ?,
+                    original_source_file_path = ?,
                     tts_service = ?,
                     language = ?,
                     dubbing_mode = ?,
@@ -1310,6 +1316,7 @@ class StateDBHandler:
                     source_path,
                     source_display_name,
                     source_display_path,
+                    original_source_file_path,
                     tts_service,
                     language,
                     dubbing_mode,
@@ -2064,6 +2071,22 @@ class StateDBHandler:
 
         return [dict(row) for row in rows]
 
+    def _resolve_source_path(self, path: str, session_name: str) -> str | None:
+        if not path:
+            return None
+
+        session_dir = os.path.join(self.outputs_root, session_name)
+        basename = os.path.basename(path)
+        session_file_path = os.path.join(session_dir, basename)
+        if os.path.isfile(session_file_path):
+            return os.path.abspath(session_file_path)
+
+        abs_path = os.path.abspath(path)
+        if os.path.isfile(abs_path):
+            return abs_path
+
+        return None
+
     def list_reusable_sources(self, limit: int = 300, include_missing: bool = False) -> list[dict[str, Any]]:
         self._ensure_ready()
         safe_limit = max(1, int(limit or 1))
@@ -2077,6 +2100,7 @@ class StateDBHandler:
                     source_display_path,
                     source_display_name,
                     source_type,
+                    original_source_file_path,
                     dubbing_mode,
                     config_modified_at,
                     indexed_at
@@ -2090,34 +2114,74 @@ class StateDBHandler:
 
         seen_paths: set[str] = set()
         reusable_sources: list[dict[str, Any]] = []
+
         for row in rows:
+            session_name = str(row["session_name"] or "")
             source_path = str(row["source_path"] or "").strip()
             display_path = str(row["source_display_path"] or "").strip() or source_path
-            if not source_path:
-                continue
+            original_path = ""
+            try:
+                original_path = str(row["original_source_file_path"] or "").strip()
+            except (sqlite3.Error, IndexError, KeyError):
+                pass
 
-            absolute_path = os.path.abspath(display_path)
-            normalized_path = os.path.normcase(absolute_path)
-            if normalized_path in seen_paths:
-                continue
+            resolved_active = self._resolve_source_path(display_path, session_name)
+            if not resolved_active:
+                resolved_active = self._resolve_source_path(source_path, session_name)
 
-            seen_paths.add(normalized_path)
-            file_exists = os.path.isfile(absolute_path)
-            if not include_missing and not file_exists:
-                continue
+            resolved_original = None
+            if original_path:
+                resolved_original = self._resolve_source_path(original_path, session_name)
 
-            reusable_sources.append(
-                {
-                    "source_path": absolute_path,
-                    "name": str(row["source_display_name"] or os.path.basename(absolute_path) or absolute_path),
-                    "internal_source_path": os.path.abspath(source_path),
-                    "source_type": str(row["source_type"] or _source_type_from_path(absolute_path)),
-                    "session_name": str(row["session_name"] or ""),
-                    "dubbing_mode": 1 if bool(row["dubbing_mode"]) else 0,
-                    "last_used_at": str(row["config_modified_at"] or row["indexed_at"] or ""),
-                    "exists": file_exists,
-                }
-            )
+            if not resolved_active and include_missing:
+                resolved_active = os.path.abspath(display_path or source_path)
+            if original_path and not resolved_original and include_missing:
+                resolved_original = os.path.abspath(original_path)
+
+            if resolved_original and resolved_active and os.path.normcase(resolved_original) == os.path.normcase(resolved_active):
+                resolved_original = None
+
+            if resolved_original:
+                norm_orig = os.path.normcase(resolved_original)
+                if norm_orig not in seen_paths:
+                    seen_paths.add(norm_orig)
+                    orig_name = str(row["source_display_name"] or os.path.basename(resolved_original))
+                    if not orig_name.lower().endswith("original") and not orig_name.lower().endswith("(original)"):
+                        orig_name = f"{orig_name} (Original)"
+                    reusable_sources.append(
+                        {
+                            "source_path": resolved_original,
+                            "name": orig_name,
+                            "internal_source_path": resolved_original,
+                            "source_type": str(row["source_type"] or _source_type_from_path(resolved_original)),
+                            "session_name": session_name,
+                            "dubbing_mode": 1 if bool(row["dubbing_mode"]) else 0,
+                            "last_used_at": str(row["config_modified_at"] or row["indexed_at"] or ""),
+                            "exists": os.path.isfile(resolved_original),
+                        }
+                    )
+
+            if resolved_active:
+                norm_active = os.path.normcase(resolved_active)
+                if norm_active not in seen_paths:
+                    seen_paths.add(norm_active)
+                    active_name = str(row["source_display_name"] or os.path.basename(resolved_active))
+                    if resolved_original or "edited" in active_name.lower():
+                        if not active_name.lower().endswith("edited") and not active_name.lower().endswith("(edited)"):
+                            active_name = f"{active_name} (Edited)"
+                    reusable_sources.append(
+                        {
+                            "source_path": resolved_active,
+                            "name": active_name,
+                            "internal_source_path": os.path.abspath(source_path),
+                            "source_type": str(row["source_type"] or _source_type_from_path(resolved_active)),
+                            "session_name": session_name,
+                            "dubbing_mode": 1 if bool(row["dubbing_mode"]) else 0,
+                            "last_used_at": str(row["config_modified_at"] or row["indexed_at"] or ""),
+                            "exists": os.path.isfile(resolved_active),
+                        }
+                    )
+
             if len(reusable_sources) >= safe_limit:
                 break
 

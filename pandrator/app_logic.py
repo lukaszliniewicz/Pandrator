@@ -1314,6 +1314,7 @@ class AppLogic(QObject):
         self.stop_playback()
         self.state.source_file_path = ""
         self.state.source_display_path = ""
+        self.state.original_source_file_path = ""
         self.state.raw_text = ""
         self.state.pdf_preprocessed = False
         self.state.active_audio_variant_id = audio_variant_handler.SOURCE_VARIANT_ID
@@ -1493,6 +1494,19 @@ class AppLogic(QObject):
 
         if not restored_state.source_display_path:
             restored_state.source_display_path = restored_state.source_file_path
+
+        if restored_state.original_source_file_path and not os.path.isabs(restored_state.original_source_file_path):
+            relative_orig = os.path.join(session_handler.get_session_path(session_name), restored_state.original_source_file_path)
+            if os.path.exists(relative_orig):
+                restored_state.original_source_file_path = os.path.abspath(relative_orig)
+
+        if not restored_state.original_source_file_path or not os.path.exists(restored_state.original_source_file_path):
+            if restored_state.original_source_file_path:
+                cand = os.path.join(session_handler.get_session_path(session_name), os.path.basename(restored_state.original_source_file_path))
+                if os.path.exists(cand):
+                    restored_state.original_source_file_path = os.path.abspath(cand)
+            if (not restored_state.original_source_file_path or not os.path.exists(restored_state.original_source_file_path)) and restored_state.source_file_path:
+                restored_state.original_source_file_path = restored_state.source_file_path
 
         if restored_state.source_file_path and not restored_state.raw_text:
             restored_state.raw_text = self._try_load_raw_text_for_source(
@@ -1730,6 +1744,7 @@ class AppLogic(QObject):
         normalize_path = lambda path: os.path.normcase(os.path.abspath(path)) if path else ""
         previous_source = self.state.source_file_path
         previous_display_source = self.state.source_display_path
+        previous_original_source = self.state.original_source_file_path
         previous_raw_text = self.state.raw_text
         previous_pdf_preprocessed = self.state.pdf_preprocessed
         previous_dubbing_video = self.state.dubbing.video_file_path
@@ -1748,6 +1763,7 @@ class AppLogic(QObject):
             session_file_path = self._ensure_session_file_copy(source_path_to_load)
             self.state.source_file_path = session_file_path
             self.state.source_display_path = session_file_path
+            self.state.original_source_file_path = session_file_path
             self.state.pdf_preprocessed = False
             self.log_message.emit(f"Source file selected: {session_file_path}")
 
@@ -1842,6 +1858,7 @@ class AppLogic(QObject):
             if reset_applied:
                 self.state.source_file_path = ""
                 self.state.source_display_path = ""
+                self.state.original_source_file_path = ""
                 self.state.raw_text = ""
                 self.state.pdf_preprocessed = False
                 self.state.dubbing.video_file_path = ""
@@ -1851,6 +1868,7 @@ class AppLogic(QObject):
             else:
                 self.state.source_file_path = previous_source
                 self.state.source_display_path = previous_display_source
+                self.state.original_source_file_path = previous_original_source
                 self.state.raw_text = previous_raw_text
                 self.state.pdf_preprocessed = previous_pdf_preprocessed
                 self.state.dubbing.video_file_path = previous_dubbing_video
@@ -2066,6 +2084,7 @@ class AppLogic(QObject):
 
         self.state.source_file_path = ""
         self.state.source_display_path = ""
+        self.state.original_source_file_path = ""
         self.state.raw_text = ""
         self.state.pdf_preprocessed = False
         self._set_processed_sentences_snapshot([])
