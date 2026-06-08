@@ -380,8 +380,11 @@ def parse_json_command(response: str) -> tuple[dict[str, Any], str]:
         return {}, "Empty LLM response."
 
     candidates, error = _extract_json_command_candidates(raw)
+    
+    # 1. Prioritize finish/operations commands first to avoid getting stuck in loops
     for candidate in candidates:
-        if str(candidate.get("action") or "").strip():
+        action = str(candidate.get("action") or "").strip()
+        if action == "finish":
             return candidate, ""
         if (
             isinstance(candidate.get("operations"), list)
@@ -390,6 +393,11 @@ def parse_json_command(response: str) -> tuple[dict[str, Any], str]:
             inferred = dict(candidate)
             inferred["action"] = "finish"
             return inferred, ""
+
+    # 2. Fall back to other actions (like preview, search, etc.)
+    for candidate in candidates:
+        if str(candidate.get("action") or "").strip():
+            return candidate, ""
 
     if candidates:
         return {}, "JSON command must include a non-empty action."

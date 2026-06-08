@@ -59,8 +59,10 @@ def build_source_document(epub_path: str) -> SourceDocument:
 
     try:
         structure = unpack_epub_structure(epub_path)
+        global_toc = toc.build_global_toc_map(structure)
     except Exception:
         structure = {}
+        global_toc = {}
 
     spine = structure.get("spine", [])
     parsed_documents = structure.get("parsed_documents", {})
@@ -150,7 +152,16 @@ def build_source_document(epub_path: str) -> SourceDocument:
                     "text": text,
                     "classes": _normalize_classes(tag.get("class", []))
                 }
-                if chapters.is_chapter_block(block_dict, item_block_count, language or "en"):
+
+                # Check element ID against global TOC anchors
+                elem_id = attributes.get("element_id") or tag.get("id") or ""
+                is_ch_via_toc = False
+                if elem_id:
+                    frag_key = f"{nh}#{str(elem_id).lower()}"
+                    if frag_key in global_toc:
+                        is_ch_via_toc = True
+
+                if is_ch_via_toc or chapters.is_chapter_block(block_dict, item_block_count, language or "en"):
                     block_roles.append("deterministic_chapter")
 
                 block = SourceBlock(
@@ -162,7 +173,7 @@ def build_source_document(epub_path: str) -> SourceDocument:
                     href=href,
                     tag=tag.name,
                     classes=_normalize_classes(tag.get("class", [])),
-                    element_id=str(tag.get("id") or "") or None,
+                    element_id=str(tag.get("id") or attributes.get("element_id") or "") or None,
                     dom_path=_build_dom_path(tag),
                     attributes=attributes,
                     role_candidates=_dedupe(block_roles + _infer_role_candidates(tag, text, href)),
@@ -405,7 +416,18 @@ def _extract_tag_text_entries(tag) -> list[tuple[str, dict[str, Any], str, list[
     text = _normalize_text(tag.get_text(" ", strip=True))
     if not text:
         return []
-    return [(text, _safe_attributes(tag), str(tag), [])]
+
+    attributes = _safe_attributes(tag)
+    # Search for child anchor tags to capture nested ids and hrefs
+    for a in tag.find_all("a"):
+        a_id = a.get("id") or a.get("name")
+        if a_id and not attributes.get("element_id"):
+            attributes["element_id"] = str(a_id)
+        a_href = a.get("href")
+        if a_href and not attributes.get("href"):
+            attributes["href"] = str(a_href)
+
+    return [(text, attributes, str(tag), [])]
 
 
 def _safe_attributes(tag) -> dict[str, Any]:
@@ -438,6 +460,19 @@ def _infer_role_candidates(tag, text: str, href: str) -> list[str]:
         roles.append("side_note")
     if any(token in lowered for token in ("footnote", "endnote", "note-ref", "noteref")):
         roles.append("footnote")
+    
+    # Check if this block contains child anchors pointing to internal links
+    has_inner_links = False
+    for a in tag.find_all("a"):
+        a_href = a.get("href") or ""
+        if a_href:
+            has_inner_links = True
+            if "#" in a_href:
+                roles.append("toc")
+                break
+    if has_inner_links:
+        roles.append("navigation")
+
     if any(token in lowered for token in ("toc", "contents", "nav")):
         roles.append("toc")
     if any(token in text_lower for token in ("copyright", "all rights reserved", "isbn")):

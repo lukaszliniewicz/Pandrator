@@ -525,8 +525,10 @@ class SourceCleaningTools:
             text = block.text.strip()
             numbered = _looks_like_numbered_heading(text)
             nav_match = _normalize_for_repeat_detection(text) in normalized_nav_titles
-            explicit_heading = "heading" in block.role_candidates
-            if numbered and (explicit_heading or self.document.source_type != "epub"):
+            explicit_heading = "heading" in block.role_candidates or "deterministic_chapter" in block.role_candidates
+            if "deterministic_chapter" in block.role_candidates:
+                evidence = "deterministic_chapter"
+            elif numbered and (explicit_heading or self.document.source_type != "epub"):
                 evidence = "numbered_heading"
                 numbered_blocks.append(block)
             elif nav_match and explicit_heading and not _looks_like_boilerplate_heading(text):
