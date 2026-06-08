@@ -74,24 +74,54 @@ def build_source_document(epub_path: str) -> SourceDocument:
     front_bp_files = set()
     end_bp_files = set()
 
-    for idx, spine_item in enumerate(spine):
-        sp_href = spine_item["href"]
-        nh = norm_href(sp_href)
-        parsed_doc = parsed_documents.get(sp_href, {})
-        size = parsed_doc.get("size", 0)
+    # Pre-classify all documents (both in-spine and out-of-spine)
+    spine_index_map = {norm_href(spine_item["href"]): spine_idx for spine_idx, spine_item in enumerate(spine)}
+    all_documents = _ordered_document_items(book)
+
+    for doc_item in all_documents:
+        doc_href = doc_item.get_name()
+        nh = norm_href(doc_href)
+        parsed_doc = parsed_documents.get(doc_href, {})
+        
+        try:
+            content_bytes = doc_item.get_content()
+            size = len(content_bytes) if content_bytes else 0
+        except Exception:
+            size = parsed_doc.get("size", 0)
+
+        spine_idx = spine_index_map.get(nh, -1)
 
         # 1. Check TOC
-        if toc.is_toc_file(sp_href, parsed_doc, spine):
+        if toc.is_toc_file(doc_href, parsed_doc, spine):
             toc_files.add(nh)
         # 2. Check Footnotes
-        elif footnotes.is_footnote_file(sp_href, size):
+        elif footnotes.is_footnote_file(doc_href, size):
             footnote_files.add(nh)
-        # 3. Check Front Boilerplate
-        elif boilerplate.is_front_boilerplate(idx, total_spine_files, size, sp_href):
-            front_bp_files.add(nh)
-        # 4. Check End Boilerplate
-        elif boilerplate.is_end_boilerplate(idx, total_spine_files, sp_href):
-            end_bp_files.add(nh)
+        # 3. Check Boilerplate (only if in spine, or using name keywords)
+        else:
+            if spine_idx != -1:
+                if boilerplate.is_front_boilerplate(spine_idx, total_spine_files, size, doc_href):
+                    front_bp_files.add(nh)
+                elif boilerplate.is_end_boilerplate(spine_idx, total_spine_files, doc_href):
+                    end_bp_files.add(nh)
+            else:
+                # Out-of-spine: check name keywords for boilerplate
+                name_lower = os.path.basename(doc_href).lower()
+                clean_name = re.sub(r'[^a-z0-9]', ' ', name_lower)
+                tokens = set(clean_name.split())
+                front_keywords = {
+                    "cover", "cvi", "cvr", "title", "tp", "copyright", "cop", "cpy",
+                    "dedication", "ded", "preface", "prf", "acknowledg", "ack", "foreword", "fwd",
+                    "colophon", "col", "fm", "halftitle"
+                }
+                end_keywords = {
+                    "index", "biblio", "bibliography", "bib", "about", "ads", "adc", "adv",
+                    "advertisement", "colophon", "col", "copyright", "cop", "copy", "ata", "bm"
+                }
+                if tokens.intersection(front_keywords) or any(x in name_lower for x in ["cover", "title", "copyright", "dedicat"]):
+                    front_bp_files.add(nh)
+                elif tokens.intersection(end_keywords) or any(x in name_lower for x in ["index", "biblio", "copyright"]):
+                    end_bp_files.add(nh)
 
     for item in _ordered_document_items(book):
         href = item.get_name()

@@ -121,6 +121,13 @@ class EPUBHTMLParser(HTMLParser):
             self.anchor_stack.append(anchor_info)
 
     def handle_data(self, data):
+        # Skip content inside page numbers/page breaks
+        for _, c_val, _ in self.tag_stack:
+            if c_val:
+                classes = {c.lower() for c in c_val.split()}
+                if "pagenum" in classes or "pagebreak" in classes or "pb" in classes:
+                    return
+
         if self.current_block_tag is not None:
             if self.anchor_stack:
                 # Accumulate text inside the active anchor
