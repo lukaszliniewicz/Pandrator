@@ -1095,17 +1095,19 @@ class SessionTab(QWidget):
         regeneration_cancel_requested = self.logic.cancel_regeneration_flag.is_set()
         cancel_requested = generation_cancel_requested or regeneration_cancel_requested
 
+
         is_xtts = state.tts.service == "XTTS"
         is_voxcpm = state.tts.service == "VoxCPM"
         is_fishs2 = state.tts.service == "FishS2"
         is_voxtral = state.tts.service == "Voxtral"
         is_kokoro = state.tts.service == "Kokoro"
+        is_chatterbox = state.tts.service == "Chatterbox"
         is_cloud_tts = state.tts.service in {
             "OpenAI-Compatible",
             "OpenAI",
             "Gemini",
         }
-        is_model_based_tts = is_xtts or is_voxcpm or is_fishs2 or is_voxtral or is_kokoro or is_cloud_tts
+        is_model_based_tts = is_xtts or is_voxcpm or is_fishs2 or is_voxtral or is_kokoro or is_cloud_tts or is_chatterbox
         show_xtts_advanced_settings = self.logic.should_show_xtts_advanced_settings()
         show_voxcpm_advanced_settings = is_voxcpm
         show_fishs2_advanced_settings = is_fishs2
@@ -1123,16 +1125,20 @@ class SessionTab(QWidget):
         )
 
         self.use_external_server_checkbox.setVisible(
-            is_xtts or is_voxcpm or is_fishs2 or is_voxtral or is_kokoro
+            is_xtts or is_voxcpm or is_fishs2 or is_voxtral or is_kokoro or is_chatterbox
         )
         self.external_server_url_edit.setVisible(
-            (is_xtts or is_voxcpm or is_fishs2 or is_voxtral or is_kokoro)
+            (is_xtts or is_voxcpm or is_fishs2 or is_voxtral or is_kokoro or is_chatterbox)
             and state.tts.use_external_server
         )
         self.external_server_url_edit.setPlaceholderText(
             "http://localhost:8000"
             if is_voxtral
-            else ("http://localhost:8880" if is_kokoro else "http://localhost:8020")
+            else (
+                "http://localhost:8880"
+                if is_kokoro
+                else ("http://localhost:8040" if is_chatterbox else "http://localhost:8020")
+            )
         )
         self.advanced_tts_checkbox.setText(
             "Advanced Voxtral Settings"
@@ -1154,7 +1160,7 @@ class SessionTab(QWidget):
         self.xtts_model_label.setVisible(show_model_selector)
         self.xtts_model_combo.setVisible(show_model_selector)
 
-        supports_voice_library_upload = is_xtts or is_voxcpm or is_fishs2
+        supports_voice_library_upload = is_xtts or is_voxcpm or is_fishs2 or is_chatterbox
         supports_prebuilt_voice_catalog = self.logic.tts_service_supports_prebuilt_voices(
             state.tts.service,
             state.tts.openai_audio_endpoint,
