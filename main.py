@@ -54,6 +54,7 @@ def main():
     parser.add_argument("-voxtral", "--voxtral", action="store_true", help="Connect to Voxtral")
     parser.add_argument("-kokoro", "--kokoro", action="store_true", help="Connect to Kokoro")
     parser.add_argument("-silero", "--silero", action="store_true", help="Connect to Silero")
+    parser.add_argument("-chatterbox", "--chatterbox", action="store_true", help="Connect to Chatterbox")
     args = parser.parse_args()
     logging.info(f"Command line arguments: {args}")
 
@@ -84,6 +85,8 @@ def main():
             auto_connect_service = "Kokoro"
         elif args.silero:
             auto_connect_service = "Silero"
+        elif args.chatterbox:
+            auto_connect_service = "Chatterbox"
 
     if auto_connect_service:
         logic.state.tts.service = auto_connect_service
@@ -102,6 +105,9 @@ def main():
         elif auto_connect_service == "Kokoro":
             logic.state.tts.use_external_server = False
             logic.state.tts.external_server_url = "http://127.0.0.1:8880"
+        elif auto_connect_service == "Chatterbox":
+            logic.state.tts.use_external_server = False
+            logic.state.tts.external_server_url = "http://127.0.0.1:8040"
         logic.state_changed.emit()
 
     main_window.show()

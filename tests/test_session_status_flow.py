@@ -314,6 +314,69 @@ class SessionStatusFlowTests(unittest.TestCase):
         SessionTab._update_cancel_button_text(harness)
         self.assertEqual("Cancel Generation", button.text)
 
+    def test_chatterbox_language_filtering_based_on_model(self):
+        class MockComboBox:
+            def __init__(self):
+                self.items = []
+                self.current_index = -1
+            def blockSignals(self, b):
+                pass
+            def clear(self):
+                self.items.clear()
+                self.current_index = -1
+            def addItem(self, label, code):
+                self.items.append((label, code))
+                if self.current_index == -1:
+                    self.current_index = 0
+            def count(self):
+                return len(self.items)
+            def itemData(self, index):
+                if 0 <= index < len(self.items):
+                    return self.items[index][1]
+                return None
+            def findData(self, data):
+                for i, (_, code) in enumerate(self.items):
+                    if code == data:
+                        return i
+                return -1
+            def setCurrentIndex(self, index):
+                if 0 <= index < len(self.items):
+                    self.current_index = index
+
+        tts_state = SimpleNamespace(
+            service="Chatterbox",
+            language="es",
+            xtts_model="chatterbox-turbo"
+        )
+        logic = SimpleNamespace(
+            state=SimpleNamespace(tts=tts_state),
+            on_tts_language_changed=lambda l: None
+        )
+        combo = MockComboBox()
+        harness = SimpleNamespace(
+            logic=logic,
+            language_combo=combo,
+            _language_codes_for_service=SessionTab._language_codes_for_service,
+            _language_label_for_service=SessionTab._language_label_for_service,
+            _normalize_language_code_for_service=SessionTab._normalize_language_code_for_service
+        )
+
+        # 1. Test chatterbox-turbo: only "en" should be populated
+        SessionTab._update_language_dropdown(harness)
+        self.assertEqual(1, len(combo.items))
+        self.assertEqual("en", combo.items[0][1])
+        # State language should fall back to "en" since "es" is not in the options
+        self.assertEqual("en", tts_state.language)
+
+        # 2. Test chatterbox-multilingual: full list should be populated
+        tts_state.xtts_model = "chatterbox-multilingual"
+        tts_state.language = "es"
+        SessionTab._update_language_dropdown(harness)
+        self.assertGreater(len(combo.items), 1)
+        # Spanish should be present and remain selected
+        self.assertEqual("es", tts_state.language)
+        self.assertEqual("es", combo.items[combo.current_index][1])
+
 
 if __name__ == "__main__":
     unittest.main()

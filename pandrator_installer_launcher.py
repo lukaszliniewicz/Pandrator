@@ -47,6 +47,7 @@ SILERO_PYTHON_VERSION = '3.10'
 KOKORO_PYTHON_VERSION = '3.11'
 KOKORO_ENV_NAME = 'kokoro_api_server_installer'
 KOKORO_GPU_SUPPORT_CONFIG_FLAG = 'kokoro_gpu_support'
+CHATTERBOX_GPU_SUPPORT_CONFIG_FLAG = 'chatterbox_gpu_support'
 KOKORO_TORCH_BASE_VERSION = '2.8.0'
 KOKORO_GPU_TORCH_VERSION_X86_64 = f'{KOKORO_TORCH_BASE_VERSION}+cu126'
 KOKORO_GPU_TORCH_VERSION_ARM64 = f'{KOKORO_TORCH_BASE_VERSION}+cu129'
@@ -102,6 +103,9 @@ VOXTRAL_API_REPO_URL = 'https://github.com/lukaszliniewicz/voxtral-fastapi.git'
 VOXTRAL_API_REPO_DIRNAME = 'voxtral-fastapi'
 KOKORO_API_REPO_URL = 'https://github.com/remsky/Kokoro-FastAPI.git'
 KOKORO_API_REPO_DIRNAME = 'Kokoro-FastAPI'
+CHATTERBOX_API_REPO_URL = 'https://github.com/lukaszliniewicz/chatterbox-fastapi.git'
+CHATTERBOX_API_REPO_DIRNAME = 'chatterbox-fastapi'
+CHATTERBOX_GPU_SUPPORT_CONFIG_FLAG = 'chatterbox_gpu_support'
 PANDRATOR_REPO_URL = 'https://github.com/lukaszliniewicz/Pandrator.git'
 SUBDUB_REPO_URL = 'https://github.com/lukaszliniewicz/Subdub.git'
 PYCROPPDF_REPO_URL = 'https://github.com/lukaszliniewicz/PyCropPDF.git'
@@ -138,6 +142,8 @@ PACKAGING_CONFIG_FLAGS = (
     'whisperx_support',
     'xtts_finetuning_support',
     'rvc_support',
+    'chatterbox_support',
+    CHATTERBOX_GPU_SUPPORT_CONFIG_FLAG,
 )
 PACKAGING_EXCLUDED_FILE_PREFIXES = (
     'pandrator_state.sqlite3',
@@ -180,6 +186,9 @@ PACKAGING_COMPONENT_PATHS = {
     'xtts_finetuning': (
         'easy_xtts_trainer',
         os.path.join('envs', 'easy_xtts_trainer'),
+    ),
+    'chatterbox': (
+        CHATTERBOX_API_REPO_DIRNAME,
     ),
 }
 RVC_PYTHON_FORK_INSTALL_SPEC = 'git+https://github.com/JarodMica/rvc-python@782467ababe17698a4b5100aedfe16e69cebaa56'
@@ -355,6 +364,8 @@ class PandratorInstaller(QMainWindow):
         self.rvc_var = False
         self.whisperx_var = False
         self.xtts_finetuning_var = False
+        self.chatterbox_var = False
+        self.chatterbox_cpu_var = False
 
         # Launch options
         self.launch_pandrator_var = True
@@ -367,6 +378,8 @@ class PandratorInstaller(QMainWindow):
         self.launch_kokoro_var = False
         self.kokoro_cpu_launch_var = False
         self.launch_silero_var = False
+        self.launch_chatterbox_var = False
+        self.chatterbox_cpu_launch_var = False
 
         # Initialize process attributes
         self.xtts_process = None
@@ -556,6 +569,12 @@ class PandratorInstaller(QMainWindow):
 
         self.kokoro_cpu_checkbox = QCheckBox("Kokoro CPU only")
         engines_layout.addWidget(self.kokoro_cpu_checkbox)
+
+        self.chatterbox_checkbox = QCheckBox("Chatterbox")
+        engines_layout.addWidget(self.chatterbox_checkbox)
+
+        self.chatterbox_cpu_checkbox = QCheckBox("Chatterbox CPU only")
+        engines_layout.addWidget(self.chatterbox_cpu_checkbox)
         engines_layout.addStretch()
         
         components_layout.addLayout(engines_layout)
@@ -669,6 +688,20 @@ class PandratorInstaller(QMainWindow):
         # Silero checkbox
         self.launch_silero_checkbox = QCheckBox("Silero")
         launch_layout.addWidget(self.launch_silero_checkbox)
+
+        # Chatterbox options
+        chatterbox_frame = QWidget()
+        chatterbox_layout = QHBoxLayout(chatterbox_frame)
+        chatterbox_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.launch_chatterbox_checkbox = QCheckBox("Chatterbox")
+        chatterbox_layout.addWidget(self.launch_chatterbox_checkbox)
+
+        self.chatterbox_cpu_launch_checkbox = QCheckBox("Use CPU")
+        chatterbox_layout.addWidget(self.chatterbox_cpu_launch_checkbox)
+        chatterbox_layout.addStretch()
+
+        launch_layout.addWidget(chatterbox_frame)
         
         layout.addWidget(launch_group)
         
@@ -991,6 +1024,20 @@ class PandratorInstaller(QMainWindow):
         set_widget_state(self.silero_checkbox, not silero_support, False)
         set_widget_state(self.launch_silero_checkbox, silero_support, False)
 
+        # Chatterbox
+        chatterbox_support = config.get('chatterbox_support', False)
+        chatterbox_gpu_support = config.get(CHATTERBOX_GPU_SUPPORT_CONFIG_FLAG, False)
+        set_widget_state(self.chatterbox_checkbox, not chatterbox_support, False)
+        set_widget_state(self.chatterbox_cpu_checkbox, not chatterbox_support, False)
+        set_widget_state(self.launch_chatterbox_checkbox, chatterbox_support, False)
+        if chatterbox_support:
+            if chatterbox_gpu_support:
+                set_widget_state(self.chatterbox_cpu_launch_checkbox, True, False)
+            else:
+                set_widget_state(self.chatterbox_cpu_launch_checkbox, False, True)
+        else:
+            set_widget_state(self.chatterbox_cpu_launch_checkbox, False, False)
+
         # RVC
         rvc_support = config.get('rvc_support', False)
         set_widget_state(self.rvc_checkbox, not rvc_support, False)
@@ -1081,7 +1128,8 @@ class PandratorInstaller(QMainWindow):
             'silero': config.get('silero_support', False),
             'rvc': config.get('rvc_support', False),
             'whisperx': config.get('whisperx_support', False),
-            'xtts_finetuning': config.get('xtts_finetuning_support', False)
+            'xtts_finetuning': config.get('xtts_finetuning_support', False),
+            'chatterbox': config.get('chatterbox_support', False)
         }
 
     def disable_buttons(self):
@@ -1123,6 +1171,7 @@ class PandratorInstaller(QMainWindow):
             ('voxtral', 'Voxtral', 'voxtral_process', self.shutdown_voxtral),
             ('kokoro', 'Kokoro', 'kokoro_process', self.shutdown_kokoro),
             ('silero', 'Silero', 'silero_process', self.shutdown_silero),
+            ('chatterbox', 'Chatterbox', 'chatterbox_process', self.shutdown_chatterbox),
         )
 
     @staticmethod
@@ -1185,6 +1234,8 @@ class PandratorInstaller(QMainWindow):
             selected.append('silero')
         if self.launch_kokoro_var:
             selected.append('kokoro')
+        if self.launch_chatterbox_var:
+            selected.append('chatterbox')
         return selected
 
     def _backend_label_from_key(self, backend_key):
@@ -1467,6 +1518,8 @@ class PandratorInstaller(QMainWindow):
         self.rvc_var = self.rvc_checkbox.isChecked()
         self.whisperx_var = self.whisperx_checkbox.isChecked()
         self.xtts_finetuning_var = self.xtts_finetuning_checkbox.isChecked()
+        self.chatterbox_var = self.chatterbox_checkbox.isChecked()
+        self.chatterbox_cpu_var = self.chatterbox_cpu_checkbox.isChecked()
         
         new_components_selected = (
             ((self.xtts_var or self.xtts_cpu_var) and not installed_components['xtts']) or
@@ -1477,7 +1530,8 @@ class PandratorInstaller(QMainWindow):
             ((self.kokoro_var or self.kokoro_cpu_var) and not installed_components['kokoro']) or
             (self.rvc_var and not installed_components['rvc']) or
             (self.whisperx_var and not installed_components['whisperx']) or
-            (self.xtts_finetuning_var and not installed_components['xtts_finetuning'])
+            (self.xtts_finetuning_var and not installed_components['xtts_finetuning']) or
+            ((self.chatterbox_var or self.chatterbox_cpu_var) and not installed_components['chatterbox'])
         )
         
         if pandrator_already_installed and not self.pandrator_var:
@@ -1530,6 +1584,8 @@ class PandratorInstaller(QMainWindow):
             'rvc',
             'whisperx',
             'xtts_finetuning',
+            'chatterbox',
+            'chatterbox_cpu',
         }
 
         selected_components = {str(component).strip().lower() for component in components if str(component).strip()}
@@ -1548,6 +1604,9 @@ class PandratorInstaller(QMainWindow):
         if 'kokoro' in selected_components and 'kokoro_cpu' in selected_components:
             raise ValueError("Select either 'kokoro' or 'kokoro_cpu' for headless installation, not both.")
 
+        if 'chatterbox' in selected_components and 'chatterbox_cpu' in selected_components:
+            raise ValueError("Select either 'chatterbox' or 'chatterbox_cpu' for headless installation, not both.")
+
         if 'xtts_finetuning' in selected_components and 'whisperx' not in selected_components:
             logging.info("Headless mode: enabling WhisperX because XTTS fine-tuning depends on it.")
             selected_components.add('whisperx')
@@ -1564,6 +1623,8 @@ class PandratorInstaller(QMainWindow):
         self.rvc_checkbox.setChecked('rvc' in selected_components)
         self.xtts_finetuning_checkbox.setChecked('xtts_finetuning' in selected_components)
         self.whisperx_checkbox.setChecked('whisperx' in selected_components)
+        self.chatterbox_checkbox.setChecked('chatterbox' in selected_components)
+        self.chatterbox_cpu_checkbox.setChecked('chatterbox_cpu' in selected_components)
         self.update_whisperx_checkbox()
 
         selected_label = ', '.join(sorted(selected_components)) if selected_components else 'none'
@@ -3741,6 +3802,12 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             command.extend(['--pixi-path', pixi_path])
         return command
 
+    def build_chatterbox_launcher_command(self, pixi_path=None):
+        command = ['cmd', '/c', 'run.bat']
+        if pixi_path:
+            command.extend(['--pixi-path', pixi_path])
+        return command
+
     def _read_text_if_exists(self, file_path):
         if not os.path.exists(file_path):
             return ""
@@ -3795,6 +3862,18 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             return pixi_path
 
         logging.info("FishS2 launcher does not advertise --pixi-path, skipping shared Pixi argument.")
+        return None
+
+    def get_chatterbox_pixi_argument(self, chatterbox_repo_path, pixi_path):
+        if not pixi_path:
+            return None
+
+        run_bat_contents = self._read_text_if_exists(os.path.join(chatterbox_repo_path, 'run.bat')).lower()
+        run_py_contents = self._read_text_if_exists(os.path.join(chatterbox_repo_path, 'run.py')).lower()
+        if '--pixi-path' in run_bat_contents or '--pixi-path' in run_py_contents:
+            return pixi_path
+
+        logging.info("Chatterbox launcher does not advertise --pixi-path, skipping shared Pixi argument.")
         return None
 
     def terminate_process_tree(self, process, timeout=10):
@@ -3996,6 +4075,64 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         finally:
             if process is not None:
                 logging.info("Stopping temporary FishS2 bootstrap process.")
+                self.terminate_process_tree(process)
+            log_handle.close()
+
+    def is_chatterbox_runtime_ready(self, chatterbox_repo_path):
+        run_bat_path = os.path.join(chatterbox_repo_path, 'run.bat')
+        env_python_path = os.path.join(chatterbox_repo_path, '.pixi', 'envs', 'default', 'python.exe')
+        return all(os.path.exists(path) for path in (run_bat_path, env_python_path))
+
+    def install_chatterbox_api_server(self, chatterbox_repo_path, use_cpu=False, pixi_path=None):
+        logging.info(f"Bootstrapping Chatterbox API server in {chatterbox_repo_path}...")
+        logging.info(
+            "Chatterbox bootstrap starts the server temporarily to validate runtime and will stop it after health checks."
+        )
+
+        run_script_path = os.path.join(chatterbox_repo_path, 'run.bat')
+        if not os.path.exists(run_script_path):
+            raise FileNotFoundError(f"Chatterbox run script not found at: {run_script_path}")
+
+        if self.is_port_in_use(8040):
+            raise RuntimeError("Chatterbox server cannot be bootstrapped because port 8040 is already in use.")
+
+        chatterbox_install_log_file = os.path.join(chatterbox_repo_path, 'chatterbox_install.log')
+        command = [run_script_path]
+        if use_cpu:
+            command.append('cpu')
+        if pixi_path:
+            command.extend(['--pixi-path', pixi_path])
+
+        log_handle = open(chatterbox_install_log_file, 'a', encoding='utf-8')
+        process = None
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=chatterbox_repo_path,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                **self.get_hidden_subprocess_kwargs(),
+            )
+
+            if not self.check_chatterbox_server_online(
+                'http://127.0.0.1:8040',
+                max_attempts=360,
+                wait_interval=5,
+                process=process,
+            ):
+                return_code = process.poll()
+                if return_code is not None:
+                    raise RuntimeError(
+                        f"Chatterbox bootstrap process exited before server was ready (exit code {return_code}). "
+                        f"See log: {chatterbox_install_log_file}"
+                    )
+                raise RuntimeError(
+                    "Chatterbox bootstrap did not bring the server online in time. "
+                    f"See log: {chatterbox_install_log_file}"
+                )
+        finally:
+            if process is not None:
+                logging.info("Stopping temporary Chatterbox bootstrap process.")
                 self.terminate_process_tree(process)
             log_handle.close()
 
@@ -4412,6 +4549,8 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         rvc_var = self.rvc_checkbox.isChecked()
         whisperx_var = self.whisperx_checkbox.isChecked()
         xtts_finetuning_var = self.xtts_finetuning_checkbox.isChecked()
+        chatterbox_var = self.chatterbox_checkbox.isChecked()
+        chatterbox_cpu_var = self.chatterbox_cpu_checkbox.isChecked()
         
         pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
         pandrator_already_installed = os.path.exists(pandrator_path)
@@ -4423,6 +4562,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         voxtral_repo_path = os.path.join(pandrator_path, VOXTRAL_API_REPO_DIRNAME)
         kokoro_repo_path = os.path.join(pandrator_path, KOKORO_API_REPO_DIRNAME)
         easy_xtts_trainer_path = os.path.join(pandrator_path, 'easy_xtts_trainer')
+        chatterbox_repo_path = os.path.join(pandrator_path, CHATTERBOX_API_REPO_DIRNAME)
 
         pandrator_repo_missing = not os.path.exists(pandrator_repo_path)
         subdub_repo_missing = not os.path.exists(subdub_repo_path)
@@ -4500,6 +4640,8 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 concurrent_tasks["Clone Kokoro"] = (self.clone_repo, (KOKORO_API_REPO_URL, kokoro_repo_path), {})
             if xtts_finetuning_var and not os.path.exists(easy_xtts_trainer_path):
                 concurrent_tasks["Clone XTTS Trainer"] = (self.clone_repo, (EASY_XTTS_TRAINER_REPO_URL, easy_xtts_trainer_path), {})
+            if (chatterbox_var or chatterbox_cpu_var) and not os.path.exists(chatterbox_repo_path):
+                concurrent_tasks["Clone Chatterbox"] = (self.clone_repo, (CHATTERBOX_API_REPO_URL, chatterbox_repo_path), {})
                 
             self.execute_concurrently(concurrent_tasks, max_workers=8)
 
@@ -4570,6 +4712,15 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 self.worker.update_status.emit("Bootstrapping FishS2 API server (temporary startup)...")
                 self.install_fishs2_api_server(
                     fishs2_repo_path,
+                    pixi_path=shared_pixi_path,
+                )
+
+            if chatterbox_var or chatterbox_cpu_var:
+                self.worker.update_progress.emit(0.89)
+                self.worker.update_status.emit("Bootstrapping Chatterbox API server (temporary startup)...")
+                self.install_chatterbox_api_server(
+                    chatterbox_repo_path,
+                    use_cpu=chatterbox_cpu_var,
                     pixi_path=shared_pixi_path,
                 )
 
@@ -4646,6 +4797,10 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             config['whisperx_support'] = config.get('whisperx_support', False) or whisperx_var
             config['xtts_finetuning_support'] = config.get('xtts_finetuning_support', False) or xtts_finetuning_var
             config['rvc_support'] = config.get('rvc_support', False) or rvc_var
+            config['chatterbox_support'] = config.get('chatterbox_support', False) or chatterbox_var or chatterbox_cpu_var
+            config[CHATTERBOX_GPU_SUPPORT_CONFIG_FLAG] = (
+                config.get(CHATTERBOX_GPU_SUPPORT_CONFIG_FLAG, False) or chatterbox_var
+            )
 
             self.save_install_config(pandrator_path, config)
 
@@ -5126,6 +5281,8 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         self.launch_kokoro_var = self.launch_kokoro_checkbox.isChecked()
         self.kokoro_cpu_launch_var = self.kokoro_cpu_launch_checkbox.isChecked()
         self.launch_silero_var = self.launch_silero_checkbox.isChecked()
+        self.launch_chatterbox_var = self.launch_chatterbox_checkbox.isChecked()
+        self.chatterbox_cpu_launch_var = self.chatterbox_cpu_launch_checkbox.isChecked()
 
         selected_backend_keys = self._selected_launch_backend_keys()
         if len(selected_backend_keys) > 1:
@@ -5429,6 +5586,48 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                     raise RuntimeError(error_msg)
 
             pandrator_args = ['-connect', '-kokoro']
+            tts_engine_launched = True
+
+        if self.launch_chatterbox_var and not tts_engine_launched:
+            self.worker.update_progress.emit(0.70)
+            chatterbox_server_url = 'http://127.0.0.1:8040'
+            if 'chatterbox' in running_backend_keys and self.chatterbox_process:
+                self.worker.update_status.emit("Chatterbox server is already running. Reusing existing backend.")
+            else:
+                self.worker.update_status.emit("Starting Chatterbox server...")
+                chatterbox_server_path = os.path.join(pandrator_path, CHATTERBOX_API_REPO_DIRNAME)
+                logging.info(f"Chatterbox server path: {chatterbox_server_path}")
+
+                if not os.path.exists(chatterbox_server_path):
+                    error_msg = f"Chatterbox server path not found: {chatterbox_server_path}"
+                    self.worker.update_status.emit(error_msg)
+                    logging.error(error_msg)
+                    raise FileNotFoundError(error_msg)
+
+                chatterbox_gpu_support = install_config.get('chatterbox_gpu_support', False)
+                chatterbox_launch_gpu = chatterbox_gpu_support and not self.chatterbox_cpu_launch_var
+
+                try:
+                    self.chatterbox_process = self.run_chatterbox_api_server(
+                        chatterbox_server_path,
+                        use_cpu=not chatterbox_launch_gpu,
+                        pixi_path=shared_pixi_path,
+                    )
+                except Exception as e:
+                    error_msg = f"Failed to start Chatterbox server: {str(e)}"
+                    self.worker.update_status.emit(error_msg)
+                    logging.error(error_msg)
+                    logging.exception("Exception details:")
+                    raise
+
+                if not self.check_chatterbox_server_online(chatterbox_server_url, process=self.chatterbox_process):
+                    error_msg = "Chatterbox server failed to come online"
+                    self.worker.update_status.emit(error_msg)
+                    logging.error(error_msg)
+                    self.shutdown_chatterbox()
+                    raise RuntimeError(error_msg)
+
+            pandrator_args = ['-connect', '-chatterbox']
             tts_engine_launched = True
 
         if self.launch_pandrator_var:
@@ -5771,6 +5970,74 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         logging.error("FishS2 server failed to come online within the specified attempts.")
         return False
 
+    def run_chatterbox_api_server(self, chatterbox_server_path, use_cpu=False, pixi_path=None):
+        """Run the Chatterbox API server via its run.bat script."""
+        logging.info(f"Running Chatterbox API server from {chatterbox_server_path}...")
+
+        if self.is_port_in_use(8040):
+            error_msg = "Chatterbox server cannot be started because port 8040 is already in use."
+            logging.error(error_msg)
+            QMessageBox.critical(self, "Error", error_msg)
+            return None
+
+        run_script_path = os.path.join(chatterbox_server_path, 'run.bat')
+        if not os.path.exists(run_script_path):
+            raise FileNotFoundError(f"Chatterbox run script not found at: {run_script_path}")
+
+        chatterbox_log_file = os.path.join(chatterbox_server_path, 'chatterbox_server.log')
+        command = [run_script_path]
+        if use_cpu:
+            command.append('cpu')
+        if pixi_path:
+            command.extend(['--pixi-path', pixi_path])
+
+        log_handle = open(chatterbox_log_file, 'a', encoding='utf-8')
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=chatterbox_server_path,
+                env=self.get_pixi_subprocess_env(os.path.dirname(chatterbox_server_path)),
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                **self.get_hidden_subprocess_kwargs(),
+            )
+        except Exception:
+            log_handle.close()
+            raise
+
+        process.log_handle = log_handle
+        self.chatterbox_process = process
+        return process
+
+    def check_chatterbox_server_online(self, base_url, max_attempts=120, wait_interval=5, process=None):
+        """Check if the Chatterbox server is online and responding."""
+        probe_paths = ['/v1/models', '/v1/audio/voices']
+        for attempt in range(1, max_attempts + 1):
+            if process is not None and process.poll() is not None:
+                logging.error("Chatterbox server process exited before coming online.")
+                return False
+
+            for probe_path in probe_paths:
+                try:
+                    response = requests.get(f"{base_url}{probe_path}", timeout=5)
+                    if response.status_code == 404:
+                        continue
+                    if response.status_code < 400:
+                        logging.info("Chatterbox server is online.")
+                        return True
+                except requests.exceptions.RequestException:
+                    continue
+
+            logging.info(
+                "Chatterbox server is not online yet. Waiting... (Attempt %s/%s)",
+                attempt,
+                max_attempts,
+            )
+            time.sleep(wait_interval)
+
+        logging.error("Chatterbox server failed to come online within the specified attempts.")
+        return False
+
     def run_voxtral_api_server(self, voxtral_server_path):
         """Run the Voxtral API server via its upstream launcher script."""
         logging.info(f"Running Voxtral API server from {voxtral_server_path}...")
@@ -5937,6 +6204,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         self.shutdown_voxtral()
         self.shutdown_kokoro()
         self.shutdown_silero()
+        self.shutdown_chatterbox()
 
     def shutdown_xtts(self):
         """Shut down the XTTS server"""
@@ -6042,6 +6310,35 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
             if hasattr(self.fishs2_process, 'log_handle') and self.fishs2_process.log_handle:
                 self.fishs2_process.log_handle.close()
             self.fishs2_process = None
+
+    def shutdown_chatterbox(self):
+        """Shut down the Chatterbox server."""
+        if self.chatterbox_process:
+            logging.info(f"Terminating Chatterbox process with PID: {self.chatterbox_process.pid}")
+            try:
+                parent = psutil.Process(self.chatterbox_process.pid)
+                for child in parent.children(recursive=True):
+                    try:
+                        child.terminate()
+                    except psutil.AccessDenied:
+                        logging.warning(f"Access denied when terminating child process with PID: {child.pid}")
+                parent.terminate()
+                self.chatterbox_process.wait(timeout=10)
+            except psutil.NoSuchProcess:
+                logging.info("Chatterbox process already terminated.")
+            except psutil.TimeoutExpired:
+                logging.warning("Chatterbox process did not terminate, forcing kill")
+                parent = psutil.Process(self.chatterbox_process.pid)
+                for child in parent.children(recursive=True):
+                    try:
+                        child.kill()
+                    except psutil.AccessDenied:
+                        logging.warning(f"Access denied when killing child process with PID: {child.pid}")
+                parent.kill()
+
+            if hasattr(self.chatterbox_process, 'log_handle') and self.chatterbox_process.log_handle:
+                self.chatterbox_process.log_handle.close()
+            self.chatterbox_process = None
 
     def shutdown_voxtral(self):
         """Shut down the Voxtral server"""

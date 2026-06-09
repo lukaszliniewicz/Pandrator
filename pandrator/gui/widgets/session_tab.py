@@ -1387,6 +1387,11 @@ class SessionTab(QWidget):
             return
 
         language_codes = self._language_codes_for_service(service)
+        if service == "Chatterbox":
+            model = str(self.logic.state.tts.xtts_model or "").strip().lower()
+            if "multilingual" not in model:
+                language_codes = ["en"]
+
         for language_code in language_codes:
             self.language_combo.addItem(
                 self._language_label_for_service(service, language_code),
