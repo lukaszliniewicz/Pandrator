@@ -220,6 +220,16 @@ class SessionTab(QWidget):
         self.voxtral_strip_diacritics_checkbox = self.advanced_tts_frame.voxtral_strip_diacritics_checkbox
         self.voxtral_level_audio_checkbox = self.advanced_tts_frame.voxtral_level_audio_checkbox
 
+        self.chatterbox_advanced_settings_frame = self.advanced_tts_frame.chatterbox_advanced_settings_frame
+        self.chatterbox_temperature_spinbox = self.advanced_tts_frame.chatterbox_temperature_spinbox
+        self.chatterbox_repetition_penalty_spinbox = self.advanced_tts_frame.chatterbox_repetition_penalty_spinbox
+        self.chatterbox_min_p_spinbox = self.advanced_tts_frame.chatterbox_min_p_spinbox
+        self.chatterbox_top_p_spinbox = self.advanced_tts_frame.chatterbox_top_p_spinbox
+        self.chatterbox_top_k_spinbox = self.advanced_tts_frame.chatterbox_top_k_spinbox
+        self.chatterbox_exaggeration_spinbox = self.advanced_tts_frame.chatterbox_exaggeration_spinbox
+        self.chatterbox_cfg_weight_spinbox = self.advanced_tts_frame.chatterbox_cfg_weight_spinbox
+        self.chatterbox_norm_loudness_checkbox = self.advanced_tts_frame.chatterbox_norm_loudness_checkbox
+
         # Dubbing controls
         self.transcription_heading = self.dubbing_frame.transcription_heading
         self.transcription_frame = self.dubbing_frame.transcription_frame
@@ -563,6 +573,34 @@ class SessionTab(QWidget):
                 self.logic.state.tts,
                 "voxtral_level_audio",
                 self.voxtral_level_audio_checkbox.isChecked(),
+            )
+        )
+        self.chatterbox_temperature_spinbox.valueChanged.connect(
+            lambda v: setattr(self.logic.state.tts, "chatterbox_temperature", v)
+        )
+        self.chatterbox_repetition_penalty_spinbox.valueChanged.connect(
+            lambda v: setattr(self.logic.state.tts, "chatterbox_repetition_penalty", v)
+        )
+        self.chatterbox_min_p_spinbox.valueChanged.connect(
+            lambda v: setattr(self.logic.state.tts, "chatterbox_min_p", v)
+        )
+        self.chatterbox_top_p_spinbox.valueChanged.connect(
+            lambda v: setattr(self.logic.state.tts, "chatterbox_top_p", v)
+        )
+        self.chatterbox_top_k_spinbox.valueChanged.connect(
+            lambda v: setattr(self.logic.state.tts, "chatterbox_top_k", v)
+        )
+        self.chatterbox_exaggeration_spinbox.valueChanged.connect(
+            lambda v: setattr(self.logic.state.tts, "chatterbox_exaggeration", v)
+        )
+        self.chatterbox_cfg_weight_spinbox.valueChanged.connect(
+            lambda v: setattr(self.logic.state.tts, "chatterbox_cfg_weight", v)
+        )
+        self.chatterbox_norm_loudness_checkbox.stateChanged.connect(
+            lambda: setattr(
+                self.logic.state.tts,
+                "chatterbox_norm_loudness",
+                self.chatterbox_norm_loudness_checkbox.isChecked(),
             )
         )
         self.adv_tts_apply_button.clicked.connect(self.logic.save_xtts_settings)
@@ -1010,6 +1048,15 @@ class SessionTab(QWidget):
         self.voxtral_strip_diacritics_checkbox.setChecked(tts_state.voxtral_strip_diacritics)
         self.voxtral_level_audio_checkbox.setChecked(tts_state.voxtral_level_audio)
 
+        self.chatterbox_temperature_spinbox.setValue(tts_state.chatterbox_temperature)
+        self.chatterbox_repetition_penalty_spinbox.setValue(tts_state.chatterbox_repetition_penalty)
+        self.chatterbox_min_p_spinbox.setValue(tts_state.chatterbox_min_p)
+        self.chatterbox_top_p_spinbox.setValue(tts_state.chatterbox_top_p)
+        self.chatterbox_top_k_spinbox.setValue(tts_state.chatterbox_top_k)
+        self.chatterbox_exaggeration_spinbox.setValue(tts_state.chatterbox_exaggeration)
+        self.chatterbox_cfg_weight_spinbox.setValue(tts_state.chatterbox_cfg_weight)
+        self.chatterbox_norm_loudness_checkbox.setChecked(tts_state.chatterbox_norm_loudness)
+
     def _update_output_state(self, state):
         self.format_combo.setCurrentText(state.audio_processing.output_format)
         self.bitrate_combo.setCurrentText(state.audio_processing.bitrate)
@@ -1112,11 +1159,13 @@ class SessionTab(QWidget):
         show_voxcpm_advanced_settings = is_voxcpm
         show_fishs2_advanced_settings = is_fishs2
         show_voxtral_advanced_settings = is_voxtral
+        show_chatterbox_advanced_settings = is_chatterbox
         show_advanced_tts_controls = (
             show_xtts_advanced_settings
             or show_voxcpm_advanced_settings
             or show_fishs2_advanced_settings
             or show_voxtral_advanced_settings
+            or show_chatterbox_advanced_settings
         )
         show_openai_instructions = is_cloud_tts and not show_xtts_advanced_settings
 
@@ -1149,7 +1198,11 @@ class SessionTab(QWidget):
                 else (
                     "Advanced VoxCPM Settings"
                     if show_voxcpm_advanced_settings
-                    else "Advanced XTTS Settings"
+                    else (
+                        "Advanced Chatterbox Settings"
+                        if show_chatterbox_advanced_settings
+                        else "Advanced XTTS Settings"
+                    )
                 )
             )
         )
@@ -1224,6 +1277,7 @@ class SessionTab(QWidget):
         self.voxcpm_advanced_settings_frame.setVisible(show_voxcpm_advanced_settings)
         self.fishs2_advanced_settings_frame.setVisible(show_fishs2_advanced_settings)
         self.voxtral_advanced_settings_frame.setVisible(show_voxtral_advanced_settings)
+        self.chatterbox_advanced_settings_frame.setVisible(show_chatterbox_advanced_settings)
         self.advanced_tts_frame.setVisible(
             show_advanced_tts_controls and self.advanced_tts_checkbox.isChecked()
         )

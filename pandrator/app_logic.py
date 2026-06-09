@@ -4433,6 +4433,18 @@ class AppLogic(QObject):
             ):
                 return
 
+        if self.state.tts.service == "Chatterbox":
+            self.state.tts.xtts_model = model_name
+            is_turbo = "turbo" in model_name.lower()
+            if is_turbo:
+                if self.state.tts.chatterbox_top_p == 1.0:
+                    self.state.tts.chatterbox_top_p = 0.95
+            else:
+                if self.state.tts.chatterbox_top_p == 0.95:
+                    self.state.tts.chatterbox_top_p = 1.0
+            self.state_changed.emit()
+            return
+
         self.state.tts.xtts_model = model_name
         self.state_changed.emit()
 

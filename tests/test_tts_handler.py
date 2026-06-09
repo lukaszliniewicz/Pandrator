@@ -81,9 +81,14 @@ class TTSHandlerTests(unittest.TestCase):
                     "speaker": "test-voice",
                     "speed": 1.2,
                     "language": "en",
-                    "temperature": 0.7,
-                    "exaggeration": 0.5,
-                    "cfg_weight": 1.5,
+                    "chatterbox_temperature": 0.9,
+                    "chatterbox_repetition_penalty": 1.5,
+                    "chatterbox_min_p": 0.08,
+                    "chatterbox_top_p": 0.8,
+                    "chatterbox_top_k": 800,
+                    "chatterbox_exaggeration": 0.4,
+                    "chatterbox_cfg_weight": 0.7,
+                    "chatterbox_norm_loudness": False,
                 },
                 "http://localhost:8040"
             )
@@ -96,9 +101,14 @@ class TTSHandlerTests(unittest.TestCase):
             self.assertEqual(payload["voice"], "test-voice")
             self.assertEqual(payload["speed"], 1.2)
             self.assertEqual(payload["language"], "en")
-            self.assertEqual(payload["temperature"], 0.7)
-            self.assertEqual(payload["exaggeration"], 0.5)
-            self.assertEqual(payload["cfg_weight"], 1.5)
+            self.assertEqual(payload["temperature"], 0.9)
+            self.assertEqual(payload["repetition_penalty"], 1.5)
+            self.assertEqual(payload["min_p"], 0.08)
+            self.assertEqual(payload["top_p"], 0.8)
+            self.assertEqual(payload["top_k"], 800)
+            self.assertEqual(payload["exaggeration"], 0.4)
+            self.assertEqual(payload["cfg_weight"], 0.7)
+            self.assertFalse(payload["norm_loudness"])
 
         with patch("requests.post") as mock_post:
             mock_post.return_value.status_code = 200
@@ -119,6 +129,13 @@ class TTSHandlerTests(unittest.TestCase):
             self.assertEqual(payload["input"], "Bonjour")
             self.assertIsNone(payload["voice"])
             self.assertEqual(payload["language"], "fr")
+            # Fallbacks
+            self.assertEqual(payload["temperature"], 0.8)
+            self.assertEqual(payload["repetition_penalty"], 1.2)
+            self.assertEqual(payload["min_p"], 0.05)
+            self.assertEqual(payload["top_p"], 0.95)
+            self.assertEqual(payload["top_k"], 1000)
+            self.assertTrue(payload["norm_loudness"])
 
 
 if __name__ == "__main__":

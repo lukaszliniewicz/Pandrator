@@ -172,6 +172,14 @@ class TTSSettings:
     xtts_send_sound_norm_refs: bool = False
     xtts_send_overlap_wav_len: bool = False
     voxcpm_cfg_value: float = 1.5
+    chatterbox_temperature: float = 0.8
+    chatterbox_repetition_penalty: float = 1.2
+    chatterbox_min_p: float = 0.05
+    chatterbox_top_p: float = 0.95
+    chatterbox_top_k: int = 1000
+    chatterbox_exaggeration: float = 0.5
+    chatterbox_cfg_weight: float = 0.5
+    chatterbox_norm_loudness: bool = True
     voxcpm_inference_timesteps: int = 15
     voxcpm_normalize: bool = False
     voxcpm_denoise: bool = False

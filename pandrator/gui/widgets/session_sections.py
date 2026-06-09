@@ -685,6 +685,188 @@ class AdvancedTtsSettingsSection(QFrame):
 
         layout.addWidget(self.voxtral_advanced_settings_frame)
 
+        # Chatterbox Advanced Settings
+        self.chatterbox_advanced_settings_frame = QFrame()
+        self.chatterbox_advanced_settings_frame.setObjectName("subGroupFrame")
+        chatterbox_layout = QGridLayout(self.chatterbox_advanced_settings_frame)
+        chatterbox_layout.setHorizontalSpacing(10)
+        chatterbox_layout.setVerticalSpacing(8)
+
+        def _format_chatterbox_tooltip(title: str, lines: list[str], note: str = "") -> str:
+            tooltip = f"<b>{title}</b><br><br>"
+            tooltip += "<br>".join(f"- {line}" for line in lines)
+            if note:
+                tooltip += f"<br><br><i>{note}</i>"
+            return tooltip
+
+        self.chatterbox_advanced_hint_label = QLabel(
+            "Chatterbox controls tune repetition penalty, min_p, top_p, top_k, exaggeration, cfg_weight, temperature, and norm_loudness."
+        )
+        self.chatterbox_advanced_hint_label.setWordWrap(True)
+        self.chatterbox_advanced_hint_label.setObjectName("secondaryInfoLabel")
+        chatterbox_layout.addWidget(self.chatterbox_advanced_hint_label, 0, 0, 1, 2)
+        self.chatterbox_advanced_hint_label.setToolTip(
+            _format_chatterbox_tooltip(
+                "Chatterbox Advanced Settings",
+                [
+                    "Parameters are automatically sent to the Chatterbox API wrapper.",
+                    "Defaults are dynamically optimized per model type (turbo vs multilingual/standard).",
+                ],
+            )
+        )
+
+        # Temperature
+        self.chatterbox_temperature_spinbox = QDoubleSpinBox()
+        self.chatterbox_temperature_spinbox.setDecimals(2)
+        self.chatterbox_temperature_spinbox.setRange(0.0, 2.0)
+        self.chatterbox_temperature_spinbox.setSingleStep(0.05)
+        self.chatterbox_temperature_label = QLabel("Temperature:")
+        chatterbox_layout.addWidget(self.chatterbox_temperature_label, 1, 0)
+        chatterbox_layout.addWidget(self.chatterbox_temperature_spinbox, 1, 1)
+        _apply_tooltip(
+            [self.chatterbox_temperature_label, self.chatterbox_temperature_spinbox],
+            _format_chatterbox_tooltip(
+                "Temperature",
+                [
+                    "Controls expressiveness/randomness.",
+                    "Lower values are more consistent; higher values are more varied.",
+                    "Range: 0.0 to 2.0 (default: 0.8).",
+                ],
+            ),
+        )
+
+        # Repetition Penalty
+        self.chatterbox_repetition_penalty_spinbox = QDoubleSpinBox()
+        self.chatterbox_repetition_penalty_spinbox.setDecimals(2)
+        self.chatterbox_repetition_penalty_spinbox.setRange(0.5, 10.0)
+        self.chatterbox_repetition_penalty_spinbox.setSingleStep(0.05)
+        self.chatterbox_repetition_penalty_label = QLabel("Repetition Penalty:")
+        chatterbox_layout.addWidget(self.chatterbox_repetition_penalty_label, 2, 0)
+        chatterbox_layout.addWidget(self.chatterbox_repetition_penalty_spinbox, 2, 1)
+        _apply_tooltip(
+            [self.chatterbox_repetition_penalty_label, self.chatterbox_repetition_penalty_spinbox],
+            _format_chatterbox_tooltip(
+                "Repetition Penalty",
+                [
+                    "Penalizes repeating phrases or tokens.",
+                    "Range: 0.5 to 10.0 (default: 1.2).",
+                ],
+            ),
+        )
+
+        # Min P
+        self.chatterbox_min_p_spinbox = QDoubleSpinBox()
+        self.chatterbox_min_p_spinbox.setDecimals(3)
+        self.chatterbox_min_p_spinbox.setRange(0.0, 1.0)
+        self.chatterbox_min_p_spinbox.setSingleStep(0.01)
+        self.chatterbox_min_p_label = QLabel("Min P:")
+        chatterbox_layout.addWidget(self.chatterbox_min_p_label, 3, 0)
+        chatterbox_layout.addWidget(self.chatterbox_min_p_spinbox, 3, 1)
+        _apply_tooltip(
+            [self.chatterbox_min_p_label, self.chatterbox_min_p_spinbox],
+            _format_chatterbox_tooltip(
+                "Min P",
+                [
+                    "Sets the minimum probability threshold for token sampling relative to the most likely token.",
+                    "Only used by non-Turbo models.",
+                    "Range: 0.0 to 1.0 (default: 0.05).",
+                ],
+            ),
+        )
+
+        # Top P
+        self.chatterbox_top_p_spinbox = QDoubleSpinBox()
+        self.chatterbox_top_p_spinbox.setDecimals(2)
+        self.chatterbox_top_p_spinbox.setRange(0.0, 1.0)
+        self.chatterbox_top_p_spinbox.setSingleStep(0.05)
+        self.chatterbox_top_p_label = QLabel("Top P:")
+        chatterbox_layout.addWidget(self.chatterbox_top_p_label, 4, 0)
+        chatterbox_layout.addWidget(self.chatterbox_top_p_spinbox, 4, 1)
+        _apply_tooltip(
+            [self.chatterbox_top_p_label, self.chatterbox_top_p_spinbox],
+            _format_chatterbox_tooltip(
+                "Top P",
+                [
+                    "Controls nucleus sampling diversity.",
+                    "Range: 0.0 to 1.0 (default: 0.95 for Turbo, 1.0 for Standard/Multilingual).",
+                ],
+            ),
+        )
+
+        # Top K
+        self.chatterbox_top_k_spinbox = QSpinBox()
+        self.chatterbox_top_k_spinbox.setRange(0, 10000)
+        self.chatterbox_top_k_spinbox.setSingleStep(50)
+        self.chatterbox_top_k_label = QLabel("Top K:")
+        chatterbox_layout.addWidget(self.chatterbox_top_k_label, 5, 0)
+        chatterbox_layout.addWidget(self.chatterbox_top_k_spinbox, 5, 1)
+        _apply_tooltip(
+            [self.chatterbox_top_k_label, self.chatterbox_top_k_spinbox],
+            _format_chatterbox_tooltip(
+                "Top K",
+                [
+                    "Only sample from the top K most likely tokens.",
+                    "Only used by Turbo model.",
+                    "Range: 0 to 10000 (default: 1000).",
+                ],
+            ),
+        )
+
+        # Exaggeration
+        self.chatterbox_exaggeration_spinbox = QDoubleSpinBox()
+        self.chatterbox_exaggeration_spinbox.setDecimals(2)
+        self.chatterbox_exaggeration_spinbox.setRange(0.0, 10.0)
+        self.chatterbox_exaggeration_spinbox.setSingleStep(0.05)
+        self.chatterbox_exaggeration_label = QLabel("Exaggeration:")
+        chatterbox_layout.addWidget(self.chatterbox_exaggeration_label, 6, 0)
+        chatterbox_layout.addWidget(self.chatterbox_exaggeration_spinbox, 6, 1)
+        _apply_tooltip(
+            [self.chatterbox_exaggeration_label, self.chatterbox_exaggeration_spinbox],
+            _format_chatterbox_tooltip(
+                "Exaggeration",
+                [
+                    "Exaggerates voice style/prosody features.",
+                    "Only used by non-Turbo models.",
+                    "Range: 0.0 to 10.0 (default: 0.5).",
+                ],
+            ),
+        )
+
+        # CFG Weight
+        self.chatterbox_cfg_weight_spinbox = QDoubleSpinBox()
+        self.chatterbox_cfg_weight_spinbox.setDecimals(2)
+        self.chatterbox_cfg_weight_spinbox.setRange(0.0, 10.0)
+        self.chatterbox_cfg_weight_spinbox.setSingleStep(0.05)
+        self.chatterbox_cfg_weight_label = QLabel("CFG Weight:")
+        chatterbox_layout.addWidget(self.chatterbox_cfg_weight_label, 7, 0)
+        chatterbox_layout.addWidget(self.chatterbox_cfg_weight_spinbox, 7, 1)
+        _apply_tooltip(
+            [self.chatterbox_cfg_weight_label, self.chatterbox_cfg_weight_spinbox],
+            _format_chatterbox_tooltip(
+                "CFG Weight",
+                [
+                    "Classifier-free guidance scale. Enforces voice cloning resemblance.",
+                    "Only used by non-Turbo models.",
+                    "Range: 0.0 to 10.0 (default: 0.5).",
+                ],
+            ),
+        )
+
+        # Normalize Loudness
+        self.chatterbox_norm_loudness_checkbox = QCheckBox("Normalize Loudness")
+        chatterbox_layout.addWidget(self.chatterbox_norm_loudness_checkbox, 8, 0, 1, 2)
+        self.chatterbox_norm_loudness_checkbox.setToolTip(
+            _format_chatterbox_tooltip(
+                "Normalize Loudness",
+                [
+                    "Applies loudness normalization to generated speech.",
+                    "Only used by Turbo model.",
+                ],
+            )
+        )
+
+        layout.addWidget(self.chatterbox_advanced_settings_frame)
+
 
 class DubbingSection(QFrame):
     def __init__(self, parent=None):

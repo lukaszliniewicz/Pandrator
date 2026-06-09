@@ -180,6 +180,52 @@ class SettingsAndTrashTests(unittest.TestCase):
             ).fetchone()[0]
         self.assertTrue(deleted_at)
 
+    def test_chatterbox_settings_serialization_and_model_aware_defaults(self):
+        from pandrator.app_logic import AppLogic
+        state = AppState()
+        
+        # 1. Test defaults
+        self.assertEqual(state.tts.chatterbox_temperature, 0.8)
+        self.assertEqual(state.tts.chatterbox_top_p, 0.95)
+        self.assertTrue(state.tts.chatterbox_norm_loudness)
+
+        # 2. Test apply payload
+        payload = {
+            "tts": {
+                "chatterbox_temperature": 0.9,
+                "chatterbox_top_p": 0.8,
+                "chatterbox_norm_loudness": False,
+            }
+        }
+        settings_handler.apply_global_settings_payload(state, payload)
+        self.assertEqual(state.tts.chatterbox_temperature, 0.9)
+        self.assertEqual(state.tts.chatterbox_top_p, 0.8)
+        self.assertFalse(state.tts.chatterbox_norm_loudness)
+
+        # 3. Test build payload
+        serialized = settings_handler.build_global_settings_payload(state)
+        self.assertEqual(serialized["tts"]["chatterbox_temperature"], 0.9)
+        self.assertEqual(serialized["tts"]["chatterbox_top_p"], 0.8)
+        self.assertFalse(serialized["tts"]["chatterbox_norm_loudness"])
+
+        # 4. Test model-aware defaults
+        logic = AppLogic()
+        logic.state.tts.service = "Chatterbox"
+        logic.state.tts.chatterbox_top_p = 0.95
+        
+        # Switch to multilingual -> top_p should go to 1.0
+        logic.on_tts_model_changed("chatterbox-multilingual")
+        self.assertEqual(logic.state.tts.chatterbox_top_p, 1.0)
+        
+        # Switch to turbo -> top_p should go to 0.95
+        logic.on_tts_model_changed("chatterbox-turbo")
+        self.assertEqual(logic.state.tts.chatterbox_top_p, 0.95)
+        
+        # User manual override should NOT be overwritten
+        logic.state.tts.chatterbox_top_p = 0.85
+        logic.on_tts_model_changed("chatterbox-multilingual")
+        self.assertEqual(logic.state.tts.chatterbox_top_p, 0.85)
+
 
 if __name__ == "__main__":
     unittest.main()

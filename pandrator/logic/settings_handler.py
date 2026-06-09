@@ -32,6 +32,12 @@ TTS_GLOBAL_FLOAT_FIELDS = (
     "fishs2_temperature",
     "fishs2_top_p",
     "fishs2_prosody_volume",
+    "chatterbox_temperature",
+    "chatterbox_repetition_penalty",
+    "chatterbox_min_p",
+    "chatterbox_top_p",
+    "chatterbox_exaggeration",
+    "chatterbox_cfg_weight",
 )
 TTS_GLOBAL_INT_FIELDS = (
     "top_k",
@@ -46,6 +52,7 @@ TTS_GLOBAL_INT_FIELDS = (
     "voxcpm_min_len",
     "voxcpm_max_len",
     "fishs2_chunk_length",
+    "chatterbox_top_k",
 )
 TTS_GLOBAL_BOOL_FIELDS = (
     "do_sample",
@@ -56,6 +63,7 @@ TTS_GLOBAL_BOOL_FIELDS = (
     "voxcpm_retry_badcase",
     "fishs2_normalize",
     "fishs2_normalize_loudness",
+    "chatterbox_norm_loudness",
     "xtts_send_temperature",
     "xtts_send_length_penalty",
     "xtts_send_repetition_penalty",

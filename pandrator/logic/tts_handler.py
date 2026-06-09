@@ -3211,15 +3211,47 @@ def _request_chatterbox_audio(text: str, tts_settings: dict, chatterbox_base_url
         "language": tts_settings.get("language") or "en",
     }
     
-    # Pass optional advanced parameters if present
-    chatterbox_defaults = {
-        "temperature": 0.7,
-        "exaggeration": 0.0,
-        "cfg_weight": 1.5,
-    }
-    for key in ("temperature", "exaggeration", "cfg_weight"):
-        if key in tts_settings and tts_settings[key] is not None:
-            payload[key] = _coerce_float(tts_settings[key], chatterbox_defaults[key])
+    # Pass optional advanced parameters
+    payload["temperature"] = _coerce_float(
+        tts_settings.get("chatterbox_temperature")
+        if tts_settings.get("chatterbox_temperature") is not None
+        else tts_settings.get("temperature"),
+        0.8,
+    )
+    payload["exaggeration"] = _coerce_float(
+        tts_settings.get("chatterbox_exaggeration"),
+        0.5,
+    )
+    payload["cfg_weight"] = _coerce_float(
+        tts_settings.get("chatterbox_cfg_weight"),
+        0.5,
+    )
+    payload["repetition_penalty"] = _coerce_float(
+        tts_settings.get("chatterbox_repetition_penalty")
+        if tts_settings.get("chatterbox_repetition_penalty") is not None
+        else tts_settings.get("repetition_penalty"),
+        1.2,
+    )
+    payload["min_p"] = _coerce_float(
+        tts_settings.get("chatterbox_min_p"),
+        0.05,
+    )
+    payload["top_p"] = _coerce_float(
+        tts_settings.get("chatterbox_top_p")
+        if tts_settings.get("chatterbox_top_p") is not None
+        else tts_settings.get("top_p"),
+        0.95,
+    )
+    payload["top_k"] = _coerce_int(
+        tts_settings.get("chatterbox_top_k")
+        if tts_settings.get("chatterbox_top_k") is not None
+        else tts_settings.get("top_k"),
+        1000,
+    )
+    payload["norm_loudness"] = _coerce_bool(
+        tts_settings.get("chatterbox_norm_loudness"),
+        True,
+    )
             
     last_response = None
     for speech_url in _openai_audio_speech_urls(normalized_base_url):
