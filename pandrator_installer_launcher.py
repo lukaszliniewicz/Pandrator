@@ -389,6 +389,7 @@ class PandratorInstaller(QMainWindow):
         self.silero_process = None
         self.voxtral_process = None
         self.kokoro_process = None
+        self.chatterbox_process = None
         self.backend_stop_targets = []
 
         # Worker thread
@@ -621,6 +622,10 @@ class PandratorInstaller(QMainWindow):
         self.bind_mutually_exclusive_install_options(
             self.kokoro_checkbox,
             self.kokoro_cpu_checkbox,
+        )
+        self.bind_mutually_exclusive_install_options(
+            self.chatterbox_checkbox,
+            self.chatterbox_cpu_checkbox,
         )
 
         for checkbox in self.install_tab.findChildren(QCheckBox):
@@ -4867,6 +4872,7 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
         voxtral_repo_path = os.path.join(pandrator_base_path, VOXTRAL_API_REPO_DIRNAME)
         kokoro_repo_path = os.path.join(pandrator_base_path, KOKORO_API_REPO_DIRNAME)
         easy_xtts_trainer_path = os.path.join(pandrator_base_path, 'easy_xtts_trainer')
+        chatterbox_repo_path = os.path.join(pandrator_base_path, CHATTERBOX_API_REPO_DIRNAME)
         config = self.load_install_config(pandrator_base_path, detect_rvc=True)
         if KOKORO_GPU_SUPPORT_CONFIG_FLAG not in config:
             config[KOKORO_GPU_SUPPORT_CONFIG_FLAG] = False
@@ -4954,6 +4960,13 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                     update_tasks["Update Kokoro"] = (self.pull_repo, (kokoro_repo_path,), {})
                 else:
                     update_tasks["Clone Kokoro"] = (self.clone_repo, (KOKORO_API_REPO_URL, kokoro_repo_path), {})
+                    
+            # Chatterbox
+            if config.get('chatterbox_support', False):
+                if os.path.exists(chatterbox_repo_path):
+                    update_tasks["Update Chatterbox"] = (self.pull_repo, (chatterbox_repo_path,), {})
+                else:
+                    update_tasks["Clone Chatterbox"] = (self.clone_repo, (CHATTERBOX_API_REPO_URL, chatterbox_repo_path), {})
                     
             # easy_xtts_trainer
             if os.path.exists(easy_xtts_trainer_path):
@@ -5129,6 +5142,16 @@ Remove-Item $installer -Force -ErrorAction SilentlyContinue
                 if not self.is_voxtral_runtime_ready(voxtral_repo_path):
                     self.worker.update_status.emit("Bootstrapping Voxtral API server...")
                     self.install_voxtral_api_server(voxtral_repo_path)
+
+            if config.get('chatterbox_support', False):
+                if not self.is_chatterbox_runtime_ready(chatterbox_repo_path):
+                    self.worker.update_status.emit("Bootstrapping Chatterbox API server...")
+                    chatterbox_gpu_support = config.get('chatterbox_gpu_support', False)
+                    self.install_chatterbox_api_server(
+                        chatterbox_repo_path,
+                        use_cpu=not chatterbox_gpu_support,
+                        pixi_path=shared_pixi_path,
+                    )
 
             whisperx_required = config.get('whisperx_support', False) or config.get('xtts_finetuning_support', False)
             if whisperx_required:
