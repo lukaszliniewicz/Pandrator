@@ -14,7 +14,7 @@ class GeneratedSentencesWidget(QWidget):
         self.logic = logic
         self._table_update_in_progress = False
         self._audio_variant_update_in_progress = False
-        self._highlight_color = QColor("#9b7dd1")
+        self._highlight_color = QColor("#7e57c2")
         self._inline_edit_triggers = (
             QAbstractItemView.EditTrigger.DoubleClicked
             | QAbstractItemView.EditTrigger.EditKeyPressed

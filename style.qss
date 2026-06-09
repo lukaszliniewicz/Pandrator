@@ -78,7 +78,7 @@ QLabel#taskStageBadge {
 
 QLabel#taskStageBadge[stepState="running"] {
     background-color: #5d4f7f;
-    border: 1px solid #ab90db;
+    border: 1px solid #9575cd;
     color: #f8f4ff;
 }
 
@@ -99,8 +99,8 @@ QLabel#sessionSectionLabel {
 }
 
 QLabel#sessionLifecycleLabel {
-    background-color: #9b7dd1;
-    border: 1px solid #9b7dd1;
+    background-color: #7e57c2;
+    border: 1px solid #7e57c2;
     border-radius: 10px;
     color: #f1f1f1;
     padding: 4px 10px;
@@ -143,19 +143,19 @@ QToolButton:disabled {
 }
 
 QPushButton#primaryButton {
-    background-color: #9b7dd1;
-    border: 1px solid #9b7dd1;
+    background-color: #7e57c2;
+    border: 1px solid #7e57c2;
 }
 
 QPushButton#primaryButton:hover {
-    background-color: #ab90db;
-    border: 1px solid #ab90db;
+    background-color: #9575cd;
+    border: 1px solid #9575cd;
 }
 
 QPushButton#primaryButton:pressed,
 QPushButton#primaryButton:checked {
-    background-color: #8668bc;
-    border: 1px solid #8668bc;
+    background-color: #5e35b1;
+    border: 1px solid #5e35b1;
 }
 
 QPushButton#primaryButton:disabled {
@@ -206,8 +206,8 @@ QComboBox::drop-down {
 QProgressBar::chunk,
 QMenu::item:selected,
 QTableWidget::item:selected {
-    background-color: #9b7dd1;
-    border: 1px solid #9b7dd1;
+    background-color: #7e57c2;
+    border: 1px solid #7e57c2;
     color: #f1f1f1;
 }
 
@@ -224,13 +224,13 @@ QTabBar::tab {
 }
 
 QTabBar::tab:selected {
-    background-color: #9b7dd1;
-    border-color: #ab90db;
+    background-color: #7e57c2;
+    border-color: #9575cd;
 }
 
 QTabBar::tab:hover:!selected {
     background-color: #5d4f7f;
-    border-color: #6a5a90;
+    border-color: #544372;
 }
 
 QTabBar QToolButton {
@@ -247,8 +247,8 @@ QRadioButton::indicator {
 
 QCheckBox::indicator:checked,
 QRadioButton::indicator:checked {
-    background-color: #9b7dd1;
-    border: 1px solid #9b7dd1;
+    background-color: #7e57c2;
+    border: 1px solid #7e57c2;
 }
 
 QScrollBar:vertical,
@@ -268,21 +268,21 @@ QScrollBar::handle:horizontal {
 
 QPushButton#startGenerationButton[accentActive="true"],
 QPushButton#generateDubAudioButton[accentActive="true"] {
-    background-color: #9b7dd1;
-    border: 1px solid #9b7dd1;
+    background-color: #7e57c2;
+    border: 1px solid #7e57c2;
     color: #f1f1f1;
 }
 
 QPushButton#startGenerationButton[accentActive="true"]:hover,
 QPushButton#generateDubAudioButton[accentActive="true"]:hover {
-    background-color: #ab90db;
-    border: 1px solid #ab90db;
+    background-color: #9575cd;
+    border: 1px solid #9575cd;
 }
 
 QPushButton#startGenerationButton[accentActive="true"]:pressed,
 QPushButton#generateDubAudioButton[accentActive="true"]:pressed {
-    background-color: #8668bc;
-    border: 1px solid #8668bc;
+    background-color: #5e35b1;
+    border: 1px solid #5e35b1;
 }
 
 QPushButton#startGenerationButton:disabled,

@@ -3226,12 +3226,13 @@ def _request_chatterbox_audio(text: str, tts_settings: dict, chatterbox_base_url
         tts_settings.get("chatterbox_cfg_weight"),
         0.5,
     )
-    payload["repetition_penalty"] = _coerce_float(
+    raw_rep_penalty = _coerce_float(
         tts_settings.get("chatterbox_repetition_penalty")
         if tts_settings.get("chatterbox_repetition_penalty") is not None
         else tts_settings.get("repetition_penalty"),
         1.2,
     )
+    payload["repetition_penalty"] = max(1.0, raw_rep_penalty)
     payload["min_p"] = _coerce_float(
         tts_settings.get("chatterbox_min_p"),
         0.05,

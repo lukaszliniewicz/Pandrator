@@ -738,7 +738,7 @@ class AdvancedTtsSettingsSection(QFrame):
         # Repetition Penalty
         self.chatterbox_repetition_penalty_spinbox = QDoubleSpinBox()
         self.chatterbox_repetition_penalty_spinbox.setDecimals(2)
-        self.chatterbox_repetition_penalty_spinbox.setRange(0.5, 10.0)
+        self.chatterbox_repetition_penalty_spinbox.setRange(1.0, 10.0)
         self.chatterbox_repetition_penalty_spinbox.setSingleStep(0.05)
         self.chatterbox_repetition_penalty_label = QLabel("Repetition Penalty:")
         chatterbox_layout.addWidget(self.chatterbox_repetition_penalty_label, 2, 0)
@@ -749,7 +749,7 @@ class AdvancedTtsSettingsSection(QFrame):
                 "Repetition Penalty",
                 [
                     "Penalizes repeating phrases or tokens.",
-                    "Range: 0.5 to 10.0 (default: 1.2).",
+                    "Range: 1.0 to 10.0 (default: 1.2).",
                 ],
             ),
         )

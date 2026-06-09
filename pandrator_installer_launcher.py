@@ -6569,9 +6569,9 @@ def run_gui_app():
     app.setStyle('Fusion')  # Use Fusion style for a modern look
 
     # Define pastel purple color
-    pastel_purple = QColor('#9B7DD1')  # Main button color
-    pastel_purple_hover = QColor('#AB90DB')  # Lighter for hover
-    pastel_purple_pressed = QColor('#8668BC')  # Darker for pressed state
+    pastel_purple = QColor('#7e57c2')  # Main button color
+    pastel_purple_hover = QColor('#9575cd')  # Lighter for hover
+    pastel_purple_pressed = QColor('#5e35b1')  # Darker for pressed state
 
     # Create dark palette
     dark_palette = QPalette()
@@ -6642,7 +6642,7 @@ def run_gui_app():
             background-color: transparent;
         }}
         QCheckBox::indicator:checked:disabled {{
-            background-color: #6E5A93;
+            background-color: #544372;
             border: 1px solid #7A7A7A;
         }}
         QCheckBox::indicator:unchecked:disabled {{
