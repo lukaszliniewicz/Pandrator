@@ -4115,6 +4115,50 @@ class AppLogic(QObject):
                     f"Connected to FishS2 server ({len(models)} model(s), {len(speakers)} voice(s))."
                 )
 
+            elif service == "Chatterbox":
+                base_url = (
+                    tts_snapshot.get("external_server_url")
+                    if tts_snapshot.get("use_external_server")
+                    else tts_handler.CHATTERBOX_API_BASE_URL
+                )
+
+                if not tts_handler.check_chatterbox_connection(base_url):
+                    result["error_title"] = "Connection Error"
+                    result["error_message"] = (
+                        f"Could not connect to Chatterbox server at {base_url}. Is it running?"
+                    )
+                    self._tts_connection_result.emit(result)
+                    return
+
+                models = tts_handler.get_chatterbox_models(base_url)
+                speakers = tts_handler.get_chatterbox_voices(base_url)
+
+                default_model = tts_handler.CHATTERBOX_DEFAULT_MODEL
+                
+                selected_model = (tts_snapshot.get("xtts_model") or "").strip()
+                if models:
+                    if selected_model not in models:
+                        selected_model = default_model if default_model in models else models[0]
+                elif not selected_model:
+                    selected_model = default_model
+
+                selected_speaker = (tts_snapshot.get("speaker") or "").strip()
+                if speakers:
+                    if selected_speaker not in speakers:
+                        selected_speaker = speakers[0]
+                else:
+                    selected_speaker = ""
+
+                result["updates"] = {
+                    "tts_models": models,
+                    "tts_speakers": speakers,
+                    "xtts_model": selected_model,
+                    "speaker": selected_speaker,
+                }
+                result["log_message"] = (
+                    f"Connected to Chatterbox server ({len(models)} model(s), {len(speakers)} voice(s))."
+                )
+
             elif service == "Voxtral":
                 base_url = (
                     tts_snapshot.get("external_server_url")
@@ -4668,6 +4712,11 @@ class AppLogic(QObject):
             if tts_snapshot.get("use_external_server") and service == "Kokoro"
             else tts_handler.KOKORO_API_BASE_URL
         )
+        chatterbox_url = (
+            tts_snapshot.get("external_server_url")
+            if tts_snapshot.get("use_external_server") and service == "Chatterbox"
+            else tts_handler.CHATTERBOX_API_BASE_URL
+        )
 
         audio_data = tts_handler.text_to_audio(
             normalized_text,
@@ -4677,6 +4726,7 @@ class AppLogic(QObject):
             fishs2_base_url=fishs2_url,
             voxtral_base_url=voxtral_url,
             kokoro_base_url=kokoro_url,
+            chatterbox_base_url=chatterbox_url,
         )
         if audio_data is None:
             return False, "", "TTS generation failed for this voice."
@@ -4793,6 +4843,8 @@ class AppLogic(QObject):
             default_base_url = tts_handler.VOXCPM_API_BASE_URL
         elif service == "FishS2":
             default_base_url = tts_handler.FISHS2_API_BASE_URL
+        elif service == "Chatterbox":
+            default_base_url = tts_handler.CHATTERBOX_API_BASE_URL
 
         return (
             self.state.tts.external_server_url
@@ -4807,8 +4859,8 @@ class AppLogic(QObject):
     ) -> tuple[bool, str]:
         """Uploads a library voice to the current local backend service."""
         service = str(self.state.tts.service or "").strip()
-        if service not in {"XTTS", "VoxCPM", "FishS2"}:
-            message = "Voice library upload is only supported for XTTS, VoxCPM, and FishS2."
+        if service not in {"XTTS", "VoxCPM", "FishS2", "Chatterbox"}:
+            message = "Voice library upload is only supported for XTTS, VoxCPM, FishS2, and Chatterbox."
             self.show_error.emit("Upload Error", message)
             return False, message
 
@@ -4894,8 +4946,12 @@ class AppLogic(QObject):
                     self._notify_user(
                         f"Uploaded VoxCPM voice: {speaker_name} ({upload_mode} mode, {prompt_note})"
                     )
-                else:
+                elif service == "FishS2":
                     self._notify_user(f"Uploaded FishS2 voice: {speaker_name} ({prompt_note})")
+                elif service == "Chatterbox":
+                    self._notify_user(f"Uploaded Chatterbox voice: {speaker_name} ({prompt_note})")
+                else:
+                    self._notify_user(f"Uploaded {service} voice: {speaker_name} ({prompt_note})")
 
             self.state.tts.speaker = speaker_name
             if normalized_voice_language_code:
@@ -4911,10 +4967,10 @@ class AppLogic(QObject):
     def upload_speaker_voice(self, wav_file_path: str, prompt_text: str | None = None):
         """Uploads a speaker voice file and refreshes available local backend voices."""
         service = str(self.state.tts.service or "").strip()
-        if service not in {"XTTS", "VoxCPM", "FishS2"}:
+        if service not in {"XTTS", "VoxCPM", "FishS2", "Chatterbox"}:
             self.show_error.emit(
                 "Upload Error",
-                "Voice upload is only supported for XTTS, VoxCPM, and FishS2.",
+                "Voice upload is only supported for XTTS, VoxCPM, FishS2, and Chatterbox.",
             )
             return
 
@@ -4924,6 +4980,8 @@ class AppLogic(QObject):
                 default_base_url = tts_handler.VOXCPM_API_BASE_URL
             elif service == "FishS2":
                 default_base_url = tts_handler.FISHS2_API_BASE_URL
+            elif service == "Chatterbox":
+                default_base_url = tts_handler.CHATTERBOX_API_BASE_URL
 
             base_url = (
                 self.state.tts.external_server_url
@@ -4937,7 +4995,7 @@ class AppLogic(QObject):
             if service == "VoxCPM":
                 upload_prompt_text = normalized_prompt_text
                 upload_mode = "hifi" if upload_prompt_text else "reference"
-            elif service == "FishS2":
+            elif service in {"FishS2", "Chatterbox"}:
                 upload_prompt_text = normalized_prompt_text
 
             speaker_name = tts_handler.upload_speaker_voice(
@@ -4952,6 +5010,9 @@ class AppLogic(QObject):
             elif service == "FishS2":
                 transcript_note = "with transcript" if upload_prompt_text else "without transcript"
                 self._notify_user(f"Uploaded FishS2 voice: {speaker_name} ({transcript_note})")
+            elif service == "Chatterbox":
+                transcript_note = "with transcript" if upload_prompt_text else "without transcript"
+                self._notify_user(f"Uploaded Chatterbox voice: {speaker_name} ({transcript_note})")
             else:
                 self._notify_user(f"Uploaded {service} voice: {speaker_name}")
             self.state.tts.speaker = speaker_name
@@ -6157,6 +6218,11 @@ class AppLogic(QObject):
                 if self.state.tts.use_external_server and active_service == "Kokoro"
                 else tts_handler.KOKORO_API_BASE_URL
             )
+            chatterbox_url = (
+                self.state.tts.external_server_url
+                if self.state.tts.use_external_server and active_service == "Chatterbox"
+                else tts_handler.CHATTERBOX_API_BASE_URL
+            )
             audio_data = tts_handler.text_to_audio(
                 processed_text,
                 self.state.tts.__dict__,
@@ -6165,6 +6231,7 @@ class AppLogic(QObject):
                 fishs2_base_url=fishs2_url,
                 voxtral_base_url=voxtral_url,
                 kokoro_base_url=kokoro_url,
+                chatterbox_base_url=chatterbox_url,
             )
             if not audio_data:
                 return False, None

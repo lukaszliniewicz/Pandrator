@@ -41,6 +41,9 @@ VOXCPM_API_BASE_URL = "http://127.0.0.1:8020"
 # FishS2 default URLs
 FISHS2_API_BASE_URL = "http://127.0.0.1:8020"
 
+# Chatterbox default URLs
+CHATTERBOX_API_BASE_URL = "http://127.0.0.1:8040"
+
 # Voxtral default URLs
 VOXTRAL_API_BASE_URL = "http://127.0.0.1:8000"
 
@@ -78,6 +81,14 @@ FISHS2_MODEL_ALIASES = [
 FISHS2_DEFAULT_VOICE = "default"
 FISHS2_UPLOAD_FILE_PURPOSE = "user_data"
 FISHS2_DEFAULT_TEMPERATURE = 0.7
+
+# Chatterbox default models
+CHATTERBOX_DEFAULT_MODEL = "chatterbox-turbo"
+CHATTERBOX_TTS_MODELS = [
+    "chatterbox-turbo",
+    "chatterbox-multilingual",
+    "chatterbox-en",
+]
 FISHS2_DEFAULT_TOP_P = 0.7
 FISHS2_DEFAULT_CHUNK_LENGTH = 200
 FISHS2_DEFAULT_LATENCY = "balanced"
@@ -1956,6 +1967,90 @@ def get_fishs2_voices(base_url: str = FISHS2_API_BASE_URL) -> list[str]:
     return _merge_catalog_with_discovered([FISHS2_DEFAULT_VOICE], discovered_voices)
 
 
+def check_chatterbox_connection(base_url: str = CHATTERBOX_API_BASE_URL) -> bool:
+    """Checks if the Chatterbox server is reachable."""
+    normalized_base_url = _normalize_base_url(base_url, CHATTERBOX_API_BASE_URL)
+    probe_urls = [
+        f"{normalized_base_url}/health",
+        *_openai_models_urls(normalized_base_url),
+        *_openai_voice_catalog_urls(normalized_base_url),
+        *_openai_files_urls(normalized_base_url),
+    ]
+
+    for probe_url in _dedupe_ordered(probe_urls):
+        try:
+            response = requests.get(
+                probe_url,
+                headers=_openai_auth_headers(XTTS_OPENAI_PLACEHOLDER_API_KEY),
+                timeout=4,
+            )
+            if _should_try_next_openai_candidate(response.status_code):
+                continue
+            if response.status_code < 400:
+                return True
+        except requests.exceptions.RequestException:
+            continue
+
+    return False
+
+
+def get_chatterbox_models(base_url: str = CHATTERBOX_API_BASE_URL) -> list[str]:
+    """Fetches available Chatterbox models from server."""
+    normalized_base_url = _normalize_base_url(base_url, CHATTERBOX_API_BASE_URL)
+
+    discovered_models: list[str] = []
+    for models_url in _openai_models_urls(normalized_base_url):
+        try:
+            response = requests.get(
+                models_url,
+                headers=_openai_auth_headers(XTTS_OPENAI_PLACEHOLDER_API_KEY),
+                timeout=8,
+            )
+            if _should_try_next_openai_candidate(response.status_code):
+                continue
+
+            response.raise_for_status()
+            discovered_models = _extract_models_from_openai_payload(response.json())
+            if discovered_models:
+                break
+        except (requests.exceptions.RequestException, ValueError) as e:
+            logging.error("Failed to list Chatterbox models from %s: %s", models_url, e)
+            continue
+
+    return _merge_catalog_with_discovered(CHATTERBOX_TTS_MODELS, discovered_models)
+
+
+def get_chatterbox_voices(base_url: str = CHATTERBOX_API_BASE_URL) -> list[str]:
+    """Fetches available Chatterbox voices from server."""
+    normalized_base_url = _normalize_base_url(base_url, CHATTERBOX_API_BASE_URL)
+
+    discovered_voices: list[str] = []
+    voice_urls = _dedupe_ordered(
+        _openai_voice_catalog_urls(normalized_base_url)
+        + _openai_files_urls(normalized_base_url)
+    )
+
+    for voices_url in voice_urls:
+        try:
+            response = requests.get(
+                voices_url,
+                headers=_openai_auth_headers(XTTS_OPENAI_PLACEHOLDER_API_KEY),
+                timeout=8,
+            )
+            if _should_try_next_openai_candidate(response.status_code):
+                continue
+
+            response.raise_for_status()
+            discovered_voices = _extract_voices_from_openai_payload(response.json())
+            if discovered_voices:
+                break
+        except (requests.exceptions.RequestException, ValueError) as e:
+            logging.error("Failed to list Chatterbox voices from %s: %s", voices_url, e)
+            continue
+
+    return _dedupe_ordered(discovered_voices)
+
+
 def check_voxtral_connection(base_url: str = VOXTRAL_API_BASE_URL) -> bool:
     """Checks if the Voxtral server is reachable."""
     normalized_base_url = _normalize_base_url(base_url, VOXTRAL_API_BASE_URL)
@@ -2552,6 +2647,26 @@ def upload_fishs2_speaker_voice(
     )
 
 
+def upload_chatterbox_speaker_voice(
+    wav_file_path: str | list[str],
+    base_url: str = CHATTERBOX_API_BASE_URL,
+    *,
+    prompt_text: str | None = None,
+    voice_id: str | None = None,
+) -> str:
+    """Uploads voice to Chatterbox and returns uploaded voice identifier."""
+    return _upload_speaker_voice_openai_compatible(
+        wav_file_path,
+        base_url=base_url,
+        fallback_base_url=CHATTERBOX_API_BASE_URL,
+        service_name="Chatterbox",
+        api_key=XTTS_OPENAI_PLACEHOLDER_API_KEY,
+        upload_purpose="user_data",
+        prompt_text=prompt_text,
+        voice_id=voice_id,
+    )
+
+
 def upload_speaker_voice(
     wav_file_path: str | list[str],
     base_url: str = XTTS_API_BASE_URL,
@@ -2574,6 +2689,14 @@ def upload_speaker_voice(
 
     if normalized_service in {"fishs2", "fish-s2", "fishs2-cpp", "fishs2cpp"}:
         return upload_fishs2_speaker_voice(
+            wav_file_path,
+            base_url=base_url,
+            prompt_text=prompt_text,
+            voice_id=voice_id,
+        )
+
+    if normalized_service in {"chatterbox", "chatterbox-turbo"}:
+        return upload_chatterbox_speaker_voice(
             wav_file_path,
             base_url=base_url,
             prompt_text=prompt_text,
@@ -3066,6 +3189,58 @@ def _decode_audio_response(response: requests.Response) -> AudioSegment:
         return AudioSegment.from_file(audio_data)
 
 
+def _request_chatterbox_audio(text: str, tts_settings: dict, chatterbox_base_url: str) -> requests.Response:
+    normalized_base_url = _normalize_base_url(chatterbox_base_url, CHATTERBOX_API_BASE_URL)
+    
+    # Map to proper model id if alias is used
+    model = str(tts_settings.get("xtts_model", CHATTERBOX_DEFAULT_MODEL) or "").strip()
+    if model.lower() in {"turbo", "chatterbox-turbo"}:
+        model = "chatterbox-turbo"
+    elif model.lower() in {"multilingual", "chatterbox-multilingual"}:
+        model = "chatterbox-multilingual"
+    elif model.lower() in {"en", "chatterbox-en"}:
+        model = "chatterbox-en"
+    else:
+        model = CHATTERBOX_DEFAULT_MODEL
+        
+    payload = {
+        "model": model,
+        "input": text,
+        "voice": tts_settings.get("speaker") or None,
+        "speed": _coerce_float(tts_settings.get("speed"), 1.0),
+        "language": tts_settings.get("language") or "en",
+    }
+    
+    # Pass optional advanced parameters if present
+    chatterbox_defaults = {
+        "temperature": 0.7,
+        "exaggeration": 0.0,
+        "cfg_weight": 1.5,
+    }
+    for key in ("temperature", "exaggeration", "cfg_weight"):
+        if key in tts_settings and tts_settings[key] is not None:
+            payload[key] = _coerce_float(tts_settings[key], chatterbox_defaults[key])
+            
+    last_response = None
+    for speech_url in _openai_audio_speech_urls(normalized_base_url):
+        response = requests.post(
+            speech_url,
+            headers=_openai_auth_headers(XTTS_OPENAI_PLACEHOLDER_API_KEY),
+            json=payload,
+            timeout=TTS_GENERATION_TIMEOUT_SECONDS,
+        )
+
+        if _should_try_next_openai_candidate(response.status_code):
+            last_response = response
+            continue
+        return response
+
+    if last_response is not None:
+        return last_response
+
+    raise RuntimeError(f"No Chatterbox speech endpoint could be resolved for '{normalized_base_url}'.")
+
+
 # Audio Generation
 def text_to_audio(
     text: str,
@@ -3076,6 +3251,7 @@ def text_to_audio(
     voxtral_base_url: str = VOXTRAL_API_BASE_URL,
     kokoro_base_url: str = KOKORO_API_BASE_URL,
     silero_base_url: str = SILERO_API_BASE_URL,
+    chatterbox_base_url: str = CHATTERBOX_API_BASE_URL,
     max_attempts: int = 5,
 ) -> AudioSegment | None:
     """
@@ -3097,6 +3273,8 @@ def text_to_audio(
                 response = _request_voxtral_audio(text, tts_settings, voxtral_base_url)
             elif service == "Kokoro":
                 response = _request_kokoro_audio(text, tts_settings, kokoro_base_url)
+            elif service == "Chatterbox":
+                response = _request_chatterbox_audio(text, tts_settings, chatterbox_base_url)
             elif service in {OPENAI_SERVICE, GEMINI_SERVICE, OPENAI_COMPAT_SERVICE}:
                 response = _request_openai_compatible_audio(text, tts_settings)
             elif service == "Silero":

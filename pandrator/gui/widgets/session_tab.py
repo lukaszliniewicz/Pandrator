@@ -1750,7 +1750,7 @@ class SessionTab(QWidget):
             return VOXTRAL_LANGUAGES
         if service == "FishS2":
             return FISHS2_LANGUAGES
-        if service in {"XTTS", "VoxCPM", "OpenAI", "Gemini", "OpenAI-Compatible"}:
+        if service in {"XTTS", "VoxCPM", "OpenAI", "Gemini", "OpenAI-Compatible", "Chatterbox"}:
             return XTTS_LANGUAGES
         return []
 

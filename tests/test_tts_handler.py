@@ -68,6 +68,58 @@ class TTSHandlerTests(unittest.TestCase):
         self.assertEqual(payload["speed"], 2.0)
         self.assertEqual(payload["prosody"]["volume"], -20.0)
 
+    def test_chatterbox_payload_construction(self):
+        from unittest.mock import patch
+        with patch("requests.post") as mock_post:
+            mock_post.return_value.status_code = 200
+            mock_post.return_value.content = b"fake audio content"
+            
+            tts_handler._request_chatterbox_audio(
+                "Hello world",
+                {
+                    "xtts_model": "turbo",
+                    "speaker": "test-voice",
+                    "speed": 1.2,
+                    "language": "en",
+                    "temperature": 0.7,
+                    "exaggeration": 0.5,
+                    "cfg_weight": 1.5,
+                },
+                "http://localhost:8040"
+            )
+            
+            mock_post.assert_called_once()
+            called_args, called_kwargs = mock_post.call_args
+            payload = called_kwargs["json"]
+            self.assertEqual(payload["model"], "chatterbox-turbo")
+            self.assertEqual(payload["input"], "Hello world")
+            self.assertEqual(payload["voice"], "test-voice")
+            self.assertEqual(payload["speed"], 1.2)
+            self.assertEqual(payload["language"], "en")
+            self.assertEqual(payload["temperature"], 0.7)
+            self.assertEqual(payload["exaggeration"], 0.5)
+            self.assertEqual(payload["cfg_weight"], 1.5)
+
+        with patch("requests.post") as mock_post:
+            mock_post.return_value.status_code = 200
+            
+            tts_handler._request_chatterbox_audio(
+                "Bonjour",
+                {
+                    "xtts_model": "chatterbox-multilingual",
+                    "language": "fr",
+                },
+                "http://localhost:8040"
+            )
+            
+            mock_post.assert_called_once()
+            called_args, called_kwargs = mock_post.call_args
+            payload = called_kwargs["json"]
+            self.assertEqual(payload["model"], "chatterbox-multilingual")
+            self.assertEqual(payload["input"], "Bonjour")
+            self.assertIsNone(payload["voice"])
+            self.assertEqual(payload["language"], "fr")
+
 
 if __name__ == "__main__":
     unittest.main()

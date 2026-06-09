@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import (
 from ...constants import LANGUAGE_DISPLAY_NAMES, XTTS_LANGUAGES
 
 
-VOICE_UPLOAD_SERVICES = {"XTTS", "VoxCPM", "FishS2"}
+VOICE_UPLOAD_SERVICES = {"XTTS", "VoxCPM", "FishS2", "Chatterbox"}
 TEXT_FILE_ENCODINGS = ("utf-8", "utf-8-sig", "cp1250", "cp1252", "latin-1")
 VOICE_LANGUAGE_DEFAULT_LABEL = "Use Current Service Language"
 
@@ -120,7 +120,7 @@ class VoiceLibraryDialog(QDialog):
         left_layout.addWidget(QLabel("Upload Prompt (TXT)"))
         self.voice_prompt_edit = QTextEdit(self)
         self.voice_prompt_edit.setPlaceholderText(
-            "Optional prompt text used when uploading this voice to VoxCPM/FishS2."
+            "Optional prompt text used when uploading this voice to VoxCPM/FishS2/Chatterbox."
         )
         self.voice_prompt_edit.setFixedHeight(100)
         left_layout.addWidget(self.voice_prompt_edit)
@@ -385,7 +385,7 @@ class VoiceLibraryDialog(QDialog):
             self.service_hint_label.setText(
                 "Active service: XTTS. Upload sends all samples from the selected voice entry."
             )
-        elif service in {"VoxCPM", "FishS2"}:
+        elif service in {"VoxCPM", "FishS2", "Chatterbox"}:
             self.upload_button.setText(f"Upload Selected Sample to {service}")
             can_upload = selected_voice is not None and bool(selected_sample_id)
             self.service_hint_label.setText(
@@ -395,7 +395,7 @@ class VoiceLibraryDialog(QDialog):
             self.upload_button.setText("Upload")
             can_upload = False
             self.service_hint_label.setText(
-                "Upload from library is available only for XTTS, VoxCPM, and FishS2."
+                "Upload from library is available only for XTTS, VoxCPM, FishS2, and Chatterbox."
             )
 
         self.upload_button.setEnabled(can_upload)
@@ -698,12 +698,12 @@ class VoiceLibraryDialog(QDialog):
             QMessageBox.warning(
                 self,
                 "Upload Voice",
-                "Voice library upload is only supported for XTTS, VoxCPM, and FishS2.",
+                "Voice library upload is only supported for XTTS, VoxCPM, FishS2, and Chatterbox.",
             )
             return
 
         sample_id = None
-        if service in {"VoxCPM", "FishS2"}:
+        if service in {"VoxCPM", "FishS2", "Chatterbox"}:
             selected_sample_id = self._selected_sample_id()
             if not selected_sample_id:
                 QMessageBox.warning(
