@@ -1148,13 +1148,14 @@ class SessionTab(QWidget):
         is_fishs2 = state.tts.service == "FishS2"
         is_voxtral = state.tts.service == "Voxtral"
         is_kokoro = state.tts.service == "Kokoro"
+        is_magpie = state.tts.service == "Magpie"
         is_chatterbox = state.tts.service == "Chatterbox"
         is_cloud_tts = state.tts.service in {
             "OpenAI-Compatible",
             "OpenAI",
             "Gemini",
         }
-        is_model_based_tts = is_xtts or is_voxcpm or is_fishs2 or is_voxtral or is_kokoro or is_cloud_tts or is_chatterbox
+        is_model_based_tts = is_xtts or is_voxcpm or is_fishs2 or is_voxtral or is_kokoro or is_magpie or is_cloud_tts or is_chatterbox
         show_xtts_advanced_settings = self.logic.should_show_xtts_advanced_settings()
         show_voxcpm_advanced_settings = is_voxcpm
         show_fishs2_advanced_settings = is_fishs2
@@ -1218,7 +1219,7 @@ class SessionTab(QWidget):
             state.tts.service,
             state.tts.openai_audio_endpoint,
         )
-        modal_voice_selection_services = {"Kokoro", "Voxtral", "Silero"}
+        modal_voice_selection_services = {"Kokoro", "Voxtral", "Magpie", "Silero"}
         modal_only_prebuilt_selection = (
             state.tts.service in modal_voice_selection_services
             and supports_prebuilt_voice_catalog
@@ -1815,6 +1816,9 @@ class SessionTab(QWidget):
             return VOXTRAL_LANGUAGES
         if service == "FishS2":
             return FISHS2_LANGUAGES
+        if service == "Magpie":
+            from ..constants import MAGPIE_LANGUAGES
+            return list(MAGPIE_LANGUAGES)
         if service in {"XTTS", "VoxCPM", "OpenAI", "Gemini", "OpenAI-Compatible", "Chatterbox"}:
             return XTTS_LANGUAGES
         return []
@@ -2219,6 +2223,7 @@ class SessionTab(QWidget):
             "VoxCPM": 300,
             "Voxtral": 300,
             "Chatterbox": 350,
+            "Magpie": 300,
             "Silero": 200,
             "OpenAI-Compatible": 200,
         }

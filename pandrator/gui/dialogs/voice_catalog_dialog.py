@@ -317,6 +317,34 @@ class VoiceCatalogDialog(QDialog):
             "gender_label": "",
         }
 
+    def _build_magpie_voice_entry(self, voice_id: str) -> dict:
+        normalized = str(voice_id or "").strip()
+        parts = normalized.split(".")
+        locale = parts[1].upper() if len(parts) >= 3 else ""
+        speaker = parts[2] if len(parts) >= 3 else ""
+        emotion = parts[3] if len(parts) >= 4 else ""
+        lang_code = ""
+        lang_label = ""
+        if locale:
+            from ..constants import MAGPIE_LOCALE_MAP
+            lang_code = MAGPIE_LOCALE_MAP.get(locale, locale.lower())
+            lang_label = locale
+        display = f"{speaker} ({locale})"
+        if emotion:
+            display += f" - {emotion}"
+        gender_label = ""
+        if speaker in ("Aria", "Sofia"):
+            gender_label = "Female"
+        elif speaker in ("John Van Stan", "Jason", "Leo"):
+            gender_label = "Male"
+        return {
+            "voice_id": normalized,
+            "display_label": display,
+            "language_code": lang_code,
+            "language_label": lang_label,
+            "gender_label": gender_label,
+        }
+
     def _build_generic_voice_entry(self, service: str, voice_id: str) -> dict:
         normalized_voice_id = str(voice_id or "").strip()
         current_language = self._normalize_language_code_for_service(service, str(self.logic.state.tts.language or ""))
@@ -336,6 +364,8 @@ class VoiceCatalogDialog(QDialog):
             return self._build_voxtral_voice_entry(voice_id)
         if service == "Silero":
             return self._build_silero_voice_entry(voice_id)
+        if service == "Magpie":
+            return self._build_magpie_voice_entry(voice_id)
         return self._build_generic_voice_entry(service, voice_id)
 
     def _refresh_header(self):
@@ -418,6 +448,13 @@ class VoiceCatalogDialog(QDialog):
                 for code in ordered_codes
             ]
 
+        if service == "Magpie":
+            from ..constants import MAGPIE_LOCALE_MAP
+            return [
+                (locale, MAGPIE_LOCALE_MAP[locale])
+                for locale in MAGPIE_LOCALE_MAP
+            ]
+
         if service == "Silero":
             current_language_name = str(self.logic.state.tts.language or "").strip()
             if not current_language_name:
@@ -464,6 +501,8 @@ class VoiceCatalogDialog(QDialog):
                 self.language_filter_hint.setText("Kokoro preview generation is limited to the selected supported language.")
             elif service == "Voxtral":
                 self.language_filter_hint.setText("Voxtral voices are grouped by language and gender.")
+            elif service == "Magpie":
+                self.language_filter_hint.setText("Magpie voices are grouped by language. Each language supports 5 speakers.")
             else:
                 self.language_filter_hint.setText("Silero voices are shown for the currently selected Silero language.")
         else:

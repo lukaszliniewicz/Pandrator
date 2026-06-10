@@ -37,24 +37,6 @@ def default_llm_provider_configs() -> List[Dict[str, Any]]:
     ]
 
 
-def _magpie_voice_catalog_static() -> List[str]:
-    locales = ["EN-US", "ES-US", "FR-FR", "DE-DE", "VI-VN", "IT-IT", "ZH-CN", "HI-IN", "JA-JP"]
-    speakers = ["Sofia", "Aria", "Jason", "Leo", "John Van Stan"]
-    emotions = ["Angry", "Calm", "Happy", "Neutral", "Sad", "Fearful"]
-    locales_with_emotions = {"EN-US"}
-    voices = []
-    for locale in locales:
-        for speaker in speakers:
-            voices.append(f"Magpie-Multilingual.{locale}.{speaker}")
-            if locale in locales_with_emotions:
-                for emotion in emotions:
-                    voices.append(f"Magpie-Multilingual.{locale}.{speaker}.{emotion}")
-    return voices
-
-
-MAGPIE_VOICES = _magpie_voice_catalog_static()
-
-
 def default_tts_provider_configs() -> List[Dict[str, Any]]:
     return [
         {
@@ -132,20 +114,6 @@ def default_tts_provider_configs() -> List[Dict[str, Any]]:
                 "Zubenelgenubi",
             ],
             "default_voice": "Kore",
-            "supports_prebuilt_voices": True,
-        },
-        {
-            "id": "magpie",
-            "name": "Magpie TTS",
-            "provider": "openai",
-            "api_base": "http://127.0.0.1:8030",
-            "api_key_env": "",
-            "api_key": "",
-            "is_custom": False,
-            "models": ["magpie-tts", "magpie-tts-multilingual"],
-            "default_model": "magpie-tts",
-            "voices": list(MAGPIE_VOICES),
-            "default_voice": "Magpie-Multilingual.EN-US.Aria",
             "supports_prebuilt_voices": True,
         },
     ]

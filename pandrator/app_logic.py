@@ -1150,6 +1150,7 @@ class AppLogic(QObject):
             "FishS2",
             "Voxtral",
             "Kokoro",
+            "Magpie",
             "Silero",
             tts_handler.OPENAI_COMPAT_SERVICE,
         }
@@ -4267,6 +4268,44 @@ class AppLogic(QObject):
                     f"Connected to Kokoro server ({len(models)} model(s), {len(speakers)} voice(s))."
                 )
 
+            elif service == "Magpie":
+                base_url = tts_handler.MAGPIE_API_BASE_URL
+
+                if not tts_handler.check_magpie_connection(base_url):
+                    result["error_title"] = "Connection Error"
+                    result["error_message"] = (
+                        f"Could not connect to Magpie TTS server at {base_url}. Is it running?"
+                    )
+                    self._tts_connection_result.emit(result)
+                    return
+
+                models = tts_handler.get_magpie_models(base_url)
+                speakers = tts_handler.get_magpie_voices(base_url)
+
+                selected_model = (tts_snapshot.get("xtts_model") or "").strip()
+                if models:
+                    if selected_model not in models:
+                        selected_model = models[0]
+                elif not selected_model:
+                    selected_model = "magpie-tts"
+
+                selected_speaker = (tts_snapshot.get("speaker") or "").strip()
+                if speakers:
+                    if selected_speaker not in speakers:
+                        selected_speaker = "Magpie-Multilingual.EN-US.Aria"
+                elif not selected_speaker:
+                    selected_speaker = "Magpie-Multilingual.EN-US.Aria"
+
+                result["updates"] = {
+                    "tts_models": models,
+                    "tts_speakers": speakers,
+                    "xtts_model": selected_model,
+                    "speaker": selected_speaker,
+                }
+                result["log_message"] = (
+                    f"Connected to Magpie TTS server ({len(models)} model(s), {len(speakers)} voice(s))."
+                )
+
             elif service == "Silero":
                 base_url = tts_handler.SILERO_API_BASE_URL
                 if not tts_handler.check_silero_connection(base_url):
@@ -4492,7 +4531,7 @@ class AppLogic(QObject):
         provider_id: str | None = None,
     ) -> bool:
         normalized_service = str(service or self.state.tts.service or "").strip()
-        if normalized_service in {"Kokoro", "Silero", "Voxtral"}:
+        if normalized_service in {"Kokoro", "Silero", "Voxtral", "Magpie"}:
             return True
         if normalized_service in {tts_handler.OPENAI_SERVICE, tts_handler.GEMINI_SERVICE}:
             return True
@@ -4549,6 +4588,8 @@ class AppLogic(QObject):
                 else tts_handler.VOXTRAL_API_BASE_URL
             )
             voices = tts_handler.get_voxtral_voices(base_url)
+        elif service == "Magpie":
+            voices = tts_handler.get_magpie_voices(tts_handler.MAGPIE_API_BASE_URL)
         elif service == "Silero":
             voices = tts_handler.get_silero_speakers(tts_handler.SILERO_API_BASE_URL)
         elif service in {
@@ -4739,6 +4780,7 @@ class AppLogic(QObject):
             voxtral_base_url=voxtral_url,
             kokoro_base_url=kokoro_url,
             chatterbox_base_url=chatterbox_url,
+            magpie_base_url=tts_handler.MAGPIE_API_BASE_URL,
         )
         if audio_data is None:
             return False, "", "TTS generation failed for this voice."
@@ -6244,6 +6286,7 @@ class AppLogic(QObject):
                 voxtral_base_url=voxtral_url,
                 kokoro_base_url=kokoro_url,
                 chatterbox_base_url=chatterbox_url,
+                magpie_base_url=tts_handler.MAGPIE_API_BASE_URL,
             )
             if not audio_data:
                 return False, None

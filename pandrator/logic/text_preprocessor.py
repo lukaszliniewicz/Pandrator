@@ -262,7 +262,7 @@ def _split_with_sentence_splitter(text: str, language: str) -> list[str]:
 def split_into_sentences(text, language, tts_service):
     normalized_language = str(language or "").strip().lower()
 
-    if tts_service in {"XTTS", "Voxtral", "Kokoro", "OpenAI", "Gemini", "OpenAI-Compatible"}:
+    if tts_service in {"XTTS", "Voxtral", "Kokoro", "Magpie", "OpenAI", "Gemini", "OpenAI-Compatible"}:
         if normalized_language in {"zh", "zh-cn"}:
             return split_chinese_sentences(text)
         elif normalized_language.startswith("ja"):

@@ -169,13 +169,6 @@ KOKORO_TTS_VOICES = [
     "zm_yunyang",
 ]
 
-# Magpie default constants
-MAGPIE_DEFAULT_MODEL = "magpie-tts"
-MAGPIE_TTS_MODELS = ["magpie-tts", "magpie-tts-multilingual"]
-MAGPIE_DEFAULT_VOICE = "Magpie-Multilingual.EN-US.Aria"
-MAGPIE_DEFAULT_TEMPERATURE = 0.7
-MAGPIE_DEFAULT_TOP_K = 80
-MAGPIE_DEFAULT_CFG_SCALE = 2.5
 
 
 def normalize_kokoro_language_code(language_value: str | None) -> str:
@@ -335,8 +328,8 @@ GEMINI_MODEL_ALIASES = {
     "gemini-2.5-pro-tts": "gemini-2.5-pro-preview-tts",
 }
 
-BUILTIN_PROVIDER_ORDER = [OPENAI_PROVIDER, GEMINI_PROVIDER, "magpie"]
-BUILTIN_PROVIDER_IDS = {OPENAI_PROVIDER, GEMINI_PROVIDER, "magpie"}
+BUILTIN_PROVIDER_ORDER = [OPENAI_PROVIDER, GEMINI_PROVIDER]
+BUILTIN_PROVIDER_IDS = {OPENAI_PROVIDER, GEMINI_PROVIDER}
 PREBUILT_VOICE_PROVIDER_FIELD = "supports_prebuilt_voices"
 
 
@@ -413,20 +406,6 @@ def _default_provider_configs() -> list[dict[str, object]]:
             "default_model": GEMINI_AUDIO_DEFAULT_MODEL,
             "voices": list(GEMINI_TTS_VOICES),
             "default_voice": GEMINI_AUDIO_DEFAULT_VOICE,
-            PREBUILT_VOICE_PROVIDER_FIELD: True,
-        },
-        {
-            "id": "magpie",
-            "name": "Magpie TTS",
-            "provider": OPENAI_PROVIDER,
-            "api_base": MAGPIE_API_BASE_URL,
-            "api_key_env": "",
-            "api_key": "",
-            "is_custom": False,
-            "models": list(MAGPIE_TTS_MODELS),
-            "default_model": MAGPIE_DEFAULT_MODEL,
-            "voices": magpie_voice_catalog(),
-            "default_voice": MAGPIE_DEFAULT_VOICE,
             PREBUILT_VOICE_PROVIDER_FIELD: True,
         },
     ]
@@ -2303,6 +2282,74 @@ def check_silero_connection(base_url: str = SILERO_API_BASE_URL) -> bool:
         return False
 
 
+# Magpie Functions
+def check_magpie_connection(base_url: str = MAGPIE_API_BASE_URL) -> bool:
+    """Checks if the Magpie TTS server is reachable."""
+    normalized_base_url = _normalize_base_url(base_url, MAGPIE_API_BASE_URL)
+    try:
+        response = requests.get(f"{normalized_base_url}/health", timeout=4)
+        return response.status_code < 400
+    except requests.exceptions.RequestException:
+        return False
+
+
+def get_magpie_models(base_url: str = MAGPIE_API_BASE_URL) -> list[str]:
+    """Fetches available Magpie TTS models from server."""
+    normalized_base_url = _normalize_base_url(base_url, MAGPIE_API_BASE_URL)
+    try:
+        import json
+        response = requests.get(f"{normalized_base_url}/v1/models", timeout=8)
+        response.raise_for_status()
+        payload = response.json()
+        discovered = [str(m["id"]) for m in payload.get("data", []) if isinstance(m, dict)]
+        if discovered:
+            return discovered
+    except (requests.exceptions.RequestException, ValueError, json.JSONDecodeError):
+        pass
+    from ..constants import MAGPIE_TTS_MODELS
+    return list(MAGPIE_TTS_MODELS)
+
+
+def get_magpie_voices(base_url: str = MAGPIE_API_BASE_URL) -> list[str]:
+    """Returns the predefined Magpie TTS voice catalog."""
+    from ..constants import magpie_voice_catalog
+    return magpie_voice_catalog()
+
+
+def _request_magpie_audio(text: str, tts_settings: dict, magpie_base_url: str) -> requests.Response:
+    """Sends a TTS request to the Magpie TTS server."""
+    from ..constants import MAGPIE_LOCALE_MAP, MAGPIE_SPEAKERS
+
+    voice = str(tts_settings.get("speaker") or "").strip() or "Magpie-Multilingual.EN-US.Aria"
+    normalized_base_url = _normalize_base_url(magpie_base_url, MAGPIE_API_BASE_URL)
+
+    payload = {
+        "model": str(tts_settings.get("xtts_model") or "").strip() or "magpie-tts",
+        "input": text,
+        "voice": voice,
+        "use_cfg": True,
+        "apply_text_normalization": False,
+        "response_format": "wav",
+    }
+
+    last_response = None
+    for speech_url in _openai_audio_speech_urls(normalized_base_url):
+        response = requests.post(
+            speech_url,
+            json=payload,
+            timeout=TTS_GENERATION_TIMEOUT_SECONDS,
+        )
+        if _should_try_next_openai_candidate(response.status_code):
+            last_response = response
+            continue
+        return response
+
+    if last_response is not None:
+        return last_response
+
+    raise RuntimeError(f"No Magpie speech endpoint could be resolved for '{normalized_base_url}'.")
+
+
 # XTTS Functions
 def get_xtts_speakers(base_url: str = XTTS_API_BASE_URL) -> list[str]:
     """Fetches discoverable XTTS voice identifiers from server."""
@@ -3312,6 +3359,7 @@ def text_to_audio(
     kokoro_base_url: str = KOKORO_API_BASE_URL,
     silero_base_url: str = SILERO_API_BASE_URL,
     chatterbox_base_url: str = CHATTERBOX_API_BASE_URL,
+    magpie_base_url: str = MAGPIE_API_BASE_URL,
     max_attempts: int = 5,
 ) -> AudioSegment | None:
     """
@@ -3335,6 +3383,8 @@ def text_to_audio(
                 response = _request_kokoro_audio(text, tts_settings, kokoro_base_url)
             elif service == "Chatterbox":
                 response = _request_chatterbox_audio(text, tts_settings, chatterbox_base_url)
+            elif service == "Magpie":
+                response = _request_magpie_audio(text, tts_settings, magpie_base_url)
             elif service in {OPENAI_SERVICE, GEMINI_SERVICE, OPENAI_COMPAT_SERVICE}:
                 response = _request_openai_compatible_audio(text, tts_settings)
             elif service == "Silero":
