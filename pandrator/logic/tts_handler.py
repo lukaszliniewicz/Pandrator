@@ -13,6 +13,7 @@ from ..constants import (
     KOKORO_NAMED_VOICE_META,
     KOKORO_OPENAI_ALIAS_VOICES,
     KOKORO_PREFIX_LANGUAGE_CODES,
+    magpie_voice_catalog,
 )
 
 _litellm_speech = None
@@ -52,6 +53,9 @@ SILERO_API_BASE_URL = "http://127.0.0.1:8001"
 
 # Kokoro default URLs
 KOKORO_API_BASE_URL = "http://127.0.0.1:8880"
+
+# Magpie default URLs
+MAGPIE_API_BASE_URL = "http://127.0.0.1:8030"
 TTS_GENERATION_TIMEOUT_SECONDS = 300
 
 XTTS_OPENAI_PLACEHOLDER_API_KEY = "sk-placeholder"
@@ -164,6 +168,14 @@ KOKORO_TTS_VOICES = [
     "zm_yunxia",
     "zm_yunyang",
 ]
+
+# Magpie default constants
+MAGPIE_DEFAULT_MODEL = "magpie-tts"
+MAGPIE_TTS_MODELS = ["magpie-tts", "magpie-tts-multilingual"]
+MAGPIE_DEFAULT_VOICE = "Magpie-Multilingual.EN-US.Aria"
+MAGPIE_DEFAULT_TEMPERATURE = 0.7
+MAGPIE_DEFAULT_TOP_K = 80
+MAGPIE_DEFAULT_CFG_SCALE = 2.5
 
 
 def normalize_kokoro_language_code(language_value: str | None) -> str:
@@ -323,7 +335,8 @@ GEMINI_MODEL_ALIASES = {
     "gemini-2.5-pro-tts": "gemini-2.5-pro-preview-tts",
 }
 
-BUILTIN_PROVIDER_ORDER = [OPENAI_PROVIDER, GEMINI_PROVIDER]
+BUILTIN_PROVIDER_ORDER = [OPENAI_PROVIDER, GEMINI_PROVIDER, "magpie"]
+BUILTIN_PROVIDER_IDS = {OPENAI_PROVIDER, GEMINI_PROVIDER, "magpie"}
 PREBUILT_VOICE_PROVIDER_FIELD = "supports_prebuilt_voices"
 
 
@@ -402,6 +415,20 @@ def _default_provider_configs() -> list[dict[str, object]]:
             "default_voice": GEMINI_AUDIO_DEFAULT_VOICE,
             PREBUILT_VOICE_PROVIDER_FIELD: True,
         },
+        {
+            "id": "magpie",
+            "name": "Magpie TTS",
+            "provider": OPENAI_PROVIDER,
+            "api_base": MAGPIE_API_BASE_URL,
+            "api_key_env": "",
+            "api_key": "",
+            "is_custom": False,
+            "models": list(MAGPIE_TTS_MODELS),
+            "default_model": MAGPIE_DEFAULT_MODEL,
+            "voices": magpie_voice_catalog(),
+            "default_voice": MAGPIE_DEFAULT_VOICE,
+            PREBUILT_VOICE_PROVIDER_FIELD: True,
+        },
     ]
 
 
@@ -460,7 +487,7 @@ def _legacy_endpoints_to_provider_configs(raw_json: str) -> list[dict[str, objec
                 "api_base": api_base,
                 "api_key_env": str(item.get("api_key_env", "")).strip(),
                 "api_key": str(item.get("api_key", "")).strip(),
-                "is_custom": provider_id not in {OPENAI_PROVIDER, GEMINI_PROVIDER},
+                "is_custom": provider_id not in BUILTIN_PROVIDER_IDS,
                 "models": models,
                 "default_model": default_model,
                 "voices": voices,
@@ -627,7 +654,7 @@ def save_provider(
         return False, get_provider_configs(tts_settings), "", "Provider type must be OpenAI or Gemini compatible."
 
     normalized_api_base = _normalize_base_url(api_base, "")
-    if normalized_provider_id not in {OPENAI_PROVIDER, GEMINI_PROVIDER} and not normalized_api_base:
+    if normalized_provider_id not in BUILTIN_PROVIDER_IDS and not normalized_api_base:
         return False, get_provider_configs(tts_settings), "", "API base URL is required."
 
     provider_configs = get_provider_configs(tts_settings)
@@ -639,7 +666,7 @@ def save_provider(
         ),
         None,
     )
-    is_custom = normalized_provider_id not in {OPENAI_PROVIDER, GEMINI_PROVIDER}
+    is_custom = normalized_provider_id not in BUILTIN_PROVIDER_IDS
 
     parsed_models = _parse_model_list(models or [], normalized_provider_type)
     if not parsed_models and existing is not None:
@@ -656,7 +683,7 @@ def save_provider(
         parsed_voices = list(_provider_voice_catalog(normalized_provider_type, default_model))
 
     default_voice = parsed_voices[0] if parsed_voices else _provider_default_voice(normalized_provider_type)
-    if normalized_provider_id in {OPENAI_PROVIDER, GEMINI_PROVIDER}:
+    if normalized_provider_id in BUILTIN_PROVIDER_IDS:
         provider_supports_prebuilt_voices = True
     elif supports_prebuilt_voices is None:
         if existing is not None:
@@ -733,7 +760,7 @@ def remove_custom_provider(
     if not provider_id:
         return False, get_provider_configs(tts_settings), "Select a custom provider first."
 
-    if provider_id in {OPENAI_PROVIDER, GEMINI_PROVIDER}:
+    if provider_id in BUILTIN_PROVIDER_IDS:
         return False, get_provider_configs(tts_settings), "Built-in providers cannot be removed."
 
     provider_configs = get_provider_configs(tts_settings)
