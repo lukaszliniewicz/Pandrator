@@ -2327,6 +2327,8 @@ def _request_magpie_audio(text: str, tts_settings: dict, magpie_base_url: str) -
         "model": str(tts_settings.get("xtts_model") or "").strip() or "magpie-tts",
         "input": text,
         "voice": voice,
+        "language": str(tts_settings.get("language") or "").strip() or None,
+        "speed": float(tts_settings.get("speed") or 1.0),
         "use_cfg": True,
         "apply_text_normalization": False,
         "response_format": "wav",

@@ -70,6 +70,7 @@ class GenerationAnewTests(unittest.TestCase):
 
     def test_have_preprocessing_settings_changed_matching(self):
         harness = LogicTestHarness()
+        harness.state.text_processing.max_sentence_length = 160
         settings = {
             "pdf_preprocessed": False,
             "source_file": "",
@@ -89,6 +90,7 @@ class GenerationAnewTests(unittest.TestCase):
 
     def test_have_preprocessing_settings_changed_not_matching(self):
         harness = LogicTestHarness()
+        harness.state.text_processing.max_sentence_length = 160
         settings = {
             "pdf_preprocessed": False,
             "source_file": "",
@@ -125,6 +127,7 @@ class GenerationAnewTests(unittest.TestCase):
 
     def test_reset_generation_progress_resets_flags_if_settings_not_changed(self):
         harness = LogicTestHarness()
+        harness.state.text_processing.max_sentence_length = 160
         harness.state.processed_sentences = [
             {"sentence_number": "1", "tts_generated": "yes", "processed_sentence": "Modified text"},
         ]

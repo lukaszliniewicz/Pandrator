@@ -1817,7 +1817,7 @@ class SessionTab(QWidget):
         if service == "FishS2":
             return FISHS2_LANGUAGES
         if service == "Magpie":
-            from ..constants import MAGPIE_LANGUAGES
+            from ...constants import MAGPIE_LANGUAGES
             return list(MAGPIE_LANGUAGES)
         if service in {"XTTS", "VoxCPM", "OpenAI", "Gemini", "OpenAI-Compatible", "Chatterbox"}:
             return XTTS_LANGUAGES

@@ -1,4 +1,4 @@
-﻿import re
+import re
 import threading
 
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -326,7 +326,7 @@ class VoiceCatalogDialog(QDialog):
         lang_code = ""
         lang_label = ""
         if locale:
-            from ..constants import MAGPIE_LOCALE_MAP
+            from ...constants import MAGPIE_LOCALE_MAP
             lang_code = MAGPIE_LOCALE_MAP.get(locale, locale.lower())
             lang_label = locale
         display = f"{speaker} ({locale})"
@@ -449,7 +449,7 @@ class VoiceCatalogDialog(QDialog):
             ]
 
         if service == "Magpie":
-            from ..constants import MAGPIE_LOCALE_MAP
+            from ...constants import MAGPIE_LOCALE_MAP
             return [
                 (locale, MAGPIE_LOCALE_MAP[locale])
                 for locale in MAGPIE_LOCALE_MAP
