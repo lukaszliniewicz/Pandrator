@@ -63,6 +63,30 @@ def strip_quotation_marks(text: str) -> str:
     without_double_quotes = text.translate(DOUBLE_QUOTATION_MARK_TRANSLATION_TABLE)
     return SINGLE_QUOTATION_MARK_PATTERN.sub("", without_double_quotes)
 
+def normalize_punctuation(text: str) -> str:
+    """Normalizes Unicode dashes, curly quotes, and ellipses to standard equivalents."""
+    # Translate fancy quotes
+    text = text.translate(str.maketrans({
+        '“': '"',
+        '”': '"',
+        '„': '"',
+        '‟': '"',
+        '‘': "'",
+        '’': "'",
+        '‚': "'",
+        '‛': "'",
+        '‹': "'",
+        '›': "'",
+        '«': '"',
+        '»': '"',
+    }))
+    # Normalize dashes to guide prosody/pauses
+    text = text.replace('—', ', ')
+    text = text.replace('–', ' - ')
+    # Normalize ellipsis
+    text = text.replace('…', '...')
+    return text
+
 def preprocess_text(text: str, settings: dict) -> list[dict]:
     """
     Main entry point for text preprocessing. Chooses parallel or sequential.
@@ -123,6 +147,7 @@ def _process_chunk(chunk: str, settings: dict) -> list[dict]:
         enable_sentence_appending = False
 
     chunk = re.sub(r'\r\n?', '\n', chunk)
+    chunk = normalize_punctuation(chunk)
     paragraph_breaks = []
 
     if not disable_paragraph_detection:
