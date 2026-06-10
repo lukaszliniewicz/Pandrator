@@ -2211,6 +2211,20 @@ class SessionTab(QWidget):
         self.logic.state.tts.xtts_model = ""
         self.logic.state.tts.speaker = ""
 
+        # Update default max sentence length according to TTS service
+        service_defaults = {
+            "XTTS": 200,
+            "Kokoro": 350,
+            "FishS2": 350,
+            "VoxCPM": 300,
+            "Voxtral": 300,
+            "Chatterbox": 350,
+            "Silero": 200,
+            "OpenAI-Compatible": 200,
+        }
+        new_len = service_defaults.get(normalized_service, 200)
+        self.logic.state.text_processing.max_sentence_length = new_len
+
         if service == "OpenAI":
             self.logic.state.tts.openai_audio_endpoint = "openai"
         elif service == "Gemini":

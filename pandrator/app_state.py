@@ -121,7 +121,7 @@ def default_tts_provider_configs() -> List[Dict[str, Any]]:
 @dataclass
 class TextProcessingSettings:
     enable_sentence_splitting: bool = True
-    max_sentence_length: int = 160
+    max_sentence_length: int = 200
     enable_sentence_appending: bool = True
     remove_diacritics: bool = False
     remove_quotation_marks: bool = False
