@@ -251,19 +251,47 @@ QRadioButton::indicator:checked {
     border: 1px solid #7e57c2;
 }
 
-QScrollBar:vertical,
-QScrollBar:horizontal,
-QScrollBar::add-line,
-QScrollBar::sub-line,
-QScrollBar::add-page,
-QScrollBar::sub-page {
-    background-color: #2d2d30;
+QScrollBar:vertical {
+    background: transparent;
+    border: none;
+    margin: 2px;
+    width: 10px;
 }
 
-QScrollBar::handle:vertical,
+QScrollBar:horizontal {
+    background: transparent;
+    border: none;
+    height: 10px;
+    margin: 2px;
+}
+
+QScrollBar::handle:vertical {
+    background-color: #59616a;
+    border-radius: 4px;
+    min-height: 32px;
+}
+
 QScrollBar::handle:horizontal {
-    background-color: #4d5863;
-    border-radius: 5px;
+    background-color: #59616a;
+    border-radius: 4px;
+    min-width: 32px;
+}
+
+QScrollBar::handle:hover {
+    background-color: #747e89;
+}
+
+QScrollBar::add-line,
+QScrollBar::sub-line {
+    background: transparent;
+    border: none;
+    height: 0;
+    width: 0;
+}
+
+QScrollBar::add-page,
+QScrollBar::sub-page {
+    background: transparent;
 }
 
 QPushButton#startGenerationButton[accentActive="true"],

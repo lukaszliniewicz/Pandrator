@@ -8,9 +8,9 @@ import sys
 from PyQt6.QtCore import QThread, Qt, QTimer
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
-    QApplication, QCheckBox, QGroupBox, QHBoxLayout, QLabel, QMainWindow,
-    QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QTabWidget,
-    QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
+    QLabel, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
+    QScrollArea, QSizePolicy, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from ..components import ComponentOperationsMixin
@@ -27,7 +27,13 @@ from ..runtime import RuntimeMixin
 from ..storage import StorageMixin
 from ..workflows import WorkflowMixin
 from .actions import GuiActionsMixin
-from .support import InfoDialog, QtLogEmitter, QtLogHandler
+from .support import (
+    GitHubLinkButton,
+    InfoDialog,
+    QtLogEmitter,
+    QtLogHandler,
+    ToggleSwitch,
+)
 
 
 class PandratorInstaller(
@@ -103,10 +109,11 @@ class PandratorInstaller(
         # Set up the main window
         self.setWindowTitle("Pandrator Installer & Launcher")
 
-        # Calculate window size
-        screen_size = QApplication.primaryScreen().size()
-        width = int(screen_size.width() * 0.5)
-        height = int(screen_size.height() * 0.6)
+        # Keep the installer compact while leaving enough room for two option columns.
+        screen_size = QApplication.primaryScreen().availableGeometry().size()
+        width = min(860, int(screen_size.width() * 0.82))
+        height = min(720, int(screen_size.height() * 0.82))
+        self.setMinimumSize(min(720, width), min(560, height))
         self.resize(width, height)
 
         # Create central widget and main layout
@@ -119,13 +126,18 @@ class PandratorInstaller(
 
         # Title
         self.title_label = QLabel("Pandrator Installer & Launcher")
-        title_font = QFont("Arial", 18, QFont.Weight.Bold)
+        self.title_label.setObjectName("titleLabel")
+        title_font = QFont("Arial", 17, QFont.Weight.Bold)
         self.title_label.setFont(title_font)
         header_layout.addWidget(self.title_label)
+        header_layout.addStretch()
+
+        self.github_button = GitHubLinkButton()
+        header_layout.addWidget(self.github_button)
 
         # Info button
-        self.info_button = QPushButton("ℹ️ Info")
-        self.info_button.setFixedWidth(100)
+        self.info_button = QPushButton("About")
+        self.info_button.setObjectName("secondaryButton")
         self.info_button.clicked.connect(self.show_info)
         header_layout.addWidget(self.info_button)
 
@@ -153,10 +165,19 @@ class PandratorInstaller(
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(False)
         self.main_layout.addWidget(self.progress_bar)
 
         self.status_label = QLabel("Ready")
+        self.status_label.setObjectName("statusLabel")
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.status_label.setWordWrap(True)
+        self.status_label.setMinimumWidth(0)
+        self.status_label.setMaximumHeight(44)
+        self.status_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Preferred,
+        )
         status_font = QFont("Arial", 11)
         self.status_label.setFont(status_font)
         self.main_layout.addWidget(self.status_label)
@@ -230,115 +251,228 @@ class PandratorInstaller(
         dialog = InfoDialog(self)
         dialog.exec()
 
+    def _create_scrollable_tab_content(self, tab):
+        tab_layout = QVBoxLayout(tab)
+        tab_layout.setContentsMargins(0, 0, 0, 0)
+
+        scroll_area = QScrollArea()
+        scroll_area.setObjectName("installerScrollArea")
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(12, 12, 12, 12)
+        content_layout.setSpacing(12)
+        scroll_area.setWidget(content)
+        tab_layout.addWidget(scroll_area)
+        return tab_layout, content_layout
+
+    @staticmethod
+    def _create_option_card(
+        control,
+        description,
+        extra_controls=(),
+        voice_capability="",
+    ):
+        card = QFrame()
+        card.setObjectName("optionCard")
+        card.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred,
+        )
+
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 11, 14, 11)
+        layout.setSpacing(5)
+        layout.addWidget(control)
+
+        description_label = QLabel(description)
+        description_label.setObjectName("mutedLabel")
+        description_label.setWordWrap(True)
+        description_label.setMinimumWidth(0)
+        description_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Preferred,
+        )
+        layout.addWidget(description_label)
+
+        if voice_capability:
+            capability_label = QLabel(voice_capability)
+            capability_label.setObjectName("voiceCapabilityBadge")
+            capability_label.setSizePolicy(
+                QSizePolicy.Policy.Maximum,
+                QSizePolicy.Policy.Preferred,
+            )
+            layout.addWidget(capability_label)
+
+        for extra_control in extra_controls:
+            layout.addWidget(extra_control)
+
+        return card
+
+    @staticmethod
+    def _add_option_cards(grid, cards):
+        grid.setContentsMargins(8, 10, 8, 8)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(10)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        for index, card in enumerate(cards):
+            grid.addWidget(card, index // 2, index % 2)
+
+    @staticmethod
+    def _create_intro(text):
+        label = QLabel(text)
+        label.setObjectName("introLabel")
+        label.setWordWrap(True)
+        label.setMinimumWidth(0)
+        return label
+
     def setup_install_tab(self):
         """Set up the Install tab"""
-        layout = QVBoxLayout(self.install_tab)
+        layout, content_layout = self._create_scrollable_tab_content(self.install_tab)
+        content_layout.addWidget(
+            self._create_intro(
+                "Choose the local services and optional tools you want. "
+                "You can return later to add more."
+            )
+        )
 
-        # Core components section
-        components_group = QGroupBox("Components")
-        components_layout = QVBoxLayout(components_group)
-
-        # Pandrator checkbox
-        self.pandrator_checkbox = QCheckBox("Pandrator")
+        core_group = QGroupBox("Core application")
+        core_layout = QVBoxLayout(core_group)
+        core_layout.setContentsMargins(8, 10, 8, 8)
+        self.pandrator_checkbox = ToggleSwitch("Install Pandrator")
         self.pandrator_checkbox.setChecked(True)
-        components_layout.addWidget(self.pandrator_checkbox)
+        core_layout.addWidget(
+            self._create_option_card(
+                self.pandrator_checkbox,
+                "The desktop app and its required runtime.",
+            )
+        )
+        content_layout.addWidget(core_group)
 
-        # TTS Engines section - with BOLD label
-        tts_engines_label = QLabel("TTS Engines")
-        tts_engines_label.setStyleSheet("font-weight: bold;")
-        components_layout.addWidget(tts_engines_label)
+        engines_group = QGroupBox("Text-to-speech engines")
+        engines_grid = QGridLayout(engines_group)
 
-        components_layout.addWidget(QLabel("You can select and install new engines and tools after the initial installation."))
+        self.xtts_checkbox = ToggleSwitch("Install XTTS")
+        self.xtts_cpu_checkbox = QCheckBox("Use CPU-only runtime")
+        self.voxcpm_checkbox = ToggleSwitch("Install VoxCPM2")
+        self.fishs2_checkbox = ToggleSwitch("Install FishS2")
+        self.silero_checkbox = ToggleSwitch("Install Silero")
+        self.voxtral_checkbox = ToggleSwitch("Install Voxtral")
+        self.kokoro_checkbox = ToggleSwitch("Install Kokoro")
+        self.kokoro_cpu_checkbox = QCheckBox("Use CPU-only runtime")
+        self.chatterbox_checkbox = ToggleSwitch("Install Chatterbox")
+        self.chatterbox_cpu_checkbox = QCheckBox("Use CPU-only runtime")
+        self.magpie_checkbox = ToggleSwitch("Install Magpie")
+        self.magpie_cpu_checkbox = QCheckBox("Use CPU-only runtime")
 
-        engines_layout = QHBoxLayout()
+        engine_cards = (
+            self._create_option_card(
+                self.kokoro_checkbox,
+                "Fast multilingual speech generation with a large built-in voice catalog.",
+                (self.kokoro_cpu_checkbox,),
+                "Pre-built voices",
+            ),
+            self._create_option_card(
+                self.xtts_checkbox,
+                "Multilingual speech generation from uploaded reference recordings.",
+                (self.xtts_cpu_checkbox,),
+                "Voice cloning",
+            ),
+            self._create_option_card(
+                self.voxcpm_checkbox,
+                "A local neural speech service that can follow an uploaded reference voice.",
+                voice_capability="Voice cloning",
+            ),
+            self._create_option_card(
+                self.fishs2_checkbox,
+                "A local Fish Audio S2 service that can follow an uploaded reference voice.",
+                voice_capability="Voice cloning",
+            ),
+            self._create_option_card(
+                self.voxtral_checkbox,
+                "A GPU-based multilingual service with a catalog of preset voices.",
+                voice_capability="Pre-built voices",
+            ),
+            self._create_option_card(
+                self.silero_checkbox,
+                "A lightweight local engine with language-specific preset speakers.",
+                voice_capability="Pre-built voices",
+            ),
+            self._create_option_card(
+                self.chatterbox_checkbox,
+                "Expressive local speech generated from uploaded reference recordings.",
+                (self.chatterbox_cpu_checkbox,),
+                "Voice cloning",
+            ),
+            self._create_option_card(
+                self.magpie_checkbox,
+                "A multilingual local service with several preset speakers per language.",
+                (self.magpie_cpu_checkbox,),
+                "Pre-built voices",
+            ),
+        )
+        self._add_option_cards(engines_grid, engine_cards)
+        content_layout.addWidget(engines_group)
 
-        self.xtts_checkbox = QCheckBox("XTTS")
-        engines_layout.addWidget(self.xtts_checkbox)
-
-        self.xtts_cpu_checkbox = QCheckBox("XTTS CPU only")
-        engines_layout.addWidget(self.xtts_cpu_checkbox)
-
-        self.voxcpm_checkbox = QCheckBox("VoxCPM2")
-        engines_layout.addWidget(self.voxcpm_checkbox)
-
-        self.fishs2_checkbox = QCheckBox("FishS2")
-        engines_layout.addWidget(self.fishs2_checkbox)
-
-        self.silero_checkbox = QCheckBox("Silero")
-        engines_layout.addWidget(self.silero_checkbox)
-
-        self.voxtral_checkbox = QCheckBox("Voxtral (GPU only)")
-        engines_layout.addWidget(self.voxtral_checkbox)
-
-        self.kokoro_checkbox = QCheckBox("Kokoro")
-        engines_layout.addWidget(self.kokoro_checkbox)
-
-        self.kokoro_cpu_checkbox = QCheckBox("Kokoro CPU only")
-        engines_layout.addWidget(self.kokoro_cpu_checkbox)
-
-        self.chatterbox_checkbox = QCheckBox("Chatterbox")
-        engines_layout.addWidget(self.chatterbox_checkbox)
-
-        self.chatterbox_cpu_checkbox = QCheckBox("Chatterbox CPU only")
-        engines_layout.addWidget(self.chatterbox_cpu_checkbox)
-
-        self.magpie_checkbox = QCheckBox("Magpie")
-        engines_layout.addWidget(self.magpie_checkbox)
-
-        self.magpie_cpu_checkbox = QCheckBox("Magpie CPU only")
-        engines_layout.addWidget(self.magpie_cpu_checkbox)
-        engines_layout.addStretch()
-
-        components_layout.addLayout(engines_layout)
-
-        # Other tools section - with BOLD label
-        other_tools_label = QLabel("Other tools")
-        other_tools_label.setStyleSheet("font-weight: bold;")
-        components_layout.addWidget(other_tools_label)
-
-        self.rvc_checkbox = QCheckBox("RVC (rvc-python fork)")
-        components_layout.addWidget(self.rvc_checkbox)
-
-        self.whisperx_checkbox = QCheckBox("WhisperX (needed for dubbing and XTTS training)")
-        components_layout.addWidget(self.whisperx_checkbox)
-
-        self.xtts_finetuning_checkbox = QCheckBox("XTTS Fine-tuning")
+        tools_group = QGroupBox("Optional tools")
+        tools_grid = QGridLayout(tools_group)
+        self.rvc_checkbox = QCheckBox("RVC voice conversion")
+        self.whisperx_checkbox = QCheckBox("WhisperX transcription")
+        self.xtts_finetuning_checkbox = QCheckBox("XTTS fine-tuning")
         self.xtts_finetuning_checkbox.stateChanged.connect(self.update_whisperx_checkbox)
-        components_layout.addWidget(self.xtts_finetuning_checkbox)
+        tool_cards = (
+            self._create_option_card(
+                self.rvc_checkbox,
+                "Reshapes generated speech with an RVC voice model for voice conversion and post-processing.",
+            ),
+            self._create_option_card(
+                self.whisperx_checkbox,
+                "Adds transcription and alignment used by dubbing and XTTS training.",
+            ),
+            self._create_option_card(
+                self.xtts_finetuning_checkbox,
+                "Adds tools for training custom XTTS voices. WhisperX will be included.",
+            ),
+        )
+        self._add_option_cards(tools_grid, tool_cards)
+        content_layout.addWidget(tools_group)
+        content_layout.addStretch()
 
-        layout.addWidget(components_group)
-
-        # Buttons section
         buttons_layout = QHBoxLayout()
+        buttons_layout.setContentsMargins(12, 8, 12, 8)
+        buttons_layout.addStretch()
 
-        self.install_button = QPushButton("Install")
+        self.install_button = QPushButton("Install selected")
+        self.install_button.setObjectName("installButton")
         self.install_button.clicked.connect(self.install_pandrator)
         buttons_layout.addWidget(self.install_button)
 
         self.update_button = QPushButton("Update Pandrator")
+        self.update_button.setObjectName("secondaryButton")
         self.update_button.clicked.connect(self.update_pandrator)
         buttons_layout.addWidget(self.update_button)
 
-        self.open_log_button = QPushButton("View Installation Log")
-        self.open_log_button.clicked.connect(self.open_log_file)
-        self.open_log_button.setEnabled(False)
-        buttons_layout.addWidget(self.open_log_button)
-
         layout.addLayout(buttons_layout)
 
-        self.bind_mutually_exclusive_install_options(
+        self.bind_cpu_install_option(
             self.xtts_checkbox,
             self.xtts_cpu_checkbox,
         )
-        self.bind_mutually_exclusive_install_options(
+        self.bind_cpu_install_option(
             self.kokoro_checkbox,
             self.kokoro_cpu_checkbox,
         )
-        self.bind_mutually_exclusive_install_options(
+        self.bind_cpu_install_option(
             self.chatterbox_checkbox,
             self.chatterbox_cpu_checkbox,
         )
-        self.bind_mutually_exclusive_install_options(
+        self.bind_cpu_install_option(
             self.magpie_checkbox,
             self.magpie_cpu_checkbox,
         )
@@ -346,104 +480,78 @@ class PandratorInstaller(
         for checkbox in self.install_tab.findChildren(QCheckBox):
             checkbox.stateChanged.connect(self.update_install_button_state)
 
-        # Add stretch to push everything to the top
-        layout.addStretch()
-
     def setup_launch_tab(self):
         """Set up the Launch tab"""
-        layout = QVBoxLayout(self.launch_tab)
+        layout, content_layout = self._create_scrollable_tab_content(self.launch_tab)
+        content_layout.addWidget(
+            self._create_intro(
+                "Choose what to start. Pandrator can run on its own or with one local speech service."
+            )
+        )
 
-        # Launch options group
-        launch_group = QGroupBox("Launch Options")
-        launch_layout = QVBoxLayout(launch_group)
+        launch_group = QGroupBox("Applications")
+        launch_grid = QGridLayout(launch_group)
 
-        # Pandrator checkbox
-        self.launch_pandrator_checkbox = QCheckBox("Pandrator")
+        self.launch_pandrator_checkbox = ToggleSwitch("Launch Pandrator")
         self.launch_pandrator_checkbox.setChecked(True)
-        launch_layout.addWidget(self.launch_pandrator_checkbox)
-
-        # XTTS options
-        xtts_frame = QWidget()
-        xtts_layout = QHBoxLayout(xtts_frame)
-        xtts_layout.setContentsMargins(0, 0, 0, 0)
-
-        self.launch_xtts_checkbox = QCheckBox("XTTS")
-        xtts_layout.addWidget(self.launch_xtts_checkbox)
-
+        self.launch_xtts_checkbox = ToggleSwitch("Launch XTTS")
         self.xtts_cpu_launch_checkbox = QCheckBox("Use CPU")
-        xtts_layout.addWidget(self.xtts_cpu_launch_checkbox)
-
         self.deepspeed_checkbox = QCheckBox("Turn off DeepSpeed")
-        xtts_layout.addWidget(self.deepspeed_checkbox)
-        xtts_layout.addStretch()
-
-        launch_layout.addWidget(xtts_frame)
-
-        # VoxCPM checkbox
-        self.launch_voxcpm_checkbox = QCheckBox("VoxCPM")
-        launch_layout.addWidget(self.launch_voxcpm_checkbox)
-
-        # FishS2 checkbox
-        self.launch_fishs2_checkbox = QCheckBox("FishS2")
-        launch_layout.addWidget(self.launch_fishs2_checkbox)
-
-        # Voxtral checkbox
-        self.launch_voxtral_checkbox = QCheckBox("Voxtral")
-        launch_layout.addWidget(self.launch_voxtral_checkbox)
-
-        # Kokoro options
-        kokoro_frame = QWidget()
-        kokoro_layout = QHBoxLayout(kokoro_frame)
-        kokoro_layout.setContentsMargins(0, 0, 0, 0)
-
-        self.launch_kokoro_checkbox = QCheckBox("Kokoro")
-        kokoro_layout.addWidget(self.launch_kokoro_checkbox)
-
+        self.launch_voxcpm_checkbox = ToggleSwitch("Launch VoxCPM2")
+        self.launch_fishs2_checkbox = ToggleSwitch("Launch FishS2")
+        self.launch_voxtral_checkbox = ToggleSwitch("Launch Voxtral")
+        self.launch_kokoro_checkbox = ToggleSwitch("Launch Kokoro")
         self.kokoro_cpu_launch_checkbox = QCheckBox("Use CPU")
-        kokoro_layout.addWidget(self.kokoro_cpu_launch_checkbox)
-        kokoro_layout.addStretch()
-
-        launch_layout.addWidget(kokoro_frame)
-
-        # Silero checkbox
-        self.launch_silero_checkbox = QCheckBox("Silero")
-        launch_layout.addWidget(self.launch_silero_checkbox)
-
-        # Chatterbox options
-        chatterbox_frame = QWidget()
-        chatterbox_layout = QHBoxLayout(chatterbox_frame)
-        chatterbox_layout.setContentsMargins(0, 0, 0, 0)
-
-        self.launch_chatterbox_checkbox = QCheckBox("Chatterbox")
-        chatterbox_layout.addWidget(self.launch_chatterbox_checkbox)
-
+        self.launch_silero_checkbox = ToggleSwitch("Launch Silero")
+        self.launch_chatterbox_checkbox = ToggleSwitch("Launch Chatterbox")
         self.chatterbox_cpu_launch_checkbox = QCheckBox("Use CPU")
-        chatterbox_layout.addWidget(self.chatterbox_cpu_launch_checkbox)
-        chatterbox_layout.addStretch()
-
-        launch_layout.addWidget(chatterbox_frame)
-
-        # Magpie options
-        magpie_frame = QWidget()
-        magpie_layout = QHBoxLayout(magpie_frame)
-        magpie_layout.setContentsMargins(0, 0, 0, 0)
-
-        self.launch_magpie_checkbox = QCheckBox("Magpie")
-        magpie_layout.addWidget(self.launch_magpie_checkbox)
-
+        self.launch_magpie_checkbox = ToggleSwitch("Launch Magpie")
         self.magpie_cpu_launch_checkbox = QCheckBox("Use CPU")
-        magpie_layout.addWidget(self.magpie_cpu_launch_checkbox)
-        magpie_layout.addStretch()
 
-        launch_layout.addWidget(magpie_frame)
-
-        layout.addWidget(launch_group)
-
-        # Launch button
-        self.launch_button = QPushButton("Launch")
-        self.launch_button.clicked.connect(self.launch_apps)
-        self.launch_button.setMinimumHeight(40)
-        layout.addWidget(self.launch_button)
+        launch_cards = (
+            self._create_option_card(
+                self.launch_pandrator_checkbox,
+                "Open the Pandrator desktop application.",
+            ),
+            self._create_option_card(
+                self.launch_kokoro_checkbox,
+                "Start the installed Kokoro speech service.",
+                (self.kokoro_cpu_launch_checkbox,),
+            ),
+            self._create_option_card(
+                self.launch_xtts_checkbox,
+                "Start the installed XTTS speech service.",
+                (self.xtts_cpu_launch_checkbox, self.deepspeed_checkbox),
+            ),
+            self._create_option_card(
+                self.launch_voxcpm_checkbox,
+                "Start the installed VoxCPM2 speech service.",
+            ),
+            self._create_option_card(
+                self.launch_fishs2_checkbox,
+                "Start the installed FishS2 speech service.",
+            ),
+            self._create_option_card(
+                self.launch_voxtral_checkbox,
+                "Start the installed Voxtral speech service.",
+            ),
+            self._create_option_card(
+                self.launch_silero_checkbox,
+                "Start the installed Silero speech service.",
+            ),
+            self._create_option_card(
+                self.launch_chatterbox_checkbox,
+                "Start the installed Chatterbox speech service.",
+                (self.chatterbox_cpu_launch_checkbox,),
+            ),
+            self._create_option_card(
+                self.launch_magpie_checkbox,
+                "Start the installed Magpie speech service.",
+                (self.magpie_cpu_launch_checkbox,),
+            ),
+        )
+        self._add_option_cards(launch_grid, launch_cards)
+        content_layout.addWidget(launch_group)
 
         backend_runtime_group = QGroupBox("Backend Runtime")
         backend_runtime_layout = QVBoxLayout(backend_runtime_group)
@@ -471,10 +579,18 @@ class PandratorInstaller(
         backend_runtime_buttons_layout.addStretch()
 
         backend_runtime_layout.addLayout(backend_runtime_buttons_layout)
-        layout.addWidget(backend_runtime_group)
+        content_layout.addWidget(backend_runtime_group)
+        content_layout.addStretch()
 
-        # Add stretch to push everything to the top
-        layout.addStretch()
+        launch_buttons_layout = QHBoxLayout()
+        launch_buttons_layout.setContentsMargins(12, 8, 12, 8)
+        launch_buttons_layout.addStretch()
+        self.launch_button = QPushButton("Launch selected")
+        self.launch_button.setObjectName("primaryButton")
+        self.launch_button.clicked.connect(self.launch_apps)
+        self.launch_button.setMinimumHeight(38)
+        launch_buttons_layout.addWidget(self.launch_button)
+        layout.addLayout(launch_buttons_layout)
 
     def setup_logs_tab(self):
         """Set up the Logs tab for realtime log viewing."""
@@ -640,29 +756,31 @@ class PandratorInstaller(
 
         self.update_backend_runtime_controls()
 
-    def bind_mutually_exclusive_install_options(self, primary_checkbox, secondary_checkbox):
-        primary_checkbox.stateChanged.connect(
-            lambda state, other=secondary_checkbox: self._handle_mutually_exclusive_install_option(
+    def bind_cpu_install_option(self, service_toggle, cpu_checkbox):
+        cpu_checkbox.stateChanged.connect(
+            lambda state, toggle=service_toggle: self._handle_cpu_install_option(
                 state,
-                other,
+                toggle,
             )
         )
-        secondary_checkbox.stateChanged.connect(
-            lambda state, other=primary_checkbox: self._handle_mutually_exclusive_install_option(
+        service_toggle.stateChanged.connect(
+            lambda state, option=cpu_checkbox: self._handle_install_service_toggle(
                 state,
-                other,
+                option,
             )
         )
 
-    def _handle_mutually_exclusive_install_option(self, state, other_checkbox):
-        if state != Qt.CheckState.Checked.value:
+    def _handle_cpu_install_option(self, state, service_toggle):
+        if state == Qt.CheckState.Checked.value and not service_toggle.isChecked():
+            service_toggle.setChecked(True)
+
+    def _handle_install_service_toggle(self, state, cpu_checkbox):
+        if state == Qt.CheckState.Checked.value or not cpu_checkbox.isChecked():
             return
 
-        if other_checkbox.isChecked():
-            other_checkbox.blockSignals(True)
-            other_checkbox.setChecked(False)
-            other_checkbox.blockSignals(False)
-
+        cpu_checkbox.blockSignals(True)
+        cpu_checkbox.setChecked(False)
+        cpu_checkbox.blockSignals(False)
         self.update_install_button_state()
 
     def update_install_button_state(self):
@@ -736,6 +854,7 @@ class PandratorInstaller(
     def update_status(self, text):
         """Update status label text"""
         self.status_label.setText(text)
+        self.status_label.setToolTip(text)
         logging.info(text)
 
     def notify_error(self, title, message):
@@ -758,28 +877,48 @@ class PandratorInstaller(
         """Read installation choices on the GUI thread before work starts."""
         return InstallSelection(
             pandrator=self.pandrator_checkbox.isChecked(),
-            xtts=self.xtts_checkbox.isChecked(),
-            xtts_cpu=self.xtts_cpu_checkbox.isChecked(),
+            xtts=self.xtts_checkbox.isChecked() and not self.xtts_cpu_checkbox.isChecked(),
+            xtts_cpu=self.xtts_checkbox.isChecked() and self.xtts_cpu_checkbox.isChecked(),
             voxcpm=self.voxcpm_checkbox.isChecked(),
             fishs2=self.fishs2_checkbox.isChecked(),
             silero=self.silero_checkbox.isChecked(),
             voxtral=self.voxtral_checkbox.isChecked(),
-            kokoro=self.kokoro_checkbox.isChecked(),
-            kokoro_cpu=self.kokoro_cpu_checkbox.isChecked(),
+            kokoro=self.kokoro_checkbox.isChecked() and not self.kokoro_cpu_checkbox.isChecked(),
+            kokoro_cpu=self.kokoro_checkbox.isChecked() and self.kokoro_cpu_checkbox.isChecked(),
             rvc=self.rvc_checkbox.isChecked(),
             whisperx=self.whisperx_checkbox.isChecked(),
             xtts_finetuning=self.xtts_finetuning_checkbox.isChecked(),
-            chatterbox=self.chatterbox_checkbox.isChecked(),
-            chatterbox_cpu=self.chatterbox_cpu_checkbox.isChecked(),
-            magpie=self.magpie_checkbox.isChecked(),
-            magpie_cpu=self.magpie_cpu_checkbox.isChecked(),
+            chatterbox=(
+                self.chatterbox_checkbox.isChecked()
+                and not self.chatterbox_cpu_checkbox.isChecked()
+            ),
+            chatterbox_cpu=(
+                self.chatterbox_checkbox.isChecked()
+                and self.chatterbox_cpu_checkbox.isChecked()
+            ),
+            magpie=self.magpie_checkbox.isChecked() and not self.magpie_cpu_checkbox.isChecked(),
+            magpie_cpu=self.magpie_checkbox.isChecked() and self.magpie_cpu_checkbox.isChecked(),
         )
 
     def apply_install_selection(self, selection):
         """Reflect a typed installation selection in the GUI."""
         self.pandrator_checkbox.setChecked(selection.pandrator)
-        for component in selection.selected_components():
-            getattr(self, f"{component}_checkbox").setChecked(True)
+        for component in (
+            "voxcpm",
+            "fishs2",
+            "silero",
+            "voxtral",
+            "rvc",
+            "whisperx",
+            "xtts_finetuning",
+        ):
+            getattr(self, f"{component}_checkbox").setChecked(getattr(selection, component))
+        for component in ("xtts", "kokoro", "chatterbox", "magpie"):
+            cpu_selected = getattr(selection, f"{component}_cpu")
+            getattr(self, f"{component}_checkbox").setChecked(
+                getattr(selection, component) or cpu_selected
+            )
+            getattr(self, f"{component}_cpu_checkbox").setChecked(cpu_selected)
         self.update_whisperx_checkbox()
 
     def snapshot_launch_selection(self):

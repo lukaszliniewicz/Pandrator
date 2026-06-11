@@ -1,8 +1,10 @@
 import unittest
 from unittest.mock import MagicMock, patch
 import os
-from PyQt6.QtWidgets import QApplication, QCheckBox
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QApplication, QCheckBox, QLabel, QScrollArea, QSizePolicy
 from pandrator_installer_launcher import PandratorInstaller
+from pandrator_installer.gui.support import ToggleSwitch
 
 
 class TestInstallerLauncherChatterbox(unittest.TestCase):
@@ -12,27 +14,54 @@ class TestInstallerLauncherChatterbox(unittest.TestCase):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         cls.app = QApplication.instance() or QApplication([])
 
-    def test_chatterbox_checkbox_mutual_exclusion(self):
+    def test_chatterbox_cpu_option_maps_to_cpu_install_variant(self):
         installer = PandratorInstaller(headless=True)
-        # Ensure the widgets exist
         self.assertTrue(hasattr(installer, "chatterbox_checkbox"))
         self.assertTrue(hasattr(installer, "chatterbox_cpu_checkbox"))
 
-        # Verify mutual exclusion binding works
-        # Check Chatterbox GPU checkbox
-        installer.chatterbox_checkbox.setChecked(True)
-        self.assertTrue(installer.chatterbox_checkbox.isChecked())
-        self.assertFalse(installer.chatterbox_cpu_checkbox.isChecked())
-
-        # Check Chatterbox CPU checkbox, should uncheck GPU checkbox
         installer.chatterbox_cpu_checkbox.setChecked(True)
-        self.assertTrue(installer.chatterbox_cpu_checkbox.isChecked())
-        self.assertFalse(installer.chatterbox_checkbox.isChecked())
-
-        # Check Chatterbox GPU checkbox again, should uncheck CPU checkbox
-        installer.chatterbox_checkbox.setChecked(True)
         self.assertTrue(installer.chatterbox_checkbox.isChecked())
+        self.assertTrue(installer.chatterbox_cpu_checkbox.isChecked())
+        selection = installer.snapshot_install_selection()
+        self.assertFalse(selection.chatterbox)
+        self.assertTrue(selection.chatterbox_cpu)
+
+        installer.chatterbox_checkbox.setChecked(False)
+        self.assertFalse(installer.chatterbox_checkbox.isChecked())
         self.assertFalse(installer.chatterbox_cpu_checkbox.isChecked())
+
+    def test_installer_uses_compact_service_controls(self):
+        installer = PandratorInstaller(headless=True)
+
+        self.assertIsInstance(installer.xtts_checkbox, ToggleSwitch)
+        self.assertIsInstance(installer.launch_xtts_checkbox, ToggleSwitch)
+        self.assertEqual(installer.github_button.text(), "See on GitHub")
+        self.assertFalse(installer.github_button.icon().isNull())
+        self.assertFalse(hasattr(installer, "open_log_button"))
+        self.assertEqual(
+            installer.status_label.sizePolicy().horizontalPolicy(),
+            QSizePolicy.Policy.Ignored,
+        )
+        capability_labels = installer.install_tab.findChildren(
+            QLabel,
+            "voiceCapabilityBadge",
+        )
+        self.assertEqual(len(capability_labels), 8)
+        self.assertEqual(
+            {label.text() for label in capability_labels},
+            {"Pre-built voices", "Voice cloning"},
+        )
+        for control in installer.install_tab.findChildren(QCheckBox):
+            control.setChecked(False)
+        self.assertFalse(installer.install_button.isEnabled())
+        self.assertEqual(installer.install_button.objectName(), "installButton")
+        self.assertTrue(
+            any(
+                scroll.horizontalScrollBarPolicy()
+                == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+                for scroll in installer.install_tab.findChildren(QScrollArea)
+            )
+        )
 
     @patch("pandrator_installer_launcher.PandratorInstaller.load_install_config")
     @patch("pandrator_installer_launcher.PandratorInstaller.execute_concurrently")
@@ -84,10 +113,10 @@ class TestInstallerLauncherChatterbox(unittest.TestCase):
         mock_runtime_ready.return_value = False
 
         # Run update process
-        with patch.object(installer, "pull_repo") as mock_pull, \
-             patch.object(installer, "clone_repo") as mock_clone, \
+        with patch.object(installer, "pull_repo"), \
+             patch.object(installer, "clone_repo"), \
              patch.object(installer, "backup_state_database") as mock_backup, \
-             patch("os.path.exists", return_value=True) as mock_exists:
+             patch("os.path.exists", return_value=True):
             
             mock_backup.return_value = []
             installer.update_process()

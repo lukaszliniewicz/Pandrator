@@ -113,22 +113,100 @@ def run_gui_app():
             background-color: #2D2D30;
             color: #FFFFFF;
         }}
-        QPushButton {{
-            background-color: {pastel_purple.name()};
-            color: white;
+        QLabel,
+        QCheckBox {{
+            background-color: transparent;
+        }}
+        QScrollArea#installerScrollArea,
+        QScrollArea#installerScrollArea > QWidget > QWidget {{
+            background-color: #29292C;
             border: none;
+        }}
+        QLabel#titleLabel {{
+            color: #F4F1FA;
+        }}
+        QLabel#introLabel {{
+            color: #D0CDD7;
+            padding: 2px 4px;
+        }}
+        QLabel#mutedLabel {{
+            color: #AAA6B2;
+            font-size: 11px;
+        }}
+        QLabel#voiceCapabilityBadge {{
+            background-color: #444047;
+            border: 1px solid #5D5664;
+            border-radius: 8px;
+            color: #DCCEEF;
+            font-size: 10px;
+            font-weight: bold;
+            padding: 2px 7px;
+        }}
+        QLabel#statusLabel {{
+            background-color: #28282B;
+            border: 1px solid #414147;
+            border-radius: 7px;
+            color: #D9D5E0;
+            padding: 6px 10px;
+        }}
+        QFrame#optionCard {{
+            background-color: #343438;
+            border: 1px solid #48484F;
+            border-radius: 8px;
+        }}
+        QPushButton {{
+            background-color: #49494F;
+            color: white;
+            border: 1px solid #5A5A62;
             padding: 8px 16px;
-            border-radius: 4px;
+            border-radius: 6px;
         }}
         QPushButton:hover {{
-            background-color: {pastel_purple_hover.name()};
+            background-color: #585860;
+            border-color: #6B6B75;
         }}
         QPushButton:pressed {{
-            background-color: {pastel_purple_pressed.name()};
+            background-color: #414147;
         }}
         QPushButton:disabled {{
-            background-color: #555555;
-            color: #888888;
+            background-color: #38383C;
+            border-color: #414147;
+            color: #77777E;
+        }}
+        QPushButton#primaryButton,
+        QPushButton#installButton {{
+            background-color: {pastel_purple.name()};
+            border-color: {pastel_purple.name()};
+            font-weight: bold;
+        }}
+        QPushButton#primaryButton:hover,
+        QPushButton#installButton:hover {{
+            background-color: {pastel_purple_hover.name()};
+            border-color: {pastel_purple_hover.name()};
+        }}
+        QPushButton#primaryButton:pressed,
+        QPushButton#installButton:pressed {{
+            background-color: {pastel_purple_pressed.name()};
+            border-color: {pastel_purple_pressed.name()};
+        }}
+        QPushButton#installButton:disabled {{
+            background-color: #44444A;
+            border-color: #52525A;
+            color: #FFFFFF;
+        }}
+        QPushButton#githubButton {{
+            background-color: transparent;
+            border: 1px solid transparent;
+            color: #D8C9F1;
+            padding: 6px 9px;
+        }}
+        QPushButton#githubButton:hover {{
+            background-color: #3A3543;
+            border-color: #554A68;
+            color: #FFFFFF;
+        }}
+        QPushButton#githubButton:pressed {{
+            background-color: #302B38;
         }}
         QCheckBox {{
             spacing: 8px;
@@ -137,18 +215,18 @@ def run_gui_app():
             color: #8A8A8A;
         }}
         QCheckBox::indicator {{
-            width: 18px;
-            height: 18px;
-            border: 1px solid white;
-            border-radius: 3px;
+            width: 16px;
+            height: 16px;
+            border: 1px solid #85858D;
+            border-radius: 4px;
         }}
         QCheckBox::indicator:checked {{
             background-color: {pastel_purple.name()};
-            border: 1px solid white;
+            border: 1px solid {pastel_purple_hover.name()};
         }}
         QCheckBox::indicator:unchecked {{
-            background-color: transparent;
-            border: 1px solid white;
+            background-color: #29292D;
+            border: 1px solid #85858D;
         }}
         QCheckBox::indicator:disabled {{
             border: 1px solid #7A7A7A;
@@ -163,29 +241,32 @@ def run_gui_app():
             border: 1px solid #7A7A7A;
         }}
         QGroupBox {{
-            border: 1px solid #444444;
-            border-radius: 4px;
-            margin-top: 12px;
-            padding-top: 15px;
+            background-color: #303034;
+            border: 1px solid #45454B;
+            border-radius: 9px;
+            font-weight: bold;
+            margin-top: 14px;
+            padding-top: 16px;
         }}
         QGroupBox::title {{
             subcontrol-origin: margin;
             subcontrol-position: top left;
-            padding: 0 5px;
-            color: {pastel_purple.name()};
+            padding: 0 7px;
+            color: #D6C8EE;
         }}
         QTabWidget::pane {{
-            border: 1px solid #444444;
-            border-radius: 4px;
+            background-color: #29292C;
+            border: 1px solid #414147;
+            border-radius: 8px;
         }}
         QTabBar::tab {{
             background-color: #2D2D30;
             color: #FFFFFF;
-            border: 1px solid #444444;
+            border: 1px solid #414147;
             border-bottom: none;
-            border-top-left-radius: 4px;
-            border-top-right-radius: 4px;
-            padding: 8px 16px;
+            border-top-left-radius: 7px;
+            border-top-right-radius: 7px;
+            padding: 9px 20px;
         }}
         QTabBar::tab:selected {{
             background-color: {pastel_purple.name()};
@@ -194,14 +275,51 @@ def run_gui_app():
             background-color: #3D3D40;
         }}
         QProgressBar {{
-            border: 1px solid #444444;
-            border-radius: 3px;
+            background-color: #29292D;
+            border: 1px solid #414147;
+            border-radius: 4px;
             text-align: center;
-            height: 20px;
+            height: 7px;
         }}
         QProgressBar::chunk {{
             background-color: {pastel_purple.name()};
+            border-radius: 3px;
+        }}
+        QScrollBar:vertical {{
+            background: transparent;
+            border: none;
+            margin: 2px;
             width: 10px;
+        }}
+        QScrollBar:horizontal {{
+            background: transparent;
+            border: none;
+            height: 10px;
+            margin: 2px;
+        }}
+        QScrollBar::handle:vertical {{
+            background-color: #5B5B63;
+            border-radius: 4px;
+            min-height: 32px;
+        }}
+        QScrollBar::handle:horizontal {{
+            background-color: #5B5B63;
+            border-radius: 4px;
+            min-width: 32px;
+        }}
+        QScrollBar::handle:hover {{
+            background-color: #777780;
+        }}
+        QScrollBar::add-line,
+        QScrollBar::sub-line {{
+            background: transparent;
+            border: none;
+            height: 0px;
+            width: 0px;
+        }}
+        QScrollBar::add-page,
+        QScrollBar::sub-page {{
+            background: transparent;
         }}
     """)
 

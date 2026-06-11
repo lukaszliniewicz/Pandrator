@@ -80,8 +80,6 @@ class OperationsMixin:
             gui_handler._pandrator_managed_handler = True
             logger.addHandler(gui_handler)
 
-        if hasattr(self, "open_log_button"):
-            self.open_log_button.setEnabled(True)
         if hasattr(self, "open_log_from_tab_button"):
             self.open_log_from_tab_button.setEnabled(True)
 
