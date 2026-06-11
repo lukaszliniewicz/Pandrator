@@ -1538,11 +1538,12 @@ class AppLogic(QObject):
 
         self._loaded_llm_model = None
         self._persist_global_settings(force=True)
-        self._persist_session_config(force=True)
-        try:
-            state_db_handler.reindex_session(session_name)
-        except Exception:
-            pass
+        loaded_payload = session_handler.build_session_config_payload(self.state)
+        self._last_session_config_snapshot = json.dumps(
+            loaded_payload,
+            sort_keys=True,
+            ensure_ascii=False,
+        )
         self._reset_session_activity()
         self._notify_user(f"Session loaded: {session_name}")
         self.state_changed.emit()

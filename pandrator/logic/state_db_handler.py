@@ -88,6 +88,19 @@ def _is_dubbing_mode(source_path: str) -> bool:
     return ext == ".srt" or ext in SOURCE_VIDEO_EXTENSIONS
 
 
+def _is_discovered_source_candidate(path: str) -> bool:
+    stem, ext = os.path.splitext(os.path.basename(str(path or "")).lower())
+    if ext not in SOURCE_TEXT_EXTENSIONS | SOURCE_VIDEO_EXTENSIONS | {".srt"}:
+        return False
+    if ext in SOURCE_VIDEO_EXTENSIONS and (
+        stem.startswith("final_output")
+        or "_final" in stem
+        or stem.endswith("_synced")
+    ):
+        return False
+    return True
+
+
 def _walk_directory_size(path: str) -> int:
     if not os.path.isdir(path):
         return 0
@@ -108,6 +121,16 @@ def _file_size(path: str) -> int:
         return os.path.getsize(path)
     except OSError:
         return 0
+
+
+def _file_modified_at_iso(path: str) -> str:
+    try:
+        return datetime.datetime.fromtimestamp(
+            os.path.getmtime(path),
+            tz=datetime.timezone.utc,
+        ).isoformat(timespec="seconds")
+    except OSError:
+        return ""
 
 
 def _relative_path(path: str, root: str) -> str:
@@ -574,6 +597,27 @@ class StateDBHandler:
             return [], speech_blocks_path
 
         return self._extract_speech_blocks(payload), speech_blocks_path
+
+    def _discover_session_source_files(self, session_path: str) -> list[str]:
+        if not os.path.isdir(session_path):
+            return []
+
+        supported_extensions = SOURCE_TEXT_EXTENSIONS | SOURCE_VIDEO_EXTENSIONS | {".srt"}
+        candidates: list[str] = []
+        for name in os.listdir(session_path):
+            path = os.path.join(session_path, name)
+            if (
+                os.path.isfile(path)
+                and os.path.splitext(name)[1].lower() in supported_extensions
+                and _is_discovered_source_candidate(path)
+            ):
+                candidates.append(os.path.abspath(path))
+
+        return sorted(
+            candidates,
+            key=lambda path: (_file_modified_at_iso(path), path.lower()),
+            reverse=True,
+        )
 
     def _settings_normalized_columns(self, payload: dict[str, Any]) -> dict[str, Any]:
         llm_payload = payload.get("llm", {}) if isinstance(payload, dict) else {}
@@ -1195,6 +1239,7 @@ class StateDBHandler:
         payload: dict[str, Any],
         version: int = 1,
         session_path: str | None = None,
+        config_modified_at: str | None = None,
     ):
         self._ensure_ready()
         if not session_name or not isinstance(payload, dict):
@@ -1210,7 +1255,7 @@ class StateDBHandler:
         source_display_name = _source_display_name_from_path(source_display_path)
         original_source_file_path = str(payload.get("original_source_file_path") or "").strip()
         if not original_source_file_path:
-            original_source_file_path = source_path
+            original_source_file_path = source_display_path or source_path
         source_type = _source_type_from_path(source_path)
         tts_payload = payload.get("tts", {}) if isinstance(payload.get("tts"), dict) else {}
         tts_service = str(tts_payload.get("service") or "").strip()
@@ -1219,6 +1264,35 @@ class StateDBHandler:
 
         with self._lock, self._connection() as connection:
             self._ensure_session_row(connection, session_name, resolved_session_path)
+
+            latest_snapshot_row = connection.execute(
+                """
+                SELECT payload_hash
+                FROM session_config_snapshots
+                WHERE session_name = ?
+                ORDER BY indexed_at DESC, id DESC
+                LIMIT 1
+                """,
+                (session_name,),
+            ).fetchone()
+            session_timestamp_row = connection.execute(
+                "SELECT config_modified_at FROM sessions WHERE session_name = ?",
+                (session_name,),
+            ).fetchone()
+            existing_modified_at = (
+                str(session_timestamp_row["config_modified_at"] or "")
+                if session_timestamp_row
+                else ""
+            )
+            payload_changed = (
+                latest_snapshot_row is None
+                or str(latest_snapshot_row["payload_hash"] or "") != payload_hash
+            )
+            resolved_modified_at = (
+                str(config_modified_at or "").strip()
+                or (indexed_at if payload_changed else existing_modified_at)
+                or indexed_at
+            )
 
             payload_index_row = connection.execute(
                 """
@@ -1253,40 +1327,41 @@ class StateDBHandler:
                 trashed_at=trashed_at or None,
             )
 
-            connection.execute(
-                """
-                INSERT INTO session_config_snapshots (
-                    session_name,
-                    version,
-                    payload_json,
-                    payload_hash,
-                    source_type,
-                    source_path,
-                    tts_service,
-                    language,
-                    dubbing_mode,
-                    progress_percent,
-                    session_size_bytes,
-                    status,
-                    indexed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    session_name,
-                    version,
-                    payload_json,
-                    payload_hash,
-                    source_type,
-                    source_path,
-                    tts_service,
-                    language,
-                    dubbing_mode,
-                    progress_percent,
-                    session_size_bytes,
-                    status,
-                    indexed_at,
-                ),
-            )
+            if payload_changed:
+                connection.execute(
+                    """
+                    INSERT INTO session_config_snapshots (
+                        session_name,
+                        version,
+                        payload_json,
+                        payload_hash,
+                        source_type,
+                        source_path,
+                        tts_service,
+                        language,
+                        dubbing_mode,
+                        progress_percent,
+                        session_size_bytes,
+                        status,
+                        indexed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        session_name,
+                        version,
+                        payload_json,
+                        payload_hash,
+                        source_type,
+                        source_path,
+                        tts_service,
+                        language,
+                        dubbing_mode,
+                        progress_percent,
+                        session_size_bytes,
+                        status,
+                        indexed_at,
+                    ),
+                )
 
             connection.execute(
                 """
@@ -1326,7 +1401,7 @@ class StateDBHandler:
                     progress_percent,
                     session_size_bytes,
                     status,
-                    indexed_at,
+                    resolved_modified_at,
                     indexed_at,
                     session_name,
                 ),
@@ -1970,11 +2045,26 @@ class StateDBHandler:
 
         session_config_path = os.path.join(session_path, SESSION_CONFIG_FILENAME)
         payload = self._load_wrapped_or_plain_payload(session_config_path, "state")
+        config_modified_at = _file_modified_at_iso(session_config_path)
+        if not payload:
+            discovered_sources = self._discover_session_source_files(session_path)
+            if discovered_sources:
+                discovered_source = discovered_sources[0]
+                payload = {
+                    "session_name": session_name,
+                    "source_file_path": discovered_source,
+                    "source_display_path": discovered_source,
+                    "original_source_file_path": discovered_source,
+                }
+                config_modified_at = _file_modified_at_iso(discovered_source)
+        if not config_modified_at:
+            config_modified_at = _file_modified_at_iso(session_path)
         self.save_session_config_snapshot(
             session_name=session_name,
             payload=payload,
             version=1,
             session_path=session_path,
+            config_modified_at=config_modified_at,
         )
 
         self.import_legacy_session_run(session_name, session_path)
@@ -2096,6 +2186,7 @@ class StateDBHandler:
                 """
                 SELECT
                     session_name,
+                    session_path,
                     source_path,
                     source_display_path,
                     source_display_name,
@@ -2106,8 +2197,6 @@ class StateDBHandler:
                     indexed_at
                 FROM sessions
                 WHERE (trashed_at IS NULL OR trashed_at = '')
-                    AND source_path IS NOT NULL
-                    AND source_path != ''
                 ORDER BY COALESCE(config_modified_at, indexed_at) DESC, session_name ASC
                 """
             ).fetchall()
@@ -2119,71 +2208,71 @@ class StateDBHandler:
             session_name = str(row["session_name"] or "")
             source_path = str(row["source_path"] or "").strip()
             display_path = str(row["source_display_path"] or "").strip() or source_path
-            original_path = ""
-            try:
-                original_path = str(row["original_source_file_path"] or "").strip()
-            except (sqlite3.Error, IndexError, KeyError):
-                pass
+            original_path = str(row["original_source_file_path"] or "").strip()
+            session_path = os.path.join(self.outputs_root, session_name)
+            if not os.path.isdir(session_path):
+                session_path = str(row["session_path"] or "")
 
-            resolved_active = self._resolve_source_path(display_path, session_name)
-            if not resolved_active:
-                resolved_active = self._resolve_source_path(source_path, session_name)
-
-            resolved_original = None
+            tracked_paths = {
+                os.path.normcase(os.path.abspath(path))
+                for path in (source_path, display_path, original_path)
+                if path
+            }
+            candidate_specs: list[tuple[str, str]] = []
             if original_path:
-                resolved_original = self._resolve_source_path(original_path, session_name)
+                candidate_specs.append((original_path, "original"))
+            if display_path:
+                candidate_specs.append((display_path, "display"))
+            if source_path:
+                candidate_specs.append((source_path, "active"))
+            candidate_specs.extend(
+                (path, "discovered")
+                for path in self._discover_session_source_files(session_path)
+                if os.path.normcase(os.path.abspath(path)) not in tracked_paths
+            )
 
-            if not resolved_active and include_missing:
-                resolved_active = os.path.abspath(display_path or source_path)
-            if original_path and not resolved_original and include_missing:
-                resolved_original = os.path.abspath(original_path)
+            for candidate_path, role in candidate_specs:
+                resolved_path = self._resolve_source_path(candidate_path, session_name)
+                if not resolved_path and include_missing:
+                    resolved_path = os.path.abspath(candidate_path)
+                if not resolved_path:
+                    continue
 
-            if resolved_original and resolved_active and os.path.normcase(resolved_original) == os.path.normcase(resolved_active):
-                resolved_original = None
+                normalized_path = os.path.normcase(os.path.abspath(resolved_path))
+                if normalized_path in seen_paths:
+                    continue
+                seen_paths.add(normalized_path)
 
-            if resolved_original:
-                norm_orig = os.path.normcase(resolved_original)
-                if norm_orig not in seen_paths:
-                    seen_paths.add(norm_orig)
-                    orig_name = str(row["source_display_name"] or os.path.basename(resolved_original))
-                    if not orig_name.lower().endswith("original") and not orig_name.lower().endswith("(original)"):
-                        orig_name = f"{orig_name} (Original)"
-                    reusable_sources.append(
-                        {
-                            "source_path": resolved_original,
-                            "name": orig_name,
-                            "internal_source_path": resolved_original,
-                            "source_type": str(row["source_type"] or _source_type_from_path(resolved_original)),
-                            "session_name": session_name,
-                            "dubbing_mode": 1 if bool(row["dubbing_mode"]) else 0,
-                            "last_used_at": str(row["config_modified_at"] or row["indexed_at"] or ""),
-                            "exists": os.path.isfile(resolved_original),
-                        }
+                name = os.path.basename(resolved_path)
+                tracked_paths_differ = len(tracked_paths) > 1
+                if role == "original" and tracked_paths_differ:
+                    name = f"{name} (Original)"
+                elif tracked_paths_differ and (
+                    role == "active"
+                    or (
+                        role == "display"
+                        and source_path
+                        and os.path.normcase(os.path.basename(source_path))
+                        == os.path.normcase(os.path.basename(resolved_path))
                     )
+                ):
+                    suffix = "Edited" if "edited" in name.lower() else "Processed"
+                    name = f"{name} ({suffix})"
 
-            if resolved_active:
-                norm_active = os.path.normcase(resolved_active)
-                if norm_active not in seen_paths:
-                    seen_paths.add(norm_active)
-                    active_name = str(row["source_display_name"] or os.path.basename(resolved_active))
-                    if resolved_original or "edited" in active_name.lower():
-                        if not active_name.lower().endswith("edited") and not active_name.lower().endswith("(edited)"):
-                            active_name = f"{active_name} (Edited)"
-                    reusable_sources.append(
-                        {
-                            "source_path": resolved_active,
-                            "name": active_name,
-                            "internal_source_path": os.path.abspath(source_path),
-                            "source_type": str(row["source_type"] or _source_type_from_path(resolved_active)),
-                            "session_name": session_name,
-                            "dubbing_mode": 1 if bool(row["dubbing_mode"]) else 0,
-                            "last_used_at": str(row["config_modified_at"] or row["indexed_at"] or ""),
-                            "exists": os.path.isfile(resolved_active),
-                        }
-                    )
-
-            if len(reusable_sources) >= safe_limit:
-                break
+                reusable_sources.append(
+                    {
+                        "source_path": resolved_path,
+                        "name": name,
+                        "internal_source_path": resolved_path,
+                        "source_type": _source_type_from_path(resolved_path),
+                        "session_name": session_name,
+                        "dubbing_mode": 1 if _is_dubbing_mode(resolved_path) else 0,
+                        "last_used_at": str(row["config_modified_at"] or row["indexed_at"] or ""),
+                        "exists": os.path.isfile(resolved_path),
+                    }
+                )
+                if len(reusable_sources) >= safe_limit:
+                    return reusable_sources
 
         return reusable_sources
 
@@ -2460,12 +2549,14 @@ def save_session_config_snapshot(
     payload: dict[str, Any],
     version: int = 1,
     session_path: str | None = None,
+    config_modified_at: str | None = None,
 ):
     DEFAULT_HANDLER.save_session_config_snapshot(
         session_name=session_name,
         payload=payload,
         version=version,
         session_path=session_path,
+        config_modified_at=config_modified_at,
     )
 
 

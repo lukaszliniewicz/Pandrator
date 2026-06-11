@@ -64,6 +64,44 @@ class SettingsAndTrashTests(unittest.TestCase):
         self.assertEqual(db_loaded["llm"]["default_model"], payload["llm"]["default_model"])
         self.assertEqual(db_loaded["text_processing"]["remove_footnotes"], True)
 
+    def test_unchanged_session_config_save_and_read_preserve_modified_time(self):
+        session_name = "StableConfig"
+        payload = {
+            "session_name": session_name,
+            "source_file_path": os.path.join(session_handler.OUTPUTS_DIR, session_name, "source.txt"),
+        }
+        session_handler.save_session_config(session_name, payload)
+        config_path = os.path.join(
+            session_handler.get_session_path(session_name),
+            session_handler.SESSION_CONFIG_FILENAME,
+        )
+        historical_timestamp = 1_704_164_645
+        os.utime(config_path, (historical_timestamp, historical_timestamp))
+
+        session_handler.save_session_config(session_name, payload)
+        loaded = session_handler.load_session_config(session_name)
+
+        with sqlite3.connect(state_db_handler.get_db_path()) as connection:
+            snapshot_count = connection.execute(
+                "SELECT COUNT(*) FROM session_config_snapshots WHERE session_name = ?",
+                (session_name,),
+            ).fetchone()[0]
+
+        self.assertEqual(loaded, payload)
+        self.assertEqual(int(os.path.getmtime(config_path)), historical_timestamp)
+        self.assertEqual(snapshot_count, 1)
+
+        changed_payload = {**payload, "source_file_path": payload["source_file_path"] + ".changed"}
+        session_handler.save_session_config(session_name, changed_payload)
+        with sqlite3.connect(state_db_handler.get_db_path()) as connection:
+            changed_snapshot_count = connection.execute(
+                "SELECT COUNT(*) FROM session_config_snapshots WHERE session_name = ?",
+                (session_name,),
+            ).fetchone()[0]
+
+        self.assertGreater(int(os.path.getmtime(config_path)), historical_timestamp)
+        self.assertEqual(changed_snapshot_count, 2)
+
     def test_apply_global_settings_payload_applies_remove_footnotes(self):
         state = AppState()
         self.assertFalse(state.text_processing.remove_footnotes)

@@ -132,8 +132,24 @@ def save_session_config(session_name: str, state_payload: Dict[str, Any]):
         "version": SESSION_CONFIG_VERSION,
         "state": state_payload,
     }
+    should_write = True
     with _FILE_IO_LOCK:
-        _write_json_atomic(config_file, config_data)
+        try:
+            with open(config_file, "r", encoding="utf-8") as f:
+                should_write = json.load(f) != config_data
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            pass
+        if should_write:
+            _write_json_atomic(config_file, config_data)
+
+    config_modified_at = ""
+    try:
+        config_modified_at = datetime.fromtimestamp(
+            os.path.getmtime(config_file),
+            tz=timezone.utc,
+        ).isoformat(timespec="seconds")
+    except OSError:
+        pass
 
     try:
         state_db_handler.save_session_config_snapshot(
@@ -141,6 +157,7 @@ def save_session_config(session_name: str, state_payload: Dict[str, Any]):
             payload=state_payload,
             version=SESSION_CONFIG_VERSION,
             session_path=session_path,
+            config_modified_at=config_modified_at,
         )
     except Exception:
         pass
@@ -167,15 +184,6 @@ def load_session_config(session_name: str) -> Dict[str, Any]:
         else:
             state_payload = config_data
 
-        try:
-            state_db_handler.save_session_config_snapshot(
-                session_name=session_name,
-                payload=state_payload,
-                version=SESSION_CONFIG_VERSION,
-                session_path=session_path,
-            )
-        except Exception:
-            pass
         return state_payload
 
     try:

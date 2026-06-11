@@ -63,6 +63,7 @@ class PixiEnvironmentMixin:
         env['PIXI_CACHE_DIR'] = pixi_cache
         env['RATTLER_CACHE_DIR'] = rattler_cache
         env['PIP_CACHE_DIR'] = pip_cache
+        env['UV_CACHE_DIR'] = os.path.join(pixi_cache, 'uv-cache')
         env['TMP'] = local_temp
         env['TEMP'] = local_temp
         env['TMPDIR'] = local_temp

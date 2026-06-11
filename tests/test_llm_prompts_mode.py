@@ -1,8 +1,8 @@
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 import os
+import sqlite3
 import tempfile
-import json
 
 from pandrator.app_state import AppState
 from pandrator.app_logic import AppLogic
@@ -130,6 +130,39 @@ class LLMPromptsModeTests(unittest.TestCase):
 
         # Assert that use_multi_stage remains False
         self.assertFalse(logic.state.llm.use_multi_stage)
+
+    def test_app_startup_and_session_load_do_not_touch_session_config(self):
+        session_name = "StableOnOpen"
+        session_path = os.path.join(session_handler.OUTPUTS_DIR, session_name)
+        os.makedirs(session_path, exist_ok=True)
+        source_path = os.path.join(session_path, "source.txt")
+        with open(source_path, "w", encoding="utf-8") as file_handle:
+            file_handle.write("Source")
+
+        session_handler.save_session_config(
+            session_name,
+            {
+                "session_name": session_name,
+                "source_file_path": source_path,
+                "source_display_path": source_path,
+                "original_source_file_path": source_path,
+            },
+        )
+        config_path = os.path.join(session_path, session_handler.SESSION_CONFIG_FILENAME)
+        historical_timestamp = 1_704_164_645
+        os.utime(config_path, (historical_timestamp, historical_timestamp))
+
+        logic = AppLogic()
+        logic.load_session(session_name)
+
+        with sqlite3.connect(state_db_handler.get_db_path()) as connection:
+            indexed_modified_at = connection.execute(
+                "SELECT config_modified_at FROM sessions WHERE session_name = ?",
+                (session_name,),
+            ).fetchone()[0]
+
+        self.assertEqual(int(os.path.getmtime(config_path)), historical_timestamp)
+        self.assertEqual(indexed_modified_at, "2024-01-02T03:04:05+00:00")
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,6 +3,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime, timezone
 
 from pandrator.logic.state_db_handler import StateDBHandler
 from pandrator.logic import audio_variant_handler
@@ -136,6 +137,99 @@ class StateDBHandlerTests(unittest.TestCase):
         legacy_preview = self.handler.get_session_preview(legacy_session)
         self.assertTrue(legacy_preview["runs"])
         self.assertTrue(any(run.get("legacy") for run in legacy_preview["runs"]))
+
+    def test_reindex_preserves_config_modified_time_and_dedupes_snapshots(self):
+        session_name = "StableModifiedTime"
+        session_dir = self._session_dir(session_name)
+        config_path = os.path.join(session_dir, "session_config.json")
+        source_path = os.path.join(session_dir, "source.txt")
+        with open(source_path, "w", encoding="utf-8") as file_handle:
+            file_handle.write("Source")
+        with open(config_path, "w", encoding="utf-8") as file_handle:
+            json.dump(
+                {
+                    "version": 1,
+                    "state": {
+                        "session_name": session_name,
+                        "source_file_path": source_path,
+                    },
+                },
+                file_handle,
+            )
+
+        historical_timestamp = datetime(2024, 1, 2, 3, 4, 5, tzinfo=timezone.utc).timestamp()
+        os.utime(config_path, (historical_timestamp, historical_timestamp))
+
+        self.handler.reindex_session(session_name)
+        first_row = next(row for row in self.handler.list_sessions() if row["session_name"] == session_name)
+        self.handler.reindex_session(session_name)
+        second_row = next(row for row in self.handler.list_sessions() if row["session_name"] == session_name)
+
+        with sqlite3.connect(self.handler.db_path) as connection:
+            snapshot_count = connection.execute(
+                "SELECT COUNT(*) FROM session_config_snapshots WHERE session_name = ?",
+                (session_name,),
+            ).fetchone()[0]
+
+        self.assertEqual(first_row["config_modified_at"], "2024-01-02T03:04:05+00:00")
+        self.assertEqual(second_row["config_modified_at"], first_row["config_modified_at"])
+        self.assertEqual(snapshot_count, 1)
+
+    def test_reusable_sources_include_configless_incomplete_session_source_types(self):
+        session_name = "ConfiglessSources"
+        session_dir = self._session_dir(session_name)
+        source_names = [
+            "pasted_text_20240101_010101.txt",
+            "notes.txt",
+            "document.pdf",
+            "book.epub",
+            "manuscript.docx",
+            "reader.mobi",
+            "captions.srt",
+            "clip.mp4",
+        ]
+        generated_output_names = ["final_output.mp4", "clip_synced.mp4", "session_final_softsubs.mp4"]
+        expected_paths = set()
+        for source_name in source_names:
+            source_path = os.path.join(session_dir, source_name)
+            with open(source_path, "wb") as file_handle:
+                file_handle.write(source_name.encode("utf-8"))
+            expected_paths.add(os.path.normcase(os.path.abspath(source_path)))
+        excluded_paths = set()
+        for output_name in generated_output_names:
+            output_path = os.path.join(session_dir, output_name)
+            with open(output_path, "wb") as file_handle:
+                file_handle.write(output_name.encode("utf-8"))
+            excluded_paths.add(os.path.normcase(os.path.abspath(output_path)))
+
+        self.handler.reindex_session(session_name)
+
+        row = next(row for row in self.handler.list_sessions() if row["session_name"] == session_name)
+        reusable_sources = self.handler.list_reusable_sources(limit=50, include_missing=False)
+        reusable_paths = {
+            os.path.normcase(os.path.abspath(source["source_path"]))
+            for source in reusable_sources
+            if source["session_name"] == session_name
+        }
+
+        self.assertEqual(row["generated_sentences"], 0)
+        self.assertEqual(row["total_sentences"], 0)
+        self.assertTrue(expected_paths.issubset(reusable_paths))
+        self.assertTrue(excluded_paths.isdisjoint(reusable_paths))
+
+    def test_reindex_uses_directory_modified_time_for_empty_configless_session(self):
+        session_name = "EmptyConfiglessSession"
+        session_dir = self._session_dir(session_name)
+        historical_timestamp = datetime(2024, 2, 3, 4, 5, 6, tzinfo=timezone.utc).timestamp()
+        os.utime(session_dir, (historical_timestamp, historical_timestamp))
+
+        self.handler.reindex_session(session_name)
+        first_row = next(row for row in self.handler.list_sessions() if row["session_name"] == session_name)
+        self.handler.reindex_session(session_name)
+        second_row = next(row for row in self.handler.list_sessions() if row["session_name"] == session_name)
+
+        self.assertEqual(first_row["config_modified_at"], "2024-02-03T04:05:06+00:00")
+        self.assertEqual(second_row["config_modified_at"], first_row["config_modified_at"])
 
     def test_active_run_artifact_selection_uses_active_flag(self):
         session_name = "RunSelection"
