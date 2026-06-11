@@ -450,6 +450,12 @@ class ComponentOperationsMixin:
             command.extend(['--pixi-path', pixi_path])
         return command
 
+    def build_magpie_launcher_command(self, pixi_path=None):
+        command = ['cmd', '/c', 'run.bat']
+        if pixi_path:
+            command.extend(['--pixi-path', pixi_path])
+        return command
+
     def _read_text_if_exists(self, file_path):
         if not os.path.exists(file_path):
             return ""
@@ -516,6 +522,18 @@ class ComponentOperationsMixin:
             return pixi_path
 
         logging.info("Chatterbox launcher does not advertise --pixi-path, skipping shared Pixi argument.")
+        return None
+
+    def get_magpie_pixi_argument(self, magpie_repo_path, pixi_path):
+        if not pixi_path:
+            return None
+
+        run_bat_contents = self._read_text_if_exists(os.path.join(magpie_repo_path, 'run.bat')).lower()
+        run_py_contents = self._read_text_if_exists(os.path.join(magpie_repo_path, 'run.py')).lower()
+        if '--pixi-path' in run_bat_contents or '--pixi-path' in run_py_contents:
+            return pixi_path
+
+        logging.info("Magpie launcher does not advertise --pixi-path, skipping shared Pixi argument.")
         return None
 
     def terminate_process_tree(self, process, timeout=10):
@@ -775,6 +793,74 @@ class ComponentOperationsMixin:
         finally:
             if process is not None:
                 logging.info("Stopping temporary Chatterbox bootstrap process.")
+                self.terminate_process_tree(process)
+            log_handle.close()
+
+    def is_magpie_runtime_ready(self, magpie_repo_path):
+        run_bat_path = os.path.join(magpie_repo_path, 'run.bat')
+        env_python_path = os.path.join(magpie_repo_path, '.pixi', 'envs', 'default', 'python.exe')
+        return all(os.path.exists(path) for path in (run_bat_path, env_python_path))
+
+    def install_magpie_api_server(self, magpie_repo_path, use_cpu=False, pixi_path=None):
+        logging.info(f"Bootstrapping Magpie API server in {magpie_repo_path}...")
+        logging.info(
+            "Magpie bootstrap starts the server temporarily to validate runtime and will stop it after health checks."
+        )
+
+        run_script_path = os.path.join(magpie_repo_path, 'run.bat')
+        if not os.path.exists(run_script_path):
+            raise FileNotFoundError(f"Magpie run script not found at: {run_script_path}")
+
+        if self.is_port_in_use(8030):
+            raise RuntimeError("Magpie server cannot be bootstrapped because port 8030 is already in use.")
+
+        magpie_install_log_file = os.path.join(magpie_repo_path, 'magpie_install.log')
+        command = [run_script_path]
+        if pixi_path:
+            command.extend(['--pixi-path', pixi_path])
+
+        pandrator_path = os.path.dirname(magpie_repo_path)
+        env = self.get_pixi_subprocess_env(pandrator_path)
+        if use_cpu:
+            env["MAGPIE_DEVICE"] = "cpu"
+        else:
+            env["MAGPIE_DEVICE"] = "cuda"
+
+        if pixi_path:
+            pixi_bin_dir = os.path.dirname(pixi_path)
+            env["PATH"] = pixi_bin_dir + os.pathsep + env.get("PATH", "")
+
+        log_handle = open(magpie_install_log_file, 'a', encoding='utf-8')
+        process = None
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=magpie_repo_path,
+                env=env,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                **self.get_hidden_subprocess_kwargs(),
+            )
+
+            if not self.check_magpie_server_online(
+                'http://127.0.0.1:8030',
+                max_attempts=360,
+                wait_interval=5,
+                process=process,
+            ):
+                return_code = process.poll()
+                if return_code is not None:
+                    raise RuntimeError(
+                        f"Magpie bootstrap process exited before server was ready (exit code {return_code}). "
+                        f"See log: {magpie_install_log_file}"
+                    )
+                raise RuntimeError(
+                    "Magpie bootstrap did not bring the server online in time. "
+                    f"See log: {magpie_install_log_file}"
+                )
+        finally:
+            if process is not None:
+                logging.info("Stopping temporary Magpie bootstrap process.")
                 self.terminate_process_tree(process)
             log_handle.close()
 

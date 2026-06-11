@@ -17,6 +17,7 @@ from ..components import ComponentOperationsMixin
 from ..constants import (
     CHATTERBOX_GPU_SUPPORT_CONFIG_FLAG,
     KOKORO_GPU_SUPPORT_CONFIG_FLAG,
+    MAGPIE_GPU_SUPPORT_CONFIG_FLAG,
 )
 from ..models import InstallSelection, LaunchSelection
 from ..operations import OperationsMixin
@@ -64,6 +65,8 @@ class PandratorInstaller(
         self.xtts_finetuning_var = False
         self.chatterbox_var = False
         self.chatterbox_cpu_var = False
+        self.magpie_var = False
+        self.magpie_cpu_var = False
 
         # Launch options
         self.launch_pandrator_var = True
@@ -78,6 +81,8 @@ class PandratorInstaller(
         self.launch_silero_var = False
         self.launch_chatterbox_var = False
         self.chatterbox_cpu_launch_var = False
+        self.launch_magpie_var = False
+        self.magpie_cpu_launch_var = False
 
         # Initialize process attributes
         self.xtts_process = None
@@ -88,6 +93,7 @@ class PandratorInstaller(
         self.voxtral_process = None
         self.kokoro_process = None
         self.chatterbox_process = None
+        self.magpie_process = None
         self.backend_stop_targets = []
 
         # Worker thread
@@ -275,6 +281,12 @@ class PandratorInstaller(
 
         self.chatterbox_cpu_checkbox = QCheckBox("Chatterbox CPU only")
         engines_layout.addWidget(self.chatterbox_cpu_checkbox)
+
+        self.magpie_checkbox = QCheckBox("Magpie")
+        engines_layout.addWidget(self.magpie_checkbox)
+
+        self.magpie_cpu_checkbox = QCheckBox("Magpie CPU only")
+        engines_layout.addWidget(self.magpie_cpu_checkbox)
         engines_layout.addStretch()
 
         components_layout.addLayout(engines_layout)
@@ -325,6 +337,10 @@ class PandratorInstaller(
         self.bind_mutually_exclusive_install_options(
             self.chatterbox_checkbox,
             self.chatterbox_cpu_checkbox,
+        )
+        self.bind_mutually_exclusive_install_options(
+            self.magpie_checkbox,
+            self.magpie_cpu_checkbox,
         )
 
         for checkbox in self.install_tab.findChildren(QCheckBox):
@@ -406,6 +422,20 @@ class PandratorInstaller(
         chatterbox_layout.addStretch()
 
         launch_layout.addWidget(chatterbox_frame)
+
+        # Magpie options
+        magpie_frame = QWidget()
+        magpie_layout = QHBoxLayout(magpie_frame)
+        magpie_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.launch_magpie_checkbox = QCheckBox("Magpie")
+        magpie_layout.addWidget(self.launch_magpie_checkbox)
+
+        self.magpie_cpu_launch_checkbox = QCheckBox("Use CPU")
+        magpie_layout.addWidget(self.magpie_cpu_launch_checkbox)
+        magpie_layout.addStretch()
+
+        launch_layout.addWidget(magpie_frame)
 
         layout.addWidget(launch_group)
 
@@ -568,6 +598,20 @@ class PandratorInstaller(
         else:
             set_widget_state(self.chatterbox_cpu_launch_checkbox, False, False)
 
+        # Magpie
+        magpie_support = config.get('magpie_support', False)
+        magpie_gpu_support = config.get(MAGPIE_GPU_SUPPORT_CONFIG_FLAG, False)
+        set_widget_state(self.magpie_checkbox, not magpie_support, False)
+        set_widget_state(self.magpie_cpu_checkbox, not magpie_support, False)
+        set_widget_state(self.launch_magpie_checkbox, magpie_support, False)
+        if magpie_support:
+            if magpie_gpu_support:
+                set_widget_state(self.magpie_cpu_launch_checkbox, True, False)
+            else:
+                set_widget_state(self.magpie_cpu_launch_checkbox, False, True)
+        else:
+            set_widget_state(self.magpie_cpu_launch_checkbox, False, False)
+
         # RVC
         rvc_support = config.get('rvc_support', False)
         set_widget_state(self.rvc_checkbox, not rvc_support, False)
@@ -659,7 +703,8 @@ class PandratorInstaller(
             'rvc': config.get('rvc_support', False),
             'whisperx': config.get('whisperx_support', False),
             'xtts_finetuning': config.get('xtts_finetuning_support', False),
-            'chatterbox': config.get('chatterbox_support', False)
+            'chatterbox': config.get('chatterbox_support', False),
+            'magpie': config.get('magpie_support', False)
         }
 
     def disable_buttons(self):
@@ -726,6 +771,8 @@ class PandratorInstaller(
             xtts_finetuning=self.xtts_finetuning_checkbox.isChecked(),
             chatterbox=self.chatterbox_checkbox.isChecked(),
             chatterbox_cpu=self.chatterbox_cpu_checkbox.isChecked(),
+            magpie=self.magpie_checkbox.isChecked(),
+            magpie_cpu=self.magpie_cpu_checkbox.isChecked(),
         )
 
     def apply_install_selection(self, selection):
@@ -750,4 +797,6 @@ class PandratorInstaller(
             silero=self.launch_silero_checkbox.isChecked(),
             chatterbox=self.launch_chatterbox_checkbox.isChecked(),
             chatterbox_cpu=self.chatterbox_cpu_launch_checkbox.isChecked(),
+            magpie=self.launch_magpie_checkbox.isChecked(),
+            magpie_cpu=self.magpie_cpu_launch_checkbox.isChecked(),
         )

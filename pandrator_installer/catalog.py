@@ -10,6 +10,7 @@ PACKAGING_LAYOUT_FILENAME = "packaging_layout.json"
 KOKORO_ENV_NAME = "kokoro_api_server_installer"
 KOKORO_GPU_SUPPORT_CONFIG_FLAG = "kokoro_gpu_support"
 CHATTERBOX_GPU_SUPPORT_CONFIG_FLAG = "chatterbox_gpu_support"
+MAGPIE_GPU_SUPPORT_CONFIG_FLAG = "magpie_gpu_support"
 
 
 @dataclass(frozen=True)
@@ -165,6 +166,29 @@ COMPONENTS: dict[str, ComponentDefinition] = {
         process_attr="chatterbox_process",
         port=8040,
     ),
+    "magpie": ComponentDefinition(
+        key="magpie",
+        label="Magpie",
+        config_flag="magpie_support",
+        paths=("magpie-fastapi",),
+        markers=("magpie-fastapi/run.bat",),
+        repo_url="https://github.com/lukaszliniewicz/magpie-fastapi.git",
+        repo_dirname="magpie-fastapi",
+        process_attr="magpie_process",
+        port=8030,
+    ),
+    "magpie_cpu": ComponentDefinition(
+        key="magpie_cpu",
+        label="Magpie CPU",
+        config_flag="magpie_support",
+        paths=("magpie-fastapi",),
+        markers=("magpie-fastapi/run.bat",),
+        variant_of="magpie",
+        repo_url="https://github.com/lukaszliniewicz/magpie-fastapi.git",
+        repo_dirname="magpie-fastapi",
+        process_attr="magpie_process",
+        port=8030,
+    ),
 }
 
 INSTALL_COMPONENT_KEYS = tuple(COMPONENTS)
@@ -186,6 +210,8 @@ PACKAGING_CONFIG_FLAGS = (
     "rvc_support",
     "chatterbox_support",
     CHATTERBOX_GPU_SUPPORT_CONFIG_FLAG,
+    "magpie_support",
+    MAGPIE_GPU_SUPPORT_CONFIG_FLAG,
 )
 
 PACKAGING_EXCLUDED_FILE_PREFIXES = ("pandrator_state.sqlite3",)
@@ -218,6 +244,7 @@ BACKEND_COMPONENT_KEYS = (
     "kokoro",
     "silero",
     "chatterbox",
+    "magpie",
 )
 
 

@@ -15,6 +15,9 @@ from .constants import (
     CHATTERBOX_API_REPO_DIRNAME,
     CHATTERBOX_API_REPO_URL,
     CHATTERBOX_GPU_SUPPORT_CONFIG_FLAG,
+    MAGPIE_API_REPO_DIRNAME,
+    MAGPIE_API_REPO_URL,
+    MAGPIE_GPU_SUPPORT_CONFIG_FLAG,
     EASY_XTTS_TRAINER_REPO_URL,
     FISHS2_API_REPO_DIRNAME,
     FISHS2_API_REPO_URL,
@@ -94,6 +97,8 @@ class WorkflowMixin:
         xtts_finetuning_var = selection.xtts_finetuning
         chatterbox_var = selection.chatterbox
         chatterbox_cpu_var = selection.chatterbox_cpu
+        magpie_var = selection.magpie
+        magpie_cpu_var = selection.magpie_cpu
 
         pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
         pandrator_already_installed = os.path.exists(pandrator_path)
@@ -106,6 +111,7 @@ class WorkflowMixin:
         kokoro_repo_path = os.path.join(pandrator_path, KOKORO_API_REPO_DIRNAME)
         easy_xtts_trainer_path = os.path.join(pandrator_path, 'easy_xtts_trainer')
         chatterbox_repo_path = os.path.join(pandrator_path, CHATTERBOX_API_REPO_DIRNAME)
+        magpie_repo_path = os.path.join(pandrator_path, MAGPIE_API_REPO_DIRNAME)
 
         pandrator_repo_missing = not os.path.exists(pandrator_repo_path)
         subdub_repo_missing = not os.path.exists(subdub_repo_path)
@@ -185,6 +191,8 @@ class WorkflowMixin:
                 concurrent_tasks["Clone XTTS Trainer"] = (self.clone_repo, (EASY_XTTS_TRAINER_REPO_URL, easy_xtts_trainer_path), {})
             if (chatterbox_var or chatterbox_cpu_var) and not os.path.exists(chatterbox_repo_path):
                 concurrent_tasks["Clone Chatterbox"] = (self.clone_repo, (CHATTERBOX_API_REPO_URL, chatterbox_repo_path), {})
+            if (magpie_var or magpie_cpu_var) and not os.path.exists(magpie_repo_path):
+                concurrent_tasks["Clone Magpie"] = (self.clone_repo, (MAGPIE_API_REPO_URL, magpie_repo_path), {})
 
             self.execute_concurrently(concurrent_tasks, max_workers=8)
 
@@ -267,6 +275,15 @@ class WorkflowMixin:
                     pixi_path=shared_pixi_path,
                 )
 
+            if magpie_var or magpie_cpu_var:
+                self.reporter.progress(0.89)
+                self.reporter.status("Bootstrapping Magpie API server (temporary startup)...")
+                self.install_magpie_api_server(
+                    magpie_repo_path,
+                    use_cpu=magpie_cpu_var,
+                    pixi_path=shared_pixi_path,
+                )
+
             if silero_var:
                 self.reporter.progress(0.8)
                 self.reporter.status("Creating Silero Pixi environment...")
@@ -344,6 +361,10 @@ class WorkflowMixin:
             config[CHATTERBOX_GPU_SUPPORT_CONFIG_FLAG] = (
                 config.get(CHATTERBOX_GPU_SUPPORT_CONFIG_FLAG, False) or chatterbox_var
             )
+            config['magpie_support'] = config.get('magpie_support', False) or magpie_var or magpie_cpu_var
+            config[MAGPIE_GPU_SUPPORT_CONFIG_FLAG] = (
+                config.get(MAGPIE_GPU_SUPPORT_CONFIG_FLAG, False) or magpie_var
+            )
 
             self.save_install_config(pandrator_path, config)
 
@@ -379,6 +400,7 @@ class WorkflowMixin:
         kokoro_repo_path = os.path.join(pandrator_base_path, KOKORO_API_REPO_DIRNAME)
         easy_xtts_trainer_path = os.path.join(pandrator_base_path, 'easy_xtts_trainer')
         chatterbox_repo_path = os.path.join(pandrator_base_path, CHATTERBOX_API_REPO_DIRNAME)
+        magpie_repo_path = os.path.join(pandrator_base_path, MAGPIE_API_REPO_DIRNAME)
         config = self.load_install_config(pandrator_base_path, detect_rvc=True)
         if KOKORO_GPU_SUPPORT_CONFIG_FLAG not in config:
             config[KOKORO_GPU_SUPPORT_CONFIG_FLAG] = False
@@ -473,6 +495,13 @@ class WorkflowMixin:
                     update_tasks["Update Chatterbox"] = (self.pull_repo, (chatterbox_repo_path,), {})
                 else:
                     update_tasks["Clone Chatterbox"] = (self.clone_repo, (CHATTERBOX_API_REPO_URL, chatterbox_repo_path), {})
+
+            # Magpie
+            if config.get('magpie_support', False):
+                if os.path.exists(magpie_repo_path):
+                    update_tasks["Update Magpie"] = (self.pull_repo, (magpie_repo_path,), {})
+                else:
+                    update_tasks["Clone Magpie"] = (self.clone_repo, (MAGPIE_API_REPO_URL, magpie_repo_path), {})
 
             # easy_xtts_trainer
             if os.path.exists(easy_xtts_trainer_path):
@@ -656,6 +685,16 @@ class WorkflowMixin:
                     self.install_chatterbox_api_server(
                         chatterbox_repo_path,
                         use_cpu=not chatterbox_gpu_support,
+                        pixi_path=shared_pixi_path,
+                    )
+
+            if config.get('magpie_support', False):
+                if not self.is_magpie_runtime_ready(magpie_repo_path):
+                    self.reporter.status("Bootstrapping Magpie API server...")
+                    magpie_gpu_support = config.get('magpie_gpu_support', False)
+                    self.install_magpie_api_server(
+                        magpie_repo_path,
+                        use_cpu=not magpie_gpu_support,
                         pixi_path=shared_pixi_path,
                     )
 

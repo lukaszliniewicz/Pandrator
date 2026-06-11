@@ -52,6 +52,8 @@ class InstallSelection:
     xtts_finetuning: bool = False
     chatterbox: bool = False
     chatterbox_cpu: bool = False
+    magpie: bool = False
+    magpie_cpu: bool = False
 
     @classmethod
     def from_components(
@@ -90,6 +92,7 @@ class InstallSelection:
             ("xtts", "xtts_cpu"),
             ("kokoro", "kokoro_cpu"),
             ("chatterbox", "chatterbox_cpu"),
+            ("magpie", "magpie_cpu"),
         )
         for primary, secondary in mutually_exclusive:
             if getattr(self, primary) and getattr(self, secondary):
@@ -120,6 +123,8 @@ class LaunchSelection:
     silero: bool = False
     chatterbox: bool = False
     chatterbox_cpu: bool = False
+    magpie: bool = False
+    magpie_cpu: bool = False
 
     def selected_backend_keys(self) -> tuple[str, ...]:
         ordered_flags = (
@@ -130,6 +135,7 @@ class LaunchSelection:
             ("silero", self.silero),
             ("kokoro", self.kokoro),
             ("chatterbox", self.chatterbox),
+            ("magpie", self.magpie),
         )
         return tuple(key for key, selected in ordered_flags if selected)
 

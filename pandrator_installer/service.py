@@ -43,6 +43,7 @@ class HeadlessInstaller(
             "voxtral_process",
             "kokoro_process",
             "chatterbox_process",
+            "magpie_process",
         ):
             setattr(self, process_attr, None)
 

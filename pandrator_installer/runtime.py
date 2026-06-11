@@ -16,6 +16,7 @@ except ImportError:
 from .catalog import BACKEND_COMPONENT_KEYS, COMPONENTS
 from .constants import (
     CHATTERBOX_API_REPO_DIRNAME,
+    MAGPIE_API_REPO_DIRNAME,
     FISHS2_API_REPO_DIRNAME,
     KOKORO_API_REPO_DIRNAME,
     KOKORO_ENV_NAME,
@@ -101,6 +102,8 @@ class RuntimeMixin:
             selected.append('kokoro')
         if self.launch_chatterbox_var:
             selected.append('chatterbox')
+        if self.launch_magpie_var:
+            selected.append('magpie')
         return selected
 
     def _apply_launch_selection_state(self, selection):
@@ -116,6 +119,8 @@ class RuntimeMixin:
         self.launch_silero_var = selection.silero
         self.launch_chatterbox_var = selection.chatterbox
         self.chatterbox_cpu_launch_var = selection.chatterbox_cpu
+        self.launch_magpie_var = selection.magpie
+        self.magpie_cpu_launch_var = selection.magpie_cpu
 
     def _backend_label_from_key(self, backend_key):
         for key, label, _, _ in self._backend_runtime_specs():
@@ -491,6 +496,48 @@ class RuntimeMixin:
             pandrator_args = ['-connect', '-chatterbox']
             tts_engine_launched = True
 
+        if self.launch_magpie_var and not tts_engine_launched:
+            self.reporter.progress(0.70)
+            magpie_server_url = 'http://127.0.0.1:8030'
+            if 'magpie' in running_backend_keys and self.magpie_process:
+                self.reporter.status("Magpie server is already running. Reusing existing backend.")
+            else:
+                self.reporter.status("Starting Magpie server...")
+                magpie_server_path = os.path.join(pandrator_path, MAGPIE_API_REPO_DIRNAME)
+                logging.info(f"Magpie server path: {magpie_server_path}")
+
+                if not os.path.exists(magpie_server_path):
+                    error_msg = f"Magpie server path not found: {magpie_server_path}"
+                    self.reporter.status(error_msg)
+                    logging.error(error_msg)
+                    raise FileNotFoundError(error_msg)
+
+                magpie_gpu_support = install_config.get('magpie_gpu_support', False)
+                magpie_launch_gpu = magpie_gpu_support and not self.magpie_cpu_launch_var
+
+                try:
+                    self.magpie_process = self.run_magpie_api_server(
+                        magpie_server_path,
+                        use_cpu=not magpie_launch_gpu,
+                        pixi_path=shared_pixi_path,
+                    )
+                except Exception as e:
+                    error_msg = f"Failed to start Magpie server: {str(e)}"
+                    self.reporter.status(error_msg)
+                    logging.error(error_msg)
+                    logging.exception("Exception details:")
+                    raise
+
+                if not self.check_magpie_server_online(magpie_server_url, process=self.magpie_process):
+                    error_msg = "Magpie server failed to come online"
+                    self.reporter.status(error_msg)
+                    logging.error(error_msg)
+                    self.shutdown_magpie()
+                    raise RuntimeError(error_msg)
+
+            pandrator_args = ['-connect', '-magpie']
+            tts_engine_launched = True
+
         if self.launch_pandrator_var:
             self.reporter.progress(0.85)
             if running_pandrator_process:
@@ -857,6 +904,82 @@ class RuntimeMixin:
         self.chatterbox_process = process
         return process
 
+    def run_magpie_api_server(self, magpie_server_path, use_cpu=False, pixi_path=None):
+        """Run the Magpie API server via its run.bat script."""
+        logging.info(f"Running Magpie API server from {magpie_server_path}...")
+
+        if self.is_port_in_use(8030):
+            error_msg = "Magpie server cannot be started because port 8030 is already in use."
+            logging.error(error_msg)
+            self.notify_error("Error", error_msg)
+            return None
+
+        run_script_path = os.path.join(magpie_server_path, 'run.bat')
+        if not os.path.exists(run_script_path):
+            raise FileNotFoundError(f"Magpie run script not found at: {run_script_path}")
+
+        magpie_log_file = os.path.join(magpie_server_path, 'magpie_server.log')
+        command = [run_script_path]
+        if pixi_path:
+            command.extend(['--pixi-path', pixi_path])
+
+        env = self.get_pixi_subprocess_env(os.path.dirname(magpie_server_path))
+        if use_cpu:
+            env["MAGPIE_DEVICE"] = "cpu"
+        else:
+            env["MAGPIE_DEVICE"] = "cuda"
+
+        if pixi_path:
+            pixi_bin_dir = os.path.dirname(pixi_path)
+            env["PATH"] = pixi_bin_dir + os.pathsep + env.get("PATH", "")
+
+        log_handle = open(magpie_log_file, 'a', encoding='utf-8')
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=magpie_server_path,
+                env=env,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                **self.get_hidden_subprocess_kwargs(),
+            )
+        except Exception:
+            log_handle.close()
+            raise
+
+        process.log_handle = log_handle
+        self.magpie_process = process
+        return process
+
+    def check_magpie_server_online(self, base_url, max_attempts=120, wait_interval=5, process=None):
+        """Check if the Magpie server is online and responding."""
+        probe_paths = ['/v1/models', '/v1/audio/voices']
+        for attempt in range(1, max_attempts + 1):
+            if process is not None and process.poll() is not None:
+                logging.error("Magpie server process exited before coming online.")
+                return False
+
+            for probe_path in probe_paths:
+                try:
+                    response = requests.get(f"{base_url}{probe_path}", timeout=5)
+                    if response.status_code == 404:
+                        continue
+                    if response.status_code < 400:
+                        logging.info("Magpie server is online.")
+                        return True
+                except requests.exceptions.RequestException:
+                    continue
+
+            logging.info(
+                "Magpie server is not online yet. Waiting... (Attempt %s/%s)",
+                attempt,
+                max_attempts,
+            )
+            time.sleep(wait_interval)
+
+        logging.error("Magpie server failed to come online within the specified attempts.")
+        return False
+
     def check_chatterbox_server_online(self, base_url, max_attempts=120, wait_interval=5, process=None):
         """Check if the Chatterbox server is online and responding."""
         probe_paths = ['/v1/models', '/v1/audio/voices']
@@ -1016,6 +1139,7 @@ class RuntimeMixin:
         self.shutdown_kokoro()
         self.shutdown_silero()
         self.shutdown_chatterbox()
+        self.shutdown_magpie()
 
     def shutdown_xtts(self):
         """Shut down the XTTS server"""
@@ -1150,6 +1274,35 @@ class RuntimeMixin:
             if hasattr(self.chatterbox_process, 'log_handle') and self.chatterbox_process.log_handle:
                 self.chatterbox_process.log_handle.close()
             self.chatterbox_process = None
+
+    def shutdown_magpie(self):
+        """Shut down the Magpie server."""
+        if self.magpie_process:
+            logging.info(f"Terminating Magpie process with PID: {self.magpie_process.pid}")
+            try:
+                parent = psutil.Process(self.magpie_process.pid)
+                for child in parent.children(recursive=True):
+                    try:
+                        child.terminate()
+                    except psutil.AccessDenied:
+                        logging.warning(f"Access denied when terminating child process with PID: {child.pid}")
+                parent.terminate()
+                self.magpie_process.wait(timeout=10)
+            except psutil.NoSuchProcess:
+                logging.info("Magpie process already terminated.")
+            except psutil.TimeoutExpired:
+                logging.warning("Magpie process did not terminate, forcing kill")
+                parent = psutil.Process(self.magpie_process.pid)
+                for child in parent.children(recursive=True):
+                    try:
+                        child.kill()
+                    except psutil.AccessDenied:
+                        logging.warning(f"Access denied when killing child process with PID: {child.pid}")
+                parent.kill()
+
+            if hasattr(self.magpie_process, 'log_handle') and self.magpie_process.log_handle:
+                self.magpie_process.log_handle.close()
+            self.magpie_process = None
 
     def shutdown_voxtral(self):
         """Shut down the Voxtral server"""

@@ -30,7 +30,8 @@ class GuiActionsMixin:
             (selection.rvc and not installed_components['rvc']) or
             (selection.whisperx and not installed_components['whisperx']) or
             (selection.xtts_finetuning and not installed_components['xtts_finetuning']) or
-            ((selection.chatterbox or selection.chatterbox_cpu) and not installed_components['chatterbox'])
+            ((selection.chatterbox or selection.chatterbox_cpu) and not installed_components['chatterbox']) or
+            ((selection.magpie or selection.magpie_cpu) and not installed_components['magpie'])
         )
 
         if pandrator_already_installed and not selection.pandrator:
