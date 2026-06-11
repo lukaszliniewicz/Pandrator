@@ -33,8 +33,8 @@ VOXTRAL_LANGUAGES = ["ar", "en", "de", "es", "fr", "hi", "it", "nl", "pt"]
 KOKORO_LANGUAGES = ["en", "en-gb", "de", "es", "fr", "hi", "it", "ja", "pt", "zh-cn"]
 
 MAGPIE_LANGUAGES = ["en", "es", "de", "fr", "vi", "it", "zh", "hi", "ja"]
-MAGPIE_DEFAULT_MODEL = "magpie-tts"
-MAGPIE_TTS_MODELS = ["magpie-tts", "magpie-tts-multilingual"]
+MAGPIE_DEFAULT_MODEL = "magpie-tts-multilingual"
+MAGPIE_TTS_MODELS = ["magpie-tts-multilingual"]
 MAGPIE_API_BASE_URL = "http://127.0.0.1:8030"
 MAGPIE_LOCALE_MAP = {
     "EN-US": "en", "ES-US": "es", "FR-FR": "fr", "DE-DE": "de",

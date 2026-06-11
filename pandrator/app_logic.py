@@ -4287,7 +4287,7 @@ class AppLogic(QObject):
                     if selected_model not in models:
                         selected_model = models[0]
                 elif not selected_model:
-                    selected_model = "magpie-tts"
+                    selected_model = "magpie-tts-multilingual"
 
                 selected_speaker = (tts_snapshot.get("speaker") or "").strip()
                 if speakers:

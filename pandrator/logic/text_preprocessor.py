@@ -140,11 +140,7 @@ def _process_chunk(chunk: str, settings: dict) -> list[dict]:
     remove_quotation_marks = settings.get('remove_quotation_marks', False)
     tts_service = settings.get('tts_service', 'XTTS')
 
-    # Magpie's do_tts() uses internal longform inference for multi-sentence input,
-    # producing continuous audio with no pauses. Disable appending so Pandrator
-    # sends one sentence per request and adds silence between them.
-    if tts_service == "Magpie":
-        enable_sentence_appending = False
+
 
     chunk = re.sub(r'\r\n?', '\n', chunk)
     chunk = normalize_punctuation(chunk)
