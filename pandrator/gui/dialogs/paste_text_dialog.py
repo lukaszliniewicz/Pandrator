@@ -1,4 +1,5 @@
-from PyQt6.QtWidgets import QDialog, QVBoxLayout, QTextEdit, QCheckBox, QDialogButtonBox
+from PyQt6.QtWidgets import QCheckBox, QDialog, QDialogButtonBox, QPlainTextEdit, QVBoxLayout
+
 
 class PasteTextDialog(QDialog):
     def __init__(self, parent=None):
@@ -8,7 +9,8 @@ class PasteTextDialog(QDialog):
 
         layout = QVBoxLayout(self)
 
-        self.text_edit = QTextEdit()
+        self.text_edit = QPlainTextEdit()
+        self.text_edit.setPlaceholderText("Paste or write plain text. Formatting will be removed.")
         layout.addWidget(self.text_edit)
 
         self.mark_paragraphs_checkbox = QCheckBox("Mark paragraphs only for multiple new lines")
