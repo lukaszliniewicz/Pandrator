@@ -163,7 +163,14 @@ Useful flags:
 
 ![pandrator_installer_launcher_KLoHrNDIps](https://github.com/user-attachments/assets/2be46b49-9e79-4281-89ed-5797bdfbe28b)
 
-Run `pandrator_installer_launcher.exe` from [Releases](https://github.com/lukaszliniewicz/Pandrator/releases). The executable is built from `pandrator_installer_launcher.py`.
+Run `PandratorInstaller.exe` from [Releases](https://github.com/lukaszliniewicz/Pandrator/releases). The executable is built from the stable `pandrator_installer_launcher.py` entry point.
+
+To build and smoke-test the standalone executable locally:
+
+```powershell
+python -m pip install -r requirements-installer.txt
+python scripts/build_installer.py
+```
 
 For automation, the launcher also supports headless installation:
 

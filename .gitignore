@@ -22,6 +22,7 @@ package_release/
 .eggs/
 pip-wheel-metadata/
 *.spec
+!pandrator_installer_launcher.spec
 
 # Test and tooling caches
 .pytest_cache/

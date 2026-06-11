@@ -91,6 +91,11 @@ class TextProcessingTab(QWidget):
         self.disable_paragraph_detection_checkbox = QCheckBox("Disable Paragraph Detection")
         self.remove_footnotes_checkbox = QCheckBox("Remove Footnotes/Endnotes")
         self.filter_citations_checkbox = QCheckBox("Filter Bibliographic Citations")
+        self.normalize_all_caps_checkbox = QCheckBox("Normalize All-Caps Words")
+        self.normalize_all_caps_checkbox.setToolTip(
+            "Convert stylistic ALL-CAPS words (chapter titles, character names) to title-case.\n"
+            "Known acronyms (NATO, UNESCO, DNA …) and Roman numerals are left unchanged."
+        )
 
         layout.addWidget(self.split_sentences_checkbox, 0, 0)
         layout.addWidget(QLabel("Max Sentence Length:"), 1, 0)
@@ -101,6 +106,7 @@ class TextProcessingTab(QWidget):
         layout.addWidget(self.disable_paragraph_detection_checkbox, 5, 0)
         layout.addWidget(self.remove_footnotes_checkbox, 6, 0)
         layout.addWidget(self.filter_citations_checkbox, 7, 0)
+        layout.addWidget(self.normalize_all_caps_checkbox, 8, 0)
 
         return frame
 
@@ -262,6 +268,13 @@ class TextProcessingTab(QWidget):
                 self.filter_citations_checkbox.isChecked(),
             )
         )
+        self.normalize_all_caps_checkbox.stateChanged.connect(
+            lambda: setattr(
+                self.logic.state.text_processing,
+                "normalize_all_caps",
+                self.normalize_all_caps_checkbox.isChecked(),
+            )
+        )
 
         # LLM Settings
         self.enable_llm_checkbox.stateChanged.connect(
@@ -415,6 +428,7 @@ class TextProcessingTab(QWidget):
         self.remove_footnotes_checkbox.setChecked(tp_state.remove_footnotes)
         self.filter_citations_checkbox.setChecked(getattr(tp_state, "filter_citations", True))
         self.filter_citations_checkbox.setEnabled(not tp_state.remove_footnotes)
+        self.normalize_all_caps_checkbox.setChecked(getattr(tp_state, "normalize_all_caps", True))
 
         # LLM Settings
         llm_state = self.logic.state.llm

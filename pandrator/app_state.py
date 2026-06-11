@@ -183,6 +183,7 @@ class TextProcessingSettings:
     disable_paragraph_detection: bool = False
     remove_footnotes: bool = False
     filter_citations: bool = True
+    normalize_all_caps: bool = True
 
 
 @dataclass

@@ -1,0 +1,753 @@
+"""Main Qt window for the Pandrator installer and launcher."""
+
+import atexit
+import logging
+import os
+import sys
+
+from PyQt6.QtCore import QThread, Qt, QTimer
+from PyQt6.QtGui import QFont
+from PyQt6.QtWidgets import (
+    QApplication, QCheckBox, QGroupBox, QHBoxLayout, QLabel, QMainWindow,
+    QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QTabWidget,
+    QVBoxLayout, QWidget,
+)
+
+from ..components import ComponentOperationsMixin
+from ..constants import (
+    CHATTERBOX_GPU_SUPPORT_CONFIG_FLAG,
+    KOKORO_GPU_SUPPORT_CONFIG_FLAG,
+)
+from ..models import InstallSelection, LaunchSelection
+from ..operations import OperationsMixin
+from ..pixi import PixiEnvironmentMixin
+from ..reporting import NullReporter
+from ..runtime import RuntimeMixin
+from ..storage import StorageMixin
+from ..workflows import WorkflowMixin
+from .actions import GuiActionsMixin
+from .support import InfoDialog, QtLogEmitter, QtLogHandler
+
+
+class PandratorInstaller(
+    StorageMixin,
+    OperationsMixin,
+    PixiEnvironmentMixin,
+    ComponentOperationsMixin,
+    WorkflowMixin,
+    RuntimeMixin,
+    GuiActionsMixin,
+    QMainWindow,
+):
+    def __init__(self, headless=False, working_dir=None, skip_space_warning=False):
+        super().__init__()
+        self.headless = bool(headless)
+        self.initial_working_dir = os.path.abspath(working_dir or os.getcwd())
+
+        # Check for spaces in the working directory
+        if ' ' in self.initial_working_dir and not skip_space_warning and not self.headless:
+            self.show_space_warning()
+
+        # Define instance variables for checkboxes
+        # Installation options
+        self.pandrator_var = False
+        self.xtts_var = False
+        self.xtts_cpu_var = False
+        self.voxcpm_var = False
+        self.fishs2_var = False
+        self.silero_var = False
+        self.voxtral_var = False
+        self.kokoro_var = False
+        self.kokoro_cpu_var = False
+        self.rvc_var = False
+        self.whisperx_var = False
+        self.xtts_finetuning_var = False
+        self.chatterbox_var = False
+        self.chatterbox_cpu_var = False
+
+        # Launch options
+        self.launch_pandrator_var = True
+        self.launch_xtts_var = False
+        self.disable_deepspeed_var = False
+        self.xtts_cpu_launch_var = False
+        self.launch_voxcpm_var = False
+        self.launch_fishs2_var = False
+        self.launch_voxtral_var = False
+        self.launch_kokoro_var = False
+        self.kokoro_cpu_launch_var = False
+        self.launch_silero_var = False
+        self.launch_chatterbox_var = False
+        self.chatterbox_cpu_launch_var = False
+
+        # Initialize process attributes
+        self.xtts_process = None
+        self.voxcpm_process = None
+        self.fishs2_process = None
+        self.pandrator_process = None
+        self.silero_process = None
+        self.voxtral_process = None
+        self.kokoro_process = None
+        self.chatterbox_process = None
+        self.backend_stop_targets = []
+
+        # Worker thread
+        self.worker = None
+        self.reporter = NullReporter()
+
+        # Set up the main window
+        self.setWindowTitle("Pandrator Installer & Launcher")
+
+        # Calculate window size
+        screen_size = QApplication.primaryScreen().size()
+        width = int(screen_size.width() * 0.5)
+        height = int(screen_size.height() * 0.6)
+        self.resize(width, height)
+
+        # Create central widget and main layout
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
+        self.main_layout = QVBoxLayout(self.central_widget)
+
+        # Create header with title and info button
+        header_layout = QHBoxLayout()
+
+        # Title
+        self.title_label = QLabel("Pandrator Installer & Launcher")
+        title_font = QFont("Arial", 18, QFont.Weight.Bold)
+        self.title_label.setFont(title_font)
+        header_layout.addWidget(self.title_label)
+
+        # Info button
+        self.info_button = QPushButton("ℹ️ Info")
+        self.info_button.setFixedWidth(100)
+        self.info_button.clicked.connect(self.show_info)
+        header_layout.addWidget(self.info_button)
+
+        self.main_layout.addLayout(header_layout)
+
+        # Create tab widget
+        self.tabs = QTabWidget()
+        self.main_layout.addWidget(self.tabs)
+
+        # Create Install and Launch tabs
+        self.install_tab = QWidget()
+        self.launch_tab = QWidget()
+        self.logs_tab = QWidget()
+
+        self.tabs.addTab(self.install_tab, "Install")
+        self.tabs.addTab(self.launch_tab, "Launch")
+        self.tabs.addTab(self.logs_tab, "Logs")
+
+        # Set up tabs
+        self.setup_install_tab()
+        self.setup_launch_tab()
+        self.setup_logs_tab()
+
+        # Progress bar and status label at the bottom
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.main_layout.addWidget(self.progress_bar)
+
+        self.status_label = QLabel("Ready")
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        status_font = QFont("Arial", 11)
+        self.status_label.setFont(status_font)
+        self.main_layout.addWidget(self.status_label)
+
+        # Initialize log file path
+        self.log_filename = None
+        self.log_emitter = QtLogEmitter()
+        self.log_emitter.message_logged.connect(self.append_log_message)
+        self.tls_configured = False
+        self.ca_bundle_path = None
+
+        # Initialize state
+        self.refresh_ui_state()
+        self.set_startup_tab()
+        self.backend_status_timer = QTimer(self)
+        self.backend_status_timer.timeout.connect(self.update_backend_runtime_controls)
+        self.backend_status_timer.start(2000)
+        atexit.register(self.shutdown_apps)
+
+    def set_startup_tab(self):
+        pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
+        install_markers = (
+            os.path.join(pandrator_path, 'config.json'),
+            os.path.join(pandrator_path, 'Pandrator', 'main.py'),
+            os.path.join(pandrator_path, 'Pandrator', 'pandrator.py'),
+        )
+        if any(os.path.exists(marker) for marker in install_markers):
+            self.tabs.setCurrentWidget(self.launch_tab)
+        else:
+            self.tabs.setCurrentWidget(self.install_tab)
+
+    def show_space_warning(self):
+        """Show warning when path contains spaces"""
+        if self.headless:
+            logging.warning(
+                "Installation path contains spaces in headless mode: %s. "
+                "Third-party tooling may fail in this location.",
+                self.initial_working_dir,
+            )
+            return
+
+        warning_message = (
+            f"⚠️ WARNING: Your installation path contains spaces:\n\n"
+            f"{self.initial_working_dir}\n\n"
+            f"Some third-party tools still have trouble when installed from paths with spaces.\n\n"
+            f"It's strongly recommended to move this installer to a path without spaces, such as:\n"
+            f"C:\\Pandrator\n\n"
+            f"Would you like to exit the installer so you can move it to a better location?"
+        )
+
+        reply = QMessageBox.warning(
+            self,
+            "Path Contains Spaces",
+            warning_message,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            sys.exit(0)
+        else:
+            QMessageBox.information(
+                self,
+                "Continuing With Risk",
+                "Installation will continue, but you may encounter errors.\n"
+                "If installation fails, please restart the installer from a path without spaces."
+            )
+
+    def show_info(self):
+        """Show the information dialog"""
+        dialog = InfoDialog(self)
+        dialog.exec()
+
+    def setup_install_tab(self):
+        """Set up the Install tab"""
+        layout = QVBoxLayout(self.install_tab)
+
+        # Core components section
+        components_group = QGroupBox("Components")
+        components_layout = QVBoxLayout(components_group)
+
+        # Pandrator checkbox
+        self.pandrator_checkbox = QCheckBox("Pandrator")
+        self.pandrator_checkbox.setChecked(True)
+        components_layout.addWidget(self.pandrator_checkbox)
+
+        # TTS Engines section - with BOLD label
+        tts_engines_label = QLabel("TTS Engines")
+        tts_engines_label.setStyleSheet("font-weight: bold;")
+        components_layout.addWidget(tts_engines_label)
+
+        components_layout.addWidget(QLabel("You can select and install new engines and tools after the initial installation."))
+
+        engines_layout = QHBoxLayout()
+
+        self.xtts_checkbox = QCheckBox("XTTS")
+        engines_layout.addWidget(self.xtts_checkbox)
+
+        self.xtts_cpu_checkbox = QCheckBox("XTTS CPU only")
+        engines_layout.addWidget(self.xtts_cpu_checkbox)
+
+        self.voxcpm_checkbox = QCheckBox("VoxCPM2")
+        engines_layout.addWidget(self.voxcpm_checkbox)
+
+        self.fishs2_checkbox = QCheckBox("FishS2")
+        engines_layout.addWidget(self.fishs2_checkbox)
+
+        self.silero_checkbox = QCheckBox("Silero")
+        engines_layout.addWidget(self.silero_checkbox)
+
+        self.voxtral_checkbox = QCheckBox("Voxtral (GPU only)")
+        engines_layout.addWidget(self.voxtral_checkbox)
+
+        self.kokoro_checkbox = QCheckBox("Kokoro")
+        engines_layout.addWidget(self.kokoro_checkbox)
+
+        self.kokoro_cpu_checkbox = QCheckBox("Kokoro CPU only")
+        engines_layout.addWidget(self.kokoro_cpu_checkbox)
+
+        self.chatterbox_checkbox = QCheckBox("Chatterbox")
+        engines_layout.addWidget(self.chatterbox_checkbox)
+
+        self.chatterbox_cpu_checkbox = QCheckBox("Chatterbox CPU only")
+        engines_layout.addWidget(self.chatterbox_cpu_checkbox)
+        engines_layout.addStretch()
+
+        components_layout.addLayout(engines_layout)
+
+        # Other tools section - with BOLD label
+        other_tools_label = QLabel("Other tools")
+        other_tools_label.setStyleSheet("font-weight: bold;")
+        components_layout.addWidget(other_tools_label)
+
+        self.rvc_checkbox = QCheckBox("RVC (rvc-python fork)")
+        components_layout.addWidget(self.rvc_checkbox)
+
+        self.whisperx_checkbox = QCheckBox("WhisperX (needed for dubbing and XTTS training)")
+        components_layout.addWidget(self.whisperx_checkbox)
+
+        self.xtts_finetuning_checkbox = QCheckBox("XTTS Fine-tuning")
+        self.xtts_finetuning_checkbox.stateChanged.connect(self.update_whisperx_checkbox)
+        components_layout.addWidget(self.xtts_finetuning_checkbox)
+
+        layout.addWidget(components_group)
+
+        # Buttons section
+        buttons_layout = QHBoxLayout()
+
+        self.install_button = QPushButton("Install")
+        self.install_button.clicked.connect(self.install_pandrator)
+        buttons_layout.addWidget(self.install_button)
+
+        self.update_button = QPushButton("Update Pandrator")
+        self.update_button.clicked.connect(self.update_pandrator)
+        buttons_layout.addWidget(self.update_button)
+
+        self.open_log_button = QPushButton("View Installation Log")
+        self.open_log_button.clicked.connect(self.open_log_file)
+        self.open_log_button.setEnabled(False)
+        buttons_layout.addWidget(self.open_log_button)
+
+        layout.addLayout(buttons_layout)
+
+        self.bind_mutually_exclusive_install_options(
+            self.xtts_checkbox,
+            self.xtts_cpu_checkbox,
+        )
+        self.bind_mutually_exclusive_install_options(
+            self.kokoro_checkbox,
+            self.kokoro_cpu_checkbox,
+        )
+        self.bind_mutually_exclusive_install_options(
+            self.chatterbox_checkbox,
+            self.chatterbox_cpu_checkbox,
+        )
+
+        for checkbox in self.install_tab.findChildren(QCheckBox):
+            checkbox.stateChanged.connect(self.update_install_button_state)
+
+        # Add stretch to push everything to the top
+        layout.addStretch()
+
+    def setup_launch_tab(self):
+        """Set up the Launch tab"""
+        layout = QVBoxLayout(self.launch_tab)
+
+        # Launch options group
+        launch_group = QGroupBox("Launch Options")
+        launch_layout = QVBoxLayout(launch_group)
+
+        # Pandrator checkbox
+        self.launch_pandrator_checkbox = QCheckBox("Pandrator")
+        self.launch_pandrator_checkbox.setChecked(True)
+        launch_layout.addWidget(self.launch_pandrator_checkbox)
+
+        # XTTS options
+        xtts_frame = QWidget()
+        xtts_layout = QHBoxLayout(xtts_frame)
+        xtts_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.launch_xtts_checkbox = QCheckBox("XTTS")
+        xtts_layout.addWidget(self.launch_xtts_checkbox)
+
+        self.xtts_cpu_launch_checkbox = QCheckBox("Use CPU")
+        xtts_layout.addWidget(self.xtts_cpu_launch_checkbox)
+
+        self.deepspeed_checkbox = QCheckBox("Turn off DeepSpeed")
+        xtts_layout.addWidget(self.deepspeed_checkbox)
+        xtts_layout.addStretch()
+
+        launch_layout.addWidget(xtts_frame)
+
+        # VoxCPM checkbox
+        self.launch_voxcpm_checkbox = QCheckBox("VoxCPM")
+        launch_layout.addWidget(self.launch_voxcpm_checkbox)
+
+        # FishS2 checkbox
+        self.launch_fishs2_checkbox = QCheckBox("FishS2")
+        launch_layout.addWidget(self.launch_fishs2_checkbox)
+
+        # Voxtral checkbox
+        self.launch_voxtral_checkbox = QCheckBox("Voxtral")
+        launch_layout.addWidget(self.launch_voxtral_checkbox)
+
+        # Kokoro options
+        kokoro_frame = QWidget()
+        kokoro_layout = QHBoxLayout(kokoro_frame)
+        kokoro_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.launch_kokoro_checkbox = QCheckBox("Kokoro")
+        kokoro_layout.addWidget(self.launch_kokoro_checkbox)
+
+        self.kokoro_cpu_launch_checkbox = QCheckBox("Use CPU")
+        kokoro_layout.addWidget(self.kokoro_cpu_launch_checkbox)
+        kokoro_layout.addStretch()
+
+        launch_layout.addWidget(kokoro_frame)
+
+        # Silero checkbox
+        self.launch_silero_checkbox = QCheckBox("Silero")
+        launch_layout.addWidget(self.launch_silero_checkbox)
+
+        # Chatterbox options
+        chatterbox_frame = QWidget()
+        chatterbox_layout = QHBoxLayout(chatterbox_frame)
+        chatterbox_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.launch_chatterbox_checkbox = QCheckBox("Chatterbox")
+        chatterbox_layout.addWidget(self.launch_chatterbox_checkbox)
+
+        self.chatterbox_cpu_launch_checkbox = QCheckBox("Use CPU")
+        chatterbox_layout.addWidget(self.chatterbox_cpu_launch_checkbox)
+        chatterbox_layout.addStretch()
+
+        launch_layout.addWidget(chatterbox_frame)
+
+        layout.addWidget(launch_group)
+
+        # Launch button
+        self.launch_button = QPushButton("Launch")
+        self.launch_button.clicked.connect(self.launch_apps)
+        self.launch_button.setMinimumHeight(40)
+        layout.addWidget(self.launch_button)
+
+        backend_runtime_group = QGroupBox("Backend Runtime")
+        backend_runtime_layout = QVBoxLayout(backend_runtime_group)
+
+        self.active_backend_value_label = QLabel("No backend running")
+        self.active_backend_value_label.setWordWrap(True)
+        backend_runtime_layout.addWidget(self.active_backend_value_label)
+
+        backend_runtime_hint_label = QLabel(
+            "Tip: Stop the running backend before starting another one to free RAM/VRAM. "
+            "Pandrator and your active session stay open."
+        )
+        backend_runtime_hint_label.setWordWrap(True)
+        backend_runtime_hint_label.setStyleSheet("color: #B8B8B8;")
+        backend_runtime_layout.addWidget(backend_runtime_hint_label)
+
+        backend_runtime_buttons_layout = QHBoxLayout()
+        self.stop_backend_button = QPushButton("Stop Running Backend")
+        self.stop_backend_button.clicked.connect(self.stop_running_backends)
+        backend_runtime_buttons_layout.addWidget(self.stop_backend_button)
+
+        self.refresh_backend_status_button = QPushButton("Refresh Status")
+        self.refresh_backend_status_button.clicked.connect(self.update_backend_runtime_controls)
+        backend_runtime_buttons_layout.addWidget(self.refresh_backend_status_button)
+        backend_runtime_buttons_layout.addStretch()
+
+        backend_runtime_layout.addLayout(backend_runtime_buttons_layout)
+        layout.addWidget(backend_runtime_group)
+
+        # Add stretch to push everything to the top
+        layout.addStretch()
+
+    def setup_logs_tab(self):
+        """Set up the Logs tab for realtime log viewing."""
+        layout = QVBoxLayout(self.logs_tab)
+
+        controls_layout = QHBoxLayout()
+
+        self.clear_log_view_button = QPushButton("Clear View")
+        self.clear_log_view_button.clicked.connect(self.clear_log_view)
+        controls_layout.addWidget(self.clear_log_view_button)
+
+        self.open_log_from_tab_button = QPushButton("Open Log File")
+        self.open_log_from_tab_button.clicked.connect(self.open_log_file)
+        self.open_log_from_tab_button.setEnabled(False)
+        controls_layout.addWidget(self.open_log_from_tab_button)
+
+        controls_layout.addStretch()
+        layout.addLayout(controls_layout)
+
+        self.log_view = QPlainTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self.log_view.setMaximumBlockCount(5000)
+        self.log_view.setPlaceholderText("Logs will appear here during install, update, and launch.")
+        self.log_view.setFont(QFont("Consolas", 10))
+        layout.addWidget(self.log_view)
+
+    def append_log_message(self, message):
+        if not hasattr(self, 'log_view'):
+            return
+
+        self.log_view.appendPlainText(message)
+        scrollbar = self.log_view.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    def clear_log_view(self):
+        if hasattr(self, 'log_view'):
+            self.log_view.clear()
+
+    def refresh_ui_state(self):
+        pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
+        config = self.load_install_config(pandrator_path, detect_rvc=True)
+
+        # Helper function to set widget state
+        def set_widget_state(widget, state, value=None):
+            widget.setEnabled(state)
+            if isinstance(widget, QCheckBox) and value is not None:
+                widget.setChecked(value)
+
+        # Pandrator
+        pandrator_installed = os.path.exists(pandrator_path)
+        set_widget_state(self.pandrator_checkbox, not pandrator_installed, False if pandrator_installed else True)
+        set_widget_state(self.launch_pandrator_checkbox, pandrator_installed, pandrator_installed)
+
+        # XTTS
+        xtts_support = config.get('xtts_support', False)
+        xtts_cuda_support = config.get('cuda_support', False)
+
+        # Disable XTTS checkboxes if XTTS is installed in any form
+        set_widget_state(self.xtts_checkbox, not xtts_support, False)
+        set_widget_state(self.xtts_cpu_checkbox, not xtts_support, False)
+        set_widget_state(self.launch_xtts_checkbox, xtts_support, False)
+
+        # Set CPU/GPU options based on XTTS installation
+        if xtts_support:
+            if xtts_cuda_support:
+                set_widget_state(self.xtts_cpu_launch_checkbox, True, False)
+                set_widget_state(self.deepspeed_checkbox, True, False)
+            else:
+                set_widget_state(self.xtts_cpu_launch_checkbox, True, True)
+                set_widget_state(self.deepspeed_checkbox, False, False)
+        else:
+            set_widget_state(self.xtts_cpu_launch_checkbox, False, False)
+            set_widget_state(self.deepspeed_checkbox, False, False)
+
+        # VoxCPM
+        voxcpm_support = config.get('voxcpm_support', False)
+        set_widget_state(self.voxcpm_checkbox, not voxcpm_support, False)
+        set_widget_state(self.launch_voxcpm_checkbox, voxcpm_support, False)
+
+        # FishS2
+        fishs2_support = config.get('fishs2_support', False)
+        set_widget_state(self.fishs2_checkbox, not fishs2_support, False)
+        set_widget_state(self.launch_fishs2_checkbox, fishs2_support, False)
+
+        # Voxtral
+        voxtral_support = config.get('voxtral_support', False)
+        set_widget_state(self.voxtral_checkbox, not voxtral_support, False)
+        set_widget_state(self.launch_voxtral_checkbox, voxtral_support, False)
+
+        # Kokoro
+        kokoro_support = config.get('kokoro_support', False)
+        kokoro_gpu_support = config.get(KOKORO_GPU_SUPPORT_CONFIG_FLAG, False)
+        set_widget_state(self.kokoro_checkbox, not kokoro_support, False)
+        set_widget_state(self.kokoro_cpu_checkbox, not kokoro_support, False)
+        set_widget_state(self.launch_kokoro_checkbox, kokoro_support, False)
+        if kokoro_support:
+            if kokoro_gpu_support:
+                set_widget_state(self.kokoro_cpu_launch_checkbox, True, False)
+            else:
+                set_widget_state(self.kokoro_cpu_launch_checkbox, False, True)
+        else:
+            set_widget_state(self.kokoro_cpu_launch_checkbox, False, False)
+
+        # Silero
+        silero_support = config.get('silero_support', False)
+        set_widget_state(self.silero_checkbox, not silero_support, False)
+        set_widget_state(self.launch_silero_checkbox, silero_support, False)
+
+        # Chatterbox
+        chatterbox_support = config.get('chatterbox_support', False)
+        chatterbox_gpu_support = config.get(CHATTERBOX_GPU_SUPPORT_CONFIG_FLAG, False)
+        set_widget_state(self.chatterbox_checkbox, not chatterbox_support, False)
+        set_widget_state(self.chatterbox_cpu_checkbox, not chatterbox_support, False)
+        set_widget_state(self.launch_chatterbox_checkbox, chatterbox_support, False)
+        if chatterbox_support:
+            if chatterbox_gpu_support:
+                set_widget_state(self.chatterbox_cpu_launch_checkbox, True, False)
+            else:
+                set_widget_state(self.chatterbox_cpu_launch_checkbox, False, True)
+        else:
+            set_widget_state(self.chatterbox_cpu_launch_checkbox, False, False)
+
+        # RVC
+        rvc_support = config.get('rvc_support', False)
+        set_widget_state(self.rvc_checkbox, not rvc_support, False)
+
+        # XTTS Fine-tuning
+        xtts_finetuning_support = config.get('xtts_finetuning_support', False)
+        set_widget_state(self.xtts_finetuning_checkbox, not xtts_finetuning_support, False)
+
+        # WhisperX
+        whisperx_support = config.get('whisperx_support', False)
+        if whisperx_support:
+            set_widget_state(self.whisperx_checkbox, False, False)
+        elif xtts_finetuning_support:
+            # XTTS Fine-tuning is installed
+            set_widget_state(self.whisperx_checkbox, False, False)
+        elif self.xtts_finetuning_checkbox.isChecked():
+            # XTTS Fine-tuning is not installed but selected
+            set_widget_state(self.whisperx_checkbox, False, True)
+        else:
+            set_widget_state(self.whisperx_checkbox, True, False)
+
+        # Update launch and install buttons state
+        self.launch_button.setEnabled(pandrator_installed)
+        self.update_install_button_state()
+        self.update_button.setEnabled(pandrator_installed)
+
+        self.update_backend_runtime_controls()
+
+    def bind_mutually_exclusive_install_options(self, primary_checkbox, secondary_checkbox):
+        primary_checkbox.stateChanged.connect(
+            lambda state, other=secondary_checkbox: self._handle_mutually_exclusive_install_option(
+                state,
+                other,
+            )
+        )
+        secondary_checkbox.stateChanged.connect(
+            lambda state, other=primary_checkbox: self._handle_mutually_exclusive_install_option(
+                state,
+                other,
+            )
+        )
+
+    def _handle_mutually_exclusive_install_option(self, state, other_checkbox):
+        if state != Qt.CheckState.Checked.value:
+            return
+
+        if other_checkbox.isChecked():
+            other_checkbox.blockSignals(True)
+            other_checkbox.setChecked(False)
+            other_checkbox.blockSignals(False)
+
+        self.update_install_button_state()
+
+    def update_install_button_state(self):
+        has_selected_component = any(
+            checkbox.isChecked() for checkbox in self.install_tab.findChildren(QCheckBox)
+        )
+        self.install_button.setEnabled(has_selected_component)
+
+    def update_whisperx_checkbox(self):
+        """Update WhisperX checkbox when XTTS Fine-tuning is toggled"""
+        installed_components = self.get_installed_components()
+        whisperx_support = installed_components.get('whisperx', False)
+        xtts_finetuning_support = installed_components.get('xtts_finetuning', False)
+
+        if whisperx_support:
+            self.whisperx_checkbox.setChecked(False)
+            self.whisperx_checkbox.setEnabled(False)
+        elif self.xtts_finetuning_checkbox.isChecked() and not xtts_finetuning_support:
+            self.whisperx_checkbox.setChecked(True)
+            self.whisperx_checkbox.setEnabled(False)
+        elif xtts_finetuning_support:
+            self.whisperx_checkbox.setChecked(False)
+            self.whisperx_checkbox.setEnabled(False)
+        else:
+            self.whisperx_checkbox.setEnabled(True)
+
+    def get_installed_components(self):
+        pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
+        config = self.load_install_config(pandrator_path, detect_rvc=True)
+
+        return {
+            'xtts': config.get('xtts_support', False),
+            'voxcpm': config.get('voxcpm_support', False),
+            'fishs2': config.get('fishs2_support', False),
+            'voxtral': config.get('voxtral_support', False),
+            'kokoro': config.get('kokoro_support', False),
+            'silero': config.get('silero_support', False),
+            'rvc': config.get('rvc_support', False),
+            'whisperx': config.get('whisperx_support', False),
+            'xtts_finetuning': config.get('xtts_finetuning_support', False),
+            'chatterbox': config.get('chatterbox_support', False)
+        }
+
+    def disable_buttons(self):
+        """Disable all buttons during processing"""
+        self.install_button.setEnabled(False)
+        self.update_button.setEnabled(False)
+        self.launch_button.setEnabled(False)
+        if hasattr(self, 'stop_backend_button'):
+            self.stop_backend_button.setEnabled(False)
+        if hasattr(self, 'refresh_backend_status_button'):
+            self.refresh_backend_status_button.setEnabled(False)
+
+        # Disable checkboxes in install tab
+        for child in self.install_tab.findChildren(QCheckBox):
+            child.setEnabled(False)
+
+        # Disable checkboxes in launch tab
+        for child in self.launch_tab.findChildren(QCheckBox):
+            child.setEnabled(False)
+
+    def enable_buttons(self):
+        """Re-enable buttons after processing"""
+        self.refresh_ui_state()
+
+    def update_progress(self, value):
+        """Update progress bar value (0.0 to 1.0)"""
+        self.progress_bar.setValue(int(value * 100))
+
+    def update_status(self, text):
+        """Update status label text"""
+        self.status_label.setText(text)
+        logging.info(text)
+
+    def notify_error(self, title, message):
+        QMessageBox.critical(self, title, message)
+
+    def notify_warning(self, title, message):
+        def show_message():
+            QMessageBox.warning(self, title, message)
+
+        app = QApplication.instance()
+        if app is not None and QThread.currentThread() is not app.thread():
+            QTimer.singleShot(0, show_message)
+            return
+        show_message()
+
+    def create_gui_log_handler(self):
+        return QtLogHandler(self.log_emitter)
+
+    def snapshot_install_selection(self):
+        """Read installation choices on the GUI thread before work starts."""
+        return InstallSelection(
+            pandrator=self.pandrator_checkbox.isChecked(),
+            xtts=self.xtts_checkbox.isChecked(),
+            xtts_cpu=self.xtts_cpu_checkbox.isChecked(),
+            voxcpm=self.voxcpm_checkbox.isChecked(),
+            fishs2=self.fishs2_checkbox.isChecked(),
+            silero=self.silero_checkbox.isChecked(),
+            voxtral=self.voxtral_checkbox.isChecked(),
+            kokoro=self.kokoro_checkbox.isChecked(),
+            kokoro_cpu=self.kokoro_cpu_checkbox.isChecked(),
+            rvc=self.rvc_checkbox.isChecked(),
+            whisperx=self.whisperx_checkbox.isChecked(),
+            xtts_finetuning=self.xtts_finetuning_checkbox.isChecked(),
+            chatterbox=self.chatterbox_checkbox.isChecked(),
+            chatterbox_cpu=self.chatterbox_cpu_checkbox.isChecked(),
+        )
+
+    def apply_install_selection(self, selection):
+        """Reflect a typed installation selection in the GUI."""
+        self.pandrator_checkbox.setChecked(selection.pandrator)
+        for component in selection.selected_components():
+            getattr(self, f"{component}_checkbox").setChecked(True)
+        self.update_whisperx_checkbox()
+
+    def snapshot_launch_selection(self):
+        """Read launch choices on the GUI thread before work starts."""
+        return LaunchSelection(
+            pandrator=self.launch_pandrator_checkbox.isChecked(),
+            xtts=self.launch_xtts_checkbox.isChecked(),
+            disable_deepspeed=self.deepspeed_checkbox.isChecked(),
+            xtts_cpu=self.xtts_cpu_launch_checkbox.isChecked(),
+            voxcpm=self.launch_voxcpm_checkbox.isChecked(),
+            fishs2=self.launch_fishs2_checkbox.isChecked(),
+            voxtral=self.launch_voxtral_checkbox.isChecked(),
+            kokoro=self.launch_kokoro_checkbox.isChecked(),
+            kokoro_cpu=self.kokoro_cpu_launch_checkbox.isChecked(),
+            silero=self.launch_silero_checkbox.isChecked(),
+            chatterbox=self.launch_chatterbox_checkbox.isChecked(),
+            chatterbox_cpu=self.chatterbox_cpu_launch_checkbox.isChecked(),
+        )

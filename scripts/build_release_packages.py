@@ -15,67 +15,25 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, Mapping, Sequence
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
-PACKAGING_LAYOUT_FILENAME = "packaging_layout.json"
-INSTALLER_STATE_FILENAME = "installer_state.json"
-KOKORO_ENV_NAME = "kokoro_api_server_installer"
-
-DEFAULT_CONFIG_FLAGS = (
-    "cuda_support",
-    "xtts_support",
-    "silero_support",
-    "voxtral_support",
-    "kokoro_support",
-    "kokoro_gpu_support",
-    "whisperx_support",
-    "xtts_finetuning_support",
-    "rvc_support",
-    "voxcpm_support",
-    "fishs2_support",
-)
-
-DEFAULT_SHARED_PATHS = (
-    "Pandrator",
-    "Subdub",
-    "bin",
-    "Calibre Portable",
-    ".pixi-home",
-    "cache",
-    "envs/pandrator_installer",
-    "config.json",
-    INSTALLER_STATE_FILENAME,
+from pandrator_installer.catalog import (  # noqa: E402
+    COMPONENTS,
+    PACKAGING_COMPONENT_PATHS,
+    PACKAGING_CONFIG_FLAGS,
+    PACKAGING_EXCLUDED_FILE_PREFIXES,
     PACKAGING_LAYOUT_FILENAME,
+    PACKAGING_SHARED_PATHS,
+    RELEASE_COMPONENT_KEYS,
 )
 
-DEFAULT_EXCLUDED_FILE_PREFIXES = (
-    "pandrator_state.sqlite3",
-)
+DEFAULT_CONFIG_FLAGS = PACKAGING_CONFIG_FLAGS
+DEFAULT_SHARED_PATHS = PACKAGING_SHARED_PATHS
+DEFAULT_EXCLUDED_FILE_PREFIXES = PACKAGING_EXCLUDED_FILE_PREFIXES
 ACTIVE_EXCLUDED_FILE_PREFIXES = tuple(DEFAULT_EXCLUDED_FILE_PREFIXES)
-
-DEFAULT_COMPONENT_PATHS = {
-    "xtts": ("xtts2_api",),
-    "voxtral": ("voxtral-fastapi",),
-    "kokoro": (
-        "Kokoro-FastAPI",
-        f"envs/{KOKORO_ENV_NAME}",
-    ),
-    "silero": ("envs/silero_api_server_installer",),
-    "whisperx": ("envs/whisperx_installer",),
-    "xtts_finetuning": (
-        "easy_xtts_trainer",
-        "envs/easy_xtts_trainer",
-    ),
-    "voxcpm": ("voxcpm_fastapi",),
-    "fishs2": ("fishs2-cpp-fastapi",),
-}
-
-@dataclass(frozen=True)
-class ModuleDefinition:
-    key: str
-    config_flag: str | None
-    paths: tuple[str, ...]
-    markers: tuple[str, ...]
-    dependencies: tuple[str, ...] = ()
+DEFAULT_COMPONENT_PATHS = PACKAGING_COMPONENT_PATHS
 
 
 @dataclass(frozen=True)
@@ -88,85 +46,8 @@ class BlockDefinition:
 
 
 MODULES = {
-    "kokoro": ModuleDefinition(
-        key="kokoro",
-        config_flag="kokoro_support",
-        paths=(
-            "Kokoro-FastAPI",
-            f"envs/{KOKORO_ENV_NAME}",
-        ),
-        markers=(
-            "Kokoro-FastAPI/api/src/main.py",
-            f"envs/{KOKORO_ENV_NAME}/pixi.toml",
-        ),
-    ),
-    "kokoro_cpu": ModuleDefinition(
-        key="kokoro_cpu",
-        config_flag="kokoro_support",
-        paths=(
-            "Kokoro-FastAPI",
-            f"envs/{KOKORO_ENV_NAME}",
-        ),
-        markers=(
-            "Kokoro-FastAPI/api/src/main.py",
-            f"envs/{KOKORO_ENV_NAME}/pixi.toml",
-        ),
-    ),
-    "voxtral": ModuleDefinition(
-        key="voxtral",
-        config_flag="voxtral_support",
-        paths=("voxtral-fastapi",),
-        markers=("voxtral-fastapi/run.ps1",),
-    ),
-    "voxcpm": ModuleDefinition(
-        key="voxcpm",
-        config_flag="voxcpm_support",
-        paths=("voxcpm_fastapi",),
-        markers=("voxcpm_fastapi/run.bat",),
-    ),
-    "fishs2": ModuleDefinition(
-        key="fishs2",
-        config_flag="fishs2_support",
-        paths=("fishs2-cpp-fastapi",),
-        markers=("fishs2-cpp-fastapi/run.bat",),
-    ),
-    "xtts": ModuleDefinition(
-        key="xtts",
-        config_flag="xtts_support",
-        paths=("xtts2_api",),
-        markers=("xtts2_api/run.bat",),
-    ),
-    "silero": ModuleDefinition(
-        key="silero",
-        config_flag="silero_support",
-        paths=("envs/silero_api_server_installer",),
-        markers=("envs/silero_api_server_installer/pixi.toml",),
-    ),
-    "whisperx": ModuleDefinition(
-        key="whisperx",
-        config_flag="whisperx_support",
-        paths=("envs/whisperx_installer",),
-        markers=("envs/whisperx_installer/pixi.toml",),
-    ),
-    "xtts_finetuning": ModuleDefinition(
-        key="xtts_finetuning",
-        config_flag="xtts_finetuning_support",
-        paths=(
-            "easy_xtts_trainer",
-            "envs/easy_xtts_trainer",
-        ),
-        markers=(
-            "easy_xtts_trainer/requirements.txt",
-            "envs/easy_xtts_trainer/pixi.toml",
-        ),
-        dependencies=("whisperx", "xtts"),
-    ),
-    "rvc": ModuleDefinition(
-        key="rvc",
-        config_flag="rvc_support",
-        paths=(),  # Installed directly in core env
-        markers=(),
-    ),
+    key: COMPONENTS[key]
+    for key in (*RELEASE_COMPONENT_KEYS, "kokoro_cpu")
 }
 
 PRESETS = {
@@ -183,7 +64,7 @@ PRESETS = {
     "voxtral_rest": ("voxtral", "xtts_finetuning", "rvc"),
     "voxtral_plus_rest": ("voxtral", "xtts_finetuning", "rvc"),
 }
-ALL_MODULE_KEYS = tuple(key for key in MODULES.keys() if key != "kokoro_cpu")
+ALL_MODULE_KEYS = RELEASE_COMPONENT_KEYS
 
 
 def normalize_relative_path(path: str) -> str:
@@ -420,7 +301,7 @@ def prepare_tailored_source(
             if not (install_root / Path(normalize_relative_path(marker))).exists():
                 has_valid_source = False
                 break
-        
+
         if has_valid_source:
             for component in components:
                 module = MODULES[component]

@@ -87,6 +87,207 @@ def normalize_punctuation(text: str) -> str:
     text = text.replace('…', '...')
     return text
 
+
+# ---------------------------------------------------------------------------
+# All-caps normalization
+# ---------------------------------------------------------------------------
+
+# Words strictly longer than this are "anchor" words (stylistic caps) in body text.
+# Words of this length or shorter are assumed to be acronyms/abbreviations.
+_CAPS_ACRONYM_MAX_LEN: int = 4
+
+# Lower threshold applied to all-caps-only lines (chapter titles, play-script
+# speaker cues, photo captions). Catches short proper names like OLGA or ANYA.
+_CAPS_HEADING_MAX_LEN: int = 3
+
+# Known acronyms that must never be title-cased regardless of length.
+_CAPS_KNOWN_ACRONYMS: frozenset = frozenset({
+    # Countries / intergovernmental
+    "USA", "USSR", "UK", "EU", "UN", "NATO", "WHO", "IMF", "WTO",
+    "UNESCO", "UNICEF", "UNHCR", "UNRWA", "IAEA", "OECD", "OPEC", "NAFTA",
+    "INTERPOL",
+    # Intelligence / law enforcement
+    "FBI", "CIA", "NSA", "MI5", "MI6", "KGB", "CDC", "FDA", "EPA",
+    "IRS", "DOD", "DOJ",
+    # Tech / web
+    "HTML", "HTTP", "HTTPS", "JSON", "XML", "API", "URL", "ISBN", "PDF",
+    "CPU", "GPU", "RAM", "ROM", "USB", "TCP", "IP", "DNS", "FTP", "SSH",
+    # Medical / science
+    "PTSD", "ADHD", "AIDS", "HIV", "DNA", "RNA", "MRI", "ICU",
+    # Physics / engineering (5-char words that would otherwise become anchors)
+    "LASER", "RADAR", "SONAR", "LIDAR",
+    # Common initialisms
+    "ASAP", "RSVP", "FAQ", "OK", "AM", "PM", "BC", "AD", "VS",
+    "AKA", "ETA", "ETC", "BTW", "FYI", "DIY", "ESP", "IQ",
+    # Military
+    "HQ", "POW", "MIA", "KIA", "AWOL", "NCO",
+    # Religious / other
+    "YHWH",
+})
+
+# Connector / article words that are lowercased when inside a normalized run.
+_CAPS_CONNECTORS: frozenset = frozenset({
+    "A", "AN", "THE", "AND", "OR", "NOR", "BUT", "FOR", "SO", "YET",
+    "OF", "IN", "ON", "AT", "TO", "BY", "AS", "UP", "IT", "IS",
+    "WITH", "FROM", "INTO", "ONTO", "UPON", "OVER", "UNDER", "ABOUT",
+    "BETWEEN", "AMONG", "THROUGH", "DURING", "BEFORE", "AFTER",
+    "ABOVE", "BELOW", "AGAINST",
+    "DO",  # Polish preposition "do" (to / of)
+})
+
+# Roman numerals — standalone matches only.
+_CAPS_ROMAN_RE = re.compile(
+    r"^M{0,4}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})$",
+    re.IGNORECASE,
+)
+
+
+def _is_all_caps_context(line: str) -> bool:
+    """Return True if every alphabetic word in *line* is all-uppercase.
+
+    Used to detect headings / speaker-cue lines where the lower threshold is safe.
+    """
+    alpha_words = [w for w in line.split() if w.isalpha()]
+    return bool(alpha_words) and all(w.isupper() for w in alpha_words)
+
+
+def _normalize_caps_run(words: list, max_len: int) -> tuple:
+    """Decide how to normalize a contiguous run of ALL-CAPS tokens.
+
+    An *anchor* word is one whose length exceeds *max_len*, is not a known
+    acronym, and is not a Roman numeral.  If the run contains at least one
+    anchor the whole run is eligible for normalization:
+
+    * Anchor words            → title-cased (capitalize()).
+    * Connector words         → lowercased.
+    * Short non-connector words adjacent to an anchor → title-cased.
+    * Known acronyms / Roman numerals → always left unchanged.
+
+    Returns (new_words, changed_flag).
+    """
+    anchor_positions: set = set()
+    for i, w in enumerate(words):
+        if (
+            len(w) > max_len
+            and w not in _CAPS_KNOWN_ACRONYMS
+            and not _CAPS_ROMAN_RE.fullmatch(w)
+        ):
+            anchor_positions.add(i)
+
+    if not anchor_positions:
+        return words, False
+
+    result: list = []
+    changed = False
+
+    for i, w in enumerate(words):
+        if w in _CAPS_KNOWN_ACRONYMS:
+            result.append(w)
+            continue
+        if _CAPS_ROMAN_RE.fullmatch(w):
+            result.append(w)
+            continue
+        if i in anchor_positions:
+            tc = w.capitalize()
+            result.append(tc)
+            if tc != w:
+                changed = True
+            continue
+        # Short word
+        if w in _CAPS_CONNECTORS:
+            lc = w.lower()
+            result.append(lc)
+            if lc != w:
+                changed = True
+        elif (i - 1) in anchor_positions or (i + 1) in anchor_positions:
+            tc = w.capitalize()
+            result.append(tc)
+            if tc != w:
+                changed = True
+        else:
+            result.append(w)
+
+    return result, changed
+
+
+def _normalize_caps_line(line: str, max_len: int) -> str:
+    """Find and normalize runs of ALL-CAPS tokens in a single line.
+
+    A *run* is a maximal sequence of [A-Z]{2,} tokens separated only by
+    whitespace.  Non-whitespace characters break the run.
+    """
+    segments: list = []
+    pos = 0
+    for m in re.finditer(r"[A-Z]{2,}", line):
+        if m.start() > pos:
+            segments.append((pos, m.start(), False))
+        segments.append((m.start(), m.end(), True))
+        pos = m.end()
+    if pos < len(line):
+        segments.append((pos, len(line), False))
+
+    if not segments:
+        return line
+
+    # Group caps tokens into runs; pure-whitespace gaps are allowed inside a run.
+    runs: list = []
+    current_run: list = []
+    for seg_start, seg_end, is_caps in segments:
+        if is_caps:
+            current_run.append((seg_start, seg_end))
+        elif line[seg_start:seg_end].strip() == "":
+            pass  # whitespace gap — run continues
+        else:
+            if current_run:
+                runs.append(current_run)
+                current_run = []
+    if current_run:
+        runs.append(current_run)
+
+    if not runs:
+        return line
+
+    # Apply replacements in reverse order to keep earlier offsets valid.
+    replacements: list = []
+    for run in runs:
+        words = [line[s:e] for s, e in run]
+        new_words, changed = _normalize_caps_run(words, max_len)
+        if changed:
+            new_run_text = ""
+            for i, (new_word, (s, e)) in enumerate(zip(new_words, run)):
+                if i > 0:
+                    new_run_text += line[run[i - 1][1]:s]
+                new_run_text += new_word
+            replacements.append((run[0][0], run[-1][1], new_run_text))
+
+    rebuilt = line
+    for start, end, replacement in sorted(replacements, reverse=True):
+        rebuilt = rebuilt[:start] + replacement + rebuilt[end:]
+    return rebuilt
+
+
+def normalize_all_caps_words(text: str) -> str:
+    """Normalize stylistic ALL-CAPS words in *text* to title-case.
+
+    Operates line-by-line.  For lines that consist entirely of uppercase words
+    (chapter titles, speaker cues, photo labels) a lower word-length threshold
+    is applied, catching short proper names like OLGA or ANYA.  For lines with
+    mixed-case context the conservative threshold protects common short acronyms
+    (NATO, FIFA, YMCA …).
+
+    Known acronyms and Roman numerals are always left unchanged.
+    """
+    result_lines = []
+    for line in text.split("\n"):
+        # Strip the chapter marker before context detection.
+        check_line = line
+        if check_line.startswith("[[Chapter]]"):
+            check_line = check_line[len("[[Chapter]]"):].strip()
+        max_len = _CAPS_HEADING_MAX_LEN if _is_all_caps_context(check_line) else _CAPS_ACRONYM_MAX_LEN
+        result_lines.append(_normalize_caps_line(line, max_len))
+    return "\n".join(result_lines)
+
+
 def preprocess_text(text: str, settings: dict) -> list[dict]:
     """
     Main entry point for text preprocessing. Chooses parallel or sequential.
@@ -138,6 +339,7 @@ def _process_chunk(chunk: str, settings: dict) -> list[dict]:
     enable_sentence_appending = settings.get('enable_sentence_appending', True)
     remove_diacritics = settings.get('remove_diacritics', False)
     remove_quotation_marks = settings.get('remove_quotation_marks', False)
+    normalize_all_caps = settings.get('normalize_all_caps', False)
     tts_service = settings.get('tts_service', 'XTTS')
 
 
@@ -163,6 +365,9 @@ def _process_chunk(chunk: str, settings: dict) -> list[dict]:
 
     if remove_quotation_marks:
         chunk = strip_quotation_marks(chunk)
+
+    if normalize_all_caps:
+        chunk = normalize_all_caps_words(chunk)
 
     chunk = re.sub(r'(^|\n+)([^\n.!?]+)(?=\n+|$)', r'\1\2.', chunk)
     sentences = split_into_sentences(chunk, language, tts_service)

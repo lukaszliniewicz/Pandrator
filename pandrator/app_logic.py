@@ -804,7 +804,8 @@ class AppLogic(QObject):
             "remove_quotation_marks": self.state.text_processing.remove_quotation_marks,
             "tts_service": self.state.tts.service,
             "remove_footnotes": self.state.text_processing.remove_footnotes,
-            "filter_citations": self.state.text_processing.filter_citations
+            "filter_citations": self.state.text_processing.filter_citations,
+            "normalize_all_caps": self.state.text_processing.normalize_all_caps,
         }
 
         saved_settings_str = self.state.metadata.get("preprocessing_settings")
@@ -3188,7 +3189,8 @@ class AppLogic(QObject):
             "remove_quotation_marks": self.state.text_processing.remove_quotation_marks,
             "tts_service": self.state.tts.service,
             "remove_footnotes": self.state.text_processing.remove_footnotes,
-            "filter_citations": self.state.text_processing.filter_citations
+            "filter_citations": self.state.text_processing.filter_citations,
+            "normalize_all_caps": self.state.text_processing.normalize_all_caps,
         }
         
         self._set_session_activity(
