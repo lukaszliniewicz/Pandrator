@@ -920,7 +920,9 @@ class SessionTab(QWidget):
                     provider_id,
                 )
 
-        if self.cloud_provider_combo.count() > 0:
+        if self.cloud_provider_combo.count() == 0:
+            self.cloud_provider_combo.addItem("No custom providers configured", "")
+        else:
             target_index = self.cloud_provider_combo.findData(selected_provider_id)
             if target_index < 0:
                 target_index = 0
@@ -1151,10 +1153,11 @@ class SessionTab(QWidget):
         is_magpie = state.tts.service == "Magpie"
         is_chatterbox = state.tts.service == "Chatterbox"
         is_cloud_tts = state.tts.service in {
-            "OpenAI-Compatible",
+            "Custom",
             "OpenAI",
-            "Gemini",
+            "Google Gemini",
         }
+        is_custom_cloud_tts = state.tts.service == "Custom"
         is_model_based_tts = is_xtts or is_voxcpm or is_fishs2 or is_voxtral or is_kokoro or is_magpie or is_cloud_tts or is_chatterbox
         show_xtts_advanced_settings = self.logic.should_show_xtts_advanced_settings()
         show_voxcpm_advanced_settings = is_voxcpm
@@ -1268,9 +1271,9 @@ class SessionTab(QWidget):
             supports_prebuilt_voice_catalog or supports_voice_library_upload
         )
 
-        self.cloud_provider_label.setVisible(is_cloud_tts)
-        self.cloud_provider_combo.setVisible(is_cloud_tts)
-        self.cloud_provider_hint.setVisible(is_cloud_tts)
+        self.cloud_provider_label.setVisible(is_custom_cloud_tts)
+        self.cloud_provider_combo.setVisible(is_custom_cloud_tts)
+        self.cloud_provider_hint.setVisible(is_custom_cloud_tts)
         self.openai_audio_instructions_label.setVisible(show_openai_instructions)
         self.openai_audio_instructions_edit.setVisible(show_openai_instructions)
         self.adv_tts_apply_button.setVisible(is_xtts)
@@ -1819,7 +1822,7 @@ class SessionTab(QWidget):
         if service == "Magpie":
             from ...constants import MAGPIE_LANGUAGES
             return list(MAGPIE_LANGUAGES)
-        if service in {"XTTS", "VoxCPM", "OpenAI", "Gemini", "OpenAI-Compatible", "Chatterbox"}:
+        if service in {"XTTS", "VoxCPM", "OpenAI", "Google Gemini", "Gemini", "Custom", "OpenAI-Compatible", "Chatterbox"}:
             return XTTS_LANGUAGES
         return []
 
@@ -2205,11 +2208,7 @@ class SessionTab(QWidget):
         )
 
     def _on_tts_service_changed(self, service: str):
-        normalized_service = service
-        if service in {"OpenAI", "Gemini"}:
-            normalized_service = "OpenAI-Compatible"
-
-        self.logic.state.tts.service = normalized_service
+        self.logic.state.tts.service = service
         self.logic.state.tts.tts_models = []
         self.logic.state.tts.tts_speakers = []
         self.logic.state.tts.xtts_model = ""
@@ -2225,24 +2224,22 @@ class SessionTab(QWidget):
             "Chatterbox": 350,
             "Magpie": 300,
             "Silero": 200,
-            "OpenAI-Compatible": 200,
+            "OpenAI": 200,
+            "Google Gemini": 200,
+            "Custom": 200,
         }
-        new_len = service_defaults.get(normalized_service, 200)
+        new_len = service_defaults.get(service, 200)
         self.logic.state.text_processing.max_sentence_length = new_len
 
-        if service == "OpenAI":
-            self.logic.state.tts.openai_audio_endpoint = "openai"
-        elif service == "Gemini":
-            self.logic.state.tts.openai_audio_endpoint = "gemini"
-        elif normalized_service == "OpenAI-Compatible":
+        if service == "Custom":
             selected_provider_id = str(
                 self.cloud_provider_combo.currentData()
                 or self.logic.state.tts.openai_audio_endpoint
-                or "openai"
+                or ""
             )
             self.logic.state.tts.openai_audio_endpoint = selected_provider_id
 
-        if normalized_service == "OpenAI-Compatible":
+        if service in {"OpenAI", "Google Gemini", "Custom"}:
             self.logic.populate_cloud_tts_catalogs(
                 use_remote=False,
                 provider_id=self.logic.state.tts.openai_audio_endpoint,
@@ -2258,7 +2255,7 @@ class SessionTab(QWidget):
             return
 
         self.logic.state.tts.openai_audio_endpoint = selected_provider_id
-        if self.logic.state.tts.service == "OpenAI-Compatible":
+        if self.logic.state.tts.service == "Custom":
             self.logic.state.tts.tts_models = []
             self.logic.state.tts.tts_speakers = []
             self.logic.state.tts.xtts_model = ""

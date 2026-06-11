@@ -242,8 +242,10 @@ OPENAI_AUDIO_BASE_URL = "https://api.openai.com/v1"
 GEMINI_AUDIO_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 
 OPENAI_SERVICE = "OpenAI"
-GEMINI_SERVICE = "Gemini"
-OPENAI_COMPAT_SERVICE = "OpenAI-Compatible"
+GEMINI_SERVICE = "Google Gemini"
+LEGACY_GEMINI_SERVICE = "Gemini"
+OPENAI_COMPAT_SERVICE = "Custom"
+LEGACY_OPENAI_COMPAT_SERVICE = "OpenAI-Compatible"
 
 OPENAI_PROVIDER = "openai"
 GEMINI_PROVIDER = "gemini"
@@ -328,8 +330,40 @@ GEMINI_MODEL_ALIASES = {
     "gemini-2.5-pro-tts": "gemini-2.5-pro-preview-tts",
 }
 
-BUILTIN_PROVIDER_ORDER = [OPENAI_PROVIDER, GEMINI_PROVIDER]
-BUILTIN_PROVIDER_IDS = {OPENAI_PROVIDER, GEMINI_PROVIDER}
+FIRST_CLASS_SERVICE_ORDER = [
+    "xtts",
+    "voxcpm",
+    "fishs2",
+    "voxtral",
+    "kokoro",
+    "magpie",
+    "silero",
+    "chatterbox",
+    OPENAI_PROVIDER,
+    GEMINI_PROVIDER,
+]
+FIRST_CLASS_SERVICE_IDS = set(FIRST_CLASS_SERVICE_ORDER)
+FIRST_CLASS_SERVICE_NAMES = {
+    "xtts": "XTTS",
+    "voxcpm": "VoxCPM",
+    "fishs2": "FishS2",
+    "voxtral": "Voxtral",
+    "kokoro": "Kokoro",
+    "magpie": "Magpie",
+    "silero": "Silero",
+    "chatterbox": "Chatterbox",
+    OPENAI_PROVIDER: OPENAI_SERVICE,
+    GEMINI_PROVIDER: GEMINI_SERVICE,
+}
+SERVICE_ID_ALIASES = {
+    "voxcpm2": "voxcpm",
+    "voxcpm-2": "voxcpm",
+    "fish-s2": "fishs2",
+    "fishs2-cpp": "fishs2",
+    "google": GEMINI_PROVIDER,
+    "google-gemini": GEMINI_PROVIDER,
+    "gemini": GEMINI_PROVIDER,
+}
 PREBUILT_VOICE_PROVIDER_FIELD = "supports_prebuilt_voices"
 
 
@@ -378,37 +412,241 @@ def _parse_voice_list(raw_voices, provider: str) -> list[str]:
     return _dedupe_ordered(voices)
 
 
-def _default_provider_configs() -> list[dict[str, object]]:
-    return [
-        {
-            "id": OPENAI_PROVIDER,
-            "name": "OpenAI",
-            "provider": OPENAI_PROVIDER,
-            "api_base": OPENAI_AUDIO_BASE_URL,
-            "api_key_env": "OPENAI_API_KEY",
-            "api_key": "",
-            "is_custom": False,
-            "models": list(OPENAI_TTS_MODELS),
-            "default_model": OPENAI_AUDIO_DEFAULT_MODEL,
-            "voices": list(OPENAI_TTS_VOICES),
-            "default_voice": OPENAI_AUDIO_DEFAULT_VOICE,
-            PREBUILT_VOICE_PROVIDER_FIELD: True,
-        },
-        {
-            "id": GEMINI_PROVIDER,
-            "name": "Gemini",
-            "provider": GEMINI_PROVIDER,
-            "api_base": GEMINI_AUDIO_BASE_URL,
-            "api_key_env": "GEMINI_API_KEY",
-            "api_key": "",
-            "is_custom": False,
-            "models": list(GEMINI_TTS_MODELS),
-            "default_model": GEMINI_AUDIO_DEFAULT_MODEL,
-            "voices": list(GEMINI_TTS_VOICES),
-            "default_voice": GEMINI_AUDIO_DEFAULT_VOICE,
-            PREBUILT_VOICE_PROVIDER_FIELD: True,
-        },
+def _default_service_configs() -> list[dict[str, object]]:
+    local_services = [
+        ("xtts", XTTS_API_BASE_URL),
+        ("voxcpm", VOXCPM_API_BASE_URL),
+        ("fishs2", FISHS2_API_BASE_URL),
+        ("voxtral", VOXTRAL_API_BASE_URL),
+        ("kokoro", KOKORO_API_BASE_URL),
+        ("magpie", MAGPIE_API_BASE_URL),
+        ("silero", SILERO_API_BASE_URL),
+        ("chatterbox", CHATTERBOX_API_BASE_URL),
     ]
+    configs: list[dict[str, object]] = [
+        {
+            "id": service_id,
+            "name": FIRST_CLASS_SERVICE_NAMES[service_id],
+            "kind": "local",
+            "api_base": api_base,
+        }
+        for service_id, api_base in local_services
+    ]
+    configs.extend(
+        [
+            {
+                "id": OPENAI_PROVIDER,
+                "name": "OpenAI",
+                "kind": "commercial",
+                "provider": OPENAI_PROVIDER,
+                "api_base": OPENAI_AUDIO_BASE_URL,
+                "api_key_env": "OPENAI_API_KEY",
+                "api_key": "",
+                "is_custom": False,
+                "models": list(OPENAI_TTS_MODELS),
+                "default_model": OPENAI_AUDIO_DEFAULT_MODEL,
+                "voices": list(OPENAI_TTS_VOICES),
+                "default_voice": OPENAI_AUDIO_DEFAULT_VOICE,
+                PREBUILT_VOICE_PROVIDER_FIELD: True,
+            },
+            {
+                "id": GEMINI_PROVIDER,
+                "name": GEMINI_SERVICE,
+                "kind": "commercial",
+                "provider": GEMINI_PROVIDER,
+                "api_base": GEMINI_AUDIO_BASE_URL,
+                "api_key_env": "GEMINI_API_KEY",
+                "api_key": "",
+                "is_custom": False,
+                "models": list(GEMINI_TTS_MODELS),
+                "default_model": GEMINI_AUDIO_DEFAULT_MODEL,
+                "voices": list(GEMINI_TTS_VOICES),
+                "default_voice": GEMINI_AUDIO_DEFAULT_VOICE,
+                PREBUILT_VOICE_PROVIDER_FIELD: True,
+            },
+        ]
+    )
+    return configs
+
+
+def _normalize_service_id(raw_value: str | None) -> str:
+    service_id = _normalize_provider_id(raw_value)
+    return SERVICE_ID_ALIASES.get(service_id, service_id)
+
+
+def get_first_class_service_name(raw_value: str | None) -> str:
+    service_id = _normalize_service_id(raw_value)
+    return FIRST_CLASS_SERVICE_NAMES.get(service_id, "")
+
+
+def _merge_service_config(
+    base_record: dict[str, object],
+    raw_record: dict,
+) -> dict[str, object]:
+    record = copy.deepcopy(base_record)
+    service_id = str(record["id"])
+    api_base = _normalize_base_url(
+        raw_record.get("api_base") or raw_record.get("base_url") or "",
+        "",
+    )
+    if api_base:
+        record["api_base"] = api_base
+
+    if record.get("kind") != "commercial":
+        return record
+
+    provider_key = str(record.get("provider") or service_id)
+    record["api_key_env"] = str(
+        raw_record.get("api_key_env") or record.get("api_key_env") or ""
+    ).strip()
+    record["api_key"] = str(raw_record.get("api_key") or "").strip()
+
+    models = _parse_model_list(raw_record.get("models", []), provider_key)
+    if models:
+        record["models"] = models
+    default_model = _normalize_model_for_provider(
+        str(raw_record.get("default_model") or "").strip(),
+        provider_key,
+    )
+    if default_model:
+        record["default_model"] = default_model
+        if default_model not in record["models"]:
+            record["models"].insert(0, default_model)
+
+    voices = _parse_voice_list(raw_record.get("voices", []), provider_key)
+    if voices:
+        record["voices"] = voices
+    default_voice = _normalize_voice_for_provider(
+        str(raw_record.get("default_voice") or "").strip(),
+        provider_key,
+    )
+    if default_voice:
+        record["default_voice"] = default_voice
+        if default_voice not in record["voices"]:
+            record["voices"].insert(0, default_voice)
+
+    return record
+
+
+def get_service_configs(tts_settings) -> list[dict[str, object]]:
+    services = {
+        str(item["id"]): copy.deepcopy(item)
+        for item in _default_service_configs()
+    }
+
+    legacy_raw_json = str(_read_setting(tts_settings, "openai_audio_endpoints_json", "") or "")
+    for legacy_record in _legacy_endpoints_to_provider_configs(legacy_raw_json):
+        service_id = _normalize_service_id(
+            legacy_record.get("id") or legacy_record.get("name")
+        )
+        if service_id not in services:
+            continue
+        services[service_id] = _merge_service_config(
+            services[service_id],
+            legacy_record,
+        )
+
+    raw_sources = [
+        _read_setting(tts_settings, "provider_configs", []),
+        _read_setting(tts_settings, "service_configs", []),
+    ]
+    for raw_configs in raw_sources:
+        if not isinstance(raw_configs, list):
+            continue
+        for raw_record in raw_configs:
+            if not isinstance(raw_record, dict):
+                continue
+            service_id = _normalize_service_id(
+                raw_record.get("id") or raw_record.get("name")
+            )
+            if service_id not in services:
+                continue
+            services[service_id] = _merge_service_config(
+                services[service_id],
+                raw_record,
+            )
+
+    return [
+        services[service_id]
+        for service_id in FIRST_CLASS_SERVICE_ORDER
+        if service_id in services
+    ]
+
+
+def get_service_config(tts_settings, service_name_or_id: str) -> dict[str, object] | None:
+    service_id = _normalize_service_id(service_name_or_id)
+    for service in get_service_configs(tts_settings):
+        if str(service.get("id") or "") == service_id:
+            return service
+    return None
+
+
+def get_service_base_url(tts_settings, service_name_or_id: str) -> str:
+    service = get_service_config(tts_settings, service_name_or_id)
+    if service is None:
+        return ""
+    return str(service.get("api_base") or "").strip().rstrip("/")
+
+
+def resolve_service_base_url(tts_settings, service_name_or_id: str) -> str:
+    requested_service = get_first_class_service_name(service_name_or_id)
+    active_service = get_first_class_service_name(
+        _read_setting(tts_settings, "service", "")
+    )
+    if (
+        requested_service
+        and requested_service == active_service
+        and _coerce_bool(_read_setting(tts_settings, "use_external_server", False), False)
+    ):
+        external_url = _normalize_base_url(
+            _read_setting(tts_settings, "external_server_url", ""),
+            "",
+        )
+        if external_url:
+            return external_url
+
+    return get_service_base_url(tts_settings, service_name_or_id)
+
+
+def save_service_config(
+    tts_settings,
+    service_name_or_id: str,
+    api_base: str,
+    api_key: str = "",
+    models: list[str] | str | None = None,
+    voices: list[str] | str | None = None,
+) -> tuple[bool, list[dict[str, object]], str]:
+    service_id = _normalize_service_id(service_name_or_id)
+    if service_id not in FIRST_CLASS_SERVICE_IDS:
+        return False, get_service_configs(tts_settings), "Select a first-class TTS service."
+
+    normalized_api_base = _normalize_base_url(api_base, "")
+    if not normalized_api_base:
+        return False, get_service_configs(tts_settings), "API base URL is required."
+
+    services = get_service_configs(tts_settings)
+    updated_services: list[dict[str, object]] = []
+    for service in services:
+        if str(service.get("id") or "") != service_id:
+            updated_services.append(service)
+            continue
+
+        updated = copy.deepcopy(service)
+        updated["api_base"] = normalized_api_base
+        if updated.get("kind") == "commercial":
+            provider_key = str(updated.get("provider") or service_id)
+            updated["api_key"] = str(api_key or "").strip()
+            parsed_models = _parse_model_list(models or [], provider_key)
+            if parsed_models:
+                updated["models"] = parsed_models
+                updated["default_model"] = parsed_models[0]
+            parsed_voices = _parse_voice_list(voices or [], provider_key)
+            if parsed_voices:
+                updated["voices"] = parsed_voices
+                updated["default_voice"] = parsed_voices[0]
+        updated_services.append(updated)
+
+    return True, updated_services, ""
 
 
 def _legacy_endpoints_to_provider_configs(raw_json: str) -> list[dict[str, object]]:
@@ -466,7 +704,7 @@ def _legacy_endpoints_to_provider_configs(raw_json: str) -> list[dict[str, objec
                 "api_base": api_base,
                 "api_key_env": str(item.get("api_key_env", "")).strip(),
                 "api_key": str(item.get("api_key", "")).strip(),
-                "is_custom": provider_id not in BUILTIN_PROVIDER_IDS,
+                "is_custom": provider_id not in FIRST_CLASS_SERVICE_IDS,
                 "models": models,
                 "default_model": default_model,
                 "voices": voices,
@@ -482,11 +720,6 @@ def _legacy_endpoints_to_provider_configs(raw_json: str) -> list[dict[str, objec
 
 
 def get_provider_configs(tts_settings) -> list[dict[str, object]]:
-    builtins = {
-        str(item["id"]): copy.deepcopy(item)
-        for item in _default_provider_configs()
-    }
-
     custom_configs: dict[str, dict[str, object]] = {}
 
     raw_provider_configs = _read_setting(tts_settings, "provider_configs", [])
@@ -497,7 +730,7 @@ def get_provider_configs(tts_settings) -> list[dict[str, object]]:
 
             raw_id = str(raw_provider.get("id") or raw_provider.get("name") or "").strip()
             provider_id = _normalize_provider_id(raw_id)
-            if not provider_id:
+            if not provider_id or _normalize_service_id(provider_id) in FIRST_CLASS_SERVICE_IDS:
                 continue
 
             api_base = _normalize_base_url(
@@ -510,27 +743,17 @@ def get_provider_configs(tts_settings) -> list[dict[str, object]]:
                 raw_provider=str(raw_provider.get("provider") or provider_id),
             )
 
-            if provider_id in builtins:
-                record = copy.deepcopy(builtins[provider_id])
-                record["name"] = str(raw_provider.get("name") or record["name"]).strip() or record["name"]
-                record["api_base"] = api_base or record["api_base"]
-                record["api_key_env"] = str(raw_provider.get("api_key_env") or record.get("api_key_env") or "").strip()
-                record["api_key"] = str(raw_provider.get("api_key") or "").strip()
-                record["provider"] = provider_key
-                record["is_custom"] = False
-                record[PREBUILT_VOICE_PROVIDER_FIELD] = True
-            else:
-                if not api_base:
-                    continue
-                record = {
-                    "id": provider_id,
-                    "name": str(raw_provider.get("name") or provider_id).strip() or provider_id,
-                    "provider": provider_key,
-                    "api_base": api_base,
-                    "api_key_env": str(raw_provider.get("api_key_env") or "").strip(),
-                    "api_key": str(raw_provider.get("api_key") or "").strip(),
-                    "is_custom": True,
-                }
+            if not api_base:
+                continue
+            record = {
+                "id": provider_id,
+                "name": str(raw_provider.get("name") or provider_id).strip() or provider_id,
+                "provider": provider_key,
+                "api_base": api_base,
+                "api_key_env": str(raw_provider.get("api_key_env") or "").strip(),
+                "api_key": str(raw_provider.get("api_key") or "").strip(),
+                "is_custom": True,
+            }
 
             models = _parse_model_list(raw_provider.get("models", []), provider_key)
             default_model = _normalize_model_for_provider(
@@ -565,48 +788,31 @@ def get_provider_configs(tts_settings) -> list[dict[str, object]]:
             record["default_model"] = default_model
             record["voices"] = _dedupe_ordered(voices)
             record["default_voice"] = default_voice
-            if provider_id in builtins:
-                record[PREBUILT_VOICE_PROVIDER_FIELD] = True
-            else:
-                raw_supports_prebuilt = raw_provider.get(PREBUILT_VOICE_PROVIDER_FIELD)
-                if raw_supports_prebuilt is None:
-                    raw_supports_prebuilt = raw_provider.get("has_prebuilt_voices")
-                record[PREBUILT_VOICE_PROVIDER_FIELD] = _coerce_bool(
-                    raw_supports_prebuilt,
-                    bool(record["voices"]),
-                )
+            raw_supports_prebuilt = raw_provider.get(PREBUILT_VOICE_PROVIDER_FIELD)
+            if raw_supports_prebuilt is None:
+                raw_supports_prebuilt = raw_provider.get("has_prebuilt_voices")
+            record[PREBUILT_VOICE_PROVIDER_FIELD] = _coerce_bool(
+                raw_supports_prebuilt,
+                bool(record["voices"]),
+            )
 
-            if provider_id in builtins:
-                builtins[provider_id] = record
-            else:
-                custom_configs[provider_id] = record
+            custom_configs[provider_id] = record
 
     legacy_raw_json = str(_read_setting(tts_settings, "openai_audio_endpoints_json", "") or "")
     for legacy_provider in _legacy_endpoints_to_provider_configs(legacy_raw_json):
         provider_id = str(legacy_provider.get("id") or "")
         if not provider_id:
             continue
-        if provider_id in builtins:
-            builtins[provider_id]["api_base"] = legacy_provider.get("api_base") or builtins[provider_id]["api_base"]
-            builtins[provider_id]["api_key_env"] = legacy_provider.get("api_key_env") or builtins[provider_id].get("api_key_env") or ""
-            if legacy_provider.get("api_key"):
-                builtins[provider_id]["api_key"] = legacy_provider.get("api_key")
+        if _normalize_service_id(provider_id) in FIRST_CLASS_SERVICE_IDS:
             continue
 
         if provider_id not in custom_configs:
             custom_configs[provider_id] = dict(legacy_provider)
 
-    ordered = [
-        builtins[provider_id]
-        for provider_id in BUILTIN_PROVIDER_ORDER
-        if provider_id in builtins
-    ]
-    custom_list = sorted(
+    return sorted(
         custom_configs.values(),
         key=lambda item: str(item.get("name") or item.get("id") or "").lower(),
     )
-
-    return ordered + custom_list
 
 
 def save_provider(
@@ -627,13 +833,23 @@ def save_provider(
     normalized_provider_id = _normalize_provider_id(provider_id or display_name)
     if not normalized_provider_id:
         return False, get_provider_configs(tts_settings), "", "Provider name must include letters or numbers."
+    if (
+        _normalize_service_id(normalized_provider_id) in FIRST_CLASS_SERVICE_IDS
+        or _normalize_service_id(display_name) in FIRST_CLASS_SERVICE_IDS
+    ):
+        return (
+            False,
+            get_provider_configs(tts_settings),
+            "",
+            f"'{display_name}' is reserved for a first-class TTS service.",
+        )
 
     normalized_provider_type = _normalize_audio_provider(provider_type)
     if not normalized_provider_type:
         return False, get_provider_configs(tts_settings), "", "Provider type must be OpenAI or Gemini compatible."
 
     normalized_api_base = _normalize_base_url(api_base, "")
-    if normalized_provider_id not in BUILTIN_PROVIDER_IDS and not normalized_api_base:
+    if not normalized_api_base:
         return False, get_provider_configs(tts_settings), "", "API base URL is required."
 
     provider_configs = get_provider_configs(tts_settings)
@@ -645,7 +861,7 @@ def save_provider(
         ),
         None,
     )
-    is_custom = normalized_provider_id not in BUILTIN_PROVIDER_IDS
+    is_custom = True
 
     parsed_models = _parse_model_list(models or [], normalized_provider_type)
     if not parsed_models and existing is not None:
@@ -662,9 +878,7 @@ def save_provider(
         parsed_voices = list(_provider_voice_catalog(normalized_provider_type, default_model))
 
     default_voice = parsed_voices[0] if parsed_voices else _provider_default_voice(normalized_provider_type)
-    if normalized_provider_id in BUILTIN_PROVIDER_IDS:
-        provider_supports_prebuilt_voices = True
-    elif supports_prebuilt_voices is None:
+    if supports_prebuilt_voices is None:
         if existing is not None:
             provider_supports_prebuilt_voices = _coerce_bool(
                 existing.get(PREBUILT_VOICE_PROVIDER_FIELD),
@@ -690,17 +904,6 @@ def save_provider(
         PREBUILT_VOICE_PROVIDER_FIELD: provider_supports_prebuilt_voices,
     }
 
-    if normalized_provider_id == OPENAI_PROVIDER:
-        updated_record["api_key_env"] = "OPENAI_API_KEY"
-    elif normalized_provider_id == GEMINI_PROVIDER:
-        updated_record["api_key_env"] = "GEMINI_API_KEY"
-
-    if not updated_record["api_base"]:
-        if normalized_provider_id == OPENAI_PROVIDER:
-            updated_record["api_base"] = OPENAI_AUDIO_BASE_URL
-        elif normalized_provider_id == GEMINI_PROVIDER:
-            updated_record["api_base"] = GEMINI_AUDIO_BASE_URL
-
     updated_provider_configs: list[dict[str, object]] = []
     found = False
     for item in provider_configs:
@@ -714,21 +917,11 @@ def save_provider(
     if not found:
         updated_provider_configs.append(updated_record)
 
-    builtins = [item for item in updated_provider_configs if not item.get("is_custom", False)]
-    customs = [item for item in updated_provider_configs if item.get("is_custom", False)]
-    customs = sorted(customs, key=lambda item: str(item.get("name") or "").lower())
-
-    builtins_by_id = {
-        str(item.get("id") or ""): item
-        for item in builtins
-    }
-    ordered_builtins = [
-        builtins_by_id[provider_id]
-        for provider_id in BUILTIN_PROVIDER_ORDER
-        if provider_id in builtins_by_id
-    ]
-
-    return True, ordered_builtins + customs, normalized_provider_id, ""
+    updated_provider_configs = sorted(
+        updated_provider_configs,
+        key=lambda item: str(item.get("name") or "").lower(),
+    )
+    return True, updated_provider_configs, normalized_provider_id, ""
 
 
 def remove_custom_provider(
@@ -739,8 +932,8 @@ def remove_custom_provider(
     if not provider_id:
         return False, get_provider_configs(tts_settings), "Select a custom provider first."
 
-    if provider_id in BUILTIN_PROVIDER_IDS:
-        return False, get_provider_configs(tts_settings), "Built-in providers cannot be removed."
+    if _normalize_service_id(provider_id) in FIRST_CLASS_SERVICE_IDS:
+        return False, get_provider_configs(tts_settings), "First-class TTS services cannot be removed."
 
     provider_configs = get_provider_configs(tts_settings)
     updated_provider_configs = [
@@ -1190,32 +1383,28 @@ def _provider_for_tts_service(raw_service: str | None) -> str:
     normalized = str(raw_service or "").strip().lower()
     if normalized == OPENAI_SERVICE.lower():
         return OPENAI_PROVIDER
-    if normalized == GEMINI_SERVICE.lower():
+    if normalized in {GEMINI_SERVICE.lower(), LEGACY_GEMINI_SERVICE.lower()}:
         return GEMINI_PROVIDER
     return ""
 
 
-def _default_audio_endpoint(provider: str) -> dict[str, str]:
+def _service_audio_endpoint(tts_settings, provider: str) -> dict[str, str]:
     normalized_provider = _normalize_audio_provider(provider)
-    if normalized_provider == GEMINI_PROVIDER:
-        return {
-            "name": GEMINI_PROVIDER,
-            "base_url": GEMINI_AUDIO_BASE_URL,
-            "api_key": XTTS_OPENAI_PLACEHOLDER_API_KEY,
-            "api_key_env": "GEMINI_API_KEY",
-            "provider": GEMINI_PROVIDER,
-            "default_model": GEMINI_AUDIO_DEFAULT_MODEL,
-            "default_voice": GEMINI_AUDIO_DEFAULT_VOICE,
-        }
+    service = get_service_config(tts_settings, normalized_provider)
+    if service is None:
+        service = get_service_config({}, normalized_provider) or {}
 
     return {
-        "name": OPENAI_PROVIDER,
-        "base_url": OPENAI_AUDIO_BASE_URL,
-        "api_key": XTTS_OPENAI_PLACEHOLDER_API_KEY,
-        "api_key_env": "OPENAI_API_KEY",
-        "provider": OPENAI_PROVIDER,
-        "default_model": OPENAI_AUDIO_DEFAULT_MODEL,
-        "default_voice": OPENAI_AUDIO_DEFAULT_VOICE,
+        "name": normalized_provider,
+        "display_name": str(service.get("name") or normalized_provider),
+        "base_url": str(service.get("api_base") or ""),
+        "api_key": str(service.get("api_key") or ""),
+        "api_key_env": str(service.get("api_key_env") or ""),
+        "provider": normalized_provider,
+        "default_model": str(service.get("default_model") or _provider_default_model(normalized_provider)),
+        "default_voice": str(service.get("default_voice") or _provider_default_voice(normalized_provider)),
+        "models": list(service.get("models") or []),
+        "voices": list(service.get("voices") or []),
     }
 
 
@@ -1529,6 +1718,8 @@ def _parse_openai_audio_endpoints(tts_settings: dict) -> dict[str, dict[str, str
             "provider": provider,
             "default_model": default_model,
             "default_voice": default_voice,
+            "models": list(provider_record.get("models") or []),
+            "voices": list(provider_record.get("voices") or []),
         }
 
     return endpoints
@@ -1538,7 +1729,7 @@ def list_openai_audio_endpoint_names(tts_settings: dict) -> list[str]:
     """Lists configured OpenAI-compatible audio endpoint names."""
     service_provider = _provider_for_tts_service(tts_settings.get("service"))
     if service_provider:
-        return [_default_audio_endpoint(service_provider)["name"]]
+        return [_service_audio_endpoint(tts_settings, service_provider)["name"]]
 
     return sorted(_parse_openai_audio_endpoints(tts_settings).keys())
 
@@ -1549,26 +1740,16 @@ def resolve_openai_audio_endpoint(tts_settings: dict) -> tuple[dict[str, str] | 
 
     service_provider = _provider_for_tts_service(tts_settings.get("service"))
     if service_provider:
-        configured = endpoints.get(service_provider)
-        if configured is not None:
-            return configured, ""
-        return _default_audio_endpoint(service_provider), ""
+        return _service_audio_endpoint(tts_settings, service_provider), ""
 
     if not endpoints:
-        selected_name = str(tts_settings.get("openai_audio_endpoint", "") or "").strip()
-        selected_provider = _normalize_audio_provider(selected_name)
-        if selected_provider:
-            return _default_audio_endpoint(selected_provider), ""
-        return None, "No OpenAI-compatible audio endpoints are configured."
+        return None, "No custom OpenAI-compatible audio endpoints are configured."
 
     selected_name = str(tts_settings.get("openai_audio_endpoint", "") or "").strip()
     if selected_name:
         endpoint = endpoints.get(selected_name)
         if endpoint is None:
-            selected_provider = _normalize_audio_provider(selected_name)
-            if selected_provider:
-                return _default_audio_endpoint(selected_provider), ""
-            return None, f"Audio endpoint '{selected_name}' is not defined in config."
+            return None, f"Custom audio endpoint '{selected_name}' is not defined in config."
         return endpoint, ""
 
     first_name = sorted(endpoints.keys())[0]
@@ -1579,9 +1760,9 @@ def should_show_xtts_advanced_settings(tts_settings: dict) -> bool:
     service = str(tts_settings.get("service") or "").strip()
     if service == "XTTS":
         return True
-    if service in {OPENAI_SERVICE, GEMINI_SERVICE}:
+    if service in {OPENAI_SERVICE, GEMINI_SERVICE, LEGACY_GEMINI_SERVICE}:
         return False
-    if service != OPENAI_COMPAT_SERVICE:
+    if service not in {OPENAI_COMPAT_SERVICE, LEGACY_OPENAI_COMPAT_SERVICE}:
         return False
 
     endpoint, _ = resolve_openai_audio_endpoint(tts_settings)
@@ -1701,7 +1882,7 @@ def get_openai_audio_models_fallback(tts_settings: dict) -> list[str]:
     if endpoint is None:
         return []
 
-    preferred_models = [default_model] + _provider_model_catalog(provider)
+    preferred_models = [default_model] + list(endpoint.get("models") or []) + _provider_model_catalog(provider)
     return _dedupe_ordered(preferred_models)
 
 
@@ -1714,7 +1895,7 @@ def get_openai_audio_voices_fallback(tts_settings: dict) -> list[str]:
     selected_model = str(tts_settings.get("xtts_model") or "").strip() or default_model
     selected_model = _normalize_model_for_provider(selected_model, provider)
 
-    preferred_voices = [default_voice] + _provider_voice_catalog(provider, selected_model)
+    preferred_voices = [default_voice] + list(endpoint.get("voices") or []) + _provider_voice_catalog(provider, selected_model)
     return _dedupe_ordered(preferred_voices)
 
 
@@ -1746,7 +1927,7 @@ def get_openai_audio_models(tts_settings: dict) -> list[str]:
             logging.error("Failed to list models for endpoint '%s': %s", endpoint["name"], e)
             continue
 
-    preferred_models = [default_model] + _provider_model_catalog(provider)
+    preferred_models = [default_model] + list(endpoint.get("models") or []) + _provider_model_catalog(provider)
 
     return _merge_catalog_with_discovered(preferred_models, models)
 
@@ -1783,7 +1964,7 @@ def get_openai_audio_voices(tts_settings: dict) -> list[str]:
         selected_model = default_model
     selected_model = _normalize_model_for_provider(selected_model, provider)
 
-    preferred_voices = [default_voice] + _provider_voice_catalog(provider, selected_model)
+    preferred_voices = [default_voice] + list(endpoint.get("voices") or []) + _provider_voice_catalog(provider, selected_model)
 
     return _merge_catalog_with_discovered(preferred_voices, voices)
 
@@ -3215,7 +3396,11 @@ def _request_openai_compatible_audio(text: str, tts_settings: dict) -> requests.
         raw_provider=endpoint.get("provider", ""),
     )
 
-    if provider in SUPPORTED_AUDIO_PROVIDERS:
+    uses_nonstandard_gemini_base = (
+        provider == GEMINI_PROVIDER
+        and _normalize_base_url(endpoint.get("base_url"), "") != GEMINI_AUDIO_BASE_URL
+    )
+    if provider in SUPPORTED_AUDIO_PROVIDERS and not uses_nonstandard_gemini_base:
         try:
             return _request_litellm_audio(payload, endpoint)
         except Exception as e:
@@ -3387,7 +3572,13 @@ def text_to_audio(
                 response = _request_chatterbox_audio(text, tts_settings, chatterbox_base_url)
             elif service == "Magpie":
                 response = _request_magpie_audio(text, tts_settings, magpie_base_url)
-            elif service in {OPENAI_SERVICE, GEMINI_SERVICE, OPENAI_COMPAT_SERVICE}:
+            elif service in {
+                OPENAI_SERVICE,
+                GEMINI_SERVICE,
+                LEGACY_GEMINI_SERVICE,
+                OPENAI_COMPAT_SERVICE,
+                LEGACY_OPENAI_COMPAT_SERVICE,
+            }:
                 response = _request_openai_compatible_audio(text, tts_settings)
             elif service == "Silero":
                 data = {

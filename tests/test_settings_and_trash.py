@@ -102,6 +102,94 @@ class SettingsAndTrashTests(unittest.TestCase):
             },
         )
 
+    def test_legacy_mixed_tts_provider_catalog_migrates_to_service_configs(self):
+        state = AppState()
+
+        settings_handler.apply_global_settings_payload(
+            state,
+            {
+                "tts": {
+                    "provider_configs": [
+                        {
+                            "id": "openai",
+                            "name": "OpenAI",
+                            "provider": "openai",
+                            "api_base": "https://openai.example/v1",
+                        },
+                        {
+                            "id": "magpie",
+                            "name": "Magpie",
+                            "provider": "openai",
+                            "api_base": "http://127.0.0.1:9999",
+                        },
+                        {
+                            "id": "custom-local",
+                            "name": "Custom Local",
+                            "provider": "openai",
+                            "api_base": "http://127.0.0.1:9000/v1",
+                        },
+                    ],
+                }
+            },
+        )
+
+        service_configs = {
+            service["id"]: service
+            for service in state.tts.service_configs
+        }
+        self.assertEqual(service_configs["openai"]["api_base"], "https://openai.example/v1")
+        self.assertEqual(service_configs["magpie"]["api_base"], "http://127.0.0.1:9999")
+        self.assertEqual(
+            [provider["id"] for provider in state.tts.provider_configs],
+            ["custom-local"],
+        )
+
+    def test_legacy_cloud_endpoint_selection_migrates_to_first_class_service(self):
+        from pandrator.app_logic import AppLogic
+
+        logic = AppLogic()
+        self.addCleanup(logic.shutdown)
+        legacy_tts = AppState().tts
+        legacy_tts.service = "OpenAI-Compatible"
+        legacy_tts.openai_audio_endpoint = "gemini"
+        legacy_tts.service_configs = []
+        legacy_tts.provider_configs = [
+            {
+                "id": "gemini",
+                "name": "Gemini",
+                "provider": "gemini",
+                "api_base": "https://gemini.example/openai",
+            }
+        ]
+
+        logic._normalize_tts_service_state(legacy_tts)
+
+        self.assertEqual(legacy_tts.service, "Google Gemini")
+        self.assertEqual(legacy_tts.openai_audio_endpoint, "")
+        self.assertEqual(legacy_tts.provider_configs, [])
+
+    def test_legacy_custom_service_label_migrates_to_custom(self):
+        from pandrator.app_logic import AppLogic
+
+        logic = AppLogic()
+        self.addCleanup(logic.shutdown)
+        legacy_tts = AppState().tts
+        legacy_tts.service = "OpenAI-Compatible"
+        legacy_tts.openai_audio_endpoint = "my-server"
+        legacy_tts.provider_configs = [
+            {
+                "id": "my-server",
+                "name": "My Server",
+                "provider": "openai",
+                "api_base": "http://127.0.0.1:9000/v1",
+            }
+        ]
+
+        logic._normalize_tts_service_state(legacy_tts)
+
+        self.assertEqual(legacy_tts.service, "Custom")
+        self.assertEqual(legacy_tts.openai_audio_endpoint, "my-server")
+
     def test_move_restore_and_expired_trash(self):
         session_name = "TrashMe"
         session_path = session_handler.get_session_path(session_name)

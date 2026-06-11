@@ -110,7 +110,21 @@ class TtsSettingsSection(QFrame):
         layout.setVerticalSpacing(8)
 
         self.tts_service_combo = QComboBox()
-        self.tts_service_combo.addItems(["XTTS", "VoxCPM", "FishS2", "Voxtral", "Kokoro", "Magpie", "Silero", "Chatterbox", "OpenAI-Compatible"])
+        self.tts_service_combo.addItems(
+            [
+                "XTTS",
+                "VoxCPM",
+                "FishS2",
+                "Voxtral",
+                "Kokoro",
+                "Magpie",
+                "Silero",
+                "Chatterbox",
+                "OpenAI",
+                "Google Gemini",
+                "Custom",
+            ]
+        )
         layout.addWidget(QLabel("TTS Service:"), 0, 0)
         layout.addWidget(self.tts_service_combo, 0, 1)
 
@@ -118,7 +132,7 @@ class TtsSettingsSection(QFrame):
         self.connect_server_button.setObjectName("primaryButton")
         layout.addWidget(self.connect_server_button, 0, 2, 1, 2)
 
-        self.cloud_provider_label = QLabel("Cloud Provider:")
+        self.cloud_provider_label = QLabel("Custom Provider:")
         self.cloud_provider_combo = QComboBox()
         layout.addWidget(self.cloud_provider_label, 1, 0)
         layout.addWidget(self.cloud_provider_combo, 1, 1, 1, 3)
@@ -170,7 +184,7 @@ class TtsSettingsSection(QFrame):
         layout.addWidget(self.advanced_tts_checkbox, 8, 0)
 
         self.cloud_provider_hint = QLabel(
-            "Cloud voices use providers configured in the Providers tab."
+            "Custom OpenAI-compatible endpoints are configured in the Providers tab."
         )
         self.cloud_provider_hint.setWordWrap(True)
         self.cloud_provider_hint.setObjectName("secondaryInfoLabel")

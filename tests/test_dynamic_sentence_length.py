@@ -65,7 +65,7 @@ class DynamicSentenceLengthTests(unittest.TestCase):
         tab._on_tts_service_changed("XTTS")
         self.assertEqual(logic.state.text_processing.max_sentence_length, 200)
 
-        # Test change to OpenAI (maps to OpenAI-Compatible)
+        # Test change to OpenAI.
         tab._on_tts_service_changed("OpenAI")
         self.assertEqual(logic.state.text_processing.max_sentence_length, 200)
 

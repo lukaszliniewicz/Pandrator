@@ -10,7 +10,7 @@ from . import state_db_handler
 from . import tts_handler
 
 GLOBAL_SETTINGS_FILENAME = "pandrator_settings.json"
-GLOBAL_SETTINGS_VERSION = 2
+GLOBAL_SETTINGS_VERSION = 3
 APP_ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 SOURCE_CLEANING_MIN_ITERATIONS = 1
@@ -81,6 +81,7 @@ TTS_GLOBAL_BOOL_FIELDS = (
 )
 
 TTS_GLOBAL_LIST_FIELDS = (
+    "service_configs",
     "provider_configs",
 )
 
@@ -143,6 +144,7 @@ def _coerce_bool(value: Any, default: bool) -> bool:
 
 def build_global_settings_payload(state: AppState) -> Dict[str, Any]:
     llm_handler.normalize_llm_settings(state.llm)
+    state.tts.service_configs = tts_handler.get_service_configs(state.tts)
     state.tts.provider_configs = tts_handler.get_provider_configs(state.tts)
     tts_payload: Dict[str, Any] = {}
     for field_name in TTS_GLOBAL_FIELDS:
@@ -226,6 +228,16 @@ def apply_global_settings_payload(state: AppState, payload: Dict[str, Any]):
 
     tts_payload = payload.get("tts", {})
     if isinstance(tts_payload, dict):
+        service_configs = tts_payload.get("service_configs")
+        if isinstance(service_configs, list):
+            state.tts.service_configs = service_configs
+        elif (
+            isinstance(tts_payload.get("provider_configs"), list)
+            or isinstance(tts_payload.get("openai_audio_endpoints_json"), str)
+        ):
+            # Let mixed legacy provider catalogs migrate into first-class services.
+            state.tts.service_configs = []
+
         provider_configs = tts_payload.get("provider_configs")
         if isinstance(provider_configs, list):
             state.tts.provider_configs = provider_configs
@@ -275,6 +287,7 @@ def apply_global_settings_payload(state: AppState, payload: Dict[str, Any]):
             else:
                 setattr(state.tts, field_name, dict(tts_payload[field_name]))
 
+        state.tts.service_configs = tts_handler.get_service_configs(state.tts)
         state.tts.provider_configs = tts_handler.get_provider_configs(state.tts)
 
     source_cleaning_payload = payload.get("source_cleaning")
@@ -303,14 +316,14 @@ def save_global_settings(payload: Dict[str, Any]):
         "version": GLOBAL_SETTINGS_VERSION,
         "settings": payload,
     }
-    with _FILE_IO_LOCK:
-        _write_json_atomic(get_global_settings_path(), wrapped)
-
     try:
         state_db_handler.save_app_settings(payload, version=GLOBAL_SETTINGS_VERSION)
     except Exception:
-        # JSON write-through remains the primary compatibility path in v1.
         pass
+
+    # Keep a readable compatibility backup, while SQLite remains the load source of truth.
+    with _FILE_IO_LOCK:
+        _write_json_atomic(get_global_settings_path(), wrapped)
 
 
 def load_global_settings() -> Dict[str, Any]:

@@ -373,7 +373,7 @@ class VoiceCatalogDialog(QDialog):
         model = str(self.logic.state.tts.xtts_model or "").strip() or "(auto)"
         provider = str(self.logic.state.tts.openai_audio_endpoint or "").strip()
 
-        if service == "OpenAI-Compatible" and provider:
+        if service == "Custom" and provider:
             service_text = f"Active service: {service} ({provider})"
         else:
             service_text = f"Active service: {service}"

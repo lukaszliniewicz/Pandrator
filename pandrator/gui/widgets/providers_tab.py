@@ -55,7 +55,9 @@ class ProvidersTab(QWidget):
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        layout.addWidget(self._create_group_label("TTS Providers"))
+        layout.addWidget(self._create_group_label("First-Class TTS Services"))
+        layout.addWidget(self._create_tts_service_frame())
+        layout.addWidget(self._create_group_label("Custom TTS Providers"))
         layout.addWidget(self._create_tts_frame())
         return tab
 
@@ -127,6 +129,44 @@ class ProvidersTab(QWidget):
 
         return frame
 
+    def _create_tts_service_frame(self) -> QFrame:
+        frame = QFrame()
+        frame.setObjectName("groupFrame")
+        layout = QGridLayout(frame)
+
+        self.tts_service_combo = QComboBox()
+        self.tts_service_api_base_edit = QLineEdit()
+        self.tts_service_api_base_edit.setPlaceholderText("Service API base URL")
+        self.tts_service_api_key_label = QLabel("API Key:")
+        self.tts_service_api_key_edit = QLineEdit()
+        self.tts_service_api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.tts_service_api_key_edit.setPlaceholderText("Optional API key")
+        self.tts_service_models_label = QLabel("Models:")
+        self.tts_service_models_edit = QTextEdit()
+        self.tts_service_models_edit.setPlaceholderText("One model per line or comma-separated")
+        self.tts_service_models_edit.setFixedHeight(70)
+        self.tts_service_voices_label = QLabel("Voices:")
+        self.tts_service_voices_edit = QTextEdit()
+        self.tts_service_voices_edit.setPlaceholderText("One voice per line or comma-separated")
+        self.tts_service_voices_edit.setFixedHeight(70)
+        self.tts_service_save_button = QPushButton("Save Service Settings")
+        self.tts_service_feedback_label = QLabel("")
+        self.tts_service_feedback_label.setWordWrap(True)
+
+        layout.addWidget(QLabel("Service:"), 0, 0)
+        layout.addWidget(self.tts_service_combo, 0, 1, 1, 3)
+        layout.addWidget(QLabel("API Base URL:"), 1, 0)
+        layout.addWidget(self.tts_service_api_base_edit, 1, 1, 1, 3)
+        layout.addWidget(self.tts_service_api_key_label, 2, 0)
+        layout.addWidget(self.tts_service_api_key_edit, 2, 1, 1, 3)
+        layout.addWidget(self.tts_service_models_label, 3, 0)
+        layout.addWidget(self.tts_service_models_edit, 3, 1, 1, 3)
+        layout.addWidget(self.tts_service_voices_label, 4, 0)
+        layout.addWidget(self.tts_service_voices_edit, 4, 1, 1, 3)
+        layout.addWidget(self.tts_service_save_button, 5, 3)
+        layout.addWidget(self.tts_service_feedback_label, 6, 0, 1, 4)
+        return frame
+
     def _create_tts_frame(self) -> QFrame:
         frame = QFrame()
         frame.setObjectName("groupFrame")
@@ -136,7 +176,7 @@ class ProvidersTab(QWidget):
         self.tts_provider_type_combo = QComboBox()
         self.tts_provider_type_combo.addItems(["openai", "gemini"])
         self.tts_provider_name_edit = QLineEdit()
-        self.tts_provider_name_edit.setPlaceholderText("My TTS Provider")
+        self.tts_provider_name_edit.setPlaceholderText("My Compatible TTS Provider")
         self.tts_provider_api_base_edit = QLineEdit()
         self.tts_provider_api_base_edit.setPlaceholderText("https://api.example.com/v1")
         self.tts_provider_api_key_edit = QLineEdit()
@@ -169,7 +209,7 @@ class ProvidersTab(QWidget):
         layout.addWidget(QLabel("Display Name:"), 1, 0)
         layout.addWidget(self.tts_provider_name_edit, 1, 1, 1, 3)
 
-        layout.addWidget(QLabel("Provider Type:"), 2, 0)
+        layout.addWidget(QLabel("Compatibility Flavor:"), 2, 0)
         layout.addWidget(self.tts_provider_type_combo, 2, 1, 1, 3)
 
         layout.addWidget(QLabel("API Base URL:"), 3, 0)
@@ -200,6 +240,8 @@ class ProvidersTab(QWidget):
         self.llm_refresh_builtin_models_button.clicked.connect(self._on_refresh_builtin_llm_models)
 
         self.tts_provider_combo.currentIndexChanged.connect(self._on_tts_provider_selected)
+        self.tts_service_combo.currentIndexChanged.connect(self._on_tts_service_selected)
+        self.tts_service_save_button.clicked.connect(self._on_save_tts_service)
         self.tts_new_provider_button.clicked.connect(self._on_new_tts_provider)
         self.tts_save_provider_button.clicked.connect(self._on_save_tts_provider)
         self.tts_remove_provider_button.clicked.connect(self._on_remove_tts_provider)
@@ -229,6 +271,9 @@ class ProvidersTab(QWidget):
 
     def _tts_providers(self) -> list[dict]:
         return self.logic.list_tts_provider_configs()
+
+    def _tts_services(self) -> list[dict]:
+        return self.logic.list_tts_service_configs()
 
     def _refresh_llm_provider_dropdown(self, target_provider_id: str = ""):
         if not target_provider_id:
@@ -265,6 +310,23 @@ class ProvidersTab(QWidget):
         self.tts_provider_combo.setCurrentIndex(index if index >= 0 else 0)
         self.tts_provider_combo.blockSignals(False)
         self._load_tts_provider_form(str(self.tts_provider_combo.currentData() or ""))
+
+    def _refresh_tts_service_dropdown(self, target_service_id: str = ""):
+        if not target_service_id:
+            target_service_id = str(self.tts_service_combo.currentData() or "")
+
+        services = self._tts_services()
+        self.tts_service_combo.blockSignals(True)
+        self.tts_service_combo.clear()
+        for service in services:
+            service_id = str(service.get("id") or "")
+            service_name = str(service.get("name") or service_id)
+            self.tts_service_combo.addItem(service_name, service_id)
+
+        index = self.tts_service_combo.findData(target_service_id)
+        self.tts_service_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.tts_service_combo.blockSignals(False)
+        self._load_tts_service_form(str(self.tts_service_combo.currentData() or ""))
 
     def _load_llm_provider_form(self, provider_id: str):
         provider = next(
@@ -331,6 +393,34 @@ class ProvidersTab(QWidget):
         self.tts_test_connection_button.setEnabled(True)
         self.tts_discover_catalog_button.setEnabled(True)
 
+    def _load_tts_service_form(self, service_id: str):
+        service = next(
+            (
+                item
+                for item in self._tts_services()
+                if str(item.get("id") or "") == service_id
+            ),
+            None,
+        )
+        if service is None:
+            return
+
+        is_commercial = str(service.get("kind") or "") == "commercial"
+        self.tts_service_api_base_edit.setText(str(service.get("api_base") or ""))
+        self.tts_service_api_key_edit.setText(str(service.get("api_key") or ""))
+        self.tts_service_models_edit.setPlainText(self._format_items(service.get("models", [])))
+        self.tts_service_voices_edit.setPlainText(self._format_items(service.get("voices", [])))
+
+        for widget in (
+            self.tts_service_api_key_label,
+            self.tts_service_api_key_edit,
+            self.tts_service_models_label,
+            self.tts_service_models_edit,
+            self.tts_service_voices_label,
+            self.tts_service_voices_edit,
+        ):
+            widget.setVisible(is_commercial)
+
     def _on_new_llm_provider(self):
         self.llm_provider_combo.setCurrentIndex(0)
         self._load_llm_provider_form("")
@@ -344,6 +434,27 @@ class ProvidersTab(QWidget):
 
     def _on_tts_provider_selected(self):
         self._load_tts_provider_form(str(self.tts_provider_combo.currentData() or ""))
+
+    def _on_tts_service_selected(self):
+        self._load_tts_service_form(str(self.tts_service_combo.currentData() or ""))
+
+    def _on_save_tts_service(self):
+        service_id = str(self.tts_service_combo.currentData() or "")
+        success, error_message = self.logic.save_tts_service_config(
+            service_id=service_id,
+            api_base=self.tts_service_api_base_edit.text().strip(),
+            api_key=self.tts_service_api_key_edit.text().strip(),
+            models=self._parse_items(self.tts_service_models_edit.toPlainText()),
+            voices=self._parse_items(self.tts_service_voices_edit.toPlainText()),
+        )
+        if not success:
+            self.tts_service_feedback_label.setText(
+                error_message or "Could not save first-class TTS service."
+            )
+            return
+
+        self._refresh_tts_service_dropdown(service_id)
+        self.tts_service_feedback_label.setText("Saved first-class TTS service settings.")
 
     def _on_save_llm_provider(self):
         provider_id = str(self.llm_provider_combo.currentData() or "")
@@ -462,4 +573,5 @@ class ProvidersTab(QWidget):
 
     def update_ui_from_state(self):
         self._refresh_llm_provider_dropdown(str(self.llm_provider_combo.currentData() or ""))
+        self._refresh_tts_service_dropdown(str(self.tts_service_combo.currentData() or ""))
         self._refresh_tts_provider_dropdown(str(self.tts_provider_combo.currentData() or ""))

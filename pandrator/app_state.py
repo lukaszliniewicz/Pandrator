@@ -37,11 +37,60 @@ def default_llm_provider_configs() -> List[Dict[str, Any]]:
     ]
 
 
-def default_tts_provider_configs() -> List[Dict[str, Any]]:
+def default_tts_service_configs() -> List[Dict[str, Any]]:
     return [
+        {
+            "id": "xtts",
+            "name": "XTTS",
+            "api_base": "http://127.0.0.1:8020",
+            "kind": "local",
+        },
+        {
+            "id": "voxcpm",
+            "name": "VoxCPM",
+            "api_base": "http://127.0.0.1:8020",
+            "kind": "local",
+        },
+        {
+            "id": "fishs2",
+            "name": "FishS2",
+            "api_base": "http://127.0.0.1:8020",
+            "kind": "local",
+        },
+        {
+            "id": "voxtral",
+            "name": "Voxtral",
+            "api_base": "http://127.0.0.1:8000",
+            "kind": "local",
+        },
+        {
+            "id": "kokoro",
+            "name": "Kokoro",
+            "api_base": "http://127.0.0.1:8880",
+            "kind": "local",
+        },
+        {
+            "id": "magpie",
+            "name": "Magpie",
+            "api_base": "http://127.0.0.1:8030",
+            "kind": "local",
+        },
+        {
+            "id": "silero",
+            "name": "Silero",
+            "api_base": "http://127.0.0.1:8001",
+            "kind": "local",
+        },
+        {
+            "id": "chatterbox",
+            "name": "Chatterbox",
+            "api_base": "http://127.0.0.1:8040",
+            "kind": "local",
+        },
         {
             "id": "openai",
             "name": "OpenAI",
+            "kind": "commercial",
             "provider": "openai",
             "api_base": "https://api.openai.com/v1",
             "api_key_env": "OPENAI_API_KEY",
@@ -69,7 +118,8 @@ def default_tts_provider_configs() -> List[Dict[str, Any]]:
         },
         {
             "id": "gemini",
-            "name": "Gemini",
+            "name": "Google Gemini",
+            "kind": "commercial",
             "provider": "gemini",
             "api_base": "https://generativelanguage.googleapis.com/v1beta/openai",
             "api_key_env": "GEMINI_API_KEY",
@@ -118,6 +168,11 @@ def default_tts_provider_configs() -> List[Dict[str, Any]]:
         },
     ]
 
+
+def default_tts_provider_configs() -> List[Dict[str, Any]]:
+    return []
+
+
 @dataclass
 class TextProcessingSettings:
     enable_sentence_splitting: bool = True
@@ -135,7 +190,8 @@ class TTSSettings:
     service: str = "XTTS"
     use_external_server: bool = False
     external_server_url: str = "http://127.0.0.1:8020"
-    openai_audio_endpoint: str = "openai"
+    openai_audio_endpoint: str = ""
+    service_configs: List[Dict[str, Any]] = field(default_factory=default_tts_service_configs)
     provider_configs: List[Dict[str, Any]] = field(default_factory=default_tts_provider_configs)
     openai_audio_endpoints_json: str = ""
     openai_audio_instructions: str = ""

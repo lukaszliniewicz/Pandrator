@@ -400,6 +400,11 @@ Pandrator offers a comprehensive workflow for generating dubbed videos from vide
 4. In order to generate speech, click on __Generate Dubbing Audio__. You will be able to edit/regenerate the sentences as in the Audiobook workflow. You can also choose to only transcribe the chosen video file or only translate a subtitle file.
 5. **Synchronization:** When you're happy with the generated audio, click on __Add Dubbing to Video__. The dubbing will be synchronised with the video, producing a dubbed video file with embedded subtitles.
 
+### TTS Provider Configuration
+- OpenAI and Google Gemini are first-class TTS services, alongside local integrations such as Kokoro, Voxtral, and Magpie.
+- `Custom` is reserved for user-created OpenAI-compatible endpoints. Add and manage those endpoints in **Providers > TTS**.
+- First-class service base URLs are editable in **Providers > TTS**, including local service ports. These settings are stored in the app settings database, with the JSON settings file retained as a compatibility backup.
+
 ### General Audio Settings
 1. You can change the length of silence appended to the end of sentences and paragraphs.
 2. You can enable a fade-in and -out effect and set the duration.

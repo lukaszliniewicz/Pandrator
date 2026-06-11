@@ -1097,65 +1097,46 @@ class AppLogic(QObject):
     def _normalize_tts_service_state(self, tts_state=None):
         target_state = tts_state or self.state.tts
         service = str(target_state.service or "").strip()
-        service_lower = service.lower()
         endpoint = str(target_state.openai_audio_endpoint or "").strip()
+        target_state.service_configs = tts_handler.get_service_configs(target_state)
         target_state.provider_configs = tts_handler.get_provider_configs(target_state)
         target_state.kokoro_default_voices = self._normalize_kokoro_default_voices(
             getattr(target_state, "kokoro_default_voices", {})
         )
-        available_provider_ids = [
+        custom_provider_ids = [
             str(item.get("id") or "").strip()
             for item in target_state.provider_configs
             if str(item.get("id") or "").strip()
         ]
 
-        cloud_services = {
+        first_class_service = tts_handler.get_first_class_service_name(service)
+        if first_class_service:
+            target_state.service = first_class_service
+            return
+
+        if service.lower() in {
             tts_handler.OPENAI_COMPAT_SERVICE.lower(),
-            tts_handler.OPENAI_SERVICE.lower(),
-            tts_handler.GEMINI_SERVICE.lower(),
-        }
-        if service_lower in cloud_services:
+            tts_handler.LEGACY_OPENAI_COMPAT_SERVICE.lower(),
+        }:
+            migrated_service = tts_handler.get_first_class_service_name(endpoint)
+            if migrated_service:
+                target_state.service = migrated_service
+                target_state.openai_audio_endpoint = ""
+                return
+
+            normalized_endpoint = self._normalize_provider_id(endpoint)
+            if normalized_endpoint not in custom_provider_ids:
+                normalized_endpoint = custom_provider_ids[0] if custom_provider_ids else ""
             target_state.service = tts_handler.OPENAI_COMPAT_SERVICE
-            if service_lower == tts_handler.OPENAI_SERVICE.lower():
-                endpoint = tts_handler.OPENAI_PROVIDER
-            elif service_lower == tts_handler.GEMINI_SERVICE.lower():
-                endpoint = tts_handler.GEMINI_PROVIDER
-
-            normalized_endpoint = re.sub(r"[^a-z0-9]+", "-", endpoint.lower()).strip("-")
-            if normalized_endpoint in available_provider_ids:
-                endpoint = normalized_endpoint
-
-            if endpoint not in available_provider_ids:
-                if tts_handler.OPENAI_PROVIDER in available_provider_ids:
-                    endpoint = tts_handler.OPENAI_PROVIDER
-                elif available_provider_ids:
-                    endpoint = available_provider_ids[0]
-                else:
-                    endpoint = tts_handler.OPENAI_PROVIDER
-
+            endpoint = normalized_endpoint
             target_state.openai_audio_endpoint = endpoint
             return
 
-        if service_lower in {"voxcpm", "voxcpm2"}:
-            target_state.service = "VoxCPM"
-            return
+        target_state.service = "XTTS"
 
-        if service_lower in {"fishs2", "fish-s2", "fishs2cpp", "fishs2-cpp"}:
-            target_state.service = "FishS2"
-            return
-
-        supported_services = {
-            "XTTS",
-            "VoxCPM",
-            "FishS2",
-            "Voxtral",
-            "Kokoro",
-            "Magpie",
-            "Silero",
-            tts_handler.OPENAI_COMPAT_SERVICE,
-        }
-        if service not in supported_services:
-            target_state.service = "XTTS"
+    @staticmethod
+    def _resolve_tts_service_base_url(tts_settings, service: str) -> str:
+        return tts_handler.resolve_service_base_url(tts_settings, service)
 
     def _load_global_settings(self):
         """Loads app-wide provider settings from JSON."""
@@ -1434,6 +1415,15 @@ class AppLogic(QObject):
         metadata = session_handler.load_metadata(session_name)
         saved_state_payload = session_handler.load_session_config(session_name)
         if isinstance(saved_state_payload, dict):
+            tts_payload = saved_state_payload.get("tts")
+            if isinstance(tts_payload, dict):
+                for global_tts_key in (
+                    "service_configs",
+                    "provider_configs",
+                    "openai_audio_endpoints_json",
+                ):
+                    tts_payload.pop(global_tts_key, None)
+
             llm_payload = saved_state_payload.get("llm")
             if isinstance(llm_payload, dict):
                 for global_llm_key in (
@@ -3890,17 +3880,13 @@ class AppLogic(QObject):
         if provider_id is not None:
             tts_snapshot["openai_audio_endpoint"] = str(provider_id).strip()
 
-        if service == tts_handler.OPENAI_SERVICE:
-            tts_snapshot["openai_audio_endpoint"] = tts_handler.OPENAI_PROVIDER
-        elif service == tts_handler.GEMINI_SERVICE:
-            tts_snapshot["openai_audio_endpoint"] = tts_handler.GEMINI_PROVIDER
-
         endpoint, endpoint_error = tts_handler.resolve_openai_audio_endpoint(tts_snapshot)
         if endpoint is None:
             logging.warning("Could not resolve cloud TTS endpoint: %s", endpoint_error)
             return False
 
-        tts_snapshot["openai_audio_endpoint"] = endpoint["name"]
+        if service == tts_handler.OPENAI_COMPAT_SERVICE:
+            tts_snapshot["openai_audio_endpoint"] = endpoint["name"]
         provider = str(endpoint.get("provider") or "").strip().lower()
         if provider == tts_handler.GEMINI_PROVIDER:
             default_model_fallback = tts_handler.GEMINI_AUDIO_DEFAULT_MODEL
@@ -3939,7 +3925,8 @@ class AppLogic(QObject):
             selected_speaker = default_voice
 
         with self._state_lock:
-            self.state.tts.openai_audio_endpoint = endpoint["name"]
+            if service == tts_handler.OPENAI_COMPAT_SERVICE:
+                self.state.tts.openai_audio_endpoint = endpoint["name"]
             self.state.tts.tts_models = models
             self.state.tts.tts_speakers = speakers
             self.state.tts.xtts_model = selected_model
@@ -3986,11 +3973,7 @@ class AppLogic(QObject):
 
         try:
             if service == "XTTS":
-                base_url = (
-                    tts_snapshot.get("external_server_url")
-                    if tts_snapshot.get("use_external_server")
-                    else tts_handler.XTTS_API_BASE_URL
-                )
+                base_url = self._resolve_tts_service_base_url(tts_snapshot, service)
 
                 if not tts_handler.check_xtts_connection(base_url):
                     result["error_title"] = "Connection Error"
@@ -4027,11 +4010,7 @@ class AppLogic(QObject):
                 )
 
             elif service == "VoxCPM":
-                base_url = (
-                    tts_snapshot.get("external_server_url")
-                    if tts_snapshot.get("use_external_server")
-                    else tts_handler.VOXCPM_API_BASE_URL
-                )
+                base_url = self._resolve_tts_service_base_url(tts_snapshot, service)
 
                 if not tts_handler.check_voxcpm_connection(base_url):
                     result["error_title"] = "Connection Error"
@@ -4072,11 +4051,7 @@ class AppLogic(QObject):
                 )
 
             elif service == "FishS2":
-                base_url = (
-                    tts_snapshot.get("external_server_url")
-                    if tts_snapshot.get("use_external_server")
-                    else tts_handler.FISHS2_API_BASE_URL
-                )
+                base_url = self._resolve_tts_service_base_url(tts_snapshot, service)
 
                 if not tts_handler.check_fishs2_connection(base_url):
                     result["error_title"] = "Connection Error"
@@ -4117,11 +4092,7 @@ class AppLogic(QObject):
                 )
 
             elif service == "Chatterbox":
-                base_url = (
-                    tts_snapshot.get("external_server_url")
-                    if tts_snapshot.get("use_external_server")
-                    else tts_handler.CHATTERBOX_API_BASE_URL
-                )
+                base_url = self._resolve_tts_service_base_url(tts_snapshot, service)
 
                 if not tts_handler.check_chatterbox_connection(base_url):
                     result["error_title"] = "Connection Error"
@@ -4161,11 +4132,7 @@ class AppLogic(QObject):
                 )
 
             elif service == "Voxtral":
-                base_url = (
-                    tts_snapshot.get("external_server_url")
-                    if tts_snapshot.get("use_external_server")
-                    else tts_handler.VOXTRAL_API_BASE_URL
-                )
+                base_url = self._resolve_tts_service_base_url(tts_snapshot, service)
 
                 if not tts_handler.check_voxtral_connection(base_url):
                     result["error_title"] = "Connection Error"
@@ -4206,11 +4173,7 @@ class AppLogic(QObject):
                 )
 
             elif service == "Kokoro":
-                base_url = (
-                    tts_snapshot.get("external_server_url")
-                    if tts_snapshot.get("use_external_server")
-                    else tts_handler.KOKORO_API_BASE_URL
-                )
+                base_url = self._resolve_tts_service_base_url(tts_snapshot, service)
 
                 if not tts_handler.check_kokoro_connection(base_url):
                     result["error_title"] = "Connection Error"
@@ -4269,7 +4232,7 @@ class AppLogic(QObject):
                 )
 
             elif service == "Magpie":
-                base_url = tts_handler.MAGPIE_API_BASE_URL
+                base_url = self._resolve_tts_service_base_url(tts_snapshot, service)
 
                 if not tts_handler.check_magpie_connection(base_url):
                     result["error_title"] = "Connection Error"
@@ -4307,7 +4270,7 @@ class AppLogic(QObject):
                 )
 
             elif service == "Silero":
-                base_url = tts_handler.SILERO_API_BASE_URL
+                base_url = self._resolve_tts_service_base_url(tts_snapshot, service)
                 if not tts_handler.check_silero_connection(base_url):
                     result["error_title"] = "Connection Error"
                     result["error_message"] = (
@@ -4346,11 +4309,6 @@ class AppLogic(QObject):
                 tts_handler.GEMINI_SERVICE,
                 tts_handler.OPENAI_COMPAT_SERVICE,
             }:
-                if service == tts_handler.OPENAI_SERVICE:
-                    tts_snapshot["openai_audio_endpoint"] = tts_handler.OPENAI_PROVIDER
-                elif service == tts_handler.GEMINI_SERVICE:
-                    tts_snapshot["openai_audio_endpoint"] = tts_handler.GEMINI_PROVIDER
-
                 endpoint, endpoint_error = tts_handler.resolve_openai_audio_endpoint(tts_snapshot)
                 if endpoint is None:
                     result["error_title"] = "Connection Error"
@@ -4358,7 +4316,8 @@ class AppLogic(QObject):
                     self._tts_connection_result.emit(result)
                     return
 
-                tts_snapshot["openai_audio_endpoint"] = endpoint["name"]
+                if service == tts_handler.OPENAI_COMPAT_SERVICE:
+                    tts_snapshot["openai_audio_endpoint"] = endpoint["name"]
 
                 connected, connection_message = tts_handler.check_openai_audio_connection(tts_snapshot)
                 if not connected:
@@ -4396,12 +4355,13 @@ class AppLogic(QObject):
                     selected_speaker = default_voice
 
                 result["updates"] = {
-                    "openai_audio_endpoint": endpoint["name"],
                     "tts_models": models,
                     "tts_speakers": speakers,
                     "xtts_model": selected_model,
                     "speaker": selected_speaker,
                 }
+                if service == tts_handler.OPENAI_COMPAT_SERVICE:
+                    result["updates"]["openai_audio_endpoint"] = endpoint["name"]
                 result["log_message"] = (
                     f"{connection_message} ({len(models)} model(s), {len(speakers)} voice(s))."
                 )
@@ -4541,9 +4501,6 @@ class AppLogic(QObject):
         normalized_provider_id = self._normalize_provider_id(
             provider_id or self.state.tts.openai_audio_endpoint
         )
-        if normalized_provider_id in {tts_handler.OPENAI_PROVIDER, tts_handler.GEMINI_PROVIDER}:
-            return True
-
         for provider in self.list_tts_provider_configs():
             provider_record_id = self._normalize_provider_id(provider.get("id"))
             if provider_record_id != normalized_provider_id:
@@ -4575,34 +4532,24 @@ class AppLogic(QObject):
         voices: list[str] = []
 
         if service == "Kokoro":
-            base_url = (
-                tts_snapshot.get("external_server_url")
-                if tts_snapshot.get("use_external_server")
-                else tts_handler.KOKORO_API_BASE_URL
-            )
+            base_url = self._resolve_tts_service_base_url(tts_snapshot, service)
             voices = tts_handler.get_kokoro_voices(base_url)
         elif service == "Voxtral":
-            base_url = (
-                tts_snapshot.get("external_server_url")
-                if tts_snapshot.get("use_external_server")
-                else tts_handler.VOXTRAL_API_BASE_URL
-            )
+            base_url = self._resolve_tts_service_base_url(tts_snapshot, service)
             voices = tts_handler.get_voxtral_voices(base_url)
         elif service == "Magpie":
-            voices = tts_handler.get_magpie_voices(tts_handler.MAGPIE_API_BASE_URL)
+            voices = tts_handler.get_magpie_voices(
+                self._resolve_tts_service_base_url(tts_snapshot, service)
+            )
         elif service == "Silero":
-            voices = tts_handler.get_silero_speakers(tts_handler.SILERO_API_BASE_URL)
+            voices = tts_handler.get_silero_speakers(
+                self._resolve_tts_service_base_url(tts_snapshot, service)
+            )
         elif service in {
             tts_handler.OPENAI_SERVICE,
             tts_handler.GEMINI_SERVICE,
             tts_handler.OPENAI_COMPAT_SERVICE,
         }:
-            tts_snapshot["service"] = tts_handler.OPENAI_COMPAT_SERVICE
-            if service == tts_handler.OPENAI_SERVICE:
-                tts_snapshot["openai_audio_endpoint"] = tts_handler.OPENAI_PROVIDER
-            elif service == tts_handler.GEMINI_SERVICE:
-                tts_snapshot["openai_audio_endpoint"] = tts_handler.GEMINI_PROVIDER
-
             if use_remote:
                 voices = tts_handler.get_openai_audio_voices(tts_snapshot)
             else:
@@ -4693,7 +4640,9 @@ class AppLogic(QObject):
             return ""
 
         service = str(self.state.tts.service or "").strip()
-        provider_id = str(self.state.tts.openai_audio_endpoint or "").strip() or service
+        provider_id = service
+        if service == tts_handler.OPENAI_COMPAT_SERVICE:
+            provider_id = str(self.state.tts.openai_audio_endpoint or "").strip() or service
         normalized_language_code = str(language_code or self.state.tts.language or "").strip().lower() or "default"
 
         preview_path = self._build_voice_preview_path(
@@ -4731,7 +4680,9 @@ class AppLogic(QObject):
 
         tts_snapshot = copy.deepcopy(self.state.tts.__dict__)
         service = str(tts_snapshot.get("service") or "").strip()
-        provider_id = str(tts_snapshot.get("openai_audio_endpoint") or "").strip()
+        provider_id = service
+        if service == tts_handler.OPENAI_COMPAT_SERVICE:
+            provider_id = str(tts_snapshot.get("openai_audio_endpoint") or "").strip()
         if not self.tts_service_supports_prebuilt_voices(service, provider_id):
             return False, "", f"Service '{service or 'Unknown'}' does not use pre-built voices."
 
@@ -4740,36 +4691,14 @@ class AppLogic(QObject):
         if normalized_language_code:
             tts_snapshot["language"] = normalized_language_code
 
-        xtts_url = (
-            tts_snapshot.get("external_server_url")
-            if tts_snapshot.get("use_external_server") and service == "XTTS"
-            else tts_handler.XTTS_API_BASE_URL
-        )
-        voxcpm_url = (
-            tts_snapshot.get("external_server_url")
-            if tts_snapshot.get("use_external_server") and service == "VoxCPM"
-            else tts_handler.VOXCPM_API_BASE_URL
-        )
-        fishs2_url = (
-            tts_snapshot.get("external_server_url")
-            if tts_snapshot.get("use_external_server") and service == "FishS2"
-            else tts_handler.FISHS2_API_BASE_URL
-        )
-        voxtral_url = (
-            tts_snapshot.get("external_server_url")
-            if tts_snapshot.get("use_external_server") and service == "Voxtral"
-            else tts_handler.VOXTRAL_API_BASE_URL
-        )
-        kokoro_url = (
-            tts_snapshot.get("external_server_url")
-            if tts_snapshot.get("use_external_server") and service == "Kokoro"
-            else tts_handler.KOKORO_API_BASE_URL
-        )
-        chatterbox_url = (
-            tts_snapshot.get("external_server_url")
-            if tts_snapshot.get("use_external_server") and service == "Chatterbox"
-            else tts_handler.CHATTERBOX_API_BASE_URL
-        )
+        xtts_url = self._resolve_tts_service_base_url(tts_snapshot, "XTTS")
+        voxcpm_url = self._resolve_tts_service_base_url(tts_snapshot, "VoxCPM")
+        fishs2_url = self._resolve_tts_service_base_url(tts_snapshot, "FishS2")
+        voxtral_url = self._resolve_tts_service_base_url(tts_snapshot, "Voxtral")
+        kokoro_url = self._resolve_tts_service_base_url(tts_snapshot, "Kokoro")
+        chatterbox_url = self._resolve_tts_service_base_url(tts_snapshot, "Chatterbox")
+        magpie_url = self._resolve_tts_service_base_url(tts_snapshot, "Magpie")
+        silero_url = self._resolve_tts_service_base_url(tts_snapshot, "Silero")
 
         audio_data = tts_handler.text_to_audio(
             normalized_text,
@@ -4779,8 +4708,9 @@ class AppLogic(QObject):
             fishs2_base_url=fishs2_url,
             voxtral_base_url=voxtral_url,
             kokoro_base_url=kokoro_url,
+            silero_base_url=silero_url,
             chatterbox_base_url=chatterbox_url,
-            magpie_base_url=tts_handler.MAGPIE_API_BASE_URL,
+            magpie_base_url=magpie_url,
         )
         if audio_data is None:
             return False, "", "TTS generation failed for this voice."
@@ -4892,19 +4822,7 @@ class AppLogic(QObject):
         voice_library_handler.delete_sample(voice_id, sample_id)
 
     def _resolve_tts_upload_base_url(self, service: str) -> str:
-        default_base_url = tts_handler.XTTS_API_BASE_URL
-        if service == "VoxCPM":
-            default_base_url = tts_handler.VOXCPM_API_BASE_URL
-        elif service == "FishS2":
-            default_base_url = tts_handler.FISHS2_API_BASE_URL
-        elif service == "Chatterbox":
-            default_base_url = tts_handler.CHATTERBOX_API_BASE_URL
-
-        return (
-            self.state.tts.external_server_url
-            if self.state.tts.use_external_server
-            else default_base_url
-        )
+        return self._resolve_tts_service_base_url(self.state.tts, service)
 
     def upload_voice_library_voice(
         self,
@@ -5029,19 +4947,7 @@ class AppLogic(QObject):
             return
 
         try:
-            default_base_url = tts_handler.XTTS_API_BASE_URL
-            if service == "VoxCPM":
-                default_base_url = tts_handler.VOXCPM_API_BASE_URL
-            elif service == "FishS2":
-                default_base_url = tts_handler.FISHS2_API_BASE_URL
-            elif service == "Chatterbox":
-                default_base_url = tts_handler.CHATTERBOX_API_BASE_URL
-
-            base_url = (
-                self.state.tts.external_server_url
-                if self.state.tts.use_external_server
-                else default_base_url
-            )
+            base_url = self._resolve_tts_service_base_url(self.state.tts, service)
 
             normalized_prompt_text = str(prompt_text or "").strip() or None
             upload_prompt_text = None
@@ -5152,91 +5058,6 @@ class AppLogic(QObject):
         self.state_changed.emit()
         return status_lines
 
-    # --- TTS Providers ---
-    def list_tts_provider_configs(self) -> list[dict]:
-        """Returns normalized provider configuration for cloud TTS UI."""
-        provider_configs = tts_handler.get_provider_configs(self.state.tts)
-        if provider_configs != self.state.tts.provider_configs:
-            self.state.tts.provider_configs = provider_configs
-        return copy.deepcopy(provider_configs)
-
-    def should_show_xtts_advanced_settings(self) -> bool:
-        """Returns whether XTTS advanced controls should be visible in the UI."""
-        return tts_handler.should_show_xtts_advanced_settings(self.state.tts.__dict__)
-
-    # --- LLM ---
-    def list_llm_models(self) -> list[str]:
-        """Returns a list of available LLM models."""
-        return llm_handler.list_models(self.state.llm)
-
-    def list_llm_provider_configs(self) -> list[dict]:
-        """Returns normalized provider configuration for LLM settings UI."""
-        provider_configs = llm_handler.get_provider_configs(self.state.llm)
-        if provider_configs != self.state.llm.provider_configs:
-            self.state.llm.provider_configs = provider_configs
-        return copy.deepcopy(provider_configs)
-
-    def save_llm_provider(
-        self,
-        provider_id: str,
-        provider_name: str,
-        provider_key: str,
-        api_base: str,
-        api_key: str,
-        models: list[str] | str | None,
-    ) -> tuple[bool, str, str]:
-        """Creates or updates an LLM provider."""
-        current_configs = llm_handler.get_provider_configs(self.state.llm)
-        normalized_provider_id = str(provider_id or "").strip()
-        existing_provider = next(
-            (
-                provider
-                for provider in current_configs
-                if str(provider.get("id") or "") == normalized_provider_id
-            ),
-            None,
-        )
-
-        if existing_provider is not None:
-            success, provider_configs, message = llm_handler.update_provider(
-                self.state.llm,
-                provider_id=normalized_provider_id,
-                provider_name=provider_name,
-                provider_key=provider_key,
-                api_base=api_base,
-                api_key=api_key,
-                models=models,
-            )
-            if success:
-                self.state.llm.provider_configs = provider_configs
-                self.normalize_dubbing_translation_state(self.state.dubbing)
-                self.state_changed.emit()
-                return True, normalized_provider_id, ""
-            return False, "", message
-
-        success, provider_configs, resolved_provider_id, message = llm_handler.save_custom_provider(
-            self.state.llm,
-            provider_name=provider_name,
-            provider_key=provider_key,
-            api_base=api_base,
-            api_key=api_key,
-            models=models,
-        )
-        if success:
-            self.state.llm.provider_configs = provider_configs
-            self.normalize_dubbing_translation_state(self.state.dubbing)
-            self.state_changed.emit()
-            return True, resolved_provider_id, ""
-        return False, "", message
-
-    def refresh_llm_builtin_models(self) -> list[str]:
-        """Uses LiteLLM to refresh model catalogs for built-in providers."""
-        provider_configs, status_lines = llm_handler.refresh_builtin_provider_models(self.state.llm)
-        self.state.llm.provider_configs = provider_configs
-        self.normalize_dubbing_translation_state(self.state.dubbing)
-        self.state_changed.emit()
-        return status_lines
-
     def remove_llm_provider(self, provider_name_or_id: str) -> tuple[bool, str]:
         """Removes a custom LLM provider."""
         success, provider_configs, message = llm_handler.remove_custom_provider(
@@ -5266,8 +5087,40 @@ class AppLogic(QObject):
         return self.remove_llm_provider(provider_name_or_id)
 
     # --- TTS Providers ---
+    def list_tts_service_configs(self) -> list[dict]:
+        """Returns editable configuration for first-class TTS services."""
+        service_configs = tts_handler.get_service_configs(self.state.tts)
+        if service_configs != self.state.tts.service_configs:
+            self.state.tts.service_configs = service_configs
+        return copy.deepcopy(service_configs)
+
+    def save_tts_service_config(
+        self,
+        service_id: str,
+        api_base: str,
+        api_key: str,
+        models: list[str] | str | None,
+        voices: list[str] | str | None,
+    ) -> tuple[bool, str]:
+        """Updates an editable first-class TTS service configuration."""
+        success, service_configs, message = tts_handler.save_service_config(
+            self.state.tts,
+            service_name_or_id=service_id,
+            api_base=api_base,
+            api_key=api_key,
+            models=models,
+            voices=voices,
+        )
+        if not success:
+            return False, message
+
+        self.state.tts.service_configs = service_configs
+        self._normalize_tts_service_state(self.state.tts)
+        self.state_changed.emit()
+        return True, ""
+
     def list_tts_provider_configs(self) -> list[dict]:
-        """Returns normalized provider configuration for cloud TTS UI."""
+        """Returns user-created OpenAI-compatible TTS providers."""
         provider_configs = tts_handler.get_provider_configs(self.state.tts)
         if provider_configs != self.state.tts.provider_configs:
             self.state.tts.provider_configs = provider_configs
@@ -5319,8 +5172,16 @@ class AppLogic(QObject):
         self.state.tts.provider_configs = provider_configs
         selected_endpoint_id = self._normalize_provider_id(self.state.tts.openai_audio_endpoint)
         if selected_endpoint_id == removed_provider_id:
-            self.state.tts.openai_audio_endpoint = tts_handler.OPENAI_PROVIDER
-            self.populate_cloud_tts_catalogs(use_remote=False, emit_state=False)
+            remaining_provider_ids = [
+                str(provider.get("id") or "")
+                for provider in provider_configs
+                if str(provider.get("id") or "")
+            ]
+            self.state.tts.openai_audio_endpoint = (
+                remaining_provider_ids[0] if remaining_provider_ids else ""
+            )
+            if remaining_provider_ids:
+                self.populate_cloud_tts_catalogs(use_remote=False, emit_state=False)
 
         self._normalize_tts_service_state(self.state.tts)
         self.state_changed.emit()
@@ -6247,36 +6108,14 @@ class AppLogic(QObject):
 
             # 2. TTS Generation
             active_service = self.state.tts.service
-            xtts_url = (
-                self.state.tts.external_server_url
-                if self.state.tts.use_external_server and active_service == "XTTS"
-                else tts_handler.XTTS_API_BASE_URL
-            )
-            voxcpm_url = (
-                self.state.tts.external_server_url
-                if self.state.tts.use_external_server and active_service == "VoxCPM"
-                else tts_handler.VOXCPM_API_BASE_URL
-            )
-            fishs2_url = (
-                self.state.tts.external_server_url
-                if self.state.tts.use_external_server and active_service == "FishS2"
-                else tts_handler.FISHS2_API_BASE_URL
-            )
-            voxtral_url = (
-                self.state.tts.external_server_url
-                if self.state.tts.use_external_server and active_service == "Voxtral"
-                else tts_handler.VOXTRAL_API_BASE_URL
-            )
-            kokoro_url = (
-                self.state.tts.external_server_url
-                if self.state.tts.use_external_server and active_service == "Kokoro"
-                else tts_handler.KOKORO_API_BASE_URL
-            )
-            chatterbox_url = (
-                self.state.tts.external_server_url
-                if self.state.tts.use_external_server and active_service == "Chatterbox"
-                else tts_handler.CHATTERBOX_API_BASE_URL
-            )
+            xtts_url = self._resolve_tts_service_base_url(self.state.tts, "XTTS")
+            voxcpm_url = self._resolve_tts_service_base_url(self.state.tts, "VoxCPM")
+            fishs2_url = self._resolve_tts_service_base_url(self.state.tts, "FishS2")
+            voxtral_url = self._resolve_tts_service_base_url(self.state.tts, "Voxtral")
+            kokoro_url = self._resolve_tts_service_base_url(self.state.tts, "Kokoro")
+            chatterbox_url = self._resolve_tts_service_base_url(self.state.tts, "Chatterbox")
+            magpie_url = self._resolve_tts_service_base_url(self.state.tts, "Magpie")
+            silero_url = self._resolve_tts_service_base_url(self.state.tts, "Silero")
             audio_data = tts_handler.text_to_audio(
                 processed_text,
                 self.state.tts.__dict__,
@@ -6285,8 +6124,9 @@ class AppLogic(QObject):
                 fishs2_base_url=fishs2_url,
                 voxtral_base_url=voxtral_url,
                 kokoro_base_url=kokoro_url,
+                silero_base_url=silero_url,
                 chatterbox_base_url=chatterbox_url,
-                magpie_base_url=tts_handler.MAGPIE_API_BASE_URL,
+                magpie_base_url=magpie_url,
             )
             if not audio_data:
                 return False, None
