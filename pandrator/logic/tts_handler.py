@@ -1835,12 +1835,13 @@ def _parse_openai_audio_endpoints(tts_settings: dict) -> dict[str, dict[str, obj
         )
 
         default_model = str(provider_record.get("default_model", "")).strip()
-        if not default_model:
+        profile_id = str(provider_record.get("profile_id") or "")
+        if not default_model and not profile_id:
             default_model = _provider_default_model(provider)
         default_model = _normalize_model_for_provider(default_model, provider)
 
         default_voice = str(provider_record.get("default_voice", "")).strip()
-        if not default_voice:
+        if not default_voice and not profile_id:
             default_voice = _provider_default_voice(provider)
         default_voice = _normalize_voice_for_provider(default_voice, provider)
 
@@ -1856,7 +1857,7 @@ def _parse_openai_audio_endpoints(tts_settings: dict) -> dict[str, dict[str, obj
             "models": list(provider_record.get("models") or []),
             "voices": list(provider_record.get("voices") or []),
             "adapter": str(provider_record.get("adapter") or OPENAI_COMPAT_ADAPTER),
-            "profile_id": str(provider_record.get("profile_id") or ""),
+            "profile_id": profile_id,
             "speech_path": str(provider_record.get("speech_path") or ""),
             "models_path": str(provider_record.get("models_path") or ""),
             "voices_path": str(provider_record.get("voices_path") or ""),
@@ -2066,10 +2067,15 @@ def _resolve_openai_audio_provider_context(
         raw_provider=endpoint.get("provider", ""),
     )
 
-    default_model = str(endpoint.get("default_model", "")).strip() or _provider_default_model(provider)
+    profile_id = str(endpoint.get("profile_id") or "")
+    default_model = str(endpoint.get("default_model", "")).strip()
+    if not default_model and not profile_id:
+        default_model = _provider_default_model(provider)
     default_model = _normalize_model_for_provider(default_model, provider)
 
-    default_voice = str(endpoint.get("default_voice", "")).strip() or _provider_default_voice(provider)
+    default_voice = str(endpoint.get("default_voice", "")).strip()
+    if not default_voice and not profile_id:
+        default_voice = _provider_default_voice(provider)
     default_voice = _normalize_voice_for_provider(default_voice, provider)
 
     return endpoint, provider, default_model, default_voice
