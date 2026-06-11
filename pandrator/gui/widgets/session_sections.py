@@ -184,7 +184,7 @@ class TtsSettingsSection(QFrame):
         layout.addWidget(self.advanced_tts_checkbox, 8, 0)
 
         self.cloud_provider_hint = QLabel(
-            "Custom OpenAI-compatible endpoints are configured in the Providers tab."
+            "Custom TTS endpoints are configured in the Providers tab."
         )
         self.cloud_provider_hint.setWordWrap(True)
         self.cloud_provider_hint.setObjectName("secondaryInfoLabel")

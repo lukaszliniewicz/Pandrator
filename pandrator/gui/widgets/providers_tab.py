@@ -20,6 +20,7 @@ class ProvidersTab(QWidget):
     def __init__(self, logic, parent=None):
         super().__init__(parent)
         self.logic = logic
+        self._pending_tts_adapter_config = None
 
         main_layout = QVBoxLayout(self)
         main_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
@@ -173,10 +174,17 @@ class ProvidersTab(QWidget):
         layout = QGridLayout(frame)
 
         self.tts_provider_combo = QComboBox()
+        self.tts_profile_combo = QComboBox()
+        self.tts_profile_combo.addItem("Auto-detect / Manual", "")
+        for profile in self.logic.list_tts_provider_profiles():
+            self.tts_profile_combo.addItem(str(profile.get("name") or profile.get("id")), profile.get("id"))
+        self.tts_apply_profile_button = QPushButton("Apply Profile")
+        self.tts_profile_hint_label = QLabel("")
+        self.tts_profile_hint_label.setWordWrap(True)
         self.tts_provider_type_combo = QComboBox()
         self.tts_provider_type_combo.addItems(["openai", "gemini"])
         self.tts_provider_name_edit = QLineEdit()
-        self.tts_provider_name_edit.setPlaceholderText("My Compatible TTS Provider")
+        self.tts_provider_name_edit.setPlaceholderText("My Custom TTS Provider")
         self.tts_provider_api_base_edit = QLineEdit()
         self.tts_provider_api_base_edit.setPlaceholderText("https://api.example.com/v1")
         self.tts_provider_api_key_edit = QLineEdit()
@@ -196,8 +204,11 @@ class ProvidersTab(QWidget):
         self.tts_save_provider_button = QPushButton("Save")
         self.tts_remove_provider_button = QPushButton("Remove")
         self.tts_test_connection_button = QPushButton("Test Connection")
+        self.tts_auto_config_button = QPushButton("Auto-configure")
         self.tts_discover_catalog_button = QPushButton("Discover Models/Voices")
 
+        self.tts_adapter_summary_label = QLabel("")
+        self.tts_adapter_summary_label.setWordWrap(True)
         self.tts_feedback_label = QLabel("")
         self.tts_feedback_label.setWordWrap(True)
 
@@ -206,29 +217,38 @@ class ProvidersTab(QWidget):
         layout.addWidget(self.tts_new_provider_button, 0, 2)
         layout.addWidget(self.tts_remove_provider_button, 0, 3)
 
-        layout.addWidget(QLabel("Display Name:"), 1, 0)
-        layout.addWidget(self.tts_provider_name_edit, 1, 1, 1, 3)
+        layout.addWidget(QLabel("Wrapper Profile:"), 1, 0)
+        layout.addWidget(self.tts_profile_combo, 1, 1, 1, 2)
+        layout.addWidget(self.tts_apply_profile_button, 1, 3)
+        layout.addWidget(self.tts_profile_hint_label, 2, 0, 1, 4)
 
-        layout.addWidget(QLabel("Compatibility Flavor:"), 2, 0)
-        layout.addWidget(self.tts_provider_type_combo, 2, 1, 1, 3)
+        layout.addWidget(QLabel("Display Name:"), 3, 0)
+        layout.addWidget(self.tts_provider_name_edit, 3, 1, 1, 3)
 
-        layout.addWidget(QLabel("API Base URL:"), 3, 0)
-        layout.addWidget(self.tts_provider_api_base_edit, 3, 1, 1, 3)
+        layout.addWidget(QLabel("Compatibility Flavor:"), 4, 0)
+        layout.addWidget(self.tts_provider_type_combo, 4, 1, 1, 3)
 
-        layout.addWidget(QLabel("API Key:"), 4, 0)
-        layout.addWidget(self.tts_provider_api_key_edit, 4, 1, 1, 3)
+        layout.addWidget(QLabel("API Base URL:"), 5, 0)
+        layout.addWidget(self.tts_provider_api_base_edit, 5, 1, 1, 3)
 
-        layout.addWidget(QLabel("Models:"), 5, 0)
-        layout.addWidget(self.tts_provider_models_edit, 5, 1, 1, 3)
+        layout.addWidget(QLabel("API Key:"), 6, 0)
+        layout.addWidget(self.tts_provider_api_key_edit, 6, 1, 1, 3)
 
-        layout.addWidget(QLabel("Voices:"), 6, 0)
-        layout.addWidget(self.tts_provider_voices_edit, 6, 1, 1, 3)
-        layout.addWidget(self.tts_provider_prebuilt_checkbox, 7, 1, 1, 3)
+        layout.addWidget(QLabel("Models:"), 7, 0)
+        layout.addWidget(self.tts_provider_models_edit, 7, 1, 1, 3)
 
-        layout.addWidget(self.tts_test_connection_button, 8, 1)
-        layout.addWidget(self.tts_discover_catalog_button, 8, 2)
-        layout.addWidget(self.tts_save_provider_button, 8, 3)
-        layout.addWidget(self.tts_feedback_label, 9, 0, 1, 4)
+        layout.addWidget(QLabel("Voices:"), 8, 0)
+        layout.addWidget(self.tts_provider_voices_edit, 8, 1, 1, 3)
+        layout.addWidget(self.tts_provider_prebuilt_checkbox, 9, 1, 1, 3)
+
+        layout.addWidget(QLabel("Detected Mapping:"), 10, 0)
+        layout.addWidget(self.tts_adapter_summary_label, 10, 1, 1, 3)
+
+        layout.addWidget(self.tts_test_connection_button, 11, 0)
+        layout.addWidget(self.tts_auto_config_button, 11, 1)
+        layout.addWidget(self.tts_discover_catalog_button, 11, 2)
+        layout.addWidget(self.tts_save_provider_button, 11, 3)
+        layout.addWidget(self.tts_feedback_label, 12, 0, 1, 4)
 
         return frame
 
@@ -246,7 +266,10 @@ class ProvidersTab(QWidget):
         self.tts_save_provider_button.clicked.connect(self._on_save_tts_provider)
         self.tts_remove_provider_button.clicked.connect(self._on_remove_tts_provider)
         self.tts_test_connection_button.clicked.connect(self._on_test_tts_provider)
+        self.tts_auto_config_button.clicked.connect(self._on_auto_configure_tts_provider)
         self.tts_discover_catalog_button.clicked.connect(self._on_discover_tts_provider_catalog)
+        self.tts_profile_combo.currentIndexChanged.connect(self._on_tts_profile_selected)
+        self.tts_apply_profile_button.clicked.connect(self._on_apply_tts_profile)
 
     @staticmethod
     def _parse_items(raw_text: str) -> list[str]:
@@ -266,11 +289,48 @@ class ProvidersTab(QWidget):
             return ""
         return "\n".join(str(item).strip() for item in items if str(item).strip())
 
+    @staticmethod
+    def _adapter_config_from_record(record: dict) -> dict:
+        return {
+            "adapter": str(record.get("adapter") or "openai_compatible"),
+            "profile_id": str(record.get("profile_id") or ""),
+            "speech_path": str(record.get("speech_path") or ""),
+            "models_path": str(record.get("models_path") or ""),
+            "voices_path": str(record.get("voices_path") or ""),
+            "request_fields": dict(record.get("request_fields") or {}),
+            "request_defaults": dict(record.get("request_defaults") or {}),
+        }
+
+    @staticmethod
+    def _adapter_summary(config: dict | None) -> str:
+        if not isinstance(config, dict):
+            return "OpenAI-compatible adapter (default route discovery)."
+
+        adapter = str(config.get("adapter") or "openai_compatible").replace("_", " ")
+        speech_path = str(config.get("speech_path") or "automatic route candidates")
+        request_fields = config.get("request_fields", {})
+        mapping = []
+        if isinstance(request_fields, dict):
+            mapping = [
+                f"{logical} -> {field}"
+                for logical, field in request_fields.items()
+                if str(field or "").strip()
+            ]
+        mapping_text = f" Fields: {', '.join(mapping)}." if mapping else ""
+        return f"{adapter.title()}: POST {speech_path}.{mapping_text}"
+
+    def _set_tts_adapter_config(self, config: dict | None):
+        self._pending_tts_adapter_config = config
+        self.tts_adapter_summary_label.setText(self._adapter_summary(config))
+
     def _llm_providers(self) -> list[dict]:
         return self.logic.list_llm_provider_configs()
 
     def _tts_providers(self) -> list[dict]:
         return self.logic.list_tts_provider_configs()
+
+    def _tts_profiles(self) -> list[dict]:
+        return self.logic.list_tts_provider_profiles()
 
     def _tts_services(self) -> list[dict]:
         return self.logic.list_tts_service_configs()
@@ -365,6 +425,7 @@ class ProvidersTab(QWidget):
         )
 
         if provider is None:
+            self._set_tts_profile_selection("")
             self.tts_provider_name_edit.setText("")
             self.tts_provider_type_combo.setCurrentText("openai")
             self.tts_provider_api_base_edit.setText("")
@@ -373,17 +434,20 @@ class ProvidersTab(QWidget):
             self.tts_provider_voices_edit.setPlainText("")
             self.tts_provider_prebuilt_checkbox.setChecked(True)
             self.tts_provider_prebuilt_checkbox.setEnabled(True)
+            self._set_tts_adapter_config(None)
             self.tts_remove_provider_button.setEnabled(False)
             self.tts_test_connection_button.setEnabled(False)
             self.tts_discover_catalog_button.setEnabled(False)
             return
 
+        self._set_tts_profile_selection(str(provider.get("profile_id") or ""))
         self.tts_provider_name_edit.setText(str(provider.get("name") or provider.get("id") or ""))
         self.tts_provider_type_combo.setCurrentText(str(provider.get("provider") or "openai"))
         self.tts_provider_api_base_edit.setText(str(provider.get("api_base") or ""))
         self.tts_provider_api_key_edit.setText(str(provider.get("api_key") or ""))
         self.tts_provider_models_edit.setPlainText(self._format_items(provider.get("models", [])))
         self.tts_provider_voices_edit.setPlainText(self._format_items(provider.get("voices", [])))
+        self._set_tts_adapter_config(self._adapter_config_from_record(provider))
         is_custom_provider = bool(provider.get("is_custom", False))
         self.tts_provider_prebuilt_checkbox.setChecked(
             bool(provider.get("supports_prebuilt_voices", bool(provider.get("voices", []))))
@@ -434,6 +498,60 @@ class ProvidersTab(QWidget):
 
     def _on_tts_provider_selected(self):
         self._load_tts_provider_form(str(self.tts_provider_combo.currentData() or ""))
+
+    def _set_tts_profile_selection(self, profile_id: str):
+        self.tts_profile_combo.blockSignals(True)
+        index = self.tts_profile_combo.findData(str(profile_id or ""))
+        self.tts_profile_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.tts_profile_combo.blockSignals(False)
+        self._update_tts_profile_hint()
+
+    def _selected_tts_profile(self) -> dict | None:
+        profile_id = str(self.tts_profile_combo.currentData() or "")
+        return next(
+            (profile for profile in self._tts_profiles() if str(profile.get("id") or "") == profile_id),
+            None,
+        )
+
+    def _update_tts_profile_hint(self):
+        profile = self._selected_tts_profile()
+        if profile is None:
+            self.tts_profile_hint_label.setText(
+                "Choose a known wrapper profile or enter a base URL and use Auto-configure."
+            )
+            return
+        details = " ".join(
+            part
+            for part in [
+                str(profile.get("description") or ""),
+                str(profile.get("notes") or ""),
+                f"Source: {profile.get('source_url')}" if profile.get("source_url") else "",
+            ]
+            if part
+        )
+        self.tts_profile_hint_label.setText(details)
+
+    def _on_tts_profile_selected(self):
+        self._update_tts_profile_hint()
+
+    def _on_apply_tts_profile(self):
+        profile = self._selected_tts_profile()
+        if profile is None:
+            self.tts_feedback_label.setText("Choose a wrapper profile to apply.")
+            return
+
+        self.tts_provider_name_edit.setText(str(profile.get("name") or "Custom TTS"))
+        self.tts_provider_type_combo.setCurrentText(str(profile.get("provider") or "openai"))
+        self.tts_provider_api_base_edit.setText(str(profile.get("api_base") or ""))
+        self.tts_provider_models_edit.setPlainText(self._format_items(profile.get("models", [])))
+        self.tts_provider_voices_edit.setPlainText(self._format_items(profile.get("voices", [])))
+        self.tts_provider_prebuilt_checkbox.setChecked(bool(profile.get("supports_prebuilt_voices")))
+        adapter_config = self._adapter_config_from_record(profile)
+        adapter_config["profile_id"] = str(profile.get("id") or "")
+        self._set_tts_adapter_config(adapter_config)
+        self.tts_feedback_label.setText(
+            "Profile applied. Adjust the base URL, port, models, or voices as needed, then click Save."
+        )
 
     def _on_tts_service_selected(self):
         self._load_tts_service_form(str(self.tts_service_combo.currentData() or ""))
@@ -519,6 +637,7 @@ class ProvidersTab(QWidget):
             models=models,
             voices=voices,
             supports_prebuilt_voices=supports_prebuilt_voices,
+            adapter_config=self._pending_tts_adapter_config,
         )
         if not success:
             self.tts_feedback_label.setText(error_message or "Could not save TTS provider.")
@@ -553,6 +672,46 @@ class ProvidersTab(QWidget):
             return
 
         self.tts_feedback_label.setText(message or "Connection failed.")
+
+    def _on_auto_configure_tts_provider(self):
+        base_url = self.tts_provider_api_base_edit.text().strip()
+        if not base_url:
+            self.tts_feedback_label.setText("Enter an API base URL before auto-configuring.")
+            return
+
+        result = self.logic.discover_tts_endpoint_config(
+            base_url,
+            self.tts_provider_api_key_edit.text().strip(),
+        )
+        if not result.get("success"):
+            details = " ".join(result.get("evidence", []) + result.get("warnings", []))
+            self.tts_feedback_label.setText(
+                " ".join(part for part in [str(result.get("message") or "Auto-configuration failed."), details] if part)
+            )
+            return
+
+        self._set_tts_profile_selection("")
+        if not self.tts_provider_name_edit.text().strip():
+            self.tts_provider_name_edit.setText(str(result.get("name") or "Custom TTS"))
+        self.tts_provider_api_base_edit.setText(str(result.get("api_base") or base_url))
+        self.tts_provider_type_combo.setCurrentText(str(result.get("provider") or "openai"))
+        self.tts_provider_models_edit.setPlainText(self._format_items(result.get("models", [])))
+        self.tts_provider_voices_edit.setPlainText(self._format_items(result.get("voices", [])))
+        self.tts_provider_prebuilt_checkbox.setChecked(bool(result.get("supports_prebuilt_voices")))
+        self._set_tts_adapter_config(self._adapter_config_from_record(result))
+
+        details = " ".join(result.get("evidence", []) + result.get("warnings", []))
+        self.tts_feedback_label.setText(
+            " ".join(
+                part
+                for part in [
+                    str(result.get("message") or "Auto-configuration complete."),
+                    details,
+                    "Review the detected mapping, then click Save.",
+                ]
+                if part
+            )
+        )
 
     def _on_discover_tts_provider_catalog(self):
         provider_id = str(self.tts_provider_combo.currentData() or "").strip()

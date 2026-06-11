@@ -5,6 +5,7 @@ import os
 import copy
 import re
 from contextlib import ExitStack
+from urllib.parse import urljoin, urlparse, urlunparse
 
 import requests
 from pydub import AudioSegment
@@ -365,6 +366,9 @@ SERVICE_ID_ALIASES = {
     "gemini": GEMINI_PROVIDER,
 }
 PREBUILT_VOICE_PROVIDER_FIELD = "supports_prebuilt_voices"
+OPENAI_COMPAT_ADAPTER = "openai_compatible"
+GENERIC_JSON_ADAPTER = "generic_json"
+SUPPORTED_CUSTOM_TTS_ADAPTERS = {OPENAI_COMPAT_ADAPTER, GENERIC_JSON_ADAPTER}
 
 
 def _read_setting(settings, key: str, default=None):
@@ -373,6 +377,57 @@ def _read_setting(settings, key: str, default=None):
     if isinstance(settings, dict):
         return settings.get(key, default)
     return getattr(settings, key, default)
+
+
+def _normalize_custom_adapter(raw_adapter: str | None) -> str:
+    normalized = str(raw_adapter or "").strip().lower().replace("-", "_")
+    aliases = {
+        "openai": OPENAI_COMPAT_ADAPTER,
+        "openai_compatible": OPENAI_COMPAT_ADAPTER,
+        "generic": GENERIC_JSON_ADAPTER,
+        "json": GENERIC_JSON_ADAPTER,
+        "generic_json": GENERIC_JSON_ADAPTER,
+    }
+    return aliases.get(normalized, OPENAI_COMPAT_ADAPTER)
+
+
+def _normalize_adapter_config(raw_config) -> dict[str, object]:
+    config = raw_config if isinstance(raw_config, dict) else {}
+    adapter = _normalize_custom_adapter(config.get("adapter"))
+    request_fields = config.get("request_fields", {})
+    if not isinstance(request_fields, dict):
+        request_fields = {}
+    normalized_fields = {
+        key: str(request_fields.get(key) or "").strip()
+        for key in ("text", "model", "voice", "speed", "format")
+    }
+    if adapter == OPENAI_COMPAT_ADAPTER:
+        normalized_fields = {
+            "text": "input",
+            "model": "model",
+            "voice": "voice",
+            "speed": "speed",
+            "format": "response_format",
+        }
+
+    request_defaults = config.get("request_defaults", {})
+    if not isinstance(request_defaults, dict):
+        request_defaults = {}
+    normalized_defaults = {
+        str(key): value
+        for key, value in request_defaults.items()
+        if str(key).strip() and isinstance(value, (str, int, float, bool, type(None)))
+    }
+
+    return {
+        "adapter": adapter,
+        "profile_id": str(config.get("profile_id") or "").strip(),
+        "speech_path": str(config.get("speech_path") or "").strip(),
+        "models_path": str(config.get("models_path") or "").strip(),
+        "voices_path": str(config.get("voices_path") or "").strip(),
+        "request_fields": normalized_fields,
+        "request_defaults": normalized_defaults,
+    }
 
 
 def _normalize_provider_id(raw_value: str | None) -> str:
@@ -754,6 +809,10 @@ def get_provider_configs(tts_settings) -> list[dict[str, object]]:
                 "api_key": str(raw_provider.get("api_key") or "").strip(),
                 "is_custom": True,
             }
+            adapter_config = _normalize_adapter_config(raw_provider)
+            record.update(adapter_config)
+            adapter = str(adapter_config["adapter"])
+            profile_id = str(adapter_config.get("profile_id") or "")
 
             models = _parse_model_list(raw_provider.get("models", []), provider_key)
             default_model = _normalize_model_for_provider(
@@ -763,12 +822,24 @@ def get_provider_configs(tts_settings) -> list[dict[str, object]]:
             if default_model and default_model not in models:
                 models.insert(0, default_model)
 
-            if not models:
+            if (
+                not models
+                and adapter == OPENAI_COMPAT_ADAPTER
+                and not profile_id
+            ):
                 builtin_models = _provider_model_catalog(provider_key)
                 models = list(builtin_models)
 
             if not default_model:
-                default_model = models[0] if models else _provider_default_model(provider_key)
+                default_model = (
+                    models[0]
+                    if models
+                    else (
+                        _provider_default_model(provider_key)
+                        if adapter == OPENAI_COMPAT_ADAPTER and not profile_id
+                        else ""
+                    )
+                )
 
             voices = _parse_voice_list(raw_provider.get("voices", []), provider_key)
             default_voice = _normalize_voice_for_provider(
@@ -778,11 +849,23 @@ def get_provider_configs(tts_settings) -> list[dict[str, object]]:
             if default_voice and default_voice not in voices:
                 voices.insert(0, default_voice)
 
-            if not voices:
+            if (
+                not voices
+                and adapter == OPENAI_COMPAT_ADAPTER
+                and not profile_id
+            ):
                 voices = _provider_voice_catalog(provider_key, default_model)
 
             if not default_voice:
-                default_voice = voices[0] if voices else _provider_default_voice(provider_key)
+                default_voice = (
+                    voices[0]
+                    if voices
+                    else (
+                        _provider_default_voice(provider_key)
+                        if adapter == OPENAI_COMPAT_ADAPTER and not profile_id
+                        else ""
+                    )
+                )
 
             record["models"] = _dedupe_ordered(models)
             record["default_model"] = default_model
@@ -825,6 +908,7 @@ def save_provider(
     voices: list[str] | str | None = None,
     supports_prebuilt_voices: bool | None = None,
     provider_id: str = "",
+    adapter_config: dict | None = None,
 ) -> tuple[bool, list[dict[str, object]], str, str]:
     display_name = str(provider_name or "").strip()
     if not display_name:
@@ -862,22 +946,50 @@ def save_provider(
         None,
     )
     is_custom = True
+    source_adapter_config = adapter_config
+    if source_adapter_config is None and existing is not None:
+        source_adapter_config = existing
+    normalized_adapter_config = _normalize_adapter_config(source_adapter_config)
+    adapter = str(normalized_adapter_config["adapter"])
+    if adapter == GENERIC_JSON_ADAPTER:
+        if not str(normalized_adapter_config.get("speech_path") or "").strip():
+            return False, provider_configs, "", "A discovered speech path is required for generic JSON endpoints."
+        request_fields = normalized_adapter_config.get("request_fields", {})
+        if not isinstance(request_fields, dict) or not str(request_fields.get("text") or "").strip():
+            return False, provider_configs, "", "A text request field is required for generic JSON endpoints."
 
     parsed_models = _parse_model_list(models or [], normalized_provider_type)
     if not parsed_models and existing is not None:
         parsed_models = _parse_model_list(existing.get("models", []), normalized_provider_type)
-    if not parsed_models:
+    profile_id = str(normalized_adapter_config.get("profile_id") or "")
+    if not parsed_models and adapter == OPENAI_COMPAT_ADAPTER and not profile_id:
         parsed_models = list(_provider_model_catalog(normalized_provider_type))
 
-    default_model = parsed_models[0] if parsed_models else _provider_default_model(normalized_provider_type)
+    default_model = (
+        parsed_models[0]
+        if parsed_models
+        else (
+            _provider_default_model(normalized_provider_type)
+            if adapter == OPENAI_COMPAT_ADAPTER and not profile_id
+            else ""
+        )
+    )
 
     parsed_voices = _parse_voice_list(voices or [], normalized_provider_type)
     if not parsed_voices and existing is not None:
         parsed_voices = _parse_voice_list(existing.get("voices", []), normalized_provider_type)
-    if not parsed_voices:
+    if not parsed_voices and adapter == OPENAI_COMPAT_ADAPTER and not profile_id:
         parsed_voices = list(_provider_voice_catalog(normalized_provider_type, default_model))
 
-    default_voice = parsed_voices[0] if parsed_voices else _provider_default_voice(normalized_provider_type)
+    default_voice = (
+        parsed_voices[0]
+        if parsed_voices
+        else (
+            _provider_default_voice(normalized_provider_type)
+            if adapter == OPENAI_COMPAT_ADAPTER and not profile_id
+            else ""
+        )
+    )
     if supports_prebuilt_voices is None:
         if existing is not None:
             provider_supports_prebuilt_voices = _coerce_bool(
@@ -903,6 +1015,7 @@ def save_provider(
         "default_voice": default_voice,
         PREBUILT_VOICE_PROVIDER_FIELD: provider_supports_prebuilt_voices,
     }
+    updated_record.update(normalized_adapter_config)
 
     updated_provider_configs: list[dict[str, object]] = []
     found = False
@@ -955,6 +1068,18 @@ def _normalize_base_url(base_url: str | None, fallback: str) -> str:
 
 def _openai_auth_headers(api_key: str = XTTS_OPENAI_PLACEHOLDER_API_KEY) -> dict[str, str]:
     return {"Authorization": f"Bearer {api_key}"}
+
+
+def _configured_endpoint_url(base_url: str, path: str) -> str:
+    normalized_path = str(path or "").strip()
+    if not normalized_path:
+        return str(base_url or "").strip().rstrip("/")
+    if normalized_path.startswith(("http://", "https://")):
+        return normalized_path
+
+    parsed = urlparse(str(base_url or "").strip())
+    origin = urlunparse(parsed._replace(path="", params="", query="", fragment="")).rstrip("/")
+    return urljoin(f"{origin}/", normalized_path.lstrip("/"))
 
 
 def _coerce_bool(value, default: bool) -> bool:
@@ -1503,6 +1628,16 @@ def _openai_audio_speech_urls(base_url: str) -> list[str]:
     return _openai_url_candidates(base_url, "audio/speech")
 
 
+def _configured_openai_urls(endpoint: dict[str, object], path_key: str, fallback_urls: list[str]) -> list[str]:
+    configured_path = str(endpoint.get(path_key) or "").strip()
+    configured_urls = (
+        [_configured_endpoint_url(str(endpoint.get("base_url") or ""), configured_path)]
+        if configured_path
+        else []
+    )
+    return _dedupe_ordered(configured_urls + fallback_urls)
+
+
 def _openai_files_urls(base_url: str) -> list[str]:
     return _openai_url_candidates(base_url, "files")
 
@@ -1681,8 +1816,8 @@ def validate_openai_audio_endpoints_json(raw_json: str) -> tuple[bool, str]:
     return True, ""
 
 
-def _parse_openai_audio_endpoints(tts_settings: dict) -> dict[str, dict[str, str]]:
-    endpoints: dict[str, dict[str, str]] = {}
+def _parse_openai_audio_endpoints(tts_settings: dict) -> dict[str, dict[str, object]]:
+    endpoints: dict[str, dict[str, object]] = {}
     provider_configs = get_provider_configs(tts_settings)
     for provider_record in provider_configs:
         provider_id = str(provider_record.get("id", "")).strip()
@@ -1720,13 +1855,20 @@ def _parse_openai_audio_endpoints(tts_settings: dict) -> dict[str, dict[str, str
             "default_voice": default_voice,
             "models": list(provider_record.get("models") or []),
             "voices": list(provider_record.get("voices") or []),
+            "adapter": str(provider_record.get("adapter") or OPENAI_COMPAT_ADAPTER),
+            "profile_id": str(provider_record.get("profile_id") or ""),
+            "speech_path": str(provider_record.get("speech_path") or ""),
+            "models_path": str(provider_record.get("models_path") or ""),
+            "voices_path": str(provider_record.get("voices_path") or ""),
+            "request_fields": dict(provider_record.get("request_fields") or {}),
+            "request_defaults": dict(provider_record.get("request_defaults") or {}),
         }
 
     return endpoints
 
 
 def list_openai_audio_endpoint_names(tts_settings: dict) -> list[str]:
-    """Lists configured OpenAI-compatible audio endpoint names."""
+    """Lists configured custom audio endpoint names."""
     service_provider = _provider_for_tts_service(tts_settings.get("service"))
     if service_provider:
         return [_service_audio_endpoint(tts_settings, service_provider)["name"]]
@@ -1734,8 +1876,8 @@ def list_openai_audio_endpoint_names(tts_settings: dict) -> list[str]:
     return sorted(_parse_openai_audio_endpoints(tts_settings).keys())
 
 
-def resolve_openai_audio_endpoint(tts_settings: dict) -> tuple[dict[str, str] | None, str]:
-    """Resolves selected OpenAI-compatible audio endpoint from settings."""
+def resolve_openai_audio_endpoint(tts_settings: dict) -> tuple[dict[str, object] | None, str]:
+    """Resolves the selected custom audio endpoint from settings."""
     endpoints = _parse_openai_audio_endpoints(tts_settings)
 
     service_provider = _provider_for_tts_service(tts_settings.get("service"))
@@ -1743,7 +1885,7 @@ def resolve_openai_audio_endpoint(tts_settings: dict) -> tuple[dict[str, str] | 
         return _service_audio_endpoint(tts_settings, service_provider), ""
 
     if not endpoints:
-        return None, "No custom OpenAI-compatible audio endpoints are configured."
+        return None, "No custom audio endpoints are configured."
 
     selected_name = str(tts_settings.get("openai_audio_endpoint", "") or "").strip()
     if selected_name:
@@ -1787,6 +1929,17 @@ def _resolve_openai_audio_api_key(endpoint: dict[str, str]) -> str:
     return XTTS_OPENAI_PLACEHOLDER_API_KEY
 
 
+def _configured_endpoint_auth_headers(endpoint: dict[str, object]) -> dict[str, str]:
+    key_env = str(endpoint.get("api_key_env", "") or "").strip()
+    if key_env:
+        env_value = os.getenv(key_env, "").strip()
+        if env_value:
+            return _openai_auth_headers(env_value)
+
+    explicit_key = str(endpoint.get("api_key", "") or "").strip()
+    return _openai_auth_headers(explicit_key) if explicit_key else {}
+
+
 def _resolve_voxcpm_api_key() -> str:
     api_key = os.getenv("VOXCPM_API_KEY", "").strip()
     if api_key:
@@ -1816,16 +1969,50 @@ def _resolve_kokoro_api_key() -> str:
 
 
 def check_openai_audio_connection(tts_settings: dict) -> tuple[bool, str]:
-    """Checks OpenAI-compatible audio endpoint reachability."""
+    """Checks custom audio endpoint reachability."""
     endpoint, error = resolve_openai_audio_endpoint(tts_settings)
     if endpoint is None:
         return False, error
+
+    if _normalize_custom_adapter(endpoint.get("adapter")) == GENERIC_JSON_ADAPTER:
+        speech_path = str(endpoint.get("speech_path") or "").strip()
+        if not speech_path:
+            return False, f"Endpoint '{endpoint['name']}' has no configured speech route."
+        try:
+            response = requests.get(
+                _configured_endpoint_url(str(endpoint["base_url"]), speech_path),
+                headers=_configured_endpoint_auth_headers(endpoint),
+                timeout=8,
+            )
+        except requests.exceptions.RequestException as e:
+            return False, f"Could not connect to endpoint '{endpoint['name']}': {e}"
+
+        if response.status_code in {401, 403}:
+            return (
+                False,
+                f"Endpoint '{endpoint['name']}' rejected the configured API key "
+                f"with status {response.status_code}.",
+            )
+        if response.status_code == 404 or response.status_code >= 500:
+            return (
+                False,
+                f"Endpoint '{endpoint['name']}' returned {response.status_code} "
+                f"for configured speech route {speech_path}.",
+            )
+        return (
+            True,
+            f"Connected to endpoint '{endpoint['name']}' at configured speech route {speech_path}.",
+        )
 
     api_key = _resolve_openai_audio_api_key(endpoint)
     last_status = None
     last_text = ""
 
-    for models_url in _openai_models_urls(endpoint["base_url"]):
+    for models_url in _configured_openai_urls(
+        endpoint,
+        "models_path",
+        _openai_models_urls(str(endpoint["base_url"])),
+    ):
         try:
             response = requests.get(
                 models_url,
@@ -1847,16 +2034,28 @@ def check_openai_audio_connection(tts_settings: dict) -> tuple[bool, str]:
         except requests.exceptions.RequestException as e:
             return False, f"Could not connect to endpoint '{endpoint['name']}': {e}"
 
-    return (
-        False,
-        f"Endpoint '{endpoint['name']}' does not expose an OpenAI-compatible /models endpoint. "
-        f"Last status: {last_status or 'N/A'}. {last_text}",
+    speech_path = str(endpoint.get("speech_path") or "").strip()
+    if speech_path:
+        try:
+            response = requests.get(
+                _configured_endpoint_url(str(endpoint["base_url"]), speech_path),
+                headers=_openai_auth_headers(api_key),
+                timeout=8,
+            )
+            if response.status_code not in {404, 501} and response.status_code < 500:
+                return True, f"Connected to endpoint '{endpoint['name']}' at {speech_path}."
+        except requests.exceptions.RequestException:
+            pass
+
+    return False, (
+        f"Endpoint '{endpoint['name']}' does not expose a reachable models or speech route. "
+        f"Last status: {last_status or 'N/A'}. {last_text}"
     )
 
 
 def _resolve_openai_audio_provider_context(
     tts_settings: dict,
-) -> tuple[dict[str, str] | None, str, str, str]:
+) -> tuple[dict[str, object] | None, str, str, str]:
     endpoint, _ = resolve_openai_audio_endpoint(tts_settings)
     if endpoint is None:
         return None, "", "", ""
@@ -1877,17 +2076,25 @@ def _resolve_openai_audio_provider_context(
 
 
 def get_openai_audio_models_fallback(tts_settings: dict) -> list[str]:
-    """Returns built-in model suggestions for OpenAI-compatible audio providers."""
+    """Returns fallback model suggestions for custom audio providers."""
     endpoint, provider, default_model, _ = _resolve_openai_audio_provider_context(tts_settings)
     if endpoint is None:
         return []
 
-    preferred_models = [default_model] + list(endpoint.get("models") or []) + _provider_model_catalog(provider)
+    builtin_models = (
+        _provider_model_catalog(provider)
+        if (
+            _normalize_custom_adapter(endpoint.get("adapter")) == OPENAI_COMPAT_ADAPTER
+            and not endpoint.get("profile_id")
+        )
+        else []
+    )
+    preferred_models = [default_model] + list(endpoint.get("models") or []) + builtin_models
     return _dedupe_ordered(preferred_models)
 
 
 def get_openai_audio_voices_fallback(tts_settings: dict) -> list[str]:
-    """Returns built-in voice suggestions for OpenAI-compatible audio providers."""
+    """Returns fallback voice suggestions for custom audio providers."""
     endpoint, provider, default_model, default_voice = _resolve_openai_audio_provider_context(tts_settings)
     if endpoint is None:
         return []
@@ -1895,18 +2102,76 @@ def get_openai_audio_voices_fallback(tts_settings: dict) -> list[str]:
     selected_model = str(tts_settings.get("xtts_model") or "").strip() or default_model
     selected_model = _normalize_model_for_provider(selected_model, provider)
 
-    preferred_voices = [default_voice] + list(endpoint.get("voices") or []) + _provider_voice_catalog(provider, selected_model)
+    builtin_voices = (
+        _provider_voice_catalog(provider, selected_model)
+        if (
+            _normalize_custom_adapter(endpoint.get("adapter")) == OPENAI_COMPAT_ADAPTER
+            and not endpoint.get("profile_id")
+        )
+        else []
+    )
+    preferred_voices = [default_voice] + list(endpoint.get("voices") or []) + builtin_voices
     return _dedupe_ordered(preferred_voices)
 
 
+def _extract_generic_catalog(payload, kind: str) -> list[str]:
+    if isinstance(payload, list):
+        candidates = payload
+    elif isinstance(payload, dict):
+        singular = "model" if kind == "models" else "voice"
+        candidates = []
+        for key in (kind, "data", "items", singular):
+            value = payload.get(key)
+            if isinstance(value, list):
+                candidates.extend(value)
+            elif isinstance(value, (str, int)):
+                candidates.append(value)
+    else:
+        return []
+
+    id_keys = (
+        ("id", "model_id", "model", "name")
+        if kind == "models"
+        else ("id", "voice_id", "speaker_id", "voice", "speaker", "name")
+    )
+    values: list[str] = []
+    for item in candidates:
+        if isinstance(item, dict):
+            item = next((item.get(key) for key in id_keys if item.get(key) is not None), "")
+        normalized = str(item or "").strip()
+        if normalized:
+            values.append(normalized)
+    return _dedupe_ordered(values)
+
+
 def get_openai_audio_models(tts_settings: dict) -> list[str]:
-    """Fetches model IDs from configured OpenAI-compatible audio endpoint."""
+    """Fetches model IDs from the configured custom audio endpoint."""
     endpoint, provider, default_model, _ = _resolve_openai_audio_provider_context(tts_settings)
     if endpoint is None:
         return []
 
+    if _normalize_custom_adapter(endpoint.get("adapter")) == GENERIC_JSON_ADAPTER:
+        models = list(endpoint.get("models") or [])
+        models_path = str(endpoint.get("models_path") or "").strip()
+        if models_path:
+            try:
+                response = requests.get(
+                    _configured_endpoint_url(str(endpoint["base_url"]), models_path),
+                    headers=_configured_endpoint_auth_headers(endpoint),
+                    timeout=8,
+                )
+                response.raise_for_status()
+                models = _dedupe_ordered(models + _extract_generic_catalog(response.json(), "models"))
+            except (requests.exceptions.RequestException, ValueError) as e:
+                logging.debug("Could not list models for endpoint '%s': %s", endpoint["name"], e)
+        return models
+
     models: list[str] = []
-    for models_url in _openai_models_urls(endpoint["base_url"]):
+    for models_url in _configured_openai_urls(
+        endpoint,
+        "models_path",
+        _openai_models_urls(str(endpoint["base_url"])),
+    ):
         try:
             response = requests.get(
                 models_url,
@@ -1927,19 +2192,40 @@ def get_openai_audio_models(tts_settings: dict) -> list[str]:
             logging.error("Failed to list models for endpoint '%s': %s", endpoint["name"], e)
             continue
 
-    preferred_models = [default_model] + list(endpoint.get("models") or []) + _provider_model_catalog(provider)
+    builtin_models = [] if endpoint.get("profile_id") else _provider_model_catalog(provider)
+    preferred_models = [default_model] + list(endpoint.get("models") or []) + builtin_models
 
     return _merge_catalog_with_discovered(preferred_models, models)
 
 
 def get_openai_audio_voices(tts_settings: dict) -> list[str]:
-    """Fetches voice IDs from configured OpenAI-compatible audio endpoint."""
+    """Fetches voice IDs from the configured custom audio endpoint."""
     endpoint, provider, default_model, default_voice = _resolve_openai_audio_provider_context(tts_settings)
     if endpoint is None:
         return []
 
+    if _normalize_custom_adapter(endpoint.get("adapter")) == GENERIC_JSON_ADAPTER:
+        voices = list(endpoint.get("voices") or [])
+        voices_path = str(endpoint.get("voices_path") or "").strip()
+        if voices_path:
+            try:
+                response = requests.get(
+                    _configured_endpoint_url(str(endpoint["base_url"]), voices_path),
+                    headers=_configured_endpoint_auth_headers(endpoint),
+                    timeout=8,
+                )
+                response.raise_for_status()
+                voices = _dedupe_ordered(voices + _extract_generic_catalog(response.json(), "voices"))
+            except (requests.exceptions.RequestException, ValueError) as e:
+                logging.debug("Could not list voices for endpoint '%s': %s", endpoint["name"], e)
+        return voices
+
     voices: list[str] = []
-    for voices_url in _openai_voice_catalog_urls(endpoint["base_url"]):
+    for voices_url in _configured_openai_urls(
+        endpoint,
+        "voices_path",
+        _openai_voice_catalog_urls(str(endpoint["base_url"])),
+    ):
         try:
             response = requests.get(
                 voices_url,
@@ -1964,7 +2250,10 @@ def get_openai_audio_voices(tts_settings: dict) -> list[str]:
         selected_model = default_model
     selected_model = _normalize_model_for_provider(selected_model, provider)
 
-    preferred_voices = [default_voice] + list(endpoint.get("voices") or []) + _provider_voice_catalog(provider, selected_model)
+    builtin_voices = (
+        [] if endpoint.get("profile_id") else _provider_voice_catalog(provider, selected_model)
+    )
+    preferred_voices = [default_voice] + list(endpoint.get("voices") or []) + builtin_voices
 
     return _merge_catalog_with_discovered(preferred_voices, voices)
 
@@ -3389,6 +3678,39 @@ def _request_openai_compatible_audio(text: str, tts_settings: dict) -> requests.
     if endpoint is None:
         raise RuntimeError(error)
 
+    if _normalize_custom_adapter(endpoint.get("adapter")) == GENERIC_JSON_ADAPTER:
+        request_fields = endpoint.get("request_fields", {})
+        if not isinstance(request_fields, dict):
+            request_fields = {}
+        request_defaults = endpoint.get("request_defaults", {})
+        payload = dict(request_defaults) if isinstance(request_defaults, dict) else {}
+
+        text_field = str(request_fields.get("text") or "").strip()
+        if not text_field:
+            raise RuntimeError(f"Endpoint '{endpoint['name']}' has no configured text request field.")
+        payload[text_field] = text
+
+        mapped_values = {
+            "model": str(tts_settings.get("xtts_model") or endpoint.get("default_model") or "").strip(),
+            "voice": str(tts_settings.get("speaker") or endpoint.get("default_voice") or "").strip(),
+            "speed": tts_settings.get("speed"),
+            "format": "wav",
+        }
+        for logical_name, value in mapped_values.items():
+            field_name = str(request_fields.get(logical_name) or "").strip()
+            if field_name and value not in (None, ""):
+                payload[field_name] = value
+
+        speech_path = str(endpoint.get("speech_path") or "").strip()
+        if not speech_path:
+            raise RuntimeError(f"Endpoint '{endpoint['name']}' has no configured speech route.")
+        return requests.post(
+            _configured_endpoint_url(str(endpoint["base_url"]), speech_path),
+            headers=_configured_endpoint_auth_headers(endpoint),
+            json=payload,
+            timeout=TTS_GENERATION_TIMEOUT_SECONDS,
+        )
+
     payload = _build_openai_compatible_audio_payload(text, tts_settings, endpoint)
     provider = _infer_audio_provider(
         name=endpoint.get("name", ""),
@@ -3412,7 +3734,11 @@ def _request_openai_compatible_audio(text: str, tts_settings: dict) -> requests.
 
     api_key = _resolve_openai_audio_api_key(endpoint)
     last_response = None
-    for speech_url in _openai_audio_speech_urls(endpoint["base_url"]):
+    for speech_url in _configured_openai_urls(
+        endpoint,
+        "speech_path",
+        _openai_audio_speech_urls(str(endpoint["base_url"])),
+    ):
         response = requests.post(
             speech_url,
             headers=_openai_auth_headers(api_key),

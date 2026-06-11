@@ -1,0 +1,298 @@
+import copy
+
+
+OPENAI_ADAPTER = "openai_compatible"
+GENERIC_JSON_ADAPTER = "generic_json"
+
+
+def _openai_profile(
+    profile_id: str,
+    name: str,
+    api_base: str,
+    source_url: str,
+    models: list[str],
+    voices: list[str] | None = None,
+    voices_path: str = "",
+    notes: str = "",
+) -> dict:
+    return {
+        "id": profile_id,
+        "name": name,
+        "description": "OpenAI-compatible JSON speech API.",
+        "source_url": source_url,
+        "api_base": api_base,
+        "provider": "openai",
+        "adapter": OPENAI_ADAPTER,
+        "speech_path": "/v1/audio/speech",
+        "models_path": "/v1/models",
+        "voices_path": voices_path,
+        "request_fields": {
+            "text": "input",
+            "model": "model",
+            "voice": "voice",
+            "speed": "speed",
+            "format": "response_format",
+        },
+        "request_defaults": {},
+        "models": models,
+        "voices": voices or [],
+        "supports_prebuilt_voices": True,
+        "notes": notes,
+    }
+
+
+def _generic_profile(
+    profile_id: str,
+    name: str,
+    api_base: str,
+    source_url: str,
+    speech_path: str,
+    request_fields: dict[str, str],
+    request_defaults: dict | None = None,
+    models: list[str] | None = None,
+    voices: list[str] | None = None,
+    supports_prebuilt_voices: bool = False,
+    notes: str = "",
+) -> dict:
+    return {
+        "id": profile_id,
+        "name": name,
+        "description": "Known JSON speech API mapping.",
+        "source_url": source_url,
+        "api_base": api_base,
+        "provider": "openai",
+        "adapter": GENERIC_JSON_ADAPTER,
+        "speech_path": speech_path,
+        "models_path": "",
+        "voices_path": "",
+        "request_fields": {
+            key: str(request_fields.get(key) or "")
+            for key in ("text", "model", "voice", "speed", "format")
+        },
+        "request_defaults": request_defaults or {},
+        "models": models or [],
+        "voices": voices or [],
+        "supports_prebuilt_voices": supports_prebuilt_voices,
+        "notes": notes,
+    }
+
+
+_VOXTRAL_RUST_VOICES = [
+    "casual_female",
+    "casual_male",
+    "cheerful_female",
+    "neutral_female",
+    "neutral_male",
+    "fr_male",
+    "fr_female",
+    "es_male",
+    "es_female",
+    "de_male",
+    "de_female",
+    "pt_male",
+    "pt_female",
+    "it_male",
+    "it_female",
+    "nl_male",
+    "nl_female",
+    "ar_male",
+    "hi_male",
+    "hi_female",
+]
+
+
+TTS_PROVIDER_PROFILES = [
+    _openai_profile(
+        "pandrator-xtts2-api",
+        "XTTS v2 - lukaszliniewicz/xtts2_api",
+        "http://127.0.0.1:8020",
+        "https://github.com/lukaszliniewicz/xtts2_api",
+        ["tts_models/multilingual/multi-dataset/xtts_v2"],
+        voices_path="/v1/files",
+        notes="Alternate custom connection to Pandrator's installer-supported XTTS2 API. Discover Models/Voices lists uploaded voice file IDs.",
+    ),
+    _openai_profile(
+        "pandrator-voxcpm-fastapi",
+        "VoxCPM2 - lukaszliniewicz/voxcpm_fastapi",
+        "http://127.0.0.1:8020",
+        "https://github.com/lukaszliniewicz/voxcpm_fastapi",
+        ["openbmb/VoxCPM2", "voxcpm2"],
+        ["default"],
+        notes="Alternate custom connection to Pandrator's installer-supported VoxCPM2 server.",
+    ),
+    _openai_profile(
+        "pandrator-fishs2-fastapi",
+        "FishS2 - lukaszliniewicz/fishs2-cpp-fastapi",
+        "http://127.0.0.1:8020",
+        "https://github.com/lukaszliniewicz/fishs2-cpp-fastapi",
+        ["fishaudio/s2-pro", "fishs2", "fish-s2", "s2-pro"],
+        ["default"],
+        notes="Alternate custom connection to Pandrator's installer-supported FishS2 server.",
+    ),
+    _openai_profile(
+        "pandrator-voxtral-fastapi",
+        "Voxtral - lukaszliniewicz/voxtral-fastapi",
+        "http://127.0.0.1:8000",
+        "https://github.com/lukaszliniewicz/voxtral-fastapi",
+        ["auto", "gguf", "bf16"],
+        ["casual_female"],
+        voices_path="/v1/audio/voices",
+        notes="Alternate custom connection to Pandrator's installer-supported Voxtral server.",
+    ),
+    _openai_profile(
+        "pandrator-chatterbox-fastapi",
+        "Chatterbox - lukaszliniewicz/chatterbox-fastapi",
+        "http://127.0.0.1:8040",
+        "https://github.com/lukaszliniewicz/chatterbox-fastapi",
+        ["chatterbox-turbo", "chatterbox-multilingual", "chatterbox-en"],
+        voices_path="/v1/files",
+        notes="Alternate custom connection to Pandrator's installer-supported Chatterbox server.",
+    ),
+    _openai_profile(
+        "chatterbox-travisvn",
+        "Chatterbox - travisvn/chatterbox-tts-api",
+        "http://127.0.0.1:4123",
+        "https://github.com/travisvn/chatterbox-tts-api",
+        ["chatterbox-tts-1"],
+        ["alloy"],
+        voices_path="/voices",
+        notes="Default port is 4123. The wrapper also offers multipart voice-library management outside this profile.",
+    ),
+    _openai_profile(
+        "chatterbox-brioch",
+        "Chatterbox - Brioch/chatterbox-tts-api",
+        "http://127.0.0.1:5001",
+        "https://github.com/Brioch/chatterbox-tts-api",
+        ["Chatterbox", "Chatterbox-Multilingual", "Chatterbox-Turbo"],
+        notes="Voice names correspond to reference files mounted into the wrapper's voices directory.",
+    ),
+    _openai_profile(
+        "voxtral-second-state",
+        "Voxtral - second-state/voxtral_tts_rs",
+        "http://127.0.0.1:8080",
+        "https://github.com/second-state/voxtral_tts_rs",
+        ["voxtral-4b-tts"],
+        _VOXTRAL_RUST_VOICES,
+        notes="Uses non-streaming requests because Pandrator expects a complete audio response.",
+    ),
+    _openai_profile(
+        "voxtral-vllm-omni",
+        "Voxtral - vLLM-Omni server",
+        "http://127.0.0.1:8091",
+        "https://github.com/vllm-project/vllm-omni",
+        ["mistralai/Voxtral-4B-TTS-2603"],
+        ["casual_female", "casual_male"],
+        notes="The official Voxtral launch example uses port 8091; adjust it to match your launch command.",
+    ),
+    _openai_profile(
+        "cosyvoice-jianchang512",
+        "CosyVoice - jianchang512/cosyvoice-api",
+        "http://127.0.0.1:9233",
+        "https://github.com/jianchang512/cosyvoice-api",
+        ["tts-1"],
+        [
+            "\u4e2d\u6587\u5973",
+            "\u4e2d\u6587\u7537",
+            "\u65e5\u8bed\u7537",
+            "\u7ca4\u8bed\u5973",
+            "\u82f1\u6587\u5973",
+            "\u82f1\u6587\u7537",
+            "\u97e9\u8bed\u5973",
+        ],
+        notes="The wrapper's current OpenAI-compatible endpoint defaults to port 9233.",
+    ),
+    _generic_profile(
+        "matcha-projecte-aina",
+        "Matcha-TTS - projecte-aina/tts-api",
+        "http://127.0.0.1:8000",
+        "https://github.com/projecte-aina/tts-api",
+        "/api/tts",
+        {"text": "text", "voice": "voice"},
+        {"type": "text", "language": "ca-es"},
+        models=["matcha-tts"],
+        voices=["quim", "ona", "lluc"],
+        supports_prebuilt_voices=True,
+        notes="The default language is ca-es; change the server/profile mapping if another deployed model requires it.",
+    ),
+    _generic_profile(
+        "styletts2-salad",
+        "StyleTTS2 - SaladTechnologies/styletts2-api",
+        "http://127.0.0.1:4321",
+        "https://github.com/SaladTechnologies/styletts2-api",
+        "/generate",
+        {"text": "text"},
+        models=["styletts2"],
+        notes="The upstream REST contract documents a text-only POST /generate request.",
+    ),
+    _generic_profile(
+        "fish-speech-official",
+        "Fish Speech - fishaudio/fish-speech API server",
+        "http://127.0.0.1:8080",
+        "https://github.com/fishaudio/fish-speech",
+        "/v1/tts",
+        {"text": "text", "voice": "reference_id", "format": "format"},
+        {"normalize": True, "latency": "normal"},
+        models=["fish-speech"],
+        supports_prebuilt_voices=True,
+        notes="The voice value is sent as reference_id. Inline reference audio/text payloads are not configured by this profile.",
+    ),
+    _openai_profile(
+        "open-unified-tts",
+        "Open Unified TTS - loserbcc/open-unified-tts",
+        "http://127.0.0.1:8765",
+        "https://github.com/loserbcc/open-unified-tts",
+        ["tts-1"],
+        ["bf_emma", "am_adam"],
+        voices_path="/v1/voices",
+        notes="The active backend and available voices are configured inside Open Unified TTS.",
+    ),
+    _openai_profile(
+        "qwen3-second-state",
+        "Qwen3-TTS - second-state/qwen3_audio_api",
+        "http://127.0.0.1:8000",
+        "https://github.com/second-state/qwen3_audio_api",
+        ["qwen3-tts"],
+        ["Vivian", "Ryan", "Serena"],
+        notes="This profile covers preset voices. Reference-audio cloning fields require additional configuration.",
+    ),
+    _openai_profile(
+        "kokoro-remsky",
+        "Kokoro - remsky/Kokoro-FastAPI",
+        "http://127.0.0.1:8880",
+        "https://github.com/remsky/Kokoro-FastAPI",
+        ["kokoro"],
+        ["af_heart", "af_bella", "af_sky", "am_adam", "bf_emma"],
+        voices_path="/v1/audio/voices",
+        notes="This is an alternate custom connection to Kokoro-FastAPI, separate from Pandrator's first-class Kokoro service.",
+    ),
+    _generic_profile(
+        "piper-native-http",
+        "Piper - native piper.http_server",
+        "http://127.0.0.1:5000",
+        "https://github.com/OHF-Voice/piper1-gpl",
+        "/",
+        {"text": "text"},
+        models=["piper"],
+        notes="The native server uses its configured model and accepts JSON containing text at POST /.",
+    ),
+    _openai_profile(
+        "piper-kamil-krawiec",
+        "Piper - Kamil-Krawiec/piper-tts-http-server",
+        "http://127.0.0.1:5000",
+        "https://github.com/Kamil-Krawiec/piper-tts-http-server",
+        ["piper"],
+        notes="Voice names use Piper identifiers such as en_US-lessac-medium and are downloaded on demand.",
+    ),
+]
+
+
+def list_tts_provider_profiles() -> list[dict]:
+    return copy.deepcopy(TTS_PROVIDER_PROFILES)
+
+
+def get_tts_provider_profile(profile_id: str) -> dict | None:
+    normalized_id = str(profile_id or "").strip()
+    for profile in TTS_PROVIDER_PROFILES:
+        if profile["id"] == normalized_id:
+            return copy.deepcopy(profile)
+    return None

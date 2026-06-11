@@ -23,7 +23,9 @@ from .logic import (
     text_preprocessor,
     llm_handler,
     source_cleaning,
+    tts_endpoint_discovery,
     tts_handler,
+    tts_provider_profiles,
     state_db_handler,
     voice_library_handler,
     rvc_handler,
@@ -5120,11 +5122,19 @@ class AppLogic(QObject):
         return True, ""
 
     def list_tts_provider_configs(self) -> list[dict]:
-        """Returns user-created OpenAI-compatible TTS providers."""
+        """Returns user-created TTS providers."""
         provider_configs = tts_handler.get_provider_configs(self.state.tts)
         if provider_configs != self.state.tts.provider_configs:
             self.state.tts.provider_configs = provider_configs
         return copy.deepcopy(provider_configs)
+
+    def discover_tts_endpoint_config(self, base_url: str, api_key: str = "") -> dict:
+        """Builds a reviewable provider draft from safe endpoint probes."""
+        return tts_endpoint_discovery.discover_tts_endpoint(base_url, api_key)
+
+    def list_tts_provider_profiles(self) -> list[dict]:
+        """Returns curated recipes for popular custom TTS wrappers."""
+        return tts_provider_profiles.list_tts_provider_profiles()
 
     def save_tts_provider(
         self,
@@ -5136,8 +5146,9 @@ class AppLogic(QObject):
         models: list[str] | str | None,
         voices: list[str] | str | None,
         supports_prebuilt_voices: bool | None = None,
+        adapter_config: dict | None = None,
     ) -> tuple[bool, str, str]:
-        """Creates or updates an OpenAI-compatible TTS provider."""
+        """Creates or updates a custom TTS provider."""
         success, provider_configs, resolved_provider_id, message = tts_handler.save_provider(
             self.state.tts,
             provider_name=provider_name,
@@ -5148,6 +5159,7 @@ class AppLogic(QObject):
             voices=voices,
             supports_prebuilt_voices=supports_prebuilt_voices,
             provider_id=provider_id,
+            adapter_config=adapter_config,
         )
         if not success:
             return False, "", message
