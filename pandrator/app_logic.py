@@ -806,6 +806,7 @@ class AppLogic(QObject):
             "remove_footnotes": self.state.text_processing.remove_footnotes,
             "filter_citations": self.state.text_processing.filter_citations,
             "normalize_all_caps": self.state.text_processing.normalize_all_caps,
+            "enable_nemo_normalization": self.state.text_processing.enable_nemo_normalization,
         }
 
         saved_settings_str = self.state.metadata.get("preprocessing_settings")
@@ -3192,6 +3193,7 @@ class AppLogic(QObject):
             "remove_footnotes": self.state.text_processing.remove_footnotes,
             "filter_citations": self.state.text_processing.filter_citations,
             "normalize_all_caps": self.state.text_processing.normalize_all_caps,
+            "enable_nemo_normalization": self.state.text_processing.enable_nemo_normalization,
         }
         
         self._set_session_activity(

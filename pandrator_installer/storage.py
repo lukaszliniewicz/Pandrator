@@ -174,24 +174,34 @@ class StorageMixin:
         if config.get('rvc_support', False):
             return config
 
-        if not self.check_pixi(pandrator_path):
-            return config
+        rvc_run_script = os.path.join(pandrator_path, 'rvc-python', 'run.bat')
+        legacy_site_packages = os.path.join(
+            pandrator_path,
+            'envs',
+            'pandrator_installer',
+            '.pixi',
+            'envs',
+            'default',
+            'Lib',
+            'site-packages',
+        )
+        legacy_rvc_detected = False
+        if os.path.isdir(legacy_site_packages):
+            try:
+                for entry in os.listdir(legacy_site_packages):
+                    normalized_entry = entry.lower().replace('_', '-').replace('.', '-')
+                    if normalized_entry == 'rvc-python' or normalized_entry.startswith('rvc-python-'):
+                        legacy_rvc_detected = True
+                        break
+            except OSError as exc:
+                logging.warning("Could not inspect the legacy RVC installation: %s", exc)
 
-        manifest_path = self.get_pixi_manifest_path(pandrator_path, 'pandrator_installer')
-        if not os.path.exists(manifest_path):
-            return config
-
-        try:
-            rvc_needs_install, _ = self.rvc_needs_package_sync(pandrator_path, 'pandrator_installer')
-        except Exception as e:
-            logging.warning(f"Could not auto-detect RVC installation state: {str(e)}")
-            return config
-
-        if rvc_needs_install:
+        if not os.path.exists(rvc_run_script) and not legacy_rvc_detected:
             return config
 
         updated_config = dict(config)
         updated_config['rvc_support'] = True
         self.save_install_config(pandrator_path, updated_config)
-        logging.info("Detected existing RVC dependencies and persisted rvc_support=true in config.json")
+        source = "legacy in-process RVC installation" if legacy_rvc_detected else "RVC service repository"
+        logging.info("Detected %s and persisted rvc_support=true in config.json", source)
         return updated_config

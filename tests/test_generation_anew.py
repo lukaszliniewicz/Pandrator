@@ -83,7 +83,9 @@ class GenerationAnewTests(unittest.TestCase):
             "remove_quotation_marks": False,
             "tts_service": "XTTS",
             "remove_footnotes": False,
-            "filter_citations": True
+            "filter_citations": True,
+            "normalize_all_caps": True,
+            "enable_nemo_normalization": True,
         }
         harness.state.metadata = {"preprocessing_settings": json.dumps(settings)}
         self.assertFalse(harness._have_preprocessing_settings_changed())
@@ -103,7 +105,9 @@ class GenerationAnewTests(unittest.TestCase):
             "remove_quotation_marks": False,
             "tts_service": "XTTS",
             "remove_footnotes": False,
-            "filter_citations": True
+            "filter_citations": True,
+            "normalize_all_caps": True,
+            "enable_nemo_normalization": True,
         }
         harness.state.metadata = {"preprocessing_settings": json.dumps(settings)}
 
@@ -143,7 +147,9 @@ class GenerationAnewTests(unittest.TestCase):
             "remove_quotation_marks": False,
             "tts_service": "XTTS",
             "remove_footnotes": False,
-            "filter_citations": True
+            "filter_citations": True,
+            "normalize_all_caps": True,
+            "enable_nemo_normalization": True,
         }
         harness.state.metadata = {"preprocessing_settings": json.dumps(settings)}
 

@@ -112,6 +112,7 @@ class InstallSelection:
 @dataclass(frozen=True)
 class LaunchSelection:
     pandrator: bool = True
+    rvc: bool = False
     xtts: bool = False
     disable_deepspeed: bool = False
     xtts_cpu: bool = False
@@ -138,4 +139,3 @@ class LaunchSelection:
             ("magpie", self.magpie),
         )
         return tuple(key for key, selected in ordered_flags if selected)
-

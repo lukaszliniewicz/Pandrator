@@ -24,13 +24,9 @@ from .constants import (
     KOKORO_GPU_TORCH_VERSION_ARM64,
     KOKORO_GPU_TORCH_VERSION_X86_64,
     KOKORO_TORCH_BASE_VERSION,
+    NEMO_PYNINI_CONDA_SPEC,
+    NEMO_TEXT_PROCESSING_SPEC,
     PYOPENJTALK_WHEEL_PREFIX,
-    RVC_NUMPY_SPEC,
-    RVC_PYTHON_FORK_INSTALL_SPEC,
-    RVC_TORCHAUDIO_VERSION,
-    RVC_TORCHVISION_VERSION,
-    RVC_TORCH_INDEX_URL,
-    RVC_TORCH_VERSION,
     SUBDUB_EDITABLE_INSTALL_SPEC,
     SUBDUB_REPO_URL,
     WHISPERX_CTRANSLATE2_VERSION,
@@ -44,6 +40,51 @@ from .constants import (
 
 
 class ComponentOperationsMixin:
+    def get_running_installation_processes(self, pandrator_path):
+        """Return processes executing binaries from the installation tree."""
+        installation_root = os.path.normcase(os.path.realpath(pandrator_path))
+        running_processes = []
+
+        for process in psutil.process_iter(['pid', 'name', 'exe']):
+            try:
+                if process.pid == os.getpid():
+                    continue
+                executable = str(process.info.get('exe') or '').strip()
+                if not executable:
+                    continue
+                executable_path = os.path.normcase(os.path.realpath(executable))
+                if os.path.commonpath((installation_root, executable_path)) != installation_root:
+                    continue
+                running_processes.append(
+                    {
+                        'pid': process.pid,
+                        'name': str(process.info.get('name') or os.path.basename(executable)),
+                        'exe': executable,
+                    }
+                )
+            except (OSError, ValueError, psutil.AccessDenied, psutil.NoSuchProcess):
+                continue
+
+        return running_processes
+
+    def ensure_update_runtime_stopped(self, pandrator_path):
+        """Prevent Windows DLL locks from causing a partial in-place update."""
+        running_processes = self.get_running_installation_processes(pandrator_path)
+        if not running_processes:
+            return
+
+        process_preview = ', '.join(
+            f"{process['name']} (PID {process['pid']})"
+            for process in running_processes[:5]
+        )
+        if len(running_processes) > 5:
+            process_preview += ', ...'
+
+        raise RuntimeError(
+            "Close Pandrator and all installed speech/RVC services before updating. "
+            f"Running installation processes: {process_preview}"
+        )
+
     def get_kokoro_torch_install_options(self, use_gpu=False):
         if not use_gpu:
             return f'torch=={KOKORO_TORCH_BASE_VERSION}', None
@@ -1047,88 +1088,115 @@ class ComponentOperationsMixin:
             logging.error(f"Error message: {str(e)}")
             raise
 
-    def install_rvc_python(self, pandrator_path, env_name):
-        logging.info("Starting RVC Python installation")
+    def is_rvc_runtime_ready(self, rvc_repo_path):
+        run_bat_path = os.path.join(rvc_repo_path, 'run.bat')
+        env_python_path = os.path.join(rvc_repo_path, '.pixi', 'envs', 'default', 'python.exe')
+        return all(os.path.exists(path) for path in (run_bat_path, env_python_path))
+
+    def build_rvc_launcher_command(self, pixi_path=None, prepare_only=False, models_dir=None):
+        command = ['cmd', '/c', 'run.bat']
+        if pixi_path:
+            command.extend(['--pixi-path', pixi_path])
+        if prepare_only:
+            command.append('--prepare-only')
+        if models_dir:
+            command.extend(['--models-dir', models_dir])
+        return command
+
+    def install_rvc_api_server(self, rvc_repo_path, pixi_path=None):
+        """Prepare the dedicated RVC service environment without starting it."""
+        run_script_path = os.path.join(rvc_repo_path, 'run.bat')
+        if not os.path.exists(run_script_path):
+            raise FileNotFoundError(f"RVC run script not found at: {run_script_path}")
+
+        logging.info("Preparing RVC service runtime in %s...", rvc_repo_path)
+        rvc_install_log_file = os.path.join(rvc_repo_path, 'rvc_install.log')
+        command = self.build_rvc_launcher_command(
+            pixi_path=pixi_path,
+            prepare_only=True,
+        )
+        with open(rvc_install_log_file, 'a', encoding='utf-8') as log_handle:
+            subprocess.run(
+                command,
+                cwd=rvc_repo_path,
+                env=self.get_pixi_subprocess_env(os.path.dirname(rvc_repo_path)),
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                check=True,
+                **self.get_hidden_subprocess_kwargs(),
+            )
+
+    def ensure_nemo_text_processing_runtime(self, pandrator_path, env_name='pandrator_installer'):
+        """Verify and repair the required NeMo text-normalization runtime."""
+        check_command = [
+            'python',
+            '-c',
+            (
+                'import pynini, nemo_text_processing; '
+                'from nemo_text_processing.text_normalization.normalize import Normalizer'
+            ),
+        ]
+
         try:
-            logging.info("Installing specific pip version...")
-            # Keep the older pip pin here because newer pip versions break this toolchain.
             self.run_pixi_in_env(
                 pandrator_path,
                 env_name,
-                ['python', '-m', 'pip', 'install', 'pip==24']
+                check_command,
+                log_errors=False,
             )
+            logging.info("NeMo text-processing runtime is ready.")
+            return
+        except subprocess.CalledProcessError as exc:
+            logging.warning("Repairing NeMo text-processing runtime after import failure: %s", exc.stderr)
 
-            python_version = self.get_env_python_version(pandrator_path, env_name)
-            fairseq_wheel_url = self.get_rvc_fairseq_wheel_url(python_version)
+        self.add_pixi_conda_package(pandrator_path, env_name, NEMO_PYNINI_CONDA_SPEC)
+        failed_specs = self.add_pypi_requirements(
+            pandrator_path,
+            env_name,
+            [NEMO_TEXT_PROCESSING_SPEC],
+        )
+        if failed_specs:
+            self.install_requirement_specs_with_pip(pandrator_path, env_name, failed_specs)
 
-            logging.info(f"Installing RVC Python fork for Python {python_version}...")
-            self.run_pixi_in_env(
-                pandrator_path,
-                env_name,
-                [
-                    'python', '-m', 'pip', 'install',
-                    '--upgrade', '--force-reinstall',
-                    RVC_PYTHON_FORK_INSTALL_SPEC,
-                ]
-            )
+        self.run_pixi_in_env(
+            pandrator_path,
+            env_name,
+            check_command,
+            log_errors=False,
+        )
+        logging.info("NeMo text-processing runtime repair completed successfully.")
 
-            logging.info("Installing fairseq wheel required by the RVC fork...")
-            self.run_pixi_in_env(
-                pandrator_path,
-                env_name,
-                [
-                    'python', '-m', 'pip', 'install',
-                    '--upgrade', '--force-reinstall',
-                    fairseq_wheel_url,
-                ]
-            )
+    def migrate_rvc_to_service(self, pandrator_path, pandrator_repo_path, rvc_repo_path, pixi_path=None):
+        """Prepare the RVC service before retiring the legacy in-process runtime."""
+        os.makedirs(os.path.join(pandrator_repo_path, 'rvc_models'), exist_ok=True)
+        if not self.is_rvc_runtime_ready(rvc_repo_path):
+            self.install_rvc_api_server(rvc_repo_path, pixi_path=pixi_path)
+        else:
+            logging.info("RVC service runtime is ready.")
 
-            logging.info("Installing PyTorch stack for RVC...")
-            self.run_pixi_in_env(
-                pandrator_path,
-                env_name,
-                [
-                    'python', '-m', 'pip', 'install', '--upgrade',
-                    f'torch=={RVC_TORCH_VERSION}',
-                    f'torchvision=={RVC_TORCHVISION_VERSION}',
-                    f'torchaudio=={RVC_TORCHAUDIO_VERSION}',
-                    '--index-url', RVC_TORCH_INDEX_URL,
-                ]
-            )
+        self.remove_legacy_rvc_from_pandrator_env(pandrator_path)
 
-            logging.info("Pinning NumPy to <2 for faiss/RVC compatibility...")
-            self.run_pixi_in_env(
-                pandrator_path,
-                env_name,
-                [
-                    'python', '-m', 'pip', 'install',
-                    '--upgrade', '--force-reinstall',
-                    RVC_NUMPY_SPEC,
-                ]
-            )
+    def remove_legacy_rvc_from_pandrator_env(self, pandrator_path):
+        """Remove the former in-process RVC packages after service migration."""
+        manifest_path = self.get_pixi_manifest_path(pandrator_path, 'pandrator_installer')
+        if not os.path.exists(manifest_path):
+            logging.info("No Pandrator environment exists; skipping legacy RVC package cleanup.")
+            return
 
-            logging.info("Verifying RVC runtime imports...")
-            self.run_pixi_in_env(
-                pandrator_path,
-                env_name,
-                [
-                    'python', '-c',
-                    (
-                        'import numpy as np; '
-                        'import fairseq, rvc_python, torch, torchvision, torchaudio; '
-                        'assert int(np.__version__.split(".")[0]) < 2, '
-                        'f"NumPy must be <2 for RVC compatibility, got {np.__version__}"'
-                    ),
-                ]
-            )
-
-            logging.info("RVC Python installation completed successfully.")
-
-        except Exception as e:
-            error_msg = f"An error occurred during RVC Python installation: {str(e)}"
-            logging.error(error_msg)
-            logging.error(traceback.format_exc())
-            raise
+        legacy_packages = (
+            'rvc-python',
+            'fairseq',
+            'faiss-cpu',
+            'torchcrepe',
+            'pyworld',
+            'praat-parselmouth',
+        )
+        logging.info("Removing legacy in-process RVC packages from the Pandrator environment.")
+        self.run_pixi_in_env(
+            pandrator_path,
+            'pandrator_installer',
+            ['python', '-m', 'pip', 'uninstall', '--yes', *legacy_packages],
+        )
 
     def install_whisperx(self, pandrator_path, env_name):
         logging.info(f"Installing WhisperX in {env_name}...")

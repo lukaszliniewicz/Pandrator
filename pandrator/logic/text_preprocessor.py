@@ -7,6 +7,7 @@ import regex
 import hasami
 import concurrent.futures
 from num2words import num2words
+from . import nemo_normalizer
 
 CHUNK_SIZE = 20000
 
@@ -293,6 +294,9 @@ def preprocess_text(text: str, settings: dict) -> list[dict]:
     Main entry point for text preprocessing. Chooses parallel or sequential.
     'settings' is a dictionary containing all necessary parameters.
     """
+    if settings.get("enable_nemo_normalization", True):
+        text = nemo_normalizer.normalize_text_for_tts(text, settings.get("language", "en"))
+
     if len(text) > CHUNK_SIZE:
         processed_sentences = _parallel_preprocess_text(text, settings)
     else:

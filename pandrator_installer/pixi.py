@@ -26,9 +26,6 @@ from .constants import (
     PIXI_HOME_DIRNAME,
     PIXI_PIP_CACHE_SUBDIRNAME,
     PIXI_TEMP_SUBDIRNAME,
-    RVC_FAIRSEQ_WHEEL_URL_BY_PYTHON,
-    RVC_PYTHON_FORK_SOURCE_FRAGMENT,
-    RVC_REQUIRED_PACKAGE_SPECS,
     SUBDUB_EDITABLE_INSTALL_SPEC,
     SUBDUB_RUNTIME_CHECK_COMMAND,
     SUBDUB_RUNTIME_REPAIR_SPECS,
@@ -67,6 +64,8 @@ class PixiEnvironmentMixin:
         env['TMP'] = local_temp
         env['TEMP'] = local_temp
         env['TMPDIR'] = local_temp
+        env['PYTHONUTF8'] = '1'
+        env['PYTHONIOENCODING'] = 'utf-8'
 
         # Unified Portable Model Caches
         local_cache_root = os.path.join(pandrator_path, 'cache')
@@ -229,16 +228,6 @@ class PixiEnvironmentMixin:
             raise RuntimeError(f"Could not detect Python version in {env_name}")
 
         return python_version
-
-    def get_rvc_fairseq_wheel_url(self, python_version):
-        wheel_url = RVC_FAIRSEQ_WHEEL_URL_BY_PYTHON.get(python_version)
-        if wheel_url:
-            return wheel_url
-
-        raise RuntimeError(
-            f"No fairseq wheel URL configured for Python {python_version}. "
-            "Supported versions are 3.10 and 3.11."
-        )
 
     def create_pixi_env(self, pandrator_path, env_name, python_version):
         logging.info(f"Creating pixi environment {env_name}...")
@@ -635,42 +624,6 @@ class PixiEnvironmentMixin:
             return False, f"{package_name} is installed from a different source"
 
         return True, "source check passed"
-
-    def rvc_needs_package_sync(self, pandrator_path, env_name):
-        needs_sync, reason = self.component_needs_package_sync(
-            pandrator_path,
-            env_name,
-            RVC_REQUIRED_PACKAGE_SPECS,
-        )
-        if needs_sync:
-            return True, reason
-
-        installed_packages = self.get_installed_pip_packages(pandrator_path, env_name)
-        if installed_packages is None:
-            return True, "pip package inspection failed"
-
-        numpy_version = installed_packages.get('numpy')
-        if not numpy_version:
-            return True, "numpy is missing or version could not be determined"
-
-        try:
-            numpy_major_version = int(numpy_version.split('.', 1)[0])
-        except ValueError:
-            return True, f"could not parse numpy version '{numpy_version}'"
-
-        if numpy_major_version >= 2:
-            return True, f"numpy {numpy_version} is incompatible with faiss; expected numpy<2"
-
-        source_ok, source_reason = self.package_source_matches(
-            pandrator_path,
-            env_name,
-            'rvc-python',
-            RVC_PYTHON_FORK_SOURCE_FRAGMENT,
-        )
-        if not source_ok:
-            return True, source_reason
-
-        return False, "package and source checks passed"
 
     def extract_import_candidates(self, requirements_file, env_name=None):
         candidates = []

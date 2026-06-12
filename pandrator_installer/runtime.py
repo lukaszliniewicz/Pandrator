@@ -22,6 +22,7 @@ from .constants import (
     KOKORO_ENV_NAME,
     KOKORO_GPU_SUPPORT_CONFIG_FLAG,
     KOKORO_PYTHON_VERSION,
+    RVC_API_REPO_DIRNAME,
     VOXCPM_API_REPO_DIRNAME,
     VOXTRAL_API_REPO_DIRNAME,
     XTTS_API_REPO_DIRNAME,
@@ -86,6 +87,23 @@ class RuntimeMixin:
         self.pandrator_process = None
         return None
 
+    def _get_running_rvc_process(self):
+        process = self.rvc_process
+        if not process:
+            return None
+
+        try:
+            return_code = process.poll()
+        except Exception:
+            return_code = 1
+
+        if return_code is None:
+            return process
+
+        self._close_process_log_handle(process)
+        self.rvc_process = None
+        return None
+
     def _selected_launch_backend_keys(self):
         selected = []
         if self.launch_xtts_var:
@@ -108,6 +126,7 @@ class RuntimeMixin:
 
     def _apply_launch_selection_state(self, selection):
         self.launch_pandrator_var = selection.pandrator
+        self.launch_rvc_var = selection.rvc
         self.launch_xtts_var = selection.xtts
         self.disable_deepspeed_var = selection.disable_deepspeed
         self.xtts_cpu_launch_var = selection.xtts_cpu
@@ -213,6 +232,7 @@ class RuntimeMixin:
             for backend_key, _, _ in running_backends
         }
         running_pandrator_process = self._get_running_pandrator_process()
+        running_rvc_process = self._get_running_rvc_process()
 
         pandrator_args = []
         tts_engine_launched = False
@@ -538,6 +558,29 @@ class RuntimeMixin:
             pandrator_args = ['-connect', '-magpie']
             tts_engine_launched = True
 
+        if self.launch_rvc_var:
+            self.reporter.progress(0.8)
+            rvc_server_url = 'http://127.0.0.1:8050/health'
+            if running_rvc_process:
+                self.reporter.status("RVC service is already running. Reusing it.")
+            elif self.is_port_in_use(8050):
+                if not self.check_rvc_server_online(rvc_server_url, max_attempts=1, wait_interval=0):
+                    raise RuntimeError("RVC service cannot start because port 8050 is already in use.")
+                self.reporter.status("RVC service is already available on port 8050.")
+            else:
+                self.reporter.status("Starting RVC service...")
+                rvc_server_path = os.path.join(pandrator_path, RVC_API_REPO_DIRNAME)
+                rvc_models_dir = os.path.join(pandrator_path, 'Pandrator', 'rvc_models')
+                os.makedirs(rvc_models_dir, exist_ok=True)
+                self.rvc_process = self.run_rvc_api_server(
+                    rvc_server_path,
+                    rvc_models_dir,
+                    pixi_path=shared_pixi_path,
+                )
+                if not self.check_rvc_server_online(rvc_server_url, process=self.rvc_process):
+                    self.shutdown_rvc()
+                    raise RuntimeError("RVC service failed to come online")
+
         if self.launch_pandrator_var:
             self.reporter.progress(0.85)
             if running_pandrator_process:
@@ -707,6 +750,60 @@ class RuntimeMixin:
         process.log_handle = log_handle
         logging.info(f"XTTS API server process started with PID: {process.pid}")
         return process
+
+    def run_rvc_api_server(self, rvc_server_path, models_dir, pixi_path=None):
+        """Run the RVC auxiliary service via its repository launcher."""
+        if not os.path.exists(rvc_server_path):
+            raise FileNotFoundError(f"RVC service path not found: {rvc_server_path}")
+        if self.is_port_in_use(8050):
+            raise RuntimeError("RVC service cannot be started because port 8050 is already in use.")
+
+        run_script_path = os.path.join(rvc_server_path, 'run.bat')
+        if not os.path.exists(run_script_path):
+            raise FileNotFoundError(f"RVC run script not found at: {run_script_path}")
+
+        rvc_log_file = os.path.join(rvc_server_path, 'rvc_server.log')
+        command = self.build_rvc_launcher_command(
+            pixi_path=pixi_path,
+            models_dir=models_dir,
+        )
+        log_handle = open(rvc_log_file, 'a', encoding='utf-8')
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=rvc_server_path,
+                env=self.get_pixi_subprocess_env(os.path.dirname(rvc_server_path)),
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                **self.get_hidden_subprocess_kwargs(),
+            )
+        except Exception:
+            log_handle.close()
+            raise
+
+        process.log_handle = log_handle
+        process.log_file_path = rvc_log_file
+        self.rvc_process = process
+        return process
+
+    def check_rvc_server_online(self, url, max_attempts=180, wait_interval=5, process=None):
+        """Check whether the RVC service is ready."""
+        for attempt in range(1, max_attempts + 1):
+            if process is not None and process.poll() is not None:
+                logging.error("RVC service process exited before coming online.")
+                return False
+            try:
+                response = requests.get(url, timeout=5)
+                if response.status_code == 200 and response.json().get('ready'):
+                    logging.info("RVC service is online.")
+                    return True
+            except (requests.exceptions.RequestException, ValueError):
+                pass
+
+            logging.info("RVC service is not online yet. Waiting... (Attempt %s/%s)", attempt, max_attempts)
+            time.sleep(wait_interval)
+
+        return False
 
     def check_xtts_server_online(self, base_url, max_attempts=120, wait_interval=5, process=None):
         """Check if the XTTS server is online and responding."""
@@ -1140,6 +1237,17 @@ class RuntimeMixin:
         self.shutdown_silero()
         self.shutdown_chatterbox()
         self.shutdown_magpie()
+        self.shutdown_rvc()
+
+    def shutdown_rvc(self):
+        """Shut down the RVC auxiliary service."""
+        if not self.rvc_process:
+            return
+
+        logging.info("Terminating RVC service process with PID: %s", self.rvc_process.pid)
+        self.terminate_process_tree(self.rvc_process)
+        self._close_process_log_handle(self.rvc_process)
+        self.rvc_process = None
 
     def shutdown_xtts(self):
         """Shut down the XTTS server"""

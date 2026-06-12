@@ -98,6 +98,12 @@ class GuiActionsMixin:
             QMessageBox.critical(self, "Update Error", error_msg)
             return
 
+        try:
+            self.ensure_update_runtime_stopped(pandrator_base_path)
+        except RuntimeError as exc:
+            QMessageBox.warning(self, "Close Running Applications", str(exc))
+            return
+
         self.disable_buttons()
         self.initialize_logging()
 
@@ -302,6 +308,8 @@ class GuiActionsMixin:
         running_backends = self._collect_running_backends()
         if running_backends:
             any_process_running = True
+        if self._get_running_rvc_process():
+            any_process_running = True
 
         if not any_process_running:
             self.update_status("All processes have exited.")
@@ -316,4 +324,3 @@ class GuiActionsMixin:
         self.shutdown_apps()
         self.shutdown_logging()
         event.accept()
-

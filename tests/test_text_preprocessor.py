@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 from pandrator.logic.text_preprocessor import normalize_punctuation, preprocess_text
 
 class TextPreprocessorTests(unittest.TestCase):
@@ -36,6 +37,24 @@ class TextPreprocessorTests(unittest.TestCase):
         self.assertEqual(len(sentences), 2)
         self.assertEqual(sentences[0]["original_sentence"], "This is a test, with a dash.")
         self.assertEqual(sentences[1]["original_sentence"], 'And "fancy quotes".')
+
+    @patch("pandrator.logic.text_preprocessor.nemo_normalizer.normalize_text_for_tts")
+    def test_nemo_normalization_runs_before_sentence_splitting(self, normalize_text):
+        normalize_text.return_value = "It costs twelve dollars. Continue."
+        settings = {
+            "disable_paragraph_detection": True,
+            "language": "en",
+            "max_sentence_length": 200,
+            "enable_sentence_splitting": True,
+            "enable_sentence_appending": False,
+            "enable_nemo_normalization": True,
+            "tts_service": "XTTS",
+        }
+
+        sentences = preprocess_text("It costs $12. Continue.", settings)
+
+        normalize_text.assert_called_once_with("It costs $12. Continue.", "en")
+        self.assertEqual(sentences[0]["original_sentence"], "It costs twelve dollars.")
 
 if __name__ == "__main__":
     unittest.main()

@@ -142,6 +142,12 @@ COMPONENTS: dict[str, ComponentDefinition] = {
         key="rvc",
         label="RVC",
         config_flag="rvc_support",
+        paths=("rvc-python",),
+        markers=("rvc-python/run.bat",),
+        repo_url="https://github.com/lukaszliniewicz/rvc-python.git",
+        repo_dirname="rvc-python",
+        process_attr="rvc_process",
+        port=8050,
     ),
     "chatterbox": ComponentDefinition(
         key="chatterbox",
@@ -265,4 +271,3 @@ def resolve_dependencies(selected_components: tuple[str, ...] | list[str] | set[
     for key in selected_components:
         visit(key)
     return tuple(resolved)
-

@@ -16,3 +16,4 @@ yt-dlp
 requests
 litellm
 qdarkstyle
+nemo_text_processing==1.2.0

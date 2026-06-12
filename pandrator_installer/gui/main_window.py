@@ -76,6 +76,7 @@ class PandratorInstaller(
 
         # Launch options
         self.launch_pandrator_var = True
+        self.launch_rvc_var = False
         self.launch_xtts_var = False
         self.disable_deepspeed_var = False
         self.xtts_cpu_launch_var = False
@@ -100,6 +101,7 @@ class PandratorInstaller(
         self.kokoro_process = None
         self.chatterbox_process = None
         self.magpie_process = None
+        self.rvc_process = None
         self.backend_stop_targets = []
 
         # Worker thread
@@ -494,6 +496,7 @@ class PandratorInstaller(
 
         self.launch_pandrator_checkbox = ToggleSwitch("Launch Pandrator")
         self.launch_pandrator_checkbox.setChecked(True)
+        self.launch_rvc_checkbox = ToggleSwitch("Launch RVC")
         self.launch_xtts_checkbox = ToggleSwitch("Launch XTTS")
         self.xtts_cpu_launch_checkbox = QCheckBox("Use CPU")
         self.deepspeed_checkbox = QCheckBox("Turn off DeepSpeed")
@@ -512,6 +515,10 @@ class PandratorInstaller(
             self._create_option_card(
                 self.launch_pandrator_checkbox,
                 "Open the Pandrator desktop application.",
+            ),
+            self._create_option_card(
+                self.launch_rvc_checkbox,
+                "Start RVC voice conversion alongside Pandrator and the selected speech service.",
             ),
             self._create_option_card(
                 self.launch_kokoro_checkbox,
@@ -731,6 +738,7 @@ class PandratorInstaller(
         # RVC
         rvc_support = config.get('rvc_support', False)
         set_widget_state(self.rvc_checkbox, not rvc_support, False)
+        set_widget_state(self.launch_rvc_checkbox, rvc_support, False)
 
         # XTTS Fine-tuning
         xtts_finetuning_support = config.get('xtts_finetuning_support', False)
@@ -925,6 +933,7 @@ class PandratorInstaller(
         """Read launch choices on the GUI thread before work starts."""
         return LaunchSelection(
             pandrator=self.launch_pandrator_checkbox.isChecked(),
+            rvc=self.launch_rvc_checkbox.isChecked(),
             xtts=self.launch_xtts_checkbox.isChecked(),
             disable_deepspeed=self.deepspeed_checkbox.isChecked(),
             xtts_cpu=self.xtts_cpu_launch_checkbox.isChecked(),

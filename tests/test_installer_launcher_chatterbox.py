@@ -71,22 +71,22 @@ class TestInstallerLauncherChatterbox(unittest.TestCase):
     @patch("pandrator_installer_launcher.PandratorInstaller.add_pixi_conda_package")
     @patch("pandrator_installer_launcher.PandratorInstaller.run_pixi_command")
     @patch("pandrator_installer_launcher.PandratorInstaller.ensure_pandrator_runtime")
+    @patch("pandrator_installer_launcher.PandratorInstaller.ensure_nemo_text_processing_runtime")
     @patch("pandrator_installer_launcher.PandratorInstaller.should_install_requirements")
     @patch("pandrator_installer_launcher.PandratorInstaller.install_subdub_requirements")
     @patch("pandrator_installer_launcher.PandratorInstaller.is_chatterbox_runtime_ready")
     @patch("pandrator_installer_launcher.PandratorInstaller.install_chatterbox_api_server")
     @patch("pandrator_installer_launcher.PandratorInstaller.write_packaging_layout")
     @patch("pandrator_installer_launcher.PandratorInstaller.component_needs_package_sync")
-    @patch("pandrator_installer_launcher.PandratorInstaller.rvc_needs_package_sync")
     def test_chatterbox_update_process_flow(
         self,
-        mock_rvc_sync,
         mock_comp_sync,
         mock_write_layout,
         mock_install_chatterbox,
         mock_runtime_ready,
         mock_subdub_reqs,
         mock_should_install_reqs,
+        mock_ensure_nemo,
         mock_ensure_runtime,
         mock_run_pixi_cmd,
         mock_add_pixi_package,
@@ -108,7 +108,6 @@ class TestInstallerLauncherChatterbox(unittest.TestCase):
         mock_get_pixi.return_value = "dummy_pixi"
         mock_should_install_reqs.return_value = (False, "dummy")
         mock_comp_sync.return_value = (False, "dummy")
-        mock_rvc_sync.return_value = (False, "dummy")
         # Runtime is NOT ready, so bootstrapping should trigger
         mock_runtime_ready.return_value = False
 

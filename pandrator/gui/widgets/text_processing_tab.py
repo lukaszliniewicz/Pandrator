@@ -14,6 +14,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ...logic import nemo_normalizer
+
 
 DEFAULT_LITELLM_MODEL = "openai/gpt-5.4-mini"
 
@@ -91,6 +93,11 @@ class TextProcessingTab(QWidget):
         self.disable_paragraph_detection_checkbox = QCheckBox("Disable Paragraph Detection")
         self.remove_footnotes_checkbox = QCheckBox("Remove Footnotes/Endnotes")
         self.filter_citations_checkbox = QCheckBox("Filter Bibliographic Citations")
+        self.enable_nemo_normalization_checkbox = QCheckBox("NeMo Text Normalization")
+        self.enable_nemo_normalization_checkbox.setToolTip(
+            "Convert dates, numbers, measurements, abbreviations, and similar written forms into spoken text.\n"
+            "Runs before sentence splitting and optional LLM processing when the selected language is supported."
+        )
         self.normalize_all_caps_checkbox = QCheckBox("Normalize All-Caps Words")
         self.normalize_all_caps_checkbox.setToolTip(
             "Convert stylistic ALL-CAPS words (chapter titles, character names) to title-case.\n"
@@ -106,7 +113,8 @@ class TextProcessingTab(QWidget):
         layout.addWidget(self.disable_paragraph_detection_checkbox, 5, 0)
         layout.addWidget(self.remove_footnotes_checkbox, 6, 0)
         layout.addWidget(self.filter_citations_checkbox, 7, 0)
-        layout.addWidget(self.normalize_all_caps_checkbox, 8, 0)
+        layout.addWidget(self.enable_nemo_normalization_checkbox, 8, 0)
+        layout.addWidget(self.normalize_all_caps_checkbox, 9, 0)
 
         return frame
 
@@ -266,6 +274,13 @@ class TextProcessingTab(QWidget):
                 self.logic.state.text_processing,
                 "filter_citations",
                 self.filter_citations_checkbox.isChecked(),
+            )
+        )
+        self.enable_nemo_normalization_checkbox.stateChanged.connect(
+            lambda: setattr(
+                self.logic.state.text_processing,
+                "enable_nemo_normalization",
+                self.enable_nemo_normalization_checkbox.isChecked(),
             )
         )
         self.normalize_all_caps_checkbox.stateChanged.connect(
@@ -428,6 +443,12 @@ class TextProcessingTab(QWidget):
         self.remove_footnotes_checkbox.setChecked(tp_state.remove_footnotes)
         self.filter_citations_checkbox.setChecked(getattr(tp_state, "filter_citations", True))
         self.filter_citations_checkbox.setEnabled(not tp_state.remove_footnotes)
+        self.enable_nemo_normalization_checkbox.setChecked(
+            getattr(tp_state, "enable_nemo_normalization", True)
+        )
+        self.enable_nemo_normalization_checkbox.setEnabled(
+            nemo_normalizer.is_nemo_normalization_supported(self.logic.state.tts.language)
+        )
         self.normalize_all_caps_checkbox.setChecked(getattr(tp_state, "normalize_all_caps", True))
 
         # LLM Settings

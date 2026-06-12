@@ -26,9 +26,12 @@ from .constants import (
     KOKORO_ENV_NAME,
     KOKORO_GPU_SUPPORT_CONFIG_FLAG,
     KOKORO_PYTHON_VERSION,
+    NEMO_PYNINI_CONDA_SPEC,
     PANDRATOR_PYTHON_VERSION,
     PANDRATOR_REPO_URL,
     PYCROPPDF_REPO_URL,
+    RVC_API_REPO_DIRNAME,
+    RVC_API_REPO_URL,
     SILERO_PYTHON_VERSION,
     SILERO_REQUIRED_PACKAGE_SPECS,
     SUBDUB_REPO_URL,
@@ -112,6 +115,7 @@ class WorkflowMixin:
         easy_xtts_trainer_path = os.path.join(pandrator_path, 'easy_xtts_trainer')
         chatterbox_repo_path = os.path.join(pandrator_path, CHATTERBOX_API_REPO_DIRNAME)
         magpie_repo_path = os.path.join(pandrator_path, MAGPIE_API_REPO_DIRNAME)
+        rvc_repo_path = os.path.join(pandrator_path, RVC_API_REPO_DIRNAME)
 
         pandrator_repo_missing = not os.path.exists(pandrator_repo_path)
         subdub_repo_missing = not os.path.exists(subdub_repo_path)
@@ -193,6 +197,8 @@ class WorkflowMixin:
                 concurrent_tasks["Clone Chatterbox"] = (self.clone_repo, (CHATTERBOX_API_REPO_URL, chatterbox_repo_path), {})
             if (magpie_var or magpie_cpu_var) and not os.path.exists(magpie_repo_path):
                 concurrent_tasks["Clone Magpie"] = (self.clone_repo, (MAGPIE_API_REPO_URL, magpie_repo_path), {})
+            if rvc_var and not os.path.exists(rvc_repo_path):
+                concurrent_tasks["Clone RVC"] = (self.clone_repo, (RVC_API_REPO_URL, rvc_repo_path), {})
 
             self.execute_concurrently(concurrent_tasks, max_workers=8)
 
@@ -208,10 +214,12 @@ class WorkflowMixin:
                 self.reporter.status("Creating Pandrator Pixi environment...")
                 self.create_pixi_env(pandrator_path, 'pandrator_installer', PANDRATOR_PYTHON_VERSION)
                 self.add_pixi_conda_package(pandrator_path, 'pandrator_installer', 'ffmpeg')
+                self.add_pixi_conda_package(pandrator_path, 'pandrator_installer', NEMO_PYNINI_CONDA_SPEC)
 
                 self.reporter.progress(0.7)
                 self.reporter.status("Installing Pandrator, Subdub, and PyCropPDF dependencies...")
                 self.install_requirements(pandrator_path, 'pandrator_installer', os.path.join(pandrator_repo_path, 'requirements.txt'))
+                self.ensure_nemo_text_processing_runtime(pandrator_path)
 
                 pycroppdf_repo_path = os.path.join(pandrator_repo_path, 'PyCropPDF')
                 if not os.path.exists(pycroppdf_repo_path):
@@ -300,8 +308,12 @@ class WorkflowMixin:
 
             if rvc_var:
                 self.reporter.progress(0.8)
-                self.reporter.status("Installing RVC Python fork...")
-                self.install_rvc_python(pandrator_path, 'pandrator_installer')
+                self.reporter.status("Preparing RVC service...")
+                self.install_rvc_api_server(
+                    rvc_repo_path,
+                    pixi_path=shared_pixi_path,
+                )
+                self.remove_legacy_rvc_from_pandrator_env(pandrator_path)
 
             if whisperx_var:
                 self.reporter.progress(0.85)
@@ -401,6 +413,8 @@ class WorkflowMixin:
         easy_xtts_trainer_path = os.path.join(pandrator_base_path, 'easy_xtts_trainer')
         chatterbox_repo_path = os.path.join(pandrator_base_path, CHATTERBOX_API_REPO_DIRNAME)
         magpie_repo_path = os.path.join(pandrator_base_path, MAGPIE_API_REPO_DIRNAME)
+        rvc_repo_path = os.path.join(pandrator_base_path, RVC_API_REPO_DIRNAME)
+        self.ensure_update_runtime_stopped(pandrator_base_path)
         config = self.load_install_config(pandrator_base_path, detect_rvc=True)
         if KOKORO_GPU_SUPPORT_CONFIG_FLAG not in config:
             config[KOKORO_GPU_SUPPORT_CONFIG_FLAG] = False
@@ -503,6 +517,12 @@ class WorkflowMixin:
                 else:
                     update_tasks["Clone Magpie"] = (self.clone_repo, (MAGPIE_API_REPO_URL, magpie_repo_path), {})
 
+            if config.get('rvc_support', False):
+                if os.path.exists(rvc_repo_path):
+                    update_tasks["Update RVC"] = (self.pull_repo, (rvc_repo_path,), {})
+                else:
+                    update_tasks["Clone RVC"] = (self.clone_repo, (RVC_API_REPO_URL, rvc_repo_path), {})
+
             # easy_xtts_trainer
             if os.path.exists(easy_xtts_trainer_path):
                 update_tasks["Update XTTS Trainer"] = (self.pull_repo, (easy_xtts_trainer_path,), {})
@@ -526,10 +546,20 @@ class WorkflowMixin:
             else:
                 logging.info("No local state database files found to back up before update.")
 
+            if config.get('rvc_support', False):
+                self.reporter.status("Migrating RVC to the dedicated service...")
+                self.migrate_rvc_to_service(
+                    pandrator_base_path,
+                    pandrator_repo_path,
+                    rvc_repo_path,
+                    pixi_path=shared_pixi_path,
+                )
+
             # Setup environments
             self.reporter.status("Checking Pandrator environment...")
             self.create_pixi_env(pandrator_base_path, 'pandrator_installer', PANDRATOR_PYTHON_VERSION)
             self.add_pixi_conda_package(pandrator_base_path, 'pandrator_installer', 'ffmpeg')
+            self.add_pixi_conda_package(pandrator_base_path, 'pandrator_installer', NEMO_PYNINI_CONDA_SPEC)
             self.reporter.status("Checking Pandrator runtime...")
             self.ensure_pandrator_runtime(pandrator_base_path, 'pandrator_installer')
 
@@ -552,6 +582,8 @@ class WorkflowMixin:
                 self.install_requirements(pandrator_base_path, 'pandrator_installer', requirements_file)
             else:
                 logging.info(f"Skipping Pandrator requirements install: {pandrator_requirements_reason}")
+            self.reporter.status("Checking NeMo text normalization...")
+            self.ensure_nemo_text_processing_runtime(pandrator_base_path)
 
             if os.path.exists(pycroppdf_repo_path):
                 self.reporter.status("Updating PyCropPDF repository...")
@@ -585,22 +617,6 @@ class WorkflowMixin:
             # Update Subdub
             self.reporter.status("Checking Subdub dependencies...")
             self.install_subdub_requirements(pandrator_base_path, 'pandrator_installer', subdub_repo_path)
-
-            if config.get('rvc_support', False):
-                rvc_needs_install = pandrator_env_missing
-                rvc_reason = "Pixi manifest is missing"
-                if not rvc_needs_install:
-                    rvc_needs_install, rvc_reason = self.rvc_needs_package_sync(
-                        pandrator_base_path,
-                        'pandrator_installer',
-                    )
-
-                if rvc_needs_install:
-                    self.reporter.status("Installing/upgrading RVC fork dependencies...")
-                    logging.info(f"Installing RVC packages because {rvc_reason}")
-                    self.install_rvc_python(pandrator_base_path, 'pandrator_installer')
-                else:
-                    logging.info(f"Skipping RVC reinstall: {rvc_reason}")
 
             # Concurrently bootstrap Kokoro in background if it needs bootstrapping
             kokoro_bootstrap_future = None
@@ -812,5 +828,3 @@ class WorkflowMixin:
             logging.error(traceback.format_exc())
             self.reporter.status(f"Update failed: {error_msg}")
             raise
-
-

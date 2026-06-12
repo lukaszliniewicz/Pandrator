@@ -76,6 +76,7 @@ This project relies on several APIs and services (running locally) and libraries
   - [silero-api-server](https://pypi.org/project/silero-api-server/) (Silero backend)
   - Commercial speech APIs and custom TTS endpoints
 - [FFmpeg](https://github.com/FFmpeg/FFmpeg) for audio encoding.
+- [NeMo Text Processing](https://github.com/NVIDIA/NeMo-text-processing) for deterministic written-to-spoken text normalization.
 - [Sentence Splitter by mediacloud](https://github.com/mediacloud/sentence-splitter), [PyQt6](https://pypi.org/project/PyQt6/), [num2words by savoirfairelinux](https://github.com/savoirfairelinux/num2words), and others listed in `requirements.txt`.
 
 For local OpenAI-compatible TTS wrappers used by Pandrator, the preferred ecosystem schema is:
@@ -204,6 +205,13 @@ Current installer flow:
 5. Sets up Pandrator dependencies and selected optional environments/tools.
 6. Bootstraps XTTS2, FishS2, Chatterbox, VoxCPM2, Voxtral, and Kokoro via their own launcher scripts.
 
+Before using **Update**, close Pandrator and all services launched from the installation. The updater refuses to modify a running installation because Windows locks loaded environment files.
+
+Updates automatically migrate older installations:
+
+- Legacy in-process RVC is detected even when the new RVC service repository is absent. The updater prepares the dedicated RVC service first, preserves `Pandrator/rvc_models`, and then removes the legacy RVC packages from Pandrator's main environment.
+- Pynini and NeMo Text Processing are installed and import-verified on every update. This repair check is independent of the saved requirements hash.
+
 Launch tab options:
 
 - `Pandrator`
@@ -250,8 +258,12 @@ Please refer to the repositories linked under [Dependencies](#dependencies) for 
 
 3. Install Pandrator dependencies:
 
+   On Windows, use a Conda or Pixi environment and install Pynini from conda-forge first. NVIDIA does not support pip-only Pynini installation on Windows.
+
    ```
    cd Pandrator
+   set PYTHONUTF8=1
+   conda install -c conda-forge pynini=2.1.6.post1
    python -m pip install -r requirements.txt
    cd ..
    ```
@@ -426,9 +438,11 @@ Pandrator offers a comprehensive workflow for generating dubbed videos from vide
 2. You can disable/enable appending short sentences (to preceding or following sentences; disabled by default, which may improve flow because the length of text fragments sent to the model is more uniform).
 3. Remove diacritics (useful when generating text that contains many foreign words or transliterations from foreign alphabets, e.g. Japanese). Do not enable this if you generate in a language that needs diacritics, like German or Polish. The pronunciation will be wrong then.
 4. Remove quotation marks (useful for models that sometimes read quotation marks aloud).
+5. NeMo Text Normalization is enabled by default for a conservative set of supported languages. It converts written forms such as dates, numbers, measurements, and abbreviations into spoken text before sentence splitting. Deterministic normalization is currently enabled for Arabic, German, English, Spanish, French, Hindi, Hungarian, Armenian, Italian, Japanese, Korean, and Portuguese. Other NeMo grammars remain disabled until their output is reliable in Pandrator's Windows runtime.
 
 ### LLM Pre-processing
-- Enable LLM processing to use language models for preprocessing text before sending it to the TTS API. For example, you may ask the LLM to remove OCR artifacts, spell out abbreviations, and correct punctuation.
+- Enable LLM processing to use language models for preprocessing text before sending it to the TTS API. For example, you may ask the LLM to remove OCR artifacts, spell out abbreviations, and correct punctuation. When NeMo normalization is active, the LLM receives the already-normalized sentence.
+- The processing order is NeMo text normalization, sentence splitting, optional LLM processing, then TTS generation.
 - You can define up to three prompts for text optimization. Each prompt is sent to the LLM API separately, and the output of the last prompt is used for TTS generation.
 - For each prompt, you can enable/disable it, set the prompt text, choose the LLM model to use, and enable/disable evaluation (if enabled, the LLM API will be called twice for each prompt, and then again for the model to choose the better result).
 - Manage providers/models in the **Providers** tab, then refresh built-in catalogs from the **Text Processing** tab if needed.

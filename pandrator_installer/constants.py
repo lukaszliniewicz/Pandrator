@@ -23,6 +23,8 @@ PIXI_CACHE_DIRNAME = '.pixi-cache'
 PIXI_PIP_CACHE_SUBDIRNAME = 'pip'
 PIXI_TEMP_SUBDIRNAME = 'tmp'
 PANDRATOR_PYTHON_VERSION = '3.11'
+NEMO_PYNINI_CONDA_SPEC = 'pynini=2.1.6.post1'
+NEMO_TEXT_PROCESSING_SPEC = 'nemo_text_processing==1.2.0'
 SILERO_PYTHON_VERSION = '3.10'
 KOKORO_PYTHON_VERSION = '3.11'
 KOKORO_TORCH_BASE_VERSION = '2.8.0'
@@ -84,6 +86,8 @@ CHATTERBOX_API_REPO_URL = COMPONENTS['chatterbox'].repo_url
 CHATTERBOX_API_REPO_DIRNAME = COMPONENTS['chatterbox'].repo_dirname
 MAGPIE_API_REPO_URL = COMPONENTS['magpie'].repo_url
 MAGPIE_API_REPO_DIRNAME = COMPONENTS['magpie'].repo_dirname
+RVC_API_REPO_URL = COMPONENTS['rvc'].repo_url
+RVC_API_REPO_DIRNAME = COMPONENTS['rvc'].repo_dirname
 PANDRATOR_REPO_URL = 'https://github.com/lukaszliniewicz/Pandrator.git'
 SUBDUB_REPO_URL = 'https://github.com/lukaszliniewicz/Subdub.git'
 PYCROPPDF_REPO_URL = 'https://github.com/lukaszliniewicz/PyCropPDF.git'
@@ -106,25 +110,6 @@ FFMPEG_BUNDLED_RELATIVE_PATH = os.path.join('bin', 'ffmpeg.exe')
 
 BUNDLED_WHEELS_RELATIVE_PATH = os.path.join('vendor', 'wheels')
 PYOPENJTALK_WHEEL_PREFIX = 'pyopenjtalk-'
-RVC_PYTHON_FORK_INSTALL_SPEC = 'git+https://github.com/JarodMica/rvc-python@782467ababe17698a4b5100aedfe16e69cebaa56'
-RVC_PYTHON_FORK_SOURCE_FRAGMENT = 'github.com/jarodmica/rvc-python'
-RVC_FAIRSEQ_WHEEL_URL_BY_PYTHON = {
-    '3.10': 'https://huggingface.co/Jmica/rvc/resolve/main/fairseq-0.12.2-cp310-cp310-win_amd64.whl?download=true',
-    '3.11': 'https://huggingface.co/Jmica/rvc/resolve/main/fairseq-0.12.4-cp311-cp311-win_amd64.whl?download=true',
-}
-RVC_TORCH_VERSION = '2.3.1'
-RVC_TORCHVISION_VERSION = '0.18.1'
-RVC_TORCHAUDIO_VERSION = '2.3.1'
-RVC_NUMPY_SPEC = 'numpy<2'
-RVC_TORCH_INDEX_URL = 'https://download.pytorch.org/whl/cu121'
-RVC_REQUIRED_PACKAGE_SPECS = (
-    'rvc-python',
-    'fairseq',
-    RVC_NUMPY_SPEC,
-    f'torch=={RVC_TORCH_VERSION}',
-    f'torchvision=={RVC_TORCHVISION_VERSION}',
-    f'torchaudio=={RVC_TORCHAUDIO_VERSION}',
-)
 SILERO_REQUIRED_PACKAGE_SPECS = (
     'requests',
     'silero-api-server',

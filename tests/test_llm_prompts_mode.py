@@ -84,6 +84,28 @@ class LLMPromptsModeTests(unittest.TestCase):
         self.assertEqual(count, 2)
         self.assertEqual(mock_process.call_count, 2)
 
+    @patch("pandrator.logic.llm_handler.process_text")
+    @patch("pandrator.app_logic.AppLogic._ensure_llm_model_loaded")
+    def test_llm_processing_receives_nemo_normalized_sentence(self, mock_load, mock_process):
+        mock_load.return_value = True
+        mock_process.return_value = "LLM Output"
+
+        logic = AppLogic()
+        logic.state.llm.combined_prompt.prompt_text = "Combined:"
+        logic.state.llm.combined_prompt.enabled = True
+        logic.state.processed_sentences = [{"original_sentence": "Chapter twelve."}]
+
+        result, _ = logic._run_llm_processing(logic.state.processed_sentences[0]["original_sentence"])
+
+        self.assertEqual(result, "LLM Output")
+        mock_process.assert_called_once_with(
+            "Chapter twelve.",
+            "Combined:",
+            False,
+            model_name=None,
+            llm_settings=logic.state.llm,
+        )
+
     def test_load_session_legacy_migration(self):
         # Create a session directory
         session_name = "LegacySession"

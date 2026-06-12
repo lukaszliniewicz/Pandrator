@@ -175,6 +175,7 @@ def default_tts_provider_configs() -> List[Dict[str, Any]]:
 
 @dataclass
 class TextProcessingSettings:
+    enable_nemo_normalization: bool = True
     enable_sentence_splitting: bool = True
     max_sentence_length: int = 200
     enable_sentence_appending: bool = True
