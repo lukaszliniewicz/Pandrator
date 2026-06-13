@@ -17,3 +17,5 @@ requests
 litellm
 qdarkstyle
 nemo_text_processing==1.2.0
+numpy==1.26.4
+wtpsplit-lite==0.2.0

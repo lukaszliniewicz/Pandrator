@@ -439,6 +439,7 @@ Pandrator offers a comprehensive workflow for generating dubbed videos from vide
 3. Remove diacritics (useful when generating text that contains many foreign words or transliterations from foreign alphabets, e.g. Japanese). Do not enable this if you generate in a language that needs diacritics, like German or Polish. The pronunciation will be wrong then.
 4. Remove quotation marks (useful for models that sometimes read quotation marks aloud).
 5. NeMo Text Normalization is enabled by default for a conservative set of supported languages. It converts written forms such as dates, numbers, measurements, and abbreviations into spoken text before sentence splitting. Deterministic normalization is currently enabled for Arabic, German, English, Spanish, French, Hindi, Hungarian, Armenian, Italian, Japanese, Korean, and Portuguese. Other NeMo grammars remain disabled until their output is reliable in Pandrator's Windows runtime.
+6. Sentence boundaries are detected with the multilingual `sat-3l-sm` model through `wtpsplit-lite`. The installer downloads the roughly 410 MiB ONNX model into Pandrator's portable cache. Existing rule-based segmenters remain available as automatic fallbacks if the model cannot load.
 
 ### LLM Pre-processing
 - Enable LLM processing to use language models for preprocessing text before sending it to the TTS API. For example, you may ask the LLM to remove OCR artifacts, spell out abbreviations, and correct punctuation. When NeMo normalization is active, the LLM receives the already-normalized sentence.

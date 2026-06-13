@@ -80,6 +80,31 @@ class InstallerUpdateMigrationTests(unittest.TestCase):
         install_with_pip.assert_not_called()
         self.assertEqual(run_pixi.call_count, 2)
 
+    @patch("pandrator_installer.service.HeadlessInstaller.install_requirement_specs_with_pip")
+    @patch("pandrator_installer.service.HeadlessInstaller.add_pypi_requirements", return_value=[])
+    @patch("pandrator_installer.service.HeadlessInstaller.run_pixi_in_env")
+    def test_missing_wtpsplit_runtime_is_repaired_and_verified(
+        self,
+        run_pixi,
+        add_pypi,
+        install_with_pip,
+    ):
+        installer = HeadlessInstaller(working_dir="workspace")
+        run_pixi.side_effect = [
+            subprocess.CalledProcessError(1, ["python"], stderr="missing"),
+            ("", ""),
+        ]
+
+        installer.ensure_wtpsplit_runtime("C:/Pandrator")
+
+        add_pypi.assert_called_once_with(
+            "C:/Pandrator",
+            "pandrator_installer",
+            ["numpy==1.26.4", "wtpsplit-lite==0.2.0"],
+        )
+        install_with_pip.assert_not_called()
+        self.assertEqual(run_pixi.call_count, 2)
+
     @patch("pandrator_installer.components.psutil.process_iter")
     def test_update_refuses_to_mutate_a_running_installation(self, process_iter):
         installer = HeadlessInstaller(working_dir="workspace")

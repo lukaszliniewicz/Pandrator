@@ -14,7 +14,7 @@ from pandrator_installer.cli import parse_launcher_cli_args, run_self_check
 from pandrator_installer.models import InstallSelection, LaunchSelection, WorkspacePaths
 from pandrator_installer.reporting import HeadlessReporter
 from pandrator_installer.service import HeadlessInstaller
-from pandrator_installer.constants import NEMO_PYNINI_CONDA_SPEC
+from pandrator_installer.constants import NEMO_PYNINI_CONDA_SPEC, PANDRATOR_NUMPY_SPEC
 
 
 class InstallerArchitectureTests(unittest.TestCase):
@@ -75,6 +75,7 @@ class InstallerArchitectureTests(unittest.TestCase):
         )
         self.assertIn("chatterbox_support", PACKAGING_CONFIG_FLAGS)
         self.assertEqual(NEMO_PYNINI_CONDA_SPEC, "pynini=2.1.6.post1")
+        self.assertEqual(PANDRATOR_NUMPY_SPEC, "numpy==1.26.4")
 
     def test_self_check_cli_flag_and_execution(self):
         args = parse_launcher_cli_args(["--self-check"])

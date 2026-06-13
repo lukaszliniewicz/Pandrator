@@ -72,6 +72,7 @@ class TestInstallerLauncherChatterbox(unittest.TestCase):
     @patch("pandrator_installer_launcher.PandratorInstaller.run_pixi_command")
     @patch("pandrator_installer_launcher.PandratorInstaller.ensure_pandrator_runtime")
     @patch("pandrator_installer_launcher.PandratorInstaller.ensure_nemo_text_processing_runtime")
+    @patch("pandrator_installer_launcher.PandratorInstaller.ensure_wtpsplit_runtime")
     @patch("pandrator_installer_launcher.PandratorInstaller.should_install_requirements")
     @patch("pandrator_installer_launcher.PandratorInstaller.install_subdub_requirements")
     @patch("pandrator_installer_launcher.PandratorInstaller.is_chatterbox_runtime_ready")
@@ -86,6 +87,7 @@ class TestInstallerLauncherChatterbox(unittest.TestCase):
         mock_runtime_ready,
         mock_subdub_reqs,
         mock_should_install_reqs,
+        mock_ensure_wtpsplit,
         mock_ensure_nemo,
         mock_ensure_runtime,
         mock_run_pixi_cmd,

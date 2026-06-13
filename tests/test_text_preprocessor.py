@@ -1,8 +1,46 @@
 import unittest
 from unittest.mock import patch
-from pandrator.logic.text_preprocessor import normalize_punctuation, preprocess_text
+from pandrator.logic.text_preprocessor import CHUNK_SIZE, normalize_punctuation, preprocess_text, split_into_sentences
 
 class TextPreprocessorTests(unittest.TestCase):
+    @patch("pandrator.logic.text_preprocessor.sentence_segmenter.split_text")
+    def test_wtpsplit_is_primary_sentence_segmenter(self, split_text):
+        split_text.return_value = ["See Sec. IV, Ch. IX, and pp. 12-14.", "Then continue."]
+
+        result = split_into_sentences(
+            "See Sec. IV, Ch. IX, and pp. 12-14. Then continue.",
+            "en",
+            "XTTS",
+        )
+
+        self.assertEqual(result, split_text.return_value)
+
+    @patch("pandrator.logic.text_preprocessor._split_with_sentence_splitter")
+    @patch("pandrator.logic.text_preprocessor.sentence_segmenter.split_text", return_value=None)
+    def test_rule_based_segmenter_is_used_as_wtpsplit_fallback(self, _split_text, legacy_split):
+        legacy_split.return_value = ["One.", "Two."]
+
+        result = split_into_sentences("One. Two.", "en", "XTTS")
+
+        self.assertEqual(result, ["One.", "Two."])
+        legacy_split.assert_called_once_with("One. Two.", "en")
+
+    @patch("pandrator.logic.text_preprocessor._sequential_preprocess_text", return_value=[])
+    @patch("pandrator.logic.text_preprocessor._parallel_preprocess_text")
+    @patch("pandrator.logic.text_preprocessor.sentence_segmenter.is_available", return_value=True)
+    def test_large_documents_avoid_loading_wtpsplit_in_worker_processes(
+        self,
+        _is_available,
+        parallel_preprocess,
+        sequential_preprocess,
+    ):
+        settings = {"enable_nemo_normalization": False}
+
+        preprocess_text("a" * (CHUNK_SIZE + 1), settings)
+
+        sequential_preprocess.assert_called_once()
+        parallel_preprocess.assert_not_called()
+
     def test_normalize_punctuation_fancy_quotes(self):
         text = "“Hello,” she said, ‘It’s a nice day.’ «Bonjour»"
         normalized = normalize_punctuation(text)
@@ -39,8 +77,10 @@ class TextPreprocessorTests(unittest.TestCase):
         self.assertEqual(sentences[1]["original_sentence"], 'And "fancy quotes".')
 
     @patch("pandrator.logic.text_preprocessor.nemo_normalizer.normalize_text_for_tts")
-    def test_nemo_normalization_runs_before_sentence_splitting(self, normalize_text):
+    @patch("pandrator.logic.text_preprocessor.sentence_segmenter.split_text")
+    def test_nemo_normalization_runs_before_sentence_splitting(self, split_text, normalize_text):
         normalize_text.return_value = "It costs twelve dollars. Continue."
+        split_text.return_value = ["It costs twelve dollars.", "Continue."]
         settings = {
             "disable_paragraph_detection": True,
             "language": "en",
@@ -54,6 +94,7 @@ class TextPreprocessorTests(unittest.TestCase):
         sentences = preprocess_text("It costs $12. Continue.", settings)
 
         normalize_text.assert_called_once_with("It costs $12. Continue.", "en")
+        split_text.assert_called_once_with("It costs twelve dollars. Continue.")
         self.assertEqual(sentences[0]["original_sentence"], "It costs twelve dollars.")
 
 if __name__ == "__main__":

@@ -220,6 +220,7 @@ class WorkflowMixin:
                 self.reporter.status("Installing Pandrator, Subdub, and PyCropPDF dependencies...")
                 self.install_requirements(pandrator_path, 'pandrator_installer', os.path.join(pandrator_repo_path, 'requirements.txt'))
                 self.ensure_nemo_text_processing_runtime(pandrator_path)
+                self.ensure_wtpsplit_runtime(pandrator_path)
 
                 pycroppdf_repo_path = os.path.join(pandrator_repo_path, 'PyCropPDF')
                 if not os.path.exists(pycroppdf_repo_path):
@@ -584,6 +585,8 @@ class WorkflowMixin:
                 logging.info(f"Skipping Pandrator requirements install: {pandrator_requirements_reason}")
             self.reporter.status("Checking NeMo text normalization...")
             self.ensure_nemo_text_processing_runtime(pandrator_base_path)
+            self.reporter.status("Checking sentence segmentation model...")
+            self.ensure_wtpsplit_runtime(pandrator_base_path)
 
             if os.path.exists(pycroppdf_repo_path):
                 self.reporter.status("Updating PyCropPDF repository...")

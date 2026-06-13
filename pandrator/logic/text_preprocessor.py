@@ -8,6 +8,7 @@ import hasami
 import concurrent.futures
 from num2words import num2words
 from . import nemo_normalizer
+from . import sentence_segmenter
 
 CHUNK_SIZE = 20000
 
@@ -297,7 +298,7 @@ def preprocess_text(text: str, settings: dict) -> list[dict]:
     if settings.get("enable_nemo_normalization", True):
         text = nemo_normalizer.normalize_text_for_tts(text, settings.get("language", "en"))
 
-    if len(text) > CHUNK_SIZE:
+    if len(text) > CHUNK_SIZE and not sentence_segmenter.is_available():
         processed_sentences = _parallel_preprocess_text(text, settings)
     else:
         processed_sentences = _sequential_preprocess_text(text, settings)
@@ -497,6 +498,10 @@ def _split_with_sentence_splitter(text: str, language: str) -> list[str]:
 
 def split_into_sentences(text, language, tts_service):
     normalized_language = str(language or "").strip().lower()
+
+    wtpsplit_sentences = sentence_segmenter.split_text(text)
+    if wtpsplit_sentences is not None:
+        return wtpsplit_sentences
 
     if tts_service in {"XTTS", "Voxtral", "Kokoro", "Magpie", "OpenAI", "Google Gemini", "Gemini", "Custom", "OpenAI-Compatible"}:
         if normalized_language in {"zh", "zh-cn"}:

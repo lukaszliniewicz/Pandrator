@@ -26,6 +26,7 @@ from .constants import (
     KOKORO_TORCH_BASE_VERSION,
     NEMO_PYNINI_CONDA_SPEC,
     NEMO_TEXT_PROCESSING_SPEC,
+    PANDRATOR_NUMPY_SPEC,
     PYOPENJTALK_WHEEL_PREFIX,
     SUBDUB_EDITABLE_INSTALL_SPEC,
     SUBDUB_REPO_URL,
@@ -35,6 +36,8 @@ from .constants import (
     WHISPERX_TORCH_INDEX_URL,
     WHISPERX_TORCH_VERSION,
     WHISPERX_VERSION,
+    WTPSPLIT_LITE_SPEC,
+    WTPSPLIT_MODEL,
     XTTS_FINETUNING_BUNDLED_WHEEL_PREFIX,
 )
 
@@ -1165,6 +1168,51 @@ class ComponentOperationsMixin:
             log_errors=False,
         )
         logging.info("NeMo text-processing runtime repair completed successfully.")
+
+    def ensure_wtpsplit_runtime(self, pandrator_path, env_name='pandrator_installer'):
+        """Verify, repair, and prefetch the default wtpsplit-lite model."""
+        check_command = [
+            'python',
+            '-c',
+            (
+                'import numpy, onnxruntime; '
+                'assert numpy.__version__ == "1.26.4"; '
+                'from wtpsplit_lite import SaT; '
+                f'model = SaT("{WTPSPLIT_MODEL}", ort_providers=["CPUExecutionProvider"]); '
+                'segments = model.split('
+                '"See Sec. IV, Ch. IX, and pp. 12-14. Then he left.", threshold=0.05'
+                '); '
+                'assert len(segments) == 2'
+            ),
+        ]
+
+        try:
+            self.run_pixi_in_env(
+                pandrator_path,
+                env_name,
+                check_command,
+                log_errors=False,
+            )
+            logging.info("wtpsplit-lite sentence-segmentation runtime is ready.")
+            return
+        except subprocess.CalledProcessError as exc:
+            logging.warning("Repairing wtpsplit-lite runtime after verification failure: %s", exc.stderr)
+
+        failed_specs = self.add_pypi_requirements(
+            pandrator_path,
+            env_name,
+            [PANDRATOR_NUMPY_SPEC, WTPSPLIT_LITE_SPEC],
+        )
+        if failed_specs:
+            self.install_requirement_specs_with_pip(pandrator_path, env_name, failed_specs)
+
+        self.run_pixi_in_env(
+            pandrator_path,
+            env_name,
+            check_command,
+            log_errors=False,
+        )
+        logging.info("wtpsplit-lite runtime repair and model prefetch completed successfully.")
 
     def migrate_rvc_to_service(self, pandrator_path, pandrator_repo_path, rvc_repo_path, pixi_path=None):
         """Prepare the RVC service before retiring the legacy in-process runtime."""
