@@ -27,6 +27,9 @@ from .constants import (
     NEMO_PYNINI_CONDA_SPEC,
     NEMO_TEXT_PROCESSING_SPEC,
     PANDRATOR_NUMPY_SPEC,
+    PANDRATOR_ONNXRUNTIME_SPEC,
+    PANDRATOR_PADDLEOCR_SPEC,
+    PANDRATOR_PYMUPDF_SPEC,
     PYOPENJTALK_WHEEL_PREFIX,
     SUBDUB_EDITABLE_INSTALL_SPEC,
     SUBDUB_REPO_URL,
@@ -1213,6 +1216,48 @@ class ComponentOperationsMixin:
             log_errors=False,
         )
         logging.info("wtpsplit-lite runtime repair and model prefetch completed successfully.")
+
+    def ensure_pdf_ocr_runtime(self, pandrator_path, env_name='pandrator_installer'):
+        """Verify, repair, and prefetch the default PP-OCRv6 medium ONNX models."""
+        check_command = [
+            'python',
+            '-c',
+            (
+                'import fitz, numpy, onnxruntime; '
+                'from paddleocr import PaddleOCR; '
+                'model = PaddleOCR('
+                'text_detection_model_name="PP-OCRv6_medium_det", '
+                'text_recognition_model_name="PP-OCRv6_medium_rec", '
+                'use_doc_orientation_classify=False, '
+                'use_doc_unwarping=False, '
+                'use_textline_orientation=False, '
+                'engine="onnxruntime", device="cpu"); '
+                'assert model is not None'
+            ),
+        ]
+
+        try:
+            self.run_pixi_in_env(pandrator_path, env_name, check_command, log_errors=False)
+            logging.info("PDF OCR runtime is ready.")
+            return
+        except subprocess.CalledProcessError as exc:
+            logging.warning("Repairing PDF OCR runtime after verification failure: %s", exc.stderr)
+
+        failed_specs = self.add_pypi_requirements(
+            pandrator_path,
+            env_name,
+            [
+                PANDRATOR_NUMPY_SPEC,
+                PANDRATOR_PYMUPDF_SPEC,
+                PANDRATOR_ONNXRUNTIME_SPEC,
+                PANDRATOR_PADDLEOCR_SPEC,
+            ],
+        )
+        if failed_specs:
+            self.install_requirement_specs_with_pip(pandrator_path, env_name, failed_specs)
+
+        self.run_pixi_in_env(pandrator_path, env_name, check_command, log_errors=False)
+        logging.info("PDF OCR runtime repair and model prefetch completed successfully.")
 
     def migrate_rvc_to_service(self, pandrator_path, pandrator_repo_path, rvc_repo_path, pixi_path=None):
         """Prepare the RVC service before retiring the legacy in-process runtime."""

@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import os
 
-from . import epub_adapter, pdf_text_adapter
+from . import epub_adapter, pdf_adapter, pdf_text_adapter
 from .models import SourceDocument
 
 
-def build_source_document(source_path: str, extracted_text: str | None = None) -> SourceDocument:
+def build_source_document(
+    source_path: str,
+    extracted_text: str | None = None,
+    pdf_config: pdf_adapter.PDFIngestionConfig | None = None,
+    artifact_dir: str | None = None,
+    progress_callback=None,
+) -> SourceDocument:
     """Dispatches source indexing by type."""
     ext = os.path.splitext(source_path)[1].lower()
     if ext == ".epub":
@@ -38,13 +44,11 @@ def build_source_document(source_path: str, extracted_text: str | None = None) -
         fallback.warnings = document.warnings + ["Structured EPUB indexing was empty; using extracted text fallback."]
         return fallback
     if ext == ".pdf":
-        if extracted_text is None:
-            from .. import file_handler
-
-            extracted_text = file_handler.extract_text_from_pdf(source_path)
-        return pdf_text_adapter.build_source_document_from_text(
-            extracted_text or "",
-            source_path=source_path,
+        return pdf_adapter.build_source_document(
+            source_path,
+            config=pdf_config,
+            artifact_dir=artifact_dir,
+            progress_callback=progress_callback,
         )
     if ext == ".txt":
         if extracted_text is None:

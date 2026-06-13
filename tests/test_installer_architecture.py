@@ -1,4 +1,5 @@
 import unittest
+import os
 import subprocess
 import sys
 import tempfile
@@ -53,6 +54,8 @@ class InstallerArchitectureTests(unittest.TestCase):
 
         self.assertEqual(env["PYTHONUTF8"], "1")
         self.assertEqual(env["PYTHONIOENCODING"], "utf-8")
+        self.assertTrue(env["PADDLE_PDX_CACHE_HOME"].endswith(os.path.join("cache", "paddlex")))
+        self.assertEqual(env["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"], "True")
 
     def test_headless_entry_imports_without_pyqt(self):
         command = [

@@ -76,6 +76,8 @@ class PixiEnvironmentMixin:
         env['TRANSFORMERS_CACHE'] = os.path.join(local_cache_root, 'huggingface', 'transformers')
         env['TORCH_HOME'] = os.path.join(local_cache_root, 'torch')
         env['TTS_HOME'] = os.path.join(local_cache_root, 'tts')
+        env['PADDLE_PDX_CACHE_HOME'] = os.path.join(local_cache_root, 'paddlex')
+        env['PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK'] = 'True'
 
         bundled_ffmpeg_path = self.get_bundled_ffmpeg_executable(pandrator_path)
         if os.path.exists(bundled_ffmpeg_path):

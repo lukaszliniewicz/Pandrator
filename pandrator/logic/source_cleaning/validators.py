@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -75,6 +76,34 @@ def validate_cleaning_result(
             "skipped_operation_count": len(result.skipped_operations),
         }
     )
+
+    if document.source_type == "pdf_structured":
+        page_blocks = Counter(block.page for block in document.blocks if block.page)
+        deleted_page_blocks = Counter(
+            block.page for block in document.blocks if block.block_id in deleted_ids and block.page
+        )
+        fully_deleted_pages = sorted(
+            page for page, count in page_blocks.items() if deleted_page_blocks.get(page, 0) >= count
+        )
+        ingestion_pages = document.attributes.get("pdf_ingestion", {}).get("pages", [])
+        low_confidence_ocr_pages = [
+            int(page.get("page") or 0)
+            for page in ingestion_pages
+            if page.get("source_method") == "ocr"
+            and isinstance(page.get("ocr"), dict)
+            and float(page["ocr"].get("mean_confidence") or 0.0) < 0.75
+        ]
+        report.stats["fully_deleted_pdf_pages"] = fully_deleted_pages
+        report.stats["low_confidence_ocr_pages"] = low_confidence_ocr_pages
+        if fully_deleted_pages:
+            add_warning(
+                f"All extracted text was removed from PDF page(s): {fully_deleted_pages[:12]}.",
+                blocking=len(fully_deleted_pages) >= 2,
+            )
+        if low_confidence_ocr_pages:
+            add_warning(
+                f"Low-confidence OCR was retained on PDF page(s): {low_confidence_ocr_pages[:12]}."
+            )
 
     if original_blocks and deletion_ratio > 0.45:
         add_warning(

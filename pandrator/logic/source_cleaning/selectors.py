@@ -23,6 +23,9 @@ SUPPORTED_SELECTOR_KEYS = {
     "text_regex",
     "start_line",
     "end_line",
+    "page",
+    "source_method",
+    "min_role_score",
 }
 
 
@@ -109,6 +112,20 @@ def block_matches_selector(block: SourceBlock, selector: dict[str, Any]) -> bool
     end_line = selector.get("end_line")
     if end_line is not None and block.line_start > int(end_line):
         return False
+
+    page = selector.get("page")
+    if page is not None and block.page != int(page):
+        return False
+
+    source_method = selector.get("source_method")
+    if source_method is not None and str(block.attributes.get("source_method") or "") != str(source_method):
+        return False
+
+    min_role_score = selector.get("min_role_score")
+    if isinstance(min_role_score, dict):
+        for role_name, minimum in min_role_score.items():
+            if block.role_score(str(role_name)) < float(minimum):
+                return False
 
     return True
 

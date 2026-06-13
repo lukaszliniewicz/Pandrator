@@ -5,11 +5,13 @@ from .agent import SourceCleaningAgentConfig, SourceCleaningAgentResult, run_sou
 from .pipeline import SourceCleaningPipelineConfig, run_cleaning_pipeline
 from .tools import SourceCleaningTools
 from .validators import SourceCleaningValidationReport, validate_cleaning_result
+from .pdf_adapter import PDFIngestionConfig, propose_deterministic_operations
 
 __all__ = [
     "CleaningResult",
     "PhaseResult",
     "PipelineResult",
+    "PDFIngestionConfig",
     "SearchHit",
     "SourceBlock",
     "SourceCleaningAgentConfig",
@@ -20,6 +22,7 @@ __all__ = [
     "SourceDocument",
     "apply_cleaning_operations",
     "build_source_document",
+    "propose_deterministic_operations",
     "run_cleaning_pipeline",
     "run_source_cleaning_agent",
     "validate_cleaning_result",

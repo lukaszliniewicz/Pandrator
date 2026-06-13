@@ -268,6 +268,7 @@ def _filtered_document(document: SourceDocument, excluded_block_ids: set[str]) -
         nav_titles=document.nav_titles,
         navigation_entries=document.navigation_entries,
         warnings=document.warnings,
+        attributes=document.attributes,
     )
 
 

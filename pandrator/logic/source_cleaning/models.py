@@ -23,6 +23,18 @@ class SourceBlock:
     role_candidates: list[str] = field(default_factory=list)
     raw_markup: str | None = None
 
+    def role_score(self, role: str) -> float:
+        evidence = self.attributes.get("role_evidence", {})
+        if not isinstance(evidence, dict):
+            return 0.0
+        payload = evidence.get(str(role))
+        if not isinstance(payload, dict):
+            return 0.0
+        try:
+            return float(payload.get("score") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
@@ -59,6 +71,7 @@ class SourceDocument:
     nav_titles: list[str] = field(default_factory=list)
     navigation_entries: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    attributes: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -85,6 +98,7 @@ class SourceDocument:
                 if isinstance(entry, dict)
             ],
             warnings=list(payload.get("warnings") or []),
+            attributes=dict(payload.get("attributes") or {}),
         )
 
     def plain_lines(self) -> list[str]:
@@ -105,6 +119,20 @@ class SourceDocument:
             for block in self.blocks
             if block.line_start <= end and block.line_end >= start
         ]
+
+    def excluding_blocks(self, block_ids: set[str]) -> "SourceDocument":
+        return SourceDocument(
+            source_type=self.source_type,
+            source_path=self.source_path,
+            filename=self.filename,
+            blocks=[block for block in self.blocks if block.block_id not in block_ids],
+            metadata_candidates=self.metadata_candidates,
+            language=self.language,
+            nav_titles=self.nav_titles,
+            navigation_entries=self.navigation_entries,
+            warnings=self.warnings,
+            attributes=self.attributes,
+        )
 
 
 @dataclass
@@ -163,4 +191,3 @@ class PipelineResult:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
-

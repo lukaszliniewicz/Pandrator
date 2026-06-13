@@ -341,6 +341,11 @@ class DubbingSettings:
 @dataclass
 class SourceCleaningSettings:
     max_iterations: int = 53
+    pdf_ocr_mode: str = "auto"
+    pdf_ocr_language: str = "auto"
+    pdf_ocr_dpi: int = 200
+    pdf_remove_toc: bool = True
+    pdf_remove_repeated_marginals: bool = True
 
 @dataclass
 class AppState:

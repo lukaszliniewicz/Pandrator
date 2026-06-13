@@ -166,6 +166,13 @@ def build_global_settings_payload(state: AppState) -> Dict[str, Any]:
         "tts": tts_payload,
         "source_cleaning": {
             "max_iterations": int(getattr(state.source_cleaning, "max_iterations", SOURCE_CLEANING_DEFAULT_ITERATIONS)),
+            "pdf_ocr_mode": str(getattr(state.source_cleaning, "pdf_ocr_mode", "auto") or "auto"),
+            "pdf_ocr_language": str(getattr(state.source_cleaning, "pdf_ocr_language", "auto") or "auto"),
+            "pdf_ocr_dpi": int(getattr(state.source_cleaning, "pdf_ocr_dpi", 200) or 200),
+            "pdf_remove_toc": _coerce_bool(getattr(state.source_cleaning, "pdf_remove_toc", True), True),
+            "pdf_remove_repeated_marginals": _coerce_bool(
+                getattr(state.source_cleaning, "pdf_remove_repeated_marginals", True), True
+            ),
         },
         "text_processing": {
             "remove_footnotes": _coerce_bool(getattr(state.text_processing, "remove_footnotes", False), False),
@@ -300,6 +307,22 @@ def apply_global_settings_payload(state: AppState, payload: Dict[str, Any]):
         iterations = max(SOURCE_CLEANING_MIN_ITERATIONS, min(iterations, SOURCE_CLEANING_MAX_ITERATIONS))
         if hasattr(state, "source_cleaning"):
             state.source_cleaning.max_iterations = iterations
+            mode = str(source_cleaning_payload.get("pdf_ocr_mode", "auto") or "auto").lower()
+            state.source_cleaning.pdf_ocr_mode = mode if mode in {"auto", "off", "force"} else "auto"
+            state.source_cleaning.pdf_ocr_language = str(
+                source_cleaning_payload.get("pdf_ocr_language", "auto") or "auto"
+            ).lower()
+            try:
+                dpi = int(source_cleaning_payload.get("pdf_ocr_dpi", 200))
+            except (TypeError, ValueError):
+                dpi = 200
+            state.source_cleaning.pdf_ocr_dpi = max(120, min(400, dpi))
+            state.source_cleaning.pdf_remove_toc = _coerce_bool(
+                source_cleaning_payload.get("pdf_remove_toc", True), True
+            )
+            state.source_cleaning.pdf_remove_repeated_marginals = _coerce_bool(
+                source_cleaning_payload.get("pdf_remove_repeated_marginals", True), True
+            )
 
     text_processing_payload = payload.get("text_processing")
     if isinstance(text_processing_payload, dict):

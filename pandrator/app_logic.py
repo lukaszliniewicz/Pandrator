@@ -1256,7 +1256,86 @@ class AppLogic(QObject):
                 suffix += 1
 
         shutil.copy2(source_abs, destination_abs)
+        sidecar_path = f"{source_abs}.pycroppdf.json"
+        if os.path.isfile(sidecar_path):
+            shutil.copy2(sidecar_path, f"{destination_abs}.pycroppdf.json")
         return destination_abs
+
+    def _pdf_ingestion_config(self, state=None):
+        resolved_state = state or self.state
+        settings = resolved_state.source_cleaning
+        ocr_language = str(getattr(settings, "pdf_ocr_language", "auto") or "auto").lower()
+        if ocr_language == "auto":
+            source_language = str(
+                resolved_state.metadata.get("language")
+                or getattr(resolved_state.tts, "language", "")
+                or ""
+            ).lower()
+            if source_language in {"ru", "uk", "bg", "be", "mk", "sr", "cyrillic"}:
+                ocr_language = "cyrillic"
+            elif source_language in {"ar", "fa", "ur", "arabic"}:
+                ocr_language = "arabic"
+            elif source_language in {"hi", "mr", "ne", "devanagari"}:
+                ocr_language = "devanagari"
+        return source_cleaning.PDFIngestionConfig(
+            ocr_mode=getattr(settings, "pdf_ocr_mode", "auto"),
+            ocr_language=ocr_language,
+            ocr_dpi=getattr(settings, "pdf_ocr_dpi", 200),
+        )
+
+    def _source_ingestion_dir(self, session_name: str | None = None) -> str:
+        return os.path.join(
+            session_handler.get_session_path(session_name or self.state.session_name),
+            "_source_ingestion",
+        )
+
+    def invalidate_pdf_ingestion_cache(self) -> None:
+        for filename in ("source_document.json", "ingestion_report.json"):
+            path = os.path.join(self._source_ingestion_dir(), filename)
+            try:
+                if os.path.isfile(path):
+                    os.remove(path)
+            except OSError as error:
+                logging.warning("Could not remove PDF ingestion cache '%s': %s", path, error)
+
+    def get_pdf_ingestion_review_data(self) -> dict:
+        result: dict = {}
+        ingestion_dir = self._source_ingestion_dir()
+        paths = {
+            "ingestion": os.path.join(ingestion_dir, "ingestion_report.json"),
+            "diff": os.path.join(ingestion_dir, "deterministic_cleanup", "diff.patch"),
+            "cleanup_report": os.path.join(
+                ingestion_dir, "deterministic_cleanup", "cleaning_report.json"
+            ),
+        }
+        for key, path in paths.items():
+            try:
+                with open(path, "r", encoding="utf-8") as file_handle:
+                    result[key] = json.load(file_handle) if path.endswith(".json") else file_handle.read()
+            except (OSError, ValueError):
+                continue
+        return result
+
+    def _pdf_deterministic_operations(
+        self,
+        document,
+        remove_footnotes: bool | None = None,
+        state=None,
+    ):
+        resolved_state = state or self.state
+        settings = resolved_state.source_cleaning
+        return source_cleaning.propose_deterministic_operations(
+            document,
+            remove_footnotes=(
+                resolved_state.text_processing.remove_footnotes
+                if remove_footnotes is None
+                else bool(remove_footnotes)
+            ),
+            remove_toc=bool(getattr(settings, "pdf_remove_toc", True)),
+            remove_repeated_marginals=bool(
+                getattr(settings, "pdf_remove_repeated_marginals", True)
+            ),
+        )
 
     def should_warn_before_source_change(self, selected_file_path: str | None = None) -> bool:
         """Returns True when source switching should show a destructive warning."""
@@ -1311,11 +1390,17 @@ class AppLogic(QObject):
         session_handler.save_metadata(session_name, self.state.metadata)
         self._last_session_config_snapshot = ""
 
-    def _try_load_raw_text_for_source(self, source_path: str, session_name: str | None = None) -> str:
+    def _try_load_raw_text_for_source(
+        self,
+        source_path: str,
+        session_name: str | None = None,
+        state=None,
+    ) -> str:
         """Best-effort loading of textual source content for session restore."""
         if not source_path or not os.path.exists(source_path):
             return ""
 
+        resolved_state = state or self.state
         ext = os.path.splitext(source_path)[1].lower()
         try:
             if ext == ".txt":
@@ -1324,11 +1409,19 @@ class AppLogic(QObject):
             if ext == ".epub":
                 return file_handler.extract_text_from_epub(
                     source_path,
-                    remove_footnotes=self.state.text_processing.remove_footnotes,
-                    filter_citations=self.state.text_processing.filter_citations,
+                    remove_footnotes=resolved_state.text_processing.remove_footnotes,
+                    filter_citations=resolved_state.text_processing.filter_citations,
                 )
             if ext == ".pdf":
-                return file_handler.extract_text_from_pdf(source_path)
+                document = source_cleaning.build_source_document(
+                    source_path,
+                    pdf_config=self._pdf_ingestion_config(state=state),
+                    artifact_dir=self._source_ingestion_dir(session_name),
+                )
+                return source_cleaning.apply_cleaning_operations(
+                    document,
+                    self._pdf_deterministic_operations(document, state=state),
+                ).cleaned_text
             if ext in [".docx", ".mobi"]:
                 target_session = session_name or self.state.session_name
                 if target_session:
@@ -1507,6 +1600,7 @@ class AppLogic(QObject):
             restored_state.raw_text = self._try_load_raw_text_for_source(
                 restored_state.source_file_path,
                 session_name=session_name,
+                state=restored_state,
             )
 
         source_ext = os.path.splitext(restored_state.source_file_path)[1].lower() if restored_state.source_file_path else ""
@@ -1685,9 +1779,9 @@ class AppLogic(QObject):
     def run_pdf_crop_tool(self, pdf_file_path: str) -> str:
         """Best-effort integration with PyCropPDF for manual PDF cleanup."""
         script_candidates = [
-            os.path.abspath(os.path.join("PyCropPDF", "pycroppdf.py")),
-            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "PyCropPDF", "pycroppdf.py")),
-            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "PyCropPDF", "pycroppdf.py")),
+            os.path.abspath(os.path.join("PyCropPDF", "run.py")),
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "PyCropPDF", "run.py")),
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "PyCropPDF", "run.py")),
         ]
         script_path = next((candidate for candidate in script_candidates if os.path.isfile(candidate)), "")
         if not script_path:
@@ -1698,6 +1792,7 @@ class AppLogic(QObject):
         source_filename = os.path.splitext(os.path.basename(pdf_file_path))[0]
         cropped_filename = f"{source_filename}_cropped.pdf"
         cropped_path = os.path.join(source_dir, cropped_filename)
+        manifest_path = f"{cropped_path}.pycroppdf.json"
 
         try:
             self._notify_user("Opening PyCropPDF. Save and close it when finished.")
@@ -1711,6 +1806,8 @@ class AppLogic(QObject):
                     source_dir,
                     "--save-as",
                     cropped_filename,
+                    "--manifest-out",
+                    manifest_path,
                 ],
                 cwd=os.path.dirname(script_path),
             )
@@ -1785,7 +1882,18 @@ class AppLogic(QObject):
                 self.state.source_file_path = converted_txt_path
                 self.log_message.emit(f"EPUB converted to text: {os.path.basename(converted_txt_path)}")
             elif ext == ".pdf":
-                raw_text = file_handler.extract_text_from_pdf(session_file_path)
+                document = source_cleaning.build_source_document(
+                    session_file_path,
+                    pdf_config=self._pdf_ingestion_config(),
+                    artifact_dir=self._source_ingestion_dir(),
+                    progress_callback=self.log_message.emit,
+                )
+                deterministic_operations = self._pdf_deterministic_operations(document)
+                raw_text = source_cleaning.apply_cleaning_operations(
+                    document,
+                    deterministic_operations,
+                    output_dir=os.path.join(self._source_ingestion_dir(), "deterministic_cleanup"),
+                ).cleaned_text
                 raw_text_filename = f"{os.path.splitext(os.path.basename(session_file_path))[0]}_raw_text.txt"
                 raw_text_path = os.path.join(session_path, raw_text_filename)
                 with open(raw_text_path, "w", encoding="utf-8", newline="\n") as f:
@@ -1904,7 +2012,16 @@ class AppLogic(QObject):
                 filter_citations=filter_citations,
             )
         elif source_ext == ".pdf":
-            return file_handler.extract_text_from_pdf(source_path)
+            document = source_cleaning.build_source_document(
+                source_path,
+                pdf_config=self._pdf_ingestion_config(),
+                artifact_dir=self._source_ingestion_dir(),
+            )
+            return source_cleaning.apply_cleaning_operations(
+                document,
+                self._pdf_deterministic_operations(document, remove_footnotes=remove_footnotes),
+                output_dir=os.path.join(self._source_ingestion_dir(), "deterministic_cleanup"),
+            ).cleaned_text
         elif source_ext == ".txt":
             with open(source_path, "r", encoding="utf-8") as f:
                 return f.read()
@@ -1956,7 +2073,9 @@ class AppLogic(QObject):
         elif source_ext == ".pdf":
             document = source_cleaning.build_source_document(
                 source_path,
-                extracted_text=source_raw,
+                pdf_config=self._pdf_ingestion_config(),
+                artifact_dir=self._source_ingestion_dir(),
+                progress_callback=emit_progress,
             )
         else:
             from .logic.source_cleaning.pdf_text_adapter import build_source_document_from_text
@@ -1979,6 +2098,17 @@ class AppLogic(QObject):
             llm_settings_for_run = _copy.copy(self.state.llm)
             llm_settings_for_run.reasoning_effort = str(reasoning_effort).strip()
 
+        deterministic_operations = (
+            self._pdf_deterministic_operations(document, remove_footnotes=remove_footnotes)
+            if source_ext == ".pdf"
+            else []
+        )
+        deterministic_result = source_cleaning.apply_cleaning_operations(
+            document,
+            deterministic_operations,
+        )
+        working_document = document.excluding_blocks(set(deterministic_result.deleted_block_ids))
+
         pipeline_config = source_cleaning.SourceCleaningPipelineConfig(
             model_name=resolved_model,
             remove_footnotes=remove_footnotes,
@@ -1987,7 +2117,7 @@ class AppLogic(QObject):
         )
         emit_progress("Running source-cleaning pipeline...")
         pipeline_result = source_cleaning.run_cleaning_pipeline(
-            document,
+            working_document,
             llm_settings=llm_settings_for_run,
             config=pipeline_config,
             progress_callback=emit_progress,
@@ -1995,9 +2125,11 @@ class AppLogic(QObject):
         )
 
         emit_progress("Applying proposed cleaning operations...")
+        all_operations = deterministic_operations + pipeline_result.all_operations
+        pipeline_result.all_operations = all_operations
         cleaning_result = source_cleaning.apply_cleaning_operations(
             document,
-            pipeline_result.all_operations,
+            all_operations,
             default_metadata=self.state.metadata,
         )
         validation = source_cleaning.validate_cleaning_result(
@@ -2007,12 +2139,13 @@ class AppLogic(QObject):
         )
 
         cleaning_result.report["pipeline"] = pipeline_result.to_dict()
+        cleaning_result.report["deterministic_operations"] = deterministic_operations
         cleaning_result.report["llm_usage"] = pipeline_result.llm_usage
         cleaning_result.report["validation"] = validation.to_dict()
         cleaning_result.report["artifacts_dir"] = output_dir
         source_cleaning.write_cleaning_artifacts(
             document,
-            pipeline_result.all_operations,
+            all_operations,
             cleaning_result,
             output_dir,
         )

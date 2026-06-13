@@ -221,6 +221,7 @@ class WorkflowMixin:
                 self.install_requirements(pandrator_path, 'pandrator_installer', os.path.join(pandrator_repo_path, 'requirements.txt'))
                 self.ensure_nemo_text_processing_runtime(pandrator_path)
                 self.ensure_wtpsplit_runtime(pandrator_path)
+                self.ensure_pdf_ocr_runtime(pandrator_path)
 
                 pycroppdf_repo_path = os.path.join(pandrator_repo_path, 'PyCropPDF')
                 if not os.path.exists(pycroppdf_repo_path):
@@ -587,6 +588,8 @@ class WorkflowMixin:
             self.ensure_nemo_text_processing_runtime(pandrator_base_path)
             self.reporter.status("Checking sentence segmentation model...")
             self.ensure_wtpsplit_runtime(pandrator_base_path)
+            self.reporter.status("Checking PDF OCR models...")
+            self.ensure_pdf_ocr_runtime(pandrator_base_path)
 
             if os.path.exists(pycroppdf_repo_path):
                 self.reporter.status("Updating PyCropPDF repository...")

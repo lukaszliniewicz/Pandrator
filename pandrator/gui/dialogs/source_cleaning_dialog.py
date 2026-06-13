@@ -90,7 +90,7 @@ class SourceCleaningDialog(QDialog):
         self._worker_thread: threading.Thread | None = None
         self._stop_event: Event = Event()
 
-        self.setWindowTitle("LLM Source Cleaning Review")
+        self.setWindowTitle("Source Cleaning Review")
         self.resize(1100, 820)
 
         self._build_layout()
@@ -104,8 +104,8 @@ class SourceCleaningDialog(QDialog):
         layout = QVBoxLayout(self)
 
         header = QLabel(
-            "Use an LLM tool loop to inspect the extracted source, mark chapters, remove non-audiobook fragments, "
-            "and propose metadata. Review the result before accepting."
+            "Review deterministic source ingestion and cleanup. Optionally run the LLM tool loop to inspect the "
+            "structured source, refine chapters, remove non-audiobook fragments, and propose metadata."
         )
         header.setWordWrap(True)
         header.setObjectName("secondaryInfoLabel")
@@ -156,6 +156,29 @@ class SourceCleaningDialog(QDialog):
         self.stop_button.setToolTip("Request the cleaning agent to stop after the current LLM turn.")
         controls.addWidget(self.stop_button)
         layout.addLayout(controls)
+
+        self.pdf_controls_widget = QWidget()
+        pdf_controls = QHBoxLayout(self.pdf_controls_widget)
+        pdf_controls.setContentsMargins(0, 0, 0, 0)
+        pdf_controls.addWidget(QLabel("PDF OCR:"))
+        self.pdf_ocr_mode_combo = QComboBox()
+        self.pdf_ocr_mode_combo.addItem("Automatic per page", "auto")
+        self.pdf_ocr_mode_combo.addItem("Native text only", "off")
+        self.pdf_ocr_mode_combo.addItem("Force OCR on every page", "force")
+        pdf_controls.addWidget(self.pdf_ocr_mode_combo)
+        pdf_controls.addWidget(QLabel("OCR language/script:"))
+        self.pdf_ocr_language_combo = QComboBox()
+        self.pdf_ocr_language_combo.setEditable(True)
+        self.pdf_ocr_language_combo.addItems(["auto", "en", "pl", "de", "fr", "es", "cyrillic", "arabic"])
+        pdf_controls.addWidget(self.pdf_ocr_language_combo)
+        self.pdf_remove_toc_checkbox = QCheckBox("Remove high-confidence TOC")
+        pdf_controls.addWidget(self.pdf_remove_toc_checkbox)
+        self.pdf_remove_marginals_checkbox = QCheckBox("Remove repeated margins/page numbers")
+        pdf_controls.addWidget(self.pdf_remove_marginals_checkbox)
+        self.pdf_refresh_button = QPushButton("Re-ingest PDF")
+        pdf_controls.addWidget(self.pdf_refresh_button)
+        layout.addWidget(self.pdf_controls_widget)
+        self._load_pdf_settings()
 
         iterations_row = QHBoxLayout()
         iterations_row.addWidget(QLabel("Max Turns:"))
@@ -218,6 +241,11 @@ class SourceCleaningDialog(QDialog):
         self.report_edit.setReadOnly(True)
         self.tabs.addTab(self.report_edit, "Report")
 
+        self.ingestion_report_edit = QPlainTextEdit()
+        self.ingestion_report_edit.setReadOnly(True)
+        self.tabs.addTab(self.ingestion_report_edit, "PDF Ingestion")
+        self.tabs.setTabVisible(self.tabs.indexOf(self.ingestion_report_edit), self._is_pdf_source())
+
         separator = QFrame()
         separator.setFrameShape(QFrame.Shape.HLine)
         layout.addWidget(separator)
@@ -239,6 +267,7 @@ class SourceCleaningDialog(QDialog):
         self.text_edit.textChanged.connect(self._refresh_action_state)
         self.status_updated.connect(self._on_status_updated)
         self.cleaning_finished.connect(self._on_cleaning_finished)
+        self.pdf_refresh_button.clicked.connect(self._refresh_pdf_ingestion)
 
     def _populate_model_combo(self):
         models = []
@@ -265,6 +294,7 @@ class SourceCleaningDialog(QDialog):
         self.filter_citations_checkbox.setEnabled(not running and not self.remove_footnotes_checkbox.isChecked())
         self.reasoning_effort_combo.setEnabled(not running)
         self.max_iterations_spinbox.setEnabled(not running)
+        self.pdf_controls_widget.setEnabled(not running)
         self.text_edit.setReadOnly(running)
         self.add_chapter_button.setEnabled(not running)
         self.cancel_button.setEnabled(not running)
@@ -290,12 +320,75 @@ class SourceCleaningDialog(QDialog):
             )
         else:
             self.status_label.setText("No extracted source preview is available.")
+        self._show_pdf_ingestion_review_data()
+
+    def _show_pdf_ingestion_review_data(self):
+        if not self._is_pdf_source():
+            return
+        getter = getattr(self.logic, "get_pdf_ingestion_review_data", None)
+        review_data = getter() if callable(getter) else {}
+        self.diff_edit.setPlainText(str(review_data.get("diff") or ""))
+        self.ingestion_report_edit.setPlainText(
+            json.dumps(
+                {
+                    "ingestion": review_data.get("ingestion", {}),
+                    "deterministic_cleanup": review_data.get("cleanup_report", {}),
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+
+    def _is_pdf_source(self) -> bool:
+        return str(self.source_path_hint or "").lower().endswith(".pdf")
+
+    def _load_pdf_settings(self):
+        is_pdf = self._is_pdf_source()
+        self.pdf_controls_widget.setVisible(is_pdf)
+        if not is_pdf:
+            return
+        settings = getattr(self.logic.state, "source_cleaning", None)
+        mode = str(getattr(settings, "pdf_ocr_mode", "auto") or "auto")
+        mode_index = self.pdf_ocr_mode_combo.findData(mode)
+        self.pdf_ocr_mode_combo.setCurrentIndex(max(0, mode_index))
+        self.pdf_ocr_language_combo.setCurrentText(
+            str(getattr(settings, "pdf_ocr_language", "auto") or "auto")
+        )
+        self.pdf_remove_toc_checkbox.setChecked(bool(getattr(settings, "pdf_remove_toc", True)))
+        self.pdf_remove_marginals_checkbox.setChecked(
+            bool(getattr(settings, "pdf_remove_repeated_marginals", True))
+        )
+
+    def _save_pdf_settings(self):
+        if not self._is_pdf_source():
+            return
+        settings = getattr(self.logic.state, "source_cleaning", None)
+        if settings is None:
+            return
+        settings.pdf_ocr_mode = str(self.pdf_ocr_mode_combo.currentData() or "auto")
+        settings.pdf_ocr_language = self.pdf_ocr_language_combo.currentText().strip().lower() or "auto"
+        settings.pdf_remove_toc = self.pdf_remove_toc_checkbox.isChecked()
+        settings.pdf_remove_repeated_marginals = self.pdf_remove_marginals_checkbox.isChecked()
+        persist = getattr(self.logic, "_persist_global_settings", None)
+        if callable(persist):
+            persist()
+
+    def _refresh_pdf_ingestion(self):
+        if self._running or not self._is_pdf_source():
+            return
+        self._save_pdf_settings()
+        invalidate = getattr(self.logic, "invalidate_pdf_ingestion_cache", None)
+        if callable(invalidate):
+            invalidate()
+        self._on_deterministic_settings_changed()
+        self._show_pdf_ingestion_review_data()
 
     def _start_cleaning(self):
         if self._running:
             return
 
         self._result = None
+        self._save_pdf_settings()
         self._stop_event.clear()
         self.diff_edit.clear()
         self.report_edit.clear()
@@ -482,6 +575,7 @@ class SourceCleaningDialog(QDialog):
             return
         self._save_max_iterations()
         self._save_reasoning_effort()
+        self._save_pdf_settings()
         super().closeEvent(event)
 
     def choice(self) -> str:

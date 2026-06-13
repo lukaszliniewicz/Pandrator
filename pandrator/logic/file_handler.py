@@ -119,11 +119,14 @@ def extract_text_from_epub(epub_path: str, remove_footnotes: bool = False, filte
     return extract_clean_epub(epub_path, remove_footnotes=remove_footnotes, filter_citations=filter_citations)
 
 def extract_text_from_pdf(pdf_path: str) -> str:
-    """Extracts raw text from a PDF file."""
-    from pdftextract import XPdf
+    """Returns a page-delimited native-text fallback using PyMuPDF."""
+    import fitz
 
-    pdf = XPdf(pdf_path)
-    return pdf.to_text()
+    document = fitz.open(pdf_path)
+    try:
+        return "\f".join(page.get_text("text") for page in document)
+    finally:
+        document.close()
 
 def convert_doc_to_text(doc_path: str, output_txt_path: str) -> bool:
     """Converts a document (e.g., .docx, .mobi) to a text file using ebook-convert."""

@@ -2046,7 +2046,10 @@ class SessionTab(QWidget):
 
         reviewable_extensions = {".pdf", ".epub", ".docx", ".mobi"}
         if selected_ext in reviewable_extensions and self.logic.state.raw_text:
-            cleaning_choice = self._run_source_cleaning_review(selected_path, selected_ext)
+            cleaning_choice = self._run_source_cleaning_review(
+                self.logic.state.original_source_file_path or selected_path,
+                selected_ext,
+            )
             if cleaning_choice != "accept":
                 self.logic.clear_source_file_selection()
 

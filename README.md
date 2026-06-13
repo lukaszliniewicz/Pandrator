@@ -448,6 +448,14 @@ Pandrator offers a comprehensive workflow for generating dubbed videos from vide
 - For each prompt, you can enable/disable it, set the prompt text, choose the LLM model to use, and enable/disable evaluation (if enabled, the LLM API will be called twice for each prompt, and then again for the model to choose the better result).
 - Manage providers/models in the **Providers** tab, then refresh built-in catalogs from the **Text Processing** tab if needed.
 
+### PDF ingestion and OCR
+
+PDF imports preserve page geometry, font evidence, reading order, and extraction provenance until source cleaning is accepted. Pages with a plausible native text layer use PyMuPDF extraction; missing or poor text layers are OCRed automatically with the CPU ONNX versions of PP-OCRv6 medium detection and recognition. Unsupported scripts can be routed to a PP-OCRv5 language-specific model from the source-cleaning dialog.
+
+The deterministic PDF pass conservatively reconstructs paragraphs and columns, removes high-confidence repeated headers, footers, page numbers, and table-of-contents entries, detects footnotes, and marks high-confidence chapters or sections. Its diff and diagnostics are available before the optional LLM source-cleaning agent runs.
+
+PyCropPDF remains available before PDF import and writes a provenance sidecar containing source/output hashes, crop rectangles, whiteouts, deleted pages, and original-to-derived page mapping. Cropping is especially useful for scans with large borders, gutters, or persistent marginal content.
+
 ### RVC Quality Enhancement and Voice Cloning
 - Enable RVC to enhance the generated audio quality and apply voice cloning.
 - Select the RVC model file (.pth) and the corresponding index file using the "Select RVC Model" and "Select RVC Index" buttons in the Audio Processing tab.

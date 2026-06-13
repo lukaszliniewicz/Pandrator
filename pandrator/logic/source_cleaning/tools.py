@@ -742,6 +742,10 @@ class SourceCleaningTools:
             "classes": block.classes,
             "element_id": block.element_id,
             "role_candidates": block.role_candidates,
+            "role_evidence": block.attributes.get("role_evidence", {}),
+            "bbox": block.attributes.get("bbox"),
+            "source_method": block.attributes.get("source_method"),
+            "confidence": block.attributes.get("confidence"),
         }
 
     @staticmethod
