@@ -15,38 +15,66 @@
 
 
 
-## Quick Demonstration
-This video shows the process of launching Pandrator, selecting a source file, starting generation, stopping it and previewing the saved file. It has not been sped up as it's intended to illustrate the real performance (you may skip the first 35s when the XTTS server is launching, and please remember to turn on the sound). 
-
-https://github.com/user-attachments/assets/7cab141a-e043-4057-8166-72cb29281c50
-
-And here you can see the dubbing workflow - from a YT video, through transcription, translation, speech generation to synchronisation. 
-
-https://github.com/user-attachments/assets/dfd4b6e8-3eda-49e4-bff4-f1683ec4cf21
-
-
 ## About Pandrator
 
 Pandrator aspires to be easy to use and install - it has a one-click installer and a graphical user interface. It is a tool designed to perform two tasks: 
 - transform text, PDF (including see-through cropping), EPUB and SRT files into spoken audio in multiple languages based chiefly on open source software run locally, including preprocessing to make the generated speech sound as natural as possible by, among other things, splitting the text into paragraphs, sentences and smaller logical text blocks (clauses), which the TTS models can process with minimal artifacts. Each sentence can be regenerated if the first attempt is not satisfactory, including marking for regeneration using mouse or keyboard actions when listening back to the generation. Voice cloning is possible for models that support it, and text can be additionally preprocessed using LLMs (to remove OCR artifacts or spell out things that the TTS models struggle with, like Roman numerals and abbreviations, for example),
 - generate dubbing either directly from a video file, including transcription (using [WhisperX](https://github.com/m-bain/whisperX)), or from an .srt file. It includes a complete workflow from a video file to a dubbed video file with subtitles - including translation using a variety of APIs and techniques to improve the quality of translation. [Subdub](https://github.com/lukaszliniewicz/Subdub), a companion app developed for this purpose, can also be used on its own. You can also correct or translate subtitles without generating audio. 
 
-At the moment, Pandrator supports multiple TTS backends: [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) via [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI), [Fish Audio S2 Pro GGUF](https://huggingface.co/rodrigomt/s2-pro-gguf) via [fishs2-cpp-fastapi](https://github.com/lukaszliniewicz/fishs2-cpp-fastapi), [Chatterbox](https://huggingface.co/ResembleAI/chatterbox) via [chatterbox-fastapi](https://github.com/lukaszliniewicz/chatterbox-fastapi), [VoxCPM2](https://huggingface.co/openbmb/VoxCPM2) via [voxcpm_fastapi](https://github.com/lukaszliniewicz/voxcpm_fastapi), [Voxtral](https://huggingface.co/mistralai/Voxtral-4B-TTS-2603) via [voxtral-fastapi](https://github.com/lukaszliniewicz/voxtral-fastapi), [XTTS v2](https://huggingface.co/coqui/XTTS-v2) via the OpenAI-compatible [XTTS2 API server](https://github.com/lukaszliniewicz/xtts2_api), and [Silero](https://github.com/snakers4/silero-models) via `silero-api-server`. It also supports commercial speech APIs and custom TTS endpoints, including OpenAI-compatible and common JSON APIs, plus optional [RVC Python (JarodMica fork)](https://github.com/JarodMica/rvc-python) post-processing. For local LLM text preprocessing, Pandrator works well with OpenAI-compatible local servers such as LM Studio and Ollama-compatible endpoints.
+At the moment, Pandrator supports multiple TTS backends: [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) via [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI), [Fish Audio S2 Pro GGUF](https://huggingface.co/rodrigomt/s2-pro-gguf) via [fishs2-cpp-fastapi](https://github.com/lukaszliniewicz/fishs2-cpp-fastapi), [Chatterbox](https://huggingface.co/ResembleAI/chatterbox) via [chatterbox-fastapi](https://github.com/lukaszliniewicz/chatterbox-fastapi), [VoxCPM2](https://huggingface.co/openbmb/VoxCPM2) via [voxcpm_fastapi](https://github.com/lukaszliniewicz/voxcpm_fastapi), [Voxtral](https://huggingface.co/mistralai/Voxtral-4B-TTS-2603) via [voxtral-fastapi](https://github.com/lukaszliniewicz/voxtral-fastapi), [XTTS v2](https://huggingface.co/coqui/XTTS-v2) via the OpenAI-compatible [XTTS2 API server](https://github.com/lukaszliniewicz/xtts2_api), [Silero](https://github.com/snakers4/silero-models) via `silero-api-server`, and [Magpie](https://huggingface.co/nvidia/magpie_tts_multilingual_357m) via [magpie-fastapi](https://github.com/lukaszliniewicz/magpie-fastapi). It also supports commercial speech APIs and custom TTS endpoints, including OpenAI-compatible and common JSON APIs, plus optional post-processing via a dedicated [RVC Python API Service](https://github.com/lukaszliniewicz/rvc-python). For local LLM text preprocessing, Pandrator works well with OpenAI-compatible local servers such as LM Studio and Ollama-compatible endpoints.
 
-## Supported Languages
-- **Kokoro** supports English (en), British English (en-gb), German (de), Spanish (es), French (fr), Hindi (hi), Italian (it), Japanese (ja), Portuguese (pt), and Chinese Simplified (zh-cn).
+## Supported Languages & Quality Characteristics
 
-- **FishS2** uses multilingual Fish S2 GGUF models and OpenAI-compatible voice upload endpoints via `fishs2-cpp-fastapi`. Supports a wide range of languages.
+Speech quality, emotional expression, and voice variety differ significantly between languages for each backend depending on parameter size, training datasets, and model architecture.
 
-- **Chatterbox** supports English (en) via `chatterbox-en` / `chatterbox-turbo`, and a range of additional languages via the `chatterbox-multilingual` model.
+### 1. Kokoro
+* **Supported Languages:** English (en/en-gb), German (de), Spanish (es), French (fr), Hindi (hi), Italian (it), Japanese (ja), Portuguese (pt), and Chinese Simplified (zh-cn).
+* **Quality & Performance:**
+  * **English (US/UK) & Japanese:** *Excellent / High Quality.* They feature dedicated phoneme/prosody handling, resulting in exceptionally natural rhythm and expression, with a large catalog of voices.
+  * **Other Languages (Spanish, French, German, Italian, Portuguese, Hindi, Chinese):** *Stable / Moderate Quality.* The voice catalog is significantly more limited (often only a few voices), and intonation may occasionally sound less natural due to smaller training datasets.
+  * **Efficiency:** Natively extremely lightweight (82M parameters), making it the best option for running fast local TTS on CPU.
 
-- **VoxCPM2** is a multilingual model supporting a broad range of languages via the `voxcpm_fastapi` server.
+### 2. FishS2
+* **Supported Languages:** Broad multilingual coverage including English (en), Spanish (es), French (fr), German (de), Italian (it), Portuguese (pt), Polish (pl), Turkish (tr), Russian (ru), Dutch (nl), Czech (cs), Arabic (ar), Chinese (zh-cn), Japanese (ja), Hungarian (hu), Korean (ko), and Hindi (hi).
+* **Quality & Performance:**
+  * **All Languages:** *High Quality.* Zero-shot voice cloning performs extremely naturally. Timber and prosody are well-preserved.
+  * **Requirements:** CUDA GPU strongly recommended; CPU mode is generally too slow.
 
-- **Voxtral** supports Arabic (ar), English (en), German (de), Spanish (es), French (fr), Hindi (hi), Italian (it), Dutch (nl), and Portuguese (pt) via preset voices exposed by `voxtral-fastapi`.
+### 3. Chatterbox
+* **Supported Languages:** English (en) natively, and 23 languages via the multilingual model: Arabic (ar), Chinese (zh), Danish (da), Dutch (nl), English (en), Finnish (fi), French (fr), German (de), Greek (el), Hebrew (he), Hindi (hi), Italian (it), Japanese (ja), Korean (ko), Malay (ms), Norwegian (no), Polish (pl), Portuguese (pt), Russian (ru), Spanish (es), Swahili (sw), Swedish (sv), and Turkish (tr).
+* **Quality & Performance:**
+  * **English:** *Excellent.* Best performance and lowest latency are achieved using `chatterbox-en` / `chatterbox-turbo` models.
+  * **Other Languages:** *Good.* The multilingual model is versatile and supports zero-shot voice cloning, though minor "accent bleed" or phonetic errors may occur. Single Language Packs (Brazilian Portuguese, Latam/Spain Spanish, Chinese, Hindi) provide higher dialect stability.
 
-- **XTTSv2** supports English (en), Spanish (es), French (fr), German (de), Italian (it), Portuguese (pt), Polish (pl), Turkish (tr), Russian (ru), Dutch (nl), Czech (cs), Arabic (ar), Chinese (zh-cn), Japanese (ja), Hungarian (hu), Korean (ko), and Hindi (hi).
+### 4. VoxCPM2
+* **Supported Languages:** Supports 30 languages without language tag input: Arabic, Burmese, Chinese, Danish, Dutch, English, Finnish, French, German, Greek, Hebrew, Hindi, Indonesian, Italian, Japanese, Khmer, Korean, Lao, Malay, Norwegian, Polish, Portuguese, Russian, Spanish, Swahili, Swedish, Tagalog, Thai, Turkish, and Vietnamese. Also natively supports 9 Chinese dialects (Cantonese, Wu, Sichuanese, Wu, Northeast Mandarin, Henan, Shaanxi, Shandong, Tianjin, and Minnan).
+* **Quality & Performance:**
+  * **All Languages:** *Studio Quality.* Outputs 48kHz high-fidelity audio (upscaled from 16kHz references using asymmetric AudioVAE). Captures natural speech rhythms, breathing, and micro-pauses without metallic artifacts.
+  * **Speaker Similarity:** Exceptionally high zero-shot cloning similarity, though intonation can sometimes feel slightly flat/repetitive in cloning modes.
 
-- **Silero** supports English, German, Russian, Spanish, French, Hindi, Tatar, Ukrainian, Uzbek, and Kalmyk.
+### 5. Voxtral
+* **Supported Languages:** English, French, German, Spanish, Dutch, Portuguese, Italian, Hindi, and Arabic.
+* **Quality & Performance:**
+  * **All Languages:** *Frontier Quality.* Based on a 4B parameter model, providing extremely expressive, high-naturalness speech that rivals proprietary services. Zero-shot cloning is outstanding on the cloud API, but the open-weights release lacks the encoder weights. As a result, the local open-source server is limited to using the provided preset voices.
+  * **Requirements:** GPU only (4GB+ VRAM minimum, 8GB+ recommended).
+
+### 6. XTTSv2
+* **Supported Languages:** English, Spanish, French, German, Italian, Portuguese, Polish, Turkish, Russian, Dutch, Czech, Arabic, Chinese, Japanese, Hungarian, Korean, and Hindi.
+* **Quality & Performance:**
+  * **All Languages:** *Good / High Quality Cloning.* Zero-shot voice cloning is highly flexible from short clips.
+  * **Limitations:** Prone to speed drift, mumbling, and phonetic artifacts if the reference audio contains background noise or is too short.
+
+### 7. Silero
+* **Supported Languages:** English, German, Russian, Spanish, French, Hindi, Tatar, Ukrainian, Uzbek, and Kalmyk.
+* **Quality & Performance:**
+  * **All Languages:** *Legible / Robotic.* Highly optimized for CPU and low-resource devices, but the voice sounds dated, flat, and robotic compared to modern diffusion/neural architectures.
+
+### 8. Magpie
+* **Supported Languages:** English (en-US), Spanish (es-US), German (de-DE), French (fr-FR), Italian (it-IT), Chinese (zh-CN), Vietnamese (vi-VN), Hindi (hi-IN), and Japanese (ja-JP).
+* **Quality & Performance:**
+  * **All Languages:** *High Quality.* A compact 357M parameter model developed by NVIDIA that maintains a consistent voice identity (timbre) across different languages. High-fidelity output via NanoCodec with robust alignment.
+  * **English:** Features 5 built-in voices (Aria, Sofia, Jason, Leo, John Van Stan) with emotional styling (Angry, Calm, Happy, Neutral, Sad, Fearful).
+  * **Limitations:** Requires ~1.4 GB VRAM for GPU (also has CPU fallback). Occasionally experiences minor audio duplications or glitches at the end of sentences.
 
 ## Requirements
 
@@ -61,6 +89,8 @@ At the moment, Pandrator supports multiple TTS backends: [Kokoro](https://huggin
 | Voxtral    | N/A (GPU-only backend in current wrapper)                    | NVIDIA GPU required (4GB+ VRAM practical minimum)                       |
 | XTTSv2     | A reasonably modern CPU with 4+ cores (for CPU-only generation)              | NVIDIA GPU with 4GB+ of VRAM for good performance                        |
 | Silero     | Performs well on most CPUs regardless of core count                   | N/A                                                                     |
+| Magpie     | Supported via CPU mode, but notably slower                    | NVIDIA GPU recommended (~1.4GB VRAM required)                           |
+| RVC        | Supported via CPU mode (slower)                               | NVIDIA GPU recommended for fast audio post-processing                    |
 
 ### Dependencies
 This project relies on several APIs and services (running locally) and libraries, notably:
@@ -74,9 +104,12 @@ This project relies on several APIs and services (running locally) and libraries
   - [voxtral-fastapi](https://github.com/lukaszliniewicz/voxtral-fastapi) (OpenAI-compatible Voxtral server)
   - [XTTS2 API](https://github.com/lukaszliniewicz/xtts2_api) (OpenAI-compatible XTTS v2 server)
   - [silero-api-server](https://pypi.org/project/silero-api-server/) (Silero backend)
+  - [magpie-fastapi](https://github.com/lukaszliniewicz/magpie-fastapi) (OpenAI-compatible Magpie server)
   - Commercial speech APIs and custom TTS endpoints
 - [FFmpeg](https://github.com/FFmpeg/FFmpeg) for audio encoding.
 - [NeMo Text Processing](https://github.com/NVIDIA/NeMo-text-processing) for deterministic written-to-spoken text normalization.
+- [wtpsplit-lite](https://github.com/superlinear-ai/wtpsplit-lite) for punctuation-agnostic sentence boundary detection using SaT models.
+- [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) for the PDF OCR pipeline (using ONNX PP-OCRv6/v5 models).
 - [Sentence Splitter by mediacloud](https://github.com/mediacloud/sentence-splitter), [PyQt6](https://pypi.org/project/PyQt6/), [num2words by savoirfairelinux](https://github.com/savoirfairelinux/num2words), and others listed in `requirements.txt`.
 
 For local OpenAI-compatible TTS wrappers used by Pandrator, the preferred ecosystem schema is:
@@ -89,7 +122,8 @@ For local OpenAI-compatible TTS wrappers used by Pandrator, the preferred ecosys
 - [Subdub](https://github.com/lukaszliniewicz/Subdub), a command line app that transcribes video files, translates subtitles and synchronises the generated speech with the video, made specially for Pandrator.
 - [WhisperX by m-bain](https://github.com/m-bain/whisperX), an enhanced implementation of OpenAI's Whisper model with improved alignment, used for dubbing and XTTS training. 
 - [Easy XTTS Trainer](https://github.com/lukaszliniewicz/easy_xtts_trainer), a command line app that enables XTTS fine-tuning using one or more audio files, made specially for Pandrator.
-- [RVC Python (JarodMica fork)](https://github.com/JarodMica/rvc-python) for enhancing voice quality and cloning results with [Retrieval Based Voice Conversion](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI).
+- [RVC Python API Service](https://github.com/lukaszliniewicz/rvc-python) for enhancing voice quality and cloning results via a dedicated local [Retrieval Based Voice Conversion](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI) service.
+- [PyCropPDF](https://github.com/lukaszliniewicz/PyCropPDF) for manual PDF cropping/cleanup before ingestion.
 - A local OpenAI-compatible LLM endpoint (for example LM Studio, Ollama-compatible endpoints, or other compatible providers) for LLM-based text pre-processing.
 
 ## Installation
@@ -162,8 +196,6 @@ Useful flags:
 
 ### GUI Installer and Launcher (Windows)
 
-![pandrator_installer_launcher_KLoHrNDIps](https://github.com/user-attachments/assets/2be46b49-9e79-4281-89ed-5797bdfbe28b)
-
 Run `PandratorInstaller.exe` from [Releases](https://github.com/lukaszliniewicz/Pandrator/releases). The executable is built from the stable `pandrator_installer_launcher.py` entry point.
 
 To build and smoke-test the standalone executable locally:
@@ -195,16 +227,18 @@ You can install components incrementally (during first setup or later):
 - Voxtral API (`Voxtral`, GPU only)
 - Kokoro API (`Kokoro` GPU or `Kokoro CPU only`)
 - Silero API
-- Optional tools: RVC Python (`RVC` GPU or `Use CPU-only runtime`), WhisperX, Easy XTTS Trainer
+- Magpie API (`Magpie` GPU or `Magpie CPU only`)
+- RVC Service (`RVC` GPU or `RVC CPU only`)
+- Optional tools: WhisperX, Easy XTTS Trainer
 
 Current installer flow:
 
 1. Creates `Pandrator/` in the selected location.
 2. Installs/checks Calibre.
 3. Downloads shared Pixi runtime to `Pandrator/bin/pixi.exe`.
-4. Clones required repositories (`Pandrator`, `Subdub`) and selected server repos (`xtts2_api`, `fishs2-cpp-fastapi`, `chatterbox-fastapi`, `voxcpm_fastapi`, `voxtral-fastapi`, `Kokoro-FastAPI`).
+4. Clones required repositories (`Pandrator`, `Subdub`) and selected server repos (`xtts2_api`, `fishs2-cpp-fastapi`, `chatterbox-fastapi`, `voxcpm_fastapi`, `voxtral-fastapi`, `Kokoro-FastAPI`, `magpie-fastapi`, `rvc-python`).
 5. Sets up Pandrator dependencies and selected optional environments/tools.
-6. Bootstraps XTTS2, FishS2, Chatterbox, VoxCPM2, Voxtral, and Kokoro via their own launcher scripts.
+6. Bootstraps XTTS2, FishS2, Chatterbox, VoxCPM2, Voxtral, Kokoro, Magpie, and RVC via their own launcher scripts.
 
 Before using **Update**, close Pandrator and all services launched from the installation. The updater refuses to modify a running installation because Windows locks loaded environment files.
 
@@ -223,9 +257,10 @@ Launch tab options:
 - `Voxtral`
 - `Kokoro` (+ `Use CPU` when GPU support is installed)
 - `Silero`
+- `Magpie` (+ `Use CPU`)
 - `RVC` (+ `Use CPU`; forced on for CPU-only installs)
 
-If a local TTS server is launched from the launcher, Pandrator is auto-started with the matching connect flag (`-connect -xtts`, `-connect -fishs2`, `-connect -chatterbox`, `-connect -voxcpm`, `-connect -voxtral`, `-connect -kokoro`, `-connect -silero`).
+If a local TTS server is launched from the launcher, Pandrator is auto-started with the matching connect flag (`-connect -xtts`, `-connect -fishs2`, `-connect -chatterbox`, `-connect -voxcpm`, `-connect -voxtral`, `-connect -kokoro`, `-connect -silero`, `-connect -magpie`).
 
 To re-run setup from scratch, remove the generated `Pandrator/` folder and start again.
 
@@ -341,6 +376,28 @@ Please refer to the repositories linked under [Dependencies](#dependencies) for 
    cd ..
    ```
 
+11. (Optional) Install Magpie API:
+
+    ```
+    git clone https://github.com/lukaszliniewicz/magpie-fastapi.git
+    cd magpie-fastapi
+    run.bat
+    # Linux:
+    # bash run.sh
+    cd ..
+    ```
+
+12. (Optional) Install RVC API:
+
+    ```
+    git clone https://github.com/lukaszliniewicz/rvc-python.git
+    cd rvc-python
+    run.bat --backend cuda
+    # or
+    run.bat --backend cpu
+    cd ..
+    ```
+
 #### Running the Components
 
 1. Run Pandrator:
@@ -363,6 +420,8 @@ Please refer to the repositories linked under [Dependencies](#dependencies) for 
    python main.py -connect -kokoro
    # or
    python main.py -connect -silero
+   # or
+   python main.py -connect -magpie
    ```
 
 3. Run XTTS2 API (if installed):
@@ -395,6 +454,21 @@ Please refer to the repositories linked under [Dependencies](#dependencies) for 
     # or set USE_GPU=true if installed with GPU support
     python -m uvicorn api.src.main:app --host 127.0.0.1 --port 8880
     ```
+
+7. Run Magpie API (if installed):
+
+   ```
+   cd magpie-fastapi
+   run.bat
+   ```
+
+8. Run RVC API (if installed):
+
+   ```
+   cd rvc-python
+   run.bat --backend cuda
+   # or run.bat --backend cpu
+   ```
 
 #### Generated sentences
 You can play back the generated sentences, also as a playlist, edit them (the text that will be used for regeneration), regenerate or remove individual ones. You can also mark them for regeneration. This is useful when you don't want to stop listening but work on all problematic sentences later. You can use the "m" key to mark the sentence that is currently playing or the right mouse button to mark both the current and the previous sentence (this can be useful if you're listening to the output and not looking at the screen).
@@ -436,12 +510,14 @@ Pandrator offers a comprehensive workflow for generating dubbed videos from vide
 3. You can enable RVC. For this to work, you have to install RVC_Python. You can do this in the Installer/Launcher at any time. You need to select a model - an RVC model consists of two files. A `.pth ` and an `.index ` file. They need to have the same name (e.g. voicex.pth and voicex.index). For best results, use the same voice for XTTS. You can also fine-tune the RVC options such as pitch.
 
 ### General Text Pre-Processing Settings
-1. You can disable/enable splitting long sentences and set the max length a text fragment sent for TTS generation may have (enabled by default; it tries to split sentences whose length exceeds the max length value; it looks for punctuation marks (, ; : -) and chooses the one closest to the midpoint of the sentence; if there are no punctuation marks, it looks for conjunctions like "and"; it performs this operation twice as some sentence fragments may still be too long after just one split).
+1. You can disable/enable splitting long sentences and set the max length a text fragment sent for TTS generation may have (enabled by default). The application dynamically adjusts the target maximum sentence length settings depending on the selected TTS service to match its recommended optimal block sizes (e.g. 350 for Kokoro/FishS2/Chatterbox, 300 for VoxCPM/Voxtral, 200 for XTTS/OpenAI). When splitting, it looks for punctuation marks (, ; : -) and chooses the one closest to the midpoint of the sentence; if there are no punctuation marks, it looks for conjunctions like "and".
 2. You can disable/enable appending short sentences (to preceding or following sentences; disabled by default, which may improve flow because the length of text fragments sent to the model is more uniform).
 3. Remove diacritics (useful when generating text that contains many foreign words or transliterations from foreign alphabets, e.g. Japanese). Do not enable this if you generate in a language that needs diacritics, like German or Polish. The pronunciation will be wrong then.
 4. Remove quotation marks (useful for models that sometimes read quotation marks aloud).
 5. NeMo Text Normalization is enabled by default for a conservative set of supported languages. It converts written forms such as dates, numbers, measurements, and abbreviations into spoken text before sentence splitting. Deterministic normalization is currently enabled for Arabic, German, English, Spanish, French, Hindi, Hungarian, Armenian, Italian, Japanese, Korean, and Portuguese. Other NeMo grammars remain disabled until their output is reliable in Pandrator's Windows runtime.
 6. Sentence boundaries are detected with the multilingual `sat-3l-sm` model through `wtpsplit-lite`. The installer downloads the roughly 410 MiB ONNX model into Pandrator's portable cache. Existing rule-based segmenters remain available as automatic fallbacks if the model cannot load.
+7. Punctuation and Case Normalization: The preprocessor automatically normalizes general punctuation marks and normalizes all-caps titles or chapters to standard title case to ensure smooth pronunciation (avoiding character-by-character spelling or unnatural pitch changes).
+8. Source Previews & Plain-Text Paste: The source file selection dialog offers plain-text paste and a preview pane, allowing you to review and inspect source contents prior to import.
 
 ### LLM Pre-processing
 - Enable LLM processing to use language models for preprocessing text before sending it to the TTS API. For example, you may ask the LLM to remove OCR artifacts, spell out abbreviations, and correct punctuation. When NeMo normalization is active, the LLM receives the already-normalized sentence.
