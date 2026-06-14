@@ -5,10 +5,9 @@
 # Pandrator: a multilingual GUI audiobook, subtitle and dubbing generator with voice cloning and translation
 >[!TIP]
 >**TL;DR:**
-> - Pandrator is not an AI model itself, but a GUI framework for Text-to-Speech, subtitle and translation projects. It can generate audiobooks and subtitles/dubbing by leveraging several AI tools, custom workflows and algorithms. It has an installer and works on Windows out of the box. It is not necessary to set up WSL or Docker containers.
+> - Pandrator is not an AI model itself, but a GUI framework for Text-to-Speech, subtitle and translation projects. It can generate audiobooks and subtitles/dubbing by leveraging several AI tools, custom workflows and algorithms. It has an installer and works on Windows out of the box. It is not necessary to set up WSL or Docker containers, though you may use it with any TTS API backend.
 > - It supports a wide range of TTS models: Kokoro, Fish S2 Pro, Chatterbox, VoxCPM2, Voxtral, XTTSv2, Silero, OpenAI and Gemini, as well as custom TTS API servers.
-> - When installing: if you don't have a GPU, choose Kokoro or Silero. If you do have one with at least 8GB of VRAM, and it supports your language, use Voxtral. For voice cloning and a wide range of languages, use XTTS v2 (works even with 4GB GPUs and on CPU).
-> - The easiest way to use it is to download one of the precompiled **[archives](https://1drv.ms/f/s!AgSiDu9lV3iMnPFKPO5BB_c72OLjtQ?e=3fRZMG)** - simply unpack them and use the included launcher. See **[this table](#self-contained-packages)** for their contents and sizes.
+> - When installing: if you don't have a GPU, choose Kokoro. If you want voice cloning, which Kokoro doesn't support by default, install RVC.
 > - You can talk to me or share tips/workflows/ideas on the Discord server.
 >
 > [![](https://dcbadge.limes.pink/api/server/JZzHv3MnaV)](https://discord.gg/https://discord.gg/JZzHv3MnaV)
