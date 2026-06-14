@@ -23,6 +23,7 @@ from .constants import (
     KOKORO_GPU_SUPPORT_CONFIG_FLAG,
     KOKORO_PYTHON_VERSION,
     RVC_API_REPO_DIRNAME,
+    RVC_GPU_SUPPORT_CONFIG_FLAG,
     VOXCPM_API_REPO_DIRNAME,
     VOXTRAL_API_REPO_DIRNAME,
     XTTS_API_REPO_DIRNAME,
@@ -127,6 +128,7 @@ class RuntimeMixin:
     def _apply_launch_selection_state(self, selection):
         self.launch_pandrator_var = selection.pandrator
         self.launch_rvc_var = selection.rvc
+        self.rvc_cpu_launch_var = selection.rvc_cpu
         self.launch_xtts_var = selection.xtts
         self.disable_deepspeed_var = selection.disable_deepspeed
         self.xtts_cpu_launch_var = selection.xtts_cpu
@@ -572,9 +574,12 @@ class RuntimeMixin:
                 rvc_server_path = os.path.join(pandrator_path, RVC_API_REPO_DIRNAME)
                 rvc_models_dir = os.path.join(pandrator_path, 'Pandrator', 'rvc_models')
                 os.makedirs(rvc_models_dir, exist_ok=True)
+                rvc_gpu_support = install_config.get(RVC_GPU_SUPPORT_CONFIG_FLAG, False)
+                rvc_use_cpu = self.rvc_cpu_launch_var or not rvc_gpu_support
                 self.rvc_process = self.run_rvc_api_server(
                     rvc_server_path,
                     rvc_models_dir,
+                    use_cpu=rvc_use_cpu,
                     pixi_path=shared_pixi_path,
                 )
                 if not self.check_rvc_server_online(rvc_server_url, process=self.rvc_process):
@@ -751,7 +756,7 @@ class RuntimeMixin:
         logging.info(f"XTTS API server process started with PID: {process.pid}")
         return process
 
-    def run_rvc_api_server(self, rvc_server_path, models_dir, pixi_path=None):
+    def run_rvc_api_server(self, rvc_server_path, models_dir, use_cpu=False, pixi_path=None):
         """Run the RVC auxiliary service via its repository launcher."""
         if not os.path.exists(rvc_server_path):
             raise FileNotFoundError(f"RVC service path not found: {rvc_server_path}")
@@ -764,6 +769,7 @@ class RuntimeMixin:
 
         rvc_log_file = os.path.join(rvc_server_path, 'rvc_server.log')
         command = self.build_rvc_launcher_command(
+            use_cpu=use_cpu,
             pixi_path=pixi_path,
             models_dir=models_dir,
         )

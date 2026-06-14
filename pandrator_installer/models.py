@@ -48,6 +48,7 @@ class InstallSelection:
     kokoro: bool = False
     kokoro_cpu: bool = False
     rvc: bool = False
+    rvc_cpu: bool = False
     whisperx: bool = False
     xtts_finetuning: bool = False
     chatterbox: bool = False
@@ -93,6 +94,7 @@ class InstallSelection:
             ("kokoro", "kokoro_cpu"),
             ("chatterbox", "chatterbox_cpu"),
             ("magpie", "magpie_cpu"),
+            ("rvc", "rvc_cpu"),
         )
         for primary, secondary in mutually_exclusive:
             if getattr(self, primary) and getattr(self, secondary):
@@ -113,6 +115,7 @@ class InstallSelection:
 class LaunchSelection:
     pandrator: bool = True
     rvc: bool = False
+    rvc_cpu: bool = False
     xtts: bool = False
     disable_deepspeed: bool = False
     xtts_cpu: bool = False

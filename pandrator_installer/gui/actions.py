@@ -27,7 +27,7 @@ class GuiActionsMixin:
             (selection.silero and not installed_components['silero']) or
             (selection.voxtral and not installed_components['voxtral']) or
             ((selection.kokoro or selection.kokoro_cpu) and not installed_components['kokoro']) or
-            (selection.rvc and not installed_components['rvc']) or
+            ((selection.rvc or selection.rvc_cpu) and not installed_components['rvc']) or
             (selection.whisperx and not installed_components['whisperx']) or
             (selection.xtts_finetuning and not installed_components['xtts_finetuning']) or
             ((selection.chatterbox or selection.chatterbox_cpu) and not installed_components['chatterbox']) or

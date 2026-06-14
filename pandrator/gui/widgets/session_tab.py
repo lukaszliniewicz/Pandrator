@@ -1,9 +1,18 @@
 import os
 import re
+import threading
 from datetime import datetime
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QCheckBox, QFileDialog, QInputDialog, QMessageBox, QVBoxLayout, QWidget
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtWidgets import (
+    QCheckBox,
+    QFileDialog,
+    QInputDialog,
+    QMessageBox,
+    QProgressDialog,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ...constants import (
     FISHS2_LANGUAGES,
@@ -54,9 +63,14 @@ SPEAKER_HEADING_VALUE = "__heading__"
 KOKORO_MISC_GROUP_ORDER = ["OpenAI Alias Voices", "Voice Blends", "Other Voices"]
 
 class SessionTab(QWidget):
+    source_import_status = pyqtSignal(str)
+    source_import_finished = pyqtSignal(object)
+
     def __init__(self, logic, parent=None):
         super().__init__(parent)
         self.logic = logic
+        self._source_import_thread: threading.Thread | None = None
+        self._source_import_progress_dialog: QProgressDialog | None = None
 
         main_layout = QVBoxLayout(self)
         main_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
@@ -277,6 +291,8 @@ class SessionTab(QWidget):
         self._connect_generation_signals()
         self.logic.progress_updated.connect(self._on_progress_updated)
         self.logic.session_activity_updated.connect(self._on_session_activity_updated)
+        self.source_import_status.connect(self._on_source_import_status)
+        self.source_import_finished.connect(self._on_source_import_finished)
 
     def _connect_session_signals(self):
         self.new_session_button.clicked.connect(self._on_new_session)
@@ -2041,9 +2057,96 @@ class SessionTab(QWidget):
             if crop_choice == QMessageBox.StandardButton.Yes:
                 selected_path = self.logic.run_pdf_crop_tool(file_path)
 
+        if selected_ext == ".pdf":
+            self._start_pdf_source_import(selected_path, selected_ext, reset_session)
+            return
+
         if not self.logic.select_source_file(selected_path, reset_session=reset_session):
             return
 
+        self._review_selected_source(selected_path, selected_ext)
+
+    def _start_pdf_source_import(self, selected_path: str, selected_ext: str, reset_session: bool):
+        if self._source_import_thread is not None and self._source_import_thread.is_alive():
+            QMessageBox.information(
+                self,
+                "PDF Import Running",
+                "Please wait for the current PDF import to finish.",
+            )
+            return
+
+        progress_dialog = QProgressDialog("Preparing PDF ingestion...", "", 0, 0, self)
+        progress_dialog.setWindowTitle("Importing PDF")
+        progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        progress_dialog.setCancelButton(None)
+        progress_dialog.setMinimumDuration(0)
+        progress_dialog.setAutoClose(False)
+        progress_dialog.setAutoReset(False)
+        progress_dialog.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
+        progress_dialog.show()
+        self._source_import_progress_dialog = progress_dialog
+
+        def worker():
+            try:
+                success = self.logic.select_source_file(
+                    selected_path,
+                    reset_session=reset_session,
+                    progress_callback=self.source_import_status.emit,
+                )
+                error = ""
+            except Exception as exception:
+                success = False
+                error = str(exception)
+            self.source_import_finished.emit(
+                {
+                    "success": success,
+                    "error": error,
+                    "selected_path": selected_path,
+                    "selected_ext": selected_ext,
+                }
+            )
+
+        self._source_import_thread = threading.Thread(target=worker, daemon=True)
+        self._source_import_thread.start()
+
+    def _on_source_import_status(self, message: str):
+        dialog = self._source_import_progress_dialog
+        if dialog is None:
+            return
+
+        status = str(message or "Importing PDF...")
+        dialog.setLabelText(status)
+        page_progress = re.search(r"\bpage\s+(\d+)/(\d+)\b", status, flags=re.IGNORECASE)
+        if page_progress:
+            current, total = (int(value) for value in page_progress.groups())
+            dialog.setRange(0, max(total, 1))
+            dialog.setValue(max(0, min(current, total)))
+        else:
+            dialog.setRange(0, 0)
+
+    def _on_source_import_finished(self, result: object):
+        dialog = self._source_import_progress_dialog
+        self._source_import_progress_dialog = None
+        self._source_import_thread = None
+        if dialog is not None:
+            dialog.close()
+            dialog.deleteLater()
+
+        payload = result if isinstance(result, dict) else {}
+        if not payload.get("success"):
+            if payload.get("error"):
+                QMessageBox.critical(
+                    self,
+                    "PDF Import Error",
+                    f"Could not import the selected PDF: {payload.get('error')}",
+                )
+            return
+        self._review_selected_source(
+            str(payload.get("selected_path") or ""),
+            str(payload.get("selected_ext") or "").lower(),
+        )
+
+    def _review_selected_source(self, selected_path: str, selected_ext: str):
         reviewable_extensions = {".pdf", ".epub", ".docx", ".mobi"}
         if selected_ext in reviewable_extensions and self.logic.state.raw_text:
             cleaning_choice = self._run_source_cleaning_review(

@@ -125,7 +125,8 @@ def run_source_cleaning_agent(
             _emit(progress_callback, "Source cleaning stopped by user request.")
             result.warnings.append("Stopped by user request.")
             break
-        _emit(progress_callback, f"Source cleaning LLM step {iteration}/{resolved_config.max_iterations}...")
+        phase_label = resolved_config.phase_name.replace("_", " ").title()
+        _emit(progress_callback, f"{phase_label}: LLM turn {iteration}/{resolved_config.max_iterations}...")
         request_messages = _build_completion_messages(
             base_messages,
             conversation_turns,

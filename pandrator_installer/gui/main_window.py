@@ -18,6 +18,7 @@ from ..constants import (
     CHATTERBOX_GPU_SUPPORT_CONFIG_FLAG,
     KOKORO_GPU_SUPPORT_CONFIG_FLAG,
     MAGPIE_GPU_SUPPORT_CONFIG_FLAG,
+    RVC_GPU_SUPPORT_CONFIG_FLAG,
 )
 from ..models import InstallSelection, LaunchSelection
 from ..operations import OperationsMixin
@@ -67,6 +68,7 @@ class PandratorInstaller(
         self.kokoro_var = False
         self.kokoro_cpu_var = False
         self.rvc_var = False
+        self.rvc_cpu_var = False
         self.whisperx_var = False
         self.xtts_finetuning_var = False
         self.chatterbox_var = False
@@ -77,6 +79,7 @@ class PandratorInstaller(
         # Launch options
         self.launch_pandrator_var = True
         self.launch_rvc_var = False
+        self.rvc_cpu_launch_var = False
         self.launch_xtts_var = False
         self.disable_deepspeed_var = False
         self.xtts_cpu_launch_var = False
@@ -425,6 +428,7 @@ class PandratorInstaller(
         tools_group = QGroupBox("Optional tools")
         tools_grid = QGridLayout(tools_group)
         self.rvc_checkbox = QCheckBox("RVC voice conversion")
+        self.rvc_cpu_checkbox = QCheckBox("Use CPU-only runtime")
         self.whisperx_checkbox = QCheckBox("WhisperX transcription")
         self.xtts_finetuning_checkbox = QCheckBox("XTTS fine-tuning")
         self.xtts_finetuning_checkbox.stateChanged.connect(self.update_whisperx_checkbox)
@@ -432,6 +436,7 @@ class PandratorInstaller(
             self._create_option_card(
                 self.rvc_checkbox,
                 "Reshapes generated speech with an RVC voice model for voice conversion and post-processing.",
+                (self.rvc_cpu_checkbox,),
             ),
             self._create_option_card(
                 self.whisperx_checkbox,
@@ -478,6 +483,10 @@ class PandratorInstaller(
             self.magpie_checkbox,
             self.magpie_cpu_checkbox,
         )
+        self.bind_cpu_install_option(
+            self.rvc_checkbox,
+            self.rvc_cpu_checkbox,
+        )
 
         for checkbox in self.install_tab.findChildren(QCheckBox):
             checkbox.stateChanged.connect(self.update_install_button_state)
@@ -497,6 +506,7 @@ class PandratorInstaller(
         self.launch_pandrator_checkbox = ToggleSwitch("Launch Pandrator")
         self.launch_pandrator_checkbox.setChecked(True)
         self.launch_rvc_checkbox = ToggleSwitch("Launch RVC")
+        self.rvc_cpu_launch_checkbox = QCheckBox("Use CPU")
         self.launch_xtts_checkbox = ToggleSwitch("Launch XTTS")
         self.xtts_cpu_launch_checkbox = QCheckBox("Use CPU")
         self.deepspeed_checkbox = QCheckBox("Turn off DeepSpeed")
@@ -519,6 +529,7 @@ class PandratorInstaller(
             self._create_option_card(
                 self.launch_rvc_checkbox,
                 "Start RVC voice conversion alongside Pandrator and the selected speech service.",
+                (self.rvc_cpu_launch_checkbox,),
             ),
             self._create_option_card(
                 self.launch_kokoro_checkbox,
@@ -737,8 +748,17 @@ class PandratorInstaller(
 
         # RVC
         rvc_support = config.get('rvc_support', False)
+        rvc_gpu_support = config.get(RVC_GPU_SUPPORT_CONFIG_FLAG, False)
         set_widget_state(self.rvc_checkbox, not rvc_support, False)
+        set_widget_state(self.rvc_cpu_checkbox, not rvc_support, False)
         set_widget_state(self.launch_rvc_checkbox, rvc_support, False)
+        if rvc_support:
+            if rvc_gpu_support:
+                set_widget_state(self.rvc_cpu_launch_checkbox, True, False)
+            else:
+                set_widget_state(self.rvc_cpu_launch_checkbox, False, True)
+        else:
+            set_widget_state(self.rvc_cpu_launch_checkbox, False, False)
 
         # XTTS Fine-tuning
         xtts_finetuning_support = config.get('xtts_finetuning_support', False)
@@ -893,7 +913,8 @@ class PandratorInstaller(
             voxtral=self.voxtral_checkbox.isChecked(),
             kokoro=self.kokoro_checkbox.isChecked() and not self.kokoro_cpu_checkbox.isChecked(),
             kokoro_cpu=self.kokoro_checkbox.isChecked() and self.kokoro_cpu_checkbox.isChecked(),
-            rvc=self.rvc_checkbox.isChecked(),
+            rvc=self.rvc_checkbox.isChecked() and not self.rvc_cpu_checkbox.isChecked(),
+            rvc_cpu=self.rvc_checkbox.isChecked() and self.rvc_cpu_checkbox.isChecked(),
             whisperx=self.whisperx_checkbox.isChecked(),
             xtts_finetuning=self.xtts_finetuning_checkbox.isChecked(),
             chatterbox=(
@@ -916,12 +937,11 @@ class PandratorInstaller(
             "fishs2",
             "silero",
             "voxtral",
-            "rvc",
             "whisperx",
             "xtts_finetuning",
         ):
             getattr(self, f"{component}_checkbox").setChecked(getattr(selection, component))
-        for component in ("xtts", "kokoro", "chatterbox", "magpie"):
+        for component in ("xtts", "kokoro", "chatterbox", "magpie", "rvc"):
             cpu_selected = getattr(selection, f"{component}_cpu")
             getattr(self, f"{component}_checkbox").setChecked(
                 getattr(selection, component) or cpu_selected
@@ -934,6 +954,7 @@ class PandratorInstaller(
         return LaunchSelection(
             pandrator=self.launch_pandrator_checkbox.isChecked(),
             rvc=self.launch_rvc_checkbox.isChecked(),
+            rvc_cpu=self.rvc_cpu_launch_checkbox.isChecked(),
             xtts=self.launch_xtts_checkbox.isChecked(),
             disable_deepspeed=self.deepspeed_checkbox.isChecked(),
             xtts_cpu=self.xtts_cpu_launch_checkbox.isChecked(),

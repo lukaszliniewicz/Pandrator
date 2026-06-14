@@ -53,12 +53,14 @@ class PDFIngestionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "book.pdf")
             artifacts = os.path.join(directory, "artifacts")
+            progress_messages = []
             self._write_native_fixture(path)
 
             document = build_source_document(
                 path,
                 pdf_config=PDFIngestionConfig(ocr_mode="off"),
                 artifact_dir=artifacts,
+                progress_callback=progress_messages.append,
             )
 
             header_blocks = [block for block in document.blocks if block.text == "Running Header"]
@@ -74,10 +76,14 @@ class PDFIngestionTests(unittest.TestCase):
             with open(os.path.join(artifacts, "ingestion_report.json"), "r", encoding="utf-8") as file_handle:
                 report = json.load(file_handle)
             self.assertEqual(len(report["pages"]), 3)
+            self.assertIn("Ingesting PDF page 1/3...", progress_messages)
+            self.assertIn("Analyzing PDF structure and layout...", progress_messages)
+            self.assertIn("Saving structured PDF ingestion cache...", progress_messages)
 
     def test_force_ocr_uses_injected_engine_and_records_provenance(self):
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "scan.pdf")
+            progress_messages = []
             document = fitz.open()
             document.new_page(width=500, height=700)
             document.save(path)
@@ -87,6 +93,7 @@ class PDFIngestionTests(unittest.TestCase):
                 path,
                 config=PDFIngestionConfig(ocr_mode="force"),
                 ocr_engine=_FakeOCREngine(),
+                progress_callback=progress_messages.append,
             )
 
             self.assertIn("OCR narration begins here.", structured.plain_text())
@@ -95,6 +102,7 @@ class PDFIngestionTests(unittest.TestCase):
                 structured.attributes["pdf_ingestion"]["pages"][0]["ocr"]["engine"],
                 "fake",
             )
+            self.assertIn("Running OCR on PDF page 1/1...", progress_messages)
 
     def test_two_column_native_text_is_grouped_in_column_reading_order(self):
         with tempfile.TemporaryDirectory() as directory:

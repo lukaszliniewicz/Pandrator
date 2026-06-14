@@ -1,6 +1,8 @@
 import json
 import os
 import tempfile
+import threading
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -10,13 +12,17 @@ from ebooklib import epub
 from pandrator.app_logic import AppLogic
 from pandrator.logic import llm_handler, session_handler
 from pandrator.logic.source_cleaning import (
+    PHASE_ORDER,
     SourceCleaningAgentConfig,
     SourceCleaningAgentResult,
+    SourceCleaningPipelineConfig,
     SourceCleaningTools,
     SourceBlock,
     SourceDocument,
     apply_cleaning_operations,
     build_source_document,
+    resolve_phase_max_iterations,
+    run_cleaning_pipeline,
     run_source_cleaning_agent,
     validate_cleaning_result,
 )
@@ -76,6 +82,47 @@ class SourceCleaningTests(unittest.TestCase):
 
         epub.write_epub(epub_path, book)
         return epub_path
+
+    def test_pipeline_uses_exact_per_phase_turn_limits(self):
+        document = build_source_document_from_text("Title\nChapter One\nNarration.", filename="sample.pdf")
+        limits = {
+            "metadata": 2,
+            "navigation": 3,
+            "boilerplate": 4,
+            "repeated_elements": 5,
+            "chapter_marking": 6,
+        }
+
+        with patch(
+            "pandrator.logic.source_cleaning.pipeline.run_source_cleaning_agent",
+            return_value=SourceCleaningAgentResult(summary="done"),
+        ) as run_agent:
+            result = run_cleaning_pipeline(
+                document,
+                config=SourceCleaningPipelineConfig(phase_max_iterations=limits),
+            )
+
+        configured_limits = [
+            call.kwargs["config"].max_iterations
+            for call in run_agent.call_args_list
+        ]
+        self.assertEqual(configured_limits, [limits[name] for name in PHASE_ORDER])
+        self.assertEqual(
+            [phase.max_iterations for phase in result.phases],
+            [limits[name] for name in PHASE_ORDER],
+        )
+
+    def test_legacy_total_turn_limit_is_distributed_across_phases(self):
+        self.assertEqual(
+            resolve_phase_max_iterations(total=53),
+            {
+                "metadata": 4,
+                "navigation": 11,
+                "boilerplate": 11,
+                "repeated_elements": 8,
+                "chapter_marking": 19,
+            },
+        )
 
     def _write_single_file_multilingual_epub_fixture(self) -> str:
         epub_path = os.path.join(self.temp_dir.name, "Yuki Tanaka - 雨の町.epub")
@@ -1160,9 +1207,24 @@ class SourceCleaningTests(unittest.TestCase):
                 "pandrator.logic.source_cleaning.pipeline.run_source_cleaning_agent",
                 return_value=fake_agent_result,
             ) as run_agent:
-                result = AppLogic.run_source_cleaning(harness, model_name="default")
+                phase_limits = {
+                    "metadata": 2,
+                    "navigation": 3,
+                    "boilerplate": 4,
+                    "repeated_elements": 5,
+                    "chapter_marking": 6,
+                }
+                result = AppLogic.run_source_cleaning(
+                    harness,
+                    model_name="default",
+                    phase_max_iterations=phase_limits,
+                )
 
         self.assertEqual(run_agent.call_count, 5)
+        self.assertEqual(
+            [call.kwargs["config"].max_iterations for call in run_agent.call_args_list],
+            [phase_limits[name] for name in PHASE_ORDER],
+        )
         self.assertTrue(result["success"])
         self.assertIn("[[Chapter]]Chapter One", result["cleaned_text"])
         self.assertNotIn("Copyright", result["cleaned_text"])
@@ -1231,6 +1293,96 @@ class SourceCleaningTests(unittest.TestCase):
         self.assertEqual(data["result"]["cleaned_text"], "User edited cleaned text")
         self.assertTrue(data["result"]["user_edited"])
         app.processEvents()
+
+    def test_source_cleaning_dialog_expands_and_saves_per_phase_defaults(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PyQt6.QtWidgets import QApplication
+
+        from pandrator.app_state import SourceCleaningSettings
+        from pandrator.gui.dialogs.source_cleaning_dialog import SourceCleaningDialog
+
+        app = QApplication.instance() or QApplication([])
+        persist_calls = []
+        settings = SourceCleaningSettings()
+        logic = SimpleNamespace(
+            state=SimpleNamespace(
+                raw_text="Raw source preview",
+                metadata={},
+                llm=SimpleNamespace(default_model="default", reasoning_effort=""),
+                source_cleaning=settings,
+                text_processing=SimpleNamespace(remove_footnotes=False, filter_citations=True),
+            ),
+            list_llm_models=lambda: ["default"],
+            _persist_global_settings=lambda: persist_calls.append(True),
+        )
+        dialog = SourceCleaningDialog(logic, source_path_hint="sample.epub")
+
+        self.assertTrue(dialog.phase_limits_content.isHidden())
+        self.assertIn("up to 53 LLM turns total", dialog.phase_limits_summary.text())
+        dialog.phase_limits_toggle.click()
+        app.processEvents()
+        self.assertFalse(dialog.phase_limits_content.isHidden())
+
+        dialog.phase_iteration_spinboxes["metadata"].setValue(12)
+        self.assertIn("up to 61 LLM turns total", dialog.phase_limits_summary.text())
+        self.assertGreaterEqual(dialog.phase_iteration_spinboxes["metadata"].minimumWidth(), 120)
+
+        dialog.save_phase_defaults_button.click()
+        self.assertEqual(settings.phase_max_iterations["metadata"], 12)
+        self.assertEqual(settings.max_iterations, 61)
+        self.assertEqual(len(persist_calls), 1)
+        self.assertIn("saved as defaults", dialog.status_label.text())
+
+    def test_source_cleaning_dialog_refreshes_preview_in_background_with_page_progress(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PyQt6.QtWidgets import QApplication
+
+        from pandrator.app_state import SourceCleaningSettings
+        from pandrator.gui.dialogs.source_cleaning_dialog import SourceCleaningDialog
+
+        app = QApplication.instance() or QApplication([])
+        started = threading.Event()
+        release = threading.Event()
+
+        def extract_preview(*_args, progress_callback=None, **_kwargs):
+            started.set()
+            if progress_callback is not None:
+                progress_callback("Running OCR on PDF page 2/4...")
+            release.wait(timeout=2)
+            return "Refreshed PDF preview"
+
+        logic = SimpleNamespace(
+            state=SimpleNamespace(
+                raw_text="Raw source preview",
+                metadata={},
+                llm=SimpleNamespace(default_model="default", reasoning_effort=""),
+                source_cleaning=SourceCleaningSettings(),
+                text_processing=SimpleNamespace(remove_footnotes=False, filter_citations=True),
+            ),
+            list_llm_models=lambda: ["default"],
+            extract_deterministic_clean_text=extract_preview,
+            get_pdf_ingestion_review_data=lambda: {},
+        )
+        dialog = SourceCleaningDialog(logic, source_path_hint="sample.pdf")
+
+        dialog._on_deterministic_settings_changed()
+        self.assertTrue(started.wait(timeout=1))
+        app.processEvents()
+
+        self.assertTrue(dialog._running)
+        self.assertEqual(dialog.progress_bar.maximum(), 4)
+        self.assertEqual(dialog.progress_bar.value(), 2)
+        self.assertIn("Running OCR", dialog.status_label.text())
+
+        release.set()
+        deadline = time.time() + 2
+        while dialog._running and time.time() < deadline:
+            app.processEvents()
+            time.sleep(0.01)
+
+        self.assertFalse(dialog._running)
+        self.assertEqual(dialog.text_edit.toPlainText(), "Refreshed PDF preview")
+        self.assertIn("Preview refreshed", dialog.status_label.text())
 
     @patch("pandrator.logic.source_cleaning.epub_adapter.epub.read_epub")
     @patch("pandrator.logic.source_cleaning.deterministic.parser.unpack_epub_structure")

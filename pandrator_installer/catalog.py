@@ -11,6 +11,7 @@ KOKORO_ENV_NAME = "kokoro_api_server_installer"
 KOKORO_GPU_SUPPORT_CONFIG_FLAG = "kokoro_gpu_support"
 CHATTERBOX_GPU_SUPPORT_CONFIG_FLAG = "chatterbox_gpu_support"
 MAGPIE_GPU_SUPPORT_CONFIG_FLAG = "magpie_gpu_support"
+RVC_GPU_SUPPORT_CONFIG_FLAG = "rvc_gpu_support"
 
 
 @dataclass(frozen=True)
@@ -149,6 +150,18 @@ COMPONENTS: dict[str, ComponentDefinition] = {
         process_attr="rvc_process",
         port=8050,
     ),
+    "rvc_cpu": ComponentDefinition(
+        key="rvc_cpu",
+        label="RVC CPU",
+        config_flag="rvc_support",
+        paths=("rvc-python",),
+        markers=("rvc-python/run.bat",),
+        variant_of="rvc",
+        repo_url="https://github.com/lukaszliniewicz/rvc-python.git",
+        repo_dirname="rvc-python",
+        process_attr="rvc_process",
+        port=8050,
+    ),
     "chatterbox": ComponentDefinition(
         key="chatterbox",
         label="Chatterbox",
@@ -214,6 +227,7 @@ PACKAGING_CONFIG_FLAGS = (
     "whisperx_support",
     "xtts_finetuning_support",
     "rvc_support",
+    RVC_GPU_SUPPORT_CONFIG_FLAG,
     "chatterbox_support",
     CHATTERBOX_GPU_SUPPORT_CONFIG_FLAG,
     "magpie_support",

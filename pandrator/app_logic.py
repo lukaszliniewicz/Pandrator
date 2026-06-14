@@ -103,6 +103,7 @@ class AppLogic(QObject):
     _download_source_ready = pyqtSignal(str, bool)
     _start_generation_requested = pyqtSignal()
     _start_generation_anew_requested = pyqtSignal()
+    _stop_playback_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -149,6 +150,7 @@ class AppLogic(QObject):
 
         self._tts_connection_result.connect(self._apply_tts_connection_result)
         self._download_source_ready.connect(self._on_download_source_ready)
+        self._stop_playback_requested.connect(self._stop_playback_on_owner_thread)
         self._start_generation_requested.connect(self.start_generation)
         self._start_generation_anew_requested.connect(self.start_generation_anew)
 
@@ -1824,7 +1826,12 @@ class AppLogic(QObject):
         self._notify_user("No cropped PDF was saved. Using the original PDF.", level="warning")
         return pdf_file_path
 
-    def select_source_file(self, file_path: str, reset_session: bool = False) -> bool:
+    def select_source_file(
+        self,
+        file_path: str,
+        reset_session: bool = False,
+        progress_callback=None,
+    ) -> bool:
         """Processes a newly selected source file."""
         if self.is_generation_or_regeneration_running():
             self.show_error.emit("Error", "Cannot change source file while generation/regeneration is running.")
@@ -1846,7 +1853,13 @@ class AppLogic(QObject):
         staging_cleanup_path = ""
         reset_applied = False
 
+        def emit_progress(message: str):
+            self.log_message.emit(message)
+            if progress_callback is not None:
+                progress_callback(message)
+
         try:
+            emit_progress("Preparing source import...")
             if reset_session:
                 source_path_to_load, staging_cleanup_path = self._stage_source_file_for_session_reset(file_path)
                 self._reset_active_session_for_source_change()
@@ -1886,14 +1899,16 @@ class AppLogic(QObject):
                     session_file_path,
                     pdf_config=self._pdf_ingestion_config(),
                     artifact_dir=self._source_ingestion_dir(),
-                    progress_callback=self.log_message.emit,
+                    progress_callback=emit_progress,
                 )
+                emit_progress("Applying deterministic PDF cleanup...")
                 deterministic_operations = self._pdf_deterministic_operations(document)
                 raw_text = source_cleaning.apply_cleaning_operations(
                     document,
                     deterministic_operations,
                     output_dir=os.path.join(self._source_ingestion_dir(), "deterministic_cleanup"),
                 ).cleaned_text
+                emit_progress("Saving extracted PDF text...")
                 raw_text_filename = f"{os.path.splitext(os.path.basename(session_file_path))[0]}_raw_text.txt"
                 raw_text_path = os.path.join(session_path, raw_text_filename)
                 with open(raw_text_path, "w", encoding="utf-8", newline="\n") as f:
@@ -1941,6 +1956,7 @@ class AppLogic(QObject):
             selected_source_name = os.path.basename(self.state.source_display_path or self.state.source_file_path or session_file_path)
             self._notify_user(self._build_source_loaded_notification(selected_source_name, ext))
 
+            emit_progress("Finalizing source import...")
             self._persist_session_config(force=True)
             if self._is_dubbing_source_selected():
                 run = self._create_dubbing_run(set_active=True, force_new=False)
@@ -1956,6 +1972,7 @@ class AppLogic(QObject):
                         except Exception:
                             pass
             self.state_changed.emit()
+            emit_progress("Source import complete.")
             return True
 
         except Exception as e:
@@ -1995,8 +2012,13 @@ class AppLogic(QObject):
         file_path: str,
         remove_footnotes: bool,
         filter_citations: bool,
+        progress_callback=None,
     ) -> str:
         """Deterministically extracts and cleans text from the specified file on-demand."""
+        def emit_progress(message: str):
+            if progress_callback is not None:
+                progress_callback(message)
+
         hint_path = os.path.abspath(str(file_path or "").strip()) if file_path else ""
         state_path = os.path.abspath(str(self.state.source_file_path or "").strip()) if self.state.source_file_path else ""
         source_path = hint_path if hint_path and os.path.exists(hint_path) else state_path
@@ -2016,12 +2038,16 @@ class AppLogic(QObject):
                 source_path,
                 pdf_config=self._pdf_ingestion_config(),
                 artifact_dir=self._source_ingestion_dir(),
+                progress_callback=emit_progress,
             )
-            return source_cleaning.apply_cleaning_operations(
+            emit_progress("Applying deterministic PDF cleanup...")
+            cleaned_text = source_cleaning.apply_cleaning_operations(
                 document,
                 self._pdf_deterministic_operations(document, remove_footnotes=remove_footnotes),
                 output_dir=os.path.join(self._source_ingestion_dir(), "deterministic_cleanup"),
             ).cleaned_text
+            emit_progress("PDF preview refresh complete.")
+            return cleaned_text
         elif source_ext == ".txt":
             with open(source_path, "r", encoding="utf-8") as f:
                 return f.read()
@@ -2041,6 +2067,7 @@ class AppLogic(QObject):
         filter_citations: bool = True,
         model_name: str | None = None,
         max_iterations: int | None = None,
+        phase_max_iterations: dict[str, int] | None = None,
         reasoning_effort: str | None = None,
         progress_callback=None,
         stop_event=None,
@@ -2109,11 +2136,24 @@ class AppLogic(QObject):
         )
         working_document = document.excluding_blocks(set(deterministic_result.deleted_block_ids))
 
+        saved_phase_iterations = getattr(
+            getattr(self.state, "source_cleaning", None),
+            "phase_max_iterations",
+            None,
+        )
+        phase_iteration_values = phase_max_iterations
+        if phase_iteration_values is None and max_iterations is None:
+            phase_iteration_values = saved_phase_iterations
+        resolved_phase_iterations = source_cleaning.resolve_phase_max_iterations(
+            phase_iteration_values,
+            total=int(max_iterations) if max_iterations is not None else 53,
+        )
         pipeline_config = source_cleaning.SourceCleaningPipelineConfig(
             model_name=resolved_model,
             remove_footnotes=remove_footnotes,
             filter_citations=filter_citations,
             total_max_iterations=int(max_iterations) if max_iterations is not None else 53,
+            phase_max_iterations=resolved_phase_iterations,
         )
         emit_progress("Running source-cleaning pipeline...")
         pipeline_result = source_cleaning.run_cleaning_pipeline(
@@ -5576,6 +5616,14 @@ class AppLogic(QObject):
         return False
 
     def stop_playback(self):
+        if threading.current_thread() is not threading.main_thread():
+            if self.playback_handler is not None:
+                self.playback_handler.stop()
+            self._stop_playback_requested.emit()
+            return
+        self._stop_playback_on_owner_thread()
+
+    def _stop_playback_on_owner_thread(self):
         self.playlist_active = False
         self.playlist_sentences = []
         self.current_playlist_index = 0

@@ -30,6 +30,20 @@ class TestInstallerLauncherChatterbox(unittest.TestCase):
         self.assertFalse(installer.chatterbox_checkbox.isChecked())
         self.assertFalse(installer.chatterbox_cpu_checkbox.isChecked())
 
+    def test_rvc_cpu_option_maps_to_cpu_install_and_launch_variants(self):
+        installer = PandratorInstaller(headless=True)
+
+        installer.rvc_cpu_checkbox.setChecked(True)
+        install_selection = installer.snapshot_install_selection()
+        self.assertFalse(install_selection.rvc)
+        self.assertTrue(install_selection.rvc_cpu)
+
+        installer.launch_rvc_checkbox.setChecked(True)
+        installer.rvc_cpu_launch_checkbox.setChecked(True)
+        launch_selection = installer.snapshot_launch_selection()
+        self.assertTrue(launch_selection.rvc)
+        self.assertTrue(launch_selection.rvc_cpu)
+
     def test_installer_uses_compact_service_controls(self):
         installer = PandratorInstaller(headless=True)
 

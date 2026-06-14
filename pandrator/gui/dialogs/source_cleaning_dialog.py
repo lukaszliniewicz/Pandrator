@@ -1,9 +1,10 @@
 import json
 import logging
+import re
 import threading
 from threading import Event
 
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -21,45 +22,69 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QTabWidget,
     QTextEdit,
+    QToolButton,
     QVBoxLayout,
     QWidget,
+)
+
+from ...logic.source_cleaning import (
+    MAX_PHASE_MAX_ITERATIONS,
+    MIN_PHASE_MAX_ITERATIONS,
+    PHASE_DESCRIPTIONS,
+    PHASE_HELP_TEXT,
+    PHASE_ORDER,
+    resolve_phase_max_iterations,
 )
 
 
 class SourceCleaningDialog(QDialog):
     status_updated = pyqtSignal(str)
     cleaning_finished = pyqtSignal(object)
+    preview_finished = pyqtSignal(object)
 
-    _MIN_MAX_ITERATIONS = 5
-    _MAX_MAX_ITERATIONS = 250
-    _DEFAULT_MAX_ITERATIONS = 53
     _REASONING_EFFORT_OPTIONS = ["", "low", "medium", "high"]  # "" = don't send
     _REASONING_EFFORT_LABELS = ["None (model default)", "Low", "Medium", "High"]
 
-    def _load_max_iterations(self) -> int:
+    def _load_phase_max_iterations(self) -> dict[str, int]:
         cleaning_settings = getattr(self.logic.state, "source_cleaning", None)
-        try:
-            value = int(getattr(cleaning_settings, "max_iterations", self._DEFAULT_MAX_ITERATIONS))
-        except (TypeError, ValueError):
-            value = self._DEFAULT_MAX_ITERATIONS
-        return max(self._MIN_MAX_ITERATIONS, min(value, self._MAX_MAX_ITERATIONS))
+        return resolve_phase_max_iterations(
+            getattr(cleaning_settings, "phase_max_iterations", None),
+            total=getattr(cleaning_settings, "max_iterations", 53),
+        )
 
-    def _save_max_iterations(self) -> None:
+    def _current_phase_max_iterations(self) -> dict[str, int]:
+        return {
+            phase_name: int(spinbox.value())
+            for phase_name, spinbox in self.phase_iteration_spinboxes.items()
+        }
+
+    def _save_phase_iterations_as_defaults(self) -> None:
         cleaning_settings = getattr(self.logic.state, "source_cleaning", None)
         if cleaning_settings is None:
             return
-        new_value = max(self._MIN_MAX_ITERATIONS, min(int(self.max_iterations_spinbox.value()), self._MAX_MAX_ITERATIONS))
-        if getattr(cleaning_settings, "max_iterations", None) == new_value:
-            return
-        cleaning_settings.max_iterations = new_value
+        phase_iterations = self._current_phase_max_iterations()
+        cleaning_settings.phase_max_iterations = phase_iterations
+        cleaning_settings.max_iterations = sum(phase_iterations.values())
         persist = getattr(self.logic, "_persist_global_settings", None)
         if callable(persist):
             try:
                 persist()
-            except Exception as e:  # noqa: BLE001 - persistence is best-effort on dialog close
+            except Exception as e:  # noqa: BLE001 - persistence is best-effort
                 logging.getLogger(__name__).warning(
-                    "Failed to persist source cleaning max_iterations: %s", e
+                    "Failed to persist source cleaning phase limits: %s", e
                 )
+                self.status_label.setText(f"Could not save cleaning phase defaults: {e}")
+                return
+        self.status_label.setText("Cleaning phase limits saved as defaults for future imports.")
+
+    def _toggle_phase_limits(self, expanded: bool) -> None:
+        self.phase_limits_content.setVisible(expanded)
+        arrow = Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
+        self.phase_limits_toggle.setArrowType(arrow)
+
+    def _update_phase_limits_summary(self) -> None:
+        total = sum(self._current_phase_max_iterations().values())
+        self.phase_limits_summary.setText(f"{len(PHASE_ORDER)} phases | up to {total} LLM turns total")
 
     def _load_reasoning_effort(self) -> str:
         """Returns the current globally-configured reasoning_effort value."""
@@ -180,20 +205,50 @@ class SourceCleaningDialog(QDialog):
         layout.addWidget(self.pdf_controls_widget)
         self._load_pdf_settings()
 
-        iterations_row = QHBoxLayout()
-        iterations_row.addWidget(QLabel("Max Turns:"))
-        self.max_iterations_spinbox = QSpinBox()
-        self.max_iterations_spinbox.setRange(self._MIN_MAX_ITERATIONS, self._MAX_MAX_ITERATIONS)
-        self.max_iterations_spinbox.setValue(self._load_max_iterations())
-        self.max_iterations_spinbox.setToolTip(
-            "Total LLM turns across all 5 cleaning phases (metadata, navigation, "
-            "boilerplate, repeated elements, chapter marking). "
-            "The budget is distributed proportionally — the default of 53 gives each phase a "
-            "focused allocation. Increase for complex or long documents."
-        )
-        iterations_row.addWidget(self.max_iterations_spinbox)
-        iterations_row.addStretch(1)
-        layout.addLayout(iterations_row)
+        phase_limits_header = QHBoxLayout()
+        self.phase_limits_toggle = QToolButton()
+        self.phase_limits_toggle.setText("Cleaning phase limits")
+        self.phase_limits_toggle.setCheckable(True)
+        self.phase_limits_toggle.setArrowType(Qt.ArrowType.RightArrow)
+        self.phase_limits_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.phase_limits_toggle.setToolTip("Expand to set the maximum LLM turns for each cleaning phase.")
+        phase_limits_header.addWidget(self.phase_limits_toggle)
+        self.phase_limits_summary = QLabel()
+        self.phase_limits_summary.setObjectName("secondaryInfoLabel")
+        phase_limits_header.addWidget(self.phase_limits_summary)
+        phase_limits_header.addStretch(1)
+        layout.addLayout(phase_limits_header)
+
+        self.phase_limits_content = QFrame()
+        self.phase_limits_content.setObjectName("groupFrame")
+        phase_limits_layout = QFormLayout(self.phase_limits_content)
+        phase_limits_layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
+        saved_phase_iterations = self._load_phase_max_iterations()
+        self.phase_iteration_spinboxes: dict[str, QSpinBox] = {}
+        for phase_name in PHASE_ORDER:
+            spinbox = QSpinBox()
+            spinbox.setRange(MIN_PHASE_MAX_ITERATIONS, MAX_PHASE_MAX_ITERATIONS)
+            spinbox.setValue(saved_phase_iterations[phase_name])
+            spinbox.setSuffix(" turns")
+            spinbox.setMinimumWidth(120)
+            spinbox.setToolTip(PHASE_HELP_TEXT[phase_name])
+            spinbox.valueChanged.connect(self._update_phase_limits_summary)
+            label = QLabel(f"{PHASE_DESCRIPTIONS[phase_name]}:")
+            label.setToolTip(PHASE_HELP_TEXT[phase_name])
+            phase_limits_layout.addRow(label, spinbox)
+            self.phase_iteration_spinboxes[phase_name] = spinbox
+
+        phase_defaults_row = QHBoxLayout()
+        phase_defaults_hint = QLabel("These limits apply to this run unless saved as defaults.")
+        phase_defaults_hint.setObjectName("secondaryInfoLabel")
+        phase_defaults_row.addWidget(phase_defaults_hint)
+        phase_defaults_row.addStretch(1)
+        self.save_phase_defaults_button = QPushButton("Save as Defaults")
+        phase_defaults_row.addWidget(self.save_phase_defaults_button)
+        phase_limits_layout.addRow(phase_defaults_row)
+        self.phase_limits_content.setVisible(False)
+        layout.addWidget(self.phase_limits_content)
+        self._update_phase_limits_summary()
 
         status_row = QHBoxLayout()
         self.status_label = QLabel("Choose a model and click Run LLM Cleaning when ready.")
@@ -267,7 +322,10 @@ class SourceCleaningDialog(QDialog):
         self.text_edit.textChanged.connect(self._refresh_action_state)
         self.status_updated.connect(self._on_status_updated)
         self.cleaning_finished.connect(self._on_cleaning_finished)
+        self.preview_finished.connect(self._on_preview_finished)
         self.pdf_refresh_button.clicked.connect(self._refresh_pdf_ingestion)
+        self.phase_limits_toggle.toggled.connect(self._toggle_phase_limits)
+        self.save_phase_defaults_button.clicked.connect(self._save_phase_iterations_as_defaults)
 
     def _populate_model_combo(self):
         models = []
@@ -285,15 +343,15 @@ class SourceCleaningDialog(QDialog):
         else:
             self.model_combo.setCurrentText("default")
 
-    def _set_running(self, running: bool):
+    def _set_running(self, running: bool, allow_stop: bool = True):
         self._running = running
         self.run_button.setEnabled(not running)
-        self.stop_button.setEnabled(running)
+        self.stop_button.setEnabled(running and allow_stop)
         self.model_combo.setEnabled(not running)
         self.remove_footnotes_checkbox.setEnabled(not running)
         self.filter_citations_checkbox.setEnabled(not running and not self.remove_footnotes_checkbox.isChecked())
         self.reasoning_effort_combo.setEnabled(not running)
-        self.max_iterations_spinbox.setEnabled(not running)
+        self.phase_limits_content.setEnabled(not running)
         self.pdf_controls_widget.setEnabled(not running)
         self.text_edit.setReadOnly(running)
         self.add_chapter_button.setEnabled(not running)
@@ -381,7 +439,6 @@ class SourceCleaningDialog(QDialog):
         if callable(invalidate):
             invalidate()
         self._on_deterministic_settings_changed()
-        self._show_pdf_ingestion_review_data()
 
     def _start_cleaning(self):
         if self._running:
@@ -398,8 +455,9 @@ class SourceCleaningDialog(QDialog):
         remove_footnotes = self.remove_footnotes_checkbox.isChecked()
         filter_citations = self.filter_citations_checkbox.isChecked()
         model_name = self.model_combo.currentText().strip() or "default"
-        max_iterations = int(self.max_iterations_spinbox.value())
+        phase_max_iterations = self._current_phase_max_iterations()
         stop_event = self._stop_event
+        extracted_text = self.text_edit.toPlainText()
 
         # Save reasoning_effort selection to global settings before running.
         self._save_reasoning_effort()
@@ -417,11 +475,11 @@ class SourceCleaningDialog(QDialog):
                     remove_footnotes=remove_footnotes,
                     filter_citations=filter_citations,
                     model_name=model_name,
-                    max_iterations=max_iterations,
+                    phase_max_iterations=phase_max_iterations,
                     reasoning_effort=reasoning_effort,
                     progress_callback=self.status_updated.emit,
                     stop_event=stop_event,
-                    extracted_text=self.text_edit.toPlainText(),
+                    extracted_text=extracted_text,
                 )
             except Exception as e:
                 result = {
@@ -441,9 +499,18 @@ class SourceCleaningDialog(QDialog):
             self.status_label.setText("Stop requested — waiting for the current LLM turn to finish...")
 
     def _on_status_updated(self, message: str):
-        self.status_label.setText(str(message or "Working..."))
+        status = str(message or "Working...")
+        self.status_label.setText(status)
+        page_progress = re.search(r"\bpage\s+(\d+)/(\d+)\b", status, flags=re.IGNORECASE)
+        if page_progress:
+            current, total = (int(value) for value in page_progress.groups())
+            self.progress_bar.setRange(0, max(total, 1))
+            self.progress_bar.setValue(max(0, min(current, total)))
+        elif self._running:
+            self.progress_bar.setRange(0, 0)
 
     def _on_cleaning_finished(self, result: object):
+        self._worker_thread = None
         payload = result if isinstance(result, dict) else {"success": False, "error": "Invalid cleaning result."}
         self._result = None if payload.get("error") else payload
         self._set_running(False)
@@ -507,25 +574,41 @@ class SourceCleaningDialog(QDialog):
             
         remove_footnotes = is_remove_checked
         filter_citations = self.filter_citations_checkbox.isChecked()
-        
+
         self.status_label.setText("Refreshing deterministic text preview...")
-        self.progress_bar.setRange(0, 0)
-        
-        try:
-            text = self.logic.extract_deterministic_clean_text(
-                self.source_path_hint,
-                remove_footnotes=remove_footnotes,
-                filter_citations=filter_citations
-            )
-            self.text_edit.setPlainText(text)
-            self.tabs.setTabText(0, "Source Preview")
-            self.status_label.setText(f"Preview refreshed: {len(text):,} characters.")
-        except Exception as e:
-            self.status_label.setText(f"Failed to refresh preview: {e}")
-        finally:
-            self.progress_bar.setRange(0, 100)
-            self.progress_bar.setValue(0)
-            self._refresh_action_state()
+        self._set_running(True, allow_stop=False)
+
+        def worker():
+            try:
+                text = self.logic.extract_deterministic_clean_text(
+                    self.source_path_hint,
+                    remove_footnotes=remove_footnotes,
+                    filter_citations=filter_citations,
+                    progress_callback=self.status_updated.emit,
+                )
+                result = {"success": True, "text": text}
+            except Exception as e:
+                result = {"success": False, "error": str(e)}
+            self.preview_finished.emit(result)
+
+        self._worker_thread = threading.Thread(target=worker, daemon=True)
+        self._worker_thread.start()
+
+    def _on_preview_finished(self, result: object):
+        self._worker_thread = None
+        payload = result if isinstance(result, dict) else {"success": False, "error": "Invalid preview result."}
+        self._set_running(False)
+        if not payload.get("success"):
+            self.status_label.setText(f"Failed to refresh preview: {payload.get('error')}")
+            return
+
+        text = str(payload.get("text") or "")
+        self.text_edit.setPlainText(text)
+        self.text_edit.moveCursor(QTextCursor.MoveOperation.Start)
+        self.tabs.setTabText(0, "Source Preview")
+        self.status_label.setText(f"Preview refreshed: {len(text):,} characters.")
+        self._show_pdf_ingestion_review_data()
+        self._refresh_action_state()
 
     def _accept_cleaned_text(self):
         edited_text = self.text_edit.toPlainText()
@@ -569,11 +652,10 @@ class SourceCleaningDialog(QDialog):
             event.ignore()
             QMessageBox.information(
                 self,
-                "Source Cleaning Running",
-                "Please wait for source cleaning to finish (or click Stop) before closing this dialog.",
+                "Source Processing Running",
+                "Please wait for the current source-processing operation to finish before closing this dialog.",
             )
             return
-        self._save_max_iterations()
         self._save_reasoning_effort()
         self._save_pdf_settings()
         super().closeEvent(event)

@@ -170,6 +170,7 @@ class PhaseResult:
     phase_description: str
     operations: list[dict[str, Any]] = field(default_factory=list)
     iterations: int = 0
+    max_iterations: int = 0
     warnings: list[str] = field(default_factory=list)
     llm_usage: dict[str, Any] = field(default_factory=dict)
     stopped: bool = False

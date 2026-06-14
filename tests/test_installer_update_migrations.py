@@ -27,6 +27,7 @@ class InstallerUpdateMigrationTests(unittest.TestCase):
             config = installer.ensure_rvc_support_flag(install_root, {})
 
             self.assertTrue(config["rvc_support"])
+            self.assertFalse(config["rvc_gpu_support"])
 
     def test_rvc_service_is_prepared_before_legacy_packages_are_removed(self):
         with tempfile.TemporaryDirectory() as install_root:

@@ -18,7 +18,7 @@ apply_cleaning_operations().
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable
 
 from .agent import SourceCleaningAgentConfig, run_source_cleaning_agent
@@ -33,7 +33,7 @@ ProgressCallback = Callable[[str], None]
 # Phase catalogue
 # ---------------------------------------------------------------------------
 
-_PHASE_ORDER = [
+PHASE_ORDER = [
     "metadata",
     "navigation",
     "boilerplate",
@@ -41,13 +41,32 @@ _PHASE_ORDER = [
     "chapter_marking",
 ]
 
-_PHASE_DESCRIPTIONS = {
+PHASE_DESCRIPTIONS = {
     "metadata": "Metadata extraction",
     "navigation": "Navigation/TOC removal",
     "boilerplate": "Boilerplate/copyright removal",
     "repeated_elements": "Repeated element removal",
     "chapter_marking": "Chapter marking",
 }
+
+PHASE_HELP_TEXT = {
+    "metadata": "Find the title, author, and language.",
+    "navigation": "Remove navigation documents and inline contents lists.",
+    "boilerplate": "Remove copyright, license, ads, and other non-narrative matter.",
+    "repeated_elements": "Remove repeated headers, footers, page numbers, and captions.",
+    "chapter_marking": "Find narrative chapter headings and add chapter markers.",
+}
+
+DEFAULT_PHASE_MAX_ITERATIONS = {
+    "metadata": 4,
+    "navigation": 11,
+    "boilerplate": 11,
+    "repeated_elements": 8,
+    "chapter_marking": 19,
+}
+
+MIN_PHASE_MAX_ITERATIONS = 1
+MAX_PHASE_MAX_ITERATIONS = 100
 
 # Operations each phase may propose (None = unrestricted, for legacy "full" mode)
 _PHASE_ALLOWED_OPS: dict[str, frozenset[str] | None] = {
@@ -100,6 +119,8 @@ class SourceCleaningPipelineConfig:
 
     # Total LLM turns across all phases; distributed proportionally
     total_max_iterations: int = 53
+    # Exact per-phase limits. When supplied, these take precedence over the legacy total.
+    phase_max_iterations: dict[str, int] | None = None
     max_tokens: int = 2200
     temperature: float = 0.2
     max_tool_result_chars: int = 12000
@@ -130,8 +151,12 @@ def run_cleaning_pipeline(
     document via apply_cleaning_operations(document, result.all_operations).
     """
     resolved = config or SourceCleaningPipelineConfig()
-    phase_names = resolved.phase_names or _PHASE_ORDER
-    budgets = _distribute_budget(resolved.total_max_iterations, phase_names)
+    phase_names = resolved.phase_names or PHASE_ORDER
+    budgets = resolve_phase_max_iterations(
+        resolved.phase_max_iterations,
+        total=resolved.total_max_iterations,
+        phase_names=phase_names,
+    )
 
     pipeline_result = PipelineResult()
     accumulated_deleted_ids: set[str] = set()
@@ -142,7 +167,7 @@ def run_cleaning_pipeline(
             pipeline_result.stopped = True
             break
 
-        description = _PHASE_DESCRIPTIONS.get(phase_name, phase_name)
+        description = PHASE_DESCRIPTIONS.get(phase_name, phase_name)
         _emit(progress_callback, f"Phase {idx + 1}/{len(phase_names)}: {description}...")
         logger.debug("Starting phase %s (%s), budget=%d", idx + 1, phase_name, budgets[phase_name])
 
@@ -205,6 +230,7 @@ def run_cleaning_pipeline(
             phase_description=description,
             operations=list(agent_result.operations),
             iterations=agent_result.iterations,
+            max_iterations=budgets[phase_name],
             warnings=list(agent_result.warnings),
             llm_usage=dict(agent_result.llm_usage),
             stopped=bool(stop_event and stop_event.is_set()),
@@ -248,6 +274,29 @@ def _distribute_budget(total: int, phase_names: list[str]) -> dict[str, int]:
             budgets[name] = max(_PHASE_MIN_ITERATIONS.get(name, 2), raw)
             allocated += budgets[name]
     return budgets
+
+
+def resolve_phase_max_iterations(
+    values: dict[str, Any] | None = None,
+    *,
+    total: int | None = None,
+    phase_names: list[str] | None = None,
+) -> dict[str, int]:
+    """Return complete, clamped phase limits, optionally migrating a legacy total."""
+    names = list(phase_names or PHASE_ORDER)
+    distributed = _distribute_budget(int(total or 53), names)
+    resolved: dict[str, int] = {}
+    for name in names:
+        fallback = DEFAULT_PHASE_MAX_ITERATIONS.get(name, distributed.get(name, 1))
+        if values is None:
+            fallback = distributed.get(name, fallback)
+        raw_value = values.get(name, fallback) if isinstance(values, dict) else fallback
+        try:
+            value = int(raw_value)
+        except (TypeError, ValueError):
+            value = fallback
+        resolved[name] = max(MIN_PHASE_MAX_ITERATIONS, min(value, MAX_PHASE_MAX_ITERATIONS))
+    return resolved
 
 
 def _filtered_document(document: SourceDocument, excluded_block_ids: set[str]) -> SourceDocument:

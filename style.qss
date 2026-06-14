@@ -180,6 +180,50 @@ QStatusBar {
     color: #f1f1f1;
 }
 
+QSpinBox,
+QDoubleSpinBox {
+    min-width: 72px;
+    min-height: 30px;
+    padding: 4px 32px 4px 8px;
+}
+
+QSpinBox::up-button,
+QDoubleSpinBox::up-button {
+    subcontrol-origin: border;
+    subcontrol-position: top right;
+    background-color: #4d5863;
+    border: none;
+    border-left: 1px solid #65717d;
+    border-bottom: 1px solid #65717d;
+    border-top-right-radius: 5px;
+    width: 26px;
+}
+
+QSpinBox::down-button,
+QDoubleSpinBox::down-button {
+    subcontrol-origin: border;
+    subcontrol-position: bottom right;
+    background-color: #4d5863;
+    border: none;
+    border-left: 1px solid #65717d;
+    border-bottom-right-radius: 5px;
+    width: 26px;
+}
+
+QSpinBox::up-button:hover,
+QSpinBox::down-button:hover,
+QDoubleSpinBox::up-button:hover,
+QDoubleSpinBox::down-button:hover {
+    background-color: #667382;
+}
+
+QSpinBox::up-button:pressed,
+QSpinBox::down-button:pressed,
+QDoubleSpinBox::up-button:pressed,
+QDoubleSpinBox::down-button:pressed {
+    background-color: #7e57c2;
+}
+
 QAbstractItemView {
     alternate-background-color: #3a3446;
 }

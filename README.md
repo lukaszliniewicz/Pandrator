@@ -179,6 +179,7 @@ For automation, the launcher also supports headless installation:
 python pandrator_installer_launcher.py --headless-install --workspace "D:/pandrator-builds/core" --components "kokoro"
 # or CPU-only Kokoro:
 python pandrator_installer_launcher.py --headless-install --workspace "D:/pandrator-builds/core" --components "kokoro_cpu"
+python pandrator_installer_launcher.py --headless-install --workspace "D:/pandrator-builds/core" --components "rvc_cpu"
 ```
 
 > [!NOTE]
@@ -194,7 +195,7 @@ You can install components incrementally (during first setup or later):
 - Voxtral API (`Voxtral`, GPU only)
 - Kokoro API (`Kokoro` GPU or `Kokoro CPU only`)
 - Silero API
-- Optional tools: RVC Python, WhisperX, Easy XTTS Trainer
+- Optional tools: RVC Python (`RVC` GPU or `Use CPU-only runtime`), WhisperX, Easy XTTS Trainer
 
 Current installer flow:
 
@@ -209,7 +210,7 @@ Before using **Update**, close Pandrator and all services launched from the inst
 
 Updates automatically migrate older installations:
 
-- Legacy in-process RVC is detected even when the new RVC service repository is absent. The updater prepares the dedicated RVC service first, preserves `Pandrator/rvc_models`, and then removes the legacy RVC packages from Pandrator's main environment.
+- Legacy in-process RVC is detected even when the new RVC service repository is absent. The updater prepares the dedicated RVC service first, defaults unknown legacy GPU capability to CPU, preserves `Pandrator/rvc_models`, and then removes the legacy RVC packages from Pandrator's main environment.
 - Pynini and NeMo Text Processing are installed and import-verified on every update. This repair check is independent of the saved requirements hash.
 
 Launch tab options:
@@ -222,6 +223,7 @@ Launch tab options:
 - `Voxtral`
 - `Kokoro` (+ `Use CPU` when GPU support is installed)
 - `Silero`
+- `RVC` (+ `Use CPU`; forced on for CPU-only installs)
 
 If a local TTS server is launched from the launcher, Pandrator is auto-started with the matching connect flag (`-connect -xtts`, `-connect -fishs2`, `-connect -chatterbox`, `-connect -voxcpm`, `-connect -voxtral`, `-connect -kokoro`, `-connect -silero`).
 

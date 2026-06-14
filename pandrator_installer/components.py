@@ -1094,13 +1094,15 @@ class ComponentOperationsMixin:
             logging.error(f"Error message: {str(e)}")
             raise
 
-    def is_rvc_runtime_ready(self, rvc_repo_path):
+    def is_rvc_runtime_ready(self, rvc_repo_path, use_cpu=False):
         run_bat_path = os.path.join(rvc_repo_path, 'run.bat')
-        env_python_path = os.path.join(rvc_repo_path, '.pixi', 'envs', 'default', 'python.exe')
+        environment_name = 'cpu' if use_cpu else 'default'
+        env_python_path = os.path.join(rvc_repo_path, '.pixi', 'envs', environment_name, 'python.exe')
         return all(os.path.exists(path) for path in (run_bat_path, env_python_path))
 
-    def build_rvc_launcher_command(self, pixi_path=None, prepare_only=False, models_dir=None):
+    def build_rvc_launcher_command(self, use_cpu=False, pixi_path=None, prepare_only=False, models_dir=None):
         command = ['cmd', '/c', 'run.bat']
+        command.extend(['--backend', 'cpu' if use_cpu else 'cuda'])
         if pixi_path:
             command.extend(['--pixi-path', pixi_path])
         if prepare_only:
@@ -1109,7 +1111,7 @@ class ComponentOperationsMixin:
             command.extend(['--models-dir', models_dir])
         return command
 
-    def install_rvc_api_server(self, rvc_repo_path, pixi_path=None):
+    def install_rvc_api_server(self, rvc_repo_path, use_cpu=False, pixi_path=None):
         """Prepare the dedicated RVC service environment without starting it."""
         run_script_path = os.path.join(rvc_repo_path, 'run.bat')
         if not os.path.exists(run_script_path):
@@ -1118,6 +1120,7 @@ class ComponentOperationsMixin:
         logging.info("Preparing RVC service runtime in %s...", rvc_repo_path)
         rvc_install_log_file = os.path.join(rvc_repo_path, 'rvc_install.log')
         command = self.build_rvc_launcher_command(
+            use_cpu=use_cpu,
             pixi_path=pixi_path,
             prepare_only=True,
         )
@@ -1259,11 +1262,18 @@ class ComponentOperationsMixin:
         self.run_pixi_in_env(pandrator_path, env_name, check_command, log_errors=False)
         logging.info("PDF OCR runtime repair and model prefetch completed successfully.")
 
-    def migrate_rvc_to_service(self, pandrator_path, pandrator_repo_path, rvc_repo_path, pixi_path=None):
+    def migrate_rvc_to_service(
+        self,
+        pandrator_path,
+        pandrator_repo_path,
+        rvc_repo_path,
+        use_cpu=False,
+        pixi_path=None,
+    ):
         """Prepare the RVC service before retiring the legacy in-process runtime."""
         os.makedirs(os.path.join(pandrator_repo_path, 'rvc_models'), exist_ok=True)
-        if not self.is_rvc_runtime_ready(rvc_repo_path):
-            self.install_rvc_api_server(rvc_repo_path, pixi_path=pixi_path)
+        if not self.is_rvc_runtime_ready(rvc_repo_path, use_cpu=use_cpu):
+            self.install_rvc_api_server(rvc_repo_path, use_cpu=use_cpu, pixi_path=pixi_path)
         else:
             logging.info("RVC service runtime is ready.")
 

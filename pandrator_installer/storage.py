@@ -20,6 +20,7 @@ from .constants import (
     PACKAGING_EXCLUDED_FILE_PREFIXES,
     PACKAGING_LAYOUT_FILENAME,
     PACKAGING_SHARED_PATHS,
+    RVC_GPU_SUPPORT_CONFIG_FLAG,
 )
 
 
@@ -171,10 +172,18 @@ class StorageMixin:
             return []
 
     def ensure_rvc_support_flag(self, pandrator_path, config):
-        if config.get('rvc_support', False):
+        if config.get('rvc_support', False) and RVC_GPU_SUPPORT_CONFIG_FLAG in config:
             return config
 
         rvc_run_script = os.path.join(pandrator_path, 'rvc-python', 'run.bat')
+        rvc_gpu_python = os.path.join(
+            pandrator_path,
+            'rvc-python',
+            '.pixi',
+            'envs',
+            'default',
+            'python.exe',
+        )
         legacy_site_packages = os.path.join(
             pandrator_path,
             'envs',
@@ -196,11 +205,16 @@ class StorageMixin:
             except OSError as exc:
                 logging.warning("Could not inspect the legacy RVC installation: %s", exc)
 
-        if not os.path.exists(rvc_run_script) and not legacy_rvc_detected:
+        if (
+            not config.get('rvc_support', False)
+            and not os.path.exists(rvc_run_script)
+            and not legacy_rvc_detected
+        ):
             return config
 
         updated_config = dict(config)
         updated_config['rvc_support'] = True
+        updated_config.setdefault(RVC_GPU_SUPPORT_CONFIG_FLAG, os.path.exists(rvc_gpu_python))
         self.save_install_config(pandrator_path, updated_config)
         source = "legacy in-process RVC installation" if legacy_rvc_detected else "RVC service repository"
         logging.info("Detected %s and persisted rvc_support=true in config.json", source)

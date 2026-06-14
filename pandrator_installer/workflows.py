@@ -32,6 +32,7 @@ from .constants import (
     PYCROPPDF_REPO_URL,
     RVC_API_REPO_DIRNAME,
     RVC_API_REPO_URL,
+    RVC_GPU_SUPPORT_CONFIG_FLAG,
     SILERO_PYTHON_VERSION,
     SILERO_REQUIRED_PACKAGE_SPECS,
     SUBDUB_REPO_URL,
@@ -96,6 +97,7 @@ class WorkflowMixin:
         kokoro_var = selection.kokoro
         kokoro_cpu_var = selection.kokoro_cpu
         rvc_var = selection.rvc
+        rvc_cpu_var = selection.rvc_cpu
         whisperx_var = selection.whisperx
         xtts_finetuning_var = selection.xtts_finetuning
         chatterbox_var = selection.chatterbox
@@ -197,7 +199,7 @@ class WorkflowMixin:
                 concurrent_tasks["Clone Chatterbox"] = (self.clone_repo, (CHATTERBOX_API_REPO_URL, chatterbox_repo_path), {})
             if (magpie_var or magpie_cpu_var) and not os.path.exists(magpie_repo_path):
                 concurrent_tasks["Clone Magpie"] = (self.clone_repo, (MAGPIE_API_REPO_URL, magpie_repo_path), {})
-            if rvc_var and not os.path.exists(rvc_repo_path):
+            if (rvc_var or rvc_cpu_var) and not os.path.exists(rvc_repo_path):
                 concurrent_tasks["Clone RVC"] = (self.clone_repo, (RVC_API_REPO_URL, rvc_repo_path), {})
 
             self.execute_concurrently(concurrent_tasks, max_workers=8)
@@ -308,11 +310,12 @@ class WorkflowMixin:
                 self.reporter.status("Bootstrapping Voxtral API server...")
                 self.install_voxtral_api_server(voxtral_repo_path)
 
-            if rvc_var:
+            if rvc_var or rvc_cpu_var:
                 self.reporter.progress(0.8)
                 self.reporter.status("Preparing RVC service...")
                 self.install_rvc_api_server(
                     rvc_repo_path,
+                    use_cpu=rvc_cpu_var,
                     pixi_path=shared_pixi_path,
                 )
                 self.remove_legacy_rvc_from_pandrator_env(pandrator_path)
@@ -370,7 +373,10 @@ class WorkflowMixin:
             )
             config['whisperx_support'] = config.get('whisperx_support', False) or whisperx_var
             config['xtts_finetuning_support'] = config.get('xtts_finetuning_support', False) or xtts_finetuning_var
-            config['rvc_support'] = config.get('rvc_support', False) or rvc_var
+            config['rvc_support'] = config.get('rvc_support', False) or rvc_var or rvc_cpu_var
+            config[RVC_GPU_SUPPORT_CONFIG_FLAG] = (
+                config.get(RVC_GPU_SUPPORT_CONFIG_FLAG, False) or rvc_var
+            )
             config['chatterbox_support'] = config.get('chatterbox_support', False) or chatterbox_var or chatterbox_cpu_var
             config[CHATTERBOX_GPU_SUPPORT_CONFIG_FLAG] = (
                 config.get(CHATTERBOX_GPU_SUPPORT_CONFIG_FLAG, False) or chatterbox_var
@@ -550,10 +556,12 @@ class WorkflowMixin:
 
             if config.get('rvc_support', False):
                 self.reporter.status("Migrating RVC to the dedicated service...")
+                rvc_use_cpu = not config.get(RVC_GPU_SUPPORT_CONFIG_FLAG, False)
                 self.migrate_rvc_to_service(
                     pandrator_base_path,
                     pandrator_repo_path,
                     rvc_repo_path,
+                    use_cpu=rvc_use_cpu,
                     pixi_path=shared_pixi_path,
                 )
 

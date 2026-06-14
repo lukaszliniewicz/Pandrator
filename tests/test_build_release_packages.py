@@ -52,6 +52,10 @@ class BuildReleasePackagesTests(unittest.TestCase):
         resolved = build_release_packages.parse_selected_modules("kokoro_cpu")
         self.assertEqual(resolved, ("kokoro_cpu",))
 
+    def test_parse_selected_modules_rvc_cpu(self):
+        resolved = build_release_packages.parse_selected_modules("rvc_cpu")
+        self.assertEqual(resolved, ("rvc_cpu",))
+
     def test_default_config_flags_include_kokoro_gpu_support(self):
         self.assertIn("kokoro_gpu_support", build_release_packages.DEFAULT_CONFIG_FLAGS)
 

@@ -219,6 +219,7 @@ def build_source_document(
             if use_ocr:
                 source_method = "ocr"
                 try:
+                    _emit(progress_callback, f"Running OCR on PDF page {page_index + 1}/{pdf.page_count}...")
                     lines, ocr_report = engine.recognize(page, resolved.ocr_language, resolved.ocr_dpi)
                 except Exception as error:
                     document.warnings.append(
@@ -269,6 +270,7 @@ def build_source_document(
     finally:
         pdf.close()
 
+    _emit(progress_callback, "Analyzing PDF structure and layout...")
     _annotate_structural_roles(document)
     repeated_marginal_count = sum(
         block.role_score("repeated_marginal") >= 0.95 for block in document.blocks
@@ -298,6 +300,7 @@ def build_source_document(
     for key, values in front_matter.items():
         document.metadata_candidates.setdefault(key, []).extend(values)
     if cache_path:
+        _emit(progress_callback, "Saving structured PDF ingestion cache...")
         os.makedirs(artifact_dir or "", exist_ok=True)
         _write_json(cache_path, document.to_dict())
         _write_json(

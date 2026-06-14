@@ -47,12 +47,13 @@ class BlockDefinition:
 
 MODULES = {
     key: COMPONENTS[key]
-    for key in (*RELEASE_COMPONENT_KEYS, "kokoro_cpu")
+    for key in (*RELEASE_COMPONENT_KEYS, "kokoro_cpu", "rvc_cpu")
 }
 
 PRESETS = {
     "kokoro": ("kokoro",),
     "kokoro_cpu": ("kokoro_cpu",),
+    "rvc_cpu": ("rvc_cpu",),
     "xtts_stack": ("xtts_finetuning", "rvc"),
     "xtts": ("xtts_finetuning", "rvc"),
     "stack": ("xtts_finetuning", "rvc"),
@@ -666,7 +667,7 @@ def parse_arguments() -> argparse.Namespace:
         help=(
             "Comma-separated list of components/presets to package: all, "
             "kokoro, kokoro_cpu, xtts_stack, voxtral, voxcpm, fishs2, voxtral_with_rest. "
-            "Individual modules: kokoro, kokoro_cpu, voxtral, voxcpm, fishs2, xtts, silero, whisperx, xtts_finetuning, rvc."
+            "Individual modules: kokoro, kokoro_cpu, voxtral, voxcpm, fishs2, xtts, silero, whisperx, xtts_finetuning, rvc, rvc_cpu."
         ),
     )
     parser.add_argument(
@@ -840,6 +841,8 @@ def main() -> int:
             paths = tuple(component_paths["voxtral"])
         elif component in {"kokoro", "kokoro_cpu"} and "kokoro" in component_paths:
             paths = tuple(component_paths["kokoro"])
+        elif component in {"rvc", "rvc_cpu"} and "rvc" in component_paths:
+            paths = tuple(component_paths["rvc"])
         elif component == "silero" and "silero" in component_paths:
             paths = tuple(component_paths["silero"])
         elif component == "whisperx" and "whisperx" in component_paths:
@@ -856,6 +859,10 @@ def main() -> int:
             overrides["kokoro_gpu_support"] = kokoro_gpu_support
         elif component == "kokoro_cpu":
             overrides["kokoro_gpu_support"] = False
+        elif component == "rvc":
+            overrides["rvc_gpu_support"] = True
+        elif component == "rvc_cpu":
+            overrides["rvc_gpu_support"] = False
         elif component == "xtts_finetuning":
             overrides["cuda_support"] = cuda_support
             overrides["xtts_support"] = True

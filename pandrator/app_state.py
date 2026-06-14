@@ -173,6 +173,16 @@ def default_tts_provider_configs() -> List[Dict[str, Any]]:
     return []
 
 
+def default_source_cleaning_phase_iterations() -> Dict[str, int]:
+    return {
+        "metadata": 4,
+        "navigation": 11,
+        "boilerplate": 11,
+        "repeated_elements": 8,
+        "chapter_marking": 19,
+    }
+
+
 @dataclass
 class TextProcessingSettings:
     enable_nemo_normalization: bool = True
@@ -341,6 +351,7 @@ class DubbingSettings:
 @dataclass
 class SourceCleaningSettings:
     max_iterations: int = 53
+    phase_max_iterations: Dict[str, int] = field(default_factory=default_source_cleaning_phase_iterations)
     pdf_ocr_mode: str = "auto"
     pdf_ocr_language: str = "auto"
     pdf_ocr_dpi: int = 200

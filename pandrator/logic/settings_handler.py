@@ -166,6 +166,7 @@ def build_global_settings_payload(state: AppState) -> Dict[str, Any]:
         "tts": tts_payload,
         "source_cleaning": {
             "max_iterations": int(getattr(state.source_cleaning, "max_iterations", SOURCE_CLEANING_DEFAULT_ITERATIONS)),
+            "phase_max_iterations": dict(getattr(state.source_cleaning, "phase_max_iterations", {}) or {}),
             "pdf_ocr_mode": str(getattr(state.source_cleaning, "pdf_ocr_mode", "auto") or "auto"),
             "pdf_ocr_language": str(getattr(state.source_cleaning, "pdf_ocr_language", "auto") or "auto"),
             "pdf_ocr_dpi": int(getattr(state.source_cleaning, "pdf_ocr_dpi", 200) or 200),
@@ -306,7 +307,15 @@ def apply_global_settings_payload(state: AppState, payload: Dict[str, Any]):
             iterations = SOURCE_CLEANING_DEFAULT_ITERATIONS
         iterations = max(SOURCE_CLEANING_MIN_ITERATIONS, min(iterations, SOURCE_CLEANING_MAX_ITERATIONS))
         if hasattr(state, "source_cleaning"):
+            from .source_cleaning.pipeline import resolve_phase_max_iterations
+
             state.source_cleaning.max_iterations = iterations
+            raw_phase_iterations = source_cleaning_payload.get("phase_max_iterations")
+            state.source_cleaning.phase_max_iterations = resolve_phase_max_iterations(
+                raw_phase_iterations if isinstance(raw_phase_iterations, dict) and raw_phase_iterations else None,
+                total=iterations,
+            )
+            state.source_cleaning.max_iterations = sum(state.source_cleaning.phase_max_iterations.values())
             mode = str(source_cleaning_payload.get("pdf_ocr_mode", "auto") or "auto").lower()
             state.source_cleaning.pdf_ocr_mode = mode if mode in {"auto", "off", "force"} else "auto"
             state.source_cleaning.pdf_ocr_language = str(

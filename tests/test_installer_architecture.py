@@ -29,6 +29,8 @@ class InstallerArchitectureTests(unittest.TestCase):
     def test_install_selection_rejects_mutually_exclusive_variants(self):
         with self.assertRaisesRegex(ValueError, "Select either 'kokoro' or 'kokoro_cpu'"):
             InstallSelection.from_components(["kokoro", "kokoro_cpu"])
+        with self.assertRaisesRegex(ValueError, "Select either 'rvc' or 'rvc_cpu'"):
+            InstallSelection.from_components(["rvc", "rvc_cpu"])
 
     def test_launch_selection_preserves_backend_priority(self):
         selection = LaunchSelection(voxcpm=True, chatterbox=True, rvc=True)
@@ -71,6 +73,7 @@ class InstallerArchitectureTests(unittest.TestCase):
     def test_catalog_drives_packaging_metadata(self):
         self.assertIn("chatterbox", COMPONENTS)
         self.assertEqual(COMPONENTS["rvc"].repo_dirname, "rvc-python")
+        self.assertEqual(COMPONENTS["rvc_cpu"].variant_of, "rvc")
         self.assertEqual(COMPONENTS["rvc"].port, 8050)
         self.assertEqual(
             PACKAGING_COMPONENT_PATHS["chatterbox"],

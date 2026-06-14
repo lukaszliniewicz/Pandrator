@@ -116,6 +116,25 @@ class SettingsAndTrashTests(unittest.TestCase):
         )
         self.assertTrue(state.text_processing.remove_footnotes)
 
+    def test_source_cleaning_phase_limits_roundtrip_and_migrate_legacy_total(self):
+        state = AppState()
+        settings_handler.apply_global_settings_payload(
+            state,
+            {"source_cleaning": {"max_iterations": 30}},
+        )
+        self.assertEqual(sum(state.source_cleaning.phase_max_iterations.values()), 30)
+
+        state.source_cleaning.phase_max_iterations["chapter_marking"] = 25
+        state.source_cleaning.max_iterations = sum(state.source_cleaning.phase_max_iterations.values())
+        payload = settings_handler.build_global_settings_payload(state)
+
+        restored = AppState()
+        settings_handler.apply_global_settings_payload(restored, payload)
+        self.assertEqual(
+            restored.source_cleaning.phase_max_iterations,
+            state.source_cleaning.phase_max_iterations,
+        )
+
     def test_kokoro_default_voice_settings_normalize_language_keys(self):
         state = AppState()
 
