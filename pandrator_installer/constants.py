@@ -26,6 +26,19 @@ PIXI_TEMP_SUBDIRNAME = 'tmp'
 PANDRATOR_PYTHON_VERSION = '3.11'
 NEMO_PYNINI_CONDA_SPEC = 'pynini=2.1.6.post1'
 NEMO_TEXT_PROCESSING_SPEC = 'nemo_text_processing==1.2.0'
+NEMO_TEXT_PROCESSING_PIP_DEPS = (
+    'cdifflib',
+    'editdistance',
+    'inflect',
+    'joblib',
+    'pandas',
+    'sacremoses>=0.0.43',
+    'setuptools>=65.5.1',
+    'tqdm>=4.41.0',
+    'transformers',
+    'wget',
+    'wrapt',
+)
 PANDRATOR_NUMPY_SPEC = 'numpy==1.26.4'
 WTPSPLIT_LITE_SPEC = 'wtpsplit-lite==0.2.0'
 WTPSPLIT_MODEL = 'sat-3l-sm'

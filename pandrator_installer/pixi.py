@@ -18,6 +18,8 @@ except ImportError:
 
 from .constants import (
     INSTALLER_STATE_FILENAME,
+    NEMO_TEXT_PROCESSING_PIP_DEPS,
+    NEMO_TEXT_PROCESSING_SPEC,
     OPTIONAL_REQUIREMENT_EXCLUSIONS_BY_ENV,
     PANDRATOR_RUNTIME_REPAIR_SPECS,
     PIXI_BINARY_NAME,
@@ -731,11 +733,23 @@ class PixiEnvironmentMixin:
     def install_requirement_specs_with_pip(self, pandrator_path, env_name, requirement_specs):
         for requirement_spec in requirement_specs:
             logging.info(f"Installing requirement via pip fallback in {env_name}: {requirement_spec}")
-            self.run_pixi_in_env(
-                pandrator_path,
-                env_name,
-                ['python', '-m', 'pip', 'install', requirement_spec]
-            )
+            if requirement_spec == NEMO_TEXT_PROCESSING_SPEC:
+                self.run_pixi_in_env(
+                    pandrator_path,
+                    env_name,
+                    ['python', '-m', 'pip', 'install', '--no-deps', requirement_spec]
+                )
+                self.run_pixi_in_env(
+                    pandrator_path,
+                    env_name,
+                    ['python', '-m', 'pip', 'install', *NEMO_TEXT_PROCESSING_PIP_DEPS]
+                )
+            else:
+                self.run_pixi_in_env(
+                    pandrator_path,
+                    env_name,
+                    ['python', '-m', 'pip', 'install', requirement_spec]
+                )
 
     def ensure_pandrator_runtime(self, pandrator_path, env_name):
         if env_name != 'pandrator_installer':
