@@ -39,6 +39,10 @@ NEMO_TEXT_PROCESSING_PIP_DEPS = (
     'wget',
     'wrapt',
 )
+NEMO_TEXT_PROCESSING_CDIFFLIB_SHIM = (
+    "import difflib\n"
+    "CSequenceMatcher = difflib.SequenceMatcher\n"
+)
 PANDRATOR_NUMPY_SPEC = 'numpy==1.26.4'
 WTPSPLIT_LITE_SPEC = 'wtpsplit-lite==0.2.0'
 WTPSPLIT_MODEL = 'sat-3l-sm'

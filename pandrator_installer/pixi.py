@@ -18,6 +18,7 @@ except ImportError:
 
 from .constants import (
     INSTALLER_STATE_FILENAME,
+    NEMO_TEXT_PROCESSING_CDIFFLIB_SHIM,
     NEMO_TEXT_PROCESSING_PIP_DEPS,
     NEMO_TEXT_PROCESSING_SPEC,
     OPTIONAL_REQUIREMENT_EXCLUSIONS_BY_ENV,
@@ -739,17 +740,48 @@ class PixiEnvironmentMixin:
                     env_name,
                     ['python', '-m', 'pip', 'install', '--no-deps', requirement_spec]
                 )
-                self.run_pixi_in_env(
-                    pandrator_path,
-                    env_name,
-                    ['python', '-m', 'pip', 'install', *NEMO_TEXT_PROCESSING_PIP_DEPS]
-                )
+                self._install_nemo_text_processing_pip_deps(pandrator_path, env_name)
             else:
                 self.run_pixi_in_env(
                     pandrator_path,
                     env_name,
                     ['python', '-m', 'pip', 'install', requirement_spec]
                 )
+
+    def _install_nemo_text_processing_pip_deps(self, pandrator_path, env_name):
+        cdifflib_failed = False
+        for dep in NEMO_TEXT_PROCESSING_PIP_DEPS:
+            try:
+                self.run_pixi_in_env(
+                    pandrator_path,
+                    env_name,
+                    ['python', '-m', 'pip', 'install', dep],
+                    log_errors=False,
+                )
+            except subprocess.CalledProcessError:
+                if dep == 'cdifflib':
+                    cdifflib_failed = True
+                    logging.warning(
+                        "cdifflib build failed (requires MSVC Build Tools). "
+                        "Installing difflib fallback shim for nemo_text_processing."
+                    )
+                else:
+                    raise
+        if cdifflib_failed:
+            self._install_cdifflib_shim(pandrator_path, env_name)
+
+    def _install_cdifflib_shim(self, pandrator_path, env_name):
+        stdout, _ = self.run_pixi_in_env(
+            pandrator_path,
+            env_name,
+            ['python', '-c', 'import sysconfig; print(sysconfig.get_path("purelib"))'],
+            log_errors=False,
+        )
+        site_packages = stdout.strip()
+        shim_path = os.path.join(site_packages, 'cdifflib.py')
+        with open(shim_path, 'w', encoding='utf-8') as f:
+            f.write(NEMO_TEXT_PROCESSING_CDIFFLIB_SHIM)
+        logging.info("cdifflib fallback shim written to %s", shim_path)
 
     def ensure_pandrator_runtime(self, pandrator_path, env_name):
         if env_name != 'pandrator_installer':
