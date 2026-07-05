@@ -1,6 +1,6 @@
 # Linux Compatibility Review and Implementation Plan
 
-Status: initial implementation pass plus Fedora SSH validation for installer import, Pixi bootstrap, and Pandrator core headless setup. Model server launch/install paths remain deferred for per-backend review.
+Status: initial implementation pass plus Fedora SSH validation for installer import, Pixi bootstrap, and Pandrator core headless setup. Kokoro is now the first reviewed Linux backend target; other model server launch/install paths remain deferred for per-backend review.
 
 Review date: 2026-07-05
 
@@ -95,9 +95,9 @@ Required direction:
 
 ### 4. Backend launch and readiness checks are Windows-script based
 
-Status: intentionally deferred. Linux install/update now exits early for model-server components instead of entering unreviewed `.bat`/PowerShell bootstrap paths.
+Status: intentionally deferred except for Kokoro. Linux install/update now exits early for unreviewed model-server components instead of entering unreviewed `.bat`/PowerShell bootstrap paths.
 
-Most backend setup and launch paths expect `run.bat`, `run.ps1`, `cmd /c`, `powershell`, and `.pixi/envs/.../python.exe`.
+Most backend setup and launch paths expect `run.bat`, `run.ps1`, `cmd /c`, `powershell`, and `.pixi/envs/.../python.exe`. Kokoro is different: Pandrator already drives it through a dedicated Pixi environment and direct `uvicorn`, and upstream `Kokoro-FastAPI` ships Linux shell launchers plus CPU/GPU Python extras.
 
 Affected paths:
 
@@ -399,6 +399,7 @@ Tasks:
 
 - Keep model server launch fixes deferred until each backend is reviewed individually.
 - Do not mass-enable Linux model server launching just because a `run.sh` exists.
+- Treat Kokoro as the first reviewed Linux backend path because upstream supports native Linux direct runs and Pandrator does not rely on a Windows batch launcher for it.
 - Replace fixed markers like `repo/run.bat` with platform-aware marker lists.
 - Add helper to resolve backend launch scripts.
 - Use `bash run.sh` on Linux where upstream repos provide it.
@@ -411,16 +412,23 @@ Tasks:
   - Chatterbox
   - Magpie
   - RVC
-- Keep Kokoro and Silero direct Pixi/Python launch paths, but fix environment path separators.
+- Keep Silero direct Pixi/Python launch paths, but review it separately before enabling Linux install/update.
+- For Kokoro:
+  - allow `kokoro` and `kokoro_cpu` through the Linux platform gate
+  - keep all Python dependencies inside the Kokoro Pixi env
+  - use the PyTorch CPU wheel index for CPU installs
+  - detect host eSpeak NG paths when present, but do not install eSpeak system-wide
+  - rely on upstream `espeakng-loader` from the Pixi env when host eSpeak is absent
+  - preserve portable model/cache directories under the installer workspace
 
 Acceptance checks:
 
 ```bash
-python3 pandrator_installer_launcher.py --headless-install --workspace /tmp/pandrator-linux --components kokoro_cpu
-python3 pandrator_installer_launcher.py --headless-install --workspace /tmp/pandrator-linux --components silero
+python3 pandrator_installer_launcher.py --headless-install --workspace /tmp/pandrator-linux-kokoro --components kokoro_cpu
+python3 pandrator_installer_launcher.py --headless-install --workspace /tmp/pandrator-linux --components chatterbox_cpu
 ```
 
-Then test one upstream `run.sh` backend at a time.
+Expected: Kokoro enters its Pixi bootstrap path; the unreviewed backend exits early with the Linux deferral message. Then test one upstream `run.sh` backend at a time.
 
 ### Phase 6: Portable app data directory cleanup
 
@@ -488,9 +496,26 @@ Validated on Fedora x86_64 on 2026-07-05:
 - generated Pixi manifests use `platforms = ["linux-64"]`.
 - a core headless install with no backend components completed successfully in `/tmp/pandrator-core-probe`.
 - the generated `pandrator_installer` Pixi environment imports Pandrator core through `QT_QPA_PLATFORM=offscreen`.
-- selecting a deferred backend component, for example `kokoro_cpu`, exits early with a clear Linux deferral message instead of entering backend bootstrap code.
+- selecting an unreviewed deferred backend component, for example `chatterbox_cpu`, exits early with a clear Linux deferral message instead of entering backend bootstrap code.
+- Kokoro is now the first backend candidate to validate on Linux instead of being part of the deferred set.
 
 Model server installation and launch paths were not validated in this pass by design.
+
+Validated Kokoro CPU on Fedora x86_64 on 2026-07-06:
+
+- Used an isolated current-source snapshot under `/tmp` and a temporary workspace at `/tmp/pandrator-linux-kokoro-20260706005809`.
+- `kokoro_cpu` was allowed through the Linux platform gate while unreviewed backends remain deferred.
+- The installer downloaded the Linux Pixi binary, generated Linux Pixi manifests, and kept caches/envs under the workspace.
+- Calibre remained optional and was only reported as needed for MOBI import.
+- Host eSpeak NG was detected at `/usr/lib64/libespeak-ng.so.1` with data at `/usr/share/espeak-ng-data`; no system installation was attempted.
+- First run exposed that the bundled `pyopenjtalk-0.4.1-cp311-cp311-win_amd64.whl` must not be used on Linux.
+- Added platform filtering for bundled wheels; on rerun, the Windows wheel was skipped and `pyopenjtalk` built successfully inside the Kokoro Pixi env.
+- Kokoro CPU installed `torch-2.8.0+cpu` from `https://download.pytorch.org/whl/cpu`.
+- Kokoro dependencies installed, model files downloaded, the bootstrap server reached `GET /health` with HTTP 200, and the installer stopped the temporary server cleanly.
+- Runtime smoke after install:
+  - `GET /health` returned `{"status":"healthy"}`.
+  - `GET /v1/audio/voices` returned 68 voices.
+  - `POST /v1/audio/speech` with `af_heart` produced a valid RIFF WAV response.
 
 ## Fedora SSH Validation Plan
 
@@ -559,8 +584,8 @@ ssh fedora 'cd /path/to/Pandrator && python3 pandrator_installer_launcher.py --h
 Start with lower-risk services:
 
 ```bash
-ssh fedora 'cd /path/to/Pandrator && python3 pandrator_installer_launcher.py --headless-install --workspace /tmp/pandrator-linux --components silero'
-ssh fedora 'cd /path/to/Pandrator && python3 pandrator_installer_launcher.py --headless-install --workspace /tmp/pandrator-linux --components kokoro_cpu'
+ssh fedora 'cd /path/to/Pandrator && python3 pandrator_installer_launcher.py --headless-install --workspace /tmp/pandrator-linux-kokoro --components kokoro_cpu'
+ssh fedora 'cd /path/to/Pandrator && python3 pandrator_installer_launcher.py --headless-install --workspace /tmp/pandrator-linux --components chatterbox_cpu'
 ```
 
 Then test upstream script-based services one at a time after `run.sh` support lands.

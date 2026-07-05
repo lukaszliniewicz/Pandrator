@@ -18,6 +18,7 @@ except ImportError:
 
 from .constants import (
     BUNDLED_WHEELS_RELATIVE_PATH,
+    KOKORO_CPU_TORCH_INDEX_URL,
     KOKORO_ENV_NAME,
     KOKORO_GPU_TORCH_INDEX_URL_ARM64,
     KOKORO_GPU_TORCH_INDEX_URL_X86_64,
@@ -93,7 +94,7 @@ class ComponentOperationsMixin:
 
     def get_kokoro_torch_install_options(self, use_gpu=False):
         if not use_gpu:
-            return f'torch=={KOKORO_TORCH_BASE_VERSION}', None
+            return f'torch=={KOKORO_TORCH_BASE_VERSION}', KOKORO_CPU_TORCH_INDEX_URL
 
         machine = platform.machine().lower()
         if machine in {'arm64', 'aarch64'}:
@@ -206,12 +207,50 @@ class ComponentOperationsMixin:
                     continue
                 if not normalized_name.startswith(PYOPENJTALK_WHEEL_PREFIX):
                     continue
+                if not self.is_bundled_wheel_platform_compatible(wheel_name):
+                    logging.info(
+                        "Skipping bundled wheel incompatible with this platform: %s",
+                        wheel_name,
+                    )
+                    continue
 
                 wheel_path = os.path.join(wheels_directory, wheel_name)
                 if os.path.isfile(wheel_path):
                     return wheel_path, wheels_directory
 
         return '', ''
+
+    def is_bundled_wheel_platform_compatible(self, wheel_name):
+        normalized_name = str(wheel_name or '').strip().lower()
+        if not normalized_name.endswith('.whl'):
+            return False
+
+        wheel_stem = normalized_name[:-4]
+        wheel_parts = wheel_stem.rsplit('-', 4)
+        if len(wheel_parts) != 5:
+            return True
+
+        platform_tags = {
+            tag.strip()
+            for tag in wheel_parts[-1].split('.')
+            if tag.strip()
+        }
+        if not platform_tags or platform_tags == {'any'}:
+            return True
+
+        if os.name == 'nt':
+            return any(tag.startswith('win') for tag in platform_tags)
+
+        if sys_platform := platform.system().lower():
+            if sys_platform == 'linux':
+                return any(
+                    tag.startswith(('manylinux', 'musllinux', 'linux'))
+                    for tag in platform_tags
+                )
+            if sys_platform == 'darwin':
+                return any(tag.startswith('macosx') for tag in platform_tags)
+
+        return False
 
     def find_bundled_xtts_finetuning_wheel(self, pandrator_path, easy_xtts_trainer_path):
         candidate_directories = [
@@ -340,6 +379,12 @@ class ComponentOperationsMixin:
                 cwd=kokoro_repo_path,
             )
 
+        self.install_pytorch_for_kokoro(
+            pandrator_path,
+            env_name,
+            use_gpu=use_gpu,
+        )
+
         _, kokoro_torch_index_url = self.get_kokoro_torch_install_options(use_gpu=use_gpu)
         editable_install_command = ['python', '-m', 'pip', 'install', '--upgrade', '-e', f'.[{install_extra}]']
         wheels_directories = self.get_bundled_wheels_directories(pandrator_path)
@@ -362,11 +407,6 @@ class ComponentOperationsMixin:
             env_name,
             editable_install_command,
             cwd=kokoro_repo_path,
-        )
-        self.install_pytorch_for_kokoro(
-            pandrator_path,
-            env_name,
-            use_gpu=use_gpu,
         )
 
         self.run_pixi_in_env(

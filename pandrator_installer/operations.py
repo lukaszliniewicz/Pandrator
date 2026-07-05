@@ -1,6 +1,7 @@
 """Logging, command execution, networking, and Windows dependency operations."""
 
 import ctypes
+import ctypes.util
 import hashlib
 import logging
 import os
@@ -858,6 +859,9 @@ class OperationsMixin:
         return False
 
     def resolve_espeak_paths(self):
+        if os.name != 'nt':
+            return self.resolve_non_windows_espeak_paths()
+
         candidate_roots = [
             os.environ.get('ProgramFiles', r'C:\Program Files'),
             os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)'),
@@ -883,13 +887,85 @@ class OperationsMixin:
 
         return '', ''
 
+    def resolve_non_windows_espeak_paths(self):
+        library_candidates = [
+            os.environ.get('PHONEMIZER_ESPEAK_LIBRARY', ''),
+            '/usr/lib64/libespeak-ng.so.1',
+            '/usr/lib64/libespeak-ng.so',
+            '/usr/lib/x86_64-linux-gnu/libespeak-ng.so.1',
+            '/usr/lib/x86_64-linux-gnu/libespeak-ng.so',
+            '/usr/lib/aarch64-linux-gnu/libespeak-ng.so.1',
+            '/usr/lib/aarch64-linux-gnu/libespeak-ng.so',
+            '/usr/lib/libespeak-ng.so.1',
+            '/usr/lib/libespeak-ng.so',
+            '/usr/local/lib/libespeak-ng.so.1',
+            '/usr/local/lib/libespeak-ng.so',
+            '/opt/homebrew/lib/libespeak-ng.dylib',
+            '/usr/local/lib/libespeak-ng.dylib',
+        ]
+
+        detected_library = ctypes.util.find_library('espeak-ng')
+        if detected_library:
+            library_candidates.append(detected_library)
+
+        data_candidates = [
+            os.environ.get('PHONEMIZER_ESPEAK_DATA', ''),
+            os.environ.get('ESPEAK_DATA_PATH', ''),
+            '/usr/share/espeak-ng-data',
+            '/usr/lib/x86_64-linux-gnu/espeak-ng-data',
+            '/usr/lib/aarch64-linux-gnu/espeak-ng-data',
+            '/usr/lib64/espeak-ng-data',
+            '/usr/lib/espeak-ng-data',
+            '/usr/local/share/espeak-ng-data',
+            '/opt/homebrew/share/espeak-ng-data',
+        ]
+
+        library_path = ''
+        seen_libraries = set()
+        for candidate in library_candidates:
+            if not candidate:
+                continue
+            normalized = os.path.normcase(os.path.abspath(candidate))
+            if normalized in seen_libraries:
+                continue
+            seen_libraries.add(normalized)
+            if os.path.exists(candidate):
+                library_path = candidate
+                break
+
+        data_path = ''
+        seen_data_paths = set()
+        for candidate in data_candidates:
+            if not candidate:
+                continue
+            normalized = os.path.normcase(os.path.abspath(candidate))
+            if normalized in seen_data_paths:
+                continue
+            seen_data_paths.add(normalized)
+            if os.path.isdir(candidate):
+                data_path = candidate
+                break
+
+        return library_path, data_path
+
     def install_espeak_ng_direct(self, pandrator_path=None):
         if os.name != 'nt':
+            dll_path, data_path = self.resolve_espeak_paths()
+            if dll_path or data_path:
+                logging.info(
+                    "Detected host eSpeak NG paths for Kokoro. Library: %s; data: %s",
+                    dll_path or 'not detected',
+                    data_path or 'not detected',
+                )
+            else:
+                logging.info(
+                    "Host eSpeak NG was not detected. "
+                    "Kokoro will rely on the Pixi-installed espeakng-loader dependency."
+                )
             logging.info(
-                "Skipping eSpeak NG MSI installation on non-Windows; "
-                "speech runtimes should use Pixi-provided packages or host prerequisites."
+                "Skipping eSpeak NG MSI installation on non-Windows."
             )
-            return False
+            return True
 
         dll_path, _ = self.resolve_espeak_paths()
         if dll_path:

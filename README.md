@@ -216,6 +216,24 @@ python pandrator_installer_launcher.py --headless-install --workspace "D:/pandra
 > [!NOTE]
 > Some antivirus tools may flag standalone executables. If needed, add an exception or run from source.
 
+### Headless Installer on Linux
+
+Linux installer support is currently source/headless oriented; there is no packaged Linux GUI installer yet. The installer keeps Pixi, environments, model caches, and downloaded repos under the selected workspace as much as possible. It does not install system packages on Linux.
+
+From the repository root:
+
+```bash
+python3 -m venv .venv-installer
+. .venv-installer/bin/activate
+python -m pip install -r requirements-installer.txt
+python pandrator_installer_launcher.py --self-check
+python pandrator_installer_launcher.py --headless-install --workspace "$HOME/pandrator-workspace" --components "kokoro_cpu"
+```
+
+Fedora x86_64 validation currently covers the core Pixi install and Kokoro CPU through `Kokoro-FastAPI`: install, model download, `/health`, voice listing, and a short WAV generation request. Kokoro GPU uses the same installer path but still needs validation on a host with compatible NVIDIA drivers. Other local model-server components remain deferred on Linux until they are reviewed one by one.
+
+Linux Calibre is optional and only needed for MOBI import. The installer detects `ebook-convert`/Calibre and reports the requirement, but does not install it. Kokoro uses dependencies inside its Pixi env and detects host eSpeak NG when available.
+
 You can install components incrementally (during first setup or later):
 
 - Pandrator core app

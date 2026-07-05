@@ -270,7 +270,8 @@ BACKEND_COMPONENT_KEYS = (
 LINUX_DEFERRED_INSTALL_COMPONENT_KEYS = tuple(
     key
     for key, component in COMPONENTS.items()
-    if component.process_attr or key == "xtts_finetuning"
+    if (component.process_attr or key == "xtts_finetuning")
+    and component.packaging_key != "kokoro"
 )
 
 

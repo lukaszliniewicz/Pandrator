@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from pandrator_installer.catalog import (
     COMPONENTS,
+    LINUX_DEFERRED_INSTALL_COMPONENT_KEYS,
     PACKAGING_COMPONENT_PATHS,
     PACKAGING_CONFIG_FLAGS,
 )
@@ -126,11 +127,18 @@ class InstallerArchitectureTests(unittest.TestCase):
 
     def test_non_windows_backend_component_install_is_deferred(self):
         installer = HeadlessInstaller(working_dir="workspace")
-        selection = InstallSelection.from_components(["kokoro_cpu"])
+        selection = InstallSelection.from_components(["chatterbox_cpu"])
 
         with patch("pandrator_installer.workflows.is_windows", return_value=False):
             with self.assertRaisesRegex(RuntimeError, "deferred"):
                 installer.validate_platform_install_selection(selection)
+
+    def test_non_windows_kokoro_install_selection_is_allowed(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        selection = InstallSelection.from_components(["kokoro_cpu"])
+
+        with patch("pandrator_installer.workflows.is_windows", return_value=False):
+            installer.validate_platform_install_selection(selection)
 
     def test_non_windows_core_install_selection_is_allowed(self):
         installer = HeadlessInstaller(working_dir="workspace")
@@ -141,11 +149,18 @@ class InstallerArchitectureTests(unittest.TestCase):
 
     def test_non_windows_update_with_backend_config_is_deferred(self):
         installer = HeadlessInstaller(working_dir="workspace")
-        config = {"kokoro_support": True}
+        config = {"chatterbox_support": True}
 
         with patch("pandrator_installer.workflows.is_windows", return_value=False):
             with self.assertRaisesRegex(RuntimeError, "deferred"):
                 installer.validate_platform_update_config(config)
+
+    def test_non_windows_update_with_kokoro_config_is_allowed(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        config = {"kokoro_support": True}
+
+        with patch("pandrator_installer.workflows.is_windows", return_value=False):
+            installer.validate_platform_update_config(config)
 
     def test_non_windows_update_with_core_config_is_allowed(self):
         installer = HeadlessInstaller(working_dir="workspace")
@@ -164,6 +179,83 @@ class InstallerArchitectureTests(unittest.TestCase):
             env["PYTHONPATH"],
             os.pathsep.join([kokoro_repo, os.path.join(kokoro_repo, "api")]),
         )
+
+    def test_kokoro_cpu_uses_explicit_pytorch_cpu_index(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        torch_spec, index_url = installer.get_kokoro_torch_install_options(use_gpu=False)
+
+        self.assertEqual(torch_spec, "torch==2.8.0")
+        self.assertEqual(index_url, "https://download.pytorch.org/whl/cpu")
+
+    def test_bundled_pyopenjtalk_wheel_skips_windows_wheel_on_linux(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        with tempfile.TemporaryDirectory() as install_root:
+            wheels_dir = os.path.join(install_root, "Pandrator", "vendor", "wheels")
+            os.makedirs(wheels_dir)
+            with open(
+                os.path.join(wheels_dir, "pyopenjtalk-0.4.1-cp311-cp311-win_amd64.whl"),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                f.write("")
+
+            with patch("pandrator_installer.components.os.name", "posix"):
+                with patch("pandrator_installer.components.platform.system", return_value="Linux"):
+                    wheel_path, wheel_directory = installer.find_bundled_pyopenjtalk_wheel(install_root)
+
+        self.assertEqual(wheel_path, "")
+        self.assertEqual(wheel_directory, "")
+
+    def test_bundled_pyopenjtalk_wheel_accepts_linux_wheel_on_linux(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        with tempfile.TemporaryDirectory() as install_root:
+            wheels_dir = os.path.join(install_root, "Pandrator", "vendor", "wheels")
+            os.makedirs(wheels_dir)
+            wheel_name = "pyopenjtalk-0.4.1-cp311-cp311-manylinux_2_28_x86_64.whl"
+            wheel_path = os.path.join(wheels_dir, wheel_name)
+            with open(wheel_path, "w", encoding="utf-8") as f:
+                f.write("")
+
+            with patch("pandrator_installer.components.os.name", "posix"):
+                with patch("pandrator_installer.components.platform.system", return_value="Linux"):
+                    resolved_path, wheel_directory = installer.find_bundled_pyopenjtalk_wheel(install_root)
+
+        self.assertEqual(resolved_path, wheel_path)
+        self.assertEqual(wheel_directory, wheels_dir)
+
+    def test_linux_deferred_components_do_not_include_kokoro(self):
+        self.assertNotIn("kokoro", LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
+        self.assertNotIn("kokoro_cpu", LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
+        self.assertIn("chatterbox", LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
+
+    def test_non_windows_espeak_paths_use_host_environment(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library_path = os.path.join(temp_dir, "libespeak-ng.so.1")
+            data_path = os.path.join(temp_dir, "espeak-ng-data")
+            with open(library_path, "w", encoding="utf-8") as f:
+                f.write("")
+            os.makedirs(data_path)
+
+            with patch("pandrator_installer.operations.os.name", "posix"):
+                with patch.dict(
+                    os.environ,
+                    {
+                        "PHONEMIZER_ESPEAK_LIBRARY": library_path,
+                        "ESPEAK_DATA_PATH": data_path,
+                    },
+                    clear=False,
+                ):
+                    resolved_library, resolved_data = installer.resolve_espeak_paths()
+
+        self.assertEqual(resolved_library, library_path)
+        self.assertEqual(resolved_data, data_path)
+
+    def test_non_windows_espeak_setup_does_not_require_system_install(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        with patch("pandrator_installer.operations.os.name", "posix"):
+            with patch.object(installer, "resolve_espeak_paths", return_value=("", "")):
+                self.assertTrue(installer.install_espeak_ng_direct("install-root"))
 
     def test_headless_entry_imports_without_pyqt(self):
         command = [
