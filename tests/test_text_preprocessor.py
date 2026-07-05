@@ -135,6 +135,36 @@ class TextPreprocessorTests(unittest.TestCase):
         self.assertEqual(sentences[1]["chapter"], "no")
 
     @patch("pandrator.logic.text_preprocessor.sentence_segmenter.split_text")
+    def test_japanese_terminal_punctuation_does_not_get_ascii_period(self, split_text):
+        seen_texts = []
+
+        def fake_split(text):
+            seen_texts.append(text)
+            return [text.strip()]
+
+        split_text.side_effect = fake_split
+        settings = {
+            "disable_paragraph_detection": True,
+            "language": "ja",
+            "max_sentence_length": 200,
+            "enable_sentence_splitting": True,
+            "enable_sentence_appending": False,
+            "enable_nemo_normalization": False,
+            "tts_service": "Kokoro",
+        }
+
+        preprocess_text("これはテストです。\n\n次の行です！\n\n質問です？\n\n全角です．", settings)
+
+        self.assertEqual(
+            seen_texts,
+            ["これはテストです。\n\n次の行です！\n\n質問です？\n\n全角です．"],
+        )
+        self.assertTrue(all("。." not in text for text in seen_texts))
+        self.assertTrue(all("！." not in text for text in seen_texts))
+        self.assertTrue(all("？." not in text for text in seen_texts))
+        self.assertTrue(all("．." not in text for text in seen_texts))
+
+    @patch("pandrator.logic.text_preprocessor.sentence_segmenter.split_text")
     def test_adjacent_chapter_markers_merge_without_segmenter_damage(self, split_text):
         split_text.return_value = ["Body starts here."]
         settings = {

@@ -130,7 +130,8 @@ def _split_structural_text_blocks(text: str) -> list[dict]:
 
 
 def _ensure_line_terminal_punctuation(text: str) -> str:
-    return re.sub(r'(^|\n+)([^\n.!?]+)(?=\n+|$)', r'\1\2.', text)
+    terminal_punctuation = re.escape(".!?。！？｡．…")
+    return re.sub(rf'(^|\n+)([^\n{terminal_punctuation}]+)(?=\n+|$)', r'\1\2.', text)
 
 
 # ---------------------------------------------------------------------------
