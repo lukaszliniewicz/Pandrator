@@ -193,16 +193,38 @@ Useful flags:
 - `--installer-script` and `--python-exe` to control how headless source preparation is executed.
 
 
-### GUI Installer and Launcher (Windows)
+### GUI Installer and Launcher
 
-Run `PandratorInstaller.exe` from [Releases](https://github.com/lukaszliniewicz/Pandrator/releases). The executable is built from the stable `pandrator_installer_launcher.py` entry point.
+Windows uses the single-file `PandratorInstaller.exe` from [Releases](https://github.com/lukaszliniewicz/Pandrator/releases). Linux uses the matching single-file `PandratorInstaller-x86_64.AppImage` artifact. Both are built from the stable `pandrator_installer_launcher.py` entry point and open the graphical installer. Release assets use those filenames directly so users can download the right installer for their platform without unpacking a source bundle.
 
-To build and smoke-test the standalone executable locally:
+On Linux:
+
+```bash
+chmod +x PandratorInstaller-x86_64.AppImage
+./PandratorInstaller-x86_64.AppImage
+```
+
+The Linux AppImage defaults to installing under `~/Pandrator`. Use the install-location selector in the GUI, or pass `--workspace /path/to/parent`, to choose another parent directory. The installer keeps Pixi, environments, model caches, and downloaded repos under the selected workspace as much as possible. It does not install system packages on Linux.
+
+To build and smoke-test the standalone installer locally:
 
 ```powershell
 python -m pip install -r requirements-installer.txt
 python scripts/build_installer.py
 ```
+
+Run the same command on Linux from an activated Python environment to build the AppImage:
+
+```bash
+python3 -m venv .venv-installer
+. .venv-installer/bin/activate
+python -m pip install -r requirements-installer.txt
+python scripts/build_installer.py
+```
+
+`scripts/build_installer.py` builds the Windows `.exe` on Windows and the Linux AppImage on Linux. The AppImage build must run on Linux.
+
+For broad Linux compatibility, build release AppImages on the oldest glibc baseline you intend to support. The Fedora build path is useful for validation, but a newer Fedora-built AppImage may not run on older distributions.
 
 For automation, the launcher also supports headless installation:
 
@@ -216,11 +238,7 @@ python pandrator_installer_launcher.py --headless-install --workspace "D:/pandra
 > [!NOTE]
 > Some antivirus tools may flag standalone executables. If needed, add an exception or run from source.
 
-### Headless Installer on Linux
-
-Linux installer support is currently source/headless oriented; there is no packaged Linux GUI installer yet. The installer keeps Pixi, environments, model caches, and downloaded repos under the selected workspace as much as possible. It does not install system packages on Linux.
-
-From the repository root:
+Linux headless/source mode is still available from the repository root:
 
 ```bash
 python3 -m venv .venv-installer

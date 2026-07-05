@@ -72,6 +72,25 @@ class InstallerArchitectureTests(unittest.TestCase):
         self.assertIn("windows-msvc.exe", platforms.pixi_download_url("Windows", "AMD64"))
         self.assertIn("linux-musl", platforms.pixi_download_url("Linux", "x86_64"))
 
+    def test_appimage_launcher_defaults_to_home_workspace(self):
+        workspace = platforms.resolve_launcher_workspace(
+            system="Linux",
+            environ={"APPIMAGE": "/tmp/PandratorInstaller-x86_64.AppImage"},
+            cwd="/tmp/desktop-launch-cwd",
+            home="/home/tester",
+        )
+        self.assertEqual(workspace, os.path.abspath("/home/tester"))
+
+    def test_explicit_launcher_workspace_overrides_appimage_default(self):
+        workspace = platforms.resolve_launcher_workspace(
+            value="/tmp/custom-pandrator",
+            system="Linux",
+            environ={"APPIMAGE": "/tmp/PandratorInstaller-x86_64.AppImage"},
+            cwd="/tmp/desktop-launch-cwd",
+            home="/home/tester",
+        )
+        self.assertEqual(workspace, os.path.abspath("/tmp/custom-pandrator"))
+
     def test_ensure_pixi_manifest_uses_platform_manifest_value(self):
         installer = HeadlessInstaller(working_dir="workspace")
         with tempfile.TemporaryDirectory() as install_root:
@@ -290,6 +309,10 @@ class InstallerArchitectureTests(unittest.TestCase):
         self.assertIn("component definitions", printed)
         self.assertIn("pixi=", printed)
         self.assertIn("manifest=", printed)
+
+    def test_gui_smoke_check_cli_flag(self):
+        args = parse_launcher_cli_args(["--gui-smoke-check"])
+        self.assertTrue(args.gui_smoke_check)
 
 
 if __name__ == "__main__":

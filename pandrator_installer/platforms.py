@@ -44,6 +44,24 @@ def is_linux(system=None):
     return normalized_system(system) == "linux"
 
 
+def is_appimage_environment(environ=None):
+    values = os.environ if environ is None else environ
+    return bool(values.get("APPIMAGE"))
+
+
+def resolve_launcher_workspace(value=None, system=None, environ=None, cwd=None, home=None):
+    values = os.environ if environ is None else environ
+    explicit_value = value or values.get("PANDRATOR_INSTALLER_WORKSPACE")
+    if explicit_value:
+        return os.path.abspath(os.path.expanduser(explicit_value))
+
+    resolved_system = normalized_system(system)
+    if resolved_system == "linux" and is_appimage_environment(values):
+        return os.path.abspath(os.path.expanduser(home or os.path.expanduser("~")))
+
+    return os.path.abspath(cwd or os.getcwd())
+
+
 def pixi_binary_name(system=None):
     return "pixi.exe" if is_windows(system) else "pixi"
 

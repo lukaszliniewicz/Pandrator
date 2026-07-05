@@ -18,11 +18,13 @@ dist/
 .release_sources/
 release_packages/
 package_release/
+.appimage-tools/
 *.egg-info/
 .eggs/
 pip-wheel-metadata/
 *.spec
 !pandrator_installer_launcher.spec
+!pandrator_installer_launcher_linux.spec
 
 # Test and tooling caches
 .pytest_cache/

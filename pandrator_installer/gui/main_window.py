@@ -9,10 +9,11 @@ from PyQt6.QtCore import QThread, Qt, QTimer
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
-    QLabel, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
-    QScrollArea, QSizePolicy, QTabWidget, QVBoxLayout, QWidget,
+    QFileDialog, QLabel, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar,
+    QPushButton, QScrollArea, QSizePolicy, QTabWidget, QVBoxLayout, QWidget,
 )
 
+from ..catalog import LINUX_DEFERRED_INSTALL_COMPONENT_KEYS
 from ..components import ComponentOperationsMixin
 from ..constants import (
     CHATTERBOX_GPU_SUPPORT_CONFIG_FLAG,
@@ -23,6 +24,7 @@ from ..constants import (
 from ..models import InstallSelection, LaunchSelection
 from ..operations import OperationsMixin
 from ..pixi import PixiEnvironmentMixin
+from ..platforms import is_windows
 from ..reporting import NullReporter
 from ..runtime import RuntimeMixin
 from ..storage import StorageMixin
@@ -224,12 +226,13 @@ class PandratorInstaller(
             )
             return
 
+        suggested_path = r"C:\Pandrator" if is_windows() else os.path.expanduser("~/pandrator-workspace")
         warning_message = (
             f"⚠️ WARNING: Your installation path contains spaces:\n\n"
             f"{self.initial_working_dir}\n\n"
             f"Some third-party tools still have trouble when installed from paths with spaces.\n\n"
             f"It's strongly recommended to move this installer to a path without spaces, such as:\n"
-            f"C:\\Pandrator\n\n"
+            f"{suggested_path}\n\n"
             f"Would you like to exit the installer so you can move it to a better location?"
         )
 
@@ -346,6 +349,23 @@ class PandratorInstaller(
                 "You can return later to add more."
             )
         )
+
+        location_group = QGroupBox("Install location")
+        location_layout = QVBoxLayout(location_group)
+        location_layout.setContentsMargins(8, 10, 8, 8)
+        self.install_location_label = QLabel()
+        self.install_location_label.setObjectName("mutedLabel")
+        self.install_location_label.setWordWrap(True)
+        location_layout.addWidget(self.install_location_label)
+        location_buttons_layout = QHBoxLayout()
+        location_buttons_layout.addStretch()
+        self.change_install_location_button = QPushButton("Change...")
+        self.change_install_location_button.setObjectName("secondaryButton")
+        self.change_install_location_button.clicked.connect(self.choose_install_workspace)
+        location_buttons_layout.addWidget(self.change_install_location_button)
+        location_layout.addLayout(location_buttons_layout)
+        content_layout.addWidget(location_group)
+        self.update_install_location_label()
 
         core_group = QGroupBox("Core application")
         core_layout = QVBoxLayout(core_group)
@@ -490,6 +510,32 @@ class PandratorInstaller(
 
         for checkbox in self.install_tab.findChildren(QCheckBox):
             checkbox.stateChanged.connect(self.update_install_button_state)
+
+    def get_pandrator_install_path(self):
+        return os.path.join(self.initial_working_dir, 'Pandrator')
+
+    def update_install_location_label(self):
+        if not hasattr(self, 'install_location_label'):
+            return
+
+        self.install_location_label.setText(
+            "Pandrator will be created or reused at:\n"
+            f"{self.get_pandrator_install_path()}"
+        )
+
+    def choose_install_workspace(self):
+        selected_dir = QFileDialog.getExistingDirectory(
+            self,
+            "Choose where Pandrator should be installed",
+            self.initial_working_dir,
+        )
+        if not selected_dir:
+            return
+
+        self.initial_working_dir = os.path.abspath(selected_dir)
+        self.update_install_location_label()
+        self.refresh_ui_state()
+        self.set_startup_tab()
 
     def setup_launch_tab(self):
         """Set up the Launch tab"""
@@ -649,6 +695,7 @@ class PandratorInstaller(
             self.log_view.clear()
 
     def refresh_ui_state(self):
+        self.update_install_location_label()
         pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
         config = self.load_install_config(pandrator_path, detect_rvc=True)
 
@@ -778,11 +825,48 @@ class PandratorInstaller(
             set_widget_state(self.whisperx_checkbox, True, False)
 
         # Update launch and install buttons state
+        self.apply_platform_install_availability()
         self.launch_button.setEnabled(pandrator_installed)
         self.update_install_button_state()
         self.update_button.setEnabled(pandrator_installed)
 
         self.update_backend_runtime_controls()
+
+    def apply_platform_install_availability(self):
+        if is_windows():
+            return
+
+        controls_by_component = {
+            'xtts': (self.xtts_checkbox, self.xtts_cpu_checkbox),
+            'xtts_cpu': (self.xtts_checkbox, self.xtts_cpu_checkbox),
+            'voxcpm': (self.voxcpm_checkbox,),
+            'fishs2': (self.fishs2_checkbox,),
+            'silero': (self.silero_checkbox,),
+            'voxtral': (self.voxtral_checkbox,),
+            'rvc': (self.rvc_checkbox, self.rvc_cpu_checkbox),
+            'rvc_cpu': (self.rvc_checkbox, self.rvc_cpu_checkbox),
+            'whisperx': (self.whisperx_checkbox,),
+            'xtts_finetuning': (self.xtts_finetuning_checkbox,),
+            'chatterbox': (self.chatterbox_checkbox, self.chatterbox_cpu_checkbox),
+            'chatterbox_cpu': (self.chatterbox_checkbox, self.chatterbox_cpu_checkbox),
+            'magpie': (self.magpie_checkbox, self.magpie_cpu_checkbox),
+            'magpie_cpu': (self.magpie_checkbox, self.magpie_cpu_checkbox),
+        }
+        tooltip = (
+            "Linux setup for this component is deferred pending per-backend review. "
+            "Install Pandrator core first; Kokoro is the currently reviewed Linux backend."
+        )
+        seen_controls = set()
+        for component_key in LINUX_DEFERRED_INSTALL_COMPONENT_KEYS:
+            for control in controls_by_component.get(component_key, ()):
+                if control in seen_controls:
+                    continue
+                seen_controls.add(control)
+                control.blockSignals(True)
+                control.setChecked(False)
+                control.blockSignals(False)
+                control.setEnabled(False)
+                control.setToolTip(tooltip)
 
     def bind_cpu_install_option(self, service_toggle, cpu_checkbox):
         cpu_checkbox.stateChanged.connect(
@@ -862,6 +946,8 @@ class PandratorInstaller(
             self.stop_backend_button.setEnabled(False)
         if hasattr(self, 'refresh_backend_status_button'):
             self.refresh_backend_status_button.setEnabled(False)
+        if hasattr(self, 'change_install_location_button'):
+            self.change_install_location_button.setEnabled(False)
 
         # Disable checkboxes in install tab
         for child in self.install_tab.findChildren(QCheckBox):
@@ -874,6 +960,8 @@ class PandratorInstaller(
     def enable_buttons(self):
         """Re-enable buttons after processing"""
         self.refresh_ui_state()
+        if hasattr(self, 'change_install_location_button'):
+            self.change_install_location_button.setEnabled(True)
 
     def update_progress(self, value):
         """Update progress bar value (0.0 to 1.0)"""

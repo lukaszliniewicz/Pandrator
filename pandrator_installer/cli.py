@@ -4,6 +4,7 @@ import argparse
 import logging
 import os
 import sys
+import tempfile
 
 from .catalog import COMPONENTS, PACKAGING_COMPONENT_PATHS
 from .platforms import (
@@ -11,6 +12,7 @@ from .platforms import (
     normalized_system,
     pixi_binary_name,
     pixi_manifest_platform,
+    resolve_launcher_workspace,
 )
 from .service import HeadlessInstaller
 
@@ -58,6 +60,11 @@ def parse_launcher_cli_args(argv=None):
         action='store_true',
         help='Validate packaged launcher imports and component metadata, then exit.',
     )
+    parser.add_argument(
+        '--gui-smoke-check',
+        action='store_true',
+        help='Instantiate the installer GUI offscreen, then exit.',
+    )
     return parser.parse_args(argv)
 
 def run_headless_install_from_cli(args):
@@ -80,7 +87,7 @@ def run_headless_install_from_cli(args):
         installer.shutdown_apps()
         installer.shutdown_logging()
 
-def run_gui_app():
+def run_gui_app(args=None):
     # Import needed modules
     from PyQt6.QtGui import QColor, QPalette
     from PyQt6.QtWidgets import QApplication
@@ -333,10 +340,34 @@ def run_gui_app():
     """)
 
     # Create and show the main window
-    window = PandratorInstaller()
+    workspace = resolve_launcher_workspace(args.workspace if args else None)
+    window = PandratorInstaller(working_dir=workspace)
     window.show()
 
     return app.exec()
+
+
+def run_gui_smoke_check(args=None):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PyQt6.QtWidgets import QApplication
+    from .gui.main_window import PandratorInstaller
+
+    app = QApplication.instance() or QApplication(["pandrator-installer-gui-smoke"])
+    with tempfile.TemporaryDirectory(prefix="pandrator-gui-smoke-") as temp_dir:
+        workspace_value = args.workspace if args and args.workspace else temp_dir
+        workspace = resolve_launcher_workspace(workspace_value)
+        window = PandratorInstaller(
+            working_dir=workspace,
+            skip_space_warning=True,
+        )
+        window.show()
+        app.processEvents()
+        window.close()
+        window.shutdown_apps()
+
+    print("Pandrator installer GUI smoke-check passed.")
+    return 0
 
 
 def run_self_check():
@@ -380,6 +411,8 @@ def main(argv=None):
     cli_args = parse_launcher_cli_args(sys.argv[1:] if argv is None else argv)
     if cli_args.self_check:
         return run_self_check()
+    if cli_args.gui_smoke_check:
+        return run_gui_smoke_check(cli_args)
     if cli_args.headless_install:
         try:
             run_headless_install_from_cli(cli_args)
@@ -387,4 +420,4 @@ def main(argv=None):
             print(f"Headless installation failed: {error}")
             return 1
         return 0
-    return run_gui_app()
+    return run_gui_app(cli_args)

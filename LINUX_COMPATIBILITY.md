@@ -468,20 +468,26 @@ Goal: Linux release artifacts are clearly separate from Windows `.exe` artifacts
 Tasks:
 
 - Keep Windows PyInstaller `.exe` build flow intact.
-- Add Linux packaging targets separately:
-  - source tar/zip
-  - optional AppImage or PyInstaller Linux binary
-  - optional RPM later
+- Add a Linux AppImage target for the same graphical installer entry point:
+  - build a Linux PyInstaller onedir bundle from `pandrator_installer_launcher_linux.spec`
+  - stage that bundle into an AppDir
+  - package it as `PandratorInstaller-<arch>.AppImage`
+  - smoke-test the AppImage with `--self-check`
+- Keep source/headless installation as an automation and diagnostics path.
+- Leave optional source tar/zip or RPM packaging for later.
 - Update release scripts that assume `PandratorInstaller.exe`.
 - Do not mix Windows and Linux backend bundles unless backend runtime layout is platform-specific.
+- AppImage launches should use a writable workspace by default. The current target is `~/Pandrator` through a workspace parent of `~`, with an explicit GUI selector and `--workspace` override.
+- Release AppImages should be built on the oldest glibc baseline intended for support. Fedora validation proves the build path, but newer Fedora builds may not be suitable as universal release artifacts for older distributions.
 
 Acceptance checks:
 
 ```bash
-python3 scripts/build_release_packages.py --help
+python3 scripts/build_installer.py
+./dist/PandratorInstaller-x86_64.AppImage --self-check
 ```
 
-Linux-specific package commands should not require a Windows installer executable.
+Linux-specific package commands should not require a Windows installer executable. The AppImage should run the graphical installer and preserve the Linux rule that Pixi, envs, caches, models, and cloned repositories stay under the chosen workspace. System package installation remains out of scope.
 
 ## Fedora SSH Validation
 
@@ -607,8 +613,7 @@ Then test upstream script-based services one at a time after `run.sh` support la
 
 ## Open Questions
 
-- Should Linux support target only source/headless installation first, or should the GUI installer also be supported on Linux?
 - Which remaining dependencies cannot practically live in Pixi and must be documented as host prerequisites?
-- Which Linux package format is desired first: source bundle, AppImage, PyInstaller binary, RPM, or no packaged binary?
-- Should portable workspace mode remain the default for all installer-managed installs, with XDG reserved for distro/AppImage packaging?
+- Should source tar/zip or RPM packaging be added after the AppImage path is validated?
+- Should portable workspace mode remain the default for all installer-managed installs, with XDG reserved for future distro packaging?
 - Which backend services are first-class Linux targets? The README mentions Linux scripts for several, but RVC and some launch sections still document Windows commands only.
