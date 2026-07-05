@@ -43,7 +43,7 @@ class EPUBHTMLParser(HTMLParser):
         self.ids = {}  # map id -> block_index
         self.classes = collections.defaultdict(int)
         
-        # Tag stack to track parents: (tag_name, class_val, id_val)
+        # Tag stack to track parents and inherited structural semantics.
         self.tag_stack = []
         
         # Block-level tag stack to track nested blocks
@@ -54,6 +54,11 @@ class EPUBHTMLParser(HTMLParser):
         self.current_block_id = ""
         self.current_block_classes = []
         self.current_block_nested_ids = []
+        self.current_block_role = ""
+        self.current_block_epub_type = ""
+        self.current_block_roles = []
+        self.current_block_epub_types = []
+        self.current_block_aria_label = ""
         self.pending_ids = []
         
         # Accumulating plain text vs anchor elements inside block
@@ -70,8 +75,10 @@ class EPUBHTMLParser(HTMLParser):
         class_val = attr_dict.get("class", "")
         href_val = attr_dict.get("href", "")
         epub_type = attr_dict.get("epub:type", "")
+        role_val = attr_dict.get("role", "")
+        aria_label = attr_dict.get("aria-label", "")
         
-        self.tag_stack.append((tag, class_val, id_val))
+        self.tag_stack.append((tag, class_val, id_val, role_val, epub_type, aria_label))
         
         if class_val:
             for c in class_val.split():
@@ -87,7 +94,12 @@ class EPUBHTMLParser(HTMLParser):
                 "tag": tag,
                 "id": id_val,
                 "classes": [c for c in class_val.split() if c] if class_val else [],
-                "nested_ids": list(self.pending_ids)
+                "nested_ids": list(self.pending_ids),
+                "role": role_val,
+                "epub_type": epub_type,
+                "roles": self._inherited_attr_values("role"),
+                "epub_types": self._inherited_attr_values("epub:type"),
+                "aria_label": aria_label,
             }
             if id_val:
                 block_info["nested_ids"].append(id_val)
@@ -99,6 +111,11 @@ class EPUBHTMLParser(HTMLParser):
             self.current_block_id = id_val
             self.current_block_classes = block_info["classes"]
             self.current_block_nested_ids = block_info["nested_ids"]
+            self.current_block_role = block_info["role"]
+            self.current_block_epub_type = block_info["epub_type"]
+            self.current_block_roles = block_info["roles"]
+            self.current_block_epub_types = block_info["epub_types"]
+            self.current_block_aria_label = block_info["aria_label"]
             self.current_parts = []
         else:
             # If we are not in a block, store the ID in pending
@@ -122,7 +139,7 @@ class EPUBHTMLParser(HTMLParser):
 
     def handle_data(self, data):
         # Skip content inside page numbers/page breaks
-        for _, c_val, _ in self.tag_stack:
+        for _, c_val, _, _, _, _ in self.tag_stack:
             if c_val:
                 classes = {c.lower() for c in c_val.split()}
                 if "pagenum" in classes or "pagebreak" in classes or "pb" in classes:
@@ -176,6 +193,11 @@ class EPUBHTMLParser(HTMLParser):
                     self.current_block_id = parent["id"]
                     self.current_block_classes = parent["classes"]
                     self.current_block_nested_ids = parent["nested_ids"]
+                    self.current_block_role = parent["role"]
+                    self.current_block_epub_type = parent["epub_type"]
+                    self.current_block_roles = parent["roles"]
+                    self.current_block_epub_types = parent["epub_types"]
+                    self.current_block_aria_label = parent["aria_label"]
                     self.current_parts = []
                 else:
                     self.current_block_tag = None
@@ -212,6 +234,11 @@ class EPUBHTMLParser(HTMLParser):
                 "tag": self.current_block_tag,
                 "id": self.current_block_id,
                 "classes": self.current_block_classes,
+                "role": self.current_block_role,
+                "epub_type": self.current_block_epub_type,
+                "roles": self.current_block_roles,
+                "epub_types": self.current_block_epub_types,
+                "aria_label": self.current_block_aria_label,
                 "parts": parts_clean,
                 "text": plain_text,
                 "href": self.href,
@@ -228,6 +255,21 @@ class EPUBHTMLParser(HTMLParser):
         # Reset current block state
         self.current_block_tag = None
         self.current_parts = []
+        self.current_block_role = ""
+        self.current_block_epub_type = ""
+        self.current_block_roles = []
+        self.current_block_epub_types = []
+        self.current_block_aria_label = ""
+
+    def _inherited_attr_values(self, attr_name: str) -> list[str]:
+        values = []
+        stack_index = {"role": 3, "epub:type": 4}[attr_name]
+        for stack_item in self.tag_stack:
+            raw_value = stack_item[stack_index]
+            if not raw_value:
+                continue
+            values.extend(str(raw_value).split())
+        return values
 
     def close(self):
         # Force closing any open blocks

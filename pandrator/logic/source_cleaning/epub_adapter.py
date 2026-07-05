@@ -150,7 +150,13 @@ def build_source_document(epub_path: str) -> SourceDocument:
                 block_dict = {
                     "tag": tag.name,
                     "text": text,
-                    "classes": _normalize_classes(tag.get("class", []))
+                    "classes": _normalize_classes(tag.get("class", [])),
+                    "id": str(tag.get("id") or attributes.get("element_id") or ""),
+                    "role": str(tag.get("role") or ""),
+                    "epub_type": str(tag.get("epub:type") or ""),
+                    "roles": _inherited_attr_values(tag, "role"),
+                    "epub_types": _inherited_attr_values(tag, "epub:type"),
+                    "aria_label": str(tag.get("aria-label") or ""),
                 }
 
                 # Check element ID against global TOC anchors
@@ -440,6 +446,17 @@ def _safe_attributes(tag) -> dict[str, Any]:
     return attrs
 
 
+def _inherited_attr_values(tag, attr_name: str) -> list[str]:
+    values: list[str] = []
+    current = tag
+    while current is not None and getattr(current, "name", None):
+        raw_value = current.get(attr_name)
+        if raw_value:
+            values.extend(str(raw_value).split())
+        current = current.parent
+    return _dedupe(values)
+
+
 def _infer_role_candidates(tag, text: str, href: str) -> list[str]:
     roles: list[str] = []
     lowered = " ".join(
@@ -448,6 +465,9 @@ def _infer_role_candidates(tag, text: str, href: str) -> list[str]:
             href or "",
             str(tag.get("id") or ""),
             " ".join(_normalize_classes(tag.get("class", []))),
+            str(tag.get("role") or ""),
+            str(tag.get("epub:type") or ""),
+            str(tag.get("aria-label") or ""),
         ]
     ).lower()
     text_lower = text.lower()

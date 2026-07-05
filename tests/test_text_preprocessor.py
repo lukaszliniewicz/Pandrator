@@ -1,6 +1,12 @@
 import unittest
 from unittest.mock import patch
-from pandrator.logic.text_preprocessor import CHUNK_SIZE, normalize_punctuation, preprocess_text, split_into_sentences
+from pandrator.logic.text_preprocessor import (
+    CHUNK_SIZE,
+    find_best_split_index,
+    normalize_punctuation,
+    preprocess_text,
+    split_into_sentences,
+)
 
 class TextPreprocessorTests(unittest.TestCase):
     @patch("pandrator.logic.text_preprocessor.sentence_segmenter.split_text")
@@ -96,6 +102,72 @@ class TextPreprocessorTests(unittest.TestCase):
         normalize_text.assert_called_once_with("It costs $12. Continue.", "en")
         split_text.assert_called_once_with("It costs twelve dollars. Continue.")
         self.assertEqual(sentences[0]["original_sentence"], "It costs twelve dollars.")
+
+    @patch("pandrator.logic.text_preprocessor.sentence_segmenter.split_text")
+    def test_chapter_markers_are_not_sent_to_sentence_segmenter(self, split_text):
+        seen_texts = []
+
+        def fake_split(text):
+            seen_texts.append(text)
+            return [text.strip()]
+
+        split_text.side_effect = fake_split
+        settings = {
+            "disable_paragraph_detection": True,
+            "language": "en",
+            "max_sentence_length": 200,
+            "enable_sentence_splitting": True,
+            "enable_sentence_appending": False,
+            "enable_nemo_normalization": False,
+            "tts_service": "XTTS",
+        }
+
+        sentences = preprocess_text(
+            "[[Chapter]]By CHARLES DICKENS\n\nThis is body text.",
+            settings,
+        )
+
+        self.assertTrue(seen_texts)
+        self.assertTrue(all("[[Chapter]]" not in text for text in seen_texts))
+        self.assertEqual(sentences[0]["original_sentence"], "By CHARLES DICKENS.")
+        self.assertEqual(sentences[0]["chapter"], "yes")
+        self.assertEqual(sentences[1]["original_sentence"], "This is body text.")
+        self.assertEqual(sentences[1]["chapter"], "no")
+
+    @patch("pandrator.logic.text_preprocessor.sentence_segmenter.split_text")
+    def test_adjacent_chapter_markers_merge_without_segmenter_damage(self, split_text):
+        split_text.return_value = ["Body starts here."]
+        settings = {
+            "disable_paragraph_detection": True,
+            "language": "en",
+            "max_sentence_length": 200,
+            "enable_sentence_splitting": True,
+            "enable_sentence_appending": False,
+            "enable_nemo_normalization": False,
+            "tts_service": "XTTS",
+        }
+
+        sentences = preprocess_text(
+            "[[Chapter]]STAVE ONE\n\n[[Chapter]]MARLEY'S GHOST\n\nBody starts here.",
+            settings,
+        )
+
+        self.assertEqual(sentences[0]["original_sentence"], "STAVE ONE. MARLEY'S GHOST.")
+        self.assertEqual(sentences[0]["chapter"], "yes")
+        split_text.assert_called_once_with("Body starts here.")
+
+    def test_conjunction_fallback_chooses_balanced_split(self):
+        text = (
+            "This is a long clause without commas and it keeps going because the author wanted "
+            "the rhythm to continue and the fallback should probably find a conjunction or another "
+            "soft boundary before falling back to an arbitrary word boundary near the hard limit."
+        )
+
+        split_index = find_best_split_index(text, "en", 200)
+
+        self.assertIsNotNone(split_index)
+        self.assertGreater(split_index, 80)
+        self.assertLessEqual(split_index, 200)
 
 if __name__ == "__main__":
     unittest.main()

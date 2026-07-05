@@ -11,6 +11,8 @@ from . import nemo_normalizer
 from . import sentence_segmenter
 
 CHUNK_SIZE = 20000
+CHAPTER_MARKER = "[[Chapter]]"
+CHAPTER_LINE_RE = re.compile(rf"(?m)^[ \t]*{re.escape(CHAPTER_MARKER)}[^\n]*$")
 
 DOUBLE_QUOTATION_MARKS = (
     "\""
@@ -88,6 +90,47 @@ def normalize_punctuation(text: str) -> str:
     # Normalize ellipsis
     text = text.replace('…', '...')
     return text
+
+
+def _protect_chapter_marker_lines(text: str) -> str:
+    """Keep Pandrator chapter markers as standalone block boundaries."""
+    if CHAPTER_MARKER not in text:
+        return text
+
+    def replace_marker(match: re.Match) -> str:
+        return f"\n\n{match.group(0).strip()}\n\n"
+
+    protected = CHAPTER_LINE_RE.sub(replace_marker, text)
+    return re.sub(r"\n{3,}", "\n\n", protected)
+
+
+def _split_structural_text_blocks(text: str) -> list[dict]:
+    if CHAPTER_MARKER not in text:
+        return [{"type": "text", "text": text}]
+
+    blocks = []
+    position = 0
+    for match in CHAPTER_LINE_RE.finditer(text):
+        body = text[position:match.start()]
+        if body.strip():
+            blocks.append({"type": "text", "text": body})
+
+        marker_line = match.group(0).strip()
+        title = marker_line[len(CHAPTER_MARKER):].strip()
+        title = re.sub(r"\s+", " ", title)
+        if title:
+            blocks.append({"type": "chapter", "text": title})
+        position = match.end()
+
+    body = text[position:]
+    if body.strip():
+        blocks.append({"type": "text", "text": body})
+
+    return blocks
+
+
+def _ensure_line_terminal_punctuation(text: str) -> str:
+    return re.sub(r'(^|\n+)([^\n.!?]+)(?=\n+|$)', r'\1\2.', text)
 
 
 # ---------------------------------------------------------------------------
@@ -303,7 +346,13 @@ def preprocess_text(text: str, settings: dict) -> list[dict]:
     else:
         processed_sentences = _sequential_preprocess_text(text, settings)
     
-    return merge_consecutive_chapters(processed_sentences)
+    processed_sentences = merge_consecutive_chapters(
+        processed_sentences,
+        max_sentence_length=settings.get('max_sentence_length', 160),
+    )
+    for i, sentence in enumerate(processed_sentences, start=1):
+        sentence['sentence_number'] = str(i)
+    return processed_sentences
 
 def _parallel_preprocess_text(text: str, settings: dict) -> list[dict]:
     chunks = _split_text_into_chunks(text)
@@ -351,16 +400,15 @@ def _process_chunk(chunk: str, settings: dict) -> list[dict]:
 
     chunk = re.sub(r'\r\n?', '\n', chunk)
     chunk = normalize_punctuation(chunk)
-    paragraph_breaks = []
+    chunk = _protect_chapter_marker_lines(chunk)
 
     if not disable_paragraph_detection:
         if pdf_preprocessed or source_file.endswith("_edited.txt"):
-            paragraph_breaks = list(re.finditer(r'\n', chunk))
+            pass
         elif source_file.endswith(".pdf"):
             chunk = preprocess_text_pdf(chunk)
         else:
             chunk = re.sub(r'(?<!\n)\n(?!\n)', ' ', chunk)
-            paragraph_breaks = list(re.finditer(r'\n', chunk))
 
     chunk = re.sub(r'\t', ' ', chunk)
 
@@ -374,39 +422,57 @@ def _process_chunk(chunk: str, settings: dict) -> list[dict]:
     if normalize_all_caps:
         chunk = normalize_all_caps_words(chunk)
 
-    chunk = re.sub(r'(^|\n+)([^\n.!?]+)(?=\n+|$)', r'\1\2.', chunk)
-    sentences = split_into_sentences(chunk, language, tts_service)
     processed_sentences = []
 
-    for sentence in sentences:
-        if not sentence.strip():
+    for block in _split_structural_text_blocks(chunk):
+        if block["type"] == "chapter":
+            title = block["text"].strip()
+            if not title:
+                continue
+            processed_sentences.append(
+                {
+                    "original_sentence": title,
+                    "paragraph": "yes",
+                    "chapter": "yes",
+                    "split_part": None,
+                }
+            )
             continue
 
-        is_paragraph = any(calculate_similarity(chunk[match.start()-15:match.start()], sentence[-15:]) >= 0.8 for match in paragraph_breaks)
-        
-        is_chapter = "[[Chapter]]" in sentence
-        if is_chapter:
-            sentence = sentence.replace("[[Chapter]]", "").strip()
-            is_paragraph = True
+        body_text = _ensure_line_terminal_punctuation(block["text"].strip())
+        body_paragraph_breaks = list(re.finditer(r'\n', body_text))
+        sentences = split_into_sentences(body_text, language, tts_service)
 
-        sentence_dict = {
-            "original_sentence": sentence,
-            "paragraph": "yes" if is_paragraph else "no",
-            "chapter": "yes" if is_chapter else "no",
-            "split_part": None
-        }
+        for sentence in sentences:
+            if not sentence.strip():
+                continue
 
-        if enable_sentence_splitting:
-            processed_sentences.extend(split_long_sentences(sentence_dict, max_sentence_length, language))
-        else:
-            processed_sentences.append(sentence_dict)
+            is_paragraph = any(
+                calculate_similarity(body_text[match.start()-15:match.start()], sentence[-15:]) >= 0.8
+                for match in body_paragraph_breaks
+            )
+
+            sentence_dict = {
+                "original_sentence": sentence,
+                "paragraph": "yes" if is_paragraph else "no",
+                "chapter": "no",
+                "split_part": None
+            }
+
+            if enable_sentence_splitting:
+                processed_sentences.extend(split_long_sentences(sentence_dict, max_sentence_length, language))
+            else:
+                processed_sentences.append(sentence_dict)
 
     if enable_sentence_appending:
         processed_sentences = append_short_sentences(processed_sentences, max_sentence_length)
 
     split_sentences = []
     for sentence_dict in processed_sentences:
-        split_sentences.extend(split_long_sentences_2(sentence_dict, max_sentence_length, language))
+        if sentence_dict.get("chapter") == "yes":
+            split_sentences.append(sentence_dict)
+        else:
+            split_sentences.extend(split_long_sentences_2(sentence_dict, max_sentence_length, language))
 
     return split_sentences
 
@@ -559,27 +625,37 @@ def split_long_sentences(sentence_dict, max_sentence_length, language: str):
     return [first_part_dict, second_part_dict]
 
 def find_best_split_index(sentence, language, max_sentence_length):
-    punctuation_marks = ['，', '；', '：', '。', '！', '？'] if language == "zh-cn" else [',', ':', ';', '–']
-    conjunction_marks = [' and ', ' or ', 'which'] if language != "zh-cn" else []
+    punctuation_marks = (
+        ["\uff0c", "\uff1b", "\uff1a", "\u3002", "\uff01", "\uff1f"]
+        if language == "zh-cn"
+        else [",", ":", ";", "\u2013", "\u2014", "â€“", "â€”"]
+    )
+    conjunction_marks = [' and ', ' or ', ' but ', ' because ', ' which '] if language != "zh-cn" else []
     min_distance = 10 if language == "zh-cn" else 30
     best_split_index, min_diff = None, float('inf')
+    target_index = min(len(sentence) // 2, max_sentence_length)
 
     for mark in punctuation_marks:
         for match in re.finditer(re.escape(mark), sentence):
             index = match.start()
             if min_distance <= index <= len(sentence) - min_distance and index + 1 <= max_sentence_length:
                 if not (mark == ',' and sentence[index-1:index].isdigit() and sentence[index+1:index+2].isdigit()):
-                    diff = abs(index - len(sentence) // 2)
+                    diff = abs((index + 1) - target_index)
                     if diff < min_diff:
                         min_diff, best_split_index = diff, index + 1
 
     if best_split_index is None:
+        min_diff = float('inf')
         for mark in conjunction_marks:
-            index = sentence.find(mark)
-            if min_distance <= index <= len(sentence) - min_distance and index <= max_sentence_length:
-                return index
-    
+            for match in re.finditer(re.escape(mark), sentence, flags=re.IGNORECASE):
+                index = match.start()
+                if min_distance <= index <= len(sentence) - min_distance and index <= max_sentence_length:
+                    diff = abs(index - target_index)
+                    if diff < min_diff:
+                        min_diff, best_split_index = diff, index
+
     return best_split_index
+
 
 def split_long_sentences_2(sentence_dict, max_sentence_length, language: str):
     sentence = sentence_dict["original_sentence"]
@@ -701,26 +777,47 @@ def convert_digits_to_words(sentence: str, language_code: str):
             return number
     return re.sub(r'\d+', replace_numbers, sentence)
 
-def merge_consecutive_chapters(sentences):
+def _join_chapter_titles(titles: list[str]) -> str:
+    text = ""
+    for title in titles:
+        next_text = title.strip()
+        if not next_text:
+            continue
+        if text and not re.search(r'[.!?]$', text):
+            text += "."
+        text += (" " if text else "") + next_text
+    if text and not re.search(r'[.!?]$', text):
+        text += "."
+    return text.strip()
+
+
+def merge_consecutive_chapters(sentences, max_sentence_length: int | None = None):
     merged, i = [], 0
     while i < len(sentences):
         current = sentences[i]
         if current.get("chapter") == "yes":
+            titles = []
             text = current["original_sentence"].strip()
+            if text:
+                titles.append(text)
             j = i + 1
             while j < len(sentences) and sentences[j].get("chapter") == "yes":
                 next_text = sentences[j]["original_sentence"].strip()
-                if text and not re.search(r'[.!?]$', text):
-                    text += "."
-                text += " " + next_text
+                if not next_text:
+                    j += 1
+                    continue
+                candidate = _join_chapter_titles(titles + [next_text])
+                if max_sentence_length and titles and len(candidate) > max_sentence_length:
+                    break
+                titles.append(next_text)
                 j += 1
-            if text and not re.search(r'[.!?]$', text):
-                 text += "."
-            merged.append({
-                "original_sentence": text.strip(),
-                "paragraph": "yes", "chapter": "yes", "split_part": None,
-                "sentence_number": current.get("sentence_number")
-            })
+            text = _join_chapter_titles(titles)
+            if text:
+                merged.append({
+                    "original_sentence": text,
+                    "paragraph": "yes", "chapter": "yes", "split_part": None,
+                    "sentence_number": current.get("sentence_number")
+                })
             i = j
         else:
             merged.append(current)

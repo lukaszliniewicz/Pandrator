@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import tempfile
 import threading
 import time
@@ -263,6 +264,96 @@ class SourceCleaningTests(unittest.TestCase):
         epub.write_epub(epub_path, book)
         return epub_path
 
+    def _write_gutenberg_noise_epub_fixture(self) -> str:
+        epub_path = os.path.join(self.temp_dir.name, "Project Gutenberg Noise.epub")
+
+        book = epub.EpubBook()
+        book.set_identifier("fixture-gutenberg-noise")
+        book.set_title("A Christmas Carol")
+        book.set_language("en")
+        book.add_author("Charles Dickens")
+
+        body = epub.EpubHtml(title="Body", file_name="body.xhtml", lang="en")
+        body.content = """
+        <html>
+          <body>
+            <h2 id="pg-header-heading">The Project Gutenberg eBook of A Christmas Carol</h2>
+            <p>This eBook is for the use of anyone anywhere in the United States.</p>
+            <div class="pg-start-separator">*** START OF THE PROJECT GUTENBERG EBOOK A CHRISTMAS CAROL ***</div>
+            <h4 id="edition-note">There are several editions of this ebook in the Project Gutenberg collection.</h4>
+            <h1 id="titlepage">A Christmas Carol</h1>
+            <h2>By Charles Dickens</h2>
+            <h2 id="intro">INTRODUCTION</h2>
+            <p>The introduction is real text and should remain.</p>
+            <h2 id="contents">CONTENTS</h2>
+            <p><a href="body.xhtml#intro">INTRODUCTION</a></p>
+            <p><a href="body.xhtml#stave1">STAVE ONE</a></p>
+            <h2 id="illustrations">ILLUSTRATIONS</h2>
+            <p>Frontispiece</p>
+            <h1 id="repeat-title">A Christmas Carol</h1>
+            <h4>In Prose</h4>
+            <h3>BEING A GHOST STORY OF CHRISTMAS</h3>
+            <h2 id="stave1">STAVE ONE</h2>
+            <h3 id="marley">MARLEY'S GHOST</h3>
+            <p>Marley was dead, to begin with.</p>
+            <div class="pg-end-separator">*** END OF THE PROJECT GUTENBERG EBOOK A CHRISTMAS CAROL ***</div>
+            <h2 id="license">THE FULL PROJECT GUTENBERG LICENSE</h2>
+          </body>
+        </html>
+        """
+
+        book.add_item(body)
+        book.add_item(epub.EpubNcx())
+        book.add_item(epub.EpubNav())
+        book.toc = (
+            epub.Link("body.xhtml#edition-note", "There are several editions of this ebook in the Project Gutenberg collection.", "edition-note"),
+            epub.Link("body.xhtml#titlepage", "A Christmas Carol", "titlepage"),
+            epub.Link("body.xhtml#intro", "INTRODUCTION", "intro"),
+            epub.Link("body.xhtml#contents", "CONTENTS", "contents"),
+            epub.Link("body.xhtml#illustrations", "ILLUSTRATIONS", "illustrations"),
+            epub.Link("body.xhtml#repeat-title", "A Christmas Carol", "repeat-title"),
+            epub.Link("body.xhtml#stave1", "STAVE ONE", "stave1"),
+            epub.Link("body.xhtml#marley", "MARLEY'S GHOST", "marley"),
+            epub.Link("body.xhtml#license", "THE FULL PROJECT GUTENBERG LICENSE", "license"),
+        )
+        book.spine = ["nav", body]
+
+        epub.write_epub(epub_path, book)
+        return epub_path
+
+    def _write_semantic_chapter_epub_fixture(self) -> str:
+        epub_path = os.path.join(self.temp_dir.name, "Semantic Chapters.epub")
+
+        book = epub.EpubBook()
+        book.set_identifier("fixture-semantic-chapters")
+        book.set_title("Semantic Chapters")
+        book.set_language("pl")
+        book.add_author("Example Author")
+
+        body = epub.EpubHtml(title="Body", file_name="body.xhtml", lang="pl")
+        body.content = """
+        <html>
+          <body>
+            <section epub:type="chapter" id="chapter_1">
+              <p class="chaptertitle">Rozdzial pierwszy</p>
+              <p>Pierwszy akapit powiesci.</p>
+            </section>
+            <section role="doc-chapter" id="chapter_2">
+              <p class="p_chapters">Drugi rozdzial</p>
+              <p>Drugi akapit powiesci.</p>
+            </section>
+          </body>
+        </html>
+        """
+
+        book.add_item(body)
+        book.add_item(epub.EpubNcx())
+        book.add_item(epub.EpubNav())
+        book.spine = ["nav", body]
+
+        epub.write_epub(epub_path, book)
+        return epub_path
+
     def test_epub_index_preserves_metadata_markup_and_nonsemantic_blocks(self):
         epub_path = self._write_epub_fixture()
 
@@ -453,6 +544,31 @@ class SourceCleaningTests(unittest.TestCase):
         self.assertIn("[[Chapter]]Chapter One", result.cleaned_text)
         self.assertIn("[[Chapter]]Chapter Two", result.cleaned_text)
         self.assertNotIn("[[Chapter]]Contents", result.cleaned_text)
+
+    def test_deterministic_epub_extract_strips_gutenberg_noise_before_chapter_marking(self):
+        from pandrator.logic.source_cleaning.deterministic import extract_clean_epub
+
+        text = extract_clean_epub(self._write_gutenberg_noise_epub_fixture())
+        markers = re.findall(r"\[\[Chapter\]\]([^\n]+)", text)
+
+        self.assertEqual(markers, ["INTRODUCTION", "STAVE ONE", "MARLEY'S GHOST"])
+        self.assertIn("The introduction is real text and should remain.", text)
+        self.assertIn("Marley was dead, to begin with.", text)
+        self.assertNotIn("Project Gutenberg", text)
+        self.assertNotIn("[[Chapter]]CONTENTS", text)
+        self.assertNotIn("[[Chapter]]ILLUSTRATIONS", text)
+        self.assertNotIn("[[Chapter]]A Christmas Carol", text)
+        self.assertNotIn("By Charles Dickens", text)
+
+    def test_deterministic_epub_extract_uses_semantic_classes_without_toc_or_headings(self):
+        from pandrator.logic.source_cleaning.deterministic import extract_clean_epub
+
+        text = extract_clean_epub(self._write_semantic_chapter_epub_fixture())
+        markers = re.findall(r"\[\[Chapter\]\]([^\n]+)", text)
+
+        self.assertEqual(markers, ["Rozdzial pierwszy", "Drugi rozdzial"])
+        self.assertIn("Pierwszy akapit powiesci.", text)
+        self.assertIn("Drugi akapit powiesci.", text)
 
     def test_chapter_structure_analysis_suggests_complete_narrative_selector(self):
         document = SourceDocument(

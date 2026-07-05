@@ -2,8 +2,73 @@ from __future__ import annotations
 
 import re
 
-NUM_PATTERN = r'^(?:[0-9]{1,3}|[I|V|X|L|C|D|M]+)\b'
+NUM_PATTERN = r'^(?:[0-9]{1,3}|[IVXLCDM]{1,12})(?:$|\s*[\.\):–—-]\s*(?=\S))'
 _REGEX_CACHE = {}
+
+HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
+
+CHAPTER_EPUB_TYPES = {
+    "chapter", "doc-chapter", "part", "doc-part", "division", "volume", "book",
+    "prologue", "epilogue", "appendix", "introduction", "preface",
+    "foreword", "afterword",
+}
+
+NON_CHAPTER_EPUB_TYPES = {
+    "toc", "doc-toc", "cover", "doc-cover", "titlepage", "halftitlepage",
+    "halftitle", "copyright-page", "copyright", "doc-index", "index",
+    "bibliography", "notes", "footnotes", "endnotes", "glossary", "colophon",
+    "acknowledgments", "acknowledgements", "dedication",
+}
+
+NON_CHAPTER_TEXT_RE = re.compile(
+    r"^(?:"
+    r".*table\s+of\s+contents.*|.*next\s+chapter.*|.*previous\s+chapter.*|"
+    r"contents|illustrations|list\s+of\s+illustrations|"
+    r"list\s+of\s+figures|list\s+of\s+tables|title\s+page|copyright|"
+    r"about\s+the\s+author|about\s+the\s+publisher|also\s+by|other\s+books|"
+    r"bibliography|index|notes|footnotes|endnotes|glossary|colophon|colofon|"
+    r"dedication|widmung|titelseite|titel|title|front|"
+    r"praise\s+for\s+.+|.+\bpublication|.+\bpublishing|"
+    r"spis\s+treści|spis\s+tresci|inhaltsverzeichnis|inhoudsopgave|inhoud|"
+    r"table\s+des\s+matières|table\s+des\s+matieres|sommaire|"
+    r"índice|indice|sommario|oglavlenie|soderzhanie|"
+    r"оглавление|содержание"
+    r")$",
+    re.IGNORECASE,
+)
+
+BOILERPLATE_TEXT_RE = re.compile(
+    r"(?:project\s+gutenberg|gutenberg(?:™|tm)?\s+license|"
+    r"\*\*\*\s*(?:start|end)\s+of\s+(?:the|this)\s+project\s+gutenberg|"
+    r"ebook\s+is\s+for\s+the\s+use\s+of\s+anyone|"
+    r"all\s+rights\s+reserved|isbn\b|copyright\s+\d{4}|"
+    r"published\s+by|printed\s+in|www\.gutenberg\.org)",
+    re.IGNORECASE,
+)
+
+CHAPTER_CLASS_EXACT = {
+    "chapter", "chap", "chapters", "chapter-title", "chaptertitle",
+    "chapter-head", "chapterhead", "chapterheada", "chapter-heading",
+    "chapterheading", "chapter-number", "chapternumber", "chapter-number",
+    "chap-num", "chapnum", "chap_no", "chap-no", "ch-title", "chtitle",
+    "chap-title", "chaptitle", "part", "part-title", "parttitle", "partno",
+    "book-title", "booktitle", "volume-title", "vol-title", "stave",
+    "cn", "ct", "cct", "ccn", "ctag", "ctag2",
+}
+
+CHAPTER_CLASS_RE = re.compile(
+    r"(?:^|[-_\s])(?:chapter|chap|chapt|chapitre|capitulo|capítulo|capitolo|"
+    r"kapitel|hoofdstuk|rozdzial|rozdział|fejezet|stave|part|book|volume|"
+    r"prologue|epilogue)(?:$|[-_\s0-9])",
+    re.IGNORECASE,
+)
+
+CHAPTER_ID_RE = re.compile(
+    r"(?:^|[-_\s])(?:chapter|chap|chapt|ch|part|book|volume|stave|"
+    r"prologue|epilogue|rozdzial|rozdział|kapitel|chapitre|capitulo|"
+    r"capítulo|capitolo|hoofdstuk|fejezet)[-_\s]?[0-9ivxlcdm]*$",
+    re.IGNORECASE,
+)
 
 def get_chapter_regex(lang: str) -> re.Pattern:
     if lang not in _REGEX_CACHE:
@@ -25,13 +90,14 @@ def get_chapter_regex(lang: str) -> re.Pattern:
     return _REGEX_CACHE[lang]
 
 KNOWN_CHAPTER_CLASSES = {
-    "ct", "cn", "chap", "chtitle", "chap_no", "ch-title", "partno", "chapter-title",
-    "h1", "h2", "h3", "heading", "chapter", "title", "header", "chapter-number", "chapternum"
+    "ct", "cn", "chap", "chapters", "chtitle", "chap_no", "ch-title",
+    "partno", "chapter-title", "chaptertitle", "chapterhead",
+    "chapter-heading", "chapter-number", "chapternum", "stave"
 }
 
 # Expanded explicit chapter patterns with numbers/words for deep checks
 EXPLICIT_CHAPTER_WORDS = (
-    r"chapter|ch|part|section|book|volume|vol|rozdział|rozdz|część|cz|księga|tom|"
+    r"chapter|ch|part|section|book|volume|vol|stave|rozdział|rozdz|część|cz|księga|tom|"
     r"kapitel|kap|teil|abschnitt|band|hoofdstuk|hst|deel|capítulo|cap|sección|sezione|"
     r"chapitre|chap|tome|secção|seção|livro|fejezet|fej|rész|szakasz|kötet|глава|гл|часть|ч|книга|кн|том|т|अध्याय|खण्ड|सर्ग|appendix"
 )
@@ -58,43 +124,183 @@ STANDALONE_CHAPTER_WORDS = (
 EXPLICIT_CHAPTER_RE = re.compile(r"^(?:(?:" + EXPLICIT_CHAPTER_WORDS + r")\s+(?:" + NUMERIC_WORDS + r"))\b", re.IGNORECASE)
 STANDALONE_CHAPTER_RE = re.compile(r"^(?:" + STANDALONE_CHAPTER_WORDS + r")\b", re.IGNORECASE)
 
-def is_chapter_block(block: dict, idx_in_doc: int, lang: str = "en") -> bool:
+def is_non_chapter_heading_text(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", text or "").strip()
+    if not normalized:
+        return True
+    compact_alpha = re.sub(r"[^a-z]", "", normalized.lower())
+    if compact_alpha.endswith(("publishing", "press", "publisher")):
+        return True
+    if re.match(r"^for\s+.{2,80}[.!?]$", normalized, re.IGNORECASE) and len(normalized.split()) <= 10:
+        return True
+    return bool(NON_CHAPTER_TEXT_RE.match(normalized) or BOILERPLATE_TEXT_RE.search(normalized))
+
+
+def is_plausible_heading_text(text: str, max_chars: int = 180) -> bool:
+    normalized = re.sub(r"\s+", " ", text or "").strip()
+    if not normalized or len(normalized) > max_chars:
+        return False
+    words = normalized.split()
+    if len(words) > 22:
+        return False
+    if re.search(r"https?://|www\.|@", normalized, re.IGNORECASE):
+        return False
+    if "[footnote:" in normalized.lower():
+        return False
+    if re.search(r"[.!?]\s*$", normalized) and len(words) > 5:
+        return False
+    return True
+
+
+def is_explicit_chapter_title(text: str, lang: str = "en") -> bool:
+    normalized = re.sub(r"\s+", " ", text or "").strip()
+    if not normalized or is_non_chapter_heading_text(normalized):
+        return False
+    if len(normalized) >= 100:
+        return False
+
+    if get_chapter_regex(lang).match(normalized):
+        return True
+
+    match = EXPLICIT_CHAPTER_RE.match(normalized)
+    if match:
+        remainder = normalized[match.end():].strip()
+        if not remainder:
+            return True
+        first_char = remainder[0]
+        if first_char in ".:;,-—~" or first_char.isupper() or first_char.isdigit():
+            return True
+
+    if STANDALONE_CHAPTER_RE.match(normalized):
+        return True
+
+    return False
+
+
+def _norm_values(values) -> list[str]:
+    if not values:
+        return []
+    if isinstance(values, str):
+        raw_values = values.split()
+    else:
+        raw_values = values
+    return [str(value or "").strip().lower() for value in raw_values if str(value or "").strip()]
+
+
+def _identity_values(block: dict) -> list[str]:
+    values = []
+    values.extend(_norm_values(block.get("classes", [])))
+    values.extend(_norm_values(block.get("id", "")))
+    values.extend(_norm_values(block.get("nested_ids", [])))
+    values.extend(_norm_values(block.get("roles", [])))
+    values.extend(_norm_values(block.get("role", "")))
+    values.extend(_norm_values(block.get("epub_types", [])))
+    values.extend(_norm_values(block.get("epub_type", "")))
+    aria_label = block.get("aria_label", "")
+    if aria_label:
+        values.append(str(aria_label).strip().lower())
+    return values
+
+
+def _direct_semantic_values(block: dict) -> list[str]:
+    values = []
+    values.extend(_norm_values(block.get("role", "")))
+    values.extend(_norm_values(block.get("epub_type", "")))
+    return values
+
+
+def _class_id_values(block: dict) -> list[str]:
+    values = []
+    values.extend(_norm_values(block.get("classes", [])))
+    values.extend(_norm_values(block.get("id", "")))
+    values.extend(_norm_values(block.get("nested_ids", [])))
+    return values
+
+
+def _has_non_chapter_semantics(block: dict) -> bool:
+    values = _identity_values(block)
+    for value in values:
+        parts = set(re.split(r"[^0-9a-zA-Z]+", value))
+        if value in NON_CHAPTER_EPUB_TYPES or parts.intersection(NON_CHAPTER_EPUB_TYPES):
+            return True
+        if any(
+            token in value
+            for token in (
+                "toc", "contents", "nav", "cover", "titlepage", "copyright",
+                "license", "gutenberg", "index", "bibliography", "footnote",
+                "endnote", "notes", "illustration", "figure-list"
+            )
+        ):
+            return True
+    return False
+
+
+def _has_strong_semantics(block: dict) -> bool:
+    direct_values = _direct_semantic_values(block)
+    inherited_values = _identity_values(block)
+    class_id_values = _class_id_values(block)
+
+    for value in direct_values:
+        parts = set(re.split(r"[^0-9a-zA-Z]+", value))
+        if value in CHAPTER_EPUB_TYPES or parts.intersection(CHAPTER_EPUB_TYPES):
+            return True
+
+    for value in class_id_values:
+        parts = set(re.split(r"[^0-9a-zA-Z]+", value))
+        if value in CHAPTER_CLASS_EXACT or parts.intersection(CHAPTER_CLASS_EXACT):
+            return True
+        if CHAPTER_CLASS_RE.search(value):
+            return True
+        if CHAPTER_ID_RE.search(value):
+            return True
+
+    tag = str(block.get("tag", "")).lower()
+    if tag in HEADING_TAGS:
+        for value in inherited_values:
+            parts = set(re.split(r"[^0-9a-zA-Z]+", value))
+            if value in CHAPTER_EPUB_TYPES or parts.intersection(CHAPTER_EPUB_TYPES):
+                return True
+
+    return False
+
+
+def is_chapter_block(
+    block: dict,
+    idx_in_doc: int,
+    lang: str = "en",
+    allow_heading_fallback: bool = True,
+) -> bool:
     """
     Checks if a block is a chapter heading, tailored to the book's language.
     """
     tag = block.get("tag", "").lower()
     text = block.get("text", "").strip()
-    classes = block.get("classes", [])
     
     if not text:
         return False
-        
-    # 1. Standard HTML headings (h1 - h6)
-    if tag in ["h1", "h2", "h3", "h4", "h5", "h6"]:
+
+    if is_non_chapter_heading_text(text) or _has_non_chapter_semantics(block):
+        return False
+
+    plausible = is_plausible_heading_text(text)
+
+    # 1. Explicit EPUB semantics and known real-world chapter IDs/classes.
+    if plausible and _has_strong_semantics(block):
         return True
         
-    # 2. Custom chapter-like CSS classes
-    if any(cls.lower() in KNOWN_CHAPTER_CLASSES for cls in classes):
-        return True
-        
-    # 3. Text scanner matching chapter prefixes (safe anywhere for CJK, first-3-paragraphs for alphabetical)
-    if (lang in ("zh", "ja") or idx_in_doc < 3) and len(text) < 60:
-        regex = get_chapter_regex(lang)
-        if regex.match(text):
+    # 2. Text scanner matching chapter prefixes. CJK headings are safe anywhere;
+    # alphabetical first paragraphs are accepted for legacy single-file books.
+    if plausible and (lang in ("zh", "ja") or idx_in_doc < 3):
+        if get_chapter_regex(lang).match(text):
             return True
             
-    # 4. Deep document chapter keyword checks (safe anywhere in the document if short and explicit)
-    if len(text) < 80:
-        match = EXPLICIT_CHAPTER_RE.match(text)
-        if match:
-            remainder = text[match.end():].strip()
-            if not remainder:
-                return True
-            else:
-                first_char = remainder[0]
-                if first_char in '.:;,-—~' or first_char.isupper() or first_char.isdigit():
-                    return True
-        if STANDALONE_CHAPTER_RE.match(text):
-            return True
+    # 3. Deep chapter keyword checks are safe anywhere if short and explicit.
+    if plausible and is_explicit_chapter_title(text, lang=lang):
+        return True
+
+    # 4. Bare heading tags are useful only when the caller has no stronger
+    # navigation or semantic signal to rely on.
+    if allow_heading_fallback and plausible and tag in HEADING_TAGS:
+        return True
             
     return False
