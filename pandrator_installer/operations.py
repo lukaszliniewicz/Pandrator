@@ -10,11 +10,15 @@ import subprocess
 import sys
 import tempfile
 import traceback
-import winreg
 import zipfile
 from datetime import datetime
 
 import requests
+
+try:
+    import winreg
+except ImportError:
+    winreg = None
 
 try:
     from packaging.specifiers import SpecifierSet as PackagingSpecifierSet
@@ -141,6 +145,9 @@ class OperationsMixin:
 
     def is_admin(self):
         """Check if the current process has admin privileges."""
+        if os.name != 'nt':
+            return False
+
         try:
             return ctypes.windll.shell32.IsUserAnAdmin() != 0
         except Exception:
@@ -229,11 +236,7 @@ class OperationsMixin:
             raise
 
     def check_program_installed(self, program):
-        try:
-            self.run_command(['where', program], log_errors=False)
-            return True
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            return False
+        return shutil.which(program) is not None
 
     def get_bundled_calibre_executable(self, pandrator_path):
         return os.path.join(pandrator_path, CALIBRE_BUNDLED_EBOOK_CONVERT_RELATIVE_PATH)
@@ -312,6 +315,13 @@ class OperationsMixin:
         return bin_candidate or any_candidate
 
     def ensure_bundled_ffmpeg_with_subtitles(self, pandrator_path):
+        if os.name != 'nt':
+            logging.info(
+                "Skipping bundled Windows FFmpeg setup on non-Windows; "
+                "Linux FFmpeg should be provided by the Pixi environment."
+            )
+            return True
+
         bundled_ffmpeg_path = self.get_bundled_ffmpeg_executable(pandrator_path)
         if self.ffmpeg_supports_subtitles_filter(bundled_ffmpeg_path):
             logging.info(
@@ -409,6 +419,10 @@ class OperationsMixin:
 
         Returns True on success, False otherwise.  Requires elevated process.
         """
+        if os.name != 'nt':
+            logging.info("Skipping Chocolatey installation on non-Windows.")
+            return False
+
         logging.info("Installing Chocolatey...")
         try:
             ps_script = """
@@ -460,6 +474,10 @@ class OperationsMixin:
         SetEnvironmentVariableW. This ensures child processes spawned by subprocess
         inherit updated values without rebooting or broadcasting WM_SETTINGCHANGE.
         """
+        if os.name != 'nt' or winreg is None:
+            logging.debug("Skipping Windows registry environment refresh on non-Windows.")
+            return
+
         try:
             logging.info("Refreshing environment variables from registry...")
 
@@ -545,14 +563,28 @@ class OperationsMixin:
             raise
 
     def install_dependencies(self, pandrator_path, allow_system_install=True):
+        if os.name != 'nt':
+            if self.check_calibre_available(pandrator_path):
+                logging.info("Calibre ebook-convert detected for optional MOBI import.")
+            else:
+                logging.info(
+                    "Calibre ebook-convert was not detected. "
+                    "MOBI import will require Calibre to be installed separately."
+                )
+            return True
+
         return self.install_calibre(
             pandrator_path,
             allow_system_install=allow_system_install,
         )
 
     def show_calibre_installation_message(self):
-        message = ("Calibre installation failed. Please install Calibre manually.\n"
-                   "You can download it from: https://calibre-ebook.com/download_windows")
+        message = (
+            "MOBI import requires Calibre's ebook-convert.\n"
+            "Install Calibre separately if MOBI import is needed.\n"
+            "Windows: https://calibre-ebook.com/download_windows\n"
+            "Linux: https://calibre-ebook.com/download_linux"
+        )
 
         if self.headless:
             logging.warning(message)
@@ -562,6 +594,10 @@ class OperationsMixin:
         self.notify_warning("Calibre Installation Required", message)
 
     def install_with_chocolatey(self, package_name, args=""):
+        if os.name != 'nt':
+            logging.info(f"Skipping Chocolatey package installation for {package_name} on non-Windows.")
+            return False
+
         logging.info(f"Attempting to install {package_name} with Chocolatey...")
 
         try:
@@ -641,6 +677,10 @@ class OperationsMixin:
         return False
 
     def install_calibre_portable(self, pandrator_path):
+        if os.name != 'nt':
+            logging.info("Skipping bundled Calibre MSI extraction on non-Windows.")
+            return False
+
         bundled_calibre_exe = self.get_bundled_calibre_executable(pandrator_path)
         if os.path.exists(bundled_calibre_exe):
             logging.info(f"Bundled Calibre executable already available at {bundled_calibre_exe}")
@@ -734,6 +774,10 @@ class OperationsMixin:
 
     def install_calibre(self, pandrator_path, allow_system_install=True):
         """Install Calibre. Prefers system install, then bundles a local fallback."""
+        if os.name != 'nt':
+            logging.info("Skipping Calibre installation on non-Windows; Calibre is optional for MOBI import.")
+            return self.check_calibre_available(pandrator_path)
+
         logging.info("Checking installation for Calibre")
         if self.check_calibre_available(pandrator_path):
             logging.info("Calibre is already installed.")
@@ -840,6 +884,13 @@ class OperationsMixin:
         return '', ''
 
     def install_espeak_ng_direct(self, pandrator_path=None):
+        if os.name != 'nt':
+            logging.info(
+                "Skipping eSpeak NG MSI installation on non-Windows; "
+                "speech runtimes should use Pixi-provided packages or host prerequisites."
+            )
+            return False
+
         dll_path, _ = self.resolve_espeak_paths()
         if dll_path:
             logging.info(f"eSpeak NG is already available at {dll_path}")

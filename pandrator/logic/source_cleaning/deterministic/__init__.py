@@ -7,6 +7,7 @@ from . import toc
 from . import boilerplate
 from . import chapters
 from . import footnotes
+from . import illustrations
 
 
 def extract_clean_epub(epub_path: str, remove_footnotes: bool = False, filter_citations: bool = True) -> str:
@@ -79,6 +80,26 @@ def extract_clean_epub(epub_path: str, remove_footnotes: bool = False, filter_ci
                     "semantic_chapter": semantic_chapter,
                 }
             )
+
+        visual_indexes = illustrations.visual_block_indexes(
+            blocks,
+            protected_indexes={
+                idx
+                for idx, candidate in enumerate(chapter_candidates)
+                if candidate["toc_chapter"] or candidate["semantic_chapter"]
+            },
+        )
+        if visual_indexes:
+            blocks = [
+                block
+                for idx, block in enumerate(blocks)
+                if idx not in visual_indexes
+            ]
+            chapter_candidates = [
+                candidate
+                for idx, candidate in enumerate(chapter_candidates)
+                if idx not in visual_indexes
+            ]
 
         has_toc_chapters = any(item["toc_chapter"] for item in chapter_candidates)
         has_semantic_chapters = any(item["semantic_chapter"] for item in chapter_candidates)

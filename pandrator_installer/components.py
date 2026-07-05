@@ -136,7 +136,9 @@ class ComponentOperationsMixin:
         env['MODEL_DIR'] = 'src/models'
         env['VOICES_DIR'] = 'src/voices/v1_0'
         env['WEB_PLAYER_PATH'] = os.path.join(kokoro_repo_path, 'web')
-        env['PYTHONPATH'] = f"{kokoro_repo_path};{os.path.join(kokoro_repo_path, 'api')}"
+        env['PYTHONPATH'] = os.pathsep.join(
+            [kokoro_repo_path, os.path.join(kokoro_repo_path, 'api')]
+        )
 
         dll_path, data_path = self.resolve_espeak_paths()
         if dll_path:
@@ -967,7 +969,7 @@ class ComponentOperationsMixin:
         self.configure_tls_certificates()
         git_executable = shutil.which('git')
         if not git_executable:
-            raise FileNotFoundError("git.exe was not found on PATH")
+            raise FileNotFoundError("git was not found on PATH")
 
         git_command = [git_executable]
         if os.name == 'nt':
@@ -1041,7 +1043,7 @@ class ComponentOperationsMixin:
                         logging.error(f"Failed to clone repository after certificate refresh: {str(retry_error)}")
                         raise RuntimeError(
                             "TLS certificate verification failed while downloading from GitHub. "
-                            "Check Windows certificates and proxy TLS settings."
+                            "Check host certificates and proxy TLS settings."
                         ) from retry_error
                 logging.error(f"Failed to clone repository: {str(dulwich_error)}")
                 raise
@@ -1079,7 +1081,7 @@ class ComponentOperationsMixin:
                         logging.error(f"Failed to update repository after certificate refresh: {str(retry_error)}")
                         raise RuntimeError(
                             "TLS certificate verification failed while downloading from GitHub. "
-                            "Check Windows certificates and proxy TLS settings."
+                            "Check host certificates and proxy TLS settings."
                         ) from retry_error
                 logging.error(f"Failed to update repository: {str(dulwich_error)}")
                 raise

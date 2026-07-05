@@ -321,6 +321,39 @@ class SourceCleaningTests(unittest.TestCase):
         epub.write_epub(epub_path, book)
         return epub_path
 
+    def _write_illustrated_duplicate_epub_fixture(self) -> str:
+        epub_path = os.path.join(self.temp_dir.name, "Illustrated Duplicate.epub")
+
+        book = epub.EpubBook()
+        book.set_identifier("fixture-illustrated-duplicate")
+        book.set_title("Illustrated Duplicate")
+        book.set_language("en")
+        book.add_author("Example Author")
+
+        body = epub.EpubHtml(title="Body", file_name="body.xhtml", lang="en")
+        body.content = """
+        <html>
+          <body>
+            <h1 id="chapter-1">Chapter One</h1>
+            <p>The bell rang once.</p>
+            <div class="figcenter">The bell rang once.</div>
+            <p>The bell rang once.</p>
+            <div class="illustration">Plate I. The road at dawn.</div>
+            <div id="fig-2">A caption from a plate.</div>
+            <p>The road continued.</p>
+          </body>
+        </html>
+        """
+
+        book.add_item(body)
+        book.add_item(epub.EpubNcx())
+        book.add_item(epub.EpubNav())
+        book.toc = (epub.Link("body.xhtml#chapter-1", "Chapter One", "chapter-one"),)
+        book.spine = ["nav", body]
+
+        epub.write_epub(epub_path, book)
+        return epub_path
+
     def _write_semantic_chapter_epub_fixture(self) -> str:
         epub_path = os.path.join(self.temp_dir.name, "Semantic Chapters.epub")
 
@@ -559,6 +592,17 @@ class SourceCleaningTests(unittest.TestCase):
         self.assertNotIn("[[Chapter]]ILLUSTRATIONS", text)
         self.assertNotIn("[[Chapter]]A Christmas Carol", text)
         self.assertNotIn("By Charles Dickens", text)
+
+    def test_deterministic_epub_extract_strips_visual_blocks_without_deduping_body_text(self):
+        from pandrator.logic.source_cleaning.deterministic import extract_clean_epub
+
+        text = extract_clean_epub(self._write_illustrated_duplicate_epub_fixture())
+
+        self.assertIn("[[Chapter]]Chapter One", text)
+        self.assertEqual(text.count("The bell rang once."), 2)
+        self.assertIn("The road continued.", text)
+        self.assertNotIn("Plate I.", text)
+        self.assertNotIn("A caption from a plate.", text)
 
     def test_deterministic_epub_extract_uses_semantic_classes_without_toc_or_headings(self):
         from pandrator.logic.source_cleaning.deterministic import extract_clean_epub

@@ -23,9 +23,7 @@ from .constants import (
     NEMO_TEXT_PROCESSING_SPEC,
     OPTIONAL_REQUIREMENT_EXCLUSIONS_BY_ENV,
     PANDRATOR_RUNTIME_REPAIR_SPECS,
-    PIXI_BINARY_NAME,
     PIXI_CACHE_DIRNAME,
-    PIXI_DOWNLOAD_URL,
     PIXI_HOME_DIRNAME,
     PIXI_PIP_CACHE_SUBDIRNAME,
     PIXI_TEMP_SUBDIRNAME,
@@ -33,11 +31,18 @@ from .constants import (
     SUBDUB_RUNTIME_CHECK_COMMAND,
     SUBDUB_RUNTIME_REPAIR_SPECS,
 )
+from .platforms import (
+    is_windows,
+    pixi_binary_name,
+    pixi_download_url,
+    pixi_manifest_platform,
+    pixi_temp_suffix,
+)
 
 
 class PixiEnvironmentMixin:
     def get_pixi_executable(self, pandrator_path):
-        return os.path.join(pandrator_path, 'bin', PIXI_BINARY_NAME)
+        return os.path.join(pandrator_path, 'bin', pixi_binary_name())
 
     def get_pixi_env_dir(self, pandrator_path, env_name):
         return os.path.join(pandrator_path, 'envs', env_name)
@@ -141,7 +146,7 @@ class PixiEnvironmentMixin:
 
         temp_fd, temp_pixi_path = tempfile.mkstemp(
             prefix='pandrator_pixi_',
-            suffix='.exe',
+            suffix=pixi_temp_suffix(),
             dir=self.get_local_temp_dir(pandrator_path),
         )
         os.close(temp_fd)
@@ -149,7 +154,7 @@ class PixiEnvironmentMixin:
 
         try:
             response = requests.get(
-                PIXI_DOWNLOAD_URL,
+                pixi_download_url(),
                 stream=True,
                 timeout=60,
                 verify=self.ca_bundle_path if self.ca_bundle_path else True,
@@ -162,6 +167,8 @@ class PixiEnvironmentMixin:
                         f.write(chunk)
 
             shutil.move(temp_pixi_path, pixi_executable)
+            if not is_windows():
+                os.chmod(pixi_executable, 0o755)
             self.run_pixi_command(pandrator_path, ['--version'])
             logging.info("Pixi installed successfully.")
         finally:
@@ -169,14 +176,31 @@ class PixiEnvironmentMixin:
                 os.remove(temp_pixi_path)
 
     def update_manifest_python_dependency(self, manifest_path, python_version):
-        desired_python_line = f'python = "{python_version}.*"'
-
         try:
             with open(manifest_path, 'r', encoding='utf-8', errors='replace') as f:
                 manifest_contents = f.read()
         except OSError as e:
             logging.warning(f"Could not read manifest for Python migration ({manifest_path}): {str(e)}")
             return False
+
+        updated_contents = self.update_manifest_contents(manifest_contents, python_version)
+        if updated_contents == manifest_contents:
+            return False
+
+        with open(manifest_path, 'w', encoding='utf-8') as f:
+            f.write(updated_contents)
+
+        logging.info(
+            "Updated Pixi manifest %s to Python %s.* and platform %s.",
+            manifest_path,
+            python_version,
+            pixi_manifest_platform(),
+        )
+        return True
+
+    def update_manifest_contents(self, manifest_contents, python_version):
+        desired_python_line = f'python = "{python_version}.*"'
+        desired_platform_line = f'platforms = ["{pixi_manifest_platform()}"]'
 
         python_line_pattern = r'(?mi)^[ \t]*python[ \t]*=[ \t]*"[^"]*"[ \t]*$'
         if re.search(python_line_pattern, manifest_contents):
@@ -187,14 +211,29 @@ class PixiEnvironmentMixin:
             newline = '' if manifest_contents.endswith('\n') else '\n'
             updated_contents = f"{manifest_contents}{newline}\n[dependencies]\n{desired_python_line}\n"
 
-        if updated_contents == manifest_contents:
-            return False
+        platform_line_pattern = r'(?mi)^[ \t]*platforms[ \t]*=[ \t]*\[[^\]]*\][ \t]*$'
+        if re.search(platform_line_pattern, updated_contents):
+            updated_contents = re.sub(
+                platform_line_pattern,
+                desired_platform_line,
+                updated_contents,
+                count=1,
+            )
+        elif re.search(r'(?mi)^[ \t]*channels[ \t]*=', updated_contents):
+            updated_contents = re.sub(
+                r'(?mi)^([ \t]*channels[ \t]*=[^\n]*\n)',
+                rf'\1{desired_platform_line}\n',
+                updated_contents,
+                count=1,
+            )
+        elif '[workspace]' in updated_contents:
+            updated_contents = updated_contents.replace(
+                '[workspace]\n',
+                f'[workspace]\n{desired_platform_line}\n',
+                1,
+            )
 
-        with open(manifest_path, 'w', encoding='utf-8') as f:
-            f.write(updated_contents)
-
-        logging.info(f"Updated Python dependency for {manifest_path} to {python_version}.*")
-        return True
+        return updated_contents
 
     def ensure_pixi_manifest(self, pandrator_path, env_name, python_version):
         env_dir = self.get_pixi_env_dir(pandrator_path, env_name)
@@ -207,7 +246,7 @@ class PixiEnvironmentMixin:
                 "[workspace]\n"
                 f"name = \"{env_name}\"\n"
                 "channels = [\"conda-forge\"]\n"
-                "platforms = [\"win-64\"]\n\n"
+                f"platforms = [\"{pixi_manifest_platform()}\"]\n\n"
                 "[dependencies]\n"
                 f"python = \"{python_version}.*\"\n"
                 "pip = \"*\"\n"

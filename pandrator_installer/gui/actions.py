@@ -3,7 +3,8 @@
 import logging
 import os
 
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QTimer, QUrl
+from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import QMessageBox
 
 from ..reporting import SignalReporter
@@ -75,7 +76,7 @@ class GuiActionsMixin:
     def open_log_file(self):
         """Open the log file with the default system application"""
         if hasattr(self, 'log_filename') and self.log_filename and os.path.exists(self.log_filename):
-            os.startfile(self.log_filename)
+            QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.abspath(self.log_filename)))
         else:
             QMessageBox.warning(self, "Log Not Available", "No log file is available yet.")
 
@@ -86,7 +87,7 @@ class GuiActionsMixin:
 
         # Check admin status
         is_admin = self.is_admin()
-        if not is_admin:
+        if os.name == 'nt' and not is_admin:
             logging.info("Running update without admin privileges - file permission changes won't be applied")
 
         logging.info(f"Checking for Pandrator at: {pandrator_repo_path}")

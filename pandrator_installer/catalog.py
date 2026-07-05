@@ -267,6 +267,12 @@ BACKEND_COMPONENT_KEYS = (
     "magpie",
 )
 
+LINUX_DEFERRED_INSTALL_COMPONENT_KEYS = tuple(
+    key
+    for key, component in COMPONENTS.items()
+    if component.process_attr or key == "xtts_finetuning"
+)
+
 
 def resolve_dependencies(selected_components: tuple[str, ...] | list[str] | set[str]) -> tuple[str, ...]:
     resolved: list[str] = []

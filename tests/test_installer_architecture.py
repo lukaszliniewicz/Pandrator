@@ -13,6 +13,7 @@ from pandrator_installer.catalog import (
 )
 from pandrator_installer.cli import parse_launcher_cli_args, run_self_check
 from pandrator_installer.models import InstallSelection, LaunchSelection, WorkspacePaths
+from pandrator_installer import platforms
 from pandrator_installer.reporting import HeadlessReporter
 from pandrator_installer.service import HeadlessInstaller
 from pandrator_installer.constants import NEMO_PYNINI_CONDA_SPEC, PANDRATOR_NUMPY_SPEC
@@ -59,6 +60,111 @@ class InstallerArchitectureTests(unittest.TestCase):
         self.assertTrue(env["PADDLE_PDX_CACHE_HOME"].endswith(os.path.join("cache", "paddlex")))
         self.assertEqual(env["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"], "True")
 
+    def test_platform_helpers_preserve_windows_and_linux_pixi_defaults(self):
+        self.assertEqual(platforms.pixi_binary_name("Windows"), "pixi.exe")
+        self.assertEqual(platforms.pixi_binary_name("Linux"), "pixi")
+        self.assertEqual(platforms.pixi_temp_suffix("Windows"), ".exe")
+        self.assertEqual(platforms.pixi_temp_suffix("Linux"), "")
+        self.assertEqual(platforms.pixi_manifest_platform("Windows", "AMD64"), "win-64")
+        self.assertEqual(platforms.pixi_manifest_platform("Linux", "x86_64"), "linux-64")
+        self.assertEqual(platforms.pixi_manifest_platform("Linux", "aarch64"), "linux-aarch64")
+        self.assertIn("windows-msvc.exe", platforms.pixi_download_url("Windows", "AMD64"))
+        self.assertIn("linux-musl", platforms.pixi_download_url("Linux", "x86_64"))
+
+    def test_ensure_pixi_manifest_uses_platform_manifest_value(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        with tempfile.TemporaryDirectory() as install_root:
+            with patch("pandrator_installer.pixi.pixi_manifest_platform", return_value="linux-64"):
+                manifest_path = installer.ensure_pixi_manifest(install_root, "test_env", "3.11")
+
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest_contents = f.read()
+
+        self.assertIn('platforms = ["linux-64"]', manifest_contents)
+
+    def test_ensure_pixi_manifest_updates_existing_platform_value(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        with tempfile.TemporaryDirectory() as install_root:
+            manifest_dir = os.path.join(install_root, "envs", "test_env")
+            os.makedirs(manifest_dir)
+            manifest_path = os.path.join(manifest_dir, "pixi.toml")
+            with open(manifest_path, "w", encoding="utf-8") as f:
+                f.write(
+                    "[workspace]\n"
+                    "name = \"test_env\"\n"
+                    "channels = [\"conda-forge\"]\n"
+                    "platforms = [\"win-64\"]\n\n"
+                    "[dependencies]\n"
+                    "python = \"3.10.*\"\n"
+                    "pip = \"*\"\n"
+                )
+
+            with patch("pandrator_installer.pixi.pixi_manifest_platform", return_value="linux-64"):
+                installer.ensure_pixi_manifest(install_root, "test_env", "3.11")
+
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest_contents = f.read()
+
+        self.assertIn('platforms = ["linux-64"]', manifest_contents)
+        self.assertIn('python = "3.11.*"', manifest_contents)
+
+    def test_program_detection_uses_shutil_which(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        with patch("pandrator_installer.operations.shutil.which", return_value="/usr/bin/git") as mock_which:
+            self.assertTrue(installer.check_program_installed("git"))
+
+        mock_which.assert_called_once_with("git")
+
+    def test_non_windows_dependency_setup_does_not_install_calibre(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        with patch("pandrator_installer.operations.os.name", "posix"):
+            with patch.object(installer, "check_calibre_available", return_value=False):
+                with patch.object(installer, "install_calibre") as install_calibre:
+                    self.assertTrue(installer.install_dependencies("install-root"))
+
+        install_calibre.assert_not_called()
+
+    def test_non_windows_backend_component_install_is_deferred(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        selection = InstallSelection.from_components(["kokoro_cpu"])
+
+        with patch("pandrator_installer.workflows.is_windows", return_value=False):
+            with self.assertRaisesRegex(RuntimeError, "deferred"):
+                installer.validate_platform_install_selection(selection)
+
+    def test_non_windows_core_install_selection_is_allowed(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        selection = InstallSelection.from_components([], install_pandrator=True)
+
+        with patch("pandrator_installer.workflows.is_windows", return_value=False):
+            installer.validate_platform_install_selection(selection)
+
+    def test_non_windows_update_with_backend_config_is_deferred(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        config = {"kokoro_support": True}
+
+        with patch("pandrator_installer.workflows.is_windows", return_value=False):
+            with self.assertRaisesRegex(RuntimeError, "deferred"):
+                installer.validate_platform_update_config(config)
+
+    def test_non_windows_update_with_core_config_is_allowed(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        config = {"kokoro_support": False, "whisperx_support": True}
+
+        with patch("pandrator_installer.workflows.is_windows", return_value=False):
+            installer.validate_platform_update_config(config)
+
+    def test_kokoro_pythonpath_uses_os_pathsep(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        with tempfile.TemporaryDirectory() as install_root:
+            kokoro_repo = os.path.join(install_root, "Kokoro")
+            env = installer.get_kokoro_runtime_env(install_root, kokoro_repo)
+
+        self.assertEqual(
+            env["PYTHONPATH"],
+            os.pathsep.join([kokoro_repo, os.path.join(kokoro_repo, "api")]),
+        )
+
     def test_headless_entry_imports_without_pyqt(self):
         command = [
             sys.executable,
@@ -86,8 +192,12 @@ class InstallerArchitectureTests(unittest.TestCase):
     def test_self_check_cli_flag_and_execution(self):
         args = parse_launcher_cli_args(["--self-check"])
         self.assertTrue(args.self_check)
-        with patch("builtins.print"):
+        with patch("builtins.print") as mock_print:
             self.assertEqual(run_self_check(), 0)
+        printed = mock_print.call_args.args[0]
+        self.assertIn("component definitions", printed)
+        self.assertIn("pixi=", printed)
+        self.assertIn("manifest=", printed)
 
 
 if __name__ == "__main__":

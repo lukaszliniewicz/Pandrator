@@ -6,6 +6,12 @@ import os
 import sys
 
 from .catalog import COMPONENTS, PACKAGING_COMPONENT_PATHS
+from .platforms import (
+    normalized_machine,
+    normalized_system,
+    pixi_binary_name,
+    pixi_manifest_platform,
+)
 from .service import HeadlessInstaller
 
 def parse_headless_components(raw_components):
@@ -42,7 +48,10 @@ def parse_launcher_cli_args(argv=None):
     parser.add_argument(
         '--skip-pandrator',
         action='store_true',
-        help='Do not select Pandrator core checkbox in headless mode.',
+        help=(
+            'Do not explicitly select the Pandrator core checkbox in headless mode. '
+            'The shared core runtime may still be prepared when a fresh install requires it.'
+        ),
     )
     parser.add_argument(
         '--self-check',
@@ -357,7 +366,13 @@ def run_self_check():
             f"missing packaging paths: {missing_packaging_paths}"
         )
 
-    print(f"Pandrator installer self-check passed ({len(COMPONENTS)} component definitions).")
+    print(
+        "Pandrator installer self-check passed "
+        f"({len(COMPONENTS)} component definitions; "
+        f"platform={normalized_system()}-{normalized_machine()}; "
+        f"pixi={pixi_binary_name()}; "
+        f"manifest={pixi_manifest_platform()})."
+    )
     return 0
 
 

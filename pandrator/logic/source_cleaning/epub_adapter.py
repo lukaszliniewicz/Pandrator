@@ -55,7 +55,7 @@ def build_source_document(epub_path: str) -> SourceDocument:
     source_index = 0
 
     from pandrator.logic.source_cleaning.deterministic.parser import unpack_epub_structure
-    from pandrator.logic.source_cleaning.deterministic import toc, footnotes, boilerplate, chapters
+    from pandrator.logic.source_cleaning.deterministic import toc, footnotes, boilerplate, chapters, illustrations
 
     try:
         structure = unpack_epub_structure(epub_path)
@@ -158,6 +158,9 @@ def build_source_document(epub_path: str) -> SourceDocument:
                     "epub_types": _inherited_attr_values(tag, "epub:type"),
                     "aria_label": str(tag.get("aria-label") or ""),
                 }
+
+                if illustrations.is_visual_material_block(block_dict):
+                    block_roles.append("deterministic_visual")
 
                 # Check element ID against global TOC anchors
                 elem_id = attributes.get("element_id") or tag.get("id") or ""

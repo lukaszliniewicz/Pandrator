@@ -11,6 +11,7 @@ try:
 except ImportError:
     PackagingSpecifierSet = None
 
+from .catalog import COMPONENTS, LINUX_DEFERRED_INSTALL_COMPONENT_KEYS
 from .constants import (
     CHATTERBOX_API_REPO_DIRNAME,
     CHATTERBOX_API_REPO_URL,
@@ -48,10 +49,56 @@ from .constants import (
     XTTS_FINETUNING_TORCH_PACKAGE_SPECS,
 )
 from .models import InstallSelection
+from .platforms import is_windows
 from .reporting import HeadlessReporter, NullReporter
 
 
 class WorkflowMixin:
+    def validate_platform_install_selection(self, selection):
+        if is_windows():
+            return
+
+        deferred_components = [
+            key
+            for key in selection.selected_components()
+            if key in LINUX_DEFERRED_INSTALL_COMPONENT_KEYS
+        ]
+        if not deferred_components:
+            return
+
+        labels = ', '.join(
+            COMPONENTS[key].label
+            for key in deferred_components
+            if key in COMPONENTS
+        )
+        raise RuntimeError(
+            "Linux setup for model server components is deferred pending per-backend review. "
+            f"Selected deferred component(s): {labels}. "
+            "Install Pandrator core first, then validate backend services one by one."
+        )
+
+    def validate_platform_update_config(self, config):
+        if is_windows():
+            return
+
+        deferred_labels = []
+        seen_config_flags = set()
+        for key in LINUX_DEFERRED_INSTALL_COMPONENT_KEYS:
+            component = COMPONENTS.get(key)
+            if component is None or component.config_flag in seen_config_flags:
+                continue
+            seen_config_flags.add(component.config_flag)
+            if config.get(component.config_flag, False):
+                deferred_labels.append(component.label)
+
+        if not deferred_labels:
+            return
+
+        raise RuntimeError(
+            "Linux update for model server components is deferred pending per-backend review. "
+            f"Installed deferred component(s): {', '.join(deferred_labels)}. "
+            "Update Pandrator core separately until these services are reviewed."
+        )
 
 
 
@@ -87,6 +134,7 @@ class WorkflowMixin:
         """Main installation process - runs in a worker thread"""
         selection = selection or self.snapshot_install_selection()
         selection.validate()
+        self.validate_platform_install_selection(selection)
         pandrator_var = selection.pandrator
         xtts_var = selection.xtts
         xtts_cpu_var = selection.xtts_cpu
@@ -126,7 +174,7 @@ class WorkflowMixin:
 
         # Check admin status
         is_admin = self.is_admin()
-        if not is_admin:
+        if is_windows() and not is_admin:
             logging.warning("Running installer without admin privileges - some features may not work correctly")
 
         try:
@@ -151,7 +199,7 @@ class WorkflowMixin:
                     )
                     if not dependencies_ok:
                         logging.warning(
-                            "[Calibre Setup] Calibre is unavailable. DOCX/MOBI conversion will require manual setup."
+                            "[Calibre Setup] Calibre is unavailable. MOBI import will require manual setup."
                         )
                 except Exception as e:
                     logging.error(f"[Calibre Setup] Error during dependency installation: {str(e)}")
@@ -427,6 +475,7 @@ class WorkflowMixin:
         if KOKORO_GPU_SUPPORT_CONFIG_FLAG not in config:
             config[KOKORO_GPU_SUPPORT_CONFIG_FLAG] = False
             self.save_install_config(pandrator_base_path, config)
+        self.validate_platform_update_config(config)
 
         pandrator_env_missing = not os.path.exists(self.get_pixi_manifest_path(pandrator_base_path, 'pandrator_installer'))
         silero_env_missing = not os.path.exists(self.get_pixi_manifest_path(pandrator_base_path, 'silero_api_server_installer'))
