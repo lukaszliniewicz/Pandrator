@@ -205,6 +205,7 @@ chmod +x PandratorInstaller-x86_64.AppImage
 ```
 
 The Linux AppImage defaults to installing under `~/Pandrator`. Use the install-location selector in the GUI, or pass `--workspace /path/to/parent`, to choose another parent directory. The installer keeps Pixi, environments, model caches, and downloaded repos under the selected workspace as much as possible. It does not install system packages on Linux.
+After successful install and update runs, the installer prunes disposable package caches under `.pixi-cache` while preserving model/runtime caches under `cache` so offline launches and model-backed features do not have to re-download assets.
 
 To build and smoke-test the standalone installer locally:
 

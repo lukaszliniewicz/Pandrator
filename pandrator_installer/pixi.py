@@ -93,6 +93,35 @@ class PixiEnvironmentMixin:
 
         return env
 
+    def cleanup_installer_package_caches(self, pandrator_path):
+        """Best-effort cleanup of disposable package caches after successful install/update."""
+        pixi_cache = os.path.join(pandrator_path, PIXI_CACHE_DIRNAME)
+        cleanup_paths = [
+            os.path.join(pixi_cache, PIXI_PIP_CACHE_SUBDIRNAME),
+            os.path.join(pixi_cache, 'pkgs'),
+            os.path.join(pixi_cache, 'rattler'),
+            os.path.join(pixi_cache, 'repodata'),
+            os.path.join(pixi_cache, 'uv-cache'),
+            os.path.join(pixi_cache, PIXI_TEMP_SUBDIRNAME),
+        ]
+
+        for cache_path in cleanup_paths:
+            if not os.path.exists(cache_path):
+                continue
+            try:
+                if os.path.isdir(cache_path):
+                    shutil.rmtree(cache_path)
+                else:
+                    os.remove(cache_path)
+                logging.info("Removed installer package cache: %s", cache_path)
+            except OSError as exc:
+                logging.warning("Could not remove installer package cache %s: %s", cache_path, exc)
+
+        # Recreate the expected empty cache roots so later launcher operations can reuse them.
+        for cache_path in cleanup_paths:
+            os.makedirs(cache_path, exist_ok=True)
+        self.get_pixi_subprocess_env(pandrator_path)
+
     def run_pixi_command(self, pandrator_path, arguments, cwd=None, log_errors=True):
         pixi_executable = self.get_pixi_executable(pandrator_path)
         if not os.path.exists(pixi_executable):

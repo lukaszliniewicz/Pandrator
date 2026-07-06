@@ -438,6 +438,9 @@ class WorkflowMixin:
 
             self.write_packaging_layout(pandrator_path)
 
+            self.reporter.status("Cleaning installer package caches...")
+            self.cleanup_installer_package_caches(pandrator_path)
+
             # Set final permissions if admin
             if is_admin:
                 self.reporter.progress(0.98)
@@ -876,6 +879,9 @@ class WorkflowMixin:
                 bootstrap_executor.shutdown()
 
             self.write_packaging_layout(pandrator_base_path)
+
+            self.reporter.status("Cleaning installer package caches...")
+            self.cleanup_installer_package_caches(pandrator_base_path)
 
             # Set permissions if running as admin
             if is_admin:

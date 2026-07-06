@@ -61,6 +61,38 @@ class InstallerArchitectureTests(unittest.TestCase):
         self.assertTrue(env["PADDLE_PDX_CACHE_HOME"].endswith(os.path.join("cache", "paddlex")))
         self.assertEqual(env["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"], "True")
 
+    def test_package_cache_cleanup_preserves_model_caches(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        with tempfile.TemporaryDirectory() as install_root:
+            pixi_cache = os.path.join(install_root, ".pixi-cache")
+            disposable_dirs = [
+                os.path.join(pixi_cache, "pip"),
+                os.path.join(pixi_cache, "pkgs"),
+                os.path.join(pixi_cache, "rattler"),
+                os.path.join(pixi_cache, "repodata"),
+                os.path.join(pixi_cache, "uv-cache"),
+                os.path.join(pixi_cache, "tmp"),
+            ]
+            model_cache = os.path.join(
+                install_root,
+                "cache",
+                "huggingface",
+                "hub",
+                "models--segment-any-text--sat-12l-sm",
+            )
+
+            for cache_dir in disposable_dirs + [model_cache]:
+                os.makedirs(cache_dir)
+                with open(os.path.join(cache_dir, "artifact"), "w", encoding="utf-8") as file:
+                    file.write("cached")
+
+            installer.cleanup_installer_package_caches(install_root)
+
+            for cache_dir in disposable_dirs:
+                self.assertTrue(os.path.isdir(cache_dir))
+                self.assertEqual(os.listdir(cache_dir), [])
+            self.assertTrue(os.path.exists(os.path.join(model_cache, "artifact")))
+
     def test_platform_helpers_preserve_windows_and_linux_pixi_defaults(self):
         self.assertEqual(platforms.pixi_binary_name("Windows"), "pixi.exe")
         self.assertEqual(platforms.pixi_binary_name("Linux"), "pixi")
