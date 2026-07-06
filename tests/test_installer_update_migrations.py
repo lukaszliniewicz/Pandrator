@@ -103,8 +103,35 @@ class InstallerUpdateMigrationTests(unittest.TestCase):
             "pandrator_installer",
             ["numpy==1.26.4", "wtpsplit-lite==0.2.0"],
         )
+        check_command = run_pixi.call_args_list[0].args[2]
+        self.assertIn('SaT("sat-12l-sm"', check_command[2])
         install_with_pip.assert_not_called()
         self.assertEqual(run_pixi.call_count, 2)
+
+    def test_retired_wtpsplit_model_cache_is_removed(self):
+        with tempfile.TemporaryDirectory() as install_root:
+            hub_cache = os.path.join(install_root, "cache", "huggingface", "hub")
+            retired_cache = os.path.join(hub_cache, "models--segment-any-text--sat-3l-sm")
+            retired_lock = os.path.join(hub_cache, ".locks", "models--segment-any-text--sat-3l-sm")
+            current_cache = os.path.join(hub_cache, "models--segment-any-text--sat-12l-sm")
+
+            os.makedirs(retired_cache)
+            os.makedirs(retired_lock)
+            os.makedirs(current_cache)
+            with open(os.path.join(retired_cache, "old-model"), "w", encoding="utf-8") as file:
+                file.write("old")
+            with open(os.path.join(retired_lock, "lock"), "w", encoding="utf-8") as file:
+                file.write("lock")
+            with open(os.path.join(current_cache, "current-model"), "w", encoding="utf-8") as file:
+                file.write("current")
+
+            installer = HeadlessInstaller(working_dir=os.path.dirname(install_root))
+
+            installer.remove_retired_wtpsplit_model_caches(install_root)
+
+            self.assertFalse(os.path.exists(retired_cache))
+            self.assertFalse(os.path.exists(retired_lock))
+            self.assertTrue(os.path.exists(current_cache))
 
     @patch("pandrator_installer.service.HeadlessInstaller.install_requirement_specs_with_pip")
     @patch("pandrator_installer.service.HeadlessInstaller.add_pypi_requirements", return_value=[])

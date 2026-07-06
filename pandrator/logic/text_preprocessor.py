@@ -27,6 +27,7 @@ DOUBLE_QUOTATION_MARK_TRANSLATION_TABLE = str.maketrans("", "", DOUBLE_QUOTATION
 SINGLE_QUOTATION_MARK_PATTERN = re.compile(
     rf"(?<!\w)[{re.escape(SINGLE_QUOTATION_MARKS)}]|[{re.escape(SINGLE_QUOTATION_MARKS)}](?!\w)"
 )
+CLOSING_SPLIT_PUNCTUATION = "\"')]}”’»›」』》〟"
 
 SENTENCE_SPLITTER_SUPPORTED_LANGUAGES = {
     "ca",
@@ -427,6 +428,9 @@ def _process_chunk(chunk: str, settings: dict) -> list[dict]:
 
     for block in _split_structural_text_blocks(chunk):
         if block["type"] == "chapter":
+            if processed_sentences and processed_sentences[-1].get("chapter") != "yes":
+                processed_sentences[-1]["paragraph"] = "yes"
+
             title = block["text"].strip()
             if not title:
                 continue
@@ -639,11 +643,12 @@ def find_best_split_index(sentence, language, max_sentence_length):
     for mark in punctuation_marks:
         for match in re.finditer(re.escape(mark), sentence):
             index = match.start()
-            if min_distance <= index <= len(sentence) - min_distance and index + 1 <= max_sentence_length:
+            split_index = _extend_split_index_past_closing_punctuation(sentence, index + len(mark))
+            if min_distance <= index <= len(sentence) - min_distance and split_index <= max_sentence_length:
                 if not (mark == ',' and sentence[index-1:index].isdigit() and sentence[index+1:index+2].isdigit()):
-                    diff = abs((index + 1) - target_index)
+                    diff = abs(split_index - target_index)
                     if diff < min_diff:
-                        min_diff, best_split_index = diff, index + 1
+                        min_diff, best_split_index = diff, split_index
 
     if best_split_index is None:
         min_diff = float('inf')
@@ -656,6 +661,12 @@ def find_best_split_index(sentence, language, max_sentence_length):
                         min_diff, best_split_index = diff, index
 
     return best_split_index
+
+
+def _extend_split_index_past_closing_punctuation(sentence: str, split_index: int) -> int:
+    while split_index < len(sentence) and sentence[split_index] in CLOSING_SPLIT_PUNCTUATION:
+        split_index += 1
+    return split_index
 
 
 def split_long_sentences_2(sentence_dict, max_sentence_length, language: str):

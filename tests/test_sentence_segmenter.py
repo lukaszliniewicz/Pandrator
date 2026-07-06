@@ -9,6 +9,9 @@ class SentenceSegmenterTests(unittest.TestCase):
         sentence_segmenter._SEGMENTER = None
         sentence_segmenter._SEGMENTER_FAILED = False
 
+    def test_default_model_is_high_quality_sentence_model(self):
+        self.assertEqual(sentence_segmenter.WTPSPLIT_MODEL, "sat-12l-sm")
+
     @patch("pandrator.logic.sentence_segmenter._create_segmenter")
     def test_segments_paragraphs_and_trims_boundary_whitespace(self, create_segmenter):
         segmenter = MagicMock()

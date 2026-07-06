@@ -5,7 +5,7 @@ import re
 import threading
 
 
-WTPSPLIT_MODEL = "sat-3l-sm"
+WTPSPLIT_MODEL = "sat-12l-sm"
 WTPSPLIT_THRESHOLD = 0.05
 _PARAGRAPH_BOUNDARY_RE = re.compile(r"\r?\n+")
 _SEGMENTER = None

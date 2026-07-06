@@ -42,6 +42,7 @@ from .constants import (
     WHISPERX_VERSION,
     WTPSPLIT_LITE_SPEC,
     WTPSPLIT_MODEL,
+    WTPSPLIT_RETIRED_MODELS,
     XTTS_FINETUNING_BUNDLED_WHEEL_PREFIX,
 )
 
@@ -1241,6 +1242,7 @@ class ComponentOperationsMixin:
                 check_command,
                 log_errors=False,
             )
+            self.remove_retired_wtpsplit_model_caches(pandrator_path)
             logging.info("wtpsplit-lite sentence-segmentation runtime is ready.")
             return
         except subprocess.CalledProcessError as exc:
@@ -1260,7 +1262,33 @@ class ComponentOperationsMixin:
             check_command,
             log_errors=False,
         )
+        self.remove_retired_wtpsplit_model_caches(pandrator_path)
         logging.info("wtpsplit-lite runtime repair and model prefetch completed successfully.")
+
+    def remove_retired_wtpsplit_model_caches(self, pandrator_path):
+        """Remove old installer-managed wtpsplit model caches after the current model is ready."""
+        hub_cache = os.path.join(pandrator_path, 'cache', 'huggingface', 'hub')
+        if not os.path.isdir(hub_cache):
+            return
+
+        for model_name in WTPSPLIT_RETIRED_MODELS:
+            if model_name == WTPSPLIT_MODEL:
+                continue
+
+            cache_name = f"models--segment-any-text--{model_name}"
+            for cache_root in (hub_cache, os.path.join(hub_cache, '.locks')):
+                cache_path = os.path.join(cache_root, cache_name)
+                if not os.path.exists(cache_path):
+                    continue
+
+                try:
+                    if os.path.isdir(cache_path):
+                        shutil.rmtree(cache_path)
+                    else:
+                        os.remove(cache_path)
+                    logging.info("Removed retired wtpsplit model cache: %s", cache_path)
+                except OSError as exc:
+                    logging.warning("Could not remove retired wtpsplit model cache %s: %s", cache_path, exc)
 
     def ensure_pdf_ocr_runtime(self, pandrator_path, env_name='pandrator_installer'):
         """Verify, repair, and prefetch the default PP-OCRv6 medium ONNX models."""

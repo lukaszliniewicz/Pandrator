@@ -186,6 +186,47 @@ class TextPreprocessorTests(unittest.TestCase):
         self.assertEqual(sentences[0]["chapter"], "yes")
         split_text.assert_called_once_with("Body starts here.")
 
+    @patch("pandrator.logic.text_preprocessor.sentence_segmenter.split_text")
+    def test_sentence_before_chapter_marker_keeps_paragraph_boundary(self, split_text):
+        split_text.side_effect = [
+            ["The last sentence of the previous chapter."],
+            ["The first sentence of the next chapter."],
+        ]
+        settings = {
+            "disable_paragraph_detection": True,
+            "language": "en",
+            "max_sentence_length": 200,
+            "enable_sentence_splitting": True,
+            "enable_sentence_appending": False,
+            "enable_nemo_normalization": False,
+            "tts_service": "XTTS",
+        }
+
+        sentences = preprocess_text(
+            "The last sentence of the previous chapter.\n\n"
+            "[[Chapter]]STAVE TWO\n\n"
+            "The first sentence of the next chapter.",
+            settings,
+        )
+
+        self.assertEqual(sentences[0]["original_sentence"], "The last sentence of the previous chapter.")
+        self.assertEqual(sentences[0]["paragraph"], "yes")
+        self.assertEqual(sentences[1]["original_sentence"], "STAVE TWO.")
+        self.assertEqual(sentences[1]["chapter"], "yes")
+
+    def test_punctuation_split_keeps_closing_quote_with_previous_part(self):
+        text = (
+            'This long passage keeps building pressure inside a quoted clause with enough words '
+            'to require a split and then Scrooge answered "Never," and the sentence continues '
+            'with more material after the quotation so the second part should not begin with a quote.'
+        )
+
+        split_index = find_best_split_index(text, "en", 160)
+
+        self.assertIsNotNone(split_index)
+        self.assertNotEqual(text[split_index], '"')
+        self.assertTrue(text[:split_index].rstrip().endswith(',"'))
+
     def test_conjunction_fallback_chooses_balanced_split(self):
         text = (
             "This is a long clause without commas and it keeps going because the author wanted "
