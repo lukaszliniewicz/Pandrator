@@ -17,6 +17,7 @@ from ..catalog import LINUX_DEFERRED_INSTALL_COMPONENT_KEYS
 from ..components import ComponentOperationsMixin
 from ..constants import (
     CHATTERBOX_GPU_SUPPORT_CONFIG_FLAG,
+    KOBOLD_QWEN_GPU_SUPPORT_CONFIG_FLAG,
     KOKORO_GPU_SUPPORT_CONFIG_FLAG,
     MAGPIE_GPU_SUPPORT_CONFIG_FLAG,
     RVC_GPU_SUPPORT_CONFIG_FLAG,
@@ -75,6 +76,8 @@ class PandratorInstaller(
         self.xtts_finetuning_var = False
         self.chatterbox_var = False
         self.chatterbox_cpu_var = False
+        self.kobold_qwen_var = False
+        self.kobold_qwen_cpu_var = False
         self.magpie_var = False
         self.magpie_cpu_var = False
 
@@ -93,6 +96,8 @@ class PandratorInstaller(
         self.launch_silero_var = False
         self.launch_chatterbox_var = False
         self.chatterbox_cpu_launch_var = False
+        self.launch_kobold_qwen_var = False
+        self.kobold_qwen_cpu_launch_var = False
         self.launch_magpie_var = False
         self.magpie_cpu_launch_var = False
 
@@ -105,6 +110,7 @@ class PandratorInstaller(
         self.voxtral_process = None
         self.kokoro_process = None
         self.chatterbox_process = None
+        self.kobold_qwen_process = None
         self.magpie_process = None
         self.rvc_process = None
         self.backend_stop_targets = []
@@ -393,6 +399,8 @@ class PandratorInstaller(
         self.kokoro_cpu_checkbox = QCheckBox("Use CPU-only runtime")
         self.chatterbox_checkbox = ToggleSwitch("Install Chatterbox")
         self.chatterbox_cpu_checkbox = QCheckBox("Use CPU-only runtime")
+        self.kobold_qwen_checkbox = ToggleSwitch("Install Qwen3 TTS")
+        self.kobold_qwen_cpu_checkbox = QCheckBox("Use CPU-only runtime")
         self.magpie_checkbox = ToggleSwitch("Install Magpie")
         self.magpie_cpu_checkbox = QCheckBox("Use CPU-only runtime")
 
@@ -433,6 +441,12 @@ class PandratorInstaller(
                 self.chatterbox_checkbox,
                 "Expressive local speech generated from uploaded reference recordings.",
                 (self.chatterbox_cpu_checkbox,),
+                "Voice cloning",
+            ),
+            self._create_option_card(
+                self.kobold_qwen_checkbox,
+                "Qwen3-TTS through KoboldCpp with CUDA, Vulkan, Metal, or CPU backends.",
+                (self.kobold_qwen_cpu_checkbox,),
                 "Voice cloning",
             ),
             self._create_option_card(
@@ -500,6 +514,10 @@ class PandratorInstaller(
             self.chatterbox_cpu_checkbox,
         )
         self.bind_cpu_install_option(
+            self.kobold_qwen_checkbox,
+            self.kobold_qwen_cpu_checkbox,
+        )
+        self.bind_cpu_install_option(
             self.magpie_checkbox,
             self.magpie_cpu_checkbox,
         )
@@ -564,6 +582,8 @@ class PandratorInstaller(
         self.launch_silero_checkbox = ToggleSwitch("Launch Silero")
         self.launch_chatterbox_checkbox = ToggleSwitch("Launch Chatterbox")
         self.chatterbox_cpu_launch_checkbox = QCheckBox("Use CPU")
+        self.launch_kobold_qwen_checkbox = ToggleSwitch("Launch Qwen3 TTS")
+        self.kobold_qwen_cpu_launch_checkbox = QCheckBox("Use CPU")
         self.launch_magpie_checkbox = ToggleSwitch("Launch Magpie")
         self.magpie_cpu_launch_checkbox = QCheckBox("Use CPU")
 
@@ -607,6 +627,11 @@ class PandratorInstaller(
                 self.launch_chatterbox_checkbox,
                 "Start the installed Chatterbox speech service.",
                 (self.chatterbox_cpu_launch_checkbox,),
+            ),
+            self._create_option_card(
+                self.launch_kobold_qwen_checkbox,
+                "Start the installed Qwen3 TTS service through KoboldCpp.",
+                (self.kobold_qwen_cpu_launch_checkbox,),
             ),
             self._create_option_card(
                 self.launch_magpie_checkbox,
@@ -779,6 +804,20 @@ class PandratorInstaller(
         else:
             set_widget_state(self.chatterbox_cpu_launch_checkbox, False, False)
 
+        # Qwen3 TTS
+        kobold_qwen_support = config.get('kobold_qwen_support', False)
+        kobold_qwen_gpu_support = config.get(KOBOLD_QWEN_GPU_SUPPORT_CONFIG_FLAG, False)
+        set_widget_state(self.kobold_qwen_checkbox, not kobold_qwen_support, False)
+        set_widget_state(self.kobold_qwen_cpu_checkbox, not kobold_qwen_support, False)
+        set_widget_state(self.launch_kobold_qwen_checkbox, kobold_qwen_support, False)
+        if kobold_qwen_support:
+            if kobold_qwen_gpu_support:
+                set_widget_state(self.kobold_qwen_cpu_launch_checkbox, True, False)
+            else:
+                set_widget_state(self.kobold_qwen_cpu_launch_checkbox, False, True)
+        else:
+            set_widget_state(self.kobold_qwen_cpu_launch_checkbox, False, False)
+
         # Magpie
         magpie_support = config.get('magpie_support', False)
         magpie_gpu_support = config.get(MAGPIE_GPU_SUPPORT_CONFIG_FLAG, False)
@@ -849,12 +888,14 @@ class PandratorInstaller(
             'xtts_finetuning': (self.xtts_finetuning_checkbox,),
             'chatterbox': (self.chatterbox_checkbox, self.chatterbox_cpu_checkbox),
             'chatterbox_cpu': (self.chatterbox_checkbox, self.chatterbox_cpu_checkbox),
+            'kobold_qwen': (self.kobold_qwen_checkbox, self.kobold_qwen_cpu_checkbox),
+            'kobold_qwen_cpu': (self.kobold_qwen_checkbox, self.kobold_qwen_cpu_checkbox),
             'magpie': (self.magpie_checkbox, self.magpie_cpu_checkbox),
             'magpie_cpu': (self.magpie_checkbox, self.magpie_cpu_checkbox),
         }
         tooltip = (
             "Linux setup for this component is deferred pending per-backend review. "
-            "Install Pandrator core first; Kokoro is the currently reviewed Linux backend."
+            "Install Pandrator core first; Kokoro, Chatterbox, and Qwen3 TTS are currently reviewed Linux backends."
         )
         seen_controls = set()
         for component_key in LINUX_DEFERRED_INSTALL_COMPONENT_KEYS:
@@ -934,6 +975,7 @@ class PandratorInstaller(
             'whisperx': config.get('whisperx_support', False),
             'xtts_finetuning': config.get('xtts_finetuning_support', False),
             'chatterbox': config.get('chatterbox_support', False),
+            'kobold_qwen': config.get('kobold_qwen_support', False),
             'magpie': config.get('magpie_support', False)
         }
 
@@ -1013,6 +1055,14 @@ class PandratorInstaller(
                 self.chatterbox_checkbox.isChecked()
                 and self.chatterbox_cpu_checkbox.isChecked()
             ),
+            kobold_qwen=(
+                self.kobold_qwen_checkbox.isChecked()
+                and not self.kobold_qwen_cpu_checkbox.isChecked()
+            ),
+            kobold_qwen_cpu=(
+                self.kobold_qwen_checkbox.isChecked()
+                and self.kobold_qwen_cpu_checkbox.isChecked()
+            ),
             magpie=self.magpie_checkbox.isChecked() and not self.magpie_cpu_checkbox.isChecked(),
             magpie_cpu=self.magpie_checkbox.isChecked() and self.magpie_cpu_checkbox.isChecked(),
         )
@@ -1029,7 +1079,7 @@ class PandratorInstaller(
             "xtts_finetuning",
         ):
             getattr(self, f"{component}_checkbox").setChecked(getattr(selection, component))
-        for component in ("xtts", "kokoro", "chatterbox", "magpie", "rvc"):
+        for component in ("xtts", "kokoro", "chatterbox", "kobold_qwen", "magpie", "rvc"):
             cpu_selected = getattr(selection, f"{component}_cpu")
             getattr(self, f"{component}_checkbox").setChecked(
                 getattr(selection, component) or cpu_selected
@@ -1054,6 +1104,8 @@ class PandratorInstaller(
             silero=self.launch_silero_checkbox.isChecked(),
             chatterbox=self.launch_chatterbox_checkbox.isChecked(),
             chatterbox_cpu=self.chatterbox_cpu_launch_checkbox.isChecked(),
+            kobold_qwen=self.launch_kobold_qwen_checkbox.isChecked(),
+            kobold_qwen_cpu=self.kobold_qwen_cpu_launch_checkbox.isChecked(),
             magpie=self.launch_magpie_checkbox.isChecked(),
             magpie_cpu=self.magpie_cpu_launch_checkbox.isChecked(),
         )

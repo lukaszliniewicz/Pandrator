@@ -34,6 +34,8 @@ class TTSProviderProfileTests(unittest.TestCase):
         self.assertEqual(profiles["open-unified-tts"]["api_base"], "http://127.0.0.1:8765")
         self.assertEqual(profiles["pandrator-xtts2-api"]["api_base"], "http://127.0.0.1:8020")
         self.assertEqual(profiles["pandrator-chatterbox-fastapi"]["api_base"], "http://127.0.0.1:8040")
+        self.assertEqual(profiles["pandrator-kobold-qwen-fastapi"]["api_base"], "http://127.0.0.1:8042")
+        self.assertEqual(profiles["pandrator-kobold-qwen-fastapi"]["models"], ["qwen3-tts"])
         self.assertNotIn("styletts2-sillytavern", profiles)
         self.assertNotIn("voxcpm-nanovllm", profiles)
 

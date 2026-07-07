@@ -30,6 +30,24 @@ class TestInstallerLauncherChatterbox(unittest.TestCase):
         self.assertFalse(installer.chatterbox_checkbox.isChecked())
         self.assertFalse(installer.chatterbox_cpu_checkbox.isChecked())
 
+    def test_kobold_qwen_cpu_option_maps_to_cpu_install_variant(self):
+        installer = PandratorInstaller(headless=True)
+        self.assertTrue(hasattr(installer, "kobold_qwen_checkbox"))
+        self.assertTrue(hasattr(installer, "kobold_qwen_cpu_checkbox"))
+
+        installer.kobold_qwen_cpu_checkbox.setChecked(True)
+        self.assertTrue(installer.kobold_qwen_checkbox.isChecked())
+        self.assertTrue(installer.kobold_qwen_cpu_checkbox.isChecked())
+        selection = installer.snapshot_install_selection()
+        self.assertFalse(selection.kobold_qwen)
+        self.assertTrue(selection.kobold_qwen_cpu)
+
+        installer.launch_kobold_qwen_checkbox.setChecked(True)
+        installer.kobold_qwen_cpu_launch_checkbox.setChecked(True)
+        launch_selection = installer.snapshot_launch_selection()
+        self.assertTrue(launch_selection.kobold_qwen)
+        self.assertTrue(launch_selection.kobold_qwen_cpu)
+
     def test_rvc_cpu_option_maps_to_cpu_install_and_launch_variants(self):
         installer = PandratorInstaller(headless=True)
 
@@ -60,7 +78,7 @@ class TestInstallerLauncherChatterbox(unittest.TestCase):
             QLabel,
             "voiceCapabilityBadge",
         )
-        self.assertEqual(len(capability_labels), 8)
+        self.assertEqual(len(capability_labels), 9)
         self.assertEqual(
             {label.text() for label in capability_labels},
             {"Pre-built voices", "Voice cloning"},

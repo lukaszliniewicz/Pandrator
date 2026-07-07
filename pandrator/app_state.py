@@ -88,6 +88,12 @@ def default_tts_service_configs() -> List[Dict[str, Any]]:
             "kind": "local",
         },
         {
+            "id": "kobold_qwen",
+            "name": "Qwen3 TTS",
+            "api_base": "http://127.0.0.1:8042",
+            "kind": "local",
+        },
+        {
             "id": "openai",
             "name": "OpenAI",
             "kind": "commercial",

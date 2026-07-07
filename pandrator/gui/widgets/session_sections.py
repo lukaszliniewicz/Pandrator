@@ -120,6 +120,7 @@ class TtsSettingsSection(QFrame):
                 "Magpie",
                 "Silero",
                 "Chatterbox",
+                "Qwen3 TTS",
                 "OpenAI",
                 "Google Gemini",
                 "Custom",

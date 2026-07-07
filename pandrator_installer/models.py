@@ -53,6 +53,8 @@ class InstallSelection:
     xtts_finetuning: bool = False
     chatterbox: bool = False
     chatterbox_cpu: bool = False
+    kobold_qwen: bool = False
+    kobold_qwen_cpu: bool = False
     magpie: bool = False
     magpie_cpu: bool = False
 
@@ -93,6 +95,7 @@ class InstallSelection:
             ("xtts", "xtts_cpu"),
             ("kokoro", "kokoro_cpu"),
             ("chatterbox", "chatterbox_cpu"),
+            ("kobold_qwen", "kobold_qwen_cpu"),
             ("magpie", "magpie_cpu"),
             ("rvc", "rvc_cpu"),
         )
@@ -127,6 +130,8 @@ class LaunchSelection:
     silero: bool = False
     chatterbox: bool = False
     chatterbox_cpu: bool = False
+    kobold_qwen: bool = False
+    kobold_qwen_cpu: bool = False
     magpie: bool = False
     magpie_cpu: bool = False
 
@@ -139,6 +144,7 @@ class LaunchSelection:
             ("silero", self.silero),
             ("kokoro", self.kokoro),
             ("chatterbox", self.chatterbox),
+            ("kobold_qwen", self.kobold_qwen),
             ("magpie", self.magpie),
         )
         return tuple(key for key, selected in ordered_flags if selected)

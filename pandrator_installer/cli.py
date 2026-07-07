@@ -44,7 +44,8 @@ def parse_launcher_cli_args(argv=None):
         help=(
             'Comma-separated component list for headless mode: '
             'xtts,xtts_cpu,voxcpm,fishs2,silero,voxtral,kokoro,kokoro_cpu,'
-            'rvc,rvc_cpu,whisperx,xtts_finetuning,chatterbox,chatterbox_cpu,magpie,magpie_cpu'
+            'rvc,rvc_cpu,whisperx,xtts_finetuning,chatterbox,chatterbox_cpu,'
+            'kobold_qwen,kobold_qwen_cpu,magpie,magpie_cpu'
         ),
     )
     parser.add_argument(
@@ -382,6 +383,7 @@ def run_self_check():
         "xtts_finetuning",
         "rvc",
         "chatterbox",
+        "kobold_qwen",
         "magpie",
     }
     missing_components = sorted(required_components.difference(COMPONENTS))

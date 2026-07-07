@@ -55,6 +55,7 @@ def main():
     parser.add_argument("-kokoro", "--kokoro", action="store_true", help="Connect to Kokoro")
     parser.add_argument("-silero", "--silero", action="store_true", help="Connect to Silero")
     parser.add_argument("-chatterbox", "--chatterbox", action="store_true", help="Connect to Chatterbox")
+    parser.add_argument("-kobold-qwen", "--kobold-qwen", action="store_true", help="Connect to Qwen3 TTS")
     parser.add_argument("-magpie", "--magpie", action="store_true", help="Connect to Magpie")
     args = parser.parse_args()
     logging.info(f"Command line arguments: {args}")
@@ -88,6 +89,8 @@ def main():
             auto_connect_service = "Silero"
         elif args.chatterbox:
             auto_connect_service = "Chatterbox"
+        elif args.kobold_qwen:
+            auto_connect_service = "Qwen3 TTS"
         elif args.magpie:
             auto_connect_service = "Magpie"
 
@@ -111,6 +114,9 @@ def main():
         elif auto_connect_service == "Chatterbox":
             logic.state.tts.use_external_server = False
             logic.state.tts.external_server_url = "http://127.0.0.1:8040"
+        elif auto_connect_service == "Qwen3 TTS":
+            logic.state.tts.use_external_server = False
+            logic.state.tts.external_server_url = "http://127.0.0.1:8042"
         elif auto_connect_service == "Magpie":
             logic.state.tts.use_external_server = False
             logic.state.tts.external_server_url = "http://127.0.0.1:8030"

@@ -16,6 +16,9 @@ from .constants import (
     CHATTERBOX_API_REPO_DIRNAME,
     CHATTERBOX_API_REPO_URL,
     CHATTERBOX_GPU_SUPPORT_CONFIG_FLAG,
+    KOBOLD_QWEN_API_REPO_DIRNAME,
+    KOBOLD_QWEN_API_REPO_URL,
+    KOBOLD_QWEN_GPU_SUPPORT_CONFIG_FLAG,
     MAGPIE_API_REPO_DIRNAME,
     MAGPIE_API_REPO_URL,
     MAGPIE_GPU_SUPPORT_CONFIG_FLAG,
@@ -150,6 +153,8 @@ class WorkflowMixin:
         xtts_finetuning_var = selection.xtts_finetuning
         chatterbox_var = selection.chatterbox
         chatterbox_cpu_var = selection.chatterbox_cpu
+        kobold_qwen_var = selection.kobold_qwen
+        kobold_qwen_cpu_var = selection.kobold_qwen_cpu
         magpie_var = selection.magpie
         magpie_cpu_var = selection.magpie_cpu
 
@@ -164,6 +169,7 @@ class WorkflowMixin:
         kokoro_repo_path = os.path.join(pandrator_path, KOKORO_API_REPO_DIRNAME)
         easy_xtts_trainer_path = os.path.join(pandrator_path, 'easy_xtts_trainer')
         chatterbox_repo_path = os.path.join(pandrator_path, CHATTERBOX_API_REPO_DIRNAME)
+        kobold_qwen_repo_path = os.path.join(pandrator_path, KOBOLD_QWEN_API_REPO_DIRNAME)
         magpie_repo_path = os.path.join(pandrator_path, MAGPIE_API_REPO_DIRNAME)
         rvc_repo_path = os.path.join(pandrator_path, RVC_API_REPO_DIRNAME)
 
@@ -245,6 +251,8 @@ class WorkflowMixin:
                 concurrent_tasks["Clone XTTS Trainer"] = (self.clone_repo, (EASY_XTTS_TRAINER_REPO_URL, easy_xtts_trainer_path), {})
             if (chatterbox_var or chatterbox_cpu_var) and not os.path.exists(chatterbox_repo_path):
                 concurrent_tasks["Clone Chatterbox"] = (self.clone_repo, (CHATTERBOX_API_REPO_URL, chatterbox_repo_path), {})
+            if (kobold_qwen_var or kobold_qwen_cpu_var) and not os.path.exists(kobold_qwen_repo_path):
+                concurrent_tasks["Clone Qwen3 TTS"] = (self.clone_repo, (KOBOLD_QWEN_API_REPO_URL, kobold_qwen_repo_path), {})
             if (magpie_var or magpie_cpu_var) and not os.path.exists(magpie_repo_path):
                 concurrent_tasks["Clone Magpie"] = (self.clone_repo, (MAGPIE_API_REPO_URL, magpie_repo_path), {})
             if (rvc_var or rvc_cpu_var) and not os.path.exists(rvc_repo_path):
@@ -332,6 +340,15 @@ class WorkflowMixin:
                 self.install_chatterbox_api_server(
                     chatterbox_repo_path,
                     use_cpu=chatterbox_cpu_var,
+                    pixi_path=shared_pixi_path,
+                )
+
+            if kobold_qwen_var or kobold_qwen_cpu_var:
+                self.reporter.progress(0.89)
+                self.reporter.status("Bootstrapping Qwen3 TTS API server (temporary startup)...")
+                self.install_kobold_qwen_api_server(
+                    kobold_qwen_repo_path,
+                    use_cpu=kobold_qwen_cpu_var,
                     pixi_path=shared_pixi_path,
                 )
 
@@ -429,6 +446,10 @@ class WorkflowMixin:
             config[CHATTERBOX_GPU_SUPPORT_CONFIG_FLAG] = (
                 config.get(CHATTERBOX_GPU_SUPPORT_CONFIG_FLAG, False) or chatterbox_var
             )
+            config['kobold_qwen_support'] = config.get('kobold_qwen_support', False) or kobold_qwen_var or kobold_qwen_cpu_var
+            config[KOBOLD_QWEN_GPU_SUPPORT_CONFIG_FLAG] = (
+                config.get(KOBOLD_QWEN_GPU_SUPPORT_CONFIG_FLAG, False) or kobold_qwen_var
+            )
             config['magpie_support'] = config.get('magpie_support', False) or magpie_var or magpie_cpu_var
             config[MAGPIE_GPU_SUPPORT_CONFIG_FLAG] = (
                 config.get(MAGPIE_GPU_SUPPORT_CONFIG_FLAG, False) or magpie_var
@@ -471,12 +492,16 @@ class WorkflowMixin:
         kokoro_repo_path = os.path.join(pandrator_base_path, KOKORO_API_REPO_DIRNAME)
         easy_xtts_trainer_path = os.path.join(pandrator_base_path, 'easy_xtts_trainer')
         chatterbox_repo_path = os.path.join(pandrator_base_path, CHATTERBOX_API_REPO_DIRNAME)
+        kobold_qwen_repo_path = os.path.join(pandrator_base_path, KOBOLD_QWEN_API_REPO_DIRNAME)
         magpie_repo_path = os.path.join(pandrator_base_path, MAGPIE_API_REPO_DIRNAME)
         rvc_repo_path = os.path.join(pandrator_base_path, RVC_API_REPO_DIRNAME)
         self.ensure_update_runtime_stopped(pandrator_base_path)
         config = self.load_install_config(pandrator_base_path, detect_rvc=True)
         if KOKORO_GPU_SUPPORT_CONFIG_FLAG not in config:
             config[KOKORO_GPU_SUPPORT_CONFIG_FLAG] = False
+            self.save_install_config(pandrator_base_path, config)
+        if KOBOLD_QWEN_GPU_SUPPORT_CONFIG_FLAG not in config:
+            config[KOBOLD_QWEN_GPU_SUPPORT_CONFIG_FLAG] = False
             self.save_install_config(pandrator_base_path, config)
         self.validate_platform_update_config(config)
 
@@ -569,6 +594,13 @@ class WorkflowMixin:
                     update_tasks["Update Chatterbox"] = (self.pull_repo, (chatterbox_repo_path,), {})
                 else:
                     update_tasks["Clone Chatterbox"] = (self.clone_repo, (CHATTERBOX_API_REPO_URL, chatterbox_repo_path), {})
+
+            # Qwen3 TTS
+            if config.get('kobold_qwen_support', False):
+                if os.path.exists(kobold_qwen_repo_path):
+                    update_tasks["Update Qwen3 TTS"] = (self.pull_repo, (kobold_qwen_repo_path,), {})
+                else:
+                    update_tasks["Clone Qwen3 TTS"] = (self.clone_repo, (KOBOLD_QWEN_API_REPO_URL, kobold_qwen_repo_path), {})
 
             # Magpie
             if config.get('magpie_support', False):
@@ -767,6 +799,16 @@ class WorkflowMixin:
                     self.install_chatterbox_api_server(
                         chatterbox_repo_path,
                         use_cpu=not chatterbox_gpu_support,
+                        pixi_path=shared_pixi_path,
+                    )
+
+            if config.get('kobold_qwen_support', False):
+                if not self.is_kobold_qwen_runtime_ready(kobold_qwen_repo_path):
+                    self.reporter.status("Bootstrapping Qwen3 TTS API server...")
+                    kobold_qwen_gpu_support = config.get(KOBOLD_QWEN_GPU_SUPPORT_CONFIG_FLAG, False)
+                    self.install_kobold_qwen_api_server(
+                        kobold_qwen_repo_path,
+                        use_cpu=not kobold_qwen_gpu_support,
                         pixi_path=shared_pixi_path,
                     )
 

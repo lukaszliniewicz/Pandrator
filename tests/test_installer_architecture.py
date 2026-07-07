@@ -33,6 +33,8 @@ class InstallerArchitectureTests(unittest.TestCase):
             InstallSelection.from_components(["kokoro", "kokoro_cpu"])
         with self.assertRaisesRegex(ValueError, "Select either 'rvc' or 'rvc_cpu'"):
             InstallSelection.from_components(["rvc", "rvc_cpu"])
+        with self.assertRaisesRegex(ValueError, "Select either 'kobold_qwen' or 'kobold_qwen_cpu'"):
+            InstallSelection.from_components(["kobold_qwen", "kobold_qwen_cpu"])
 
     def test_launch_selection_preserves_backend_priority(self):
         selection = LaunchSelection(voxcpm=True, chatterbox=True, rvc=True)
@@ -208,6 +210,13 @@ class InstallerArchitectureTests(unittest.TestCase):
         with patch("pandrator_installer.workflows.is_windows", return_value=False):
             installer.validate_platform_install_selection(selection)
 
+    def test_non_windows_kobold_qwen_install_selection_is_allowed(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        selection = InstallSelection.from_components(["kobold_qwen_cpu"])
+
+        with patch("pandrator_installer.workflows.is_windows", return_value=False):
+            installer.validate_platform_install_selection(selection)
+
     def test_non_windows_core_install_selection_is_allowed(self):
         installer = HeadlessInstaller(working_dir="workspace")
         selection = InstallSelection.from_components([], install_pandrator=True)
@@ -233,6 +242,13 @@ class InstallerArchitectureTests(unittest.TestCase):
     def test_non_windows_update_with_kokoro_config_is_allowed(self):
         installer = HeadlessInstaller(working_dir="workspace")
         config = {"kokoro_support": True}
+
+        with patch("pandrator_installer.workflows.is_windows", return_value=False):
+            installer.validate_platform_update_config(config)
+
+    def test_non_windows_update_with_kobold_qwen_config_is_allowed(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        config = {"kobold_qwen_support": True}
 
         with patch("pandrator_installer.workflows.is_windows", return_value=False):
             installer.validate_platform_update_config(config)
@@ -303,6 +319,8 @@ class InstallerArchitectureTests(unittest.TestCase):
         self.assertNotIn("kokoro_cpu", LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
         self.assertNotIn("chatterbox", LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
         self.assertNotIn("chatterbox_cpu", LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
+        self.assertNotIn("kobold_qwen", LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
+        self.assertNotIn("kobold_qwen_cpu", LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
         self.assertIn("magpie", LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
 
     def test_chatterbox_launcher_uses_platform_launcher(self):
@@ -326,6 +344,41 @@ class InstallerArchitectureTests(unittest.TestCase):
         self.assertEqual(
             linux_command,
             ["/home/user/Pandrator/bin/pixi", "run", "python", "run.py", "--backend", "cpu"],
+        )
+
+    def test_kobold_qwen_launcher_uses_auto_backend_and_port(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+
+        with patch("pandrator_installer.components.is_windows", return_value=True):
+            windows_command = installer.build_kobold_qwen_launcher_command(
+                use_cpu=False,
+                pixi_path="C:/Pandrator/bin/pixi.exe",
+            )
+
+        with patch("pandrator_installer.components.is_windows", return_value=False):
+            linux_command = installer.build_kobold_qwen_launcher_command(
+                use_cpu=True,
+                pixi_path="/home/user/Pandrator/bin/pixi",
+            )
+
+        self.assertEqual(windows_command[:3], ["cmd", "/c", "run.bat"])
+        self.assertIn("--backend", windows_command)
+        self.assertIn("auto", windows_command)
+        self.assertIn("--port", windows_command)
+        self.assertIn("8042", windows_command)
+        self.assertIn("--pixi-path", windows_command)
+        self.assertEqual(
+            linux_command,
+            [
+                "/home/user/Pandrator/bin/pixi",
+                "run",
+                "python",
+                "run.py",
+                "--backend",
+                "cpu",
+                "--port",
+                "8042",
+            ],
         )
 
     def test_non_windows_espeak_paths_use_host_environment(self):

@@ -6,7 +6,7 @@
 >[!TIP]
 >**TL;DR:**
 > - Pandrator is not an AI model itself, but a GUI framework for Text-to-Speech, subtitle and translation projects. It can generate audiobooks and subtitles/dubbing by leveraging several AI tools, custom workflows and algorithms. It has an installer and works on Windows out of the box. It is not necessary to set up WSL or Docker containers, though you may use it with any TTS API backend.
-> - It supports a wide range of TTS models: Kokoro, Fish S2 Pro, Chatterbox, VoxCPM2, Voxtral, XTTSv2, Silero, OpenAI and Gemini, as well as custom TTS API servers.
+> - It supports a wide range of TTS models: Kokoro, Fish S2 Pro, Chatterbox, Qwen3 TTS, VoxCPM2, Voxtral, XTTSv2, Silero, OpenAI and Gemini, as well as custom TTS API servers.
 > - When installing: if you don't have a GPU, choose Kokoro. If you want voice cloning, which Kokoro doesn't support by default, install RVC.
 > - You can talk to me or share tips/workflows/ideas on the Discord server.
 >
@@ -20,7 +20,7 @@ Pandrator aspires to be easy to use and install - it has a one-click installer a
 - transform text, PDF (including see-through cropping), EPUB and SRT files into spoken audio in multiple languages based chiefly on open source software run locally, including preprocessing to make the generated speech sound as natural as possible by, among other things, splitting the text into paragraphs, sentences and smaller logical text blocks (clauses), which the TTS models can process with minimal artifacts. Each sentence can be regenerated if the first attempt is not satisfactory, including marking for regeneration using mouse or keyboard actions when listening back to the generation. Voice cloning is possible for models that support it, and text can be additionally preprocessed using LLMs (to remove OCR artifacts or spell out things that the TTS models struggle with, like Roman numerals and abbreviations, for example),
 - generate dubbing either directly from a video file, including transcription (using [WhisperX](https://github.com/m-bain/whisperX)), or from an .srt file. It includes a complete workflow from a video file to a dubbed video file with subtitles - including translation using a variety of APIs and techniques to improve the quality of translation. [Subdub](https://github.com/lukaszliniewicz/Subdub), a companion app developed for this purpose, can also be used on its own. You can also correct or translate subtitles without generating audio. 
 
-At the moment, Pandrator supports multiple TTS backends: [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) via [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI), [Fish Audio S2 Pro GGUF](https://huggingface.co/rodrigomt/s2-pro-gguf) via [fishs2-cpp-fastapi](https://github.com/lukaszliniewicz/fishs2-cpp-fastapi), [Chatterbox](https://huggingface.co/ResembleAI/chatterbox) via [chatterbox-fastapi](https://github.com/lukaszliniewicz/chatterbox-fastapi), [VoxCPM2](https://huggingface.co/openbmb/VoxCPM2) via [voxcpm_fastapi](https://github.com/lukaszliniewicz/voxcpm_fastapi), [Voxtral](https://huggingface.co/mistralai/Voxtral-4B-TTS-2603) via [voxtral-fastapi](https://github.com/lukaszliniewicz/voxtral-fastapi), [XTTS v2](https://huggingface.co/coqui/XTTS-v2) via the OpenAI-compatible [XTTS2 API server](https://github.com/lukaszliniewicz/xtts2_api), [Silero](https://github.com/snakers4/silero-models) via `silero-api-server`, and [Magpie](https://huggingface.co/nvidia/magpie_tts_multilingual_357m) via [magpie-fastapi](https://github.com/lukaszliniewicz/magpie-fastapi). It also supports commercial speech APIs and custom TTS endpoints, including OpenAI-compatible and common JSON APIs, plus optional post-processing via a dedicated [RVC Python API Service](https://github.com/lukaszliniewicz/rvc-python). For local LLM text preprocessing, Pandrator works well with OpenAI-compatible local servers such as LM Studio and Ollama-compatible endpoints.
+At the moment, Pandrator supports multiple TTS backends: [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) via [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI), [Fish Audio S2 Pro GGUF](https://huggingface.co/rodrigomt/s2-pro-gguf) via [fishs2-cpp-fastapi](https://github.com/lukaszliniewicz/fishs2-cpp-fastapi), [Chatterbox](https://huggingface.co/ResembleAI/chatterbox) via [chatterbox-fastapi](https://github.com/lukaszliniewicz/chatterbox-fastapi), Qwen3 TTS through KoboldCpp via [kobold-qwen-fastapi](https://github.com/lukaszliniewicz/kobold-qwen-fastapi), [VoxCPM2](https://huggingface.co/openbmb/VoxCPM2) via [voxcpm_fastapi](https://github.com/lukaszliniewicz/voxcpm_fastapi), [Voxtral](https://huggingface.co/mistralai/Voxtral-4B-TTS-2603) via [voxtral-fastapi](https://github.com/lukaszliniewicz/voxtral-fastapi), [XTTS v2](https://huggingface.co/coqui/XTTS-v2) via the OpenAI-compatible [XTTS2 API server](https://github.com/lukaszliniewicz/xtts2_api), [Silero](https://github.com/snakers4/silero-models) via `silero-api-server`, and [Magpie](https://huggingface.co/nvidia/magpie_tts_multilingual_357m) via [magpie-fastapi](https://github.com/lukaszliniewicz/magpie-fastapi). It also supports commercial speech APIs and custom TTS endpoints, including OpenAI-compatible and common JSON APIs, plus optional post-processing via a dedicated [RVC Python API Service](https://github.com/lukaszliniewicz/rvc-python). For local LLM text preprocessing, Pandrator works well with OpenAI-compatible local servers such as LM Studio and Ollama-compatible endpoints.
 
 ## Supported Languages & Quality Characteristics
 
@@ -75,6 +75,12 @@ Speech quality, emotional expression, and voice variety differ significantly bet
   * **English:** Features 5 built-in voices (Aria, Sofia, Jason, Leo, John Van Stan) with emotional styling (Angry, Calm, Happy, Neutral, Sad, Fearful).
   * **Limitations:** Requires ~1.4 GB VRAM for GPU (also has CPU fallback). Occasionally experiences minor audio duplications or glitches at the end of sentences.
 
+### 9. Qwen3 TTS
+* **Supported Languages:** Broad multilingual coverage through the KoboldCpp Qwen3-TTS engine.
+* **Quality & Performance:**
+  * **All Languages:** Early support is available through the OpenAI-compatible [kobold-qwen-fastapi](https://github.com/lukaszliniewicz/kobold-qwen-fastapi) wrapper, with uploaded WAV references for voice cloning.
+  * **Requirements:** The wrapper can auto-select CUDA, Vulkan (AMD/Intel), Apple Metal, or CPU mode depending on the host.
+
 ## Requirements
 
 ### Hardware Requirements
@@ -84,6 +90,7 @@ Speech quality, emotional expression, and voice variety differ significantly bet
 | Kokoro     | Works well on modern CPUs; install includes direct eSpeak setup on Windows    | Optional (CPU path is supported)                                         |
 | FishS2     | CPU mode exists but is generally too slow for practical long-form usage       | NVIDIA GPU strongly recommended (8GB+ VRAM practical target)             |
 | Chatterbox | Supported via CPU mode, but notably slower than GPU           | NVIDIA GPU recommended (4GB+ VRAM); GPU-only for the multilingual model  |
+| Qwen3 TTS  | Supported via CPU mode, but slower than accelerated backends   | CUDA, Vulkan, or Apple Metal through KoboldCpp                            |
 | VoxCPM2    | N/A (GPU-only in current wrapper)                            | NVIDIA GPU required (8GB+ VRAM recommended)                             |
 | Voxtral    | N/A (GPU-only backend in current wrapper)                    | NVIDIA GPU required (4GB+ VRAM practical minimum)                       |
 | XTTSv2     | A reasonably modern CPU with 4+ cores (for CPU-only generation)              | NVIDIA GPU with 4GB+ of VRAM for good performance                        |
@@ -99,6 +106,7 @@ This project relies on several APIs and services (running locally) and libraries
   - [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI) (OpenAI-compatible Kokoro server)
   - [fishs2-cpp-fastapi](https://github.com/lukaszliniewicz/fishs2-cpp-fastapi) (OpenAI-compatible Fish S2 server)
   - [chatterbox-fastapi](https://github.com/lukaszliniewicz/chatterbox-fastapi) (OpenAI-compatible Chatterbox server)
+  - [kobold-qwen-fastapi](https://github.com/lukaszliniewicz/kobold-qwen-fastapi) (OpenAI-compatible Qwen3 TTS / KoboldCpp server)
   - [voxcpm_fastapi](https://github.com/lukaszliniewicz/voxcpm_fastapi) (OpenAI-compatible VoxCPM2 server)
   - [voxtral-fastapi](https://github.com/lukaszliniewicz/voxtral-fastapi) (OpenAI-compatible Voxtral server)
   - [XTTS2 API](https://github.com/lukaszliniewicz/xtts2_api) (OpenAI-compatible XTTS v2 server)
@@ -115,7 +123,7 @@ For local OpenAI-compatible TTS wrappers used by Pandrator, the preferred ecosys
 - `POST /v1/audio/speech`
 - `GET /v1/models`
 - `GET /v1/audio/voices` (preferred voice catalog) with legacy `GET /v1/voices` support during migration
-- `POST /v1/audio/voices` for cloning-capable backends (XTTS, FishS2), with legacy `/v1/files` fallback
+- `POST /v1/audio/voices` for cloning-capable backends (XTTS, FishS2, Chatterbox, Qwen3 TTS), with legacy `/v1/files` fallback
 
 #### Optional
 - [Subdub](https://github.com/lukaszliniewicz/Subdub), a command line app that transcribes video files, translates subtitles and synchronises the generated speech with the video, made specially for Pandrator.
@@ -247,9 +255,10 @@ python3 -m venv .venv-installer
 python -m pip install -r requirements-installer.txt
 python pandrator_installer_launcher.py --self-check
 python pandrator_installer_launcher.py --headless-install --workspace "$HOME/pandrator-workspace" --components "kokoro_cpu"
+python pandrator_installer_launcher.py --headless-install --workspace "$HOME/pandrator-workspace" --components "kobold_qwen_cpu"
 ```
 
-Fedora x86_64 validation currently covers the core Pixi install and Kokoro CPU through `Kokoro-FastAPI`: install, model download, `/health`, voice listing, and a short WAV generation request. Chatterbox is wired through its Pixi-based launcher on Linux, with CPU mode available and CUDA mode expected to follow the same package path on hosts with compatible NVIDIA drivers. Kokoro GPU and Chatterbox GPU still need validation on a host with compatible NVIDIA drivers. Other local model-server components remain deferred on Linux until they are reviewed one by one.
+Fedora x86_64 validation currently covers the core Pixi install and Kokoro CPU through `Kokoro-FastAPI`: install, model download, `/health`, voice listing, and a short WAV generation request. Chatterbox is wired through its Pixi-based launcher on Linux, with CPU mode available and CUDA mode expected to follow the same package path on hosts with compatible NVIDIA drivers. Qwen3 TTS is wired through `kobold-qwen-fastapi`, installs inside its Pixi env, and can auto-select CPU, CUDA, Vulkan, or Metal through KoboldCpp. Kokoro GPU and Chatterbox GPU still need validation on a host with compatible NVIDIA drivers. Other local model-server components remain deferred on Linux until they are reviewed one by one.
 
 Linux Calibre is optional and only needed for MOBI import. The installer detects `ebook-convert`/Calibre and reports the requirement, but does not install it. Kokoro uses dependencies inside its Pixi env and detects host eSpeak NG when available.
 
@@ -259,6 +268,7 @@ You can install components incrementally (during first setup or later):
 - XTTS2 API (`XTTS` GPU or `XTTS CPU only`)
 - FishS2 API (`FishS2`)
 - Chatterbox API (`Chatterbox` GPU or `Chatterbox CPU only`)
+- Qwen3 TTS API (`Qwen3 TTS` auto accelerator or `Qwen3 TTS CPU only`)
 - VoxCPM2 API (`VoxCPM`)
 - Voxtral API (`Voxtral`, GPU only)
 - Kokoro API (`Kokoro` GPU or `Kokoro CPU only`)
@@ -272,9 +282,9 @@ Current installer flow:
 1. Creates `Pandrator/` in the selected location.
 2. Installs/checks Calibre.
 3. Downloads shared Pixi runtime to `Pandrator/bin/pixi.exe`.
-4. Clones required repositories (`Pandrator`, `Subdub`) and selected server repos (`xtts2_api`, `fishs2-cpp-fastapi`, `chatterbox-fastapi`, `voxcpm_fastapi`, `voxtral-fastapi`, `Kokoro-FastAPI`, `magpie-fastapi`, `rvc-python`).
+4. Clones required repositories (`Pandrator`, `Subdub`) and selected server repos (`xtts2_api`, `fishs2-cpp-fastapi`, `chatterbox-fastapi`, `kobold-qwen-fastapi`, `voxcpm_fastapi`, `voxtral-fastapi`, `Kokoro-FastAPI`, `magpie-fastapi`, `rvc-python`).
 5. Sets up Pandrator dependencies and selected optional environments/tools.
-6. Bootstraps XTTS2, FishS2, Chatterbox, VoxCPM2, Voxtral, Kokoro, Magpie, and RVC via their own launcher scripts.
+6. Bootstraps XTTS2, FishS2, Chatterbox, Qwen3 TTS, VoxCPM2, Voxtral, Kokoro, Magpie, and RVC via their own launcher scripts.
 
 Before using **Update**, close Pandrator and all services launched from the installation. The updater refuses to modify a running installation because Windows locks loaded environment files.
 
@@ -289,6 +299,7 @@ Launch tab options:
 - `XTTS` (+ `Use CPU`, `DeepSpeed`)
 - `FishS2`
 - `Chatterbox` (+ `Use CPU`)
+- `Qwen3 TTS` (+ `Use CPU`)
 - `VoxCPM`
 - `Voxtral`
 - `Kokoro` (+ `Use CPU` when GPU support is installed)
@@ -296,7 +307,7 @@ Launch tab options:
 - `Magpie` (+ `Use CPU`)
 - `RVC` (+ `Use CPU`; forced on for CPU-only installs)
 
-If a local TTS server is launched from the launcher, Pandrator is auto-started with the matching connect flag (`-connect -xtts`, `-connect -fishs2`, `-connect -chatterbox`, `-connect -voxcpm`, `-connect -voxtral`, `-connect -kokoro`, `-connect -silero`, `-connect -magpie`).
+If a local TTS server is launched from the launcher, Pandrator is auto-started with the matching connect flag (`-connect -xtts`, `-connect -fishs2`, `-connect -chatterbox`, `-connect -kobold-qwen`, `-connect -voxcpm`, `-connect -voxtral`, `-connect -kokoro`, `-connect -silero`, `-connect -magpie`).
 
 To re-run setup from scratch, remove the generated `Pandrator/` folder and start again.
 
@@ -473,6 +484,8 @@ Please refer to the repositories linked under [Dependencies](#dependencies) for 
    python main.py -connect -silero
    # or
    python main.py -connect -magpie
+   # or
+   python main.py -connect -kobold-qwen
    ```
 
 3. Run XTTS2 API (if installed):
@@ -498,14 +511,22 @@ Please refer to the repositories linked under [Dependencies](#dependencies) for 
    # or python run.py --backend cuda
    ```
 
-6. Run Voxtral API (if installed):
+6. Run Qwen3 TTS API (if installed):
+
+   ```
+   cd kobold-qwen-fastapi
+   python run.py --backend auto --port 8042
+   # or python run.py --backend cpu --port 8042
+   ```
+
+7. Run Voxtral API (if installed):
 
    ```
    cd voxtral-fastapi
    run.bat
    ```
 
-7. Run Kokoro API (if installed):
+8. Run Kokoro API (if installed):
 
     ```
     cd Kokoro-FastAPI
@@ -514,14 +535,14 @@ Please refer to the repositories linked under [Dependencies](#dependencies) for 
     python -m uvicorn api.src.main:app --host 127.0.0.1 --port 8880
     ```
 
-8. Run Magpie API (if installed):
+9. Run Magpie API (if installed):
 
    ```
    cd magpie-fastapi
    run.bat
    ```
 
-9. Run RVC API (if installed):
+10. Run RVC API (if installed):
 
    ```
    cd rvc-python
@@ -569,7 +590,7 @@ Pandrator offers a comprehensive workflow for generating dubbed videos from vide
 3. You can enable RVC. For this to work, you have to install RVC_Python. You can do this in the Installer/Launcher at any time. You need to select a model - an RVC model consists of two files. A `.pth ` and an `.index ` file. They need to have the same name (e.g. voicex.pth and voicex.index). For best results, use the same voice for XTTS. You can also fine-tune the RVC options such as pitch.
 
 ### General Text Pre-Processing Settings
-1. You can disable/enable splitting long sentences and set the max length a text fragment sent for TTS generation may have (enabled by default). The application dynamically adjusts the target maximum sentence length settings depending on the selected TTS service to match its recommended optimal block sizes (e.g. 350 for Kokoro/FishS2/Chatterbox, 300 for VoxCPM/Voxtral, 200 for XTTS/OpenAI). When splitting, it looks for punctuation marks (, ; : -) and chooses the one closest to the midpoint of the sentence; if there are no punctuation marks, it looks for conjunctions like "and".
+1. You can disable/enable splitting long sentences and set the max length a text fragment sent for TTS generation may have (enabled by default). The application dynamically adjusts the target maximum sentence length settings depending on the selected TTS service to match its recommended optimal block sizes (e.g. 350 for Kokoro/FishS2/Chatterbox, 300 for VoxCPM/Voxtral/Qwen3 TTS, 200 for XTTS/OpenAI). When splitting, it looks for punctuation marks (, ; : -) and chooses the one closest to the midpoint of the sentence; if there are no punctuation marks, it looks for conjunctions like "and".
 2. You can disable/enable appending short sentences (to preceding or following sentences; disabled by default, which may improve flow because the length of text fragments sent to the model is more uniform).
 3. Remove diacritics (useful when generating text that contains many foreign words or transliterations from foreign alphabets, e.g. Japanese). Do not enable this if you generate in a language that needs diacritics, like German or Polish. The pronunciation will be wrong then.
 4. Remove quotation marks (useful for models that sometimes read quotation marks aloud).

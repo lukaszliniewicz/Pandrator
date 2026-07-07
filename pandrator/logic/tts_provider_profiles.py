@@ -149,6 +149,16 @@ TTS_PROVIDER_PROFILES = [
         notes="Alternate custom connection to Pandrator's installer-supported Chatterbox server.",
     ),
     _openai_profile(
+        "pandrator-kobold-qwen-fastapi",
+        "Qwen3-TTS - lukaszliniewicz/kobold-qwen-fastapi",
+        "http://127.0.0.1:8042",
+        "https://github.com/lukaszliniewicz/kobold-qwen-fastapi",
+        ["qwen3-tts"],
+        ["kobo"],
+        voices_path="/v1/audio/voices",
+        notes="Alternate custom connection to Pandrator's installer-supported Qwen3-TTS KoboldCpp wrapper.",
+    ),
+    _openai_profile(
         "chatterbox-travisvn",
         "Chatterbox - travisvn/chatterbox-tts-api",
         "http://127.0.0.1:4123",

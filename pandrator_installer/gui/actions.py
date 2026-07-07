@@ -32,6 +32,7 @@ class GuiActionsMixin:
             (selection.whisperx and not installed_components['whisperx']) or
             (selection.xtts_finetuning and not installed_components['xtts_finetuning']) or
             ((selection.chatterbox or selection.chatterbox_cpu) and not installed_components['chatterbox']) or
+            ((selection.kobold_qwen or selection.kobold_qwen_cpu) and not installed_components['kobold_qwen']) or
             ((selection.magpie or selection.magpie_cpu) and not installed_components['magpie'])
         )
 

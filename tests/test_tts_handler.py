@@ -359,6 +359,39 @@ class TTSHandlerTests(unittest.TestCase):
             self.assertEqual(payload["top_k"], 1000)
             self.assertTrue(payload["norm_loudness"])
 
+    def test_kobold_qwen_payload_construction(self):
+        with patch("requests.post") as mock_post:
+            mock_post.return_value.status_code = 200
+            mock_post.return_value.content = b"fake audio content"
+
+            tts_handler._request_kobold_qwen_audio(
+                "Hello world",
+                {
+                    "xtts_model": "qwen3-tts",
+                    "speaker": "reader-voice",
+                    "speed": 0.9,
+                },
+                "http://localhost:8042",
+            )
+
+        mock_post.assert_called_once()
+        self.assertEqual(mock_post.call_args.args[0], "http://localhost:8042/v1/audio/speech")
+        called_kwargs = mock_post.call_args.kwargs
+        self.assertEqual(
+            called_kwargs["headers"],
+            {"Authorization": f"Bearer {tts_handler.XTTS_OPENAI_PLACEHOLDER_API_KEY}"},
+        )
+        self.assertEqual(
+            called_kwargs["json"],
+            {
+                "model": "qwen3-tts",
+                "input": "Hello world",
+                "voice": "reader-voice",
+                "speed": 0.9,
+                "response_format": "wav",
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

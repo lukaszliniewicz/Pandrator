@@ -1168,13 +1168,24 @@ class SessionTab(QWidget):
         is_kokoro = state.tts.service == "Kokoro"
         is_magpie = state.tts.service == "Magpie"
         is_chatterbox = state.tts.service == "Chatterbox"
+        is_kobold_qwen = state.tts.service == "Qwen3 TTS"
         is_cloud_tts = state.tts.service in {
             "Custom",
             "OpenAI",
             "Google Gemini",
         }
         is_custom_cloud_tts = state.tts.service == "Custom"
-        is_model_based_tts = is_xtts or is_voxcpm or is_fishs2 or is_voxtral or is_kokoro or is_magpie or is_cloud_tts or is_chatterbox
+        is_model_based_tts = (
+            is_xtts
+            or is_voxcpm
+            or is_fishs2
+            or is_voxtral
+            or is_kokoro
+            or is_magpie
+            or is_cloud_tts
+            or is_chatterbox
+            or is_kobold_qwen
+        )
         show_xtts_advanced_settings = self.logic.should_show_xtts_advanced_settings()
         show_voxcpm_advanced_settings = is_voxcpm
         show_fishs2_advanced_settings = is_fishs2
@@ -1194,10 +1205,10 @@ class SessionTab(QWidget):
         )
 
         self.use_external_server_checkbox.setVisible(
-            is_xtts or is_voxcpm or is_fishs2 or is_voxtral or is_kokoro or is_chatterbox
+            is_xtts or is_voxcpm or is_fishs2 or is_voxtral or is_kokoro or is_chatterbox or is_kobold_qwen
         )
         self.external_server_url_edit.setVisible(
-            (is_xtts or is_voxcpm or is_fishs2 or is_voxtral or is_kokoro or is_chatterbox)
+            (is_xtts or is_voxcpm or is_fishs2 or is_voxtral or is_kokoro or is_chatterbox or is_kobold_qwen)
             and state.tts.use_external_server
         )
         self.external_server_url_edit.setPlaceholderText(
@@ -1206,7 +1217,11 @@ class SessionTab(QWidget):
             else (
                 "http://localhost:8880"
                 if is_kokoro
-                else ("http://localhost:8040" if is_chatterbox else "http://localhost:8020")
+                else (
+                    "http://localhost:8042"
+                    if is_kobold_qwen
+                    else ("http://localhost:8040" if is_chatterbox else "http://localhost:8020")
+                )
             )
         )
         self.advanced_tts_checkbox.setText(
@@ -1233,7 +1248,7 @@ class SessionTab(QWidget):
         self.xtts_model_label.setVisible(show_model_selector)
         self.xtts_model_combo.setVisible(show_model_selector)
 
-        supports_voice_library_upload = is_xtts or is_voxcpm or is_fishs2 or is_chatterbox
+        supports_voice_library_upload = is_xtts or is_voxcpm or is_fishs2 or is_chatterbox or is_kobold_qwen
         supports_prebuilt_voice_catalog = self.logic.tts_service_supports_prebuilt_voices(
             state.tts.service,
             state.tts.openai_audio_endpoint,
@@ -1838,7 +1853,7 @@ class SessionTab(QWidget):
         if service == "Magpie":
             from ...constants import MAGPIE_LANGUAGES
             return list(MAGPIE_LANGUAGES)
-        if service in {"XTTS", "VoxCPM", "OpenAI", "Google Gemini", "Gemini", "Custom", "OpenAI-Compatible", "Chatterbox"}:
+        if service in {"XTTS", "VoxCPM", "OpenAI", "Google Gemini", "Gemini", "Custom", "OpenAI-Compatible", "Chatterbox", "Qwen3 TTS"}:
             return XTTS_LANGUAGES
         return []
 
@@ -2328,6 +2343,7 @@ class SessionTab(QWidget):
             "VoxCPM": 300,
             "Voxtral": 300,
             "Chatterbox": 350,
+            "Qwen3 TTS": 300,
             "Magpie": 300,
             "Silero": 200,
             "OpenAI": 200,

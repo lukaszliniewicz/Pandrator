@@ -46,6 +46,9 @@ FISHS2_API_BASE_URL = "http://127.0.0.1:8020"
 # Chatterbox default URLs
 CHATTERBOX_API_BASE_URL = "http://127.0.0.1:8040"
 
+# Kobold Qwen default URLs
+KOBOLD_QWEN_API_BASE_URL = "http://127.0.0.1:8042"
+
 # Voxtral default URLs
 VOXTRAL_API_BASE_URL = "http://127.0.0.1:8000"
 
@@ -94,6 +97,10 @@ CHATTERBOX_TTS_MODELS = [
     "chatterbox-multilingual",
     "chatterbox-en",
 ]
+KOBOLD_QWEN_DEFAULT_MODEL = "qwen3-tts"
+KOBOLD_QWEN_DEFAULT_VOICE = "kobo"
+KOBOLD_QWEN_TTS_MODELS = [KOBOLD_QWEN_DEFAULT_MODEL]
+KOBOLD_QWEN_TTS_VOICES = [KOBOLD_QWEN_DEFAULT_VOICE]
 FISHS2_DEFAULT_TOP_P = 0.7
 FISHS2_DEFAULT_CHUNK_LENGTH = 200
 FISHS2_DEFAULT_LATENCY = "balanced"
@@ -340,6 +347,7 @@ FIRST_CLASS_SERVICE_ORDER = [
     "magpie",
     "silero",
     "chatterbox",
+    "kobold_qwen",
     OPENAI_PROVIDER,
     GEMINI_PROVIDER,
 ]
@@ -353,6 +361,7 @@ FIRST_CLASS_SERVICE_NAMES = {
     "magpie": "Magpie",
     "silero": "Silero",
     "chatterbox": "Chatterbox",
+    "kobold_qwen": "Qwen3 TTS",
     OPENAI_PROVIDER: OPENAI_SERVICE,
     GEMINI_PROVIDER: GEMINI_SERVICE,
 }
@@ -364,6 +373,11 @@ SERVICE_ID_ALIASES = {
     "google": GEMINI_PROVIDER,
     "google-gemini": GEMINI_PROVIDER,
     "gemini": GEMINI_PROVIDER,
+    "kobold-qwen": "kobold_qwen",
+    "koboldqwen": "kobold_qwen",
+    "qwen": "kobold_qwen",
+    "qwen3": "kobold_qwen",
+    "qwen3-tts": "kobold_qwen",
 }
 PREBUILT_VOICE_PROVIDER_FIELD = "supports_prebuilt_voices"
 OPENAI_COMPAT_ADAPTER = "openai_compatible"
@@ -477,6 +491,7 @@ def _default_service_configs() -> list[dict[str, object]]:
         ("magpie", MAGPIE_API_BASE_URL),
         ("silero", SILERO_API_BASE_URL),
         ("chatterbox", CHATTERBOX_API_BASE_URL),
+        ("kobold_qwen", KOBOLD_QWEN_API_BASE_URL),
     ]
     configs: list[dict[str, object]] = [
         {
@@ -1969,6 +1984,13 @@ def _resolve_kokoro_api_key() -> str:
     return XTTS_OPENAI_PLACEHOLDER_API_KEY
 
 
+def _resolve_kobold_qwen_api_key() -> str:
+    api_key = os.getenv("KOBOLD_QWEN_API_KEY", "").strip()
+    if api_key:
+        return api_key
+    return XTTS_OPENAI_PLACEHOLDER_API_KEY
+
+
 def check_openai_audio_connection(tts_settings: dict) -> tuple[bool, str]:
     """Checks custom audio endpoint reachability."""
     endpoint, error = resolve_openai_audio_endpoint(tts_settings)
@@ -2531,6 +2553,93 @@ def get_chatterbox_voices(base_url: str = CHATTERBOX_API_BASE_URL) -> list[str]:
             continue
 
     return _dedupe_ordered(discovered_voices)
+
+
+def check_kobold_qwen_connection(base_url: str = KOBOLD_QWEN_API_BASE_URL) -> bool:
+    """Checks if the Qwen3 TTS server is reachable."""
+    normalized_base_url = _normalize_base_url(base_url, KOBOLD_QWEN_API_BASE_URL)
+    api_key = _resolve_kobold_qwen_api_key()
+    probe_urls = [
+        f"{normalized_base_url}/health",
+        *_openai_models_urls(normalized_base_url),
+        *_openai_voice_catalog_urls(normalized_base_url),
+        *_openai_files_urls(normalized_base_url),
+    ]
+
+    for probe_url in _dedupe_ordered(probe_urls):
+        try:
+            response = requests.get(
+                probe_url,
+                headers=_openai_auth_headers(api_key),
+                timeout=4,
+            )
+            if _should_try_next_openai_candidate(response.status_code):
+                continue
+            if response.status_code < 400:
+                return True
+        except requests.exceptions.RequestException:
+            continue
+
+    return False
+
+
+def get_kobold_qwen_models(base_url: str = KOBOLD_QWEN_API_BASE_URL) -> list[str]:
+    """Fetches available Qwen3 TTS models from server."""
+    normalized_base_url = _normalize_base_url(base_url, KOBOLD_QWEN_API_BASE_URL)
+    api_key = _resolve_kobold_qwen_api_key()
+
+    discovered_models: list[str] = []
+    for models_url in _openai_models_urls(normalized_base_url):
+        try:
+            response = requests.get(
+                models_url,
+                headers=_openai_auth_headers(api_key),
+                timeout=8,
+            )
+            if _should_try_next_openai_candidate(response.status_code):
+                continue
+
+            response.raise_for_status()
+            discovered_models = _extract_models_from_openai_payload(response.json())
+            if discovered_models:
+                break
+        except (requests.exceptions.RequestException, ValueError) as e:
+            logging.error("Failed to list Qwen3 TTS models from %s: %s", models_url, e)
+            continue
+
+    return _merge_catalog_with_discovered(KOBOLD_QWEN_TTS_MODELS, discovered_models)
+
+
+def get_kobold_qwen_voices(base_url: str = KOBOLD_QWEN_API_BASE_URL) -> list[str]:
+    """Fetches available Qwen3 TTS voices from server."""
+    normalized_base_url = _normalize_base_url(base_url, KOBOLD_QWEN_API_BASE_URL)
+    api_key = _resolve_kobold_qwen_api_key()
+
+    discovered_voices: list[str] = []
+    voice_urls = _dedupe_ordered(
+        _openai_voice_catalog_urls(normalized_base_url)
+        + _openai_files_urls(normalized_base_url)
+    )
+
+    for voices_url in voice_urls:
+        try:
+            response = requests.get(
+                voices_url,
+                headers=_openai_auth_headers(api_key),
+                timeout=8,
+            )
+            if _should_try_next_openai_candidate(response.status_code):
+                continue
+
+            response.raise_for_status()
+            discovered_voices = _extract_voices_from_openai_payload(response.json())
+            if discovered_voices:
+                break
+        except (requests.exceptions.RequestException, ValueError) as e:
+            logging.debug("Could not list Qwen3 TTS voices from %s: %s", voices_url, e)
+            continue
+
+    return _merge_catalog_with_discovered(KOBOLD_QWEN_TTS_VOICES, discovered_voices)
 
 
 def check_voxtral_connection(base_url: str = VOXTRAL_API_BASE_URL) -> bool:
@@ -3219,6 +3328,24 @@ def upload_chatterbox_speaker_voice(
     )
 
 
+def upload_kobold_qwen_speaker_voice(
+    wav_file_path: str | list[str],
+    base_url: str = KOBOLD_QWEN_API_BASE_URL,
+    *,
+    voice_id: str | None = None,
+) -> str:
+    """Uploads voice to Qwen3 TTS and returns uploaded voice identifier."""
+    return _upload_speaker_voice_openai_compatible(
+        wav_file_path,
+        base_url=base_url,
+        fallback_base_url=KOBOLD_QWEN_API_BASE_URL,
+        service_name="Qwen3 TTS",
+        api_key=_resolve_kobold_qwen_api_key(),
+        upload_purpose="user_data",
+        voice_id=voice_id,
+    )
+
+
 def upload_speaker_voice(
     wav_file_path: str | list[str],
     base_url: str = XTTS_API_BASE_URL,
@@ -3252,6 +3379,13 @@ def upload_speaker_voice(
             wav_file_path,
             base_url=base_url,
             prompt_text=prompt_text,
+            voice_id=voice_id,
+        )
+
+    if normalized_service in {"qwen3 tts", "qwen3-tts", "qwen3", "qwen", "kobold-qwen", "kobold_qwen"}:
+        return upload_kobold_qwen_speaker_voice(
+            wav_file_path,
+            base_url=base_url,
             voice_id=voice_id,
         )
 
@@ -3867,6 +4001,45 @@ def _request_chatterbox_audio(text: str, tts_settings: dict, chatterbox_base_url
     raise RuntimeError(f"No Chatterbox speech endpoint could be resolved for '{normalized_base_url}'.")
 
 
+def _request_kobold_qwen_audio(text: str, tts_settings: dict, kobold_qwen_base_url: str) -> requests.Response:
+    normalized_base_url = _normalize_base_url(kobold_qwen_base_url, KOBOLD_QWEN_API_BASE_URL)
+    api_key = _resolve_kobold_qwen_api_key()
+    model = str(tts_settings.get("xtts_model") or KOBOLD_QWEN_DEFAULT_MODEL).strip()
+    if not model:
+        model = KOBOLD_QWEN_DEFAULT_MODEL
+
+    voice = str(tts_settings.get("speaker") or KOBOLD_QWEN_DEFAULT_VOICE).strip()
+    if not voice:
+        voice = KOBOLD_QWEN_DEFAULT_VOICE
+
+    payload = {
+        "model": model,
+        "input": text,
+        "voice": voice,
+        "speed": _coerce_float(tts_settings.get("speed"), 1.0),
+        "response_format": "wav",
+    }
+
+    last_response = None
+    for speech_url in _openai_audio_speech_urls(normalized_base_url):
+        response = requests.post(
+            speech_url,
+            headers=_openai_auth_headers(api_key),
+            json=payload,
+            timeout=TTS_GENERATION_TIMEOUT_SECONDS,
+        )
+
+        if _should_try_next_openai_candidate(response.status_code):
+            last_response = response
+            continue
+        return response
+
+    if last_response is not None:
+        return last_response
+
+    raise RuntimeError(f"No Qwen3 TTS speech endpoint could be resolved for '{normalized_base_url}'.")
+
+
 # Audio Generation
 def text_to_audio(
     text: str,
@@ -3878,6 +4051,7 @@ def text_to_audio(
     kokoro_base_url: str = KOKORO_API_BASE_URL,
     silero_base_url: str = SILERO_API_BASE_URL,
     chatterbox_base_url: str = CHATTERBOX_API_BASE_URL,
+    kobold_qwen_base_url: str = KOBOLD_QWEN_API_BASE_URL,
     magpie_base_url: str = MAGPIE_API_BASE_URL,
     max_attempts: int = 5,
 ) -> AudioSegment | None:
@@ -3902,6 +4076,8 @@ def text_to_audio(
                 response = _request_kokoro_audio(text, tts_settings, kokoro_base_url)
             elif service == "Chatterbox":
                 response = _request_chatterbox_audio(text, tts_settings, chatterbox_base_url)
+            elif service == "Qwen3 TTS":
+                response = _request_kobold_qwen_audio(text, tts_settings, kobold_qwen_base_url)
             elif service == "Magpie":
                 response = _request_magpie_audio(text, tts_settings, magpie_base_url)
             elif service in {

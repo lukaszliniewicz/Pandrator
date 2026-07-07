@@ -10,6 +10,7 @@ PACKAGING_LAYOUT_FILENAME = "packaging_layout.json"
 KOKORO_ENV_NAME = "kokoro_api_server_installer"
 KOKORO_GPU_SUPPORT_CONFIG_FLAG = "kokoro_gpu_support"
 CHATTERBOX_GPU_SUPPORT_CONFIG_FLAG = "chatterbox_gpu_support"
+KOBOLD_QWEN_GPU_SUPPORT_CONFIG_FLAG = "kobold_qwen_gpu_support"
 MAGPIE_GPU_SUPPORT_CONFIG_FLAG = "magpie_gpu_support"
 RVC_GPU_SUPPORT_CONFIG_FLAG = "rvc_gpu_support"
 
@@ -185,6 +186,29 @@ COMPONENTS: dict[str, ComponentDefinition] = {
         process_attr="chatterbox_process",
         port=8040,
     ),
+    "kobold_qwen": ComponentDefinition(
+        key="kobold_qwen",
+        label="Qwen3 TTS",
+        config_flag="kobold_qwen_support",
+        paths=("kobold-qwen-fastapi",),
+        markers=("kobold-qwen-fastapi/run.py", "kobold-qwen-fastapi/pyproject.toml"),
+        repo_url="https://github.com/lukaszliniewicz/kobold-qwen-fastapi.git",
+        repo_dirname="kobold-qwen-fastapi",
+        process_attr="kobold_qwen_process",
+        port=8042,
+    ),
+    "kobold_qwen_cpu": ComponentDefinition(
+        key="kobold_qwen_cpu",
+        label="Qwen3 TTS CPU",
+        config_flag="kobold_qwen_support",
+        paths=("kobold-qwen-fastapi",),
+        markers=("kobold-qwen-fastapi/run.py", "kobold-qwen-fastapi/pyproject.toml"),
+        variant_of="kobold_qwen",
+        repo_url="https://github.com/lukaszliniewicz/kobold-qwen-fastapi.git",
+        repo_dirname="kobold-qwen-fastapi",
+        process_attr="kobold_qwen_process",
+        port=8042,
+    ),
     "magpie": ComponentDefinition(
         key="magpie",
         label="Magpie",
@@ -230,6 +254,8 @@ PACKAGING_CONFIG_FLAGS = (
     RVC_GPU_SUPPORT_CONFIG_FLAG,
     "chatterbox_support",
     CHATTERBOX_GPU_SUPPORT_CONFIG_FLAG,
+    "kobold_qwen_support",
+    KOBOLD_QWEN_GPU_SUPPORT_CONFIG_FLAG,
     "magpie_support",
     MAGPIE_GPU_SUPPORT_CONFIG_FLAG,
 )
@@ -264,10 +290,11 @@ BACKEND_COMPONENT_KEYS = (
     "kokoro",
     "silero",
     "chatterbox",
+    "kobold_qwen",
     "magpie",
 )
 
-LINUX_READY_BACKEND_KEYS = ("kokoro", "chatterbox")
+LINUX_READY_BACKEND_KEYS = ("kokoro", "chatterbox", "kobold_qwen")
 
 LINUX_DEFERRED_INSTALL_COMPONENT_KEYS = tuple(
     key

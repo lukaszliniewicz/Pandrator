@@ -16,6 +16,8 @@ except ImportError:
 from .catalog import BACKEND_COMPONENT_KEYS, COMPONENTS
 from .constants import (
     CHATTERBOX_API_REPO_DIRNAME,
+    KOBOLD_QWEN_API_REPO_DIRNAME,
+    KOBOLD_QWEN_GPU_SUPPORT_CONFIG_FLAG,
     MAGPIE_API_REPO_DIRNAME,
     FISHS2_API_REPO_DIRNAME,
     KOKORO_API_REPO_DIRNAME,
@@ -122,6 +124,8 @@ class RuntimeMixin:
             selected.append('kokoro')
         if self.launch_chatterbox_var:
             selected.append('chatterbox')
+        if self.launch_kobold_qwen_var:
+            selected.append('kobold_qwen')
         if self.launch_magpie_var:
             selected.append('magpie')
         return selected
@@ -141,6 +145,8 @@ class RuntimeMixin:
         self.launch_silero_var = selection.silero
         self.launch_chatterbox_var = selection.chatterbox
         self.chatterbox_cpu_launch_var = selection.chatterbox_cpu
+        self.launch_kobold_qwen_var = selection.kobold_qwen
+        self.kobold_qwen_cpu_launch_var = selection.kobold_qwen_cpu
         self.launch_magpie_var = selection.magpie
         self.magpie_cpu_launch_var = selection.magpie_cpu
 
@@ -517,6 +523,48 @@ class RuntimeMixin:
                     raise RuntimeError(error_msg)
 
             pandrator_args = ['-connect', '-chatterbox']
+            tts_engine_launched = True
+
+        if self.launch_kobold_qwen_var and not tts_engine_launched:
+            self.reporter.progress(0.70)
+            kobold_qwen_server_url = 'http://127.0.0.1:8042'
+            if 'kobold_qwen' in running_backend_keys and self.kobold_qwen_process:
+                self.reporter.status("Qwen3 TTS server is already running. Reusing existing backend.")
+            else:
+                self.reporter.status("Starting Qwen3 TTS server...")
+                kobold_qwen_server_path = os.path.join(pandrator_path, KOBOLD_QWEN_API_REPO_DIRNAME)
+                logging.info(f"Qwen3 TTS server path: {kobold_qwen_server_path}")
+
+                if not os.path.exists(kobold_qwen_server_path):
+                    error_msg = f"Qwen3 TTS server path not found: {kobold_qwen_server_path}"
+                    self.reporter.status(error_msg)
+                    logging.error(error_msg)
+                    raise FileNotFoundError(error_msg)
+
+                kobold_qwen_gpu_support = install_config.get(KOBOLD_QWEN_GPU_SUPPORT_CONFIG_FLAG, False)
+                kobold_qwen_launch_gpu = kobold_qwen_gpu_support and not self.kobold_qwen_cpu_launch_var
+
+                try:
+                    self.kobold_qwen_process = self.run_kobold_qwen_api_server(
+                        kobold_qwen_server_path,
+                        use_cpu=not kobold_qwen_launch_gpu,
+                        pixi_path=shared_pixi_path,
+                    )
+                except Exception as e:
+                    error_msg = f"Failed to start Qwen3 TTS server: {str(e)}"
+                    self.reporter.status(error_msg)
+                    logging.error(error_msg)
+                    logging.exception("Exception details:")
+                    raise
+
+                if not self.check_kobold_qwen_server_online(kobold_qwen_server_url, process=self.kobold_qwen_process):
+                    error_msg = "Qwen3 TTS server failed to come online"
+                    self.reporter.status(error_msg)
+                    logging.error(error_msg)
+                    self.shutdown_kobold_qwen()
+                    raise RuntimeError(error_msg)
+
+            pandrator_args = ['-connect', '-kobold-qwen']
             tts_engine_launched = True
 
         if self.launch_magpie_var and not tts_engine_launched:
@@ -1005,6 +1053,42 @@ class RuntimeMixin:
         self.chatterbox_process = process
         return process
 
+    def run_kobold_qwen_api_server(self, kobold_qwen_server_path, use_cpu=False, pixi_path=None):
+        """Run the Qwen3 TTS API server via its cross-platform launcher."""
+        logging.info(f"Running Qwen3 TTS API server from {kobold_qwen_server_path}...")
+
+        if self.is_port_in_use(8042):
+            error_msg = "Qwen3 TTS server cannot be started because port 8042 is already in use."
+            logging.error(error_msg)
+            self.notify_error("Error", error_msg)
+            return None
+
+        run_script_name = 'run.bat' if is_windows() else 'run.py'
+        run_script_path = os.path.join(kobold_qwen_server_path, run_script_name)
+        if not os.path.exists(run_script_path):
+            raise FileNotFoundError(f"Qwen3 TTS run script not found at: {run_script_path}")
+
+        kobold_qwen_log_file = os.path.join(kobold_qwen_server_path, 'kobold_qwen_server.log')
+        command = self.build_kobold_qwen_launcher_command(use_cpu=use_cpu, pixi_path=pixi_path)
+
+        log_handle = open(kobold_qwen_log_file, 'a', encoding='utf-8')
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=kobold_qwen_server_path,
+                env=self.get_pixi_subprocess_env(os.path.dirname(kobold_qwen_server_path)),
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                **self.get_hidden_subprocess_kwargs(),
+            )
+        except Exception:
+            log_handle.close()
+            raise
+
+        process.log_handle = log_handle
+        self.kobold_qwen_process = process
+        return process
+
     def run_magpie_api_server(self, magpie_server_path, use_cpu=False, pixi_path=None):
         """Run the Magpie API server via its run.bat script."""
         logging.info(f"Running Magpie API server from {magpie_server_path}...")
@@ -1108,6 +1192,35 @@ class RuntimeMixin:
             time.sleep(wait_interval)
 
         logging.error("Chatterbox server failed to come online within the specified attempts.")
+        return False
+
+    def check_kobold_qwen_server_online(self, base_url, max_attempts=120, wait_interval=5, process=None):
+        """Check if the Qwen3 TTS server is online and responding."""
+        probe_paths = ['/health', '/v1/models', '/v1/audio/voices']
+        for attempt in range(1, max_attempts + 1):
+            if process is not None and process.poll() is not None:
+                logging.error("Qwen3 TTS server process exited before coming online.")
+                return False
+
+            for probe_path in probe_paths:
+                try:
+                    response = requests.get(f"{base_url}{probe_path}", timeout=5)
+                    if response.status_code == 404:
+                        continue
+                    if response.status_code < 400:
+                        logging.info("Qwen3 TTS server is online.")
+                        return True
+                except requests.exceptions.RequestException:
+                    continue
+
+            logging.info(
+                "Qwen3 TTS server is not online yet. Waiting... (Attempt %s/%s)",
+                attempt,
+                max_attempts,
+            )
+            time.sleep(wait_interval)
+
+        logging.error("Qwen3 TTS server failed to come online within the specified attempts.")
         return False
 
     def run_voxtral_api_server(self, voxtral_server_path):
@@ -1240,6 +1353,7 @@ class RuntimeMixin:
         self.shutdown_kokoro()
         self.shutdown_silero()
         self.shutdown_chatterbox()
+        self.shutdown_kobold_qwen()
         self.shutdown_magpie()
         self.shutdown_rvc()
 
@@ -1386,6 +1500,17 @@ class RuntimeMixin:
             if hasattr(self.chatterbox_process, 'log_handle') and self.chatterbox_process.log_handle:
                 self.chatterbox_process.log_handle.close()
             self.chatterbox_process = None
+
+    def shutdown_kobold_qwen(self):
+        """Shut down the Qwen3 TTS server."""
+        if not self.kobold_qwen_process:
+            return
+
+        logging.info(f"Terminating Qwen3 TTS process with PID: {self.kobold_qwen_process.pid}")
+        self.terminate_process_tree(self.kobold_qwen_process)
+        if hasattr(self.kobold_qwen_process, 'log_handle') and self.kobold_qwen_process.log_handle:
+            self.kobold_qwen_process.log_handle.close()
+        self.kobold_qwen_process = None
 
     def shutdown_magpie(self):
         """Shut down the Magpie server."""

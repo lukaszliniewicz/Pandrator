@@ -546,6 +546,25 @@ class ComponentOperationsMixin:
         command = [pixi_path or 'pixi', 'run', 'python', 'run.py', '--backend', backend]
         return command
 
+    def build_kobold_qwen_launcher_command(self, use_cpu=False, pixi_path=None):
+        backend = 'cpu' if use_cpu else 'auto'
+        if is_windows():
+            command = ['cmd', '/c', 'run.bat', '--backend', backend, '--port', '8042']
+            if pixi_path:
+                command.extend(['--pixi-path', pixi_path])
+            return command
+
+        return [
+            pixi_path or 'pixi',
+            'run',
+            'python',
+            'run.py',
+            '--backend',
+            backend,
+            '--port',
+            '8042',
+        ]
+
     def build_magpie_launcher_command(self, pixi_path=None):
         command = ['cmd', '/c', 'run.bat']
         if pixi_path:
@@ -618,6 +637,18 @@ class ComponentOperationsMixin:
             return pixi_path
 
         logging.info("Chatterbox launcher does not advertise --pixi-path, skipping shared Pixi argument.")
+        return None
+
+    def get_kobold_qwen_pixi_argument(self, kobold_qwen_repo_path, pixi_path):
+        if not pixi_path:
+            return None
+
+        run_bat_contents = self._read_text_if_exists(os.path.join(kobold_qwen_repo_path, 'run.bat')).lower()
+        run_py_contents = self._read_text_if_exists(os.path.join(kobold_qwen_repo_path, 'run.py')).lower()
+        if '--pixi-path' in run_bat_contents or '--pixi-path' in run_py_contents:
+            return pixi_path
+
+        logging.info("Qwen3 TTS launcher does not advertise --pixi-path, skipping shared Pixi argument.")
         return None
 
     def get_magpie_pixi_argument(self, magpie_repo_path, pixi_path):
@@ -896,6 +927,71 @@ class ComponentOperationsMixin:
         finally:
             if process is not None:
                 logging.info("Stopping temporary Chatterbox bootstrap process.")
+                self.terminate_process_tree(process)
+            log_handle.close()
+
+    def is_kobold_qwen_runtime_ready(self, kobold_qwen_repo_path):
+        run_py_path = os.path.join(kobold_qwen_repo_path, 'run.py')
+        run_bat_path = os.path.join(kobold_qwen_repo_path, 'run.bat')
+        env_root = os.path.join(kobold_qwen_repo_path, '.pixi', 'envs', 'default')
+        env_python_path = pixi_env_python_path(env_root)
+        required_paths = [run_py_path, env_python_path]
+        if is_windows():
+            required_paths.append(run_bat_path)
+        return all(os.path.exists(path) for path in required_paths)
+
+    def install_kobold_qwen_api_server(self, kobold_qwen_repo_path, use_cpu=False, pixi_path=None):
+        logging.info(f"Bootstrapping Qwen3 TTS API server in {kobold_qwen_repo_path}...")
+        logging.info(
+            "Qwen3 TTS bootstrap starts the server temporarily to validate runtime and will stop it after health checks."
+        )
+
+        run_script_name = 'run.bat' if is_windows() else 'run.py'
+        run_script_path = os.path.join(kobold_qwen_repo_path, run_script_name)
+        if not os.path.exists(run_script_path):
+            raise FileNotFoundError(f"Qwen3 TTS run script not found at: {run_script_path}")
+
+        if self.is_port_in_use(8042):
+            raise RuntimeError("Qwen3 TTS server cannot be bootstrapped because port 8042 is already in use.")
+
+        kobold_qwen_install_log_file = os.path.join(kobold_qwen_repo_path, 'kobold_qwen_install.log')
+        command = self.build_kobold_qwen_launcher_command(
+            use_cpu=use_cpu,
+            pixi_path=self.get_kobold_qwen_pixi_argument(kobold_qwen_repo_path, pixi_path)
+            if is_windows()
+            else pixi_path,
+        )
+
+        log_handle = open(kobold_qwen_install_log_file, 'a', encoding='utf-8')
+        process = None
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=kobold_qwen_repo_path,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                **self.get_hidden_subprocess_kwargs(),
+            )
+
+            if not self.check_kobold_qwen_server_online(
+                'http://127.0.0.1:8042',
+                max_attempts=360,
+                wait_interval=5,
+                process=process,
+            ):
+                return_code = process.poll()
+                if return_code is not None:
+                    raise RuntimeError(
+                        f"Qwen3 TTS bootstrap process exited before server was ready (exit code {return_code}). "
+                        f"See log: {kobold_qwen_install_log_file}"
+                    )
+                raise RuntimeError(
+                    "Qwen3 TTS bootstrap did not bring the server online in time. "
+                    f"See log: {kobold_qwen_install_log_file}"
+                )
+        finally:
+            if process is not None:
+                logging.info("Stopping temporary Qwen3 TTS bootstrap process.")
                 self.terminate_process_tree(process)
             log_handle.close()
 

@@ -65,6 +65,10 @@ class DynamicSentenceLengthTests(unittest.TestCase):
         tab._on_tts_service_changed("Chatterbox")
         self.assertEqual(logic.state.text_processing.max_sentence_length, 350)
 
+        # Test change to Qwen3 TTS
+        tab._on_tts_service_changed("Qwen3 TTS")
+        self.assertEqual(logic.state.text_processing.max_sentence_length, 300)
+
         # Test change to XTTS
         tab._on_tts_service_changed("XTTS")
         self.assertEqual(logic.state.text_processing.max_sentence_length, 200)
