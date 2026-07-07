@@ -399,8 +399,6 @@ class PandratorInstaller(
         self.voxcpm_checkbox = ToggleSwitch("Install VoxCPM2")
         self.fishs2_checkbox = ToggleSwitch("Install FishS2")
         self.fishs2_cpu_checkbox = QCheckBox("Use CPU-only runtime")
-        self.fishs2_config_button = QPushButton("Configure GPU Runtime...")
-        self.fishs2_config_button.setEnabled(False)
         self.silero_checkbox = ToggleSwitch("Install Silero")
         self.voxtral_checkbox = ToggleSwitch("Install Voxtral")
         self.kokoro_checkbox = ToggleSwitch("Install Kokoro")
@@ -433,7 +431,7 @@ class PandratorInstaller(
             self._create_option_card(
                 self.fishs2_checkbox,
                 "A local Fish Audio S2 service that can follow an uploaded reference voice.",
-                (self.fishs2_cpu_checkbox, self.fishs2_config_button),
+                (self.fishs2_cpu_checkbox,),
                 voice_capability="Voice cloning",
             ),
             self._create_option_card(
@@ -536,7 +534,6 @@ class PandratorInstaller(
         )
         self.fishs2_checkbox.stateChanged.connect(self._handle_fishs2_toggle)
         self.fishs2_cpu_checkbox.stateChanged.connect(self._handle_fishs2_cpu_toggle)
-        self.fishs2_config_button.clicked.connect(lambda: self.show_fishs2_config_dialog(force=True))
 
         for checkbox in self.install_tab.findChildren(QCheckBox):
             checkbox.stateChanged.connect(self.update_install_button_state)
@@ -783,10 +780,6 @@ class PandratorInstaller(
 
         set_widget_state(self.fishs2_checkbox, not fishs2_support, False)
         set_widget_state(self.fishs2_cpu_checkbox, not fishs2_support, False)
-        if not fishs2_support:
-            self.fishs2_config_button.setEnabled(False)
-        else:
-            self.fishs2_config_button.setEnabled(not self.fishs2_cpu_checkbox.isChecked())
 
         set_widget_state(self.launch_fishs2_checkbox, fishs2_support, False)
         if fishs2_support:
@@ -910,8 +903,8 @@ class PandratorInstaller(
             'xtts': (self.xtts_checkbox, self.xtts_cpu_checkbox),
             'xtts_cpu': (self.xtts_checkbox, self.xtts_cpu_checkbox),
             'voxcpm': (self.voxcpm_checkbox,),
-            'fishs2': (self.fishs2_checkbox, self.fishs2_cpu_checkbox, self.fishs2_config_button),
-            'fishs2_cpu': (self.fishs2_checkbox, self.fishs2_cpu_checkbox, self.fishs2_config_button),
+            'fishs2': (self.fishs2_checkbox, self.fishs2_cpu_checkbox),
+            'fishs2_cpu': (self.fishs2_checkbox, self.fishs2_cpu_checkbox),
             'silero': (self.silero_checkbox,),
             'voxtral': (self.voxtral_checkbox,),
             'rvc': (self.rvc_checkbox, self.rvc_cpu_checkbox),
@@ -1153,12 +1146,8 @@ class PandratorInstaller(
         
         if is_checked:
             if not self.fishs2_cpu_checkbox.isChecked():
-                self.fishs2_config_button.setEnabled(True)
                 self.show_fishs2_config_dialog(force=False)
-            else:
-                self.fishs2_config_button.setEnabled(False)
         else:
-            self.fishs2_config_button.setEnabled(False)
             self.fishs2_cpu_checkbox.blockSignals(True)
             self.fishs2_cpu_checkbox.setChecked(False)
             self.fishs2_cpu_checkbox.blockSignals(False)
@@ -1170,12 +1159,10 @@ class PandratorInstaller(
         if is_cpu:
             if not self.fishs2_checkbox.isChecked():
                 self.fishs2_checkbox.setChecked(True)
-            self.fishs2_config_button.setEnabled(False)
             self.fishs2_backend = "cpu"
             self.fishs2_model_quant = "q6_k"
         else:
             if self.fishs2_checkbox.isChecked():
-                self.fishs2_config_button.setEnabled(True)
                 self.show_fishs2_config_dialog(force=False)
         self.update_install_button_state()
 
@@ -1197,7 +1184,6 @@ class PandratorInstaller(
                 self.fishs2_cpu_checkbox.blockSignals(True)
                 self.fishs2_cpu_checkbox.setChecked(False)
                 self.fishs2_cpu_checkbox.blockSignals(False)
-                self.fishs2_config_button.setEnabled(False)
                 self.update_install_button_state()
 
 
