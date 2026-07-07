@@ -398,7 +398,6 @@ class PandratorInstaller(
         self.xtts_cpu_checkbox = QCheckBox("Use CPU-only runtime")
         self.voxcpm_checkbox = ToggleSwitch("Install VoxCPM2")
         self.fishs2_checkbox = ToggleSwitch("Install FishS2")
-        self.fishs2_cpu_checkbox = QCheckBox("Use CPU-only runtime")
         self.silero_checkbox = ToggleSwitch("Install Silero")
         self.voxtral_checkbox = ToggleSwitch("Install Voxtral")
         self.kokoro_checkbox = ToggleSwitch("Install Kokoro")
@@ -431,7 +430,6 @@ class PandratorInstaller(
             self._create_option_card(
                 self.fishs2_checkbox,
                 "A local Fish Audio S2 service that can follow an uploaded reference voice.",
-                (self.fishs2_cpu_checkbox,),
                 voice_capability="Voice cloning",
             ),
             self._create_option_card(
@@ -533,7 +531,6 @@ class PandratorInstaller(
             self.rvc_cpu_checkbox,
         )
         self.fishs2_checkbox.stateChanged.connect(self._handle_fishs2_toggle)
-        self.fishs2_cpu_checkbox.stateChanged.connect(self._handle_fishs2_cpu_toggle)
 
         for checkbox in self.install_tab.findChildren(QCheckBox):
             checkbox.stateChanged.connect(self.update_install_button_state)
@@ -779,7 +776,6 @@ class PandratorInstaller(
         self.fishs2_model_quant = config.get('fishs2_model_quant', 'q6_k')
 
         set_widget_state(self.fishs2_checkbox, not fishs2_support, False)
-        set_widget_state(self.fishs2_cpu_checkbox, not fishs2_support, False)
 
         set_widget_state(self.launch_fishs2_checkbox, fishs2_support, False)
         if fishs2_support:
@@ -903,8 +899,8 @@ class PandratorInstaller(
             'xtts': (self.xtts_checkbox, self.xtts_cpu_checkbox),
             'xtts_cpu': (self.xtts_checkbox, self.xtts_cpu_checkbox),
             'voxcpm': (self.voxcpm_checkbox,),
-            'fishs2': (self.fishs2_checkbox, self.fishs2_cpu_checkbox),
-            'fishs2_cpu': (self.fishs2_checkbox, self.fishs2_cpu_checkbox),
+            'fishs2': (self.fishs2_checkbox,),
+            'fishs2_cpu': (self.fishs2_checkbox,),
             'silero': (self.silero_checkbox,),
             'voxtral': (self.voxtral_checkbox,),
             'rvc': (self.rvc_checkbox, self.rvc_cpu_checkbox),
@@ -1063,8 +1059,8 @@ class PandratorInstaller(
             xtts=self.xtts_checkbox.isChecked() and not self.xtts_cpu_checkbox.isChecked(),
             xtts_cpu=self.xtts_checkbox.isChecked() and self.xtts_cpu_checkbox.isChecked(),
             voxcpm=self.voxcpm_checkbox.isChecked(),
-            fishs2=self.fishs2_checkbox.isChecked() and not self.fishs2_cpu_checkbox.isChecked(),
-            fishs2_cpu=self.fishs2_checkbox.isChecked() and self.fishs2_cpu_checkbox.isChecked(),
+            fishs2=self.fishs2_checkbox.isChecked() and self.fishs2_backend != "cpu",
+            fishs2_cpu=self.fishs2_checkbox.isChecked() and self.fishs2_backend == "cpu",
             fishs2_backend=self.fishs2_backend,
             fishs2_model_quant=self.fishs2_model_quant,
             silero=self.silero_checkbox.isChecked(),
@@ -1106,12 +1102,16 @@ class PandratorInstaller(
             "xtts_finetuning",
         ):
             getattr(self, f"{component}_checkbox").setChecked(getattr(selection, component))
-        for component in ("xtts", "kokoro", "chatterbox", "kobold_qwen", "magpie", "rvc", "fishs2"):
+        for component in ("xtts", "kokoro", "chatterbox", "kobold_qwen", "magpie", "rvc"):
             cpu_selected = getattr(selection, f"{component}_cpu")
             getattr(self, f"{component}_checkbox").setChecked(
                 getattr(selection, component) or cpu_selected
             )
             getattr(self, f"{component}_cpu_checkbox").setChecked(cpu_selected)
+        
+        # FishS2 is handled without a CPU checkbox on card
+        fishs2_selected = selection.fishs2 or selection.fishs2_cpu
+        self.fishs2_checkbox.setChecked(fishs2_selected)
         self.fishs2_backend = getattr(selection, "fishs2_backend", "auto")
         self.fishs2_model_quant = getattr(selection, "fishs2_model_quant", "q6_k")
         self.update_whisperx_checkbox()
@@ -1142,28 +1142,8 @@ class PandratorInstaller(
 
     def _handle_fishs2_toggle(self, state):
         is_checked = (state == Qt.CheckState.Checked.value)
-        self.fishs2_cpu_checkbox.setEnabled(is_checked)
-        
         if is_checked:
-            if not self.fishs2_cpu_checkbox.isChecked():
-                self.show_fishs2_config_dialog(force=False)
-        else:
-            self.fishs2_cpu_checkbox.blockSignals(True)
-            self.fishs2_cpu_checkbox.setChecked(False)
-            self.fishs2_cpu_checkbox.blockSignals(False)
-            
-        self.update_install_button_state()
-
-    def _handle_fishs2_cpu_toggle(self, state):
-        is_cpu = (state == Qt.CheckState.Checked.value)
-        if is_cpu:
-            if not self.fishs2_checkbox.isChecked():
-                self.fishs2_checkbox.setChecked(True)
-            self.fishs2_backend = "cpu"
-            self.fishs2_model_quant = "q6_k"
-        else:
-            if self.fishs2_checkbox.isChecked():
-                self.show_fishs2_config_dialog(force=False)
+            self.show_fishs2_config_dialog(force=False)
         self.update_install_button_state()
 
     def show_fishs2_config_dialog(self, force=False):
@@ -1181,9 +1161,6 @@ class PandratorInstaller(
                 self.fishs2_checkbox.blockSignals(True)
                 self.fishs2_checkbox.setChecked(False)
                 self.fishs2_checkbox.blockSignals(False)
-                self.fishs2_cpu_checkbox.blockSignals(True)
-                self.fishs2_cpu_checkbox.setChecked(False)
-                self.fishs2_cpu_checkbox.blockSignals(False)
                 self.update_install_button_state()
 
 
