@@ -139,6 +139,7 @@ class RuntimeMixin:
         self.xtts_cpu_launch_var = selection.xtts_cpu
         self.launch_voxcpm_var = selection.voxcpm
         self.launch_fishs2_var = selection.fishs2
+        self.fishs2_cpu_launch_var = selection.fishs2_cpu
         self.launch_voxtral_var = selection.voxtral
         self.launch_kokoro_var = selection.kokoro
         self.kokoro_cpu_launch_var = selection.kokoro_cpu
@@ -342,9 +343,17 @@ class RuntimeMixin:
                     logging.error(error_msg)
                     raise FileNotFoundError(error_msg)
 
+                fishs2_gpu_support = install_config.get('fishs2_gpu_support', True)
+                fishs2_launch_gpu = fishs2_gpu_support and not getattr(self, 'fishs2_cpu_launch_var', False)
+                
+                backend = install_config.get('fishs2_backend', 'auto') if fishs2_launch_gpu else 'cpu'
+                model_quant = install_config.get('fishs2_model_quant', 'q6_k')
+
                 try:
                     self.fishs2_process = self.run_fishs2_api_server(
                         fishs2_server_path,
+                        backend=backend,
+                        model_quant=model_quant,
                         pixi_path=shared_pixi_path,
                     )
                 except Exception as e:
@@ -951,9 +960,9 @@ class RuntimeMixin:
         logging.error("VoxCPM server failed to come online within the specified attempts.")
         return False
 
-    def run_fishs2_api_server(self, fishs2_server_path, pixi_path=None):
+    def run_fishs2_api_server(self, fishs2_server_path, backend="auto", model_quant="q6_k", pixi_path=None):
         """Run the FishS2 API server via its upstream launcher script."""
-        logging.info(f"Running FishS2 API server from {fishs2_server_path}...")
+        logging.info(f"Running FishS2 API server from {fishs2_server_path} (backend={backend}, quant={model_quant})...")
 
         if self.is_port_in_use(8020):
             error_msg = "FishS2 server cannot be started because port 8020 is already in use."
@@ -961,9 +970,20 @@ class RuntimeMixin:
             self.notify_error("Error", error_msg)
             return None
 
-        run_script_path = os.path.join(fishs2_server_path, 'run.bat')
+        run_script_name = 'run.bat' if is_windows() else 'run.py'
+        run_script_path = os.path.join(fishs2_server_path, run_script_name)
         if not os.path.exists(run_script_path):
             raise FileNotFoundError(f"FishS2 run script not found at: {run_script_path}")
+
+        # Write runtime .env config
+        env_file_path = os.path.join(fishs2_server_path, '.env')
+        try:
+            with open(env_file_path, 'w', encoding='utf-8') as f:
+                f.write(f"FISHS2_BACKEND={backend}\n")
+                f.write(f"FISHS2_MODEL_QUANT={model_quant}\n")
+                f.write("FISHS2_PORT=8020\n")
+        except Exception as e:
+            logging.error(f"Failed to write runtime .env file: {e}")
 
         fishs2_log_file = os.path.join(fishs2_server_path, 'fishs2_server.log')
         command = self.build_fishs2_launcher_command(

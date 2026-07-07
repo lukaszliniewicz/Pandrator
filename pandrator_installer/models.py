@@ -43,6 +43,9 @@ class InstallSelection:
     xtts_cpu: bool = False
     voxcpm: bool = False
     fishs2: bool = False
+    fishs2_cpu: bool = False
+    fishs2_backend: str = "auto"
+    fishs2_model_quant: str = "q6_k"
     silero: bool = False
     voxtral: bool = False
     kokoro: bool = False
@@ -65,6 +68,8 @@ class InstallSelection:
         *,
         install_pandrator: bool = True,
         include_dependencies: bool = True,
+        fishs2_backend: str = "auto",
+        fishs2_model_quant: str = "q6_k",
     ) -> "InstallSelection":
         selected = {
             str(component).strip().lower().replace("-", "_")
@@ -85,7 +90,9 @@ class InstallSelection:
 
         selection = cls(
             pandrator=bool(install_pandrator),
-            **{field.name: field.name in selected for field in fields(cls) if field.name != "pandrator"},
+            fishs2_backend=fishs2_backend,
+            fishs2_model_quant=fishs2_model_quant,
+            **{field.name: field.name in selected for field in fields(cls) if field.name not in ("pandrator", "fishs2_backend", "fishs2_model_quant")},
         )
         selection.validate()
         return selection
@@ -98,6 +105,7 @@ class InstallSelection:
             ("kobold_qwen", "kobold_qwen_cpu"),
             ("magpie", "magpie_cpu"),
             ("rvc", "rvc_cpu"),
+            ("fishs2", "fishs2_cpu"),
         )
         for primary, secondary in mutually_exclusive:
             if getattr(self, primary) and getattr(self, secondary):
@@ -107,7 +115,7 @@ class InstallSelection:
         return tuple(
             field.name
             for field in fields(self)
-            if field.name != "pandrator" and getattr(self, field.name)
+            if field.name not in ("pandrator", "fishs2_backend", "fishs2_model_quant") and getattr(self, field.name)
         )
 
     def any_component_selected(self) -> bool:
@@ -124,6 +132,7 @@ class LaunchSelection:
     xtts_cpu: bool = False
     voxcpm: bool = False
     fishs2: bool = False
+    fishs2_cpu: bool = False
     voxtral: bool = False
     kokoro: bool = False
     kokoro_cpu: bool = False

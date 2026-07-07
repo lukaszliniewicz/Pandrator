@@ -10,7 +10,7 @@ from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
     QFileDialog, QLabel, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar,
-    QPushButton, QScrollArea, QSizePolicy, QTabWidget, QVBoxLayout, QWidget,
+    QPushButton, QScrollArea, QSizePolicy, QTabWidget, QVBoxLayout, QWidget, QComboBox, QDialog,
 )
 
 from ..catalog import LINUX_DEFERRED_INSTALL_COMPONENT_KEYS
@@ -66,6 +66,10 @@ class PandratorInstaller(
         self.xtts_cpu_var = False
         self.voxcpm_var = False
         self.fishs2_var = False
+        self.fishs2_cpu_var = False
+        self.fishs2_backend = "auto"
+        self.fishs2_model_quant = "q6_k"
+        self.fishs2_model_quant_manually_set = False
         self.silero_var = False
         self.voxtral_var = False
         self.kokoro_var = False
@@ -90,6 +94,7 @@ class PandratorInstaller(
         self.xtts_cpu_launch_var = False
         self.launch_voxcpm_var = False
         self.launch_fishs2_var = False
+        self.fishs2_cpu_launch_var = False
         self.launch_voxtral_var = False
         self.launch_kokoro_var = False
         self.kokoro_cpu_launch_var = False
@@ -393,6 +398,9 @@ class PandratorInstaller(
         self.xtts_cpu_checkbox = QCheckBox("Use CPU-only runtime")
         self.voxcpm_checkbox = ToggleSwitch("Install VoxCPM2")
         self.fishs2_checkbox = ToggleSwitch("Install FishS2")
+        self.fishs2_cpu_checkbox = QCheckBox("Use CPU-only runtime")
+        self.fishs2_config_button = QPushButton("Configure GPU Runtime...")
+        self.fishs2_config_button.setEnabled(False)
         self.silero_checkbox = ToggleSwitch("Install Silero")
         self.voxtral_checkbox = ToggleSwitch("Install Voxtral")
         self.kokoro_checkbox = ToggleSwitch("Install Kokoro")
@@ -425,6 +433,7 @@ class PandratorInstaller(
             self._create_option_card(
                 self.fishs2_checkbox,
                 "A local Fish Audio S2 service that can follow an uploaded reference voice.",
+                (self.fishs2_cpu_checkbox, self.fishs2_config_button),
                 voice_capability="Voice cloning",
             ),
             self._create_option_card(
@@ -525,6 +534,9 @@ class PandratorInstaller(
             self.rvc_checkbox,
             self.rvc_cpu_checkbox,
         )
+        self.fishs2_checkbox.stateChanged.connect(self._handle_fishs2_toggle)
+        self.fishs2_cpu_checkbox.stateChanged.connect(self._handle_fishs2_cpu_toggle)
+        self.fishs2_config_button.clicked.connect(lambda: self.show_fishs2_config_dialog(force=True))
 
         for checkbox in self.install_tab.findChildren(QCheckBox):
             checkbox.stateChanged.connect(self.update_install_button_state)
@@ -576,6 +588,7 @@ class PandratorInstaller(
         self.deepspeed_checkbox = QCheckBox("Turn off DeepSpeed")
         self.launch_voxcpm_checkbox = ToggleSwitch("Launch VoxCPM2")
         self.launch_fishs2_checkbox = ToggleSwitch("Launch FishS2")
+        self.fishs2_cpu_launch_checkbox = QCheckBox("Use CPU")
         self.launch_voxtral_checkbox = ToggleSwitch("Launch Voxtral")
         self.launch_kokoro_checkbox = ToggleSwitch("Launch Kokoro")
         self.kokoro_cpu_launch_checkbox = QCheckBox("Use CPU")
@@ -614,6 +627,7 @@ class PandratorInstaller(
             self._create_option_card(
                 self.launch_fishs2_checkbox,
                 "Start the installed FishS2 speech service.",
+                (self.fishs2_cpu_launch_checkbox,),
             ),
             self._create_option_card(
                 self.launch_voxtral_checkbox,
@@ -763,8 +777,25 @@ class PandratorInstaller(
 
         # FishS2
         fishs2_support = config.get('fishs2_support', False)
+        fishs2_gpu_support = config.get('fishs2_gpu_support', False)
+        self.fishs2_backend = config.get('fishs2_backend', 'auto')
+        self.fishs2_model_quant = config.get('fishs2_model_quant', 'q6_k')
+
         set_widget_state(self.fishs2_checkbox, not fishs2_support, False)
+        set_widget_state(self.fishs2_cpu_checkbox, not fishs2_support, False)
+        if not fishs2_support:
+            self.fishs2_config_button.setEnabled(False)
+        else:
+            self.fishs2_config_button.setEnabled(not self.fishs2_cpu_checkbox.isChecked())
+
         set_widget_state(self.launch_fishs2_checkbox, fishs2_support, False)
+        if fishs2_support:
+            if fishs2_gpu_support:
+                set_widget_state(self.fishs2_cpu_launch_checkbox, True, False)
+            else:
+                set_widget_state(self.fishs2_cpu_launch_checkbox, False, True)
+        else:
+            set_widget_state(self.fishs2_cpu_launch_checkbox, False, False)
 
         # Voxtral
         voxtral_support = config.get('voxtral_support', False)
@@ -879,7 +910,8 @@ class PandratorInstaller(
             'xtts': (self.xtts_checkbox, self.xtts_cpu_checkbox),
             'xtts_cpu': (self.xtts_checkbox, self.xtts_cpu_checkbox),
             'voxcpm': (self.voxcpm_checkbox,),
-            'fishs2': (self.fishs2_checkbox,),
+            'fishs2': (self.fishs2_checkbox, self.fishs2_cpu_checkbox, self.fishs2_config_button),
+            'fishs2_cpu': (self.fishs2_checkbox, self.fishs2_cpu_checkbox, self.fishs2_config_button),
             'silero': (self.silero_checkbox,),
             'voxtral': (self.voxtral_checkbox,),
             'rvc': (self.rvc_checkbox, self.rvc_cpu_checkbox),
@@ -895,7 +927,7 @@ class PandratorInstaller(
         }
         tooltip = (
             "Linux setup for this component is deferred pending per-backend review. "
-            "Install Pandrator core first; Kokoro, Chatterbox, and Qwen3 TTS are currently reviewed Linux backends."
+            "Install Pandrator core first; Kokoro, Chatterbox, Qwen3 TTS, and FishS2 are currently reviewed Linux backends."
         )
         seen_controls = set()
         for component_key in LINUX_DEFERRED_INSTALL_COMPONENT_KEYS:
@@ -1038,7 +1070,10 @@ class PandratorInstaller(
             xtts=self.xtts_checkbox.isChecked() and not self.xtts_cpu_checkbox.isChecked(),
             xtts_cpu=self.xtts_checkbox.isChecked() and self.xtts_cpu_checkbox.isChecked(),
             voxcpm=self.voxcpm_checkbox.isChecked(),
-            fishs2=self.fishs2_checkbox.isChecked(),
+            fishs2=self.fishs2_checkbox.isChecked() and not self.fishs2_cpu_checkbox.isChecked(),
+            fishs2_cpu=self.fishs2_checkbox.isChecked() and self.fishs2_cpu_checkbox.isChecked(),
+            fishs2_backend=self.fishs2_backend,
+            fishs2_model_quant=self.fishs2_model_quant,
             silero=self.silero_checkbox.isChecked(),
             voxtral=self.voxtral_checkbox.isChecked(),
             kokoro=self.kokoro_checkbox.isChecked() and not self.kokoro_cpu_checkbox.isChecked(),
@@ -1072,19 +1107,20 @@ class PandratorInstaller(
         self.pandrator_checkbox.setChecked(selection.pandrator)
         for component in (
             "voxcpm",
-            "fishs2",
             "silero",
             "voxtral",
             "whisperx",
             "xtts_finetuning",
         ):
             getattr(self, f"{component}_checkbox").setChecked(getattr(selection, component))
-        for component in ("xtts", "kokoro", "chatterbox", "kobold_qwen", "magpie", "rvc"):
+        for component in ("xtts", "kokoro", "chatterbox", "kobold_qwen", "magpie", "rvc", "fishs2"):
             cpu_selected = getattr(selection, f"{component}_cpu")
             getattr(self, f"{component}_checkbox").setChecked(
                 getattr(selection, component) or cpu_selected
             )
             getattr(self, f"{component}_cpu_checkbox").setChecked(cpu_selected)
+        self.fishs2_backend = getattr(selection, "fishs2_backend", "auto")
+        self.fishs2_model_quant = getattr(selection, "fishs2_model_quant", "q6_k")
         self.update_whisperx_checkbox()
 
     def snapshot_launch_selection(self):
@@ -1097,7 +1133,8 @@ class PandratorInstaller(
             disable_deepspeed=self.deepspeed_checkbox.isChecked(),
             xtts_cpu=self.xtts_cpu_launch_checkbox.isChecked(),
             voxcpm=self.launch_voxcpm_checkbox.isChecked(),
-            fishs2=self.launch_fishs2_checkbox.isChecked(),
+            fishs2=self.launch_fishs2_checkbox.isChecked() and not self.fishs2_cpu_launch_checkbox.isChecked(),
+            fishs2_cpu=self.launch_fishs2_checkbox.isChecked() and self.fishs2_cpu_launch_checkbox.isChecked(),
             voxtral=self.launch_voxtral_checkbox.isChecked(),
             kokoro=self.launch_kokoro_checkbox.isChecked(),
             kokoro_cpu=self.kokoro_cpu_launch_checkbox.isChecked(),
@@ -1109,3 +1146,196 @@ class PandratorInstaller(
             magpie=self.launch_magpie_checkbox.isChecked(),
             magpie_cpu=self.magpie_cpu_launch_checkbox.isChecked(),
         )
+
+    def _handle_fishs2_toggle(self, state):
+        is_checked = (state == Qt.CheckState.Checked.value)
+        self.fishs2_cpu_checkbox.setEnabled(is_checked)
+        
+        if is_checked:
+            if not self.fishs2_cpu_checkbox.isChecked():
+                self.fishs2_config_button.setEnabled(True)
+                self.show_fishs2_config_dialog(force=False)
+            else:
+                self.fishs2_config_button.setEnabled(False)
+        else:
+            self.fishs2_config_button.setEnabled(False)
+            self.fishs2_cpu_checkbox.blockSignals(True)
+            self.fishs2_cpu_checkbox.setChecked(False)
+            self.fishs2_cpu_checkbox.blockSignals(False)
+            
+        self.update_install_button_state()
+
+    def _handle_fishs2_cpu_toggle(self, state):
+        is_cpu = (state == Qt.CheckState.Checked.value)
+        if is_cpu:
+            if not self.fishs2_checkbox.isChecked():
+                self.fishs2_checkbox.setChecked(True)
+            self.fishs2_config_button.setEnabled(False)
+            self.fishs2_backend = "cpu"
+            self.fishs2_model_quant = "q6_k"
+        else:
+            if self.fishs2_checkbox.isChecked():
+                self.fishs2_config_button.setEnabled(True)
+                self.show_fishs2_config_dialog(force=False)
+        self.update_install_button_state()
+
+    def show_fishs2_config_dialog(self, force=False):
+        if not force and getattr(self, "fishs2_model_quant_manually_set", False):
+            return
+            
+        dialog = FishS2ConfigDialog(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.fishs2_backend = dialog.get_selected_backend()
+            self.fishs2_model_quant = dialog.get_selected_quant()
+            self.fishs2_model_quant_manually_set = True
+            logging.info(f"FishS2 configured: backend={self.fishs2_backend}, quant={self.fishs2_model_quant}")
+        else:
+            if not force:
+                self.fishs2_checkbox.blockSignals(True)
+                self.fishs2_checkbox.setChecked(False)
+                self.fishs2_checkbox.blockSignals(False)
+                self.fishs2_cpu_checkbox.blockSignals(True)
+                self.fishs2_cpu_checkbox.setChecked(False)
+                self.fishs2_cpu_checkbox.blockSignals(False)
+                self.fishs2_config_button.setEnabled(False)
+                self.update_install_button_state()
+
+
+class FishS2ConfigDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Configure FishS2 GPU Runtime")
+        self.setMinimumSize(420, 320)
+        
+        self.selected_backend = getattr(parent, "fishs2_backend", "auto")
+        self.selected_quant = getattr(parent, "fishs2_model_quant", "q6_k")
+        
+        layout = QVBoxLayout(self)
+        layout.setSpacing(14)
+        layout.setContentsMargins(16, 16, 16, 16)
+        
+        title_label = QLabel("<h2>Configure FishS2 GPU</h2>")
+        desc_label = QLabel(
+            "FishS2 is a high-quality neural voice cloning engine. "
+            "Please select your hardware backend and model quantization size."
+        )
+        desc_label.setWordWrap(True)
+        layout.addWidget(title_label)
+        layout.addWidget(desc_label)
+        
+        gpu_info_group = QGroupBox("Detected Hardware")
+        gpu_info_layout = QVBoxLayout(gpu_info_group)
+        
+        gpu_vram = self._get_gpu_vram_gb()
+        if gpu_vram is not None:
+            gpu_text = f"Detected GPU VRAM: <b>{gpu_vram:.1f} GB</b>.<br>"
+            if gpu_vram <= 8.0:
+                gpu_text += "Recommendation: We suggest using the <b>6-bit (q6_k)</b> model to fit inside VRAM."
+                default_quant = "q6_k"
+            else:
+                gpu_text += "Recommendation: We suggest using the high-fidelity <b>8-bit (q8_0)</b> model."
+                default_quant = "q8_0"
+        else:
+            gpu_text = "Could not autodetect GPU VRAM.<br>Recommendation: Defaulting to <b>6-bit (q6_k)</b> for safety."
+            default_quant = "q6_k"
+            
+        if not getattr(parent, "fishs2_model_quant_manually_set", False):
+            self.selected_quant = default_quant
+            
+        gpu_label = QLabel(gpu_text)
+        gpu_label.setWordWrap(True)
+        gpu_info_layout.addWidget(gpu_label)
+        layout.addWidget(gpu_info_group)
+        
+        form_widget = QWidget()
+        form_layout = QGridLayout(form_widget)
+        form_layout.setContentsMargins(0, 0, 0, 0)
+        
+        backend_label = QLabel("Hardware Backend:")
+        self.backend_combo = QComboBox()
+        self.backend_combo.addItems(["auto", "cuda", "vulkan", "cpu"])
+        self.backend_combo.setCurrentText(self.selected_backend)
+        form_layout.addWidget(backend_label, 0, 0)
+        form_layout.addWidget(self.backend_combo, 0, 1)
+        
+        quant_label = QLabel("Model Quantization:")
+        self.quant_combo = QComboBox()
+        self.quant_map = {
+            "8-bit (q8_0) - Best quality, requires > 8 GB VRAM": "q8_0",
+            "6-bit (q6_k) - Great compromise, fits 8 GB cards (Recommended)": "q6_k",
+            "5-bit (q5_k_m) - Light and fast": "q5_k_m",
+            "4-bit (q4_k_m) - Very light, fits 6 GB cards": "q4_k_m",
+            "2-bit (q2_k) - Lowest memory, fast": "q2_k",
+        }
+        for display_text in self.quant_map.keys():
+            self.quant_combo.addItem(display_text)
+            
+        for display_text, val in self.quant_map.items():
+            if val == self.selected_quant:
+                self.quant_combo.setCurrentText(display_text)
+                break
+                
+        form_layout.addWidget(quant_label, 1, 0)
+        form_layout.addWidget(self.quant_combo, 1, 1)
+        
+        layout.addWidget(form_widget)
+        
+        buttons_layout = QHBoxLayout()
+        cancel_button = QPushButton("Cancel")
+        ok_button = QPushButton("OK")
+        ok_button.setDefault(True)
+        
+        cancel_button.clicked.connect(self.reject)
+        ok_button.clicked.connect(self.accept_selection)
+        
+        buttons_layout.addStretch()
+        buttons_layout.addWidget(cancel_button)
+        buttons_layout.addWidget(ok_button)
+        layout.addLayout(buttons_layout)
+
+    def _get_gpu_vram_gb(self) -> float | None:
+        import subprocess
+        try:
+            res = subprocess.run(
+                ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, check=True
+            )
+            vram_mb = float(res.stdout.strip().split("\n")[0])
+            return vram_mb / 1024.0
+        except Exception:
+            pass
+
+        if is_windows():
+            try:
+                res = subprocess.run(
+                    ["wmic", "path", "win32_VideoController", "get", "AdapterRAM"],
+                    capture_output=True, text=True, check=True
+                )
+                lines = [l.strip() for l in res.stdout.strip().split("\n") if l.strip()]
+                if len(lines) > 1:
+                    bytes_ram = int(lines[1])
+                    return bytes_ram / (1024.0 ** 3)
+            except Exception:
+                pass
+        else:
+            for card in ("/sys/class/drm/card0/device/mem_info_vram_total", 
+                         "/sys/class/drm/card1/device/mem_info_vram_total"):
+                if os.path.exists(card):
+                    try:
+                        with open(card, "r") as f:
+                            bytes_ram = int(f.read().strip())
+                            return bytes_ram / (1024.0 ** 3)
+                    except Exception:
+                        pass
+        return None
+
+    def accept_selection(self):
+        self.selected_backend = self.backend_combo.currentText()
+        self.selected_quant = self.quant_map[self.quant_combo.currentText()]
+        self.accept()
+
+    def get_selected_backend(self):
+        return self.selected_backend
+
+    def get_selected_quant(self):
+        return self.selected_quant

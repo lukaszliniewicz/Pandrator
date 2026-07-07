@@ -530,9 +530,13 @@ class ComponentOperationsMixin:
         return command
 
     def build_fishs2_launcher_command(self, pixi_path=None):
-        command = ['cmd', '/c', 'run.bat']
-        if pixi_path:
-            command.extend(['--pixi-path', pixi_path])
+        if is_windows():
+            command = ['cmd', '/c', 'run.bat']
+            if pixi_path:
+                command.extend(['--pixi-path', pixi_path])
+            return command
+
+        command = [pixi_path or 'pixi', 'run', 'python', 'run.py']
         return command
 
     def build_chatterbox_launcher_command(self, use_cpu=False, pixi_path=None):
@@ -810,22 +814,34 @@ class ComponentOperationsMixin:
             log_handle.close()
 
     def is_fishs2_runtime_ready(self, fishs2_repo_path):
-        run_bat_path = os.path.join(fishs2_repo_path, 'run.bat')
-        env_python_path = os.path.join(fishs2_repo_path, '.pixi', 'envs', 'default', 'python.exe')
-        return all(os.path.exists(path) for path in (run_bat_path, env_python_path))
+        run_script_name = 'run.bat' if is_windows() else 'run.sh'
+        run_script_path = os.path.join(fishs2_repo_path, run_script_name)
+        env_python_path = pixi_env_python_path(os.path.join(fishs2_repo_path, '.pixi', 'envs', 'default'))
+        return all(os.path.exists(path) for path in (run_script_path, env_python_path))
 
-    def install_fishs2_api_server(self, fishs2_repo_path, pixi_path=None):
-        logging.info(f"Bootstrapping FishS2 API server in {fishs2_repo_path}...")
+    def install_fishs2_api_server(self, fishs2_repo_path, backend="auto", model_quant="q6_k", pixi_path=None):
+        logging.info(f"Bootstrapping FishS2 API server in {fishs2_repo_path} (backend={backend}, quant={model_quant})...")
         logging.info(
             "FishS2 bootstrap starts the server temporarily to validate runtime and will stop it after health checks."
         )
 
-        run_script_path = os.path.join(fishs2_repo_path, 'run.bat')
+        run_script_name = 'run.bat' if is_windows() else 'run.py'
+        run_script_path = os.path.join(fishs2_repo_path, run_script_name)
         if not os.path.exists(run_script_path):
             raise FileNotFoundError(f"FishS2 run script not found at: {run_script_path}")
 
         if self.is_port_in_use(8020):
             raise RuntimeError("FishS2 server cannot be bootstrapped because port 8020 is already in use.")
+
+        # Write configuration to .env file before bootstrapping
+        env_file_path = os.path.join(fishs2_repo_path, '.env')
+        try:
+            with open(env_file_path, 'w', encoding='utf-8') as f:
+                f.write(f"FISHS2_BACKEND={backend}\n")
+                f.write(f"FISHS2_MODEL_QUANT={model_quant}\n")
+                f.write("FISHS2_PORT=8020\n")
+        except Exception as e:
+            logging.error(f"Failed to write bootstrap .env file: {e}")
 
         fishs2_install_log_file = os.path.join(fishs2_repo_path, 'fishs2_install.log')
         command = self.build_fishs2_launcher_command(

@@ -143,6 +143,7 @@ class WorkflowMixin:
         xtts_cpu_var = selection.xtts_cpu
         voxcpm_var = selection.voxcpm
         fishs2_var = selection.fishs2
+        fishs2_cpu_var = selection.fishs2_cpu
         silero_var = selection.silero
         voxtral_var = selection.voxtral
         kokoro_var = selection.kokoro
@@ -326,11 +327,17 @@ class WorkflowMixin:
                     pixi_path=shared_pixi_path,
                 )
 
-            if fishs2_var:
+            if fishs2_var or fishs2_cpu_var:
                 self.reporter.progress(0.88)
                 self.reporter.status("Bootstrapping FishS2 API server (temporary startup)...")
+                
+                backend = selection.fishs2_backend if fishs2_var else 'cpu'
+                model_quant = selection.fishs2_model_quant
+                
                 self.install_fishs2_api_server(
                     fishs2_repo_path,
+                    backend=backend,
+                    model_quant=model_quant,
                     pixi_path=shared_pixi_path,
                 )
 
@@ -429,7 +436,11 @@ class WorkflowMixin:
             config['cuda_support'] = config.get('cuda_support', False) or xtts_var
             config['xtts_support'] = config.get('xtts_support', False) or xtts_var or xtts_cpu_var
             config['voxcpm_support'] = config.get('voxcpm_support', False) or voxcpm_var
-            config['fishs2_support'] = config.get('fishs2_support', False) or fishs2_var
+            config['fishs2_support'] = config.get('fishs2_support', False) or fishs2_var or fishs2_cpu_var
+            config['fishs2_gpu_support'] = config.get('fishs2_gpu_support', False) or fishs2_var
+            if fishs2_var or fishs2_cpu_var:
+                config['fishs2_backend'] = getattr(selection, 'fishs2_backend', 'auto')
+                config['fishs2_model_quant'] = getattr(selection, 'fishs2_model_quant', 'q6_k')
             config['silero_support'] = config.get('silero_support', False) or silero_var
             config['voxtral_support'] = config.get('voxtral_support', False) or voxtral_var
             config['kokoro_support'] = config.get('kokoro_support', False) or kokoro_var or kokoro_cpu_var

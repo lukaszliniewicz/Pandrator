@@ -13,6 +13,7 @@ CHATTERBOX_GPU_SUPPORT_CONFIG_FLAG = "chatterbox_gpu_support"
 KOBOLD_QWEN_GPU_SUPPORT_CONFIG_FLAG = "kobold_qwen_gpu_support"
 MAGPIE_GPU_SUPPORT_CONFIG_FLAG = "magpie_gpu_support"
 RVC_GPU_SUPPORT_CONFIG_FLAG = "rvc_gpu_support"
+FISHS2_GPU_SUPPORT_CONFIG_FLAG = "fishs2_gpu_support"
 
 
 @dataclass(frozen=True)
@@ -74,7 +75,19 @@ COMPONENTS: dict[str, ComponentDefinition] = {
         label="FishS2",
         config_flag="fishs2_support",
         paths=("fishs2-cpp-fastapi",),
-        markers=("fishs2-cpp-fastapi/run.bat",),
+        markers=("fishs2-cpp-fastapi/run.py", "fishs2-cpp-fastapi/pyproject.toml"),
+        repo_url="https://github.com/lukaszliniewicz/fishs2-cpp-fastapi.git",
+        repo_dirname="fishs2-cpp-fastapi",
+        process_attr="fishs2_process",
+        port=8020,
+    ),
+    "fishs2_cpu": ComponentDefinition(
+        key="fishs2_cpu",
+        label="FishS2 CPU",
+        config_flag="fishs2_support",
+        paths=("fishs2-cpp-fastapi",),
+        markers=("fishs2-cpp-fastapi/run.py", "fishs2-cpp-fastapi/pyproject.toml"),
+        variant_of="fishs2",
         repo_url="https://github.com/lukaszliniewicz/fishs2-cpp-fastapi.git",
         repo_dirname="fishs2-cpp-fastapi",
         process_attr="fishs2_process",
@@ -244,6 +257,7 @@ PACKAGING_CONFIG_FLAGS = (
     "xtts_support",
     "voxcpm_support",
     "fishs2_support",
+    FISHS2_GPU_SUPPORT_CONFIG_FLAG,
     "silero_support",
     "voxtral_support",
     "kokoro_support",
@@ -294,7 +308,7 @@ BACKEND_COMPONENT_KEYS = (
     "magpie",
 )
 
-LINUX_READY_BACKEND_KEYS = ("kokoro", "chatterbox", "kobold_qwen")
+LINUX_READY_BACKEND_KEYS = ("kokoro", "chatterbox", "kobold_qwen", "fishs2")
 
 LINUX_DEFERRED_INSTALL_COMPONENT_KEYS = tuple(
     key
