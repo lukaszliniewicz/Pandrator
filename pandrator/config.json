@@ -1,1 +1,1 @@
-{"chatterbox_support": true, "chatterbox_gpu_support": true, "kokoro_gpu_support": false}
+{"chatterbox_support": true, "chatterbox_gpu_support": true, "kokoro_gpu_support": false, "kobold_qwen_gpu_support": false}

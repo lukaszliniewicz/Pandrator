@@ -24,6 +24,7 @@ from ...constants import (
     SILERO_LANGUAGES,
     VOXTRAL_LANGUAGES,
     XTTS_LANGUAGES,
+    QWEN_LANGUAGES,
 )
 from ..dialogs.custom_prompt_dialog import CustomPromptDialog
 from ..dialogs.metadata_dialog import MetadataDialog
@@ -1853,7 +1854,9 @@ class SessionTab(QWidget):
         if service == "Magpie":
             from ...constants import MAGPIE_LANGUAGES
             return list(MAGPIE_LANGUAGES)
-        if service in {"XTTS", "VoxCPM", "OpenAI", "Google Gemini", "Gemini", "Custom", "OpenAI-Compatible", "Chatterbox", "Qwen3 TTS"}:
+        if service == "Qwen3 TTS":
+            return QWEN_LANGUAGES
+        if service in {"XTTS", "VoxCPM", "OpenAI", "Google Gemini", "Gemini", "Custom", "OpenAI-Compatible", "Chatterbox"}:
             return XTTS_LANGUAGES
         return []
 
