@@ -155,6 +155,10 @@ class AppLogic(QObject):
         self._start_generation_anew_requested.connect(self.start_generation_anew)
 
         self._initialize_state_index()
+        try:
+            voice_library_handler.ensure_bundled_voice_library()
+        except Exception as e:
+            logging.warning("Failed to initialize bundled voice library: %s", e, exc_info=True)
 
         logging.info("AppLogic initialized.")
 

@@ -1,5 +1,6 @@
 import copy
 import json
+import logging
 import os
 import shutil
 import tempfile
@@ -15,6 +16,7 @@ APP_ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 VOICE_LIBRARY_DIR = os.path.join(APP_ROOT_DIR, "tts_voices")
 VOICE_LIBRARY_STORAGE_DIR = os.path.join(VOICE_LIBRARY_DIR, "library")
 VOICE_LIBRARY_INDEX_FILE = os.path.join(VOICE_LIBRARY_DIR, "voice_library.json")
+VOICE_LIBRARY_SEED_FILE = os.path.join(VOICE_LIBRARY_DIR, "voice_library_seed.json")
 
 _FILE_IO_LOCK = threading.RLock()
 _TRANSCRIPT_ENCODINGS = ("utf-8", "utf-8-sig", "cp1250", "cp1252", "latin-1")
@@ -189,6 +191,128 @@ def _save_payload_unlocked(payload: dict[str, Any]):
         "voices": payload.get("voices", []),
     }
     _write_json_atomic(VOICE_LIBRARY_INDEX_FILE, wrapped_payload)
+
+
+def _seed_payload_unlocked() -> dict[str, Any]:
+    try:
+        with open(VOICE_LIBRARY_SEED_FILE, "r", encoding="utf-8") as f:
+            loaded_payload = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return _default_payload()
+
+    if not isinstance(loaded_payload, dict):
+        return _default_payload()
+
+    seed_voices_payload = loaded_payload.get("voices")
+    if not isinstance(seed_voices_payload, list):
+        return _default_payload()
+
+    normalized_voices: list[dict[str, Any]] = []
+    for voice_payload in seed_voices_payload:
+        normalized_voice = _normalize_voice_record(voice_payload)
+        if not normalized_voice:
+            continue
+        normalized_voice["created_at"] = _coerce_text(normalized_voice.get("created_at"), trim=False)
+        normalized_voice["updated_at"] = _coerce_text(normalized_voice.get("updated_at"), trim=False)
+        normalized_voices.append(normalized_voice)
+
+    return {
+        "version": VOICE_LIBRARY_VERSION,
+        "voices": normalized_voices,
+    }
+
+
+def _has_seed_voice(payload: dict[str, Any], seed_voice: dict[str, Any]) -> bool:
+    seed_voice_id = _coerce_text(seed_voice.get("id"))
+    seed_name = _coerce_text(seed_voice.get("name")).lower()
+    for voice in payload["voices"]:
+        existing_id = _coerce_text(voice.get("id"))
+        existing_name = _coerce_text(voice.get("name")).lower()
+        if seed_voice_id and existing_id == seed_voice_id:
+            return True
+        if seed_name and existing_name == seed_name:
+            return True
+    return False
+
+
+def _seed_voice_sample(
+    voice: dict[str, Any],
+    sample: dict[str, Any],
+    timestamp: str,
+) -> dict[str, Any] | None:
+    source_path = resolve_sample_path(_normalize_relative_path(sample.get("relative_path")))
+    if not source_path or not os.path.isfile(source_path):
+        logging.debug("Bundled voice sample not found: %s", source_path)
+        return None
+
+    target_dir = _voice_storage_dir(voice["id"])
+    os.makedirs(target_dir, exist_ok=True)
+
+    source_basename = sample.get("file_name") or os.path.basename(source_path)
+    target_basename = _build_unique_file_name(target_dir, source_basename)
+    target_path = os.path.join(target_dir, target_basename)
+
+    try:
+        shutil.copy2(source_path, target_path)
+    except OSError as exc:
+        logging.warning("Unable to seed bundled voice sample '%s': %s", source_path, exc)
+        return None
+
+    return {
+        "id": _coerce_text(sample.get("id")) or f"sample_{uuid.uuid4().hex[:12]}",
+        "file_name": target_basename,
+        "relative_path": _normalize_relative_path(
+            os.path.relpath(target_path, VOICE_LIBRARY_DIR)
+        ),
+        "duration_seconds": _wav_duration_seconds(target_path),
+        "transcript": _coerce_text(sample.get("transcript"), trim=False),
+        "notes": _coerce_text(sample.get("notes"), trim=False),
+        "created_at": timestamp,
+        "updated_at": timestamp,
+    }
+
+
+def ensure_bundled_voice_library():
+    seed_payload = _seed_payload_unlocked()
+    seed_voices = seed_payload.get("voices")
+    if not isinstance(seed_voices, list) or not seed_voices:
+        return
+
+    changed = False
+    now = _utc_timestamp()
+
+    with _FILE_IO_LOCK:
+        payload = _load_payload_unlocked()
+
+        for seed_voice in seed_voices:
+            if _has_seed_voice(payload, seed_voice):
+                continue
+
+            seeded_voice = {
+                "id": _coerce_text(seed_voice.get("id")) or f"voice_{uuid.uuid4().hex[:12]}",
+                "name": _coerce_text(seed_voice.get("name"), trim=False) or seed_voice.get("id"),
+                "notes": _coerce_text(seed_voice.get("notes"), trim=False),
+                "prompt_text": _coerce_text(seed_voice.get("prompt_text"), trim=False),
+                "language_code": _coerce_text(seed_voice.get("language_code")),
+                "samples": [],
+                "created_at": now,
+                "updated_at": now,
+            }
+
+            for sample in seed_voice.get("samples", []):
+                seeded_sample = _seed_voice_sample(seeded_voice, sample, now)
+                if seeded_sample is not None:
+                    seeded_voice["samples"].append(seeded_sample)
+
+            if not seeded_voice["samples"]:
+                logging.debug("Skipping bundled voice '%s' because no samples could be seeded.", seeded_voice["name"])
+                continue
+
+            payload["voices"].append(seeded_voice)
+            changed = True
+
+        if changed:
+            _save_payload_unlocked(payload)
 
 
 def _find_voice_unlocked(payload: dict[str, Any], voice_id: str) -> dict[str, Any] | None:
