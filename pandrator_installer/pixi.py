@@ -118,6 +118,7 @@ class PixiEnvironmentMixin:
                 logging.warning("Could not remove installer package cache %s: %s", cache_path, exc)
 
         # Recreate the expected empty cache roots so later launcher operations can reuse them.
+        os.makedirs(pixi_cache, exist_ok=True)
         for cache_path in cleanup_paths:
             os.makedirs(cache_path, exist_ok=True)
         self.get_pixi_subprocess_env(pandrator_path)

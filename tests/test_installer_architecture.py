@@ -93,6 +93,16 @@ class InstallerArchitectureTests(unittest.TestCase):
                 self.assertEqual(os.listdir(cache_dir), [])
             self.assertTrue(os.path.exists(os.path.join(model_cache, "artifact")))
 
+    def test_package_cache_cleanup_handles_missing_cache_root(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        with tempfile.TemporaryDirectory() as install_root:
+            installer.cleanup_installer_package_caches(install_root)
+
+            pixi_cache = os.path.join(install_root, ".pixi-cache")
+            self.assertTrue(os.path.isdir(os.path.join(pixi_cache, "pip")))
+            self.assertTrue(os.path.isdir(os.path.join(pixi_cache, "rattler")))
+            self.assertTrue(os.path.isdir(os.path.join(pixi_cache, "tmp")))
+
     def test_platform_helpers_preserve_windows_and_linux_pixi_defaults(self):
         self.assertEqual(platforms.pixi_binary_name("Windows"), "pixi.exe")
         self.assertEqual(platforms.pixi_binary_name("Linux"), "pixi")
@@ -178,11 +188,18 @@ class InstallerArchitectureTests(unittest.TestCase):
 
     def test_non_windows_backend_component_install_is_deferred(self):
         installer = HeadlessInstaller(working_dir="workspace")
-        selection = InstallSelection.from_components(["chatterbox_cpu"])
+        selection = InstallSelection.from_components(["magpie_cpu"])
 
         with patch("pandrator_installer.workflows.is_windows", return_value=False):
             with self.assertRaisesRegex(RuntimeError, "deferred"):
                 installer.validate_platform_install_selection(selection)
+
+    def test_non_windows_chatterbox_install_selection_is_allowed(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        selection = InstallSelection.from_components(["chatterbox_cpu"])
+
+        with patch("pandrator_installer.workflows.is_windows", return_value=False):
+            installer.validate_platform_install_selection(selection)
 
     def test_non_windows_kokoro_install_selection_is_allowed(self):
         installer = HeadlessInstaller(working_dir="workspace")
@@ -200,11 +217,18 @@ class InstallerArchitectureTests(unittest.TestCase):
 
     def test_non_windows_update_with_backend_config_is_deferred(self):
         installer = HeadlessInstaller(working_dir="workspace")
-        config = {"chatterbox_support": True}
+        config = {"magpie_support": True}
 
         with patch("pandrator_installer.workflows.is_windows", return_value=False):
             with self.assertRaisesRegex(RuntimeError, "deferred"):
                 installer.validate_platform_update_config(config)
+
+    def test_non_windows_update_with_chatterbox_config_is_allowed(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        config = {"chatterbox_support": True}
+
+        with patch("pandrator_installer.workflows.is_windows", return_value=False):
+            installer.validate_platform_update_config(config)
 
     def test_non_windows_update_with_kokoro_config_is_allowed(self):
         installer = HeadlessInstaller(working_dir="workspace")
@@ -277,7 +301,32 @@ class InstallerArchitectureTests(unittest.TestCase):
     def test_linux_deferred_components_do_not_include_kokoro(self):
         self.assertNotIn("kokoro", LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
         self.assertNotIn("kokoro_cpu", LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
-        self.assertIn("chatterbox", LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
+        self.assertNotIn("chatterbox", LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
+        self.assertNotIn("chatterbox_cpu", LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
+        self.assertIn("magpie", LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
+
+    def test_chatterbox_launcher_uses_platform_launcher(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+
+        with patch("pandrator_installer.components.is_windows", return_value=True):
+            windows_command = installer.build_chatterbox_launcher_command(
+                use_cpu=True,
+                pixi_path="C:/Pandrator/bin/pixi.exe",
+            )
+
+        with patch("pandrator_installer.components.is_windows", return_value=False):
+            linux_command = installer.build_chatterbox_launcher_command(
+                use_cpu=True,
+                pixi_path="/home/user/Pandrator/bin/pixi",
+            )
+
+        self.assertEqual(windows_command[:4], ["cmd", "/c", "run.bat", "--backend"])
+        self.assertIn("cpu", windows_command)
+        self.assertIn("--pixi-path", windows_command)
+        self.assertEqual(
+            linux_command,
+            ["/home/user/Pandrator/bin/pixi", "run", "python", "run.py", "--backend", "cpu"],
+        )
 
     def test_non_windows_espeak_paths_use_host_environment(self):
         installer = HeadlessInstaller(working_dir="workspace")

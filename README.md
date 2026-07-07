@@ -249,7 +249,7 @@ python pandrator_installer_launcher.py --self-check
 python pandrator_installer_launcher.py --headless-install --workspace "$HOME/pandrator-workspace" --components "kokoro_cpu"
 ```
 
-Fedora x86_64 validation currently covers the core Pixi install and Kokoro CPU through `Kokoro-FastAPI`: install, model download, `/health`, voice listing, and a short WAV generation request. Kokoro GPU uses the same installer path but still needs validation on a host with compatible NVIDIA drivers. Other local model-server components remain deferred on Linux until they are reviewed one by one.
+Fedora x86_64 validation currently covers the core Pixi install and Kokoro CPU through `Kokoro-FastAPI`: install, model download, `/health`, voice listing, and a short WAV generation request. Chatterbox is wired through its Pixi-based launcher on Linux, with CPU mode available and CUDA mode expected to follow the same package path on hosts with compatible NVIDIA drivers. Kokoro GPU and Chatterbox GPU still need validation on a host with compatible NVIDIA drivers. Other local model-server components remain deferred on Linux until they are reviewed one by one.
 
 Linux Calibre is optional and only needed for MOBI import. The installer detects `ebook-convert`/Calibre and reports the requirement, but does not install it. Kokoro uses dependencies inside its Pixi env and detects host eSpeak NG when available.
 
@@ -316,9 +316,9 @@ Please refer to the repositories linked under [Dependencies](#dependencies) for 
 
 #### Installation Steps
 
-1. Install Calibre:
+1. Optionally install Calibre if you need MOBI import:
 
-   - [https://calibre-ebook.com/download_windows](https://calibre-ebook.com/download_windows)
+   - [https://calibre-ebook.com/download](https://calibre-ebook.com/download)
 
 2. Clone the repositories:
 
@@ -374,7 +374,20 @@ Please refer to the repositories linked under [Dependencies](#dependencies) for 
    cd ..
    ```
 
-7. (Optional) Install Voxtral API:
+7. (Optional) Install Chatterbox API:
+
+   ```
+   git clone https://github.com/lukaszliniewicz/chatterbox-fastapi.git
+   cd chatterbox-fastapi
+   python run.py --backend cpu
+   # or, on an NVIDIA CUDA host:
+   python run.py --backend cuda
+   # Windows users may also use:
+   # run.bat --backend cpu
+   cd ..
+   ```
+
+8. (Optional) Install Voxtral API:
 
    ```
    git clone https://github.com/lukaszliniewicz/voxtral-fastapi.git
@@ -385,7 +398,7 @@ Please refer to the repositories linked under [Dependencies](#dependencies) for 
    cd ..
    ```
 
-8. (Optional) Install Kokoro API:
+9. (Optional) Install Kokoro API:
 
     ```
     git clone https://github.com/remsky/Kokoro-FastAPI.git
@@ -397,13 +410,13 @@ Please refer to the repositories linked under [Dependencies](#dependencies) for 
     cd ..
     ```
 
-9. (Optional) Install Silero API:
+10. (Optional) Install Silero API:
 
    ```
    python -m pip install silero-api-server
    ```
 
-10. (Optional) Install Easy XTTS Trainer:
+11. (Optional) Install Easy XTTS Trainer:
 
    ```
    git clone https://github.com/lukaszliniewicz/easy_xtts_trainer.git
@@ -412,7 +425,7 @@ Please refer to the repositories linked under [Dependencies](#dependencies) for 
    cd ..
    ```
 
-11. (Optional) Install Magpie API:
+12. (Optional) Install Magpie API:
 
     ```
     git clone https://github.com/lukaszliniewicz/magpie-fastapi.git
@@ -423,7 +436,7 @@ Please refer to the repositories linked under [Dependencies](#dependencies) for 
     cd ..
     ```
 
-12. (Optional) Install RVC API:
+13. (Optional) Install RVC API:
 
     ```
     git clone https://github.com/lukaszliniewicz/rvc-python.git
@@ -451,6 +464,8 @@ Please refer to the repositories linked under [Dependencies](#dependencies) for 
    # or
    python main.py -connect -fishs2
    # or
+   python main.py -connect -chatterbox
+   # or
    python main.py -connect -voxtral
    # or
    python main.py -connect -kokoro
@@ -475,14 +490,22 @@ Please refer to the repositories linked under [Dependencies](#dependencies) for 
    run.bat
    ```
 
-5. Run Voxtral API (if installed):
+5. Run Chatterbox API (if installed):
+
+   ```
+   cd chatterbox-fastapi
+   python run.py --backend cpu
+   # or python run.py --backend cuda
+   ```
+
+6. Run Voxtral API (if installed):
 
    ```
    cd voxtral-fastapi
    run.bat
    ```
 
-6. Run Kokoro API (if installed):
+7. Run Kokoro API (if installed):
 
     ```
     cd Kokoro-FastAPI
@@ -491,14 +514,14 @@ Please refer to the repositories linked under [Dependencies](#dependencies) for 
     python -m uvicorn api.src.main:app --host 127.0.0.1 --port 8880
     ```
 
-7. Run Magpie API (if installed):
+8. Run Magpie API (if installed):
 
    ```
    cd magpie-fastapi
    run.bat
    ```
 
-8. Run RVC API (if installed):
+9. Run RVC API (if installed):
 
    ```
    cd rvc-python

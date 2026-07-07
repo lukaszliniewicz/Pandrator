@@ -45,6 +45,7 @@ from .constants import (
     WTPSPLIT_RETIRED_MODELS,
     XTTS_FINETUNING_BUNDLED_WHEEL_PREFIX,
 )
+from .platforms import is_windows, pixi_env_python_path
 
 
 class ComponentOperationsMixin:
@@ -534,10 +535,15 @@ class ComponentOperationsMixin:
             command.extend(['--pixi-path', pixi_path])
         return command
 
-    def build_chatterbox_launcher_command(self, pixi_path=None):
-        command = ['cmd', '/c', 'run.bat']
-        if pixi_path:
-            command.extend(['--pixi-path', pixi_path])
+    def build_chatterbox_launcher_command(self, use_cpu=False, pixi_path=None):
+        backend = 'cpu' if use_cpu else 'cuda'
+        if is_windows():
+            command = ['cmd', '/c', 'run.bat', '--backend', backend]
+            if pixi_path:
+                command.extend(['--pixi-path', pixi_path])
+            return command
+
+        command = [pixi_path or 'pixi', 'run', 'python', 'run.py', '--backend', backend]
         return command
 
     def build_magpie_launcher_command(self, pixi_path=None):
@@ -829,9 +835,14 @@ class ComponentOperationsMixin:
             log_handle.close()
 
     def is_chatterbox_runtime_ready(self, chatterbox_repo_path):
+        run_py_path = os.path.join(chatterbox_repo_path, 'run.py')
         run_bat_path = os.path.join(chatterbox_repo_path, 'run.bat')
-        env_python_path = os.path.join(chatterbox_repo_path, '.pixi', 'envs', 'default', 'python.exe')
-        return all(os.path.exists(path) for path in (run_bat_path, env_python_path))
+        env_root = os.path.join(chatterbox_repo_path, '.pixi', 'envs', 'default')
+        env_python_path = pixi_env_python_path(env_root)
+        required_paths = [run_py_path, env_python_path]
+        if is_windows():
+            required_paths.append(run_bat_path)
+        return all(os.path.exists(path) for path in required_paths)
 
     def install_chatterbox_api_server(self, chatterbox_repo_path, use_cpu=False, pixi_path=None):
         logging.info(f"Bootstrapping Chatterbox API server in {chatterbox_repo_path}...")
@@ -839,7 +850,8 @@ class ComponentOperationsMixin:
             "Chatterbox bootstrap starts the server temporarily to validate runtime and will stop it after health checks."
         )
 
-        run_script_path = os.path.join(chatterbox_repo_path, 'run.bat')
+        run_script_name = 'run.bat' if is_windows() else 'run.py'
+        run_script_path = os.path.join(chatterbox_repo_path, run_script_name)
         if not os.path.exists(run_script_path):
             raise FileNotFoundError(f"Chatterbox run script not found at: {run_script_path}")
 
@@ -847,11 +859,12 @@ class ComponentOperationsMixin:
             raise RuntimeError("Chatterbox server cannot be bootstrapped because port 8040 is already in use.")
 
         chatterbox_install_log_file = os.path.join(chatterbox_repo_path, 'chatterbox_install.log')
-        command = [run_script_path]
-        if use_cpu:
-            command.append('cpu')
-        if pixi_path:
-            command.extend(['--pixi-path', pixi_path])
+        command = self.build_chatterbox_launcher_command(
+            use_cpu=use_cpu,
+            pixi_path=self.get_chatterbox_pixi_argument(chatterbox_repo_path, pixi_path)
+            if is_windows()
+            else pixi_path,
+        )
 
         log_handle = open(chatterbox_install_log_file, 'a', encoding='utf-8')
         process = None

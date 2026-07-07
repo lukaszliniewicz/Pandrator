@@ -28,6 +28,7 @@ from .constants import (
     VOXTRAL_API_REPO_DIRNAME,
     XTTS_API_REPO_DIRNAME,
 )
+from .platforms import is_windows
 
 
 class RuntimeMixin:
@@ -969,7 +970,7 @@ class RuntimeMixin:
         return False
 
     def run_chatterbox_api_server(self, chatterbox_server_path, use_cpu=False, pixi_path=None):
-        """Run the Chatterbox API server via its run.bat script."""
+        """Run the Chatterbox API server via its cross-platform launcher."""
         logging.info(f"Running Chatterbox API server from {chatterbox_server_path}...")
 
         if self.is_port_in_use(8040):
@@ -978,16 +979,13 @@ class RuntimeMixin:
             self.notify_error("Error", error_msg)
             return None
 
-        run_script_path = os.path.join(chatterbox_server_path, 'run.bat')
+        run_script_name = 'run.bat' if is_windows() else 'run.py'
+        run_script_path = os.path.join(chatterbox_server_path, run_script_name)
         if not os.path.exists(run_script_path):
             raise FileNotFoundError(f"Chatterbox run script not found at: {run_script_path}")
 
         chatterbox_log_file = os.path.join(chatterbox_server_path, 'chatterbox_server.log')
-        command = [run_script_path]
-        if use_cpu:
-            command.append('cpu')
-        if pixi_path:
-            command.extend(['--pixi-path', pixi_path])
+        command = self.build_chatterbox_launcher_command(use_cpu=use_cpu, pixi_path=pixi_path)
 
         log_handle = open(chatterbox_log_file, 'a', encoding='utf-8')
         try:

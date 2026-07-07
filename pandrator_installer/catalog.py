@@ -167,7 +167,7 @@ COMPONENTS: dict[str, ComponentDefinition] = {
         label="Chatterbox",
         config_flag="chatterbox_support",
         paths=("chatterbox-fastapi",),
-        markers=("chatterbox-fastapi/run.bat",),
+        markers=("chatterbox-fastapi/run.py", "chatterbox-fastapi/pyproject.toml"),
         repo_url="https://github.com/lukaszliniewicz/chatterbox-fastapi.git",
         repo_dirname="chatterbox-fastapi",
         process_attr="chatterbox_process",
@@ -178,7 +178,7 @@ COMPONENTS: dict[str, ComponentDefinition] = {
         label="Chatterbox CPU",
         config_flag="chatterbox_support",
         paths=("chatterbox-fastapi",),
-        markers=("chatterbox-fastapi/run.bat",),
+        markers=("chatterbox-fastapi/run.py", "chatterbox-fastapi/pyproject.toml"),
         variant_of="chatterbox",
         repo_url="https://github.com/lukaszliniewicz/chatterbox-fastapi.git",
         repo_dirname="chatterbox-fastapi",
@@ -267,11 +267,13 @@ BACKEND_COMPONENT_KEYS = (
     "magpie",
 )
 
+LINUX_READY_BACKEND_KEYS = ("kokoro", "chatterbox")
+
 LINUX_DEFERRED_INSTALL_COMPONENT_KEYS = tuple(
     key
     for key, component in COMPONENTS.items()
     if (component.process_attr or key == "xtts_finetuning")
-    and component.packaging_key != "kokoro"
+    and component.packaging_key not in LINUX_READY_BACKEND_KEYS
 )
 
 
