@@ -537,6 +537,8 @@ class ComponentOperationsMixin:
             return command
 
         command = [pixi_path or 'pixi', 'run', 'python', 'run.py']
+        if pixi_path:
+            command.extend(['--pixi-path', pixi_path])
         return command
 
     def build_chatterbox_launcher_command(self, use_cpu=False, pixi_path=None):
