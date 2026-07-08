@@ -1829,6 +1829,33 @@ class SessionTab(QWidget):
         seen: set[str] = set()
         options: list[tuple[str, str, bool]] = []
 
+        if service == "Qwen3 TTS":
+            # Dynamic client-side filtering based on model selection
+            active_model = str(self.logic.state.tts.xtts_model or "").strip().lower()
+            presets = {"aiden", "dylan", "eric", "ono_anna", "ryan", "serena", "sohee", "uncle_fu", "vivian"}
+            
+            for speaker_id in speaker_ids:
+                normalized_speaker_id = str(speaker_id or "").strip()
+                if not normalized_speaker_id:
+                    continue
+                
+                dedupe_key = normalized_speaker_id.lower()
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                
+                is_preset = dedupe_key in presets
+                
+                if active_model == "qwen3-tts-customvoice":
+                    if is_preset:
+                        options.append((normalized_speaker_id, normalized_speaker_id, True))
+                elif active_model in ("qwen3-tts-base", "qwen3-tts"):
+                    if not is_preset or dedupe_key == "kobo":
+                        options.append((normalized_speaker_id, normalized_speaker_id, True))
+                else:
+                    options.append((normalized_speaker_id, normalized_speaker_id, True))
+            return options
+
         for speaker_id in speaker_ids:
             normalized_speaker_id = str(speaker_id or "").strip()
             if not normalized_speaker_id:
