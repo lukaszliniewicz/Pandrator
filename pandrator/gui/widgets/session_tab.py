@@ -1846,11 +1846,11 @@ class SessionTab(QWidget):
                 
                 is_preset = dedupe_key in presets
                 
-                if active_model == "qwen3-tts-customvoice":
+                if active_model in ("qwen3-tts-customvoice", "Prebuilt Voices"):
                     if is_preset:
                         options.append((normalized_speaker_id, normalized_speaker_id, True))
-                elif active_model in ("qwen3-tts-base", "qwen3-tts"):
-                    if not is_preset or dedupe_key == "kobo":
+                elif active_model in ("qwen3-tts-base", "qwen3-tts", "Voice Cloning"):
+                    if not is_preset or dedupe_key in ("kobo", "aiden"):
                         options.append((normalized_speaker_id, normalized_speaker_id, True))
                 else:
                     options.append((normalized_speaker_id, normalized_speaker_id, True))
