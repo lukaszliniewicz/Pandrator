@@ -1,12 +1,20 @@
 import os
+import shutil
+import tempfile
+import time
 import unittest
+import wave
+from pathlib import Path
+from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import QEventLoop, QTimer
+from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from pandrator.app_state import DubbingSettings
 from pandrator.gui.dialogs.dubbing_advanced_dialog import DubbingAdvancedDialog
+from pandrator.gui.dialogs.manual_timing_dialog import ManualTimingDialog
 from pandrator.gui.widgets.session_sections import DubbingSection
 
 
@@ -27,6 +35,86 @@ class DubbingUiTests(unittest.TestCase):
         self.assertFalse(section.dub_whisper_model_label.isHidden())
         self.assertFalse(section.dub_whisper_model_combo.isHidden())
         section.close()
+
+    def test_manual_timing_dialog_plays_cached_clip_through_app_playback(self):
+        srt_content = """1
+00:00:00,000 --> 00:00:02,000
+Preview this segment.
+"""
+        play_audio = Mock(return_value=True)
+        stop_audio = Mock()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            srt_path = Path(temp_dir) / "source.srt"
+            audio_path = Path(temp_dir) / "reference.wav"
+            preview_path = Path(temp_dir) / "preview.wav"
+            srt_path.write_text(srt_content, encoding="utf-8")
+            audio_path.write_bytes(b"reference")
+            preview_path.write_bytes(b"preview")
+
+            dialog = ManualTimingDialog(
+                str(srt_path),
+                str(audio_path),
+                temp_dir,
+                play_audio_callback=play_audio,
+                stop_audio_callback=stop_audio,
+            )
+            dialog._cache_preview((0, 2150), str(preview_path))
+
+            self.assertTrue(dialog.play_button.isEnabled())
+            dialog.play_button.click()
+            play_audio.assert_called_once_with(str(preview_path))
+            self.assertEqual(dialog.playback_status_label.text(), "Playing selected segment.")
+
+            dialog.stop_button.click()
+            self.assertGreaterEqual(stop_audio.call_count, 2)
+            dialog.close()
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg is required for preview extraction")
+    def test_manual_timing_dialog_extracts_selected_clip_asynchronously(self):
+        srt_content = """1
+00:00:01,000 --> 00:00:02,000
+Preview this segment.
+"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            srt_path = Path(temp_dir) / "source.srt"
+            audio_path = Path(temp_dir) / "reference.wav"
+            srt_path.write_text(srt_content, encoding="utf-8")
+            with wave.open(str(audio_path), "wb") as audio_file:
+                audio_file.setnchannels(1)
+                audio_file.setsampwidth(2)
+                audio_file.setframerate(16000)
+                audio_file.writeframes(b"\x00\x00" * 16000 * 3)
+
+            played_paths: list[str] = []
+            event_loop = QEventLoop()
+
+            def play_audio(preview_path: str) -> bool:
+                played_paths.append(preview_path)
+                event_loop.quit()
+                return True
+
+            dialog = ManualTimingDialog(
+                str(srt_path),
+                str(audio_path),
+                temp_dir,
+                play_audio_callback=play_audio,
+                stop_audio_callback=lambda: None,
+            )
+
+            started_at = time.perf_counter()
+            with patch.object(QMessageBox, "warning") as warning:
+                dialog.play_button.click()
+                QTimer.singleShot(5000, event_loop.quit)
+                event_loop.exec()
+
+            self.assertFalse(warning.called)
+            self.assertEqual(len(played_paths), 1)
+            self.assertTrue(Path(played_paths[0]).is_file())
+            self.assertGreater(Path(played_paths[0]).stat().st_size, 44)
+            self.assertLess(time.perf_counter() - started_at, 5.0)
+            dialog.close()
 
     def test_native_model_catalog_populates_both_dubbing_stages(self):
         section = DubbingSection()

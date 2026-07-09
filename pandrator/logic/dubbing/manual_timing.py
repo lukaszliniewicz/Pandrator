@@ -16,6 +16,38 @@ MIN_SEGMENT_DURATION_SECONDS = 0.05
 MIN_GAP_BETWEEN_SEGMENTS_SECONDS = 0.02
 
 
+def build_segment_preview_command(
+    audio_file: str | os.PathLike[str],
+    output_file: str | os.PathLike[str],
+    *,
+    start_ms: int,
+    end_ms: int,
+    ffmpeg_executable: str = "ffmpeg",
+) -> list[str]:
+    """Builds a fast input-seeking FFmpeg command for a short PCM preview."""
+
+    normalized_start_ms = max(0, int(start_ms))
+    normalized_end_ms = max(normalized_start_ms + 50, int(end_ms))
+    duration_ms = normalized_end_ms - normalized_start_ms
+    return [
+        str(ffmpeg_executable or "ffmpeg"),
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-ss",
+        f"{normalized_start_ms / 1000.0:.3f}",
+        "-i",
+        str(audio_file),
+        "-t",
+        f"{duration_ms / 1000.0:.3f}",
+        "-vn",
+        "-acodec",
+        "pcm_s16le",
+        str(output_file),
+    ]
+
+
 def srt_to_timing_segments(srt_content: str) -> list[dict[str, Any]]:
     return [
         {

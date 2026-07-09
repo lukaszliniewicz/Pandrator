@@ -18,6 +18,21 @@ Next subtitle.
 
 
 class DubbingManualTimingTests(unittest.TestCase):
+    def test_segment_preview_command_uses_fast_input_seek_and_short_pcm_output(self):
+        command = manual_timing.build_segment_preview_command(
+            "reference.wav",
+            "preview.wav",
+            start_ms=850,
+            end_ms=2200,
+            ffmpeg_executable="ffmpeg-bin",
+        )
+
+        self.assertEqual(command[0], "ffmpeg-bin")
+        self.assertLess(command.index("-ss"), command.index("-i"))
+        self.assertEqual(command[command.index("-ss") + 1], "0.850")
+        self.assertEqual(command[command.index("-t") + 1], "1.350")
+        self.assertEqual(command[-3:], ["-acodec", "pcm_s16le", "preview.wav"])
+
     def test_srt_timing_round_trip(self):
         segments = manual_timing.srt_to_timing_segments(SAMPLE_SRT)
         self.assertEqual(segments[0]["start"], 0.0)

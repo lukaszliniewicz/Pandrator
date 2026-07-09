@@ -2640,6 +2640,8 @@ class AppLogic(QObject):
                 str(payload.get("srt_file") or ""),
                 str(payload.get("audio_file") or ""),
                 str(payload.get("session_dir") or ""),
+                play_audio_callback=self.play_audio_file,
+                stop_audio_callback=self.stop_playback,
             )
         except Exception as error:
             logging.error("Manual timing editor failed to open.", exc_info=True)

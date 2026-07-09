@@ -1,7 +1,10 @@
+import logging
 import os
+from collections import OrderedDict
+from collections.abc import Callable
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QTimer, QUrl
+from PyQt6.QtCore import QProcess, QTemporaryDir, Qt
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -25,15 +28,9 @@ from ...logic.dubbing.manual_timing import (
     BoundaryEditorController,
     BoundaryEditorModel,
     BoundaryEditorPersistence,
+    build_segment_preview_command,
     load_srt_timing_segments,
 )
-
-try:
-    from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
-except Exception:  # pragma: no cover - depends on the local Qt multimedia build
-    QAudioOutput = None
-    QMediaPlayer = None
-
 
 def _format_time(value: float) -> str:
     return f"{float(value or 0.0):.3f}"
@@ -47,8 +44,18 @@ def _readonly_item(text: str) -> QTableWidgetItem:
 
 class ManualTimingDialog(QDialog):
     HEADERS = ("#", "Start", "End", "Gap", "Text")
+    PREVIEW_CACHE_LIMIT = 24
 
-    def __init__(self, srt_file: str, audio_file: str, session_dir: str, parent=None):
+    def __init__(
+        self,
+        srt_file: str,
+        audio_file: str,
+        session_dir: str,
+        parent=None,
+        *,
+        play_audio_callback: Callable[[str], bool] | None = None,
+        stop_audio_callback: Callable[[], None] | None = None,
+    ):
         super().__init__(parent)
         self.srt_file = os.path.abspath(srt_file)
         self.audio_file = os.path.abspath(audio_file) if audio_file else ""
@@ -57,7 +64,14 @@ class ManualTimingDialog(QDialog):
         self.saved_json_path: str | None = None
         self._updating_table = False
         self._updating_controls = False
-        self._playback_stop_ms = 0
+        self._play_audio_callback = play_audio_callback
+        self._stop_audio_callback = stop_audio_callback
+        self._preview_process: QProcess | None = None
+        self._pending_preview_key: tuple[int, int] | None = None
+        self._pending_preview_path = ""
+        self._preview_cache: OrderedDict[tuple[int, int], str] = OrderedDict()
+        self._preview_dir = QTemporaryDir()
+        self._playback_cleaned_up = False
 
         segments = load_srt_timing_segments(self.srt_file)
         persistence = BoundaryEditorPersistence(
@@ -70,28 +84,11 @@ class ManualTimingDialog(QDialog):
         self.setWindowTitle("Subtitle Timing Editor")
         self.resize(1120, 760)
 
-        self._player = None
-        self._audio_output = None
-        self._playback_timer = QTimer(self)
-        self._playback_timer.setInterval(50)
-        self._playback_timer.timeout.connect(self._on_playback_tick)
-        self._build_player()
         self._build_ui()
         self._populate_table()
         if self.controller.segments:
             self.table.selectRow(0)
             self._sync_controls_to_selected_row()
-
-    def _build_player(self) -> None:
-        if not self.audio_file or not os.path.exists(self.audio_file):
-            return
-        if QMediaPlayer is None or QAudioOutput is None:
-            return
-        self._audio_output = QAudioOutput(self)
-        self._audio_output.setVolume(0.8)
-        self._player = QMediaPlayer(self)
-        self._player.setAudioOutput(self._audio_output)
-        self._player.setSource(QUrl.fromLocalFile(self.audio_file))
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -103,14 +100,24 @@ class ManualTimingDialog(QDialog):
 
         toolbar = QHBoxLayout()
         self.play_button = QPushButton("Play", self)
-        self.play_button.setEnabled(self._player is not None)
+        playback_available = bool(
+            self._play_audio_callback
+            and self.audio_file
+            and os.path.exists(self.audio_file)
+            and self._preview_dir.isValid()
+        )
+        self.play_button.setEnabled(playback_available)
         self.play_button.clicked.connect(self._play_selected_segment)
         toolbar.addWidget(self.play_button)
 
         self.stop_button = QPushButton("Stop", self)
-        self.stop_button.setEnabled(self._player is not None)
+        self.stop_button.setEnabled(playback_available)
         self.stop_button.clicked.connect(self._stop_playback)
         toolbar.addWidget(self.stop_button)
+
+        self.playback_status_label = QLabel("", self)
+        self.playback_status_label.setObjectName("secondaryInfoLabel")
+        toolbar.addWidget(self.playback_status_label)
 
         self.show_modified_only_check = QCheckBox("Show modified only", self)
         self.show_modified_only_check.stateChanged.connect(lambda _state: self._apply_row_filter())
@@ -327,8 +334,8 @@ class ManualTimingDialog(QDialog):
         self._sync_controls_to_selected_row()
 
     def _play_selected_segment(self) -> None:
-        if self._player is None:
-            QMessageBox.warning(self, "Audio Playback", "Audio playback is unavailable in this Qt build.")
+        if self._play_audio_callback is None or not self._preview_dir.isValid():
+            QMessageBox.warning(self, "Audio Playback", "Audio playback is unavailable.")
             return
         segment_index = self._selected_segment_index()
         if segment_index is None:
@@ -336,22 +343,148 @@ class ManualTimingDialog(QDialog):
         segment = self.controller.segments[segment_index]
         start_ms = max(0, int(round((float(segment.get("start") or 0.0) - 0.15) * 1000)))
         end_ms = max(start_ms + 50, int(round((float(segment.get("end") or 0.0) + 0.15) * 1000)))
-        self._playback_stop_ms = end_ms
-        self._player.setPosition(start_ms)
-        self._player.play()
-        self._playback_timer.start()
+        preview_key = (start_ms, end_ms)
 
-    def _on_playback_tick(self) -> None:
-        if self._player is None:
-            self._playback_timer.stop()
+        self._cancel_preview_process()
+        if self._stop_audio_callback is not None:
+            self._stop_audio_callback()
+
+        cached_path = self._preview_cache.get(preview_key)
+        if cached_path and os.path.exists(cached_path):
+            self._preview_cache.move_to_end(preview_key)
+            self._play_preview_file(cached_path)
             return
-        if self._playback_stop_ms and self._player.position() >= self._playback_stop_ms:
-            self._stop_playback()
+
+        preview_path = str(
+            Path(self._preview_dir.path())
+            / f"segment_{start_ms}_{end_ms}.wav"
+        )
+        command = build_segment_preview_command(
+            self.audio_file,
+            preview_path,
+            start_ms=start_ms,
+            end_ms=end_ms,
+        )
+
+        process = QProcess(self)
+        process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        process.finished.connect(self._on_preview_process_finished)
+        process.errorOccurred.connect(self._on_preview_process_error)
+        self._preview_process = process
+        self._pending_preview_key = preview_key
+        self._pending_preview_path = preview_path
+        self.play_button.setEnabled(False)
+        self.play_button.setText("Preparing…")
+        self.playback_status_label.setText("Preparing selected segment…")
+        process.start(command[0], command[1:])
+
+    def _on_preview_process_finished(
+        self,
+        exit_code: int,
+        exit_status: QProcess.ExitStatus,
+    ) -> None:
+        process = self.sender()
+        if process is not self._preview_process:
+            return
+
+        output = bytes(process.readAllStandardOutput()).decode("utf-8", errors="replace").strip()
+        preview_key = self._pending_preview_key
+        preview_path = self._pending_preview_path
+        self._preview_process = None
+        self._pending_preview_key = None
+        self._pending_preview_path = ""
+        process.deleteLater()
+        self._reset_preview_controls()
+
+        succeeded = (
+            exit_status == QProcess.ExitStatus.NormalExit
+            and exit_code == 0
+            and preview_key is not None
+            and os.path.isfile(preview_path)
+            and os.path.getsize(preview_path) > 0
+        )
+        if not succeeded:
+            detail = output.splitlines()[-1] if output else "FFmpeg did not create a playable preview."
+            logging.error("Manual timing preview extraction failed: %s", detail)
+            self.playback_status_label.setText("Could not prepare audio preview.")
+            QMessageBox.warning(self, "Audio Playback", f"Could not prepare the selected segment:\n{detail}")
+            return
+
+        self._cache_preview(preview_key, preview_path)
+        self._play_preview_file(preview_path)
+
+    def _on_preview_process_error(self, _error: QProcess.ProcessError) -> None:
+        process = self.sender()
+        if process is not self._preview_process:
+            return
+
+        error_text = process.errorString() or "Could not start FFmpeg."
+        logging.error("Manual timing preview process error: %s", error_text)
+        self._preview_process = None
+        self._pending_preview_key = None
+        self._pending_preview_path = ""
+        process.deleteLater()
+        self._reset_preview_controls()
+        self.playback_status_label.setText("Audio preview is unavailable.")
+        QMessageBox.warning(self, "Audio Playback", f"Could not prepare audio preview:\n{error_text}")
+
+    def _cache_preview(self, preview_key: tuple[int, int], preview_path: str) -> None:
+        self._preview_cache[preview_key] = preview_path
+        self._preview_cache.move_to_end(preview_key)
+        while len(self._preview_cache) > self.PREVIEW_CACHE_LIMIT:
+            _, stale_path = self._preview_cache.popitem(last=False)
+            try:
+                os.remove(stale_path)
+            except OSError:
+                pass
+
+    def _play_preview_file(self, preview_path: str) -> None:
+        try:
+            played = bool(self._play_audio_callback and self._play_audio_callback(preview_path))
+        except Exception as error:
+            logging.error("Manual timing preview playback failed: %s", error, exc_info=True)
+            played = False
+
+        if played:
+            self.playback_status_label.setText("Playing selected segment.")
+            return
+
+        self.playback_status_label.setText("Could not play selected segment.")
+        QMessageBox.warning(self, "Audio Playback", "Could not play the selected segment.")
+
+    def _reset_preview_controls(self) -> None:
+        self.play_button.setText("Play")
+        self.play_button.setEnabled(
+            bool(self._play_audio_callback and self._preview_dir.isValid())
+        )
+
+    def _cancel_preview_process(self) -> None:
+        process = self._preview_process
+        if process is None:
+            return
+        self._preview_process = None
+        self._pending_preview_key = None
+        self._pending_preview_path = ""
+        process.blockSignals(True)
+        if process.state() != QProcess.ProcessState.NotRunning:
+            process.kill()
+            process.waitForFinished(1000)
+        process.deleteLater()
+        self._reset_preview_controls()
 
     def _stop_playback(self) -> None:
-        self._playback_timer.stop()
-        if self._player is not None:
-            self._player.stop()
+        self._cancel_preview_process()
+        if self._stop_audio_callback is not None:
+            self._stop_audio_callback()
+        self.playback_status_label.setText("")
+
+    def _cleanup_playback(self) -> None:
+        if self._playback_cleaned_up:
+            return
+        self._playback_cleaned_up = True
+        self._stop_playback()
+        self._preview_cache.clear()
+        self._preview_dir.remove()
 
     def _save_and_accept(self) -> None:
         try:
@@ -363,15 +496,23 @@ class ManualTimingDialog(QDialog):
         self.accept()
 
     def reject(self) -> None:
-        self._stop_playback()
+        self._cleanup_playback()
         super().reject()
 
     def accept(self) -> None:
-        self._stop_playback()
+        self._cleanup_playback()
         super().accept()
 
 
-def open_manual_timing_dialog(srt_file: str, audio_file: str, session_dir: str, parent=None) -> str | None:
+def open_manual_timing_dialog(
+    srt_file: str,
+    audio_file: str,
+    session_dir: str,
+    parent=None,
+    *,
+    play_audio_callback: Callable[[str], bool] | None = None,
+    stop_audio_callback: Callable[[], None] | None = None,
+) -> str | None:
     srt_path = os.path.abspath(srt_file) if srt_file else ""
     audio_path = os.path.abspath(audio_file) if audio_file else ""
     session_path = os.path.abspath(session_dir) if session_dir else ""
@@ -383,7 +524,14 @@ def open_manual_timing_dialog(srt_file: str, audio_file: str, session_dir: str, 
         return None
 
     os.makedirs(session_path, exist_ok=True)
-    dialog = ManualTimingDialog(srt_path, audio_path, session_path, parent=parent)
+    dialog = ManualTimingDialog(
+        srt_path,
+        audio_path,
+        session_path,
+        parent=parent,
+        play_audio_callback=play_audio_callback,
+        stop_audio_callback=stop_audio_callback,
+    )
     result = dialog.exec()
     if result == QDialog.DialogCode.Accepted and dialog.saved_srt_path:
         return dialog.saved_srt_path
