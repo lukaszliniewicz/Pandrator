@@ -182,7 +182,7 @@ Required direction:
 - Use explicit user overrides next.
 - Use system `PATH` only as a fallback for optional external tools or developer/source-checkout use.
 
-The Subdub and XTTS trainer helpers already check both `pixi.exe` and `pixi` in some places.
+The XTTS trainer helpers already check both `pixi.exe` and `pixi` in some places.
 
 ## Pixi-First Locality Principle
 

@@ -17,7 +17,7 @@ from pandrator_installer.models import InstallSelection, LaunchSelection, Worksp
 from pandrator_installer import platforms
 from pandrator_installer.reporting import HeadlessReporter
 from pandrator_installer.service import HeadlessInstaller
-from pandrator_installer.constants import NEMO_PYNINI_CONDA_SPEC, PANDRATOR_NUMPY_SPEC
+from pandrator_installer.constants import NEMO_PYNINI_CONDA_SPEC, ONNX_ASR_INSTALL_SPEC, PANDRATOR_NUMPY_SPEC
 
 
 class InstallerArchitectureTests(unittest.TestCase):
@@ -27,6 +27,11 @@ class InstallerArchitectureTests(unittest.TestCase):
             set(selection.selected_components()),
             {"xtts", "whisperx", "xtts_finetuning"},
         )
+
+    def test_install_selection_accepts_parakeet_onnx_component(self):
+        selection = InstallSelection.from_components(["parakeet-onnx"])
+
+        self.assertEqual(selection.selected_components(), ("parakeet_onnx",))
 
     def test_install_selection_rejects_mutually_exclusive_variants(self):
         with self.assertRaisesRegex(ValueError, "Select either 'kokoro' or 'kokoro_cpu'"):
@@ -45,7 +50,7 @@ class InstallerArchitectureTests(unittest.TestCase):
         paths = WorkspacePaths.from_value(Path("workspace"))
         self.assertEqual(paths.install_root.name, "Pandrator")
         self.assertEqual(paths.pandrator_repo.name, "Pandrator")
-        self.assertEqual(paths.subdub_repo.name, "Subdub")
+        self.assertFalse(hasattr(paths, "subdub_repo"))
 
     def test_headless_installer_does_not_require_widgets(self):
         installer = HeadlessInstaller(working_dir="workspace")
@@ -134,6 +139,50 @@ class InstallerArchitectureTests(unittest.TestCase):
             home="/home/tester",
         )
         self.assertEqual(workspace, os.path.abspath("/tmp/custom-pandrator"))
+
+    def test_launcher_workspace_infers_installed_repo_cwd(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            install_root = Path(workspace) / "Pandrator"
+            repo_root = install_root / "Pandrator"
+            repo_root.mkdir(parents=True)
+            (install_root / "config.json").write_text("{}", encoding="utf-8")
+            (repo_root / "main.py").write_text("", encoding="utf-8")
+
+            resolved = platforms.resolve_launcher_workspace(
+                system="Windows",
+                environ={},
+                cwd=str(repo_root),
+            )
+
+        self.assertEqual(resolved, os.path.abspath(workspace))
+
+    def test_launcher_workspace_infers_install_root_cwd(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            install_root = Path(workspace) / "Pandrator"
+            repo_root = install_root / "Pandrator"
+            repo_root.mkdir(parents=True)
+            (install_root / "config.json").write_text("{}", encoding="utf-8")
+            (repo_root / "main.py").write_text("", encoding="utf-8")
+
+            resolved = platforms.resolve_launcher_workspace(
+                system="Windows",
+                environ={},
+                cwd=str(install_root),
+            )
+
+        self.assertEqual(resolved, os.path.abspath(workspace))
+
+    def test_launcher_workspace_keeps_uninstalled_repo_cwd(self):
+        with tempfile.TemporaryDirectory() as repo_root:
+            Path(repo_root, "main.py").write_text("", encoding="utf-8")
+
+            resolved = platforms.resolve_launcher_workspace(
+                system="Windows",
+                environ={},
+                cwd=repo_root,
+            )
+
+        self.assertEqual(resolved, os.path.abspath(repo_root))
 
     def test_ensure_pixi_manifest_uses_platform_manifest_value(self):
         installer = HeadlessInstaller(working_dir="workspace")
@@ -430,9 +479,15 @@ class InstallerArchitectureTests(unittest.TestCase):
             PACKAGING_COMPONENT_PATHS["chatterbox"],
             COMPONENTS["chatterbox"].paths,
         )
+        self.assertEqual(
+            PACKAGING_COMPONENT_PATHS["parakeet_onnx"],
+            COMPONENTS["parakeet_onnx"].paths,
+        )
         self.assertIn("chatterbox_support", PACKAGING_CONFIG_FLAGS)
+        self.assertIn("parakeet_onnx_support", PACKAGING_CONFIG_FLAGS)
         self.assertEqual(NEMO_PYNINI_CONDA_SPEC, "pynini=2.1.6.post1")
         self.assertEqual(PANDRATOR_NUMPY_SPEC, "numpy==1.26.4")
+        self.assertEqual(ONNX_ASR_INSTALL_SPEC, "onnx-asr[cpu,hub]==0.11.0")
 
     def test_self_check_cli_flag_and_execution(self):
         args = parse_launcher_cli_args(["--self-check"])

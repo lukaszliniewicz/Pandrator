@@ -25,10 +25,6 @@ class WorkspacePaths:
     def pandrator_repo(self) -> Path:
         return self.install_root / "Pandrator"
 
-    @property
-    def subdub_repo(self) -> Path:
-        return self.install_root / "Subdub"
-
     def repository(self, dirname: str) -> Path:
         return self.install_root / dirname
 
@@ -53,6 +49,7 @@ class InstallSelection:
     rvc: bool = False
     rvc_cpu: bool = False
     whisperx: bool = False
+    parakeet_onnx: bool = False
     xtts_finetuning: bool = False
     chatterbox: bool = False
     chatterbox_cpu: bool = False

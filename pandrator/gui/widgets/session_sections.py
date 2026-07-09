@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ...constants import LANGUAGE_DISPLAY_NAMES, WHISPER_LANGUAGES, XTTS_LANGUAGES
+from ...logic.dubbing.stt_backends import STT_BACKEND_WHISPERX, normalize_stt_backend
 
 
 def create_section_label(text: str) -> QLabel:
@@ -900,12 +901,19 @@ class DubbingSection(QFrame):
         trans_layout = QGridLayout(self.transcription_frame)
         layout.addWidget(self.transcription_frame)
 
-        trans_layout.addWidget(QLabel("Language:"), 0, 0)
+        self.dub_stt_backend_label = QLabel("Backend:")
+        trans_layout.addWidget(self.dub_stt_backend_label, 0, 0)
+        self.dub_stt_backend_combo = QComboBox()
+        trans_layout.addWidget(self.dub_stt_backend_combo, 0, 1)
+
+        self.dub_whisper_lang_label = QLabel("Language:")
+        trans_layout.addWidget(self.dub_whisper_lang_label, 0, 2)
         self.dub_whisper_lang_combo = QComboBox()
         self.dub_whisper_lang_combo.addItems(WHISPER_LANGUAGES)
-        trans_layout.addWidget(self.dub_whisper_lang_combo, 0, 1)
+        trans_layout.addWidget(self.dub_whisper_lang_combo, 0, 3)
 
-        trans_layout.addWidget(QLabel("Model:"), 0, 2)
+        self.dub_whisper_model_label = QLabel("WhisperX Model:")
+        trans_layout.addWidget(self.dub_whisper_model_label, 1, 0)
         self.dub_whisper_model_combo = QComboBox()
         self.dub_whisper_model_combo.addItems([
             "small",
@@ -915,13 +923,24 @@ class DubbingSection(QFrame):
             "large-v2",
             "large-v3",
         ])
-        trans_layout.addWidget(self.dub_whisper_model_combo, 0, 3)
+        trans_layout.addWidget(self.dub_whisper_model_combo, 1, 1)
+
+        self.dub_advanced_button = QPushButton("Transcription Settings...")
+        trans_layout.addWidget(self.dub_advanced_button, 1, 2, 1, 2)
 
         self.dub_correct_transcription_check = QCheckBox("Correct transcription with LLM")
-        trans_layout.addWidget(self.dub_correct_transcription_check, 1, 0, 1, 2)
+        trans_layout.addWidget(self.dub_correct_transcription_check, 2, 0, 1, 2)
+
+        self.dub_correction_model_combo = QComboBox()
+        self.dub_correction_model_combo.setEditable(True)
+        self.dub_correction_model_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        correction_model_edit = self.dub_correction_model_combo.lineEdit()
+        if correction_model_edit is not None:
+            correction_model_edit.setPlaceholderText("default")
+        trans_layout.addWidget(self.dub_correction_model_combo, 2, 2, 1, 2)
 
         self.dub_custom_prompt_button = QPushButton("Custom Correction Prompt")
-        trans_layout.addWidget(self.dub_custom_prompt_button, 1, 2, 1, 2)
+        trans_layout.addWidget(self.dub_custom_prompt_button, 3, 0, 1, 4)
 
         self.translation_heading = QLabel("Translation Options")
         self.translation_heading.setObjectName("subSectionLabel")
@@ -952,11 +971,14 @@ class DubbingSection(QFrame):
         self.dub_glossary_check = QCheckBox("Enable glossary")
         transl_layout.addWidget(self.dub_glossary_check, 2, 0, 1, 4)
 
-        transl_layout.addWidget(QLabel("Translation Provider:"), 3, 0)
-        self.dub_trans_provider_combo = QComboBox()
-        transl_layout.addWidget(self.dub_trans_provider_combo, 3, 1, 1, 3)
+        transl_layout.addWidget(QLabel("Translation Backend:"), 3, 0)
+        self.dub_translation_backend_combo = QComboBox()
+        self.dub_translation_backend_combo.addItem("Pandrator LLM", "llm")
+        self.dub_translation_backend_combo.addItem("DeepL", "deepl")
+        transl_layout.addWidget(self.dub_translation_backend_combo, 3, 1, 1, 3)
 
-        transl_layout.addWidget(QLabel("Translation Model:"), 4, 0)
+        self.dub_trans_model_label = QLabel("Translation Model:")
+        transl_layout.addWidget(self.dub_trans_model_label, 4, 0)
         self.dub_trans_model_combo = QComboBox()
         self.dub_trans_model_combo.setEditable(True)
         self.dub_trans_model_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
@@ -977,11 +999,11 @@ class DubbingSection(QFrame):
         video_file_layout = QHBoxLayout(self.video_file_frame)
         layout.addWidget(self.video_file_frame)
 
-        video_file_layout.addWidget(QLabel("Video File:"))
-        self.selected_video_file_label = QLabel("No video selected")
+        video_file_layout.addWidget(QLabel("Media File:"))
+        self.selected_video_file_label = QLabel("No media selected")
         self.selected_video_file_label.setObjectName("secondaryInfoLabel")
         video_file_layout.addWidget(self.selected_video_file_label)
-        self.select_video_file_button = QPushButton("Select Video")
+        self.select_video_file_button = QPushButton("Select Media")
         video_file_layout.addWidget(self.select_video_file_button)
 
         self.buttons_frame = QFrame()
@@ -996,7 +1018,7 @@ class DubbingSection(QFrame):
         self.only_transcribe_button = QPushButton("Only Transcribe")
         self.only_correct_button = QPushButton("Only Correct")
         self.only_translate_button = QPushButton("Only Translate")
-        self.fine_tune_timings_button = QPushButton("Fine-Tune Timings (Subdub GUI)")
+        self.fine_tune_timings_button = QPushButton("Fine-Tune Timings")
 
         buttons_layout.addWidget(self.generate_dub_audio_button, 0, 0, 1, 3)
         buttons_layout.addWidget(self.add_dub_to_video_button, 1, 0, 1, 3)
@@ -1004,6 +1026,40 @@ class DubbingSection(QFrame):
         buttons_layout.addWidget(self.only_correct_button, 2, 1)
         buttons_layout.addWidget(self.only_translate_button, 2, 2)
         buttons_layout.addWidget(self.fine_tune_timings_button, 3, 0, 1, 3)
+
+    def set_stt_backend(self, backend: str):
+        selected_is_whisperx = normalize_stt_backend(backend) == STT_BACKEND_WHISPERX
+        self.dub_whisper_model_label.setVisible(selected_is_whisperx)
+        self.dub_whisper_model_combo.setVisible(selected_is_whisperx)
+
+    @staticmethod
+    def _set_editable_model_options(combo, models: list[str], selected_model: str):
+        selected = str(selected_model or "default").strip() or "default"
+        options = list(models)
+        if selected not in options:
+            options.append(selected)
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItems(options)
+        combo.setCurrentText(selected)
+        combo.blockSignals(False)
+
+    def set_llm_model_options(
+        self,
+        models: list[str],
+        correction_model: str,
+        translation_model: str,
+    ):
+        self._set_editable_model_options(
+            self.dub_correction_model_combo,
+            models,
+            correction_model,
+        )
+        self._set_editable_model_options(
+            self.dub_trans_model_combo,
+            models,
+            translation_model,
+        )
 
 
 class OutputOptionsSection(QFrame):
@@ -1038,6 +1094,7 @@ class TaskStatusPanel(QFrame):
         ("transcribe", "Transcribe"),
         ("correct", "Correct"),
         ("translate", "Translate"),
+        ("manual_timing", "Manual Timing"),
         ("speech_blocks", "Speech Blocks"),
         ("tts_generation", "Generate Audio"),
         ("sync", "Sync"),

@@ -27,12 +27,28 @@ from ...constants import (
     QWEN_LANGUAGES,
 )
 from ..dialogs.custom_prompt_dialog import CustomPromptDialog
+from ..dialogs.dubbing_advanced_dialog import DubbingAdvancedDialog
 from ..dialogs.metadata_dialog import MetadataDialog
 from ..dialogs.paste_text_dialog import PasteTextDialog
 from ..dialogs.source_picker_dialog import SourcePickerDialog
 from ..dialogs.source_cleaning_dialog import SourceCleaningDialog
 from ..dialogs.voice_catalog_dialog import VoiceCatalogDialog
 from ..dialogs.voice_library_dialog import VoiceLibraryDialog
+from ...logic.dubbing.stt_backends import (
+    STT_BACKEND_PARAKEET_ONNX,
+    STT_BACKEND_WHISPERX,
+    detect_stt_backend_statuses,
+    language_options_for_backend,
+    normalize_stt_backend,
+    normalize_stt_language_for_backend,
+    select_available_stt_backend,
+)
+from ...logic.source_media import (
+    AUDIO_SOURCE_EXTENSIONS,
+    MEDIA_SOURCE_EXTENSIONS,
+    VIDEO_SOURCE_EXTENSIONS,
+    is_video_source,
+)
 from .session_sections import (
     AdvancedTtsSettingsSection,
     DubbingSection,
@@ -62,6 +78,25 @@ VOXTRAL_STYLE_LABELS = {
 SPEAKER_HEADING_VALUE = "__heading__"
 
 KOKORO_MISC_GROUP_ORDER = ["OpenAI Alias Voices", "Voice Blends", "Other Voices"]
+
+
+def _extension_glob_filter(extensions: frozenset[str] | set[str]) -> str:
+    return " ".join(f"*{extension}" for extension in sorted(extensions))
+
+
+SOURCE_FILE_DIALOG_FILTER = (
+    "Supported Files ("
+    "*.txt *.srt *.pdf *.epub *.docx *.mobi "
+    f"{_extension_glob_filter(MEDIA_SOURCE_EXTENSIONS)}"
+    ");;All files (*.*)"
+)
+MEDIA_FILE_DIALOG_FILTER = (
+    f"Media Files ({_extension_glob_filter(MEDIA_SOURCE_EXTENSIONS)});;"
+    f"Video Files ({_extension_glob_filter(VIDEO_SOURCE_EXTENSIONS)});;"
+    f"Audio Files ({_extension_glob_filter(AUDIO_SOURCE_EXTENSIONS)});;"
+    "All files (*.*)"
+)
+
 
 class SessionTab(QWidget):
     source_import_status = pyqtSignal(str)
@@ -249,15 +284,22 @@ class SessionTab(QWidget):
         self.transcription_heading = self.dubbing_frame.transcription_heading
         self.transcription_frame = self.dubbing_frame.transcription_frame
         self.video_file_frame = self.dubbing_frame.video_file_frame
+        self.dub_stt_backend_label = self.dubbing_frame.dub_stt_backend_label
+        self.dub_stt_backend_combo = self.dubbing_frame.dub_stt_backend_combo
+        self.dub_whisper_lang_label = self.dubbing_frame.dub_whisper_lang_label
         self.dub_whisper_lang_combo = self.dubbing_frame.dub_whisper_lang_combo
+        self.dub_whisper_model_label = self.dubbing_frame.dub_whisper_model_label
         self.dub_whisper_model_combo = self.dubbing_frame.dub_whisper_model_combo
         self.dub_correct_transcription_check = self.dubbing_frame.dub_correct_transcription_check
+        self.dub_correction_model_combo = self.dubbing_frame.dub_correction_model_combo
         self.dub_custom_prompt_button = self.dubbing_frame.dub_custom_prompt_button
+        self.dub_advanced_button = self.dubbing_frame.dub_advanced_button
         self.dub_translate_check = self.dubbing_frame.dub_translate_check
         self.dub_from_lang_combo = self.dubbing_frame.dub_from_lang_combo
         self.dub_to_lang_combo = self.dubbing_frame.dub_to_lang_combo
         self.dub_glossary_check = self.dubbing_frame.dub_glossary_check
-        self.dub_trans_provider_combo = self.dubbing_frame.dub_trans_provider_combo
+        self.dub_translation_backend_combo = self.dubbing_frame.dub_translation_backend_combo
+        self.dub_trans_model_label = self.dubbing_frame.dub_trans_model_label
         self.dub_trans_model_combo = self.dubbing_frame.dub_trans_model_combo
         self.dub_trans_model_hint = self.dubbing_frame.dub_trans_model_hint
         self.selected_video_file_label = self.dubbing_frame.selected_video_file_label
@@ -633,26 +675,29 @@ class SessionTab(QWidget):
         self.metadata_button.clicked.connect(self._on_metadata)
 
     def _connect_dubbing_signals(self):
+        self.dub_stt_backend_combo.currentIndexChanged.connect(
+            self._on_dub_stt_backend_changed
+        )
         self.dub_whisper_lang_combo.currentTextChanged.connect(
-            lambda t: setattr(self.logic.state.dubbing, "whisper_language", t)
+            lambda t: setattr(self.logic.state.dubbing, "stt_language", t)
         )
         self.dub_whisper_model_combo.currentTextChanged.connect(
             lambda t: setattr(self.logic.state.dubbing, "whisper_model", t)
         )
         self.dub_correct_transcription_check.stateChanged.connect(
-            lambda: setattr(
+            self._on_dub_correction_toggled
+        )
+        self.dub_correction_model_combo.currentTextChanged.connect(
+            lambda model: setattr(
                 self.logic.state.dubbing,
-                "correction_enabled",
-                self.dub_correct_transcription_check.isChecked(),
+                "correction_model",
+                model.strip() or "default",
             )
         )
         self.dub_custom_prompt_button.clicked.connect(self._on_open_custom_prompt)
+        self.dub_advanced_button.clicked.connect(self._on_open_dubbing_advanced)
         self.dub_translate_check.stateChanged.connect(
-            lambda: setattr(
-                self.logic.state.dubbing,
-                "translation_enabled",
-                self.dub_translate_check.isChecked(),
-            )
+            self._on_dub_translation_toggled
         )
         self.dub_from_lang_combo.currentTextChanged.connect(
             lambda t: setattr(self.logic.state.dubbing, "original_language", t)
@@ -667,8 +712,8 @@ class SessionTab(QWidget):
                 self.dub_glossary_check.isChecked(),
             )
         )
-        self.dub_trans_provider_combo.currentIndexChanged.connect(
-            self._on_dub_translation_provider_changed
+        self.dub_translation_backend_combo.currentIndexChanged.connect(
+            self._on_dub_translation_backend_changed
         )
         self.dub_trans_model_combo.currentTextChanged.connect(
             self._on_dub_translation_model_changed
@@ -690,25 +735,36 @@ class SessionTab(QWidget):
         )
 
     def _on_dub_translation_model_changed(self, model_name: str):
-        self.logic.state.dubbing.translation_model = model_name.strip()
+        self.logic.state.dubbing.translation_model = model_name.strip() or "default"
 
-    def _on_dub_translation_provider_changed(self, _index: int = -1):
-        provider_id = str(self.dub_trans_provider_combo.currentData() or "").strip()
-        if not provider_id:
+    def _on_dub_correction_toggled(self):
+        self.logic.state.dubbing.correction_enabled = (
+            self.dub_correct_transcription_check.isChecked()
+        )
+        self.logic.state_changed.emit()
+
+    def _on_dub_translation_toggled(self):
+        self.logic.state.dubbing.translation_enabled = self.dub_translate_check.isChecked()
+        self.logic.state_changed.emit()
+
+    def _on_dub_stt_backend_changed(self, _index: int = -1):
+        backend = str(self.dub_stt_backend_combo.currentData() or "").strip()
+        if not backend:
             return
+        self.logic.state.dubbing.stt_backend = backend
+        selected_language = normalize_stt_language_for_backend(
+            backend,
+            self.logic.state.dubbing.stt_language,
+        )
+        self.logic.state.dubbing.stt_language = selected_language.name
+        self.logic.state_changed.emit()
 
-        self.logic.state.dubbing.translation_provider = provider_id
-        if provider_id == "deepl":
-            self.logic.state.dubbing.translation_model = ""
-        else:
-            models = self.logic.list_dubbing_translation_models(provider_id)
-            current_model = str(self.logic.state.dubbing.translation_model or "").strip()
-            if models and current_model not in models:
-                self.logic.state.dubbing.translation_model = models[0]
-            elif not current_model and models:
-                self.logic.state.dubbing.translation_model = models[0]
-
-        self.logic.normalize_dubbing_translation_state(self.logic.state.dubbing)
+    def _on_dub_translation_backend_changed(self, _index: int = -1):
+        backend = str(self.dub_translation_backend_combo.currentData() or "").strip()
+        if not backend:
+            return
+        self.logic.state.dubbing.translation_backend = backend
+        self.logic.normalize_dubbing_settings_state(self.logic.state.dubbing)
         self.logic.state_changed.emit()
 
     def _connect_generation_signals(self):
@@ -1083,11 +1139,77 @@ class SessionTab(QWidget):
             "Cover Uploaded" if state.cover_image_path else "Upload Cover"
         )
 
+    def _update_dubbing_stt_controls(self, dub_state):
+        backend_statuses = detect_stt_backend_statuses()
+        selected_backend = select_available_stt_backend(
+            normalize_stt_backend(getattr(dub_state, "stt_backend", "")),
+            backend_statuses,
+        )
+        if selected_backend != normalize_stt_backend(getattr(dub_state, "stt_backend", "")):
+            dub_state.stt_backend = selected_backend
+
+        self.dub_stt_backend_combo.blockSignals(True)
+        self.dub_stt_backend_combo.clear()
+        for backend in (STT_BACKEND_WHISPERX, STT_BACKEND_PARAKEET_ONNX):
+            status = backend_statuses.get(backend)
+            label = status.label if status else backend
+            if not status or not status.installed:
+                label = f"{label} (not installed)"
+            self.dub_stt_backend_combo.addItem(label, backend)
+            item = self.dub_stt_backend_combo.model().item(
+                self.dub_stt_backend_combo.count() - 1
+            )
+            if item is not None and status and not status.installed:
+                item.setEnabled(False)
+                item.setToolTip(status.reason)
+        backend_index = self.dub_stt_backend_combo.findData(selected_backend)
+        if backend_index >= 0:
+            self.dub_stt_backend_combo.setCurrentIndex(backend_index)
+        self.dub_stt_backend_combo.blockSignals(False)
+
+        selected_language = normalize_stt_language_for_backend(
+            selected_backend,
+            getattr(dub_state, "stt_language", ""),
+        )
+        if selected_language.name != getattr(dub_state, "stt_language", ""):
+            dub_state.stt_language = selected_language.name
+
+        self.dub_whisper_lang_combo.blockSignals(True)
+        self.dub_whisper_lang_combo.clear()
+        for option in language_options_for_backend(selected_backend):
+            self.dub_whisper_lang_combo.addItem(option.name, option.code)
+        language_index = self.dub_whisper_lang_combo.findText(dub_state.stt_language)
+        if language_index < 0:
+            language_index = self.dub_whisper_lang_combo.findData(selected_language.code)
+        if language_index >= 0:
+            self.dub_whisper_lang_combo.setCurrentIndex(language_index)
+        self.dub_whisper_lang_combo.blockSignals(False)
+
+        self.dub_whisper_lang_label.setText("Language:")
+        selected_is_whisperx = selected_backend == STT_BACKEND_WHISPERX
+        self.dubbing_frame.set_stt_backend(selected_backend)
+        self.dub_whisper_lang_combo.setToolTip(
+            "Parakeet v3 supports this language set and auto-detects the spoken language."
+            if selected_backend == STT_BACKEND_PARAKEET_ONNX
+            else ""
+        )
+
+        unavailable = [
+            status.label
+            for status in backend_statuses.values()
+            if not status.installed
+        ]
+        if len(unavailable) == len(backend_statuses):
+            tooltip = "Install WhisperX or ONNX Parakeet from the Pandrator installer to transcribe media sources."
+        else:
+            tooltip = ""
+        self.transcription_frame.setToolTip(tooltip)
+
     def _update_dubbing_state(self, state):
         dub_state = state.dubbing
-        self.logic.normalize_dubbing_translation_state(dub_state)
+        self.logic.normalize_dubbing_settings_state(dub_state)
+        self._update_dubbing_stt_controls(dub_state)
 
-        self.dub_whisper_lang_combo.setCurrentText(dub_state.whisper_language)
         self.dub_whisper_model_combo.setCurrentText(dub_state.whisper_model)
         self.dub_correct_transcription_check.setChecked(dub_state.correction_enabled)
         self.dub_translate_check.setChecked(dub_state.translation_enabled)
@@ -1095,61 +1217,57 @@ class SessionTab(QWidget):
         self._update_dubbing_target_language_dropdown(dub_state.target_language)
         self.dub_glossary_check.setChecked(dub_state.glossary_enabled)
 
-        provider_options = self.logic.list_dubbing_translation_provider_configs()
-        selected_provider_id = str(dub_state.translation_provider or "").strip()
+        models = self.logic.list_llm_models()
+        self.dubbing_frame.set_llm_model_options(
+            models,
+            dub_state.correction_model,
+            dub_state.translation_model,
+        )
 
-        self.dub_trans_provider_combo.blockSignals(True)
-        self.dub_trans_provider_combo.clear()
-        for provider in provider_options:
-            provider_id = str(provider.get("id") or "").strip()
-            provider_name = str(provider.get("name") or provider_id).strip()
-            if provider_id:
-                self.dub_trans_provider_combo.addItem(provider_name, provider_id)
-
-        if self.dub_trans_provider_combo.count() > 0:
-            target_index = self.dub_trans_provider_combo.findData(selected_provider_id)
-            if target_index < 0:
-                target_index = 0
-                selected_provider_id = str(self.dub_trans_provider_combo.itemData(0) or "")
-                if selected_provider_id != str(dub_state.translation_provider or ""):
-                    dub_state.translation_provider = selected_provider_id
-            self.dub_trans_provider_combo.setCurrentIndex(target_index)
-
-        self.dub_trans_provider_combo.blockSignals(False)
-
-        provider_models = self.logic.list_dubbing_translation_models(selected_provider_id)
-        selected_model = str(dub_state.translation_model or "").strip()
-
-        self.dub_trans_model_combo.blockSignals(True)
-        self.dub_trans_model_combo.clear()
-        self.dub_trans_model_combo.addItems(provider_models)
-
-        if selected_provider_id != "deepl":
-            if selected_model and self.dub_trans_model_combo.findText(selected_model) == -1:
-                self.dub_trans_model_combo.addItem(selected_model)
-            self.dub_trans_model_combo.setCurrentText(selected_model)
-        else:
-            self.dub_trans_model_combo.setCurrentText("")
-
-        self.dub_trans_model_combo.blockSignals(False)
+        self.dub_translation_backend_combo.blockSignals(True)
+        backend_index = self.dub_translation_backend_combo.findData(
+            dub_state.translation_backend
+        )
+        if backend_index >= 0:
+            self.dub_translation_backend_combo.setCurrentIndex(backend_index)
+        self.dub_translation_backend_combo.blockSignals(False)
 
         if dub_state.video_file_path:
             filename = dub_state.video_file_path.split("/")[-1].split("\\")[-1]
             self.selected_video_file_label.setText(filename)
         else:
-            self.selected_video_file_label.setText("No video selected")
+            self.selected_video_file_label.setText("No media selected")
 
     def _update_visibility_and_control_state(self, state):
         source_ext = ""
         if state.source_file_path:
-            source_ext = state.source_file_path.split(".")[-1].lower()
+            source_ext = os.path.splitext(state.source_file_path)[1].lower()
 
-        is_video = source_ext in ["mp4", "mkv", "webm", "avi", "mov"]
-        is_srt = source_ext == "srt"
-        is_dubbing_source = is_video or is_srt
-        is_deepl_provider = (
-            str(state.dubbing.translation_provider or "").strip().lower() == "deepl"
+        is_video = source_ext in VIDEO_SOURCE_EXTENSIONS
+        is_audio = source_ext in AUDIO_SOURCE_EXTENSIONS
+        is_media = is_video or is_audio
+        is_srt = source_ext == ".srt"
+        attached_media_ext = os.path.splitext(str(state.dubbing.video_file_path or ""))[1].lower()
+        attached_is_video = attached_media_ext in VIDEO_SOURCE_EXTENSIONS
+        attached_is_audio = attached_media_ext in AUDIO_SOURCE_EXTENSIONS
+        attached_is_media = attached_is_video or attached_is_audio
+        is_dubbing_source = is_media or is_srt
+        is_deepl_backend = (
+            str(state.dubbing.translation_backend or "").strip().lower() == "deepl"
         )
+        stt_backend_statuses = detect_stt_backend_statuses()
+        selected_stt_backend = normalize_stt_backend(getattr(state.dubbing, "stt_backend", ""))
+        selected_stt_available = bool(
+            stt_backend_statuses.get(selected_stt_backend)
+            and stt_backend_statuses[selected_stt_backend].installed
+        )
+        any_stt_available = any(status.installed for status in stt_backend_statuses.values())
+        transcription_source_selected = is_media or (is_srt and attached_is_media)
+        media_transcription_available = (
+            (not transcription_source_selected)
+            or (any_stt_available and selected_stt_available)
+        )
+        video_render_available = is_video or (is_srt and attached_is_video)
 
         generation_running = self.logic.is_generation_running()
         regeneration_running = self.logic.is_regeneration_running()
@@ -1320,7 +1438,15 @@ class SessionTab(QWidget):
 
         self.dubbing_label.setVisible(is_dubbing_source)
         self.dubbing_frame.setVisible(is_dubbing_source)
-        self.dub_trans_model_hint.setVisible(is_dubbing_source and not is_deepl_provider)
+        self.dub_trans_model_label.setVisible(is_dubbing_source and not is_deepl_backend)
+        self.dub_trans_model_combo.setVisible(is_dubbing_source and not is_deepl_backend)
+        self.dub_trans_model_hint.setVisible(is_dubbing_source and not is_deepl_backend)
+        self.dub_correction_model_combo.setVisible(
+            is_dubbing_source and state.dubbing.correction_enabled
+        )
+        self.dub_custom_prompt_button.setVisible(
+            is_dubbing_source and state.dubbing.correction_enabled
+        )
         self.output_options_label.setVisible(not is_dubbing_source)
         self.output_options_frame.setVisible(not is_dubbing_source)
 
@@ -1426,15 +1552,16 @@ class SessionTab(QWidget):
 
         dubbing_controls_enabled = (not generation_busy) and is_dubbing_source
         for widget in (
+            self.dub_stt_backend_combo,
             self.dub_whisper_lang_combo,
             self.dub_whisper_model_combo,
             self.dub_correct_transcription_check,
-            self.dub_custom_prompt_button,
+            self.dub_advanced_button,
             self.dub_translate_check,
             self.dub_from_lang_combo,
             self.dub_to_lang_combo,
             self.dub_glossary_check,
-            self.dub_trans_provider_combo,
+            self.dub_translation_backend_combo,
             self.select_video_file_button,
             self.generate_dub_audio_button,
             self.add_dub_to_video_button,
@@ -1444,16 +1571,55 @@ class SessionTab(QWidget):
         ):
             widget.setEnabled(dubbing_controls_enabled)
 
-        self.dub_trans_model_combo.setEnabled(
-            dubbing_controls_enabled and not is_deepl_provider
+        self.dub_correction_model_combo.setEnabled(
+            dubbing_controls_enabled and state.dubbing.correction_enabled
         )
+        self.dub_custom_prompt_button.setEnabled(
+            dubbing_controls_enabled and state.dubbing.correction_enabled
+        )
+
+        self.dub_trans_model_combo.setEnabled(
+            dubbing_controls_enabled
+            and state.dubbing.translation_enabled
+            and not is_deepl_backend
+        )
+        selected_is_whisperx = selected_stt_backend == STT_BACKEND_WHISPERX
+        self.dub_whisper_model_combo.setEnabled(
+            dubbing_controls_enabled and selected_is_whisperx and selected_stt_available
+        )
+        self.dub_whisper_lang_combo.setEnabled(
+            dubbing_controls_enabled and any_stt_available
+        )
+        has_dubbing_srt = self.logic.has_dubbing_srt_file()
+        stt_tooltip = (
+            ""
+            if media_transcription_available
+            else "Install WhisperX or ONNX Parakeet from the Pandrator installer to transcribe media sources."
+        )
+        generate_needs_transcription = is_media and not has_dubbing_srt
+        self.generate_dub_audio_button.setEnabled(
+            dubbing_controls_enabled
+            and (not generate_needs_transcription or media_transcription_available)
+        )
+        self.generate_dub_audio_button.setToolTip(stt_tooltip if generate_needs_transcription else "")
+
+        self.only_transcribe_button.setEnabled(
+            dubbing_controls_enabled
+            and transcription_source_selected
+            and media_transcription_available
+        )
+        self.only_transcribe_button.setToolTip(stt_tooltip)
+
+        video_render_tooltip = "" if video_render_available else "Final video rendering requires a video source."
+        self.add_dub_to_video_button.setEnabled(dubbing_controls_enabled and video_render_available)
+        self.add_dub_to_video_button.setToolTip(video_render_tooltip)
 
         self.fine_tune_timings_button.setVisible(is_dubbing_source)
         self.fine_tune_timings_button.setEnabled(
-            dubbing_controls_enabled and self.logic.has_dubbing_srt_file()
+            dubbing_controls_enabled and has_dubbing_srt
         )
 
-        show_transcription_options = is_dubbing_source and is_video
+        show_transcription_options = is_media
         self.transcription_heading.setVisible(show_transcription_options)
         self.transcription_frame.setVisible(show_transcription_options)
         self.video_file_frame.setVisible(is_dubbing_source and is_srt)
@@ -2002,10 +2168,16 @@ class SessionTab(QWidget):
             file_path = self._prompt_source_upload_path()
         elif source_mode == "existing":
             file_path = self._prompt_existing_source_path()
+        elif source_mode == "zoom_vtt":
+            file_path = self._prompt_zoom_vtt_upload_path()
         else:
             return
 
         if not file_path:
+            return
+
+        if source_mode == "zoom_vtt":
+            self._apply_zoom_vtt_source_selection(file_path)
             return
 
         allow_pdf_crop_prompt = source_mode == "upload"
@@ -2017,9 +2189,10 @@ class SessionTab(QWidget):
         chooser.setWindowTitle("Add Source")
         chooser.setText("How would you like to add a source?")
         chooser.setInformativeText(
-            "Upload a new file from disk, or reuse a source that was already indexed in previous sessions."
+            "Upload a new file, correct a Zoom VTT transcript, or reuse a source that was already indexed in previous sessions."
         )
         upload_button = chooser.addButton("Upload New Source", QMessageBox.ButtonRole.AcceptRole)
+        zoom_button = chooser.addButton("Correct Zoom VTT", QMessageBox.ButtonRole.ActionRole)
         existing_button = chooser.addButton("Select Existing Source", QMessageBox.ButtonRole.ActionRole)
         chooser.addButton(QMessageBox.StandardButton.Cancel)
         chooser.setDefaultButton(upload_button)
@@ -2028,6 +2201,8 @@ class SessionTab(QWidget):
         clicked = chooser.clickedButton()
         if clicked == upload_button:
             return "upload"
+        if clicked == zoom_button:
+            return "zoom_vtt"
         if clicked == existing_button:
             return "existing"
         return ""
@@ -2037,7 +2212,16 @@ class SessionTab(QWidget):
             self,
             "Select Source File",
             "",
-            "Supported Files (*.txt *.srt *.pdf *.epub *.docx *.mobi *.mp4 *.mkv *.webm *.avi *.mov);;All files (*.*)",
+            SOURCE_FILE_DIALOG_FILTER,
+        )
+        return str(file_path or "").strip()
+
+    def _prompt_zoom_vtt_upload_path(self) -> str:
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Zoom VTT Transcript",
+            "",
+            "Zoom/WebVTT Files (*.vtt);;All files (*.*)",
         )
         return str(file_path or "").strip()
 
@@ -2111,6 +2295,13 @@ class SessionTab(QWidget):
 
         self._review_selected_source(selected_path, selected_ext)
 
+    def _apply_zoom_vtt_source_selection(self, file_path: str):
+        should_continue, reset_session = self._confirm_source_replacement(file_path)
+        if not should_continue:
+            return
+
+        self._start_zoom_vtt_source_import(file_path, reset_session)
+
     def _start_pdf_source_import(self, selected_path: str, selected_ext: str, reset_session: bool):
         if self._source_import_thread is not None and self._source_import_thread.is_alive():
             QMessageBox.information(
@@ -2148,6 +2339,53 @@ class SessionTab(QWidget):
                     "error": error,
                     "selected_path": selected_path,
                     "selected_ext": selected_ext,
+                    "error_title": "PDF Import Error",
+                    "error_prefix": "Could not import the selected PDF",
+                }
+            )
+
+        self._source_import_thread = threading.Thread(target=worker, daemon=True)
+        self._source_import_thread.start()
+
+    def _start_zoom_vtt_source_import(self, selected_path: str, reset_session: bool):
+        if self._source_import_thread is not None and self._source_import_thread.is_alive():
+            QMessageBox.information(
+                self,
+                "Source Import Running",
+                "Please wait for the current source import to finish.",
+            )
+            return
+
+        progress_dialog = QProgressDialog("Preparing Zoom transcript correction...", "", 0, 0, self)
+        progress_dialog.setWindowTitle("Correcting Zoom Transcript")
+        progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        progress_dialog.setCancelButton(None)
+        progress_dialog.setMinimumDuration(0)
+        progress_dialog.setAutoClose(False)
+        progress_dialog.setAutoReset(False)
+        progress_dialog.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
+        progress_dialog.show()
+        self._source_import_progress_dialog = progress_dialog
+
+        def worker():
+            try:
+                success = self.logic.import_zoom_vtt_transcript_source(
+                    selected_path,
+                    reset_session=reset_session,
+                    progress_callback=self.source_import_status.emit,
+                )
+                error = ""
+            except Exception as exception:
+                success = False
+                error = str(exception)
+            self.source_import_finished.emit(
+                {
+                    "success": success,
+                    "error": error,
+                    "selected_path": selected_path,
+                    "selected_ext": ".vtt",
+                    "error_title": "Zoom Transcript Error",
+                    "error_prefix": "Could not correct the selected Zoom transcript",
                 }
             )
 
@@ -2180,10 +2418,11 @@ class SessionTab(QWidget):
         payload = result if isinstance(result, dict) else {}
         if not payload.get("success"):
             if payload.get("error"):
+                error_prefix = str(payload.get("error_prefix") or "Could not import the selected source")
                 QMessageBox.critical(
                     self,
-                    "PDF Import Error",
-                    f"Could not import the selected PDF: {payload.get('error')}",
+                    str(payload.get("error_title") or "Source Import Error"),
+                    f"{error_prefix}: {payload.get('error')}",
                 )
             return
         self._review_selected_source(
@@ -2254,15 +2493,21 @@ class SessionTab(QWidget):
             new_prompt = dialog.get_prompt_text()
             self.logic.state.dubbing.custom_correction_prompt = new_prompt
 
+    def _on_open_dubbing_advanced(self):
+        dialog = DubbingAdvancedDialog(self.logic.state.dubbing, self)
+        if dialog.exec():
+            dialog.apply_to_state(self.logic.state.dubbing)
+            self.logic.state_changed.emit()
+
     def _on_select_video_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self,
-            "Select Video File",
+            "Select Media File",
             "",
-            "Video Files (*.mp4 *.mkv *.webm *.avi *.mov);;All files (*.*)",
+            MEDIA_FILE_DIALOG_FILTER,
         )
         if file_path:
-            self.logic.select_dubbing_video_file(file_path)
+            self.logic.select_dubbing_media_file(file_path)
 
     def _prompt_dubbing_video_output_options(self) -> tuple[str, bool] | None:
         chooser = QMessageBox(self)
@@ -2304,6 +2549,14 @@ class SessionTab(QWidget):
         return None
 
     def _on_generate_dubbing_audio(self):
+        state = self.logic.state
+        has_video_render_source = is_video_source(str(state.source_file_path or "")) or is_video_source(
+            str(state.dubbing.video_file_path or "")
+        )
+        if not has_video_render_source:
+            self.logic.run_dubbing_task("generate_audio")
+            return
+
         chooser = QMessageBox(self)
         chooser.setIcon(QMessageBox.Icon.Question)
         chooser.setWindowTitle("Generate Dubbing Audio")
@@ -2347,6 +2600,18 @@ class SessionTab(QWidget):
         )
 
     def _on_add_dubbing_to_video(self):
+        state = self.logic.state
+        has_video_render_source = is_video_source(str(state.source_file_path or "")) or is_video_source(
+            str(state.dubbing.video_file_path or "")
+        )
+        if not has_video_render_source:
+            QMessageBox.warning(
+                self,
+                "No Video Source",
+                "Select a video source before adding dubbing to video.",
+            )
+            return
+
         output_options = self._prompt_dubbing_video_output_options()
         if not output_options:
             return

@@ -18,7 +18,7 @@
 
 Pandrator aspires to be easy to use and install - it has a one-click installer and a graphical user interface. It is a tool designed to perform two tasks: 
 - transform text, PDF (including see-through cropping), EPUB and SRT files into spoken audio in multiple languages based chiefly on open source software run locally, including preprocessing to make the generated speech sound as natural as possible by, among other things, splitting the text into paragraphs, sentences and smaller logical text blocks (clauses), which the TTS models can process with minimal artifacts. Each sentence can be regenerated if the first attempt is not satisfactory, including marking for regeneration using mouse or keyboard actions when listening back to the generation. Voice cloning is possible for models that support it, and text can be additionally preprocessed using LLMs (to remove OCR artifacts or spell out things that the TTS models struggle with, like Roman numerals and abbreviations, for example),
-- generate dubbing either directly from a video file, including transcription (using [WhisperX](https://github.com/m-bain/whisperX)), or from an .srt file. It includes a complete workflow from a video file to a dubbed video file with subtitles - including translation using a variety of APIs and techniques to improve the quality of translation. [Subdub](https://github.com/lukaszliniewicz/Subdub), a companion app developed for this purpose, can also be used on its own. You can also correct or translate subtitles without generating audio. 
+- generate dubbing either directly from a video file, including transcription through optional STT backends such as [WhisperX](https://github.com/m-bain/whisperX) or ONNX Parakeet, or from an .srt file. It includes a Pandrator-native workflow from a video file to a dubbed video file with subtitles, including correction, translation, manual timing edits, audio alignment, and final video rendering. You can also correct or translate subtitles without generating audio.
 
 At the moment, Pandrator supports multiple TTS backends: [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) via [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI), [Fish Audio S2 Pro GGUF](https://huggingface.co/rodrigomt/s2-pro-gguf) via [fishs2-cpp-fastapi](https://github.com/lukaszliniewicz/fishs2-cpp-fastapi), [Chatterbox](https://huggingface.co/ResembleAI/chatterbox) via [chatterbox-fastapi](https://github.com/lukaszliniewicz/chatterbox-fastapi), Qwen3 TTS through KoboldCpp via [kobold-qwen-fastapi](https://github.com/lukaszliniewicz/kobold-qwen-fastapi), [VoxCPM2](https://huggingface.co/openbmb/VoxCPM2) via [voxcpm_fastapi](https://github.com/lukaszliniewicz/voxcpm_fastapi), [Voxtral](https://huggingface.co/mistralai/Voxtral-4B-TTS-2603) via [voxtral-fastapi](https://github.com/lukaszliniewicz/voxtral-fastapi), [XTTS v2](https://huggingface.co/coqui/XTTS-v2) via the OpenAI-compatible [XTTS2 API server](https://github.com/lukaszliniewicz/xtts2_api), [Silero](https://github.com/snakers4/silero-models) via `silero-api-server`, and [Magpie](https://huggingface.co/nvidia/magpie_tts_multilingual_357m) via [magpie-fastapi](https://github.com/lukaszliniewicz/magpie-fastapi). It also supports commercial speech APIs and custom TTS endpoints, including OpenAI-compatible and common JSON APIs, plus optional post-processing via a dedicated [RVC Python API Service](https://github.com/lukaszliniewicz/rvc-python). For local LLM text preprocessing, Pandrator works well with OpenAI-compatible local servers such as LM Studio and Ollama-compatible endpoints.
 
@@ -126,8 +126,8 @@ For local OpenAI-compatible TTS wrappers used by Pandrator, the preferred ecosys
 - `POST /v1/audio/voices` for cloning-capable backends (XTTS, FishS2, Chatterbox, Qwen3 TTS), with legacy `/v1/files` fallback
 
 #### Optional
-- [Subdub](https://github.com/lukaszliniewicz/Subdub), a command line app that transcribes video files, translates subtitles and synchronises the generated speech with the video, made specially for Pandrator.
 - [WhisperX by m-bain](https://github.com/m-bain/whisperX), an enhanced implementation of OpenAI's Whisper model with improved alignment, used for dubbing and XTTS training. 
+- ONNX Parakeet through `onnx-asr[cpu,hub]`, an optional CPU-capable STT backend for dubbing transcription.
 - [Easy XTTS Trainer](https://github.com/lukaszliniewicz/easy_xtts_trainer), a command line app that enables XTTS fine-tuning using one or more audio files, made specially for Pandrator.
 - [RVC Python API Service](https://github.com/lukaszliniewicz/rvc-python) for enhancing voice quality and cloning results via a dedicated local [Retrieval Based Voice Conversion](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI) service.
 - [PyCropPDF](https://github.com/lukaszliniewicz/PyCropPDF) for manual PDF cropping/cleanup before ingestion.
@@ -274,15 +274,16 @@ You can install components incrementally (during first setup or later):
 - Kokoro API (`Kokoro` GPU or `Kokoro CPU only`)
 - Silero API
 - Magpie API (`Magpie` GPU or `Magpie CPU only`)
-- RVC Service (`RVC` GPU or `RVC CPU only`)
-- Optional tools: WhisperX, Easy XTTS Trainer
+- STT backends: WhisperX, ONNX Parakeet
+- Speech to Speech: RVC Service (`RVC` GPU or `RVC CPU only`)
+- Training tools: Easy XTTS Trainer
 
 Current installer flow:
 
 1. Creates `Pandrator/` in the selected location.
 2. Installs/checks Calibre.
 3. Downloads shared Pixi runtime to `Pandrator/bin/pixi.exe`.
-4. Clones required repositories (`Pandrator`, `Subdub`) and selected server repos (`xtts2_api`, `fishs2-cpp-fastapi`, `chatterbox-fastapi`, `kobold-qwen-fastapi`, `voxcpm_fastapi`, `voxtral-fastapi`, `Kokoro-FastAPI`, `magpie-fastapi`, `rvc-python`).
+4. Clones required repositories (`Pandrator`) and selected server repos (`xtts2_api`, `fishs2-cpp-fastapi`, `chatterbox-fastapi`, `kobold-qwen-fastapi`, `voxcpm_fastapi`, `voxtral-fastapi`, `Kokoro-FastAPI`, `magpie-fastapi`, `rvc-python`).
 5. Sets up Pandrator dependencies and selected optional environments/tools.
 6. Bootstraps XTTS2, FishS2, Chatterbox, Qwen3 TTS, VoxCPM2, Voxtral, Kokoro, Magpie, and RVC via their own launcher scripts.
 
@@ -311,6 +312,8 @@ If a local TTS server is launched from the launcher, Pandrator is auto-started w
 
 To re-run setup from scratch, remove the generated `Pandrator/` folder and start again.
 
+Existing workspaces created before the native dubbing migration may still contain a sibling `Subdub` checkout. Current Pandrator builds no longer use that folder for install, update, or dubbing runtime paths; after confirming you do not keep separate local work there, it can be removed.
+
 For additional functionality not yet included in the installer:
 - Configure a local OpenAI-compatible LLM endpoint (for example LM Studio or an Ollama-compatible endpoint) if you want LLM text preprocessing and local translation.
 
@@ -337,7 +340,6 @@ Please refer to the repositories linked under [Dependencies](#dependencies) for 
    mkdir Pandrator
    cd Pandrator
    git clone https://github.com/lukaszliniewicz/Pandrator.git
-   git clone https://github.com/lukaszliniewicz/Subdub.git
    ```
 
 3. Install Pandrator dependencies:
@@ -352,15 +354,7 @@ Please refer to the repositories linked under [Dependencies](#dependencies) for 
    cd ..
    ```
 
-4. Install Subdub dependencies:
-
-   ```
-   cd Subdub
-   python -m pip install -e .
-   cd ..
-   ```
-
-5. (Optional) Install XTTS2 API:
+4. (Optional) Install XTTS2 API:
 
    ```
    git clone https://github.com/lukaszliniewicz/xtts2_api.git
@@ -559,12 +553,13 @@ You can play back the generated sentences, also as a playlist, edit them (the te
 Pandrator offers a comprehensive workflow for generating dubbed videos from video files or existing subtitles. This includes transcription, translation, speech generation, and synchronization:
 
 1. **Select a Video or SRT File:** 
-    - **Video File:** Choose a video file. The audio will be extracted automatically, and transcription will be performed using WhisperX. 
+    - **Video File:** Choose a video file. The audio will be extracted automatically, and transcription will be performed using the selected STT backend.
     - **SRT File:** Select an existing SRT subtitle file. In this case, you also need to specify the corresponding video file (unless you only want to translate the subtitles).
 2. **Transcription (if using a video file):**
     - **Language:** Select the language spoken in the original video.
-    - **Model:** Choose a WhisperX model for transcription. Smaller models are faster, while larger ones provide higher accuracy. The `large-v3` model provides the best results. 
-    - Pandrator will automatically run WhisperX to generate an SRT file containing the transcription.
+    - **Model:** Choose a WhisperX model for WhisperX transcription, or choose ONNX Parakeet in the advanced dubbing settings.
+    - Pandrator detects installed STT backends and filters transcription languages accordingly. WhisperX uses the broad Whisper language list; ONNX Parakeet v3 exposes its 25 supported languages and auto-detects the spoken language during recognition.
+    - Pandrator will automatically run the selected STT backend to generate an SRT file containing the transcription. Advanced settings expose WhisperX prompts/alignment and Parakeet Silero VAD controls.
 3. **Translation (optional):**
     - **Enable Translation:** Toggle this option to translate the subtitles.
     - **Original and Target Languages:** Select the original language of the subtitles and the language you want to translate them into.

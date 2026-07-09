@@ -11,6 +11,7 @@ from typing import Any, Dict, List
 
 from ..app_state import AppState
 from . import state_db_handler
+from .source_media import MEDIA_SOURCE_EXTENSIONS, SOURCE_FILE_EXTENSIONS, VIDEO_SOURCE_EXTENSIONS
 
 OUTPUTS_DIR = "Outputs"
 DUBBING_STAGING_DIR = "_dubbing_staging"
@@ -19,22 +20,9 @@ FINAL_OUTPUT_DIR = "final"
 TRASH_DIR_NAME = ".trash"
 DEFAULT_TRASH_RETENTION_DAYS = 30
 SESSION_CONFIG_FILENAME = "session_config.json"
-SESSION_CONFIG_VERSION = 1
+SESSION_CONFIG_VERSION = 2
 
-SOURCE_FILE_EXTENSIONS = {
-    ".txt",
-    ".srt",
-    ".pdf",
-    ".epub",
-    ".docx",
-    ".mobi",
-    ".mp4",
-    ".mkv",
-    ".webm",
-    ".avi",
-    ".mov",
-}
-VIDEO_FILE_EXTENSIONS = {".mp4", ".mkv", ".webm", ".avi", ".mov"}
+VIDEO_FILE_EXTENSIONS = VIDEO_SOURCE_EXTENSIONS
 SPEECH_BLOCKS_SUFFIX = "_speech_blocks.json"
 
 _NON_ARTIFACT_FILENAMES = {
@@ -231,6 +219,21 @@ def discover_video_file(session_name: str) -> str | None:
         pass
 
     return _discover_latest_file_by_extensions(session_name, VIDEO_FILE_EXTENSIONS)
+
+
+def discover_media_file(session_name: str) -> str | None:
+    """Finds the most recently updated audio/video source file in a session directory."""
+    try:
+        run_media = state_db_handler.get_active_dubbing_artifact(
+            session_name,
+            roles=["media_source", "audio_source", "video_source", "source_audio", "source_video"],
+        )
+        if run_media and os.path.exists(run_media):
+            return run_media
+    except Exception:
+        pass
+
+    return _discover_latest_file_by_extensions(session_name, MEDIA_SOURCE_EXTENSIONS)
 
 
 def discover_latest_speech_blocks_file(session_name: str) -> str | None:

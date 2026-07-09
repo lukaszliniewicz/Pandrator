@@ -31,6 +31,9 @@ from .constants import (
     KOKORO_GPU_SUPPORT_CONFIG_FLAG,
     KOKORO_PYTHON_VERSION,
     NEMO_PYNINI_CONDA_SPEC,
+    ONNX_ASR_REQUIRED_PACKAGE_SPECS,
+    PARAKEET_ONNX_ENV_NAME,
+    PARAKEET_ONNX_PYTHON_VERSION,
     PANDRATOR_PYTHON_VERSION,
     PANDRATOR_REPO_URL,
     PYCROPPDF_REPO_URL,
@@ -39,7 +42,6 @@ from .constants import (
     RVC_GPU_SUPPORT_CONFIG_FLAG,
     SILERO_PYTHON_VERSION,
     SILERO_REQUIRED_PACKAGE_SPECS,
-    SUBDUB_REPO_URL,
     VOXCPM_API_REPO_DIRNAME,
     VOXCPM_API_REPO_URL,
     VOXTRAL_API_REPO_DIRNAME,
@@ -151,6 +153,7 @@ class WorkflowMixin:
         rvc_var = selection.rvc
         rvc_cpu_var = selection.rvc_cpu
         whisperx_var = selection.whisperx
+        parakeet_onnx_var = selection.parakeet_onnx
         xtts_finetuning_var = selection.xtts_finetuning
         chatterbox_var = selection.chatterbox
         chatterbox_cpu_var = selection.chatterbox_cpu
@@ -162,7 +165,6 @@ class WorkflowMixin:
         pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
         pandrator_already_installed = os.path.exists(pandrator_path)
         pandrator_repo_path = os.path.join(pandrator_path, 'Pandrator')
-        subdub_repo_path = os.path.join(pandrator_path, 'Subdub')
         xtts_repo_path = os.path.join(pandrator_path, XTTS_API_REPO_DIRNAME)
         voxcpm_repo_path = os.path.join(pandrator_path, VOXCPM_API_REPO_DIRNAME)
         fishs2_repo_path = os.path.join(pandrator_path, FISHS2_API_REPO_DIRNAME)
@@ -175,7 +177,6 @@ class WorkflowMixin:
         rvc_repo_path = os.path.join(pandrator_path, RVC_API_REPO_DIRNAME)
 
         pandrator_repo_missing = not os.path.exists(pandrator_repo_path)
-        subdub_repo_missing = not os.path.exists(subdub_repo_path)
         pandrator_env_missing = not os.path.exists(self.get_pixi_manifest_path(pandrator_path, 'pandrator_installer'))
         needs_pandrator_environment = pandrator_var or not pandrator_already_installed or pandrator_env_missing
 
@@ -236,8 +237,6 @@ class WorkflowMixin:
             # Git repositories tasks
             if pandrator_var or not pandrator_already_installed or pandrator_repo_missing:
                 concurrent_tasks["Clone Pandrator"] = (self.clone_repo, (PANDRATOR_REPO_URL, pandrator_repo_path), {})
-            if pandrator_var or not pandrator_already_installed or subdub_repo_missing:
-                concurrent_tasks["Clone Subdub"] = (self.clone_repo, (SUBDUB_REPO_URL, subdub_repo_path), {})
             if (xtts_var or xtts_cpu_var) and not os.path.exists(xtts_repo_path):
                 concurrent_tasks["Clone XTTS"] = (self.clone_repo, (XTTS_API_REPO_URL, xtts_repo_path), {})
             if voxcpm_var and not os.path.exists(voxcpm_repo_path):
@@ -276,7 +275,7 @@ class WorkflowMixin:
                 self.add_pixi_conda_package(pandrator_path, 'pandrator_installer', NEMO_PYNINI_CONDA_SPEC)
 
                 self.reporter.progress(0.7)
-                self.reporter.status("Installing Pandrator, Subdub, and PyCropPDF dependencies...")
+                self.reporter.status("Installing Pandrator and PyCropPDF dependencies...")
                 self.install_requirements(pandrator_path, 'pandrator_installer', os.path.join(pandrator_repo_path, 'requirements.txt'))
                 self.ensure_nemo_text_processing_runtime(pandrator_path)
                 self.ensure_wtpsplit_runtime(pandrator_path)
@@ -286,8 +285,6 @@ class WorkflowMixin:
                 if not os.path.exists(pycroppdf_repo_path):
                     self.clone_repo(PYCROPPDF_REPO_URL, pycroppdf_repo_path)
                 self.install_pycroppdf_requirements(pandrator_path, 'pandrator_installer', pycroppdf_repo_path)
-
-                self.install_subdub_requirements(pandrator_path, 'pandrator_installer', subdub_repo_path)
 
             # Bootstrapping
             kokoro_bootstrap_future = None
@@ -400,6 +397,14 @@ class WorkflowMixin:
                 self.reporter.status("Installing WhisperX...")
                 self.install_whisperx(pandrator_path, 'whisperx_installer')
 
+            if parakeet_onnx_var:
+                self.reporter.progress(0.86)
+                self.reporter.status("Creating ONNX Parakeet Pixi environment...")
+                self.create_pixi_env(pandrator_path, PARAKEET_ONNX_ENV_NAME, PARAKEET_ONNX_PYTHON_VERSION)
+                self.reporter.progress(0.91)
+                self.reporter.status("Installing ONNX Parakeet STT support...")
+                self.install_parakeet_onnx(pandrator_path, PARAKEET_ONNX_ENV_NAME)
+
             if xtts_finetuning_var:
                 self.reporter.progress(0.85)
                 self.reporter.status("Cloning XTTS Fine-tuning repository...")
@@ -448,6 +453,7 @@ class WorkflowMixin:
                 config.get(KOKORO_GPU_SUPPORT_CONFIG_FLAG, False) or kokoro_var
             )
             config['whisperx_support'] = config.get('whisperx_support', False) or whisperx_var
+            config['parakeet_onnx_support'] = config.get('parakeet_onnx_support', False) or parakeet_onnx_var
             config['xtts_finetuning_support'] = config.get('xtts_finetuning_support', False) or xtts_finetuning_var
             config['rvc_support'] = config.get('rvc_support', False) or rvc_var or rvc_cpu_var
             config[RVC_GPU_SUPPORT_CONFIG_FLAG] = (
@@ -495,7 +501,6 @@ class WorkflowMixin:
         pandrator_base_path = os.path.join(self.initial_working_dir, 'Pandrator')
         pandrator_repo_path = os.path.join(pandrator_base_path, 'Pandrator')
         pycroppdf_repo_path = os.path.join(pandrator_repo_path, 'PyCropPDF')
-        subdub_repo_path = os.path.join(pandrator_base_path, 'Subdub')
         xtts_repo_path = os.path.join(pandrator_base_path, XTTS_API_REPO_DIRNAME)
         voxcpm_repo_path = os.path.join(pandrator_base_path, VOXCPM_API_REPO_DIRNAME)
         fishs2_repo_path = os.path.join(pandrator_base_path, FISHS2_API_REPO_DIRNAME)
@@ -557,12 +562,6 @@ class WorkflowMixin:
             # Git repos tasks
             # Pandrator
             update_tasks["Update Pandrator"] = (self.pull_repo, (pandrator_repo_path,), {})
-
-            # Subdub
-            if os.path.exists(subdub_repo_path):
-                update_tasks["Update Subdub"] = (self.pull_repo, (subdub_repo_path,), {})
-            else:
-                update_tasks["Clone Subdub"] = (self.clone_repo, (SUBDUB_REPO_URL, subdub_repo_path), {})
 
             # XTTS
             if config.get('xtts_support', False):
@@ -723,10 +722,6 @@ class WorkflowMixin:
             else:
                 logging.warning(f"PyCropPDF requirements file not found at: {pycroppdf_requirements_file}")
 
-            # Update Subdub
-            self.reporter.status("Checking Subdub dependencies...")
-            self.install_subdub_requirements(pandrator_base_path, 'pandrator_installer', subdub_repo_path)
-
             # Concurrently bootstrap Kokoro in background if it needs bootstrapping
             kokoro_bootstrap_future = None
             bootstrap_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -855,6 +850,23 @@ class WorkflowMixin:
                     self.install_whisperx(pandrator_base_path, 'whisperx_installer')
                 else:
                     logging.info(f"Skipping WhisperX reinstall: {whisperx_reason}")
+
+            if config.get('parakeet_onnx_support', False):
+                self.reporter.status("Checking ONNX Parakeet environment...")
+                self.create_pixi_env(pandrator_base_path, PARAKEET_ONNX_ENV_NAME, PARAKEET_ONNX_PYTHON_VERSION)
+
+                parakeet_needs_install, parakeet_reason = self.component_needs_package_sync(
+                    pandrator_base_path,
+                    PARAKEET_ONNX_ENV_NAME,
+                    ONNX_ASR_REQUIRED_PACKAGE_SPECS,
+                )
+
+                if parakeet_needs_install:
+                    self.reporter.status("Installing/upgrading ONNX Parakeet dependencies...")
+                    logging.info(f"Installing ONNX Parakeet packages because {parakeet_reason}")
+                    self.install_parakeet_onnx(pandrator_base_path, PARAKEET_ONNX_ENV_NAME)
+                else:
+                    logging.info(f"Skipping ONNX Parakeet reinstall: {parakeet_reason}")
 
             # Update easy XTTS trainer (repo and requirements)
             if os.path.exists(easy_xtts_trainer_path):

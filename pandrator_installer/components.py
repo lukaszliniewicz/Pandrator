@@ -27,13 +27,12 @@ from .constants import (
     KOKORO_TORCH_BASE_VERSION,
     NEMO_PYNINI_CONDA_SPEC,
     NEMO_TEXT_PROCESSING_SPEC,
+    ONNX_ASR_INSTALL_SPEC,
     PANDRATOR_NUMPY_SPEC,
     PANDRATOR_ONNXRUNTIME_SPEC,
     PANDRATOR_PADDLEOCR_SPEC,
     PANDRATOR_PYMUPDF_SPEC,
     PYOPENJTALK_WHEEL_PREFIX,
-    SUBDUB_EDITABLE_INSTALL_SPEC,
-    SUBDUB_REPO_URL,
     WHISPERX_CTRANSLATE2_VERSION,
     WHISPERX_TORCHAUDIO_VERSION,
     WHISPERX_TORCHVISION_VERSION,
@@ -1532,37 +1531,17 @@ class ComponentOperationsMixin:
             logging.error(f"Error message: {str(e)}")
             raise
 
-    def install_subdub_requirements(self, pandrator_path, env_name, subdub_repo_path):
-        logging.info(f"Installing Subdub package in {env_name}...")
+    def install_parakeet_onnx(self, pandrator_path, env_name):
+        logging.info(f"Installing ONNX Parakeet STT support in {env_name}...")
         try:
-            if not os.path.exists(subdub_repo_path):
-                self.clone_repo(SUBDUB_REPO_URL, subdub_repo_path)
-
-            pyproject_file = os.path.join(subdub_repo_path, 'pyproject.toml')
-            if os.path.exists(pyproject_file):
-                logging.info(
-                    "Detected refactored Subdub package layout (pyproject.toml). "
-                    "Installing editable package with GUI extras..."
-                )
-                self.run_pixi_in_env(
-                    pandrator_path,
-                    env_name,
-                    ['python', '-m', 'pip', 'install', '-e', SUBDUB_EDITABLE_INSTALL_SPEC],
-                    cwd=subdub_repo_path,
-                )
-                self.ensure_subdub_runtime(pandrator_path, env_name, subdub_repo_path)
-                return
-
-            requirements_file = os.path.join(subdub_repo_path, 'requirements.txt')
-            if not os.path.exists(requirements_file):
-                raise FileNotFoundError(
-                    f"Subdub dependency manifest not found. Expected either {pyproject_file} or {requirements_file}."
-                )
-
-            logging.info("Using legacy Subdub requirements.txt installation path.")
-            self.install_requirements(pandrator_path, env_name, requirements_file)
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            logging.error(f"Failed to install Subdub package in {env_name}")
+            self.run_pixi_in_env(
+                pandrator_path,
+                env_name,
+                ['python', '-m', 'pip', 'install', '--upgrade', ONNX_ASR_INSTALL_SPEC],
+            )
+            logging.info("ONNX Parakeet STT installation completed successfully.")
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Failed to install ONNX Parakeet STT support in {env_name}")
             logging.error(f"Error message: {str(e)}")
             raise
 

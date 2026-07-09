@@ -77,6 +77,7 @@ class PandratorInstaller(
         self.rvc_var = False
         self.rvc_cpu_var = False
         self.whisperx_var = False
+        self.parakeet_onnx_var = False
         self.xtts_finetuning_var = False
         self.chatterbox_var = False
         self.chatterbox_cpu_var = False
@@ -464,23 +465,42 @@ class PandratorInstaller(
         self._add_option_cards(engines_grid, engine_cards)
         content_layout.addWidget(engines_group)
 
-        tools_group = QGroupBox("Optional tools")
-        tools_grid = QGridLayout(tools_group)
+        stt_group = QGroupBox("STT backends")
+        stt_grid = QGridLayout(stt_group)
+        self.whisperx_checkbox = QCheckBox("WhisperX transcription")
+        self.parakeet_onnx_checkbox = QCheckBox("ONNX Parakeet transcription")
+        stt_cards = (
+            self._create_option_card(
+                self.whisperx_checkbox,
+                "Adds transcription and alignment used by dubbing and XTTS training.",
+            ),
+            self._create_option_card(
+                self.parakeet_onnx_checkbox,
+                "Adds CPU-friendly ONNX Parakeet transcription with Silero VAD.",
+            ),
+        )
+        self._add_option_cards(stt_grid, stt_cards)
+        content_layout.addWidget(stt_group)
+
+        speech_to_speech_group = QGroupBox("Speech to Speech")
+        speech_to_speech_grid = QGridLayout(speech_to_speech_group)
         self.rvc_checkbox = QCheckBox("RVC voice conversion")
         self.rvc_cpu_checkbox = QCheckBox("Use CPU-only runtime")
-        self.whisperx_checkbox = QCheckBox("WhisperX transcription")
-        self.xtts_finetuning_checkbox = QCheckBox("XTTS fine-tuning")
-        self.xtts_finetuning_checkbox.stateChanged.connect(self.update_whisperx_checkbox)
-        tool_cards = (
+        speech_to_speech_cards = (
             self._create_option_card(
                 self.rvc_checkbox,
                 "Reshapes generated speech with an RVC voice model for voice conversion and post-processing.",
                 (self.rvc_cpu_checkbox,),
             ),
-            self._create_option_card(
-                self.whisperx_checkbox,
-                "Adds transcription and alignment used by dubbing and XTTS training.",
-            ),
+        )
+        self._add_option_cards(speech_to_speech_grid, speech_to_speech_cards)
+        content_layout.addWidget(speech_to_speech_group)
+
+        tools_group = QGroupBox("Training tools")
+        tools_grid = QGridLayout(tools_group)
+        self.xtts_finetuning_checkbox = QCheckBox("XTTS fine-tuning")
+        self.xtts_finetuning_checkbox.stateChanged.connect(self.update_whisperx_checkbox)
+        tool_cards = (
             self._create_option_card(
                 self.xtts_finetuning_checkbox,
                 "Adds tools for training custom XTTS voices. WhisperX will be included.",
@@ -883,6 +903,10 @@ class PandratorInstaller(
         else:
             set_widget_state(self.whisperx_checkbox, True, False)
 
+        # ONNX Parakeet
+        parakeet_onnx_support = config.get('parakeet_onnx_support', False)
+        set_widget_state(self.parakeet_onnx_checkbox, not parakeet_onnx_support, False)
+
         # Update launch and install buttons state
         self.apply_platform_install_availability()
         self.launch_button.setEnabled(pandrator_installed)
@@ -906,6 +930,7 @@ class PandratorInstaller(
             'rvc': (self.rvc_checkbox, self.rvc_cpu_checkbox),
             'rvc_cpu': (self.rvc_checkbox, self.rvc_cpu_checkbox),
             'whisperx': (self.whisperx_checkbox,),
+            'parakeet_onnx': (self.parakeet_onnx_checkbox,),
             'xtts_finetuning': (self.xtts_finetuning_checkbox,),
             'chatterbox': (self.chatterbox_checkbox, self.chatterbox_cpu_checkbox),
             'chatterbox_cpu': (self.chatterbox_checkbox, self.chatterbox_cpu_checkbox),
@@ -994,6 +1019,7 @@ class PandratorInstaller(
             'silero': config.get('silero_support', False),
             'rvc': config.get('rvc_support', False),
             'whisperx': config.get('whisperx_support', False),
+            'parakeet_onnx': config.get('parakeet_onnx_support', False),
             'xtts_finetuning': config.get('xtts_finetuning_support', False),
             'chatterbox': config.get('chatterbox_support', False),
             'kobold_qwen': config.get('kobold_qwen_support', False),
@@ -1070,6 +1096,7 @@ class PandratorInstaller(
             rvc=self.rvc_checkbox.isChecked() and not self.rvc_cpu_checkbox.isChecked(),
             rvc_cpu=self.rvc_checkbox.isChecked() and self.rvc_cpu_checkbox.isChecked(),
             whisperx=self.whisperx_checkbox.isChecked(),
+            parakeet_onnx=self.parakeet_onnx_checkbox.isChecked(),
             xtts_finetuning=self.xtts_finetuning_checkbox.isChecked(),
             chatterbox=(
                 self.chatterbox_checkbox.isChecked()
@@ -1099,6 +1126,7 @@ class PandratorInstaller(
             "silero",
             "voxtral",
             "whisperx",
+            "parakeet_onnx",
             "xtts_finetuning",
         ):
             getattr(self, f"{component}_checkbox").setChecked(getattr(selection, component))

@@ -93,11 +93,13 @@ class AppLogicNotificationTests(unittest.TestCase):
     def test_build_source_loaded_notification_specializes_dubbing_sources(self):
         srt_message = AppLogic._build_source_loaded_notification("captions.srt", ".srt")
         video_message = AppLogic._build_source_loaded_notification("clip.mp4", ".mp4")
+        audio_message = AppLogic._build_source_loaded_notification("meeting.mp3", ".mp3")
         text_message = AppLogic._build_source_loaded_notification("book.txt", ".txt")
 
         self.assertIn("SRT source loaded: captions.srt.", srt_message)
         self.assertIn("Fine-Tune Timings", srt_message)
         self.assertEqual("Dubbing source loaded: clip.mp4", video_message)
+        self.assertEqual("Dubbing source loaded: meeting.mp3", audio_message)
         self.assertEqual("Source loaded: book.txt", text_message)
 
     def test_regenerate_sentences_normalizes_and_dedupes_selection(self):

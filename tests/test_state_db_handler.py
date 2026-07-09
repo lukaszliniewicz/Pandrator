@@ -3,6 +3,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from datetime import datetime, timezone
 
 from pandrator.logic.state_db_handler import StateDBHandler
@@ -25,7 +26,7 @@ class StateDBHandlerTests(unittest.TestCase):
         db_path = self.handler.db_path
         self.assertTrue(os.path.isfile(db_path))
 
-        with sqlite3.connect(db_path) as connection:
+        with closing(sqlite3.connect(db_path)) as connection:
             tables = {
                 row[0]
                 for row in connection.execute(
@@ -165,7 +166,7 @@ class StateDBHandlerTests(unittest.TestCase):
         self.handler.reindex_session(session_name)
         second_row = next(row for row in self.handler.list_sessions() if row["session_name"] == session_name)
 
-        with sqlite3.connect(self.handler.db_path) as connection:
+        with closing(sqlite3.connect(self.handler.db_path)) as connection:
             snapshot_count = connection.execute(
                 "SELECT COUNT(*) FROM session_config_snapshots WHERE session_name = ?",
                 (session_name,),
@@ -187,8 +188,14 @@ class StateDBHandlerTests(unittest.TestCase):
             "reader.mobi",
             "captions.srt",
             "clip.mp4",
+            "meeting.mp3",
         ]
-        generated_output_names = ["final_output.mp4", "clip_synced.mp4", "session_final_softsubs.mp4"]
+        generated_output_names = [
+            "final_output.mp4",
+            "clip_synced.mp4",
+            "session_final_softsubs.mp4",
+            "aligned_audio.wav",
+        ]
         expected_paths = set()
         for source_name in source_names:
             source_path = os.path.join(session_dir, source_name)
@@ -216,6 +223,13 @@ class StateDBHandlerTests(unittest.TestCase):
         self.assertEqual(row["total_sentences"], 0)
         self.assertTrue(expected_paths.issubset(reusable_paths))
         self.assertTrue(excluded_paths.isdisjoint(reusable_paths))
+        audio_source = next(
+            source
+            for source in reusable_sources
+            if os.path.basename(source["source_path"]) == "meeting.mp3"
+        )
+        self.assertEqual(audio_source["source_type"], "audio")
+        self.assertEqual(audio_source["dubbing_mode"], 1)
 
     def test_reindex_uses_directory_modified_time_for_empty_configless_session(self):
         session_name = "EmptyConfiglessSession"
@@ -230,6 +244,27 @@ class StateDBHandlerTests(unittest.TestCase):
 
         self.assertEqual(first_row["config_modified_at"], "2024-02-03T04:05:06+00:00")
         self.assertEqual(second_row["config_modified_at"], first_row["config_modified_at"])
+
+    def test_legacy_artifact_discovery_keeps_generated_wavs_out_of_audio_sources(self):
+        session_name = "LegacyAudioSources"
+        session_dir = self._session_dir(session_name)
+        audio_source_path = os.path.join(session_dir, "meeting.mp3")
+        with open(audio_source_path, "wb") as file_handle:
+            file_handle.write(b"audio")
+
+        sentence_wavs_dir = os.path.join(session_dir, "Sentence_wavs")
+        os.makedirs(sentence_wavs_dir, exist_ok=True)
+        generated_wav_path = os.path.join(sentence_wavs_dir, f"{session_name}_sentence_1.wav")
+        with open(generated_wav_path, "wb") as file_handle:
+            file_handle.write(b"generated")
+
+        discovered = self.handler._discover_legacy_artifacts(session_dir)
+
+        self.assertIn(os.path.abspath(audio_source_path), {os.path.abspath(path) for path in discovered["audio_source"]})
+        self.assertNotIn(
+            os.path.abspath(generated_wav_path),
+            {os.path.abspath(path) for path in discovered["audio_source"]},
+        )
 
     def test_active_run_artifact_selection_uses_active_flag(self):
         session_name = "RunSelection"
@@ -274,6 +309,89 @@ class StateDBHandlerTests(unittest.TestCase):
         self.assertEqual(updated_steps["transcribe"]["status"], "running")
         self.assertEqual(updated_steps["translate"]["status"], "completed")
         self.assertEqual(updated_steps["translate"]["detail"], "Done")
+
+    def test_record_dubbing_llm_usage_persists_run_totals(self):
+        session_name = "DubbingUsage"
+        self._session_dir(session_name)
+
+        run = self.handler.create_dubbing_run(session_name=session_name, set_active=True)
+        self.handler.record_dubbing_llm_usage(
+            run["run_id"],
+            "correct",
+            cost=0.025,
+            response_count=1,
+            metadata={"model": "claude-sonnet-4-6"},
+        )
+        self.handler.record_dubbing_llm_usage(
+            run["run_id"],
+            "translate",
+            cost=0.05,
+            response_count=2,
+        )
+
+        updated_run = self.handler.get_dubbing_run(run["run_id"])
+        self.assertAlmostEqual(updated_run["llm_cost_total"], 0.075)
+        self.assertEqual(updated_run["llm_response_count"], 3)
+
+        usage = json.loads(updated_run["llm_usage_json"])
+        self.assertAlmostEqual(usage["correct"]["cost"], 0.025)
+        self.assertEqual(usage["translate"]["response_count"], 2)
+        self.assertEqual(usage["correct"]["events"][0]["metadata"]["model"], "claude-sonnet-4-6")
+
+    def test_dubbing_run_snapshot_does_not_persist_provider_credentials(self):
+        session_name = "DubbingSnapshotSecrets"
+        self._session_dir(session_name)
+
+        run = self.handler.create_dubbing_run(
+            session_name=session_name,
+            settings_snapshot={
+                "correction_model": "custom:local/model",
+                "llm_provider_configs": [
+                    {
+                        "id": "local",
+                        "api_key": "provider-secret",
+                        "models": ["model"],
+                    }
+                ],
+                "hf_token": "hf-secret",
+            },
+        )
+        stored_run = self.handler.get_dubbing_run(run["run_id"])
+        snapshot = json.loads(stored_run["settings_snapshot_json"])
+
+        self.assertEqual(snapshot["correction_model"], "custom:local/model")
+        self.assertNotIn("llm_provider_configs", snapshot)
+        self.assertEqual(snapshot["hf_token"], "***redacted***")
+        self.assertNotIn("provider-secret", stored_run["settings_snapshot_json"])
+
+    def test_schema_upgrade_sanitizes_existing_dubbing_run_snapshots(self):
+        session_name = "LegacyDubbingSnapshotSecrets"
+        self._session_dir(session_name)
+        run = self.handler.create_dubbing_run(session_name=session_name)
+        legacy_snapshot = {
+            "translation_model": "claude-sonnet-4-6",
+            "llm_provider_configs": [
+                {"id": "anthropic", "api_key": "legacy-provider-secret"}
+            ],
+            "hf_token": "legacy-hf-secret",
+        }
+
+        with closing(sqlite3.connect(self.handler.db_path)) as connection:
+            connection.execute(
+                "UPDATE dubbing_runs SET settings_snapshot_json = ? WHERE run_id = ?",
+                (json.dumps(legacy_snapshot), run["run_id"]),
+            )
+            connection.execute("PRAGMA user_version = 2")
+            connection.commit()
+
+        upgraded_handler = StateDBHandler(app_root=self.temp_dir.name)
+        upgraded_handler.initialize_database()
+        upgraded_run = upgraded_handler.get_dubbing_run(run["run_id"])
+        upgraded_snapshot = json.loads(upgraded_run["settings_snapshot_json"])
+
+        self.assertNotIn("llm_provider_configs", upgraded_snapshot)
+        self.assertEqual(upgraded_snapshot["hf_token"], "***redacted***")
+        self.assertNotIn("legacy-provider-secret", upgraded_run["settings_snapshot_json"])
 
     def test_list_reusable_sources_dedupes_and_filters_missing_paths(self):
         source_root = os.path.join(self.temp_dir.name, "source_library")

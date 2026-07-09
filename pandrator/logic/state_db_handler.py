@@ -1,4 +1,5 @@
 import datetime
+import copy
 import hashlib
 import json
 import logging
@@ -10,9 +11,17 @@ import uuid
 from contextlib import contextmanager
 from typing import Any
 
+from .source_media import (
+    AUDIO_SOURCE_EXTENSIONS,
+    DUBBING_SOURCE_EXTENSIONS,
+    SOURCE_FILE_EXTENSIONS,
+    TEXT_SOURCE_EXTENSIONS,
+    VIDEO_SOURCE_EXTENSIONS,
+)
+
 
 STATE_DB_FILENAME = "pandrator_state.sqlite3"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 OUTPUTS_DIRNAME = "Outputs"
 TRASH_DIRNAME = ".trash"
@@ -23,8 +32,10 @@ AUDIO_VARIANTS_DIRNAME = "Audio_Variants"
 SENTENCE_WAVS_DIRNAME = "Sentence_wavs"
 SOURCE_AUDIO_VERSION_ID = "source"
 
-SOURCE_TEXT_EXTENSIONS = {".txt", ".pdf", ".epub", ".docx", ".mobi"}
-SOURCE_VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".avi", ".mov"}
+SOURCE_TEXT_EXTENSIONS = TEXT_SOURCE_EXTENSIONS
+SOURCE_VIDEO_EXTENSIONS = VIDEO_SOURCE_EXTENSIONS
+SOURCE_AUDIO_EXTENSIONS = AUDIO_SOURCE_EXTENSIONS
+GENERATED_AUDIO_STEMS = {"aligned_audio", "amplified_dubbed_audio", "mixed_audio", "original_audio"}
 
 DUBBING_STEPS = (
     "transcribe",
@@ -70,6 +81,74 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def merge_dubbing_llm_usage(
+    existing_usage: dict[str, Any] | str | None,
+    stage_key: str,
+    cost: float = 0.0,
+    response_count: int = 0,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Merges one LLM usage event into a per-stage dubbing usage payload."""
+    normalized_stage = str(stage_key or "").strip()
+    if not normalized_stage:
+        raise ValueError("stage_key is required")
+
+    if isinstance(existing_usage, str):
+        try:
+            parsed_usage = json.loads(existing_usage)
+        except json.JSONDecodeError:
+            parsed_usage = {}
+    else:
+        parsed_usage = existing_usage
+    usage = copy.deepcopy(parsed_usage) if isinstance(parsed_usage, dict) else {}
+
+    normalized_cost = max(0.0, _safe_float(cost, 0.0))
+    normalized_response_count = max(0, _safe_int(response_count, 0))
+    stage_payload = usage.get(normalized_stage)
+    if not isinstance(stage_payload, dict):
+        stage_payload = {}
+
+    events = stage_payload.get("events")
+    if not isinstance(events, list):
+        events = []
+
+    event: dict[str, Any] = {
+        "cost": normalized_cost,
+        "response_count": normalized_response_count,
+    }
+    if isinstance(metadata, dict) and metadata:
+        event["metadata"] = copy.deepcopy(metadata)
+    events.append(event)
+
+    stage_payload["cost"] = _safe_float(stage_payload.get("cost"), 0.0) + normalized_cost
+    stage_payload["response_count"] = _safe_int(stage_payload.get("response_count"), 0) + normalized_response_count
+    stage_payload["events"] = events
+    usage[normalized_stage] = stage_payload
+
+    total_cost = sum(
+        _safe_float(stage.get("cost"), 0.0)
+        for stage in usage.values()
+        if isinstance(stage, dict)
+    )
+    total_response_count = sum(
+        _safe_int(stage.get("response_count"), 0)
+        for stage in usage.values()
+        if isinstance(stage, dict)
+    )
+    return {
+        "usage": usage,
+        "total_cost": total_cost,
+        "response_count": total_response_count,
+    }
+
+
 def _source_type_from_path(path: str) -> str:
     ext = os.path.splitext(str(path or ""))[1].lower()
     if ext in SOURCE_TEXT_EXTENSIONS:
@@ -78,6 +157,8 @@ def _source_type_from_path(path: str) -> str:
         return "srt"
     if ext in SOURCE_VIDEO_EXTENSIONS:
         return "video"
+    if ext in SOURCE_AUDIO_EXTENSIONS:
+        return "audio"
     if ext:
         return ext.lstrip(".")
     return "unknown"
@@ -85,12 +166,12 @@ def _source_type_from_path(path: str) -> str:
 
 def _is_dubbing_mode(source_path: str) -> bool:
     ext = os.path.splitext(str(source_path or ""))[1].lower()
-    return ext == ".srt" or ext in SOURCE_VIDEO_EXTENSIONS
+    return ext in DUBBING_SOURCE_EXTENSIONS
 
 
 def _is_discovered_source_candidate(path: str) -> bool:
     stem, ext = os.path.splitext(os.path.basename(str(path or "")).lower())
-    if ext not in SOURCE_TEXT_EXTENSIONS | SOURCE_VIDEO_EXTENSIONS | {".srt"}:
+    if ext not in SOURCE_FILE_EXTENSIONS:
         return False
     if ext in SOURCE_VIDEO_EXTENSIONS and (
         stem.startswith("final_output")
@@ -98,7 +179,27 @@ def _is_discovered_source_candidate(path: str) -> bool:
         or stem.endswith("_synced")
     ):
         return False
+    if ext in SOURCE_AUDIO_EXTENSIONS and _is_generated_audio_artifact(stem):
+        return False
     return True
+
+
+def _is_generated_audio_artifact(stem: str, root: str = "") -> bool:
+    normalized_stem = str(stem or "").strip().lower()
+    if (
+        normalized_stem in GENERATED_AUDIO_STEMS
+        or normalized_stem.endswith("_manual_correction")
+        or normalized_stem.endswith("_transcription")
+        or "_sentence_" in normalized_stem
+    ):
+        return True
+
+    root_parts = {
+        part.lower()
+        for part in os.path.normpath(str(root or "")).split(os.sep)
+        if part
+    }
+    return bool({"sentence_wavs", "audio_variants"} & root_parts)
 
 
 def _walk_directory_size(path: str) -> int:
@@ -183,7 +284,7 @@ def _redact_api_keys(payload: Any) -> Any:
         redacted: dict[str, Any] = {}
         for key, value in payload.items():
             key_lower = str(key).lower()
-            if key_lower == "api_key":
+            if key_lower in {"api_key", "hf_token", "access_token", "secret"} or key_lower.endswith("_api_key"):
                 redacted[key] = "***redacted***" if value else ""
                 continue
             redacted[key] = _redact_api_keys(value)
@@ -193,6 +294,14 @@ def _redact_api_keys(payload: Any) -> Any:
         return [_redact_api_keys(item) for item in payload]
 
     return payload
+
+
+def _sanitize_dubbing_run_snapshot(payload: Any) -> dict[str, Any]:
+    sanitized = copy.deepcopy(payload) if isinstance(payload, dict) else {}
+    sanitized.pop("llm_provider_configs", None)
+    sanitized.pop("provider_configs", None)
+    redacted = _redact_api_keys(sanitized)
+    return redacted if isinstance(redacted, dict) else {}
 
 
 class StateDBHandler:
@@ -329,6 +438,9 @@ class StateDBHandler:
                 source_video_path TEXT,
                 source_srt_path TEXT,
                 settings_snapshot_json TEXT,
+                llm_cost_total REAL NOT NULL DEFAULT 0,
+                llm_response_count INTEGER NOT NULL DEFAULT 0,
+                llm_usage_json TEXT,
                 active INTEGER NOT NULL DEFAULT 0,
                 status TEXT NOT NULL DEFAULT 'pending',
                 legacy INTEGER NOT NULL DEFAULT 0,
@@ -424,6 +536,9 @@ class StateDBHandler:
         self._ensure_column(connection, "sessions", "audio_version_count INTEGER NOT NULL DEFAULT 0")
         self._ensure_column(connection, "sessions", "audio_version_size_bytes INTEGER NOT NULL DEFAULT 0")
         self._ensure_column(connection, "sessions", "audio_version_summary TEXT")
+        self._ensure_column(connection, "dubbing_runs", "llm_cost_total REAL NOT NULL DEFAULT 0")
+        self._ensure_column(connection, "dubbing_runs", "llm_response_count INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column(connection, "dubbing_runs", "llm_usage_json TEXT")
         connection.executescript(
             """
             CREATE TABLE IF NOT EXISTS session_audio_versions (
@@ -459,6 +574,21 @@ class StateDBHandler:
         current_version = _safe_int(version_row[0], 0) if version_row else 0
         self._create_schema(connection)
         self._ensure_schema_compatibility(connection)
+        if current_version < 3:
+            rows = connection.execute(
+                "SELECT run_id, settings_snapshot_json FROM dubbing_runs WHERE settings_snapshot_json <> ''"
+            ).fetchall()
+            for row in rows:
+                try:
+                    payload = json.loads(str(row["settings_snapshot_json"] or ""))
+                except json.JSONDecodeError:
+                    continue
+                sanitized = _sanitize_dubbing_run_snapshot(payload)
+                if sanitized != payload:
+                    connection.execute(
+                        "UPDATE dubbing_runs SET settings_snapshot_json = ? WHERE run_id = ?",
+                        (_json_dumps(sanitized), str(row["run_id"])),
+                    )
         if current_version < SCHEMA_VERSION:
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
@@ -602,7 +732,7 @@ class StateDBHandler:
         if not os.path.isdir(session_path):
             return []
 
-        supported_extensions = SOURCE_TEXT_EXTENSIONS | SOURCE_VIDEO_EXTENSIONS | {".srt"}
+        supported_extensions = SOURCE_FILE_EXTENSIONS
         candidates: list[str] = []
         for name in os.listdir(session_path):
             path = os.path.join(session_path, name)
@@ -1496,7 +1626,7 @@ class StateDBHandler:
         resolved_run_dir = os.path.abspath(run_dir or default_run_dir)
         os.makedirs(resolved_run_dir, exist_ok=True)
 
-        settings_payload = settings_snapshot if isinstance(settings_snapshot, dict) else {}
+        settings_payload = _sanitize_dubbing_run_snapshot(settings_snapshot)
         settings_json = _json_dumps(settings_payload) if settings_payload else ""
 
         with self._lock, self._connection() as connection:
@@ -1681,6 +1811,67 @@ class StateDBHandler:
                 """,
                 (status, now_iso, session_name),
             )
+
+    def record_dubbing_llm_usage(
+        self,
+        run_id: str,
+        stage_key: str,
+        cost: float = 0.0,
+        response_count: int = 0,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        self._ensure_ready()
+        if not run_id:
+            return {}
+
+        normalized_stage = str(stage_key or "").strip()
+        if not normalized_stage:
+            return {}
+
+        normalized_cost = max(0.0, _safe_float(cost, 0.0))
+        normalized_response_count = max(0, _safe_int(response_count, 0))
+        if normalized_cost == 0.0 and normalized_response_count == 0 and not metadata:
+            return {}
+
+        now_iso = _utc_now_iso()
+        with self._lock, self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT llm_usage_json
+                FROM dubbing_runs
+                WHERE run_id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                return {}
+
+            merged = merge_dubbing_llm_usage(
+                str(row["llm_usage_json"] or ""),
+                normalized_stage,
+                cost=normalized_cost,
+                response_count=normalized_response_count,
+                metadata=metadata,
+            )
+            connection.execute(
+                """
+                UPDATE dubbing_runs
+                SET llm_cost_total = ?,
+                    llm_response_count = ?,
+                    llm_usage_json = ?,
+                    updated_at = ?
+                WHERE run_id = ?
+                """,
+                (
+                    merged["total_cost"],
+                    merged["response_count"],
+                    _json_dumps(merged["usage"]),
+                    now_iso,
+                    run_id,
+                ),
+            )
+
+        return merged
 
     def record_dubbing_step(self, run_id: str, step_key: str, status: str, detail: str = ""):
         self._ensure_ready()
@@ -1897,6 +2088,7 @@ class StateDBHandler:
             "final_video": [],
             "sentence_wavs_dir": [],
             "video_source": [],
+            "audio_source": [],
         }
 
         if not os.path.isdir(session_path):
@@ -1934,6 +2126,8 @@ class StateDBHandler:
                         grouped["synced_video"].append(path)
                     else:
                         grouped["video_source"].append(path)
+                elif ext in SOURCE_AUDIO_EXTENSIONS and not _is_generated_audio_artifact(stem, root):
+                    grouped.setdefault("audio_source", []).append(path)
 
         return grouped
 
@@ -1966,9 +2160,14 @@ class StateDBHandler:
             if not os.path.isdir(legacy_run_dir):
                 legacy_run_dir = session_path
 
+            discovered_media_source = (
+                discovered["video_source"][0]
+                if discovered["video_source"]
+                else (discovered["audio_source"][0] if discovered["audio_source"] else "")
+            )
             run_info = self.create_dubbing_run(
                 session_name=session_name,
-                source_video_path=discovered["video_source"][0] if discovered["video_source"] else "",
+                source_video_path=discovered_media_source,
                 source_srt_path=discovered["transcribed_srt"][0] if discovered["transcribed_srt"] else "",
                 settings_snapshot={},
                 set_active=False,
@@ -2616,6 +2815,22 @@ def set_active_dubbing_run(session_name: str, run_id: str):
 
 def update_dubbing_run_status(run_id: str, status: str):
     DEFAULT_HANDLER.update_dubbing_run_status(run_id, status)
+
+
+def record_dubbing_llm_usage(
+    run_id: str,
+    stage_key: str,
+    cost: float = 0.0,
+    response_count: int = 0,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return DEFAULT_HANDLER.record_dubbing_llm_usage(
+        run_id=run_id,
+        stage_key=stage_key,
+        cost=cost,
+        response_count=response_count,
+        metadata=metadata,
+    )
 
 
 def record_dubbing_step(run_id: str, step_key: str, status: str, detail: str = ""):

@@ -49,6 +49,43 @@ def is_appimage_environment(environ=None):
     return bool(values.get("APPIMAGE"))
 
 
+def _looks_like_install_root(path):
+    return (
+        os.path.isfile(os.path.join(path, "config.json"))
+        and os.path.isfile(os.path.join(path, "Pandrator", "main.py"))
+    )
+
+
+def _looks_like_workspace(path):
+    return _looks_like_install_root(os.path.join(path, "Pandrator"))
+
+
+def infer_installed_workspace_from_cwd(cwd):
+    """Return the installer workspace when launched inside an existing install."""
+    if not cwd:
+        return None
+
+    current = os.path.abspath(cwd)
+    if _looks_like_workspace(current):
+        return current
+
+    for candidate in (current, *list(_iter_parent_paths(current, max_depth=4))):
+        if _looks_like_install_root(candidate):
+            return os.path.dirname(candidate)
+
+    return None
+
+
+def _iter_parent_paths(path, max_depth=4):
+    current = os.path.abspath(path)
+    for _ in range(max_depth):
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        yield parent
+        current = parent
+
+
 def resolve_launcher_workspace(value=None, system=None, environ=None, cwd=None, home=None):
     values = os.environ if environ is None else environ
     explicit_value = value or values.get("PANDRATOR_INSTALLER_WORKSPACE")
@@ -59,7 +96,12 @@ def resolve_launcher_workspace(value=None, system=None, environ=None, cwd=None, 
     if resolved_system == "linux" and is_appimage_environment(values):
         return os.path.abspath(os.path.expanduser(home or os.path.expanduser("~")))
 
-    return os.path.abspath(cwd or os.getcwd())
+    current_directory = os.path.abspath(cwd or os.getcwd())
+    inferred_workspace = infer_installed_workspace_from_cwd(current_directory)
+    if inferred_workspace:
+        return inferred_workspace
+
+    return current_directory
 
 
 def pixi_binary_name(system=None):

@@ -10,6 +10,7 @@ from .catalog import (
     KOKORO_ENV_NAME as KOKORO_ENV_NAME,
     KOKORO_GPU_SUPPORT_CONFIG_FLAG as KOKORO_GPU_SUPPORT_CONFIG_FLAG,
     MAGPIE_GPU_SUPPORT_CONFIG_FLAG as MAGPIE_GPU_SUPPORT_CONFIG_FLAG,
+    PARAKEET_ONNX_ENV_NAME as PARAKEET_ONNX_ENV_NAME,
     RVC_GPU_SUPPORT_CONFIG_FLAG as RVC_GPU_SUPPORT_CONFIG_FLAG,
     PACKAGING_COMPONENT_PATHS as PACKAGING_COMPONENT_PATHS,
     PACKAGING_CONFIG_FLAGS as PACKAGING_CONFIG_FLAGS,
@@ -68,30 +69,14 @@ PANDRATOR_RUNTIME_REPAIR_SPECS = (
     PYQT6_SIP_RUNTIME_SPEC,
     PYGAME_RUNTIME_SPEC,
 )
-SUBDUB_EDITABLE_INSTALL_SPEC = '.[gui]'
-SUBDUB_GUI_RUNTIME_REPAIR_SPECS = (
-    PYQT6_RUNTIME_PIN,
-    PYQT6_SIP_RUNTIME_SPEC,
-    'matplotlib',
-    'sounddevice',
-)
-SUBDUB_RUNTIME_REPAIR_SPECS = (
-    'litellm',
-    'tiktoken',
-    'fastuuid',
-    *SUBDUB_GUI_RUNTIME_REPAIR_SPECS,
-)
-SUBDUB_RUNTIME_CHECK_COMMAND = [
-    'python',
-    '-c',
-    (
-        'import subdub; import litellm, tiktoken, fastuuid; '
-        'from PyQt6.QtWidgets import QApplication; '
-        'import matplotlib; import sounddevice; '
-        'import subdub.corrector.gui.app'
-    ),
-]
 WHISPERX_PYTHON_VERSION = '3.13'
+PARAKEET_ONNX_PYTHON_VERSION = '3.11'
+ONNX_ASR_VERSION = '0.11.0'
+ONNX_ASR_INSTALL_SPEC = f'onnx-asr[cpu,hub]=={ONNX_ASR_VERSION}'
+ONNX_ASR_REQUIRED_PACKAGE_SPECS = (
+    f'onnx-asr=={ONNX_ASR_VERSION}',
+    'onnxruntime>=1.20,<2',
+)
 WHISPERX_VERSION = '3.8.5'
 WHISPERX_CTRANSLATE2_VERSION = '4.7.1'
 WHISPERX_TORCH_VERSION = '2.8.0'
@@ -118,7 +103,6 @@ MAGPIE_API_REPO_DIRNAME = COMPONENTS['magpie'].repo_dirname
 RVC_API_REPO_URL = COMPONENTS['rvc'].repo_url
 RVC_API_REPO_DIRNAME = COMPONENTS['rvc'].repo_dirname
 PANDRATOR_REPO_URL = 'https://github.com/lukaszliniewicz/Pandrator.git'
-SUBDUB_REPO_URL = 'https://github.com/lukaszliniewicz/Subdub.git'
 PYCROPPDF_REPO_URL = 'https://github.com/lukaszliniewicz/PyCropPDF.git'
 EASY_XTTS_TRAINER_REPO_URL = COMPONENTS['xtts_finetuning'].repo_url
 

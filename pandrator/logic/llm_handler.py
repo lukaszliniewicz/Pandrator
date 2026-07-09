@@ -55,6 +55,33 @@ KNOWN_PROVIDER_PREFIXES = {
     "mistral",
     "ollama",
 }
+COMMON_PROVIDER_API_KEY_ENVS = {
+    "openai": "OPENAI_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+    "groq": "GROQ_API_KEY",
+    "mistral": "MISTRAL_API_KEY",
+}
+CLOUD_API_KEY_PROVIDER_KEYS = {
+    "anthropic",
+    "azure",
+    "bedrock",
+    "gemini",
+    "groq",
+    "mistral",
+    "openrouter",
+    "vertex_ai",
+}
+KEYLESS_PROVIDER_KEYS = {
+    "ollama",
+}
+LOCAL_BASE_URL_HOSTS = (
+    "localhost",
+    "127.0.0.1",
+    "0.0.0.0",
+    "[::1]",
+)
 
 NON_TEXT_MODEL_KEYWORDS = (
     "embedding",
@@ -86,6 +113,19 @@ class ChatCompletionResult:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class LLMCredentialStatus:
+    ok: bool
+    model: str = ""
+    provider_id: str = ""
+    provider_name: str = ""
+    provider: str = ""
+    api_key_env: str = ""
+    api_base: str = ""
+    needs_api_key: bool = False
+    message: str = ""
 
 
 def _get_litellm_clients() -> tuple[Any, Any]:
@@ -414,6 +454,42 @@ def _resolve_api_key(provider_config: dict[str, Any]) -> str:
         return explicit
 
     return ""
+
+
+def _is_local_base_url(api_base: str | None) -> bool:
+    normalized = _normalize_base_url(api_base).lower()
+    if not normalized:
+        return False
+    return any(
+        normalized.startswith(f"http://{host}") or normalized.startswith(f"https://{host}")
+        for host in LOCAL_BASE_URL_HOSTS
+    )
+
+
+def _common_provider_env(provider_key: str) -> str:
+    return COMMON_PROVIDER_API_KEY_ENVS.get(_normalize_provider_key(provider_key), "")
+
+
+def _common_provider_api_key(provider_key: str) -> str:
+    env_name = _common_provider_env(provider_key)
+    return os.getenv(env_name, "").strip() if env_name else ""
+
+
+def _provider_requires_api_key(provider_config: dict[str, Any] | None, provider_key: str) -> bool:
+    normalized_provider = _normalize_provider_key(provider_key)
+    if normalized_provider in KEYLESS_PROVIDER_KEYS:
+        return False
+
+    if provider_config:
+        if _is_local_base_url(provider_config.get("api_base")):
+            return False
+        if provider_config.get("is_custom", False) and normalized_provider == "openai":
+            return False
+        provider_id = str(provider_config.get("id") or "").strip()
+        if provider_id in BUILTIN_PROVIDER_CONFIGS:
+            return True
+
+    return normalized_provider in CLOUD_API_KEY_PROVIDER_KEYS
 
 
 def _is_text_model(model_id: str) -> bool:
@@ -774,10 +850,38 @@ def _infer_provider_for_unprefixed_model(
     return ""
 
 
-def _resolve_model_request(
+def _provider_key_for_resolved_model(model_name: str) -> str:
+    normalized_model = str(model_name or "").strip()
+    if "/" not in normalized_model:
+        return ""
+
+    prefix, _remainder = normalized_model.split("/", 1)
+    return _normalize_provider_key(prefix)
+
+
+def _builtin_provider_config_for_key(
+    provider_configs: list[dict[str, Any]],
+    provider_key: str,
+) -> dict[str, Any] | None:
+    normalized_provider_key = _normalize_provider_key(provider_key)
+    if not normalized_provider_key:
+        return None
+
+    for provider in provider_configs:
+        if provider.get("is_custom", False):
+            continue
+        provider_id = str(provider.get("id") or "").strip()
+        configured_provider_key = _normalize_provider_key(provider.get("provider"))
+        if provider_id == normalized_provider_key or configured_provider_key == normalized_provider_key:
+            return provider
+
+    return None
+
+
+def _resolve_model_request_details(
     model_name: str | None,
     llm_settings: Any | None,
-) -> tuple[str, dict[str, Any]]:
+) -> dict[str, Any]:
     configured_default = normalize_default_model(
         _read_setting(llm_settings, "default_model", DEFAULT_LITELLM_MODEL)
     )
@@ -853,7 +957,13 @@ def _resolve_model_request(
         elif resolved_api_key:
             request_overrides["api_key"] = resolved_api_key
 
-        return resolved_model, request_overrides
+        return {
+            "model": resolved_model,
+            "request_overrides": request_overrides,
+            "provider_config": provider,
+            "provider_key": custom_provider_key,
+            "is_custom": True,
+        }
 
     if "/" not in normalized_model:
         inferred_provider = _infer_provider_for_unprefixed_model(
@@ -863,7 +973,88 @@ def _resolve_model_request(
         if inferred_provider:
             normalized_model = _to_litellm_model_name(inferred_provider, normalized_model)
 
-    return normalized_model, request_overrides
+    provider_key = _provider_key_for_resolved_model(normalized_model)
+    provider_config = _builtin_provider_config_for_key(provider_configs, provider_key)
+    resolved_api_key = _resolve_api_key(provider_config) if provider_config else _common_provider_api_key(provider_key)
+    if resolved_api_key:
+        request_overrides["api_key"] = resolved_api_key
+
+    return {
+        "model": normalized_model,
+        "request_overrides": request_overrides,
+        "provider_config": provider_config,
+        "provider_key": provider_key,
+        "is_custom": False,
+    }
+
+
+def _resolve_model_request(
+    model_name: str | None,
+    llm_settings: Any | None,
+) -> tuple[str, dict[str, Any]]:
+    details = _resolve_model_request_details(model_name, llm_settings)
+    return str(details["model"]), dict(details.get("request_overrides") or {})
+
+
+def validate_model_credentials(
+    model_name: str | None,
+    llm_settings: Any | None = None,
+) -> LLMCredentialStatus:
+    """Validate local model/provider configuration and required API key presence."""
+    try:
+        details = _resolve_model_request_details(model_name, llm_settings)
+    except ValueError as error:
+        return LLMCredentialStatus(ok=False, message=str(error))
+
+    resolved_model = str(details.get("model") or "")
+    request_overrides = dict(details.get("request_overrides") or {})
+    provider_config = details.get("provider_config")
+    provider_config = provider_config if isinstance(provider_config, dict) else None
+    provider_key = _normalize_provider_key(details.get("provider_key")) or _provider_key_for_resolved_model(resolved_model)
+
+    provider_id = str(provider_config.get("id") or "") if provider_config else provider_key
+    provider_name = str(provider_config.get("name") or "") if provider_config else provider_key
+    api_base = str(provider_config.get("api_base") or "") if provider_config else ""
+    api_key_env = str(provider_config.get("api_key_env") or "") if provider_config else ""
+    if not api_key_env:
+        api_key_env = _common_provider_env(provider_key)
+
+    resolved_api_key = ""
+    override_api_key = request_overrides.get("api_key")
+    if isinstance(override_api_key, str) and override_api_key != PLACEHOLDER_API_KEY:
+        resolved_api_key = override_api_key.strip()
+    if not resolved_api_key and provider_config:
+        resolved_api_key = _resolve_api_key(provider_config)
+    if not resolved_api_key and api_key_env:
+        resolved_api_key = os.getenv(api_key_env, "").strip()
+
+    needs_api_key = _provider_requires_api_key(provider_config, provider_key)
+    if needs_api_key and not resolved_api_key:
+        label = provider_name or provider_id or provider_key or resolved_model
+        env_hint = f" Set {api_key_env} in the API Keys tab or environment." if api_key_env else ""
+        return LLMCredentialStatus(
+            ok=False,
+            model=resolved_model,
+            provider_id=provider_id,
+            provider_name=provider_name,
+            provider=provider_key,
+            api_key_env=api_key_env,
+            api_base=api_base,
+            needs_api_key=True,
+            message=f"{label} requires an API key before this LLM request can run.{env_hint}",
+        )
+
+    return LLMCredentialStatus(
+        ok=True,
+        model=resolved_model,
+        provider_id=provider_id,
+        provider_name=provider_name,
+        provider=provider_key,
+        api_key_env=api_key_env,
+        api_base=api_base,
+        needs_api_key=needs_api_key,
+        message="LLM provider configuration is valid.",
+    )
 
 
 def _extract_choice_content(response_data: Any) -> str:
@@ -991,8 +1182,8 @@ def chat_completion_with_metadata(
     messages: list[dict[str, Any]],
     model_name: str | None = None,
     llm_settings: Any | None = None,
-    max_tokens: int = 2000,
-    temperature: float = 0.2,
+    max_tokens: int | None = None,
+    temperature: float | None = None,
 ) -> ChatCompletionResult:
     """Runs a LiteLLM chat completion and preserves usage/cost metadata."""
     completion, _ = _get_litellm_clients()
@@ -1015,9 +1206,18 @@ def chat_completion_with_metadata(
     request_payload: dict[str, Any] = {
         "model": resolved_model,
         "messages": messages,
-        "temperature": float(temperature),
         "timeout": request_timeout,
     }
+    if max_tokens is not None:
+        try:
+            request_payload["max_tokens"] = max(1, int(max_tokens))
+        except (TypeError, ValueError):
+            logging.warning("Ignoring invalid max_tokens value: %r", max_tokens)
+    if temperature is not None:
+        try:
+            request_payload["temperature"] = float(temperature)
+        except (TypeError, ValueError):
+            logging.warning("Ignoring invalid temperature value: %r", temperature)
     request_payload.update(request_overrides)
 
     # Inject reasoning_effort when the caller has configured one.
@@ -1043,8 +1243,8 @@ def chat_completion(
     messages: list[dict[str, Any]],
     model_name: str | None = None,
     llm_settings: Any | None = None,
-    max_tokens: int = 2000,
-    temperature: float = 0.2,
+    max_tokens: int | None = None,
+    temperature: float | None = None,
 ) -> str:
     """Runs a LiteLLM chat completion using Pandrator's configured providers."""
     result = chat_completion_with_metadata(

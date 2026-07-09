@@ -8,6 +8,7 @@ from dataclasses import dataclass
 INSTALLER_STATE_FILENAME = "installer_state.json"
 PACKAGING_LAYOUT_FILENAME = "packaging_layout.json"
 KOKORO_ENV_NAME = "kokoro_api_server_installer"
+PARAKEET_ONNX_ENV_NAME = "parakeet_onnx_installer"
 KOKORO_GPU_SUPPORT_CONFIG_FLAG = "kokoro_gpu_support"
 CHATTERBOX_GPU_SUPPORT_CONFIG_FLAG = "chatterbox_gpu_support"
 KOBOLD_QWEN_GPU_SUPPORT_CONFIG_FLAG = "kobold_qwen_gpu_support"
@@ -143,6 +144,13 @@ COMPONENTS: dict[str, ComponentDefinition] = {
         paths=("envs/whisperx_installer",),
         markers=("envs/whisperx_installer/pixi.toml",),
     ),
+    "parakeet_onnx": ComponentDefinition(
+        key="parakeet_onnx",
+        label="ONNX Parakeet",
+        config_flag="parakeet_onnx_support",
+        paths=(f"envs/{PARAKEET_ONNX_ENV_NAME}",),
+        markers=(f"envs/{PARAKEET_ONNX_ENV_NAME}/pixi.toml",),
+    ),
     "xtts_finetuning": ComponentDefinition(
         key="xtts_finetuning",
         label="XTTS Fine-tuning",
@@ -263,6 +271,7 @@ PACKAGING_CONFIG_FLAGS = (
     "kokoro_support",
     KOKORO_GPU_SUPPORT_CONFIG_FLAG,
     "whisperx_support",
+    "parakeet_onnx_support",
     "xtts_finetuning_support",
     "rvc_support",
     RVC_GPU_SUPPORT_CONFIG_FLAG,
@@ -278,7 +287,6 @@ PACKAGING_EXCLUDED_FILE_PREFIXES = ("pandrator_state.sqlite3",)
 
 PACKAGING_SHARED_PATHS = (
     "Pandrator",
-    "Subdub",
     "bin",
     "Calibre Portable",
     ".pixi-home",

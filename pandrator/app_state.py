@@ -316,7 +316,7 @@ class LLMSettings:
     concurrent_calls: int = 1
     default_model: str = "openai/gpt-5.4-mini"
     provider_configs: List[Dict[str, Any]] = field(default_factory=default_llm_provider_configs)
-    request_timeout_seconds: int = 180
+    request_timeout_seconds: int = 600
     # reasoning_effort: "" = don't send (model default), "low"/"medium"/"high" = explicit level.
     # LiteLLM translates this to native provider format and drops it if unsupported.
     reasoning_effort: str = ""
@@ -339,19 +339,44 @@ class LLMSettings:
 @dataclass
 class DubbingSettings:
     dubbing_enabled: bool = False
-    whisper_language: str = "English"
+    stt_backend: str = "whisperx"
+    stt_language: str = "English"
     whisper_model: str = "large-v3"
+    whisper_prompt: str = "Hello, welcome to this presentation. This is a professional recording with clear speech, proper punctuation, and standard grammar."
+    whisper_align_model: str = ""
+    whisper_chunk_size: int = 15
+    whisper_save_txt: bool = False
+    parakeet_model: str = "nemo-parakeet-tdt-0.6b-v3"
+    parakeet_quantization: str = ""
+    parakeet_vad_enabled: bool = True
+    parakeet_vad_max_speech_seconds: float = 15.0
+    parakeet_vad_threshold: float = 0.5
+    parakeet_vad_neg_threshold: float = 0.0
+    parakeet_vad_min_silence_ms: float = 100.0
+    parakeet_vad_min_speech_ms: float = 250.0
+    parakeet_vad_speech_pad_ms: float = 30.0
+    parakeet_vad_batch_size: int = 8
+    parakeet_hf_cache_dir: str = ""
+    parakeet_save_txt: bool = False
+    diarization_enabled: bool = False
+    boundary_correction_enabled: bool = False
+    subtitle_merge_threshold: int = 250
     correction_enabled: bool = False
+    correction_model: str = "default"
     custom_correction_prompt: str = ""
     translation_enabled: bool = False
+    llm_char: int = 6000
+    max_line_length: int = 42
+    context: bool = True
+    no_remove_subtitles: bool = False
+    translate_prompt: str = ""
+    sync_delay_start_ms: int = 2000
+    sync_speed_up_percent: int = 115
     original_language: str = "English"
     target_language: str = "en"
-    chain_of_thought_enabled: bool = False
     glossary_enabled: bool = False
-    translation_provider: str = "anthropic"
-    translation_model: str = "claude-sonnet-4-6"
-    custom_translation_model: str = ""
-    custom_api_base: str = ""
+    translation_backend: str = "llm"
+    translation_model: str = "default"
     video_file_path: str = ""
 
 @dataclass

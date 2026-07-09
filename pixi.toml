@@ -1,0 +1,33 @@
+[workspace]
+name = "pandrator"
+channels = ["conda-forge"]
+platforms = ["win-64", "linux-64"]
+
+[dependencies]
+python = "3.11.*"
+numpy = "==1.26.4"
+
+[tasks]
+test-dubbing = "python -m unittest tests.test_dubbing_subtitle_logic tests.test_dubbing_speech_blocks_integration tests.test_dubbing_llm_correction tests.test_dubbing_llm_translation tests.test_dubbing_transcription tests.test_dubbing_audio_sync tests.test_dubbing_boundary_correction tests.test_dubbing_manual_timing tests.test_dubbing_run_usage tests.test_dubbing_status_definitions tests.test_dubbing_artifacts tests.test_dubbing_credentials tests.test_dubbing_settings tests.test_llm_handler tests.test_state_db_handler"
+
+[feature.smoke.dependencies]
+ffmpeg = "*"
+pydub = "*"
+
+[feature.smoke.tasks]
+smoke-dubbing-local = "python scripts/dubbing_live_smoke.py"
+
+[feature.gui-tests.pypi-dependencies]
+PyQt6 = "==6.7.1"
+psutil = "*"
+requests = "*"
+dulwich = "*"
+certifi = "*"
+packaging = "*"
+
+[feature.gui-tests.tasks]
+test-dubbing-ui = { cmd = "python -m unittest tests.test_dubbing_ui", env = { QT_QPA_PLATFORM = "offscreen" } }
+
+[environments]
+smoke = ["smoke"]
+gui-tests = ["gui-tests"]

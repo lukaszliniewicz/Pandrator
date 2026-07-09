@@ -380,6 +380,7 @@ def run_self_check():
         "kokoro",
         "silero",
         "whisperx",
+        "parakeet_onnx",
         "xtts_finetuning",
         "rvc",
         "chatterbox",

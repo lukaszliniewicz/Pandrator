@@ -107,7 +107,6 @@ class TestInstallerLauncherChatterbox(unittest.TestCase):
     @patch("pandrator_installer_launcher.PandratorInstaller.ensure_wtpsplit_runtime")
     @patch("pandrator_installer_launcher.PandratorInstaller.ensure_pdf_ocr_runtime")
     @patch("pandrator_installer_launcher.PandratorInstaller.should_install_requirements")
-    @patch("pandrator_installer_launcher.PandratorInstaller.install_subdub_requirements")
     @patch("pandrator_installer_launcher.PandratorInstaller.is_chatterbox_runtime_ready")
     @patch("pandrator_installer_launcher.PandratorInstaller.install_chatterbox_api_server")
     @patch("pandrator_installer_launcher.PandratorInstaller.write_packaging_layout")
@@ -118,7 +117,6 @@ class TestInstallerLauncherChatterbox(unittest.TestCase):
         mock_write_layout,
         mock_install_chatterbox,
         mock_runtime_ready,
-        mock_subdub_reqs,
         mock_should_install_reqs,
         mock_ensure_pdf_ocr,
         mock_ensure_wtpsplit,
@@ -165,6 +163,7 @@ class TestInstallerLauncherChatterbox(unittest.TestCase):
                 "Update Chatterbox" in tasks or "Clone Chatterbox" in tasks,
                 "Chatterbox update/clone task was not registered in update_tasks"
             )
+            self.assertFalse(any("Subdub" in task_name for task_name in tasks))
 
             # Verify that bootstrapping was called because runtime is not ready
             mock_install_chatterbox.assert_called_once()

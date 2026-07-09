@@ -33,6 +33,7 @@ class ApiKeysTab(QWidget):
             "DEEPL_API_KEY": "DeepL API Key:",
             "GEMINI_API_KEY": "Gemini API Key:",
             "OPENROUTER_API_KEY": "OpenRouter API Key:",
+            "HF_TOKEN": "Hugging Face Token:",
         }
         self.api_key_edits: dict[str, QLineEdit] = {}
 

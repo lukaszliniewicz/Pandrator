@@ -12,7 +12,7 @@ TRAINER_ENV_NAME = 'easy_xtts_trainer'
 WHISPERX_ENV_NAME = 'whisperx_installer'
 WHISPERX_PIXI_EXE_ENV = 'WHISPERX_PIXI_EXE'
 WHISPERX_PIXI_MANIFEST_ENV = 'WHISPERX_PIXI_MANIFEST'
-PANDRATOR_SUBDUB_CACHE_DIR_ENV = 'PANDRATOR_SUBDUB_CACHE_DIR'
+PANDRATOR_DUBBING_CACHE_DIR_ENV = 'PANDRATOR_DUBBING_CACHE_DIR'
 DEFAULT_WHISPER_CACHE_ROOT = os.path.join(PROJECT_ROOT, 'cache')
 
 
@@ -54,7 +54,7 @@ def _normalize_path(path: str) -> str:
 
 
 def _resolve_whisper_cache_root() -> str:
-    configured_path = str(os.environ.get(PANDRATOR_SUBDUB_CACHE_DIR_ENV, '')).strip()
+    configured_path = str(os.environ.get(PANDRATOR_DUBBING_CACHE_DIR_ENV, '')).strip()
     if configured_path:
         return _normalize_path(configured_path)
 

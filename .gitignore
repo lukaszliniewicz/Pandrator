@@ -34,6 +34,9 @@ pip-wheel-metadata/
 .hypothesis/
 .tox/
 .nox/
+.pixi/
+.pixi-cache/
+.pixi-home/
 .coverage
 .coverage.*
 htmlcov/
