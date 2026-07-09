@@ -63,6 +63,25 @@ class DubbingUiTests(unittest.TestCase):
         self.assertGreaterEqual(section.dub_translation_backend_combo.findData("llm"), 0)
         self.assertGreaterEqual(section.dub_translation_backend_combo.findData("deepl"), 0)
 
+    def test_translation_options_are_hidden_until_enabled(self):
+        section = DubbingSection()
+        section.show()
+
+        self.assertTrue(section.translation_frame.isHidden())
+        section.dub_translate_check.setChecked(True)
+        self.assertFalse(section.translation_frame.isHidden())
+        section.dub_translate_check.setChecked(False)
+        self.assertTrue(section.translation_frame.isHidden())
+        section.close()
+
+    def test_individual_dubbing_stages_are_grouped_in_one_menu(self):
+        section = DubbingSection()
+
+        self.assertIs(section.stage_actions_button.menu(), section.stage_actions_menu)
+        self.assertEqual(section.only_transcribe_action.text(), "Transcribe Only")
+        self.assertEqual(section.only_correct_action.text(), "Correct Only")
+        self.assertEqual(section.only_translate_action.text(), "Translate Only")
+
     def test_parakeet_advanced_dialog_shows_vad_group_not_whisper_group(self):
         state = DubbingSettings(stt_backend="parakeet_onnx")
         dialog = DubbingAdvancedDialog(state)

@@ -26,6 +26,90 @@ QFrame#rowFrame {
     padding: 0;
 }
 
+QFrame#workspaceHeader {
+    background-color: #29292c;
+    border: none;
+    border-bottom: 1px solid #4d5863;
+}
+
+QLabel#workspaceTitle {
+    color: #cfd5dd;
+    font-weight: bold;
+}
+
+QPushButton#workspaceModeButton {
+    background-color: transparent;
+    border: 1px solid #4d5863;
+    border-radius: 6px;
+    color: #cfd5dd;
+    min-width: 92px;
+    padding: 6px 12px;
+}
+
+QPushButton#workspaceModeButton:hover {
+    background-color: #3b3f45;
+}
+
+QPushButton#workspaceModeButton:checked {
+    background-color: #5d4f7f;
+    border-color: #9575cd;
+    color: #ffffff;
+}
+
+QScrollArea#workspaceCreateScrollArea,
+QScrollArea#workspaceCreateScrollArea > QWidget > QWidget {
+    background-color: #2d2d30;
+    border: none;
+}
+
+QFrame#reviewToolbar {
+    background-color: transparent;
+    border: none;
+}
+
+QPushButton#reviewFilterButton {
+    background-color: transparent;
+    border: 1px solid #4d5863;
+    color: #cfd5dd;
+    padding: 5px 10px;
+}
+
+QPushButton#reviewFilterButton:checked {
+    background-color: #5d4f7f;
+    border-color: #9575cd;
+    color: #ffffff;
+}
+
+QPushButton#reviewFilterButton:disabled,
+QPushButton#reviewFilterButton:checked:disabled {
+    background-color: #34383d;
+    border-color: #42484f;
+    color: #7f8790;
+}
+
+QFrame#reviewSelectionToolbar {
+    background-color: #29292c;
+    border: none;
+    border-top: 1px solid #4d5863;
+    padding-top: 8px;
+}
+
+QFrame#emptyReviewFrame {
+    background-color: #29292c;
+    border: 1px dashed #59616a;
+    border-radius: 10px;
+}
+
+QLabel#emptyReviewTitle {
+    color: #f1f1f1;
+    font-size: 18px;
+    font-weight: bold;
+}
+
+QLabel#emptyReviewDetail {
+    color: #aeb6c0;
+}
+
 QFrame#taskStatusFrame {
     background-color: transparent;
     border: none;
@@ -178,6 +262,19 @@ QStatusBar {
     background-color: #2d2d30;
     border: 1px solid #4d5863;
     color: #f1f1f1;
+}
+
+QTextEdit:disabled,
+QPlainTextEdit:disabled,
+QLineEdit:disabled,
+QSpinBox:disabled,
+QDoubleSpinBox:disabled,
+QComboBox:disabled,
+QListWidget:disabled,
+QTableWidget:disabled {
+    background-color: #34383d;
+    border-color: #42484f;
+    color: #7f8790;
 }
 
 QSpinBox,

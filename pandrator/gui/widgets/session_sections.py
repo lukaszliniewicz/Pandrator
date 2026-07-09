@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QProgressBar,
     QPushButton,
     QSlider,
@@ -109,6 +110,10 @@ class TtsSettingsSection(QFrame):
         layout = QGridLayout(self)
         layout.setHorizontalSpacing(10)
         layout.setVerticalSpacing(8)
+        layout.setColumnStretch(0, 0)
+        layout.setColumnStretch(1, 1)
+        layout.setColumnStretch(2, 0)
+        layout.setColumnStretch(3, 0)
 
         self.tts_service_combo = QComboBox()
         self.tts_service_combo.addItems(
@@ -899,6 +904,12 @@ class DubbingSection(QFrame):
         self.transcription_frame = QFrame()
         self.transcription_frame.setObjectName("subGroupFrame")
         trans_layout = QGridLayout(self.transcription_frame)
+        trans_layout.setHorizontalSpacing(10)
+        trans_layout.setVerticalSpacing(8)
+        trans_layout.setColumnStretch(0, 0)
+        trans_layout.setColumnStretch(1, 1)
+        trans_layout.setColumnStretch(2, 0)
+        trans_layout.setColumnStretch(3, 1)
         layout.addWidget(self.transcription_frame)
 
         self.dub_stt_backend_label = QLabel("Backend:")
@@ -946,53 +957,61 @@ class DubbingSection(QFrame):
         self.translation_heading.setObjectName("subSectionLabel")
         layout.addWidget(self.translation_heading)
 
+        self.dub_translate_check = QCheckBox("Translate subtitles")
+        layout.addWidget(self.dub_translate_check)
+
         self.translation_frame = QFrame()
         self.translation_frame.setObjectName("subGroupFrame")
         transl_layout = QGridLayout(self.translation_frame)
+        transl_layout.setHorizontalSpacing(10)
+        transl_layout.setVerticalSpacing(8)
+        transl_layout.setColumnStretch(0, 0)
+        transl_layout.setColumnStretch(1, 1)
+        transl_layout.setColumnStretch(2, 0)
+        transl_layout.setColumnStretch(3, 1)
         layout.addWidget(self.translation_frame)
 
-        self.dub_translate_check = QCheckBox("Translate subtitles")
-        transl_layout.addWidget(self.dub_translate_check, 0, 0, 1, 4)
-
-        transl_layout.addWidget(QLabel("From:"), 1, 0)
+        transl_layout.addWidget(QLabel("From:"), 0, 0)
         self.dub_from_lang_combo = QComboBox()
         self.dub_from_lang_combo.addItems(WHISPER_LANGUAGES)
-        transl_layout.addWidget(self.dub_from_lang_combo, 1, 1)
+        transl_layout.addWidget(self.dub_from_lang_combo, 0, 1)
 
-        transl_layout.addWidget(QLabel("To:"), 1, 2)
+        transl_layout.addWidget(QLabel("To:"), 0, 2)
         self.dub_to_lang_combo = QComboBox()
         for language_code in XTTS_LANGUAGES:
             self.dub_to_lang_combo.addItem(
                 LANGUAGE_DISPLAY_NAMES.get(language_code, language_code),
                 language_code,
             )
-        transl_layout.addWidget(self.dub_to_lang_combo, 1, 3)
+        transl_layout.addWidget(self.dub_to_lang_combo, 0, 3)
 
         self.dub_glossary_check = QCheckBox("Enable glossary")
-        transl_layout.addWidget(self.dub_glossary_check, 2, 0, 1, 4)
+        transl_layout.addWidget(self.dub_glossary_check, 1, 0, 1, 4)
 
-        transl_layout.addWidget(QLabel("Translation Backend:"), 3, 0)
+        transl_layout.addWidget(QLabel("Translation Backend:"), 2, 0)
         self.dub_translation_backend_combo = QComboBox()
         self.dub_translation_backend_combo.addItem("Pandrator LLM", "llm")
         self.dub_translation_backend_combo.addItem("DeepL", "deepl")
-        transl_layout.addWidget(self.dub_translation_backend_combo, 3, 1, 1, 3)
+        transl_layout.addWidget(self.dub_translation_backend_combo, 2, 1, 1, 3)
 
         self.dub_trans_model_label = QLabel("Translation Model:")
-        transl_layout.addWidget(self.dub_trans_model_label, 4, 0)
+        transl_layout.addWidget(self.dub_trans_model_label, 3, 0)
         self.dub_trans_model_combo = QComboBox()
         self.dub_trans_model_combo.setEditable(True)
         self.dub_trans_model_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         model_line_edit = self.dub_trans_model_combo.lineEdit()
         if model_line_edit is not None:
             model_line_edit.setPlaceholderText("Type model ID if not listed")
-        transl_layout.addWidget(self.dub_trans_model_combo, 4, 1, 1, 3)
+        transl_layout.addWidget(self.dub_trans_model_combo, 3, 1, 1, 3)
 
         self.dub_trans_model_hint = QLabel(
             "Manage provider catalogs in the Providers tab."
         )
         self.dub_trans_model_hint.setWordWrap(True)
         self.dub_trans_model_hint.setObjectName("secondaryInfoLabel")
-        transl_layout.addWidget(self.dub_trans_model_hint, 5, 0, 1, 4)
+        transl_layout.addWidget(self.dub_trans_model_hint, 4, 0, 1, 4)
+        self.dub_translate_check.toggled.connect(self.translation_frame.setVisible)
+        self.translation_frame.setVisible(False)
 
         self.video_file_frame = QFrame()
         self.video_file_frame.setObjectName("rowFrame")
@@ -1008,24 +1027,29 @@ class DubbingSection(QFrame):
 
         self.buttons_frame = QFrame()
         self.buttons_frame.setObjectName("rowFrame")
-        buttons_layout = QGridLayout(self.buttons_frame)
+        buttons_layout = QHBoxLayout(self.buttons_frame)
+        buttons_layout.setContentsMargins(0, 4, 0, 0)
+        buttons_layout.setSpacing(8)
         layout.addWidget(self.buttons_frame)
+
+        self.stage_actions_button = QPushButton("Run Stage")
+        self.stage_actions_menu = QMenu(self.stage_actions_button)
+        self.only_transcribe_action = self.stage_actions_menu.addAction("Transcribe Only")
+        self.only_correct_action = self.stage_actions_menu.addAction("Correct Only")
+        self.only_translate_action = self.stage_actions_menu.addAction("Translate Only")
+        self.stage_actions_button.setMenu(self.stage_actions_menu)
 
         self.generate_dub_audio_button = QPushButton("Generate Dubbing Audio")
         self.generate_dub_audio_button.setObjectName("generateDubAudioButton")
         self.generate_dub_audio_button.setProperty("accentActive", False)
         self.add_dub_to_video_button = QPushButton("Add Dubbing to Video")
-        self.only_transcribe_button = QPushButton("Only Transcribe")
-        self.only_correct_button = QPushButton("Only Correct")
-        self.only_translate_button = QPushButton("Only Translate")
         self.fine_tune_timings_button = QPushButton("Fine-Tune Timings")
 
-        buttons_layout.addWidget(self.generate_dub_audio_button, 0, 0, 1, 3)
-        buttons_layout.addWidget(self.add_dub_to_video_button, 1, 0, 1, 3)
-        buttons_layout.addWidget(self.only_transcribe_button, 2, 0)
-        buttons_layout.addWidget(self.only_correct_button, 2, 1)
-        buttons_layout.addWidget(self.only_translate_button, 2, 2)
-        buttons_layout.addWidget(self.fine_tune_timings_button, 3, 0, 1, 3)
+        buttons_layout.addWidget(self.stage_actions_button)
+        buttons_layout.addStretch(1)
+        buttons_layout.addWidget(self.fine_tune_timings_button)
+        buttons_layout.addWidget(self.add_dub_to_video_button)
+        buttons_layout.addWidget(self.generate_dub_audio_button)
 
     def set_stt_backend(self, backend: str):
         selected_is_whisperx = normalize_stt_backend(backend) == STT_BACKEND_WHISPERX

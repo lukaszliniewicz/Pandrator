@@ -2,7 +2,7 @@ import os
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout,
-    QTabWidget, QSplitter, QScrollArea, QMessageBox
+    QTabWidget, QMessageBox
 )
 from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtGui import QDesktopServices, QKeyEvent
@@ -15,6 +15,7 @@ from .widgets.providers_tab import ProvidersTab
 from .widgets.logs_tab import LogsTab
 from .widgets.train_xtts_tab import TrainXttsTab
 from .widgets.generated_sentences_widget import GeneratedSentencesWidget
+from .widgets.session_workspace import SessionWorkspace
 
 class MainWindow(QMainWindow):
     def __init__(self, logic, parent=None):
@@ -28,22 +29,9 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central_widget)
         main_layout = QHBoxLayout(central_widget)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        main_layout.addWidget(splitter)
-
-        left_scroll_area = QScrollArea()
-        left_scroll_area.setObjectName("leftPaneScrollArea")
-        left_scroll_area.setWidgetResizable(True)
-
         self.tab_widget = QTabWidget()
         self.tab_widget.setObjectName("leftPaneTabWidget")
-        left_scroll_area.setWidget(self.tab_widget)
-
-        self.right_widget = GeneratedSentencesWidget(self.logic)
-
-        splitter.addWidget(left_scroll_area)
-        splitter.addWidget(self.right_widget)
-        splitter.setSizes([800, 800])
+        main_layout.addWidget(self.tab_widget)
 
         self._create_tabs()
 
@@ -55,7 +43,12 @@ class MainWindow(QMainWindow):
 
     def _create_tabs(self):
         self.session_tab = SessionTab(self.logic)
-        self.tab_widget.addTab(self.session_tab, "Session")
+        self.right_widget = GeneratedSentencesWidget(self.logic)
+        self.session_workspace = SessionWorkspace(
+            self.session_tab,
+            self.right_widget,
+        )
+        self.tab_widget.addTab(self.session_workspace, "Session")
 
         self.sessions_manager_tab = SessionsManagerTab(self.logic)
         self.tab_widget.addTab(self.sessions_manager_tab, "Sessions")
@@ -144,12 +137,6 @@ class MainWindow(QMainWindow):
         if event.key() == Qt.Key.Key_M:
             focused_widget = self.focusWidget()
             if focused_widget == self.right_widget.sentences_list:
-                for item in self.right_widget.sentences_list.selectedItems():
-                    sentence_number = item.data(Qt.ItemDataRole.UserRole)
-                    self.logic.mark_sentence(sentence_number, True)
-            elif focused_widget == self.right_widget.marked_list:
-                for item in self.right_widget.marked_list.selectedItems():
-                    sentence_number = item.data(Qt.ItemDataRole.UserRole)
-                    self.logic.mark_sentence(sentence_number, False)
+                self.right_widget.toggle_mark_for_selected()
         else:
             super().keyPressEvent(event)

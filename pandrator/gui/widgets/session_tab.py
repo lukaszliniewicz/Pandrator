@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
     QInputDialog,
     QMessageBox,
     QProgressDialog,
+    QHBoxLayout,
     QVBoxLayout,
     QWidget,
 )
@@ -108,7 +109,17 @@ class SessionTab(QWidget):
         self._source_import_thread: threading.Thread | None = None
         self._source_import_progress_dialog: QProgressDialog | None = None
 
-        main_layout = QVBoxLayout(self)
+        outer_layout = QHBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.content_widget = QWidget()
+        self.content_widget.setObjectName("sessionContent")
+        self.content_widget.setMaximumWidth(1080)
+        outer_layout.addStretch(1)
+        outer_layout.addWidget(self.content_widget, 1)
+        outer_layout.addStretch(1)
+
+        main_layout = QVBoxLayout(self.content_widget)
         main_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         main_layout.setSpacing(8)
 
@@ -306,9 +317,10 @@ class SessionTab(QWidget):
         self.select_video_file_button = self.dubbing_frame.select_video_file_button
         self.generate_dub_audio_button = self.dubbing_frame.generate_dub_audio_button
         self.add_dub_to_video_button = self.dubbing_frame.add_dub_to_video_button
-        self.only_transcribe_button = self.dubbing_frame.only_transcribe_button
-        self.only_correct_button = self.dubbing_frame.only_correct_button
-        self.only_translate_button = self.dubbing_frame.only_translate_button
+        self.stage_actions_button = self.dubbing_frame.stage_actions_button
+        self.only_transcribe_action = self.dubbing_frame.only_transcribe_action
+        self.only_correct_action = self.dubbing_frame.only_correct_action
+        self.only_translate_action = self.dubbing_frame.only_translate_action
         self.fine_tune_timings_button = self.dubbing_frame.fine_tune_timings_button
 
         # Output controls
@@ -721,13 +733,13 @@ class SessionTab(QWidget):
         self.select_video_file_button.clicked.connect(self._on_select_video_file)
         self.generate_dub_audio_button.clicked.connect(self._on_generate_dubbing_audio)
         self.add_dub_to_video_button.clicked.connect(self._on_add_dubbing_to_video)
-        self.only_transcribe_button.clicked.connect(
+        self.only_transcribe_action.triggered.connect(
             lambda: self.logic.run_dubbing_task("transcribe")
         )
-        self.only_correct_button.clicked.connect(
+        self.only_correct_action.triggered.connect(
             lambda: self.logic.run_dubbing_task("correct")
         )
-        self.only_translate_button.clicked.connect(
+        self.only_translate_action.triggered.connect(
             lambda: self.logic.run_dubbing_task("translate")
         )
         self.fine_tune_timings_button.clicked.connect(
@@ -1438,9 +1450,17 @@ class SessionTab(QWidget):
 
         self.dubbing_label.setVisible(is_dubbing_source)
         self.dubbing_frame.setVisible(is_dubbing_source)
-        self.dub_trans_model_label.setVisible(is_dubbing_source and not is_deepl_backend)
-        self.dub_trans_model_combo.setVisible(is_dubbing_source and not is_deepl_backend)
-        self.dub_trans_model_hint.setVisible(is_dubbing_source and not is_deepl_backend)
+        show_translation_options = is_dubbing_source and state.dubbing.translation_enabled
+        self.dubbing_frame.translation_frame.setVisible(show_translation_options)
+        self.dub_trans_model_label.setVisible(
+            show_translation_options and not is_deepl_backend
+        )
+        self.dub_trans_model_combo.setVisible(
+            show_translation_options and not is_deepl_backend
+        )
+        self.dub_trans_model_hint.setVisible(
+            show_translation_options and not is_deepl_backend
+        )
         self.dub_correction_model_combo.setVisible(
             is_dubbing_source and state.dubbing.correction_enabled
         )
@@ -1565,9 +1585,7 @@ class SessionTab(QWidget):
             self.select_video_file_button,
             self.generate_dub_audio_button,
             self.add_dub_to_video_button,
-            self.only_transcribe_button,
-            self.only_correct_button,
-            self.only_translate_button,
+            self.stage_actions_button,
         ):
             widget.setEnabled(dubbing_controls_enabled)
 
@@ -1591,6 +1609,7 @@ class SessionTab(QWidget):
             dubbing_controls_enabled and any_stt_available
         )
         has_dubbing_srt = self.logic.has_dubbing_srt_file()
+        has_generated_audio = self.logic.has_any_generation_progress()
         stt_tooltip = (
             ""
             if media_transcription_available
@@ -1603,18 +1622,42 @@ class SessionTab(QWidget):
         )
         self.generate_dub_audio_button.setToolTip(stt_tooltip if generate_needs_transcription else "")
 
-        self.only_transcribe_button.setEnabled(
+        self.only_transcribe_action.setEnabled(
             dubbing_controls_enabled
             and transcription_source_selected
             and media_transcription_available
         )
-        self.only_transcribe_button.setToolTip(stt_tooltip)
+        self.only_correct_action.setEnabled(
+            dubbing_controls_enabled
+            and has_dubbing_srt
+            and state.dubbing.correction_enabled
+        )
+        self.only_translate_action.setEnabled(
+            dubbing_controls_enabled
+            and has_dubbing_srt
+            and state.dubbing.translation_enabled
+        )
+        self.stage_actions_button.setEnabled(
+            self.only_transcribe_action.isEnabled()
+            or self.only_correct_action.isEnabled()
+            or self.only_translate_action.isEnabled()
+        )
+        self.stage_actions_button.setToolTip(stt_tooltip)
 
         video_render_tooltip = "" if video_render_available else "Final video rendering requires a video source."
-        self.add_dub_to_video_button.setEnabled(dubbing_controls_enabled and video_render_available)
+        self.add_dub_to_video_button.setVisible(
+            is_dubbing_source and video_render_available and has_generated_audio
+        )
+        self.add_dub_to_video_button.setEnabled(
+            dubbing_controls_enabled
+            and video_render_available
+            and has_generated_audio
+        )
         self.add_dub_to_video_button.setToolTip(video_render_tooltip)
 
-        self.fine_tune_timings_button.setVisible(is_dubbing_source)
+        self.fine_tune_timings_button.setVisible(
+            is_dubbing_source and has_dubbing_srt
+        )
         self.fine_tune_timings_button.setEnabled(
             dubbing_controls_enabled and has_dubbing_srt
         )
