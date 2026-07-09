@@ -122,7 +122,7 @@ def main():
             logic.state.tts.external_server_url = "http://127.0.0.1:8030"
         logic.state_changed.emit()
 
-    main_window.show()
+    main_window.showMaximized()
 
     if auto_connect_service:
         logging.info("Auto-connecting to %s on launch", auto_connect_service)

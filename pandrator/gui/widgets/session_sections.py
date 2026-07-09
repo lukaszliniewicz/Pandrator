@@ -1094,33 +1094,6 @@ class DubbingSection(QFrame):
         )
 
 
-class OutputOptionsSection(QFrame):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setObjectName("rowFrame")
-
-        layout = QHBoxLayout(self)
-        layout.setSpacing(8)
-
-        layout.addWidget(QLabel("Format:"))
-        self.format_combo = QComboBox()
-        self.format_combo.addItems(["m4b", "opus", "mp3", "wav"])
-        layout.addWidget(self.format_combo)
-
-        layout.addWidget(QLabel("Bitrate:"))
-        self.bitrate_combo = QComboBox()
-        self.bitrate_combo.addItems(["16k", "32k", "64k", "128k", "196k", "312k"])
-        layout.addWidget(self.bitrate_combo)
-
-        self.upload_cover_button = QPushButton("Upload Cover")
-        layout.addWidget(self.upload_cover_button)
-
-        self.metadata_button = QPushButton("Metadata")
-        layout.addWidget(self.metadata_button)
-
-        layout.addStretch()
-
-
 class TaskStatusPanel(QFrame):
     DUBBING_STAGE_DEFINITIONS = (
         ("transcribe", "Transcribe"),

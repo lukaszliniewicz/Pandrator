@@ -1,6 +1,7 @@
 import os
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -16,6 +17,7 @@ from PyQt6.QtWidgets import (
 )
 
 from pandrator.gui.widgets.generated_sentences_widget import GeneratedSentencesWidget
+from pandrator.gui.dialogs.output_options_dialog import OutputOptionsDialog
 from pandrator.gui.widgets.responsive_page import ScrollableSettingsPage
 from pandrator.gui.widgets.session_workspace import SessionWorkspace
 
@@ -29,7 +31,9 @@ class FakeReviewLogic(QWidget):
         self.playing_sentence_number = None
         self.state = SimpleNamespace(
             session_name="Test Session",
-            audio_processing=SimpleNamespace(output_format="wav"),
+            audio_processing=SimpleNamespace(output_format="wav", bitrate="64k"),
+            metadata={},
+            cover_image_path=None,
         )
 
     def list_audio_variants(self):
@@ -113,6 +117,7 @@ class GeneratedSentencesUiTests(unittest.TestCase):
         self.assertFalse(widget.play_button.isEnabled())
         self.assertFalse(widget.play_as_playlist_button.isEnabled())
         self.assertFalse(widget.stop_button.isEnabled())
+        self.assertTrue(widget.output_options_button.isEnabled())
         self.assertFalse(widget.save_output_button.isEnabled())
         self.assertFalse(widget.edit_button.isEnabled())
 
@@ -152,6 +157,26 @@ class GeneratedSentencesUiTests(unittest.TestCase):
         number_item = widget.sentences_list.item(0, widget.NUMBER_COLUMN)
         self.assertEqual(number_item.text(), "2")
 
+    def test_output_options_are_modal_and_update_export_state(self):
+        logic = FakeReviewLogic()
+        dialog = OutputOptionsDialog(logic)
+
+        self.assertEqual(dialog.format_combo.currentText(), "wav")
+        self.assertEqual(dialog.bitrate_combo.currentText(), "64k")
+        dialog.format_combo.setCurrentText("mp3")
+        dialog.bitrate_combo.setCurrentText("128k")
+        self.assertEqual(logic.state.audio_processing.output_format, "mp3")
+        self.assertEqual(logic.state.audio_processing.bitrate, "128k")
+        dialog.close()
+
+        widget = GeneratedSentencesWidget(logic)
+        with patch(
+            "pandrator.gui.widgets.generated_sentences_widget.OutputOptionsDialog"
+        ) as dialog_class:
+            widget.output_options_button.click()
+            dialog_class.assert_called_once_with(logic, widget)
+            dialog_class.return_value.exec.assert_called_once_with()
+
     def test_workspace_switches_between_shared_create_review_and_split_views(self):
         create_widget = QWidget()
         review_widget = DummyReview()
@@ -160,6 +185,13 @@ class GeneratedSentencesUiTests(unittest.TestCase):
         self.assertEqual(workspace.mode(), "split")
         self.assertFalse(create_widget.isHidden())
         self.assertFalse(review_widget.isHidden())
+
+        workspace.resize(1200, 700)
+        workspace.show()
+        self.app.processEvents()
+        self.app.processEvents()
+        left_width, right_width = workspace.splitter.sizes()
+        self.assertLessEqual(abs(left_width - right_width), 1)
 
         workspace.set_mode("review")
         self.assertEqual(workspace.mode(), "review")
@@ -173,6 +205,7 @@ class GeneratedSentencesUiTests(unittest.TestCase):
 
         review_widget.create_requested.emit()
         self.assertEqual(workspace.mode(), "create")
+        workspace.close()
 
     def test_responsive_page_is_wide_scrollable_and_compacts_form_controls(self):
         page = ScrollableSettingsPage(max_content_width=1400)

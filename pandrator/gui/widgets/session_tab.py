@@ -27,7 +27,6 @@ from ...constants import (
 )
 from ..dialogs.custom_prompt_dialog import CustomPromptDialog
 from ..dialogs.dubbing_advanced_dialog import DubbingAdvancedDialog
-from ..dialogs.metadata_dialog import MetadataDialog
 from ..dialogs.paste_text_dialog import PasteTextDialog
 from ..dialogs.source_picker_dialog import SourcePickerDialog
 from ..dialogs.source_cleaning_dialog import SourceCleaningDialog
@@ -52,7 +51,6 @@ from .session_sections import (
     AdvancedTtsSettingsSection,
     DubbingSection,
     GenerationSection,
-    OutputOptionsSection,
     SessionControlsSection,
     SessionHeader,
     SourceFileSection,
@@ -154,11 +152,6 @@ class SessionTab(ScrollableSettingsPage):
         main_layout.addWidget(self.dubbing_label)
         self.dubbing_frame = DubbingSection(self)
         main_layout.addWidget(self.dubbing_frame)
-
-        self.output_options_label = create_section_label("Output Options")
-        main_layout.addWidget(self.output_options_label)
-        self.output_options_frame = OutputOptionsSection(self)
-        main_layout.addWidget(self.output_options_frame)
 
         self.generation_label = create_section_label("Generation")
         main_layout.addWidget(self.generation_label)
@@ -315,12 +308,6 @@ class SessionTab(ScrollableSettingsPage):
         self.only_translate_action = self.dubbing_frame.only_translate_action
         self.fine_tune_timings_button = self.dubbing_frame.fine_tune_timings_button
 
-        # Output controls
-        self.format_combo = self.output_options_frame.format_combo
-        self.bitrate_combo = self.output_options_frame.bitrate_combo
-        self.upload_cover_button = self.output_options_frame.upload_cover_button
-        self.metadata_button = self.output_options_frame.metadata_button
-
         # Generation controls
         self.start_button = self.generation_section.start_button
         self.resume_button = self.generation_section.resume_button
@@ -333,7 +320,6 @@ class SessionTab(ScrollableSettingsPage):
     def _connect_signals(self):
         self._connect_session_signals()
         self._connect_tts_signals()
-        self._connect_output_signals()
         self._connect_dubbing_signals()
         self._connect_generation_signals()
         self.logic.progress_updated.connect(self._on_progress_updated)
@@ -668,16 +654,6 @@ class SessionTab(ScrollableSettingsPage):
         )
         self.adv_tts_apply_button.clicked.connect(self.logic.save_xtts_settings)
 
-    def _connect_output_signals(self):
-        self.format_combo.currentTextChanged.connect(
-            lambda t: setattr(self.logic.state.audio_processing, "output_format", t)
-        )
-        self.bitrate_combo.currentTextChanged.connect(
-            lambda t: setattr(self.logic.state.audio_processing, "bitrate", t)
-        )
-        self.upload_cover_button.clicked.connect(self._on_upload_cover)
-        self.metadata_button.clicked.connect(self._on_metadata)
-
     def _connect_dubbing_signals(self):
         self.dub_stt_backend_combo.currentIndexChanged.connect(
             self._on_dub_stt_backend_changed
@@ -954,7 +930,6 @@ class SessionTab(ScrollableSettingsPage):
         self._update_session_state(state)
         self._update_source_state(state)
         self._update_tts_state(state)
-        self._update_output_state(state)
         self._update_dubbing_state(state)
         self._update_language_dropdown()
         self._update_visibility_and_control_state(state)
@@ -1135,13 +1110,6 @@ class SessionTab(ScrollableSettingsPage):
         self.chatterbox_exaggeration_spinbox.setValue(tts_state.chatterbox_exaggeration)
         self.chatterbox_cfg_weight_spinbox.setValue(tts_state.chatterbox_cfg_weight)
         self.chatterbox_norm_loudness_checkbox.setChecked(tts_state.chatterbox_norm_loudness)
-
-    def _update_output_state(self, state):
-        self.format_combo.setCurrentText(state.audio_processing.output_format)
-        self.bitrate_combo.setCurrentText(state.audio_processing.bitrate)
-        self.upload_cover_button.setText(
-            "Cover Uploaded" if state.cover_image_path else "Upload Cover"
-        )
 
     def _update_dubbing_stt_controls(self, dub_state):
         backend_statuses = detect_stt_backend_statuses()
@@ -1459,9 +1427,6 @@ class SessionTab(ScrollableSettingsPage):
         self.dub_custom_prompt_button.setVisible(
             is_dubbing_source and state.dubbing.correction_enabled
         )
-        self.output_options_label.setVisible(not is_dubbing_source)
-        self.output_options_frame.setVisible(not is_dubbing_source)
-
         can_start_or_resume = (not generation_busy) and (not is_dubbing_source)
         start_button_label = (
             "Start anew" if self._has_resumable_generation_progress() else "Start Generation"
@@ -2493,23 +2458,6 @@ class SessionTab(ScrollableSettingsPage):
                 return "accept"
             return "cancel"
         return "cancel"
-
-    def _on_metadata(self):
-        metadata_to_edit = self.logic.state.metadata.copy()
-        dialog = MetadataDialog(metadata_to_edit, self)
-        if dialog.exec():
-            new_metadata = dialog.get_metadata()
-            self.logic.save_metadata(new_metadata)
-
-    def _on_upload_cover(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select Cover Image",
-            "",
-            "Image Files (*.png *.jpg *.jpeg);;All files (*.*)",
-        )
-        if file_path:
-            self.logic.select_cover_image(file_path)
 
     def _on_upload_voice(self):
         dialog = VoiceLibraryDialog(self.logic, self)

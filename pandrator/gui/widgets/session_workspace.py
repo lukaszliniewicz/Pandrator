@@ -1,4 +1,4 @@
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QTimer, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QButtonGroup,
     QFrame,
@@ -22,6 +22,7 @@ class SessionWorkspace(QWidget):
         self.review_widget = review_widget
         self._mode = "split"
         self._review_count = 0
+        self._equal_split_pending = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -87,6 +88,11 @@ class SessionWorkspace(QWidget):
     def mode(self) -> str:
         return self._mode
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._mode == "split":
+            self._schedule_equal_split()
+
     def set_review_count(self, count: int):
         self._review_count = max(0, int(count or 0))
         self.review_button.setText(f"Review {self._review_count}")
@@ -109,10 +115,28 @@ class SessionWorkspace(QWidget):
         target_button.setChecked(True)
 
         if normalized_mode == "split":
-            available_width = max(2, self.splitter.width())
-            self.splitter.setSizes([available_width // 2, available_width // 2])
+            self._schedule_equal_split()
 
         mode_changed = normalized_mode != self._mode
         self._mode = normalized_mode
         if mode_changed:
             self.mode_changed.emit(normalized_mode)
+
+    def _schedule_equal_split(self):
+        if self._equal_split_pending:
+            return
+        self._equal_split_pending = True
+        QTimer.singleShot(0, self._apply_equal_split)
+
+    def _apply_equal_split(self):
+        self._equal_split_pending = False
+        if self._mode != "split":
+            return
+
+        available_width = max(
+            2,
+            self.splitter.width()
+            - self.splitter.handleWidth() * max(0, self.splitter.count() - 1),
+        )
+        left_width = available_width // 2
+        self.splitter.setSizes([left_width, available_width - left_width])

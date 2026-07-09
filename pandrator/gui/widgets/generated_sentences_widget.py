@@ -9,6 +9,8 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QFont, QColor
 from PyQt6.QtCore import Qt, QItemSelectionModel, pyqtSignal
 
+from ..dialogs.output_options_dialog import OutputOptionsDialog
+
 class GeneratedSentencesWidget(QWidget):
     create_requested = pyqtSignal()
     review_count_changed = pyqtSignal(int)
@@ -49,6 +51,10 @@ class GeneratedSentencesWidget(QWidget):
         self.audio_variant_combo = QComboBox()
         self.audio_variant_combo.currentIndexChanged.connect(self._on_audio_variant_selected)
         header_layout.addWidget(self.audio_variant_combo)
+
+        self.output_options_button = QPushButton("Output Options")
+        self.output_options_button.clicked.connect(self._on_output_options)
+        header_layout.addWidget(self.output_options_button)
 
         self.save_output_button = QPushButton("Save Output")
         self.save_output_button.clicked.connect(self._on_save_output)
@@ -665,6 +671,7 @@ class GeneratedSentencesWidget(QWidget):
             (not generation_busy) and has_audio
         )
         self.stop_button.setEnabled(is_playing)
+        self.output_options_button.setEnabled(not generation_busy)
         self.save_output_button.setEnabled((not generation_busy) and has_audio)
         self.audio_variant_combo.setEnabled((not generation_busy) and has_audio)
         self.all_filter_button.setEnabled(has_rows)
@@ -869,6 +876,10 @@ class GeneratedSentencesWidget(QWidget):
         )
         if file_path:
             self.logic.save_output(file_path)
+
+    def _on_output_options(self):
+        dialog = OutputOptionsDialog(self.logic, self)
+        dialog.exec()
 
     def update_ui_from_state(self):
         self._update_audio_variant_combo()
