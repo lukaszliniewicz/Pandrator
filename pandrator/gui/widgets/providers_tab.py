@@ -1,6 +1,5 @@
 import re
 
-from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -15,6 +14,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from .responsive_page import ScrollableSettingsPage, configure_form_grid
 
 class ProvidersTab(QWidget):
     def __init__(self, logic, parent=None):
@@ -23,12 +23,12 @@ class ProvidersTab(QWidget):
         self._pending_tts_adapter_config = None
 
         main_layout = QVBoxLayout(self)
-        main_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        main_layout.setContentsMargins(0, 0, 0, 0)
 
         self.providers_tabs = QTabWidget()
         self.providers_tabs.addTab(self._create_tts_tab(), "TTS")
         self.providers_tabs.addTab(self._create_llm_tab(), "LLM")
-        main_layout.addWidget(self.providers_tabs)
+        main_layout.addWidget(self.providers_tabs, 1)
 
         self._connect_signals()
         self.update_ui_from_state()
@@ -43,19 +43,15 @@ class ProvidersTab(QWidget):
         return label
 
     def _create_llm_tab(self) -> QWidget:
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        tab = ScrollableSettingsPage(page_object_name="llmProvidersPage")
+        layout = tab.content_layout
         layout.addWidget(self._create_group_label("LLM Providers"))
         layout.addWidget(self._create_llm_frame())
         return tab
 
     def _create_tts_tab(self) -> QWidget:
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        tab = ScrollableSettingsPage(page_object_name="ttsProvidersPage")
+        layout = tab.content_layout
         layout.addWidget(self._create_group_label("First-Class TTS Services"))
         layout.addWidget(self._create_tts_service_frame())
         layout.addWidget(self._create_group_label("Custom TTS Providers"))
@@ -65,7 +61,9 @@ class ProvidersTab(QWidget):
     def _create_llm_frame(self) -> QFrame:
         frame = QFrame()
         frame.setObjectName("groupFrame")
-        layout = QGridLayout(frame)
+        layout = configure_form_grid(
+            QGridLayout(frame), label_width=180, trailing_column=4
+        )
 
         self.llm_provider_combo = QComboBox()
         self.llm_provider_type_combo = QComboBox()
@@ -100,6 +98,13 @@ class ProvidersTab(QWidget):
         self.llm_save_provider_button = QPushButton("Save")
         self.llm_remove_provider_button = QPushButton("Remove")
         self.llm_refresh_builtin_models_button = QPushButton("Refresh Built-in Models")
+        for button in (
+            self.llm_new_provider_button,
+            self.llm_save_provider_button,
+            self.llm_remove_provider_button,
+            self.llm_refresh_builtin_models_button,
+        ):
+            button.setMaximumWidth(240)
 
         self.llm_feedback_label = QLabel("")
         self.llm_feedback_label.setWordWrap(True)
@@ -133,7 +138,9 @@ class ProvidersTab(QWidget):
     def _create_tts_service_frame(self) -> QFrame:
         frame = QFrame()
         frame.setObjectName("groupFrame")
-        layout = QGridLayout(frame)
+        layout = configure_form_grid(
+            QGridLayout(frame), label_width=180, trailing_column=4
+        )
 
         self.tts_service_combo = QComboBox()
         self.tts_service_api_base_edit = QLineEdit()
@@ -151,6 +158,7 @@ class ProvidersTab(QWidget):
         self.tts_service_voices_edit.setPlaceholderText("One voice per line or comma-separated")
         self.tts_service_voices_edit.setFixedHeight(70)
         self.tts_service_save_button = QPushButton("Save Service Settings")
+        self.tts_service_save_button.setMaximumWidth(240)
         self.tts_service_feedback_label = QLabel("")
         self.tts_service_feedback_label.setWordWrap(True)
 
@@ -171,7 +179,9 @@ class ProvidersTab(QWidget):
     def _create_tts_frame(self) -> QFrame:
         frame = QFrame()
         frame.setObjectName("groupFrame")
-        layout = QGridLayout(frame)
+        layout = configure_form_grid(
+            QGridLayout(frame), label_width=180, trailing_column=4
+        )
 
         self.tts_provider_combo = QComboBox()
         self.tts_profile_combo = QComboBox()
@@ -206,6 +216,16 @@ class ProvidersTab(QWidget):
         self.tts_test_connection_button = QPushButton("Test Connection")
         self.tts_auto_config_button = QPushButton("Auto-configure")
         self.tts_discover_catalog_button = QPushButton("Discover Models/Voices")
+        for button in (
+            self.tts_apply_profile_button,
+            self.tts_new_provider_button,
+            self.tts_save_provider_button,
+            self.tts_remove_provider_button,
+            self.tts_test_connection_button,
+            self.tts_auto_config_button,
+            self.tts_discover_catalog_button,
+        ):
+            button.setMaximumWidth(240)
 
         self.tts_adapter_summary_label = QLabel("")
         self.tts_adapter_summary_label.setWordWrap(True)

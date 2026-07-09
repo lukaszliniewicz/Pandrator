@@ -5,7 +5,6 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QScrollArea,
     QSplitter,
     QVBoxLayout,
     QWidget,
@@ -21,7 +20,7 @@ class SessionWorkspace(QWidget):
         super().__init__(parent)
         self.create_widget = create_widget
         self.review_widget = review_widget
-        self._mode = "create"
+        self._mode = "split"
         self._review_count = 0
 
         layout = QVBoxLayout(self)
@@ -51,18 +50,10 @@ class SessionWorkspace(QWidget):
 
         layout.addWidget(header)
 
-        self.create_scroll_area = QScrollArea()
-        self.create_scroll_area.setObjectName("workspaceCreateScrollArea")
-        self.create_scroll_area.setWidgetResizable(True)
-        self.create_scroll_area.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
-        self.create_scroll_area.setWidget(self.create_widget)
-
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.setObjectName("sessionWorkspaceSplitter")
         self.splitter.setChildrenCollapsible(False)
-        self.splitter.addWidget(self.create_scroll_area)
+        self.splitter.addWidget(self.create_widget)
         self.splitter.addWidget(self.review_widget)
         self.splitter.setStretchFactor(0, 1)
         self.splitter.setStretchFactor(1, 1)
@@ -84,7 +75,7 @@ class SessionWorkspace(QWidget):
         if callable(review_count):
             self.set_review_count(review_count())
 
-        self.set_mode("create")
+        self.set_mode("split")
 
     def _create_mode_button(self, text: str, mode: str) -> QPushButton:
         button = QPushButton(text)
@@ -107,7 +98,7 @@ class SessionWorkspace(QWidget):
 
         show_create = normalized_mode in {"create", "split"}
         show_review = normalized_mode in {"review", "split"}
-        self.create_scroll_area.setVisible(show_create)
+        self.create_widget.setVisible(show_create)
         self.review_widget.setVisible(show_review)
 
         target_button = {

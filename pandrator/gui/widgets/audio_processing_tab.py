@@ -1,18 +1,17 @@
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QFrame, QLabel, QCheckBox, QSpinBox,
+    QWidget, QFrame, QLabel, QCheckBox, QSpinBox,
     QPushButton, QComboBox, QGridLayout, QFileDialog, QDoubleSpinBox,
-    QMessageBox
+    QMessageBox, QHBoxLayout,
 )
-from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
+from .responsive_page import ScrollableSettingsPage, configure_form_grid
 
-class AudioProcessingTab(QWidget):
+class AudioProcessingTab(ScrollableSettingsPage):
     def __init__(self, logic, parent=None):
-        super().__init__(parent)
+        super().__init__(parent, page_object_name="audioProcessingPage")
         self.logic = logic
         
-        main_layout = QVBoxLayout(self)
-        main_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        main_layout = self.content_layout
 
         main_layout.addWidget(self._create_group_label("Appended Silence"))
         main_layout.addWidget(self._create_silence_frame())
@@ -38,7 +37,7 @@ class AudioProcessingTab(QWidget):
     def _create_silence_frame(self):
         frame = QFrame()
         frame.setObjectName("groupFrame")
-        layout = QGridLayout(frame)
+        layout = configure_form_grid(QGridLayout(frame), label_width=240)
         
         self.sentence_silence_spinbox = QSpinBox()
         self.sentence_silence_spinbox.setRange(0, 10000)
@@ -54,23 +53,31 @@ class AudioProcessingTab(QWidget):
     def _create_rvc_frame(self):
         frame = QFrame()
         frame.setObjectName("groupFrame")
-        layout = QGridLayout(frame)
+        layout = configure_form_grid(QGridLayout(frame), label_width=240)
         
         self.enable_rvc_checkbox = QCheckBox("Create RVC version during generation")
         self.rvc_model_combo = QComboBox()
         self.refresh_rvc_button = QPushButton("Refresh Models")
         self.upload_rvc_button = QPushButton("Upload New Model")
+        self.refresh_rvc_button.setMaximumWidth(220)
+        self.upload_rvc_button.setMaximumWidth(220)
 
         layout.addWidget(self.enable_rvc_checkbox, 0, 0, 1, 2)
         layout.addWidget(QLabel("RVC Model:"), 1, 0)
         layout.addWidget(self.rvc_model_combo, 1, 1)
-        layout.addWidget(self.refresh_rvc_button, 2, 0)
-        layout.addWidget(self.upload_rvc_button, 2, 1)
+        model_actions = QWidget()
+        model_actions_layout = QHBoxLayout(model_actions)
+        model_actions_layout.setContentsMargins(0, 0, 0, 0)
+        model_actions_layout.setSpacing(8)
+        model_actions_layout.addWidget(self.refresh_rvc_button)
+        model_actions_layout.addWidget(self.upload_rvc_button)
+        model_actions_layout.addStretch(1)
+        layout.addWidget(model_actions, 2, 1)
 
         # Advanced RVC Settings
         adv_frame = QFrame()
         adv_frame.setObjectName("subGroupFrame")
-        adv_layout = QGridLayout(adv_frame)
+        adv_layout = configure_form_grid(QGridLayout(adv_frame), label_width=220)
         layout.addWidget(adv_frame, 3, 0, 1, 2)
 
         adv_layout.addWidget(QLabel("Advanced RVC Settings"), 0, 0, 1, 2)
@@ -110,7 +117,7 @@ class AudioProcessingTab(QWidget):
     def _create_fade_frame(self):
         frame = QFrame()
         frame.setObjectName("groupFrame")
-        layout = QGridLayout(frame)
+        layout = configure_form_grid(QGridLayout(frame), label_width=240)
         
         self.enable_fade_checkbox = QCheckBox("Enable Fade-in and Fade-out")
         self.fade_in_spinbox = QSpinBox()

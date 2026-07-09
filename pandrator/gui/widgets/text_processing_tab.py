@@ -15,18 +15,18 @@ from PyQt6.QtWidgets import (
 )
 
 from ...logic import nemo_normalizer
+from .responsive_page import ScrollableSettingsPage, configure_form_grid
 
 
 DEFAULT_LITELLM_MODEL = "openai/gpt-5.4-mini"
 
 
-class TextProcessingTab(QWidget):
+class TextProcessingTab(ScrollableSettingsPage):
     def __init__(self, logic, parent=None):
-        super().__init__(parent)
+        super().__init__(parent, page_object_name="textProcessingPage")
         self.logic = logic
 
-        main_layout = QVBoxLayout(self)
-        main_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        main_layout = self.content_layout
 
         main_layout.addWidget(self._create_group_label("General Settings"))
         main_layout.addWidget(self._create_general_settings_frame())
@@ -82,7 +82,7 @@ class TextProcessingTab(QWidget):
     def _create_general_settings_frame(self):
         frame = QFrame()
         frame.setObjectName("groupFrame")
-        layout = QGridLayout(frame)
+        layout = configure_form_grid(QGridLayout(frame), label_width=220)
 
         self.split_sentences_checkbox = QCheckBox("Split Long Sentences")
         self.max_length_spinbox = QSpinBox()
@@ -121,10 +121,13 @@ class TextProcessingTab(QWidget):
     def _create_llm_processing_frame(self):
         frame = QFrame()
         frame.setObjectName("groupFrame")
-        layout = QGridLayout(frame)
+        layout = configure_form_grid(
+            QGridLayout(frame), label_width=220, trailing_column=3
+        )
 
         self.enable_llm_checkbox = QCheckBox("Enable LLM Processing")
         self.load_models_button = QPushButton("Refresh Built-in Models")
+        self.load_models_button.setMaximumWidth(240)
         
         self.concurrent_calls_spinbox = QSpinBox()
         self.concurrent_calls_spinbox.setRange(1, 20)
@@ -158,7 +161,14 @@ class TextProcessingTab(QWidget):
         self.llm_feedback_label.setWordWrap(True)
 
         layout.addWidget(self.enable_llm_checkbox, 0, 0)
-        layout.addWidget(self.load_models_button, 0, 1, 1, 2)
+        layout.addWidget(
+            self.load_models_button,
+            0,
+            1,
+            1,
+            2,
+            alignment=Qt.AlignmentFlag.AlignLeft,
+        )
         
         layout.addWidget(QLabel("Concurrent Calls:"), 1, 0)
         layout.addWidget(self.concurrent_calls_spinbox, 1, 1)

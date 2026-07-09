@@ -17,15 +17,15 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from .responsive_page import ScrollableSettingsPage, configure_form_grid
 
 
-class TrainXttsTab(QWidget):
+class TrainXttsTab(ScrollableSettingsPage):
     def __init__(self, logic, parent=None):
-        super().__init__(parent)
+        super().__init__(parent, page_object_name="trainXttsPage")
         self.logic = logic
 
-        main_layout = QVBoxLayout(self)
-        main_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        main_layout = self.content_layout
 
         main_layout.addWidget(self._create_group_label("Source Audio"))
         main_layout.addWidget(self._create_source_audio_frame())
@@ -109,7 +109,9 @@ class TrainXttsTab(QWidget):
     def _create_source_audio_frame(self) -> QFrame:
         frame = QFrame()
         frame.setObjectName("groupFrame")
-        layout = QGridLayout(frame)
+        layout = configure_form_grid(
+            QGridLayout(frame), label_width=240, trailing_column=3
+        )
 
         self.source_audio_path_edit = QLineEdit()
         self.browse_source_audio_button = QPushButton("Browse")
@@ -123,7 +125,7 @@ class TrainXttsTab(QWidget):
     def _create_model_config_frame(self) -> QFrame:
         frame = QFrame()
         frame.setObjectName("groupFrame")
-        layout = QGridLayout(frame)
+        layout = configure_form_grid(QGridLayout(frame), label_width=240)
 
         self.model_name_edit = QLineEdit()
 
@@ -152,7 +154,9 @@ class TrainXttsTab(QWidget):
     def _create_training_config_frame(self) -> QFrame:
         frame = QFrame()
         frame.setObjectName("groupFrame")
-        layout = QGridLayout(frame)
+        layout = configure_form_grid(
+            QGridLayout(frame), label_width=280, trailing_column=3
+        )
 
         self.max_duration_combo = self._create_editable_float_combo(
             options=[8.0, 10.0, 11.0, 12.0, 14.0, 16.0],
@@ -228,7 +232,7 @@ class TrainXttsTab(QWidget):
     def _create_voice_sample_frame(self) -> QFrame:
         frame = QFrame()
         frame.setObjectName("groupFrame")
-        layout = QGridLayout(frame)
+        layout = configure_form_grid(QGridLayout(frame), label_width=240)
 
         self.voice_sample_mode_combo = QComboBox()
         self.voice_sample_mode_combo.addItems(["basic", "extended", "dynamic"])
@@ -254,7 +258,7 @@ class TrainXttsTab(QWidget):
     def _create_training_params_frame(self) -> QFrame:
         frame = QFrame()
         frame.setObjectName("groupFrame")
-        layout = QGridLayout(frame)
+        layout = configure_form_grid(QGridLayout(frame), label_width=240)
 
         self.epochs_combo = self._create_editable_integer_combo(
             options=[4, 6, 8, 10, 12, 16],
@@ -289,7 +293,7 @@ class TrainXttsTab(QWidget):
     def _create_audio_preprocessing_frame(self) -> QFrame:
         frame = QFrame()
         frame.setObjectName("groupFrame")
-        layout = QGridLayout(frame)
+        layout = configure_form_grid(QGridLayout(frame), label_width=200)
 
         self.denoise_checkbox = QCheckBox("Denoise")
         self.breath_checkbox = QCheckBox("Remove breath sounds")

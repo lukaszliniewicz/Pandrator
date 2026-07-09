@@ -27,7 +27,7 @@ QFrame#rowFrame {
 }
 
 QFrame#workspaceHeader {
-    background-color: #29292c;
+    background-color: transparent;
     border: none;
     border-bottom: 1px solid #4d5863;
 }
@@ -56,8 +56,10 @@ QPushButton#workspaceModeButton:checked {
     color: #ffffff;
 }
 
-QScrollArea#workspaceCreateScrollArea,
-QScrollArea#workspaceCreateScrollArea > QWidget > QWidget {
+QScrollArea#settingsPageScrollArea,
+QScrollArea#settingsPageScrollArea > QWidget > QWidget,
+QWidget#settingsPageShell,
+QWidget#settingsPageContent {
     background-color: #2d2d30;
     border: none;
 }
@@ -88,25 +90,27 @@ QPushButton#reviewFilterButton:checked:disabled {
 }
 
 QFrame#reviewSelectionToolbar {
-    background-color: #29292c;
+    background-color: transparent;
     border: none;
     border-top: 1px solid #4d5863;
     padding-top: 8px;
 }
 
 QFrame#emptyReviewFrame {
-    background-color: #29292c;
+    background-color: transparent;
     border: 1px dashed #59616a;
     border-radius: 10px;
 }
 
 QLabel#emptyReviewTitle {
+    background-color: transparent;
     color: #f1f1f1;
     font-size: 18px;
     font-weight: bold;
 }
 
 QLabel#emptyReviewDetail {
+    background-color: transparent;
     color: #aeb6c0;
 }
 
@@ -281,44 +285,12 @@ QSpinBox,
 QDoubleSpinBox {
     min-width: 72px;
     min-height: 30px;
-    padding: 4px 32px 4px 8px;
+    padding: 4px 8px;
 }
 
-QSpinBox::up-button,
-QDoubleSpinBox::up-button {
-    subcontrol-origin: border;
-    subcontrol-position: top right;
-    background-color: #4d5863;
-    border: none;
-    border-left: 1px solid #65717d;
-    border-bottom: 1px solid #65717d;
-    border-top-right-radius: 5px;
-    width: 26px;
-}
-
-QSpinBox::down-button,
-QDoubleSpinBox::down-button {
-    subcontrol-origin: border;
-    subcontrol-position: bottom right;
-    background-color: #4d5863;
-    border: none;
-    border-left: 1px solid #65717d;
-    border-bottom-right-radius: 5px;
-    width: 26px;
-}
-
-QSpinBox::up-button:hover,
-QSpinBox::down-button:hover,
-QDoubleSpinBox::up-button:hover,
-QDoubleSpinBox::down-button:hover {
-    background-color: #667382;
-}
-
-QSpinBox::up-button:pressed,
-QSpinBox::down-button:pressed,
-QDoubleSpinBox::up-button:pressed,
-QDoubleSpinBox::down-button:pressed {
-    background-color: #7e57c2;
+QComboBox {
+    min-height: 24px;
+    padding: 3px 8px;
 }
 
 QAbstractItemView {
@@ -337,8 +309,7 @@ QTabWidget#leftPaneTabWidget::pane {
     border: none;
 }
 
-QHeaderView::section,
-QComboBox::drop-down {
+QHeaderView::section {
     background-color: #4d5863;
     border: 1px solid #4d5863;
     color: #f1f1f1;
@@ -396,7 +367,7 @@ QScrollBar:vertical {
     background: transparent;
     border: none;
     margin: 2px;
-    width: 10px;
+    width: 12px;
 }
 
 QScrollBar:horizontal {

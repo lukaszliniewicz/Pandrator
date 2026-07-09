@@ -4,10 +4,19 @@ from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import QApplication, QWidget
+from PyQt6.QtCore import QPoint, QPointF, Qt, pyqtSignal
+from PyQt6.QtGui import QWheelEvent
+from PyQt6.QtWidgets import (
+    QAbstractSpinBox,
+    QApplication,
+    QComboBox,
+    QLabel,
+    QSpinBox,
+    QWidget,
+)
 
 from pandrator.gui.widgets.generated_sentences_widget import GeneratedSentencesWidget
+from pandrator.gui.widgets.responsive_page import ScrollableSettingsPage
 from pandrator.gui.widgets.session_workspace import SessionWorkspace
 
 
@@ -148,22 +157,62 @@ class GeneratedSentencesUiTests(unittest.TestCase):
         review_widget = DummyReview()
         workspace = SessionWorkspace(create_widget, review_widget)
 
-        self.assertEqual(workspace.mode(), "create")
-        self.assertFalse(workspace.create_scroll_area.isHidden())
-        self.assertTrue(review_widget.isHidden())
+        self.assertEqual(workspace.mode(), "split")
+        self.assertFalse(create_widget.isHidden())
+        self.assertFalse(review_widget.isHidden())
 
         workspace.set_mode("review")
         self.assertEqual(workspace.mode(), "review")
-        self.assertTrue(workspace.create_scroll_area.isHidden())
+        self.assertTrue(create_widget.isHidden())
         self.assertFalse(review_widget.isHidden())
 
         workspace.set_mode("split")
         self.assertEqual(workspace.mode(), "split")
-        self.assertFalse(workspace.create_scroll_area.isHidden())
+        self.assertFalse(create_widget.isHidden())
         self.assertFalse(review_widget.isHidden())
 
         review_widget.create_requested.emit()
         self.assertEqual(workspace.mode(), "create")
+
+    def test_responsive_page_is_wide_scrollable_and_compacts_form_controls(self):
+        page = ScrollableSettingsPage(max_content_width=1400)
+        spinbox = QSpinBox()
+        combo = QComboBox()
+        combo.addItems(["One", "Two"])
+        page.content_layout.addWidget(spinbox)
+        page.content_layout.addWidget(combo)
+        for index in range(50):
+            page.content_layout.addWidget(QLabel(f"Settings row {index}"))
+
+        page.resize(1900, 700)
+        page.show()
+        self.app.processEvents()
+
+        self.assertGreaterEqual(page.content_widget.width(), 1200)
+        self.assertLessEqual(page.content_widget.width(), 1400)
+        self.assertGreater(page.scroll_area.verticalScrollBar().maximum(), 0)
+        self.assertEqual(
+            spinbox.buttonSymbols(),
+            QAbstractSpinBox.ButtonSymbols.NoButtons,
+        )
+        self.assertLessEqual(spinbox.maximumWidth(), 180)
+        self.assertLessEqual(combo.maximumWidth(), 560)
+
+        starting_value = spinbox.value()
+        wheel_event = QWheelEvent(
+            QPointF(4, 4),
+            QPointF(4, 4),
+            QPoint(0, 0),
+            QPoint(0, -120),
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+            Qt.ScrollPhase.ScrollUpdate,
+            False,
+        )
+        QApplication.sendEvent(spinbox, wheel_event)
+        self.assertEqual(spinbox.value(), starting_value)
+        self.assertGreater(page.scroll_area.verticalScrollBar().value(), 0)
+        page.close()
 
 
 if __name__ == "__main__":

@@ -10,9 +10,7 @@ from PyQt6.QtWidgets import (
     QInputDialog,
     QMessageBox,
     QProgressDialog,
-    QHBoxLayout,
     QVBoxLayout,
-    QWidget,
 )
 
 from ...constants import (
@@ -61,6 +59,7 @@ from .session_sections import (
     TtsSettingsSection,
     create_section_label,
 )
+from .responsive_page import ScrollableSettingsPage
 
 
 VOICE_GENDER_LABELS = {
@@ -99,28 +98,21 @@ MEDIA_FILE_DIALOG_FILTER = (
 )
 
 
-class SessionTab(QWidget):
+class SessionTab(ScrollableSettingsPage):
     source_import_status = pyqtSignal(str)
     source_import_finished = pyqtSignal(object)
 
     def __init__(self, logic, parent=None):
-        super().__init__(parent)
+        super().__init__(
+            parent,
+            max_content_width=1400,
+            page_object_name="sessionCreatePage",
+        )
         self.logic = logic
         self._source_import_thread: threading.Thread | None = None
         self._source_import_progress_dialog: QProgressDialog | None = None
 
-        outer_layout = QHBoxLayout(self)
-        outer_layout.setContentsMargins(0, 0, 0, 0)
-
-        self.content_widget = QWidget()
-        self.content_widget.setObjectName("sessionContent")
-        self.content_widget.setMaximumWidth(1080)
-        outer_layout.addStretch(1)
-        outer_layout.addWidget(self.content_widget, 1)
-        outer_layout.addStretch(1)
-
-        main_layout = QVBoxLayout(self.content_widget)
-        main_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        main_layout = self.content_layout
         main_layout.setSpacing(8)
 
         self._build_layout(main_layout)
