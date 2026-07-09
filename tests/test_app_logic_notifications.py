@@ -97,7 +97,7 @@ class AppLogicNotificationTests(unittest.TestCase):
         text_message = AppLogic._build_source_loaded_notification("book.txt", ".txt")
 
         self.assertIn("SRT source loaded: captions.srt.", srt_message)
-        self.assertIn("Fine-Tune Timings", srt_message)
+        self.assertIn("Preview Subtitles", srt_message)
         self.assertEqual("Dubbing source loaded: clip.mp4", video_message)
         self.assertEqual("Dubbing source loaded: meeting.mp3", audio_message)
         self.assertEqual("Source loaded: book.txt", text_message)

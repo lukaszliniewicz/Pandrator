@@ -941,9 +941,6 @@ class DubbingSection(QFrame):
         ])
         trans_layout.addWidget(self.dub_whisper_model_combo, 1, 1)
 
-        self.dub_advanced_button = QPushButton("Transcription Settings...")
-        trans_layout.addWidget(self.dub_advanced_button, 1, 2, 1, 2)
-
         self.dub_correct_transcription_check = QCheckBox("Correct transcription with LLM")
         trans_layout.addWidget(self.dub_correct_transcription_check, 2, 0, 1, 2)
 
@@ -1047,13 +1044,16 @@ class DubbingSection(QFrame):
         self.only_translate_action = self.stage_actions_menu.addAction("Translate Only")
         self.stage_actions_button.setMenu(self.stage_actions_menu)
 
+        self.dub_advanced_button = QPushButton("Advanced Dubbing Settings…")
+
         self.generate_dub_audio_button = QPushButton("Generate Dubbing Audio")
         self.generate_dub_audio_button.setObjectName("generateDubAudioButton")
         self.generate_dub_audio_button.setProperty("accentActive", False)
         self.add_dub_to_video_button = QPushButton("Add Dubbing to Video")
-        self.fine_tune_timings_button = QPushButton("Fine-Tune Timings")
+        self.fine_tune_timings_button = QPushButton("Preview Subtitles")
 
         buttons_layout.addWidget(self.stage_actions_button)
+        buttons_layout.addWidget(self.dub_advanced_button)
         buttons_layout.addStretch(1)
         buttons_layout.addWidget(self.fine_tune_timings_button)
         buttons_layout.addWidget(self.add_dub_to_video_button)

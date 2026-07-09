@@ -21,6 +21,22 @@ friend
 
 
 class DubbingTranscriptionTests(unittest.TestCase):
+    def test_automatic_boundary_correction_is_whisperx_only(self):
+        settings = {"boundary_correction_enabled": True}
+
+        self.assertTrue(
+            transcription.automatic_boundary_correction_enabled(
+                settings,
+                "whisperx",
+            )
+        )
+        self.assertFalse(
+            transcription.automatic_boundary_correction_enabled(
+                settings,
+                "parakeet_onnx",
+            )
+        )
+
     def test_build_whisperx_args_includes_prompt_and_diarization(self):
         args = transcription.build_whisperx_args(
             "audio.wav",
@@ -234,6 +250,9 @@ class DubbingTranscriptionTests(unittest.TestCase):
                 return SimpleNamespace(stderr=b"")
             raise AssertionError(f"Unexpected command: {command}")
 
+        def fail_boundary_audio_loader(*_args):
+            raise AssertionError("Parakeet must not run WhisperX boundary correction")
+
         with tempfile.TemporaryDirectory() as temp_dir:
             video_path = os.path.join(temp_dir, "clip.mp4")
             Path(video_path).write_bytes(b"video")
@@ -244,12 +263,14 @@ class DubbingTranscriptionTests(unittest.TestCase):
                     video_path,
                     {
                         "stt_backend": "parakeet_onnx",
+                        "boundary_correction_enabled": True,
                         "parakeet_model": "nemo-parakeet-tdt-0.6b-v3",
                         "parakeet_vad_max_speech_seconds": 15,
                         "parakeet_vad_threshold": 0.5,
                         "subtitle_merge_threshold": 0,
                     },
                     run_func=fake_run,
+                    boundary_audio_loader=fail_boundary_audio_loader,
                 )
 
             self.assertEqual(Path(output_path).name, "clip.srt")

@@ -316,10 +316,15 @@ QHeaderView::section {
 }
 
 QProgressBar::chunk,
-QMenu::item:selected,
-QTableWidget::item:selected {
+QMenu::item:selected {
     background-color: #7e57c2;
     border: 1px solid #7e57c2;
+    color: #f1f1f1;
+}
+
+QTableWidget::item:selected {
+    background-color: #7e57c2;
+    border: none;
     color: #f1f1f1;
 }
 

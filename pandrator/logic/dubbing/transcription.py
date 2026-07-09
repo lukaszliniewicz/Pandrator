@@ -10,7 +10,11 @@ from typing import Any, Callable
 
 from .languages import normalize_language_code
 from ..source_media import is_audio_source
-from .stt_backends import STT_BACKEND_PARAKEET_ONNX, normalize_stt_backend
+from .stt_backends import (
+    STT_BACKEND_PARAKEET_ONNX,
+    STT_BACKEND_WHISPERX,
+    normalize_stt_backend,
+)
 from .srt_utils import merge_subtitles_with_speaker_awareness, renumber_subtitles
 
 logger = logging.getLogger(__name__)
@@ -22,6 +26,23 @@ DEFAULT_WHISPER_PROMPT = (
 DEFAULT_WHISPER_CHUNK_SIZE = 15
 WHISPERX_PIXI_EXE_ENV = "WHISPERX_PIXI_EXE"
 WHISPERX_PIXI_MANIFEST_ENV = "WHISPERX_PIXI_MANIFEST"
+
+
+def automatic_boundary_correction_enabled(
+    settings: dict[str, Any],
+    stt_backend: str | None = None,
+) -> bool:
+    """Automatic wav2vec2 boundary correction is specific to WhisperX output."""
+
+    backend = normalize_stt_backend(
+        stt_backend if stt_backend is not None else settings.get("stt_backend")
+    )
+    requested = bool(
+        settings.get("boundary_correction_enabled")
+        or settings.get("boundary_correction")
+    )
+    return requested and backend == STT_BACKEND_WHISPERX
+
 
 ALIGN_MODELS_BY_LANGUAGE = {
     "pl": "jonatasgrosman/wav2vec2-xls-r-1b-polish",
@@ -128,19 +149,14 @@ def transcribe_source_file(
     )
     if is_audio_source(str(source_path)):
         logger.info("Normalized audio source for transcription: %s", audio_path)
-    boundary_correction_enabled = bool(
-        settings.get("boundary_correction_enabled")
-        or settings.get("boundary_correction")
-    )
     stt_backend = normalize_stt_backend(settings.get("stt_backend"))
+    boundary_correction_enabled = automatic_boundary_correction_enabled(
+        settings,
+        stt_backend,
+    )
     if stt_backend == STT_BACKEND_PARAKEET_ONNX:
         from .parakeet_onnx import transcribe_audio_with_parakeet
 
-        if boundary_correction_enabled:
-            logger.warning(
-                "WhisperX JSON boundary correction is not available for ONNX Parakeet yet; "
-                "using Parakeet VAD segment boundaries."
-            )
         if bool(settings.get("diarization_enabled") or settings.get("diarize")):
             logger.warning("Diarization is currently only supported by the WhisperX STT backend.")
 

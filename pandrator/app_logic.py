@@ -269,7 +269,7 @@ class AppLogic(QObject):
         if normalized_extension == ".srt":
             return (
                 f"SRT source loaded: {normalized_name}. "
-                "Use Fine-Tune Timings to adjust subtitle boundaries."
+                "Use Preview Subtitles to review and adjust subtitle boundaries."
             )
         if cls._is_dubbing_source_extension(normalized_extension):
             return f"Dubbing source loaded: {normalized_name}"
@@ -2822,11 +2822,11 @@ class AppLogic(QObject):
                 self._mark_dubbing_step("transcribe", "completed")
                 self._set_session_activity(
                     "Transcription complete",
-                    "Subtitle text is ready. Use Fine-Tune Timings if you want manual boundary edits.",
+                    "Subtitle text is ready. Use Preview Subtitles to review or adjust boundaries.",
                     "success",
                 )
                 self.log_message.emit(
-                    "Transcription complete. Use Fine-Tune Timings to adjust subtitle boundaries."
+                    "Transcription complete. Use Preview Subtitles to review or adjust boundaries."
                 )
                 self.state_changed.emit()
             else:
@@ -2992,7 +2992,7 @@ class AppLogic(QObject):
             self._mark_dubbing_step("transcribe", "completed")
 
             self.log_message.emit(
-                "Transcription generated an SRT. Use Fine-Tune Timings before rerunning if you want manual boundary edits."
+                "Transcription generated an SRT. Use Preview Subtitles before rerunning if you want manual boundary edits."
             )
         else:
             self._register_dubbing_artifact("source_srt", srt_file, is_current=True)

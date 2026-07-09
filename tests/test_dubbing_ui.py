@@ -30,6 +30,7 @@ class DubbingUiTests(unittest.TestCase):
         section.set_stt_backend("parakeet_onnx")
         self.assertTrue(section.dub_whisper_model_label.isHidden())
         self.assertTrue(section.dub_whisper_model_combo.isHidden())
+        self.assertFalse(section.fine_tune_timings_button.isHidden())
 
         section.set_stt_backend("whisperx")
         self.assertFalse(section.dub_whisper_model_label.isHidden())
@@ -169,6 +170,15 @@ Preview this segment.
         self.assertEqual(section.only_transcribe_action.text(), "Transcribe Only")
         self.assertEqual(section.only_correct_action.text(), "Correct Only")
         self.assertEqual(section.only_translate_action.text(), "Translate Only")
+        self.assertEqual(section.dub_advanced_button.text(), "Advanced Dubbing Settings…")
+        self.assertEqual(section.fine_tune_timings_button.text(), "Preview Subtitles")
+
+        actions_layout = section.buttons_frame.layout()
+        self.assertEqual(
+            actions_layout.indexOf(section.dub_advanced_button),
+            actions_layout.indexOf(section.stage_actions_button) + 1,
+        )
+        self.assertEqual(section.transcription_frame.layout().indexOf(section.dub_advanced_button), -1)
 
     def test_parakeet_advanced_dialog_shows_vad_group_not_whisper_group(self):
         state = DubbingSettings(stt_backend="parakeet_onnx")
