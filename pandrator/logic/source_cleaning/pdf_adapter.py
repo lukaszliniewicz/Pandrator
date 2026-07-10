@@ -8,7 +8,7 @@ import os
 import re
 import statistics
 import unicodedata
-from collections import Counter, defaultdict
+from collections import defaultdict
 from dataclasses import asdict, dataclass
 from typing import Any, Callable, Iterable
 
@@ -17,7 +17,7 @@ from .pdf_text_adapter import _front_matter_metadata, _metadata_from_filename
 
 
 ProgressCallback = Callable[[str], None]
-PDF_INGESTION_VERSION = 1
+PDF_INGESTION_VERSION = 3
 _LATIN_V6_LANGUAGES = {
     "auto", "latin", "en", "af", "az", "bs", "ca", "cs", "cy", "da", "de", "es",
     "et", "eu", "fi", "fr", "ga", "gl", "hr", "hu", "id", "is", "it", "ku", "la",
@@ -32,12 +32,42 @@ _CHAPTER_RE = re.compile(
     re.IGNORECASE,
 )
 _NUMBERED_HEADING_RE = re.compile(
-    r"^(?:[ivxlcdm]+|\d{1,4})(?:(?:[.)]\s+)|(?:\s+-\s+)|\s+)\S+",
+    # A bare ``I `` is ordinarily a sentence pronoun, and OCR often inserts
+    # spaces into page numbers (``1 30``). Both were previously treated as
+    # numbered headings. Permit an undelimited form only for Arabic numbers
+    # followed by a word, while Roman numerals require an explicit delimiter.
+    r"^(?:\d{1,4}(?:[.)]\s+|\s*[-–—]\s+|\s+(?=[^\W\d_])\S+)|"
+    r"[ivxlcdm]{1,8}(?:[.)]\s+|\s*[-–—]\s+))",
     re.IGNORECASE,
 )
-_NOTE_PREFIX_RE = re.compile(r"^(?:\[\d+\]|\d{1,3}[.)]|[*†‡])\s+\S+")
+_MAJOR_SECTION_RE = re.compile(
+    r"^(?:acknowledg(?:e)?ments?|preface|foreword|introduction|prologue|epilogue|afterword|"
+    r"conclusion|appendi(?:x|ces)|postscript|chapter|book|part|volume|section|"
+    r"pr[eé]face|avant-propos|postface|chapitre|kapitel|vorwort|einleitung|nachwort|"
+    r"prolog|epilog|cap[ií]tulo|introducci[oó]n|pr[oó]logo|ep[ií]logo|"
+    r"wst[eę]p|przedmowa|pos[lł]owie|podzi[eę]kowania|rozdzia[lł]|cz[eę][sś][cć]|tom|ksi[eę]ga|"
+    r"предисловие|введение|послесловие|глава|часть)\b",
+    re.IGNORECASE,
+)
+_NOTE_PREFIX_RE = re.compile(
+    r"^(?:\[\d{1,3}\]|\d{1,3}[.)]|[*†‡]|[ivxlcdm]{1,8})\s+\S+",
+    re.IGNORECASE,
+)
+_SINGLE_NOTE_MARKER_RE = re.compile(r"^[*†‡]$")
 _TOC_HEADING_RE = re.compile(
-    r"^(?:table of contents|contents|spis tre[sś]ci|sommaire|inhaltsverzeichnis|indice|índice)$",
+    r"\b(?:table of contents|contents|spis tre[sś]ci|sommaire|inhaltsverzeichnis|indice|índice|содержание)\b",
+    re.IGNORECASE,
+)
+_COPYRIGHT_RE = re.compile(
+    r"(?:\bcopyright\b|©|\ball rights reserved\b|\bisbn\b|\blibrary of congress\b|"
+    r"\bcatalog(?:ue|uing|ing)?\b|\bno part of this publication\b|\bprinted in\b|"
+    r"\bfirst published\b|\bpublished by\b)",
+    re.IGNORECASE,
+)
+_NON_NARRATIVE_HEADING_RE = re.compile(
+    r"^(?:(?:select\s+)?(?:bibliography|references|works cited|index|glossary|"
+    r"notes?|footnotes?|endnotes?|colophon|copyright|list of abbreviations|abbreviations)|"
+    r"(?:wykaz|spis)\s+skr[oó]t[oó]w|ключи|.*(?:мини[-*])?словар\w*)\b",
     re.IGNORECASE,
 )
 
@@ -272,8 +302,12 @@ def build_source_document(
 
     _emit(progress_callback, "Analyzing PDF structure and layout...")
     _annotate_structural_roles(document)
+    _annotate_page_continuations(document)
     repeated_marginal_count = sum(
         block.role_score("repeated_marginal") >= 0.95 for block in document.blocks
+    )
+    page_continuation_count = sum(
+        block.role_score("page_continuation") >= 0.92 for block in document.blocks
     )
     ocr_page_count = sum(
         page.get("source_method") == "ocr"
@@ -294,6 +328,7 @@ def build_source_document(
         "native_page_count": len(document.attributes["pdf_ingestion"]["pages"]) - ocr_page_count,
         "block_count": len(document.blocks),
         "repeated_marginal_block_count": repeated_marginal_count,
+        "page_continuation_count": page_continuation_count,
         "recommendations": recommendations,
     }
     front_matter = _front_matter_metadata(document.blocks)
@@ -322,10 +357,19 @@ def propose_deterministic_operations(
         repeated = [
             block.block_id
             for block in document.blocks
-            if block.role_score("repeated_marginal") >= 0.95 or block.role_score("page_number") >= 0.98
+            if (
+                block.role_score("repeated_marginal") >= 0.95
+                or block.role_score("running_header") >= 0.98
+                or block.role_score("page_number") >= 0.98
+            )
         ]
         if repeated:
             deletion_groups.append(("high-confidence repeated margins and page numbers", repeated, 0.98))
+        boilerplate = [
+            block.block_id for block in document.blocks if block.role_score("boilerplate") >= 0.98
+        ]
+        if boilerplate:
+            deletion_groups.append(("high-confidence front-matter publishing boilerplate", boilerplate, 0.98))
     if remove_toc:
         toc = [block.block_id for block in document.blocks if block.role_score("toc") >= 0.92]
         if toc:
@@ -497,6 +541,11 @@ def _annotate_structural_roles(document: SourceDocument) -> None:
     ]
     body_font = statistics.median(font_sizes) if font_sizes else 10.0
     page_count = max((block.page or 0 for block in document.blocks), default=1)
+    blocks_by_page: dict[int, list[SourceBlock]] = defaultdict(list)
+    for block in document.blocks:
+        if block.page:
+            blocks_by_page[block.page].append(block)
+
     marginal_occurrences: dict[str, list[SourceBlock]] = defaultdict(list)
     for block in document.blocks:
         bbox = block.attributes.get("bbox") or [0, 0, 0, 0]
@@ -515,18 +564,23 @@ def _annotate_structural_roles(document: SourceDocument) -> None:
         for block in blocks
     }
 
-    toc_candidates: list[SourceBlock] = []
     front_limit = max(5, min(30, int(page_count * 0.2) + 1))
+    toc_pages = _find_toc_pages(blocks_by_page, front_limit)
+    boilerplate_pages = _find_front_boilerplate_pages(blocks_by_page, page_count)
     for block in document.blocks:
         evidence: dict[str, dict[str, Any]] = {}
         text = block.text.strip()
-        lowered = text.casefold()
         bbox = block.attributes.get("bbox") or [0, 0, 0, 0]
         page_size = block.attributes.get("page_size") or [1, 1]
         y0 = float(bbox[1]) / max(1.0, float(page_size[1]))
         y1 = float(bbox[3]) / max(1.0, float(page_size[1]))
         font_size = float(block.attributes.get("font_size") or body_font)
+        font_ratio = font_size / max(1.0, body_font)
         short = len(text) <= 160 and len(text.split()) <= 18
+        page_blocks = blocks_by_page.get(block.page or 0, [])
+        is_toc_page = (block.page or 0) in toc_pages
+        is_content_opener = _is_content_opener(block, page_blocks, body_font)
+        is_running_header = _is_probable_running_header(text, short, y1, font_size, body_font)
 
         page_number_shape = bool(re.fullmatch(r"(?:\d{1,4}|[ivxlcdm]{1,8})", text, re.IGNORECASE))
         page_number_size = font_size <= body_font * 1.15
@@ -537,23 +591,62 @@ def _annotate_structural_roles(document: SourceDocument) -> None:
                 "score": 0.98,
                 "reasons": ["normalized_text_repeats_across_pages", "consistent_marginal_position"],
             }
+        if is_running_header:
+            evidence["running_header"] = {
+                "score": 0.98,
+                "reasons": ["top_marginal_position", "smaller_than_body_font", "variable_header_shape"],
+            }
+        if (block.page or 0) in boilerplate_pages:
+            reasons = ["front_matter_page_with_multiple_publishing_signals"]
+            if _COPYRIGHT_RE.search(text):
+                reasons.insert(0, "explicit_publishing_or_copyright_signal")
+            evidence["boilerplate"] = {"score": 0.98, "reasons": reasons}
+
         heading_score = 0.0
         heading_reasons: list[str] = []
-        if short and font_size >= body_font * 1.18:
+        explicit_chapter = short and bool(_CHAPTER_RE.match(text))
+        numbered_heading = short and bool(_NUMBERED_HEADING_RE.match(text))
+        major_section = short and bool(_MAJOR_SECTION_RE.match(text))
+        non_narrative_section = short and bool(_NON_NARRATIVE_HEADING_RE.match(text))
+        if short and font_ratio >= 1.45:
+            heading_score += 0.65
+            heading_reasons.append("substantially_larger_than_body_font")
+        elif short and font_ratio >= 1.18:
             heading_score += 0.45
             heading_reasons.append("larger_than_body_font")
-        if short and (_CHAPTER_RE.match(text) or _NUMBERED_HEADING_RE.match(text)):
+        if explicit_chapter:
+            heading_score += 0.75
+            heading_reasons.append("explicit_numbered_chapter")
+        elif numbered_heading:
             heading_score += 0.45
-            heading_reasons.append("numbered_or_named_heading")
+            heading_reasons.append("numbered_heading_with_safe_delimiter")
+        if major_section:
+            heading_score += 0.55
+            heading_reasons.append("named_major_section")
         if short and text.isupper() and len(text) >= 4:
             heading_score += 0.20
             heading_reasons.append("all_caps")
         if short and y0 < 0.35:
             heading_score += 0.10
             heading_reasons.append("upper_page_position")
+        if short and is_content_opener:
+            heading_score += 0.15
+            heading_reasons.append("opens_substantial_page_content")
         if heading_score >= 0.45:
             evidence["heading"] = {"score": min(0.99, heading_score), "reasons": heading_reasons}
-        if heading_score >= 0.85 and not evidence.get("repeated_marginal"):
+        if non_narrative_section:
+            evidence["non_narrative_section"] = {
+                "score": 0.90,
+                "reasons": ["bibliographic_or_note_section_heading"],
+            }
+        if (
+            heading_score >= 0.85
+            and not evidence.get("repeated_marginal")
+            and not evidence.get("running_header")
+            and not is_toc_page
+            and not non_narrative_section
+            and (is_content_opener or explicit_chapter or major_section)
+        ):
             evidence["deterministic_chapter"] = {
                 "score": min(0.96, heading_score),
                 "reasons": heading_reasons + ["global_pdf_heading_policy"],
@@ -561,14 +654,18 @@ def _annotate_structural_roles(document: SourceDocument) -> None:
 
         footnote_reasons: list[str] = []
         footnote_score = 0.0
-        if y0 >= 0.72:
-            footnote_score += 0.4
+        note_marker = bool(_NOTE_PREFIX_RE.match(text) or _SINGLE_NOTE_MARKER_RE.fullmatch(text))
+        if y0 >= 0.80:
+            footnote_score += 0.45
             footnote_reasons.append("bottom_page_region")
-        if font_size <= body_font * 0.86:
+        elif y0 >= 0.72:
+            footnote_score += 0.30
+            footnote_reasons.append("lower_page_region")
+        if font_size <= body_font * 0.90:
             footnote_score += 0.3
             footnote_reasons.append("smaller_than_body_font")
-        if _NOTE_PREFIX_RE.match(text):
-            footnote_score += 0.3
+        if note_marker:
+            footnote_score += 0.35
             footnote_reasons.append("note_marker_prefix")
         if footnote_score >= 0.6 and "page_number" not in evidence:
             evidence["footnote"] = {"score": min(0.98, footnote_score), "reasons": footnote_reasons}
@@ -576,8 +673,12 @@ def _annotate_structural_roles(document: SourceDocument) -> None:
         toc_like = bool(re.search(r"\.{3,}\s*\d{1,4}$", text)) or (
             short and bool(re.search(r"\s+\d{1,4}$", text))
         )
-        if (block.page or 1) <= front_limit and (toc_like or _TOC_HEADING_RE.match(text)):
-            toc_candidates.append(block)
+        if is_toc_page:
+            evidence["toc"] = {
+                "score": 0.94,
+                "reasons": ["front_matter", "toc_heading_or_continuation_page"],
+            }
+        elif (block.page or 1) <= front_limit and (toc_like or _TOC_HEADING_RE.search(text)):
             evidence["toc_candidate"] = {
                 "score": 0.7 if toc_like else 0.85,
                 "reasons": ["front_matter", "toc_entry_shape" if toc_like else "toc_heading"],
@@ -585,17 +686,260 @@ def _annotate_structural_roles(document: SourceDocument) -> None:
         block.attributes["role_evidence"] = evidence
         block.role_candidates = sorted(set(block.role_candidates + list(evidence)))
 
-    by_page = Counter(block.page for block in toc_candidates)
-    toc_pages = {page for page, count in by_page.items() if page and count >= 4}
-    for block in toc_candidates:
-        if block.page not in toc_pages:
+
+def _annotate_page_continuations(document: SourceDocument) -> None:
+    """Mark only high-confidence narrative continuations across adjacent pages.
+
+    PDF layout normally creates a new extraction block at every page boundary.
+    Keeping the source blocks separate preserves page-level provenance for review,
+    while the annotation lets the cleaned-text writer reflow safe continuations.
+    """
+    blocks_by_page: dict[int, list[SourceBlock]] = defaultdict(list)
+    for block in document.blocks:
+        if block.page:
+            blocks_by_page[block.page].append(block)
+
+    pages = sorted(blocks_by_page)
+    for previous_page, current_page in zip(pages, pages[1:]):
+        if current_page != previous_page + 1:
             continue
-        evidence = block.attributes["role_evidence"]
-        evidence["toc"] = {
-            "score": 0.94,
-            "reasons": ["front_matter", "dense_toc_candidate_page"],
-        }
-        block.role_candidates = sorted(set(block.role_candidates + ["toc"]))
+        previous = _boundary_narrative_block(blocks_by_page[previous_page], reverse=True)
+        current = _boundary_narrative_block(blocks_by_page[current_page])
+        if previous is None or current is None:
+            continue
+        if _has_structural_separator_after(blocks_by_page[previous_page], previous):
+            continue
+        if _has_structural_separator_before(blocks_by_page[current_page], current):
+            continue
+        continuation = _page_continuation_details(previous, current)
+        if continuation is None:
+            continue
+        mode, reasons = continuation
+        evidence = current.attributes.setdefault("role_evidence", {})
+        evidence["page_continuation"] = {"score": 0.96, "reasons": reasons}
+        current.attributes["continuation_from_block_id"] = previous.block_id
+        current.attributes["continuation_join"] = mode
+        current.role_candidates = sorted(set(current.role_candidates + ["page_continuation"]))
+
+
+def _boundary_narrative_block(blocks: list[SourceBlock], reverse: bool = False) -> SourceBlock | None:
+    for block in reversed(blocks) if reverse else blocks:
+        if _is_narrative_boundary_block(block):
+            return block
+    return None
+
+
+def _is_narrative_boundary_block(block: SourceBlock) -> bool:
+    if len(block.text.strip()) < 3:
+        return False
+    excluded_roles = (
+        ("repeated_marginal", 0.95),
+        ("running_header", 0.98),
+        ("page_number", 0.98),
+        ("boilerplate", 0.98),
+        ("toc", 0.92),
+        ("toc_candidate", 0.70),
+        ("footnote", 0.60),
+        ("heading", 0.45),
+        ("non_narrative_section", 0.85),
+    )
+    return not any(block.role_score(role) >= score for role, score in excluded_roles)
+
+
+def _has_structural_separator_after(blocks: list[SourceBlock], candidate: SourceBlock) -> bool:
+    try:
+        candidate_index = next(
+            index for index, block in enumerate(blocks) if block.block_id == candidate.block_id
+        )
+    except StopIteration:
+        return True
+    return any(_is_structural_page_separator(block) for block in blocks[candidate_index + 1:])
+
+
+def _has_structural_separator_before(blocks: list[SourceBlock], candidate: SourceBlock) -> bool:
+    try:
+        candidate_index = next(
+            index for index, block in enumerate(blocks) if block.block_id == candidate.block_id
+        )
+    except StopIteration:
+        return True
+    return any(_is_structural_page_separator(block) for block in blocks[:candidate_index])
+
+
+def _is_structural_page_separator(block: SourceBlock) -> bool:
+    if any(
+        block.role_score(role) >= score
+        for role, score in (
+            ("repeated_marginal", 0.95),
+            ("running_header", 0.98),
+            ("page_number", 0.98),
+        )
+    ):
+        return False
+    return any(
+        block.role_score(role) >= score
+        for role, score in (
+            ("deterministic_chapter", 0.85),
+            ("heading", 0.45),
+            ("non_narrative_section", 0.85),
+            ("toc", 0.92),
+            ("boilerplate", 0.98),
+        )
+    )
+
+
+def _page_continuation_details(
+    previous: SourceBlock, current: SourceBlock
+) -> tuple[str, list[str]] | None:
+    previous_box = previous.attributes.get("bbox") or [0, 0, 0, 0]
+    current_box = current.attributes.get("bbox") or [0, 0, 0, 0]
+    previous_size = previous.attributes.get("page_size") or [1, 1]
+    current_size = current.attributes.get("page_size") or [1, 1]
+    previous_bottom = float(previous_box[3]) / max(1.0, float(previous_size[1]))
+    current_top = float(current_box[1]) / max(1.0, float(current_size[1]))
+    if previous_bottom < 0.64 or current_top > 0.32:
+        return None
+    if previous.attributes.get("source_method") != current.attributes.get("source_method"):
+        return None
+    if previous.attributes.get("reading_order") != current.attributes.get("reading_order"):
+        return None
+
+    previous_font = float(previous.attributes.get("font_size") or 0.0)
+    current_font = float(current.attributes.get("font_size") or 0.0)
+    if previous_font and current_font:
+        font_ratio = current_font / previous_font
+        if not 0.78 <= font_ratio <= 1.28:
+            return None
+    previous_left = float(previous_box[0]) / max(1.0, float(previous_size[0]))
+    current_left = float(current_box[0]) / max(1.0, float(current_size[0]))
+    if abs(previous_left - current_left) > 0.14:
+        return None
+
+    previous_text = previous.text.rstrip()
+    current_text = current.text.lstrip()
+    if not previous_text or not current_text:
+        return None
+    reasons = [
+        "adjacent_pages",
+        "body_blocks_touch_page_boundary",
+        "matching_source_method_and_layout",
+        "matching_typography_and_left_margin",
+    ]
+    if _ends_with_split_hyphen(previous_text) and _starts_with_letter(current_text):
+        return "remove_hyphen", reasons + ["hyphenated_word_continues"]
+    if _ends_with_sentence_terminal(previous_text) or not _starts_with_lowercase_continuation(current_text):
+        return None
+    return "space", reasons + ["unfinished_sentence_with_lowercase_continuation"]
+
+
+def _ends_with_split_hyphen(text: str) -> bool:
+    stripped = text.rstrip()
+    return bool(
+        len(stripped) >= 2
+        and stripped[-1] in {"-", "\u00ad"}
+        and stripped[-2].isalpha()
+    )
+
+
+def _starts_with_letter(text: str) -> bool:
+    return bool(_first_letter(text))
+
+
+def _starts_with_lowercase_continuation(text: str) -> bool:
+    first_letter = _first_letter(text)
+    return bool(first_letter and first_letter.islower())
+
+
+def _first_letter(text: str) -> str:
+    for char in str(text or "").lstrip(" \t\"'“”‘’([{<"):
+        if char.isalpha():
+            return char
+        if not char.isspace() and char not in "\"'“”‘’([{<":
+            return ""
+    return ""
+
+
+def _ends_with_sentence_terminal(text: str) -> bool:
+    return str(text or "").rstrip().endswith((".", "!", "?", "…", ":", ";"))
+
+
+def _find_toc_pages(
+    blocks_by_page: dict[int, list[SourceBlock]], front_limit: int
+) -> set[int]:
+    """Find an anchored TOC and its short, numbered continuation pages."""
+    anchors = {
+        page
+        for page, blocks in blocks_by_page.items()
+        if page <= front_limit and any(_TOC_HEADING_RE.search(block.text) for block in blocks)
+    }
+    toc_pages = set(anchors)
+    for anchor in anchors:
+        for page in range(anchor + 1, min(front_limit, anchor + 5) + 1):
+            if not _looks_like_toc_continuation(blocks_by_page.get(page, [])):
+                break
+            toc_pages.add(page)
+    return toc_pages
+
+
+def _looks_like_toc_continuation(blocks: list[SourceBlock]) -> bool:
+    if not blocks:
+        return False
+    texts = [_normalize_space(block.text) for block in blocks if _normalize_space(block.text)]
+    if not texts:
+        return False
+    long_narration = any(len(text) > 300 or len(text.split()) > 50 for text in texts)
+    if long_narration:
+        return False
+    entry_count = sum(
+        len(re.findall(r"(?:\.{3,}\s*|\s+)\d{1,4}(?=\s|$)", text)) for text in texts
+    )
+    page_number_column = any(
+        re.fullmatch(r"(?:\d{1,4}\s+){3,}\d{1,4}", text) is not None for text in texts
+    )
+    return page_number_column or entry_count >= 2
+
+
+def _find_front_boilerplate_pages(
+    blocks_by_page: dict[int, list[SourceBlock]], page_count: int
+) -> set[int]:
+    front_limit = min(12, max(5, int(page_count * 0.05)))
+    return {
+        page
+        for page, blocks in blocks_by_page.items()
+        if page <= front_limit and sum(bool(_COPYRIGHT_RE.search(block.text)) for block in blocks) >= 2
+    }
+
+
+def _is_content_opener(
+    block: SourceBlock, page_blocks: list[SourceBlock], body_font: float
+) -> bool:
+    bbox = block.attributes.get("bbox") or [0, 0, 0, 0]
+    page_size = block.attributes.get("page_size") or [1, 1]
+    y0 = float(bbox[1]) / max(1.0, float(page_size[1]))
+    if y0 > 0.42:
+        return False
+    bottom = float(bbox[3])
+    for other in page_blocks:
+        if other.block_id == block.block_id or len(other.text) < 140:
+            continue
+        other_bbox = other.attributes.get("bbox") or [0, 0, 0, 0]
+        other_font = float(other.attributes.get("font_size") or body_font)
+        if float(other_bbox[1]) >= bottom - 1.0 and other_font <= body_font * 1.15:
+            return True
+    return False
+
+
+def _is_probable_running_header(
+    text: str, short: bool, y1: float, font_size: float, body_font: float
+) -> bool:
+    """Catch section/page headers whose wording varies too much to repeat exactly."""
+    return bool(
+        short
+        and y1 <= 0.10
+        and font_size <= body_font * 1.10
+        and (text.isupper() or re.match(r"^\d{1,4}\s+", text))
+        and re.search(r"[^\W\d_]", text)
+    )
 
 
 def _load_cached_document(

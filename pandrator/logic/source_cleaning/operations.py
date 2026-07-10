@@ -183,16 +183,33 @@ def apply_cleaning_operations(
         skipped.append({"index": index, "operation": operation, "reason": f"unsupported operation: {op}"})
 
     cleaned_lines: list[str] = []
+    last_output_block_id = ""
+    joined_page_continuations = 0
     for block in document.blocks:
         if block.block_id in deleted_block_ids:
             continue
         text = replacements.get(block.block_id, block.text).strip()
         if not text:
             continue
-        if block.block_id in chapter_marks:
+        is_chapter = block.block_id in chapter_marks
+        if is_chapter:
             title = chapter_marks[block.block_id].strip() or text
             text = title if title.startswith("[[Chapter]]") else f"[[Chapter]]{title}"
-        cleaned_lines.append(text)
+        continuation_from = str(block.attributes.get("continuation_from_block_id") or "")
+        continuation_mode = str(block.attributes.get("continuation_join") or "")
+        if (
+            not is_chapter
+            and continuation_from
+            and continuation_from == last_output_block_id
+            and cleaned_lines
+        ):
+            cleaned_lines[-1] = _join_page_continuation(
+                cleaned_lines[-1], text, continuation_mode
+            )
+            joined_page_continuations += 1
+        else:
+            cleaned_lines.append(text)
+        last_output_block_id = block.block_id
 
     original_lines = document.plain_lines()
     cleaned_text = "\n\n".join(cleaned_lines)
@@ -205,6 +222,7 @@ def apply_cleaning_operations(
         "cleaned_block_count": len(cleaned_lines),
         "deleted_block_count": len(deleted_block_ids),
         "chapter_count": sum(1 for line in cleaned_lines if line.startswith("[[Chapter]]")),
+        "page_continuation_join_count": joined_page_continuations,
         "applied_operation_count": len(applied),
         "skipped_operation_count": len(skipped),
         "metadata": metadata,
@@ -327,3 +345,11 @@ def _write_json(path: str, payload: Any):
 def _write_text(path: str, text: str):
     with open(path, "w", encoding="utf-8", newline="\n") as file_handle:
         file_handle.write(text)
+
+
+def _join_page_continuation(previous: str, current: str, mode: str) -> str:
+    previous_text = str(previous or "").rstrip()
+    current_text = str(current or "").lstrip()
+    if mode == "remove_hyphen" and previous_text.endswith(("-", "\u00ad")):
+        return f"{previous_text[:-1]}{current_text}"
+    return f"{previous_text} {current_text}".strip()

@@ -37,6 +37,31 @@ class _FakeOCREngine:
         )
 
 
+class _ContinuationOCREngine:
+    def recognize(self, page, language, dpi):
+        if page.number == 0:
+            lines = [
+                {
+                    "text": "OCR narration continues to",
+                    "bbox": [72, 600, 350, 618],
+                    "font_size": 11,
+                    "font": "FakeOCR",
+                    "confidence": 0.99,
+                }
+            ]
+        else:
+            lines = [
+                {
+                    "text": "the next scanned page without a paragraph break.",
+                    "bbox": [72, 86, 430, 104],
+                    "font_size": 11,
+                    "font": "FakeOCR",
+                    "confidence": 0.99,
+                }
+            ]
+        return lines, {"engine": "continuation-fake", "dpi": dpi, "mean_confidence": 0.99}
+
+
 class PDFIngestionTests(unittest.TestCase):
     def _write_native_fixture(self, path):
         document = fitz.open()
@@ -104,6 +129,146 @@ class PDFIngestionTests(unittest.TestCase):
             )
             self.assertIn("Running OCR on PDF page 1/1...", progress_messages)
 
+    def test_page_continuations_reflow_cleaned_native_and_ocr_text_without_crossing_sentences(self):
+        with tempfile.TemporaryDirectory() as directory:
+            native_path = os.path.join(directory, "native-continuations.pdf")
+            native = fitz.open()
+            for page_number in range(1, 5):
+                page = native.new_page(width=500, height=700)
+                if page_number == 1:
+                    page.insert_textbox(
+                        fitz.Rect(72, 540, 430, 630),
+                        "This deliberately long narration carries an unfinished thought across the physical "
+                        "page boundary without ending its paragraph at the artificial PDF",
+                        fontsize=11,
+                    )
+                elif page_number == 2:
+                    page.insert_textbox(
+                        fitz.Rect(72, 80, 430, 240),
+                        "boundary and preserves the single paragraph for the audiobook "
+                        "listener instead of creating an artificial pause.",
+                        fontsize=11,
+                    )
+                    page.insert_textbox(
+                        fitz.Rect(72, 540, 430, 630),
+                        "This separate and deliberately long paragraph ends here with a complete sentence.",
+                        fontsize=11,
+                    )
+                elif page_number == 3:
+                    page.insert_textbox(
+                        fitz.Rect(72, 80, 430, 240),
+                        "A fresh and deliberately long paragraph starts on a new page after the complete "
+                        "sentence, so it must remain separate in the cleaned output.",
+                        fontsize=11,
+                    )
+                    page.insert_textbox(
+                        fitz.Rect(72, 540, 430, 630),
+                        "This deliberately long explanatory line reaches the page edge and carries a single "
+                        "unbroken international term from the previous line fragment inter-",
+                        fontsize=11,
+                    )
+                else:
+                    page.insert_textbox(
+                        fitz.Rect(72, 80, 430, 240),
+                        "national example that remains one word after the page continuation is reflowed "
+                        "for the audiobook listener and remains continuous in the final narration output.",
+                        fontsize=11,
+                    )
+            native.save(native_path)
+            native.close()
+
+            structured = build_source_document(native_path, pdf_config=PDFIngestionConfig(ocr_mode="off"))
+            by_text = {block.text: block for block in structured.blocks}
+            self.assertEqual(
+                by_text[
+                    "boundary and preserves the single paragraph for the audiobook listener "
+                    "instead of creating an artificial pause."
+                ].attributes[
+                    "continuation_from_block_id"
+                ],
+                by_text[
+                    "This deliberately long narration carries an unfinished thought across the physical page "
+                    "boundary without ending its paragraph at the artificial PDF"
+                ].block_id,
+            )
+            self.assertEqual(
+                by_text[
+                    "national example that remains one word after the page continuation is reflowed for "
+                    "the audiobook listener and remains continuous in the final narration output."
+                ].attributes["continuation_join"],
+                "remove_hyphen",
+            )
+            cleaned = apply_cleaning_operations(structured, propose_deterministic_operations(structured))
+            self.assertIn(
+                "This deliberately long narration carries an unfinished thought across the physical page boundary "
+                "without ending its paragraph at the artificial PDF "
+                "boundary and preserves the single "
+                "paragraph",
+                cleaned.cleaned_text,
+            )
+            self.assertIn("international example that remains one word", cleaned.cleaned_text)
+            self.assertIn(
+                "This separate and deliberately long paragraph ends here with a complete sentence.\n\n"
+                "A fresh and deliberately long paragraph starts on a new page",
+                cleaned.cleaned_text,
+            )
+            self.assertEqual(cleaned.report["page_continuation_join_count"], 2)
+
+            ocr_path = os.path.join(directory, "ocr-continuations.pdf")
+            ocr = fitz.open()
+            ocr.new_page(width=500, height=700)
+            ocr.new_page(width=500, height=700)
+            ocr.save(ocr_path)
+            ocr.close()
+            ocr_document = build_pdf_source_document(
+                ocr_path,
+                config=PDFIngestionConfig(ocr_mode="force"),
+                ocr_engine=_ContinuationOCREngine(),
+            )
+            ocr_cleaned = apply_cleaning_operations(ocr_document, [])
+            self.assertIn(
+                "OCR narration continues to the next scanned page without a paragraph break.",
+                ocr_cleaned.cleaned_text,
+            )
+            self.assertEqual(ocr_cleaned.report["page_continuation_join_count"], 1)
+
+    def test_page_continuation_does_not_cross_a_chapter_heading_at_a_page_boundary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "chapter-boundary.pdf")
+            document = fitz.open()
+            first_page = document.new_page(width=500, height=700)
+            first_page.insert_textbox(
+                fitz.Rect(72, 500, 430, 610),
+                "This deliberately long paragraph reaches the end of the page without terminal punctuation "
+                "but must not continue beyond the chapter heading",
+                fontsize=11,
+            )
+            first_page.insert_text((72, 660), "Chapter 2", fontsize=16)
+            second_page = document.new_page(width=500, height=700)
+            second_page.insert_textbox(
+                fitz.Rect(72, 80, 430, 220),
+                "lowercase text begins a deliberately long new chapter paragraph and should remain separate "
+                "from the previous chapter despite its lowercase first letter.",
+                fontsize=11,
+            )
+            document.save(path)
+            document.close()
+
+            structured = build_source_document(path, pdf_config=PDFIngestionConfig(ocr_mode="off"))
+            next_page_text = next(
+                block
+                for block in structured.blocks
+                if block.text.startswith("lowercase text begins")
+            )
+            self.assertNotIn("continuation_from_block_id", next_page_text.attributes)
+
+            cleaned = apply_cleaning_operations(structured, [])
+            self.assertIn(
+                "chapter heading\n\nChapter 2\n\nlowercase text begins",
+                cleaned.cleaned_text,
+            )
+            self.assertEqual(cleaned.report["page_continuation_join_count"], 0)
+
     def test_two_column_native_text_is_grouped_in_column_reading_order(self):
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "columns.pdf")
@@ -142,6 +307,127 @@ class PDFIngestionTests(unittest.TestCase):
             decimal = next(block for block in structured.blocks if block.text == "1478.455")
 
             self.assertLess(decimal.role_score("deterministic_chapter"), 0.85)
+
+    def test_pdf_heading_policy_promotes_content_openers_without_promoting_title_or_notes_pages(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "headings.pdf")
+            document = fitz.open()
+
+            title_page = document.new_page(width=500, height=700)
+            title_page.insert_text((72, 90), "EXAMPLE ANTHOLOGY", fontsize=20)
+
+            chapter_page = document.new_page(width=500, height=700)
+            chapter_page.insert_text((72, 90), "Chapter 1", fontsize=12)
+            chapter_page.insert_text(
+                (72, 140),
+                "Narration begins after the chapter heading and continues with enough body text to establish "
+                "that this is a genuine content-opening page rather than a title page.",
+                fontsize=11,
+            )
+
+            story_page = document.new_page(width=500, height=700)
+            story_page.insert_text((72, 90), "A Short Story", fontsize=18)
+            story_page.insert_textbox(
+                fitz.Rect(72, 140, 430, 280),
+                "Narration begins after the story title and continues with enough body text to establish "
+                "that this is a genuine content-opening page rather than a title page.",
+                fontsize=11,
+            )
+
+            noisy_page = document.new_page(width=500, height=700)
+            noisy_page.insert_text((72, 30), "13 INTRODUCTION", fontsize=8)
+            noisy_page.insert_text((72, 90), "I was thinking about ordinary narration.", fontsize=11)
+            noisy_page.insert_text((230, 680), "1 30", fontsize=8)
+
+            bibliography_page = document.new_page(width=500, height=700)
+            bibliography_page.insert_text((72, 90), "Select Bibliography", fontsize=18)
+            bibliography_page.insert_text(
+                (72, 140),
+                "A list of sources follows this non-narrative heading and is deliberately long enough to "
+                "look like ordinary page content to the geometry-aware extractor.",
+                fontsize=11,
+            )
+
+            abbreviations_page = document.new_page(width=500, height=700)
+            abbreviations_page.insert_text((72, 90), "List of Abbreviations", fontsize=18)
+            abbreviations_page.insert_textbox(
+                fitz.Rect(72, 140, 430, 280),
+                "A list of abbreviations follows this non-narrative heading and is deliberately long enough "
+                "to look like ordinary page content to the geometry-aware extractor.",
+                fontsize=11,
+            )
+
+            document.save(path)
+            document.close()
+
+            structured = build_source_document(path, pdf_config=PDFIngestionConfig(ocr_mode="off"))
+            by_text = {block.text: block for block in structured.blocks}
+
+            self.assertLess(by_text["EXAMPLE ANTHOLOGY"].role_score("deterministic_chapter"), 0.85)
+            self.assertGreaterEqual(by_text["Chapter 1"].role_score("deterministic_chapter"), 0.85)
+            self.assertGreaterEqual(by_text["A Short Story"].role_score("deterministic_chapter"), 0.85)
+            self.assertLess(by_text["I was thinking about ordinary narration."].role_score("heading"), 0.45)
+            self.assertLess(by_text["1 30"].role_score("heading"), 0.45)
+            self.assertGreaterEqual(by_text["13 INTRODUCTION"].role_score("running_header"), 0.98)
+            self.assertGreaterEqual(by_text["Select Bibliography"].role_score("non_narrative_section"), 0.85)
+            self.assertLess(by_text["Select Bibliography"].role_score("deterministic_chapter"), 0.85)
+            self.assertGreaterEqual(by_text["List of Abbreviations"].role_score("non_narrative_section"), 0.85)
+            self.assertLess(by_text["List of Abbreviations"].role_score("deterministic_chapter"), 0.85)
+
+            deleted = {
+                block_id
+                for operation in propose_deterministic_operations(structured)
+                if operation["op"] == "delete_blocks"
+                for block_id in operation["block_ids"]
+            }
+            self.assertIn(by_text["13 INTRODUCTION"].block_id, deleted)
+
+    def test_pdf_toc_boilerplate_and_roman_footnotes_are_safe_to_remove(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "front-matter.pdf")
+            document = fitz.open()
+
+            toc_page = document.new_page(width=500, height=700)
+            toc_page.insert_text((72, 90), "Contents", fontsize=18)
+            toc_page.insert_text((72, 140), "First Story 7", fontsize=11)
+            toc_page.insert_text((72, 170), "Second Story 21", fontsize=11)
+
+            continuation_page = document.new_page(width=500, height=700)
+            continuation_page.insert_text((72, 90), "Third Story 43", fontsize=11)
+            continuation_page.insert_text((72, 120), "Fourth Story 67", fontsize=11)
+
+            copyright_page = document.new_page(width=500, height=700)
+            copyright_page.insert_text((72, 90), "Copyright 2026 Example Press", fontsize=9)
+            copyright_page.insert_text((72, 120), "All rights reserved.", fontsize=9)
+            copyright_page.insert_text((72, 150), "ISBN 978-1-2345-6789-0", fontsize=9)
+
+            body_page = document.new_page(width=500, height=700)
+            body_page.insert_text((72, 90), "Chapter 1", fontsize=15)
+            body_page.insert_text((72, 140), "Narration continues here with ordinary body text.", fontsize=11)
+            body_page.insert_text((72, 620), "I A textual note for the printed edition.", fontsize=7)
+
+            document.save(path)
+            document.close()
+
+            structured = build_source_document(path, pdf_config=PDFIngestionConfig(ocr_mode="off"))
+            toc_blocks = [block for block in structured.blocks if block.page in {1, 2}]
+            copyright_blocks = [block for block in structured.blocks if block.page == 3]
+            note = next(block for block in structured.blocks if block.text.startswith("I A textual note"))
+
+            self.assertTrue(all(block.role_score("toc") >= 0.92 for block in toc_blocks))
+            self.assertTrue(all(block.role_score("boilerplate") >= 0.98 for block in copyright_blocks))
+            self.assertGreaterEqual(note.role_score("footnote"), 0.92)
+
+            operations = propose_deterministic_operations(structured, remove_footnotes=True)
+            deleted = {
+                block_id
+                for operation in operations
+                if operation["op"] == "delete_blocks"
+                for block_id in operation["block_ids"]
+            }
+            self.assertTrue({block.block_id for block in toc_blocks}.issubset(deleted))
+            self.assertTrue({block.block_id for block in copyright_blocks}.issubset(deleted))
+            self.assertIn(note.block_id, deleted)
 
     def test_pycroppdf_sidecar_is_preserved_in_document_provenance(self):
         with tempfile.TemporaryDirectory() as directory:
