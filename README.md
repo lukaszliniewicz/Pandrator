@@ -33,53 +33,53 @@ Speech quality, emotional expression, and voice variety differ significantly bet
   * **Other Languages (Spanish, French, German, Italian, Portuguese, Hindi, Chinese):** *Stable / Moderate Quality.* The voice catalog is significantly more limited (often only a few voices), and intonation may occasionally sound less natural due to smaller training datasets.
   * **Efficiency:** Natively extremely lightweight (82M parameters), making it the best option for running fast local TTS on CPU.
 
-### 2. FishS2
+### 2. Qwen3 TTS
+* **Supported Languages:** Chinese, English, Japanese, Korean, German, French, Russian, Portuguese, Spanish, and Italian.
+* **Quality & Performance:**
+  * **All Languages:** *High Quality.* Two models are available: one for rapid voice cloning (using a short audio reference) and one with ready-made/preset voices. Early support is available through the OpenAI-compatible [kobold-qwen-fastapi](https://github.com/lukaszliniewicz/kobold-qwen-fastapi) wrapper.
+  * **Requirements:** The wrapper can auto-select CUDA, Vulkan (AMD/Intel), Apple Metal, or CPU mode depending on the host.
+
+### 3. FishS2
 * **Supported Languages:** Broad multilingual coverage including English (en), Spanish (es), French (fr), German (de), Italian (it), Portuguese (pt), Polish (pl), Turkish (tr), Russian (ru), Dutch (nl), Czech (cs), Arabic (ar), Chinese (zh-cn), Japanese (ja), Hungarian (hu), Korean (ko), and Hindi (hi).
 * **Quality & Performance:**
   * **All Languages:** *High Quality.* Zero-shot voice cloning performs extremely naturally. Timber and prosody are well-preserved.
   * **Requirements:** CUDA GPU strongly recommended; CPU mode is generally too slow.
 
-### 3. Chatterbox
+### 4. Chatterbox
 * **Supported Languages:** English (en) natively, and 23 languages via the multilingual model: Arabic (ar), Chinese (zh), Danish (da), Dutch (nl), English (en), Finnish (fi), French (fr), German (de), Greek (el), Hebrew (he), Hindi (hi), Italian (it), Japanese (ja), Korean (ko), Malay (ms), Norwegian (no), Polish (pl), Portuguese (pt), Russian (ru), Spanish (es), Swahili (sw), Swedish (sv), and Turkish (tr).
 * **Quality & Performance:**
   * **English:** *Excellent.* Best performance and lowest latency are achieved using `chatterbox-en` / `chatterbox-turbo` models.
   * **Other Languages:** *Good.* The multilingual model is versatile and supports zero-shot voice cloning, though minor "accent bleed" or phonetic errors may occur. Single Language Packs (Brazilian Portuguese, Latam/Spain Spanish, Chinese, Hindi) provide higher dialect stability.
 
-### 4. VoxCPM2
+### 5. VoxCPM2
 * **Supported Languages:** Supports 30 languages without language tag input: Arabic, Burmese, Chinese, Danish, Dutch, English, Finnish, French, German, Greek, Hebrew, Hindi, Indonesian, Italian, Japanese, Khmer, Korean, Lao, Malay, Norwegian, Polish, Portuguese, Russian, Spanish, Swahili, Swedish, Tagalog, Thai, Turkish, and Vietnamese. Also natively supports 9 Chinese dialects (Cantonese, Wu, Sichuanese, Wu, Northeast Mandarin, Henan, Shaanxi, Shandong, Tianjin, and Minnan).
 * **Quality & Performance:**
   * **All Languages:** *Studio Quality.* Outputs 48kHz high-fidelity audio (upscaled from 16kHz references using asymmetric AudioVAE). Captures natural speech rhythms, breathing, and micro-pauses without metallic artifacts.
   * **Speaker Similarity:** Exceptionally high zero-shot cloning similarity, though intonation can sometimes feel slightly flat/repetitive in cloning modes.
 
-### 5. Voxtral
+### 6. Voxtral
 * **Supported Languages:** English, French, German, Spanish, Dutch, Portuguese, Italian, Hindi, and Arabic.
 * **Quality & Performance:**
   * **All Languages:** *Frontier Quality.* Based on a 4B parameter model, providing extremely expressive, high-naturalness speech that rivals proprietary services. Zero-shot cloning is outstanding on the cloud API, but the open-weights release lacks the encoder weights. As a result, the local open-source server is limited to using the provided preset voices.
   * **Requirements:** GPU only (4GB+ VRAM minimum, 8GB+ recommended).
 
-### 6. XTTSv2
+### 7. XTTSv2
 * **Supported Languages:** English, Spanish, French, German, Italian, Portuguese, Polish, Turkish, Russian, Dutch, Czech, Arabic, Chinese, Japanese, Hungarian, Korean, and Hindi.
 * **Quality & Performance:**
   * **All Languages:** *Good / High Quality Cloning.* Zero-shot voice cloning is highly flexible from short clips.
   * **Limitations:** Prone to speed drift, mumbling, and phonetic artifacts if the reference audio contains background noise or is too short.
 
-### 7. Silero
+### 8. Silero
 * **Supported Languages:** English, German, Russian, Spanish, French, Hindi, Tatar, Ukrainian, Uzbek, and Kalmyk.
 * **Quality & Performance:**
   * **All Languages:** *Legible / Robotic.* Highly optimized for CPU and low-resource devices, but the voice sounds dated, flat, and robotic compared to modern diffusion/neural architectures.
 
-### 8. Magpie
+### 9. Magpie
 * **Supported Languages:** English (en-US), Spanish (es-US), German (de-DE), French (fr-FR), Italian (it-IT), Chinese (zh-CN), Vietnamese (vi-VN), Hindi (hi-IN), and Japanese (ja-JP).
 * **Quality & Performance:**
   * **All Languages:** *High Quality.* A compact 357M parameter model developed by NVIDIA that maintains a consistent voice identity (timbre) across different languages. High-fidelity output via NanoCodec with robust alignment.
   * **English:** Features 5 built-in voices (Aria, Sofia, Jason, Leo, John Van Stan) with emotional styling (Angry, Calm, Happy, Neutral, Sad, Fearful).
   * **Limitations:** Requires ~1.4 GB VRAM for GPU (also has CPU fallback). Occasionally experiences minor audio duplications or glitches at the end of sentences.
-
-### 9. Qwen3 TTS
-* **Supported Languages:** Broad multilingual coverage through the KoboldCpp Qwen3-TTS engine.
-* **Quality & Performance:**
-  * **All Languages:** Early support is available through the OpenAI-compatible [kobold-qwen-fastapi](https://github.com/lukaszliniewicz/kobold-qwen-fastapi) wrapper, with uploaded WAV references for voice cloning.
-  * **Requirements:** The wrapper can auto-select CUDA, Vulkan (AMD/Intel), Apple Metal, or CPU mode depending on the host.
 
 ## Requirements
 
