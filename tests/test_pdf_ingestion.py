@@ -269,6 +269,44 @@ class PDFIngestionTests(unittest.TestCase):
             )
             self.assertEqual(cleaned.report["page_continuation_join_count"], 0)
 
+    def test_page_continuation_does_not_reflow_an_identified_abbreviations_section(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "abbreviations-boundary.pdf")
+            document = fitz.open()
+            first_page = document.new_page(width=500, height=700)
+            first_page.insert_text((72, 90), "List of Abbreviations", fontsize=16)
+            first_page.insert_textbox(
+                fitz.Rect(72, 500, 430, 610),
+                "This deliberately long abbreviations entry reaches the end of the page without terminal "
+                "punctuation but is not narrative prose",
+                fontsize=11,
+            )
+            second_page = document.new_page(width=500, height=700)
+            second_page.insert_textbox(
+                fitz.Rect(72, 80, 430, 220),
+                "lowercase continuation-like text represents another abbreviations entry and must remain "
+                "separate even though its geometry resembles a prose page continuation.",
+                fontsize=11,
+            )
+            document.save(path)
+            document.close()
+
+            structured = build_source_document(path, pdf_config=PDFIngestionConfig(ocr_mode="off"))
+            next_page_text = next(
+                block
+                for block in structured.blocks
+                if block.text.startswith("lowercase continuation-like text")
+            )
+            self.assertNotIn("continuation_from_block_id", next_page_text.attributes)
+            self.assertGreaterEqual(
+                next(
+                    block
+                    for block in structured.blocks
+                    if block.text == "List of Abbreviations"
+                ).role_score("non_narrative_section"),
+                0.85,
+            )
+
     def test_two_column_native_text_is_grouped_in_column_reading_order(self):
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "columns.pdf")

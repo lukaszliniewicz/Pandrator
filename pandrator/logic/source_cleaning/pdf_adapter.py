@@ -17,7 +17,7 @@ from .pdf_text_adapter import _front_matter_metadata, _metadata_from_filename
 
 
 ProgressCallback = Callable[[str], None]
-PDF_INGESTION_VERSION = 3
+PDF_INGESTION_VERSION = 4
 _LATIN_V6_LANGUAGES = {
     "auto", "latin", "en", "af", "az", "bs", "ca", "cs", "cy", "da", "de", "es",
     "et", "eu", "fi", "fr", "ga", "gl", "hr", "hu", "id", "is", "it", "ku", "la",
@@ -699,9 +699,12 @@ def _annotate_page_continuations(document: SourceDocument) -> None:
         if block.page:
             blocks_by_page[block.page].append(block)
 
+    non_narrative_pages = _non_narrative_page_span(blocks_by_page)
     pages = sorted(blocks_by_page)
     for previous_page, current_page in zip(pages, pages[1:]):
         if current_page != previous_page + 1:
+            continue
+        if previous_page in non_narrative_pages or current_page in non_narrative_pages:
             continue
         previous = _boundary_narrative_block(blocks_by_page[previous_page], reverse=True)
         current = _boundary_narrative_block(blocks_by_page[current_page])
@@ -720,6 +723,23 @@ def _annotate_page_continuations(document: SourceDocument) -> None:
         current.attributes["continuation_from_block_id"] = previous.block_id
         current.attributes["continuation_join"] = mode
         current.role_candidates = sorted(set(current.role_candidates + ["page_continuation"]))
+
+
+def _non_narrative_page_span(blocks_by_page: dict[int, list[SourceBlock]]) -> set[int]:
+    """Track end-matter/list sections so their entries are never reflowed as prose."""
+    active = False
+    pages: set[int] = set()
+    for page in sorted(blocks_by_page):
+        for block in blocks_by_page[page]:
+            if block.role_score("toc") >= 0.92:
+                continue
+            if block.role_score("deterministic_chapter") >= 0.85:
+                active = False
+            if block.role_score("non_narrative_section") >= 0.85:
+                active = True
+        if active:
+            pages.add(page)
+    return pages
 
 
 def _boundary_narrative_block(blocks: list[SourceBlock], reverse: bool = False) -> SourceBlock | None:
