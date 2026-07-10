@@ -307,6 +307,33 @@ class PDFIngestionTests(unittest.TestCase):
                 0.85,
             )
 
+    def test_page_continuation_does_not_join_a_bilingual_translation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "bilingual-boundary.pdf")
+            document = fitz.open()
+            french_page = document.new_page(width=500, height=700)
+            french_page.insert_textbox(
+                fitz.Rect(72, 500, 430, 610),
+                "Cette longue phrase française est poursuivie jusqu'à la page suivante sans ponctuation "
+                "finale afin de vérifier que la traduction reste séparée",
+                fontsize=11,
+            )
+            english_page = document.new_page(width=500, height=700)
+            english_page.insert_textbox(
+                fitz.Rect(72, 80, 430, 220),
+                "this English translation begins on the next page and must remain separate from the French "
+                "original even though its geometry resembles a prose continuation.",
+                fontsize=11,
+            )
+            document.save(path)
+            document.close()
+
+            structured = build_source_document(path, pdf_config=PDFIngestionConfig(ocr_mode="off"))
+            english_text = next(
+                block for block in structured.blocks if block.text.startswith("this English translation")
+            )
+            self.assertNotIn("continuation_from_block_id", english_text.attributes)
+
     def test_two_column_native_text_is_grouped_in_column_reading_order(self):
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "columns.pdf")
@@ -373,8 +400,8 @@ class PDFIngestionTests(unittest.TestCase):
             )
 
             noisy_page = document.new_page(width=500, height=700)
-            noisy_page.insert_text((72, 30), "13 INTRODUCTION", fontsize=8)
-            noisy_page.insert_text((72, 90), "I was thinking about ordinary narration.", fontsize=11)
+            noisy_page.insert_text((72, 80), "13 INTRODUCTION", fontsize=8)
+            noisy_page.insert_text((72, 130), "I was thinking about ordinary narration.", fontsize=11)
             noisy_page.insert_text((230, 680), "1 30", fontsize=8)
 
             bibliography_page = document.new_page(width=500, height=700)

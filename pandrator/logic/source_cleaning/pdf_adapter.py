@@ -17,7 +17,7 @@ from .pdf_text_adapter import _front_matter_metadata, _metadata_from_filename
 
 
 ProgressCallback = Callable[[str], None]
-PDF_INGESTION_VERSION = 4
+PDF_INGESTION_VERSION = 7
 _LATIN_V6_LANGUAGES = {
     "auto", "latin", "en", "af", "az", "bs", "ca", "cs", "cy", "da", "de", "es",
     "et", "eu", "fi", "fr", "ga", "gl", "hr", "hu", "id", "is", "it", "ku", "la",
@@ -70,6 +70,16 @@ _NON_NARRATIVE_HEADING_RE = re.compile(
     r"(?:wykaz|spis)\s+skr[oó]t[oó]w|ключи|.*(?:мини[-*])?словар\w*)\b",
     re.IGNORECASE,
 )
+_LATIN_LANGUAGE_STOPWORDS = {
+    "en": {
+        "the", "and", "of", "to", "in", "is", "that", "for", "with", "as", "on", "this",
+        "it", "be", "by", "from", "at", "or", "an", "are", "not", "which", "but", "we",
+    },
+    "fr": {
+        "le", "la", "les", "de", "des", "du", "et", "en", "un", "une", "que", "qui", "dans",
+        "pour", "est", "pas", "sur", "avec", "par", "au", "aux", "ce", "cette", "il", "elle",
+    },
+}
 
 
 @dataclass
@@ -839,6 +849,10 @@ def _page_continuation_details(
     current_text = current.text.lstrip()
     if not previous_text or not current_text:
         return None
+    previous_language = _dominant_latin_language(previous_text)
+    current_language = _dominant_latin_language(current_text)
+    if previous_language and current_language and previous_language != current_language:
+        return None
     reasons = [
         "adjacent_pages",
         "body_blocks_touch_page_boundary",
@@ -881,6 +895,25 @@ def _first_letter(text: str) -> str:
 
 def _ends_with_sentence_terminal(text: str) -> bool:
     return str(text or "").rstrip().endswith((".", "!", "?", "…", ":", ";"))
+
+
+def _dominant_latin_language(text: str) -> str:
+    """Return a language only when simple stop-word evidence is decisive.
+
+    It is intentionally limited to English/French: those can share the same
+    page geometry in bilingual source editions, while a weak guess must never
+    suppress a valid continuation.
+    """
+    tokens = re.findall(r"[^\W\d_]+", str(text or "").casefold())
+    if not tokens:
+        return ""
+    scores = {
+        language: sum(token in words for token in tokens)
+        for language, words in _LATIN_LANGUAGE_STOPWORDS.items()
+    }
+    language, score = max(scores.items(), key=lambda item: item[1])
+    other_score = max(value for other, value in scores.items() if other != language)
+    return language if score >= 2 and score >= other_score + 2 else ""
 
 
 def _find_toc_pages(
@@ -955,9 +988,9 @@ def _is_probable_running_header(
     """Catch section/page headers whose wording varies too much to repeat exactly."""
     return bool(
         short
-        and y1 <= 0.10
+        and y1 <= 0.14
         and font_size <= body_font * 1.10
-        and (text.isupper() or re.match(r"^\d{1,4}\s+", text))
+        and text.isupper()
         and re.search(r"[^\W\d_]", text)
     )
 
