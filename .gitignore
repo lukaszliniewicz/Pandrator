@@ -76,3 +76,6 @@ desktop.ini
 
 # Linux compatibility documentation (untracked locally)
 LINUX_COMPATIBILITY.md
+
+# Local documentation
+docs/
