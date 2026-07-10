@@ -7,7 +7,7 @@
 >**TL;DR:**
 > - Pandrator is not an AI model itself, but a GUI framework for Text-to-Speech, subtitle and translation projects. It can generate audiobooks and subtitles/dubbing by leveraging several AI tools, custom workflows and algorithms. It has an installer and works on Windows out of the box. It is not necessary to set up WSL or Docker containers, though you may use it with any TTS API backend.
 > - It supports a wide range of TTS models: Kokoro, Fish S2 Pro, Chatterbox, Qwen3 TTS, VoxCPM2, Voxtral, XTTSv2, Silero, OpenAI and Gemini, as well as custom TTS API servers.
-> - When installing: if you don't have a GPU, choose Kokoro. If you want voice cloning, which Kokoro doesn't support by default, install RVC.
+> - When installing: if you don't have a GPU, choose Kokoro. If you want voice cloning, which Kokoro doesn't support by default, install RVC. If you do have a GPU, choose Qwen TTS 3 for the best balance of compatibility (including old AMD GPUs such as the RX480 and Intel GPUs), performance and quality.
 > - You can talk to me or share tips/workflows/ideas on the Discord server.
 >
 > [![](https://dcbadge.limes.pink/api/server/JZzHv3MnaV)](https://discord.gg/https://discord.gg/JZzHv3MnaV)
