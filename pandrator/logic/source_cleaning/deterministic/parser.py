@@ -138,12 +138,25 @@ class EPUBHTMLParser(HTMLParser):
             self.anchor_stack.append(anchor_info)
 
     def handle_data(self, data):
-        # Skip content inside page numbers/page breaks
-        for _, c_val, _, _, _, _ in self.tag_stack:
-            if c_val:
-                classes = {c.lower() for c in c_val.split()}
-                if "pagenum" in classes or "pagebreak" in classes or "pb" in classes:
-                    return
+        # Suppress an inline page label, but retain prose inside a pagebreak
+        # wrapper. Some commercial EPUBs put a complete chapter inside
+        # ``<div class="pagebreak">…</div>``; treating every descendant as a
+        # page number silently discards the book.
+        page_label_classes = {"pagenum", "pagebreak", "pb"}
+        block_tags = {
+            "p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li",
+            "dd", "dt", "blockquote", "aside", "section", "article",
+        }
+        for page_idx, (_, c_val, _, _, _, _) in enumerate(self.tag_stack):
+            classes = {c.lower() for c in c_val.split()} if c_val else set()
+            if not classes.intersection(page_label_classes):
+                continue
+            has_structural_descendant = any(
+                descendant[0].lower() in block_tags
+                for descendant in self.tag_stack[page_idx + 1:]
+            )
+            if not has_structural_descendant:
+                return
 
         if self.current_block_tag is not None:
             if self.anchor_stack:
@@ -359,7 +372,8 @@ def unpack_epub_structure(epub_path: str) -> dict:
                 if item_id and href:
                     manifest[item_id] = {
                         "href": urllib.parse.unquote(href),
-                        "media_type": media_type
+                        "media_type": media_type,
+                        "properties": item.attrib.get("properties", "").split(),
                     }
                     
         # Extract spine
@@ -374,6 +388,7 @@ def unpack_epub_structure(epub_path: str) -> dict:
                         "id": idref,
                         "href": manifest[idref]["href"],
                         "media_type": manifest[idref]["media_type"],
+                        "properties": manifest[idref].get("properties", []),
                         "linear": linear
                     })
                     

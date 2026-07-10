@@ -36,9 +36,9 @@ def extract_clean_epub(epub_path: str, remove_footnotes: bool = False, filter_ci
 
         if toc.is_toc_file(href, doc, spine):
             continue
-        if footnotes.is_footnote_file(href, size):
+        if footnotes.is_footnote_file(href, size, parsed_doc=doc, spine_item=item):
             continue
-        if boilerplate.is_front_boilerplate(idx, total_spine_files, size, href):
+        if boilerplate.is_front_boilerplate(idx, total_spine_files, size, href, blocks=doc.get("blocks", [])):
             continue
         if boilerplate.is_end_boilerplate(idx, total_spine_files, href):
             continue
@@ -62,31 +62,23 @@ def extract_clean_epub(epub_path: str, remove_footnotes: bool = False, filter_ci
         if not blocks:
             continue
 
-        ids_by_block_index = _ids_by_block_index(doc)
-        chapter_candidates = []
-        for idx_in_doc, block in enumerate(blocks):
-            matched_title = _matched_toc_title(doc_href, block, ids_by_block_index, global_toc)
-            toc_chapter = _is_usable_toc_chapter(block, matched_title, metadata, detected_lang)
-            semantic_chapter = chapters.is_chapter_block(
-                block,
-                idx_in_doc,
-                lang=detected_lang,
-                allow_heading_fallback=False,
-            )
-            chapter_candidates.append(
-                {
-                    "matched_title": matched_title,
-                    "toc_chapter": toc_chapter,
-                    "semantic_chapter": semantic_chapter,
-                }
-            )
-
+        # Preserve likely structural headings while removing visual-only blocks.
+        # Navigation links are deliberately not used here: a page-list or nested
+        # TOC entry must never create an audiobook chapter by itself.
         visual_indexes = illustrations.visual_block_indexes(
             blocks,
             protected_indexes={
                 idx
-                for idx, candidate in enumerate(chapter_candidates)
-                if candidate["toc_chapter"] or candidate["semantic_chapter"]
+                for idx, block in enumerate(blocks)
+                if (
+                    chapters.has_direct_chapter_semantics(block)
+                    or chapters.is_chapter_block(
+                        block,
+                        idx,
+                        lang=detected_lang,
+                        allow_heading_fallback=False,
+                    )
+                )
             },
         )
         if visual_indexes:
@@ -95,54 +87,94 @@ def extract_clean_epub(epub_path: str, remove_footnotes: bool = False, filter_ci
                 for idx, block in enumerate(blocks)
                 if idx not in visual_indexes
             ]
-            chapter_candidates = [
-                candidate
-                for idx, candidate in enumerate(chapter_candidates)
-                if idx not in visual_indexes
-            ]
 
-        has_toc_chapters = any(item["toc_chapter"] for item in chapter_candidates)
-        has_semantic_chapters = any(item["semantic_chapter"] for item in chapter_candidates)
-        recovered_title = _usable_recovered_doc_title(doc_href, global_toc, metadata, detected_lang)
-        allow_heading_fallback = not has_toc_chapters and not has_semantic_chapters and not recovered_title
+        ids_by_block_index = _ids_by_block_index(doc)
+        chapter_titles = _direct_chapter_titles(
+            blocks,
+            doc_href,
+            ids_by_block_index,
+            global_toc,
+            metadata,
+            detected_lang,
+        )
+        recovered_title = None
+        allow_heading_fallback = False
+
+        # Direct structural signals are authoritative over weak heading and
+        # navigation fallbacks. Explicit chapter text is still additive: a
+        # publisher can legitimately put a Part wrapper and ``1. Title`` in
+        # the same document.
+        for idx, block in enumerate(blocks):
+            if idx in chapter_titles:
+                continue
+            text = block.get("text", "").strip()
+            if chapters.is_chapter_block(
+                block,
+                idx,
+                lang=detected_lang,
+                allow_heading_fallback=False,
+            ):
+                chapter_titles[idx] = text
+
+        # TOC entries only validate a matching heading if there is no direct
+        # or explicit chapter evidence in the document.
+        if not chapter_titles:
+            for idx, block in enumerate(blocks):
+                text = block.get("text", "").strip()
+                matched_title = _matched_toc_title(
+                    doc_href,
+                    block,
+                    ids_by_block_index,
+                    global_toc,
+                )
+                if _is_toc_validated_heading(
+                    block,
+                    matched_title,
+                    metadata,
+                    detected_lang,
+                ):
+                    chapter_titles[idx] = text
+
+        if not chapter_titles and _has_meaningful_text(blocks):
+            raw_recovered_title = global_toc.get(doc_href.lower())
+            recovered_title = _usable_recovered_doc_title(
+                doc_href,
+                global_toc,
+                metadata,
+                detected_lang,
+            )
+            # A navigation target still tells us that this document belongs to
+            # a larger hierarchy.  If its title is a map item, page label, or
+            # other unusable value, do not fall back to every heading in the
+            # document; that turns guidebook lists into hundreds of chapters.
+            allow_heading_fallback = not recovered_title and not raw_recovered_title
+
+        chapter_titles = _dedupe_numbered_chapter_titles(chapter_titles)
 
         formatted_blocks = []
         last_chapter_title_norm = ""
 
-        if recovered_title and not has_toc_chapters and not has_semantic_chapters:
+        if recovered_title:
             formatted_blocks.append(_heading_block(doc_href, recovered_title))
             last_chapter_title_norm = _norm_title(recovered_title)
 
         for idx_in_doc, block in enumerate(blocks):
             block_copy = block.copy()
-            candidate = chapter_candidates[idx_in_doc]
-            matched_title = candidate["matched_title"]
-            is_chapter = candidate["toc_chapter"] or candidate["semantic_chapter"]
+            title = chapter_titles.get(idx_in_doc, "")
+            if not title and allow_heading_fallback and chapters.is_chapter_block(
+                block,
+                idx_in_doc,
+                lang=detected_lang,
+                allow_heading_fallback=True,
+            ):
+                title = block.get("text", "").strip()
 
-            if not is_chapter and allow_heading_fallback:
-                is_chapter = chapters.is_chapter_block(
-                    block,
-                    idx_in_doc,
-                    lang=detected_lang,
-                    allow_heading_fallback=True,
-                )
-
-            if is_chapter:
-                title = matched_title or block.get("text", "").strip()
+            if title:
                 if title and _norm_title(title) != last_chapter_title_norm:
                     if not title.startswith("[[Chapter]]"):
                         block_copy["text"] = f"[[Chapter]]{title}"
                         block_copy["parts"] = [{"type": "text", "content": block_copy["text"]}]
                     last_chapter_title_norm = _norm_title(title)
-            elif matched_title and not chapters.is_non_chapter_heading_text(matched_title):
-                matched_title_norm = _norm_title(matched_title)
-                if (
-                    allow_heading_fallback
-                    and _is_insertable_toc_heading(matched_title, block, metadata, detected_lang)
-                    and matched_title_norm != last_chapter_title_norm
-                ):
-                    formatted_blocks.append(_heading_block(doc_href, matched_title))
-                    last_chapter_title_norm = matched_title_norm
 
             formatted_blocks.append(block_copy)
 
@@ -304,6 +336,132 @@ def _titlepage_run_indexes(
     return to_remove
 
 
+def _is_standalone_chapter_number(text: str) -> bool:
+    return chapters.is_standalone_chapter_number(text)
+
+
+def _dedupe_numbered_chapter_titles(chapter_titles: dict[int, str]) -> dict[int, str]:
+    """Keep the cleaner of adjacent duplicate chapter-number headings."""
+    selected: dict[str, tuple[int, str]] = {}
+    unkeyed: list[tuple[int, str]] = []
+    for index, title in chapter_titles.items():
+        normalized = re.sub(r"\s+", " ", title or "").strip()
+        match = re.search(r"\b(?:chapter|ch)\s+(\d{1,4})\b", normalized, re.IGNORECASE)
+        if not match:
+            unkeyed.append((index, title))
+            continue
+
+        key = f"chapter:{match.group(1)}"
+        current = selected.get(key)
+        candidate_score = (
+            int(bool(re.match(r"^(?:chapter|ch)\s+\d{1,4}\b", normalized, re.IGNORECASE))),
+            -len(normalized),
+        )
+        if current is None:
+            selected[key] = (index, title)
+            continue
+
+        current_title = re.sub(r"\s+", " ", current[1] or "").strip()
+        current_score = (
+            int(bool(re.match(r"^(?:chapter|ch)\s+\d{1,4}\b", current_title, re.IGNORECASE))),
+            -len(current_title),
+        )
+        if candidate_score > current_score:
+            selected[key] = (index, title)
+
+    return dict(sorted(unkeyed + list(selected.values())))
+
+
+def _is_direct_title_candidate(block: dict) -> bool:
+    """Whether a block can supply the spoken title for a chapter container."""
+    text = re.sub(r"\s+", " ", block.get("text", "") or "").strip()
+    if (
+        not text
+        or _is_standalone_chapter_number(text)
+        or chapters.is_navigation_label(text)
+        or chapters.is_heading_fragment(text)
+        or chapters.is_non_chapter_heading_text(text)
+        or not chapters.is_plausible_heading_text(text, max_chars=220)
+    ):
+        return False
+
+    tag = str(block.get("tag", "")).lower()
+    return tag in chapters.HEADING_TAGS or chapters.has_direct_chapter_semantics(block)
+
+
+def _direct_title_after_container(blocks: list[dict], start_idx: int) -> tuple[int, str] | None:
+    """Find a nearby title for an empty semantic chapter wrapper.
+
+    Several commercial EPUBs encode a chapter as an empty ``section`` followed
+    by a page number, a chapter number, then the actual heading.  We preserve
+    the chapter number only when it is itself structurally tagged and join it
+    to the first meaningful title.
+    """
+    number_prefix = ""
+    for idx in range(start_idx, min(len(blocks), start_idx + 8)):
+        block = blocks[idx]
+        text = re.sub(r"\s+", " ", block.get("text", "") or "").strip()
+
+        if text and _is_standalone_chapter_number(text):
+            if chapters.has_direct_chapter_semantics(block):
+                number_prefix = text.rstrip(".)")
+            continue
+
+        if _is_direct_title_candidate(block):
+            if number_prefix and not re.match(rf"^{re.escape(number_prefix)}(?:[.)]|\s|:)", text):
+                text = f"{number_prefix}. {text}"
+            return idx, text
+
+        # A normal paragraph before a title indicates that this container has
+        # no separately marked chapter title.
+        if text and not chapters.is_plausible_heading_text(text, max_chars=220):
+            break
+
+    return None
+
+
+def _direct_chapter_titles(
+    blocks: list[dict],
+    doc_href: str,
+    ids_by_block_index: dict[int, list[str]],
+    global_toc: dict[str, str],
+    metadata: dict,
+    detected_lang: str,
+) -> dict[int, str]:
+    """Return title-bearing blocks selected from direct chapter structure.
+
+    Navigation is used only as a title fallback for a direct semantic element;
+    it cannot independently add a chapter boundary.  This avoids promoting
+    page-list targets and nested TOC entries to M4B chapters.
+    """
+    titles: dict[int, str] = {}
+    seen_container_ids: set[str] = set()
+
+    for idx, block in enumerate(blocks):
+        if not chapters.has_direct_chapter_semantics(block):
+            continue
+
+        container_id = str(block.get("id") or "").strip().lower()
+        if container_id and container_id in seen_container_ids:
+            continue
+        if container_id:
+            seen_container_ids.add(container_id)
+
+        resolved = _direct_title_after_container(blocks, idx)
+        if resolved:
+            title_idx, title = resolved
+            titles.setdefault(title_idx, title)
+            continue
+
+        matched_title = _matched_toc_title(doc_href, block, ids_by_block_index, global_toc)
+        if _is_usable_toc_chapter(block, matched_title, metadata, detected_lang):
+            title = re.sub(r"\s+", " ", matched_title or "").strip()
+            if title and not _is_standalone_chapter_number(title):
+                titles.setdefault(idx, title)
+
+    return titles
+
+
 def _ids_by_block_index(doc: dict) -> dict[int, list[str]]:
     ids_by_block: dict[int, list[str]] = {}
     for nested_id, block_idx in doc.get("ids", {}).items():
@@ -346,6 +504,12 @@ def _is_usable_toc_chapter(
         return False
     if not chapters.is_plausible_heading_text(title, max_chars=220):
         return False
+    if _is_standalone_chapter_number(title):
+        return False
+    if chapters.is_navigation_label(title):
+        return False
+    if chapters.is_heading_fragment(title):
+        return False
 
     block_text = block.get("text", "").strip()
     if chapters.is_explicit_chapter_title(title, lang=detected_lang):
@@ -355,6 +519,32 @@ def _is_usable_toc_chapter(
     if block.get("tag", "").lower() in chapters.HEADING_TAGS:
         return True
     return False
+
+
+def _has_meaningful_text(blocks: list[dict]) -> bool:
+    """Whether a navigation target has text, rather than only images/anchors."""
+    for block in blocks:
+        text = re.sub(r"\s+", " ", block.get("text", "") or "").strip()
+        if not text or _is_standalone_chapter_number(text):
+            continue
+        return True
+    return False
+
+
+def _is_toc_validated_heading(
+    block: dict,
+    matched_title: str | None,
+    metadata: dict,
+    detected_lang: str,
+) -> bool:
+    """Use TOC metadata only to validate an already-present heading element."""
+    if str(block.get("tag", "")).lower() not in chapters.HEADING_TAGS:
+        return False
+    if not _is_usable_toc_chapter(block, matched_title, metadata, detected_lang):
+        return False
+    block_text = re.sub(r"\s+", " ", block.get("text", "") or "").strip()
+    toc_text = re.sub(r"\s+", " ", matched_title or "").strip()
+    return bool(block_text and _norm_title(block_text) == _norm_title(toc_text))
 
 
 def _is_insertable_toc_heading(
@@ -395,9 +585,38 @@ def _usable_recovered_doc_title(
         return None
     if boilerplate.is_titlepage_metadata_text(recovered_title, metadata):
         return None
+    if _is_standalone_chapter_number(recovered_title):
+        return None
+    if chapters.is_navigation_label(recovered_title):
+        return None
+    if _looks_like_navigation_noise(recovered_title):
+        return None
     if not chapters.is_plausible_heading_text(recovered_title, max_chars=220):
         return None
     return recovered_title
+
+
+def _looks_like_navigation_noise(title: str) -> bool:
+    """Reject page-list and map/POI labels masquerading as document titles."""
+    normalized = re.sub(r"\s+", " ", title or "").strip()
+    lowered = normalized.lower()
+    if re.match(r"^\d+(?:[.,]\d+)?\s+(?:million|thousand|billion)\b", lowered):
+        return True
+    if re.match(r"^\d+\s*(?:\.{2,}|…)", normalized):
+        return True
+    if re.match(r"^\d{1,4}\s*[-–]\s*\d{1,4}$", normalized):
+        return True
+    if re.match(r"^\d{2,4}\s+", normalized) and not re.match(r"^\d{1,4}\s*[.)•:–—-]", normalized):
+        return True
+    if normalized.startswith("♦"):
+        return True
+    if re.match(r"^(?:early|mid|late)[ -]?\d+(?:st|nd|rd|th)\s+century$", lowered):
+        return True
+    if re.search(r"\b(?:hostel|hotel|guesthouse|temple|museum)\W*$", lowered):
+        return True
+    if re.search(r"[A-Z]\d$", normalized):
+        return True
+    return lowered in {"book designers", "our writers"}
 
 
 def _heading_block(doc_href: str, title: str) -> dict:

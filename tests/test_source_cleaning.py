@@ -387,6 +387,151 @@ class SourceCleaningTests(unittest.TestCase):
         epub.write_epub(epub_path, book)
         return epub_path
 
+    def _write_structural_chapter_components_epub_fixture(self) -> str:
+        epub_path = os.path.join(self.temp_dir.name, "Structural Chapter Components.epub")
+
+        book = epub.EpubBook()
+        book.set_identifier("fixture-structural-components")
+        book.set_title("Structural Chapter Components")
+        book.set_language("en")
+
+        body = epub.EpubHtml(title="Body", file_name="body.xhtml", lang="en")
+        body.content = """
+        <html>
+          <body>
+            <section epub:type="chapter" id="chapter-1">
+              <div class="page-label">11</div>
+              <h1 class="chapnum">1</h1>
+              <h1 class="chaptertitle" id="chapter-1-title">Signals and Structure</h1>
+              <h2 id="chapter-1-section-1">A nested section</h2>
+              <aside id="chapter-1-note-1" class="refnote1">1. A note, not a chapter.</aside>
+              <p>The first chapter begins here.</p>
+            </section>
+            <section epub:type="chapter" id="chapter-2">
+              <div class="page-label">29</div>
+              <h1 class="chapnum">2</h1>
+              <h1 class="chaptertitle" id="chapter-2-title">The Next Signal</h1>
+              <h2 id="chapter-2-section-1">Another nested section</h2>
+              <p>The second chapter begins here.</p>
+            </section>
+          </body>
+        </html>
+        """
+
+        toc = epub.EpubHtml(title="Contents", file_name="toc.xhtml", lang="en")
+        toc.content = """
+        <html><body><nav id="toc"><ol>
+          <li><a href="body.xhtml#page-one">11</a></li>
+          <li><a href="body.xhtml#chapter-1-title">Signals and Structure</a></li>
+          <li><a href="body.xhtml#chapter-1-section-1">A nested section</a></li>
+          <li><a href="body.xhtml#chapter-2-title">The Next Signal</a></li>
+          <li><a href="body.xhtml#chapter-2-section-1">Another nested section</a></li>
+        </ol></nav></body></html>
+        """
+
+        book.add_item(body)
+        book.add_item(toc)
+        book.add_item(epub.EpubNcx())
+        book.add_item(epub.EpubNav())
+        book.toc = (
+            epub.Link("body.xhtml#page-one", "11", "page-one"),
+            epub.Link("body.xhtml#chapter-1-title", "Signals and Structure", "chapter-one"),
+            epub.Link("body.xhtml#chapter-1-section-1", "A nested section", "chapter-one-section"),
+            epub.Link("body.xhtml#chapter-2-title", "The Next Signal", "chapter-two"),
+            epub.Link("body.xhtml#chapter-2-section-1", "Another nested section", "chapter-two-section"),
+        )
+        book.spine = ["nav", toc, body]
+
+        epub.write_epub(epub_path, book)
+        return epub_path
+
+    def _write_named_matter_epub_fixture(self) -> str:
+        epub_path = os.path.join(self.temp_dir.name, "Named Matter.epub")
+
+        book = epub.EpubBook()
+        book.set_identifier("fixture-named-matter")
+        book.set_title("Named Matter")
+        book.set_language("en")
+
+        documents = []
+        for file_name, heading, prose in (
+            ("preface.xhtml", "Preface", "This preface explains how the book came to be written."),
+            ("introduction.xhtml", "Introduction", "This introduction gives the listener essential context."),
+            ("chapter.xhtml", "Chapter One", "The narrative chapter begins with a real event."),
+            ("acknowledgements.xhtml", "Acknowledgements", "The author thanks the people who supported the work."),
+        ):
+            document = epub.EpubHtml(title=heading, file_name=file_name, lang="en")
+            document.content = f"<html><body><h1>{heading}</h1><p>{prose}</p></body></html>"
+            documents.append(document)
+            book.add_item(document)
+
+        book.add_item(epub.EpubNcx())
+        book.add_item(epub.EpubNav())
+        book.toc = tuple(epub.Link(document.file_name, document.title, document.file_name) for document in documents)
+        book.spine = ["nav", *documents]
+        epub.write_epub(epub_path, book)
+        return epub_path
+
+    def _write_pagebreak_and_numeric_toc_epub_fixture(self) -> str:
+        epub_path = os.path.join(self.temp_dir.name, "Pagebreak and Numeric TOC.epub")
+
+        book = epub.EpubBook()
+        book.set_identifier("fixture-pagebreak-numeric")
+        book.set_title("Pagebreak and Numeric TOC")
+        book.set_language("en")
+
+        body = epub.EpubHtml(title="Body", file_name="body.xhtml", lang="en")
+        body.content = """
+        <html><body>
+          <div class="pagebreak">
+            <h1 id="chapter-one">Chapter One</h1>
+            <h3 id="scene-one">1</h3>
+            <p>The narrative survives the wrapper <span class="pagenum">19</span> and continues normally.</p>
+          </div>
+        </body></html>
+        """
+        toc = epub.EpubHtml(title="Contents", file_name="toc.xhtml", lang="en")
+        toc.content = """
+        <html><body><nav id="toc"><ol>
+          <li><a href="body.xhtml#chapter-one">Chapter One</a></li>
+          <li><a href="body.xhtml#scene-one">1</a></li>
+        </ol></nav></body></html>
+        """
+
+        book.add_item(body)
+        book.add_item(toc)
+        book.add_item(epub.EpubNcx())
+        book.add_item(epub.EpubNav())
+        book.toc = (
+            epub.Link("body.xhtml#chapter-one", "Chapter One", "chapter-one"),
+            epub.Link("body.xhtml#scene-one", "1", "scene-one"),
+        )
+        book.spine = ["nav", toc, body]
+        epub.write_epub(epub_path, book)
+        return epub_path
+
+    def _write_image_only_toc_target_epub_fixture(self) -> str:
+        epub_path = os.path.join(self.temp_dir.name, "Image-only TOC Target.epub")
+
+        book = epub.EpubBook()
+        book.set_identifier("fixture-image-only-target")
+        book.set_title("Image-only TOC Target")
+        book.set_language("en")
+
+        body = epub.EpubHtml(title="Recipe One", file_name="recipe.xhtml", lang="en")
+        body.content = "<html><body><div id=\"recipe-one\"><img src=\"recipe.jpg\" /></div></body></html>"
+        toc = epub.EpubHtml(title="Contents", file_name="toc.xhtml", lang="en")
+        toc.content = "<html><body><nav id=\"toc\"><a href=\"recipe.xhtml#recipe-one\">Recipe One</a></nav></body></html>"
+
+        book.add_item(body)
+        book.add_item(toc)
+        book.add_item(epub.EpubNcx())
+        book.add_item(epub.EpubNav())
+        book.toc = (epub.Link("recipe.xhtml#recipe-one", "Recipe One", "recipe-one"),)
+        book.spine = ["nav", toc, body]
+        epub.write_epub(epub_path, book)
+        return epub_path
+
     def test_epub_index_preserves_metadata_markup_and_nonsemantic_blocks(self):
         epub_path = self._write_epub_fixture()
 
@@ -613,6 +758,134 @@ class SourceCleaningTests(unittest.TestCase):
         self.assertEqual(markers, ["Rozdzial pierwszy", "Drugi rozdzial"])
         self.assertIn("Pierwszy akapit powiesci.", text)
         self.assertIn("Drugi akapit powiesci.", text)
+
+    def test_deterministic_epub_extract_uses_direct_structure_not_toc_fragments(self):
+        from pandrator.logic.source_cleaning.deterministic import extract_clean_epub
+
+        text = extract_clean_epub(self._write_structural_chapter_components_epub_fixture())
+        markers = re.findall(r"\[\[Chapter\]\]([^\n]+)", text)
+
+        self.assertEqual(markers, ["1. Signals and Structure", "2. The Next Signal"])
+        self.assertNotIn("[[Chapter]]11", text)
+        self.assertNotIn("[[Chapter]]A nested section", text)
+        self.assertNotIn("[[Chapter]]Another nested section", text)
+        self.assertNotIn("[[Chapter]]1. A note", text)
+
+    def test_deterministic_chapter_text_rejects_navigation_labels_and_keeps_embedded_label(self):
+        from pandrator.logic.source_cleaning.deterministic import chapters
+
+        self.assertFalse(
+            chapters.is_chapter_block(
+                {"tag": "p", "text": "13.96 million"},
+                0,
+                lang="en",
+                allow_heading_fallback=False,
+            )
+        )
+        self.assertFalse(
+            chapters.is_chapter_block(
+                {"tag": "h2", "text": "Page 175"},
+                0,
+                lang="en",
+                allow_heading_fallback=False,
+            )
+        )
+        self.assertFalse(
+            chapters.is_chapter_block(
+                {"tag": "h2", "text": "translated by François Raffoul"},
+                0,
+                lang="en",
+                allow_heading_fallback=False,
+            )
+        )
+        self.assertTrue(
+            chapters.is_navigation_label("Page 175")
+        )
+        self.assertFalse(
+            chapters.is_chapter_block(
+                {"tag": "p", "text": "Book and Bed Shinjuku Hostel"},
+                0,
+                lang="en",
+                allow_heading_fallback=False,
+            )
+        )
+        self.assertTrue(
+            chapters.is_chapter_block(
+                {"tag": "h1", "text": "Antidote – Chapter 1"},
+                0,
+                lang="en",
+                allow_heading_fallback=False,
+            )
+        )
+        self.assertTrue(
+            chapters.is_chapter_block(
+                {"tag": "h1", "text": "10 • WHAT KIND OF MAN WAS MY FATHER?"},
+                0,
+                lang="en",
+                allow_heading_fallback=False,
+            )
+        )
+        self.assertFalse(
+            chapters.is_chapter_block(
+                {"tag": "p", "text": "10 • This is a numbered prose sentence."},
+                0,
+                lang="en",
+                allow_heading_fallback=False,
+            )
+        )
+        self.assertTrue(
+            chapters.is_chapter_block(
+                {"tag": "h1", "classes": ["chaptertitle"], "text": "4. Baudolino falls in love with the empress"},
+                0,
+                lang="en",
+                allow_heading_fallback=False,
+            )
+        )
+
+    def test_deterministic_epub_extract_keeps_named_front_and_back_matter(self):
+        from pandrator.logic.source_cleaning.deterministic import extract_clean_epub
+
+        text = extract_clean_epub(self._write_named_matter_epub_fixture())
+        markers = re.findall(r"\[\[Chapter\]\]([^\n]+)", text)
+
+        self.assertEqual(markers, ["Preface", "Introduction", "Chapter One", "Acknowledgements"])
+        self.assertIn("This preface explains", text)
+        self.assertIn("The author thanks", text)
+
+    def test_deterministic_epub_extract_keeps_pagebreak_wrapped_prose_not_numeric_toc_entries(self):
+        from pandrator.logic.source_cleaning.deterministic import extract_clean_epub
+
+        text = extract_clean_epub(self._write_pagebreak_and_numeric_toc_epub_fixture())
+        markers = re.findall(r"\[\[Chapter\]\]([^\n]+)", text)
+
+        self.assertEqual(markers, ["Chapter One"])
+        self.assertIn("The narrative survives the wrapper", text)
+        self.assertNotIn("[[Chapter]]1", text)
+        self.assertNotIn("19", text)
+
+    def test_deterministic_epub_extract_does_not_create_chapter_for_image_only_toc_target(self):
+        from pandrator.logic.source_cleaning.deterministic import extract_clean_epub
+
+        text = extract_clean_epub(self._write_image_only_toc_target_epub_fixture())
+
+        self.assertNotIn("[[Chapter]]Recipe One", text)
+
+    def test_deterministic_chapter_id_and_footnote_filename_rules_require_specific_evidence(self):
+        from pandrator.logic.source_cleaning.deterministic import chapters, footnotes
+
+        self.assertFalse(chapters.has_direct_chapter_semantics({"tag": "p", "id": "chi0000077", "text": "Dialogue."}))
+        self.assertTrue(chapters.has_direct_chapter_semantics({"tag": "h1", "id": "ch7", "text": "Chapter Seven"}))
+        self.assertTrue(chapters.has_direct_chapter_semantics({"tag": "h1", "id": "ch-iv", "text": "Chapter Four"}))
+        self.assertFalse(footnotes.is_footnote_file("Mihail_Notes_Off_The_Cuff_split_003.htm", 9000))
+        self.assertTrue(footnotes.is_footnote_file("chapter-001-fn.xhtml", 9000))
+        self.assertFalse(footnotes.is_footnote_file("notes.xhtml", 9000, parsed_doc={"blocks": []}))
+        self.assertTrue(
+            footnotes.is_footnote_file(
+                "notes.xhtml",
+                9000,
+                parsed_doc={"blocks": [{"id": "note-1"}, {"id": "note-2"}]},
+            )
+        )
 
     def test_chapter_structure_analysis_suggests_complete_narrative_selector(self):
         document = SourceDocument(

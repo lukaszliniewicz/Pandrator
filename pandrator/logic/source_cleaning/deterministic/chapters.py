@@ -4,6 +4,19 @@ import re
 
 NUM_PATTERN = r'^(?:[0-9]{1,3}|[IVXLCDM]{1,12})(?:$|\s*[\.\):–—-]\s*(?=\S))'
 _REGEX_CACHE = {}
+STANDALONE_CHAPTER_NUMBER_RE = re.compile(r"^(?:[0-9]{1,4}|[IVXLCDM]{1,12})[.)]?$", re.IGNORECASE)
+NUMBERED_HEADING_WITH_TITLE_RE = re.compile(
+    r"^(?:[0-9]{1,4}|[IVXLCDM]{1,12})(?:(?:[.)]\s+)|(?:\s+(?:[.•:–—-]\s*)?))(?=[^\d\s])",
+    re.IGNORECASE,
+)
+PAGE_LABEL_RE = re.compile(
+    r"^(?:page|pages|p\.?|seite|seiten|strona|strony|str\.?|p[aá]gina|pag\.?|pág\.)\s*\d+(?:\s*[-–]\s*\d+)?$",
+    re.IGNORECASE,
+)
+HEADING_FRAGMENT_RE = re.compile(
+    r"^(?:and|or|translated\s+by\b.*|edited\s+by\b.*|compiled\s+by\b.*)$",
+    re.IGNORECASE,
+)
 
 HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
 
@@ -26,7 +39,8 @@ NON_CHAPTER_TEXT_RE = re.compile(
     r"contents|illustrations|list\s+of\s+illustrations|"
     r"list\s+of\s+figures|list\s+of\s+tables|title\s+page|copyright|"
     r"about\s+the\s+author|about\s+the\s+publisher|also\s+by|other\s+books|"
-    r"bibliography|index|notes|footnotes|endnotes|glossary|colophon|colofon|"
+    r"bibliography|references|reference\s+list|index|notes|footnotes|endnotes|glossary|colophon|colofon|"
+    r"landing\s+page|praise|advance\s+praise|"
     r"dedication|widmung|titelseite|titel|title|front|"
     r"praise\s+for\s+.+|.+\bpublication|.+\bpublishing|"
     r"spis\s+treści|spis\s+tresci|inhaltsverzeichnis|inhoudsopgave|inhoud|"
@@ -64,11 +78,17 @@ CHAPTER_CLASS_RE = re.compile(
 )
 
 CHAPTER_ID_RE = re.compile(
-    r"(?:^|[-_\s])(?:chapter|chap|chapt|ch|part|book|volume|stave|"
-    r"prologue|epilogue|rozdzial|rozdział|kapitel|chapitre|capitulo|"
-    r"capítulo|capitolo|hoofdstuk|fejezet)[-_\s]?[0-9ivxlcdm]*$",
+    r"(?:"
+    r"(?:chapter|chap|chapt|part|book|volume|stave|prologue|epilogue|"
+    r"rozdzial|rozdział|kapitel|chapitre|capitulo|capítulo|capitolo|"
+    r"hoofdstuk|fejezet)(?:[-_\s]?(?:[0-9]+|[ivxlcdm]+))?"
+    # ``ch`` is deliberately stricter than ``chap``: generated paragraph IDs
+    # such as ``chi0000077`` must not be mistaken for chapter I.
+    r"|ch(?:[0-9]+|[-_\s]+(?:[0-9]+|[ivxlcdm]+))"
+    r")$",
     re.IGNORECASE,
 )
+
 
 def get_chapter_regex(lang: str) -> re.Pattern:
     if lang not in _REGEX_CACHE:
@@ -122,14 +142,14 @@ STANDALONE_CHAPTER_WORDS = (
 )
 
 EXPLICIT_CHAPTER_RE = re.compile(r"^(?:(?:" + EXPLICIT_CHAPTER_WORDS + r")\s+(?:" + NUMERIC_WORDS + r"))\b", re.IGNORECASE)
+EMBEDDED_EXPLICIT_CHAPTER_RE = re.compile(r"\b(?:" + EXPLICIT_CHAPTER_WORDS + r")\s+(?:" + NUMERIC_WORDS + r")\b", re.IGNORECASE)
 STANDALONE_CHAPTER_RE = re.compile(r"^(?:" + STANDALONE_CHAPTER_WORDS + r")\b", re.IGNORECASE)
 
 def is_non_chapter_heading_text(text: str) -> bool:
     normalized = re.sub(r"\s+", " ", text or "").strip()
     if not normalized:
         return True
-    compact_alpha = re.sub(r"[^a-z]", "", normalized.lower())
-    if compact_alpha.endswith(("publishing", "press", "publisher")):
+    if re.search(r"\b(?:publishing|press|publisher)\W*$", normalized, re.IGNORECASE):
         return True
     if re.match(r"^for\s+.{2,80}[.!?]$", normalized, re.IGNORECASE) and len(normalized.split()) <= 10:
         return True
@@ -152,6 +172,29 @@ def is_plausible_heading_text(text: str, max_chars: int = 180) -> bool:
     return True
 
 
+def is_standalone_chapter_number(text: str) -> bool:
+    """Reject page labels unless a caller intentionally pairs them with a title."""
+    return bool(STANDALONE_CHAPTER_NUMBER_RE.fullmatch(re.sub(r"\s+", " ", text or "").strip()))
+
+
+def is_numbered_heading_with_title(text: str) -> bool:
+    """Recognize ``1. Title`` but not a bare number or decimal page label."""
+    normalized = re.sub(r"\s+", " ", text or "").strip()
+    return bool(NUMBERED_HEADING_WITH_TITLE_RE.match(normalized))
+
+
+def is_navigation_label(text: str) -> bool:
+    """Recognize a printed page label that must not become a chapter."""
+    normalized = re.sub(r"\s+", " ", text or "").strip()
+    return bool(PAGE_LABEL_RE.fullmatch(normalized))
+
+
+def is_heading_fragment(text: str) -> bool:
+    """Reject connective and credit fragments split from a real heading."""
+    normalized = re.sub(r"\s+", " ", text or "").strip()
+    return bool(HEADING_FRAGMENT_RE.fullmatch(normalized))
+
+
 def is_explicit_chapter_title(text: str, lang: str = "en") -> bool:
     normalized = re.sub(r"\s+", " ", text or "").strip()
     if not normalized or is_non_chapter_heading_text(normalized):
@@ -159,7 +202,10 @@ def is_explicit_chapter_title(text: str, lang: str = "en") -> bool:
     if len(normalized) >= 100:
         return False
 
-    if get_chapter_regex(lang).match(normalized):
+    # CJK chapter headings are commonly compact (for example, 第1章) and do
+    # not need a separate number/title token.  Alphabetical labels such as
+    # "Book and Bed" must not match merely because they begin with "Book".
+    if lang in ("zh", "ja") and get_chapter_regex(lang).match(normalized):
         return True
 
     match = EXPLICIT_CHAPTER_RE.match(normalized)
@@ -228,40 +274,69 @@ def _has_non_chapter_semantics(block: dict) -> bool:
             for token in (
                 "toc", "contents", "nav", "cover", "titlepage", "copyright",
                 "license", "gutenberg", "index", "bibliography", "footnote",
-                "endnote", "notes", "illustration", "figure-list"
+                "endnote", "note", "notes", "refnote", "reference", "citation",
+                "pagenum", "pagebreak", "author", "byline", "banner", "navigation",
+                "illustration", "figure-list"
             )
         ):
             return True
     return False
 
 
-def _has_strong_semantics(block: dict) -> bool:
+def has_embedded_explicit_chapter_label(text: str, lang: str = "en") -> bool:
+    """Recognize a numbered chapter label embedded in a descriptive heading."""
+    normalized = re.sub(r"\s+", " ", text or "").strip()
+    if not normalized or is_non_chapter_heading_text(normalized):
+        return False
+    if lang in ("zh", "ja"):
+        return bool(get_chapter_regex(lang).search(normalized))
+    return bool(EMBEDDED_EXPLICIT_CHAPTER_RE.search(normalized))
+
+
+def has_direct_chapter_semantics(block: dict) -> bool:
+    """Return whether this element itself carries a chapter-specific signal.
+
+    EPUB chapter semantics commonly live on a section wrapper and are inherited
+    by every descendant.  Descendant headings are often sections, captions, or
+    page labels, so inherited ``role``/``epub:type`` values must not turn each
+    of them into a chapter boundary.
+    """
+    if _has_non_chapter_semantics(block):
+        return False
+
     direct_values = _direct_semantic_values(block)
-    inherited_values = _identity_values(block)
-    class_id_values = _class_id_values(block)
+    class_values = _norm_values(block.get("classes", []))
+    id_values = _norm_values(block.get("id", ""))
+    id_values.extend(_norm_values(block.get("nested_ids", [])))
 
     for value in direct_values:
         parts = set(re.split(r"[^0-9a-zA-Z]+", value))
         if value in CHAPTER_EPUB_TYPES or parts.intersection(CHAPTER_EPUB_TYPES):
             return True
 
-    for value in class_id_values:
+    # Class names may include a chapter term as a component.  IDs require a
+    # stricter match: commercial EPUBs often use IDs such as
+    # ``chapter-1-note-79`` for footnotes and ``chapter-1-titleGroup-2`` for
+    # internal headings, neither of which is a chapter boundary.
+    for value in class_values:
         parts = set(re.split(r"[^0-9a-zA-Z]+", value))
         if value in CHAPTER_CLASS_EXACT or parts.intersection(CHAPTER_CLASS_EXACT):
             return True
         if CHAPTER_CLASS_RE.search(value):
             return True
-        if CHAPTER_ID_RE.search(value):
+
+    for value in id_values:
+        if value in CHAPTER_CLASS_EXACT:
+            return True
+        if CHAPTER_ID_RE.fullmatch(value):
             return True
 
-    tag = str(block.get("tag", "")).lower()
-    if tag in HEADING_TAGS:
-        for value in inherited_values:
-            parts = set(re.split(r"[^0-9a-zA-Z]+", value))
-            if value in CHAPTER_EPUB_TYPES or parts.intersection(CHAPTER_EPUB_TYPES):
-                return True
-
     return False
+
+
+def _has_strong_semantics(block: dict) -> bool:
+    """Backward-compatible internal alias for direct chapter semantics."""
+    return has_direct_chapter_semantics(block)
 
 
 def is_chapter_block(
@@ -279,23 +354,47 @@ def is_chapter_block(
     if not text:
         return False
 
-    if is_non_chapter_heading_text(text) or _has_non_chapter_semantics(block):
+    if (
+        is_non_chapter_heading_text(text)
+        or is_navigation_label(text)
+        or is_heading_fragment(text)
+        or _has_non_chapter_semantics(block)
+    ):
         return False
 
-    plausible = is_plausible_heading_text(text)
+    if is_standalone_chapter_number(text):
+        return False
+
+    numbered_heading = tag in HEADING_TAGS and is_numbered_heading_with_title(text)
+    # A numbered title may legitimately end in a question mark (for example,
+    # ``10 • WHAT KIND OF MAN WAS MY FATHER?``), which the general short-text
+    # heuristic otherwise treats as a prose sentence.
+    plausible = is_plausible_heading_text(text) or numbered_heading
 
     # 1. Explicit EPUB semantics and known real-world chapter IDs/classes.
     if plausible and _has_strong_semantics(block):
         return True
         
-    # 2. Text scanner matching chapter prefixes. CJK headings are safe anywhere;
-    # alphabetical first paragraphs are accepted for legacy single-file books.
-    if plausible and (lang in ("zh", "ja") or idx_in_doc < 3):
+    # 2. CJK chapter headings are safe anywhere; alphabetical labels require
+    # an explicit chapter number or a standalone chapter-word match below.
+    if plausible and lang in ("zh", "ja"):
         if get_chapter_regex(lang).match(text):
             return True
             
     # 3. Deep chapter keyword checks are safe anywhere if short and explicit.
     if plausible and is_explicit_chapter_title(text, lang=lang):
+        return True
+
+    # A numbered *heading* has a title, unlike a running page label.  Keep it
+    # restricted to heading elements so a numbered prose paragraph cannot turn
+    # into an audiobook boundary.
+    if plausible and numbered_heading:
+        return True
+
+    # Publisher chapter headings can include a book title before the explicit
+    # label (for example, "Antidote – Chapter 1").  Do not apply this to
+    # paragraphs, where quoted chapter labels are ordinary prose.
+    if plausible and tag in HEADING_TAGS and has_embedded_explicit_chapter_label(text, lang=lang):
         return True
 
     # 4. Bare heading tags are useful only when the caller has no stronger

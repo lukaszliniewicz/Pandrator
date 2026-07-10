@@ -97,12 +97,23 @@ def build_source_document(epub_path: str) -> SourceDocument:
         if toc.is_toc_file(doc_href, parsed_doc, spine):
             toc_files.add(nh)
         # 2. Check Footnotes
-        elif footnotes.is_footnote_file(doc_href, size):
+        elif footnotes.is_footnote_file(
+            doc_href,
+            size,
+            parsed_doc=parsed_doc,
+            spine_item=spine[spine_idx] if spine_idx != -1 else None,
+        ):
             footnote_files.add(nh)
         # 3. Check Boilerplate (only if in spine, or using name keywords)
         else:
             if spine_idx != -1:
-                if boilerplate.is_front_boilerplate(spine_idx, total_spine_files, size, doc_href):
+                if boilerplate.is_front_boilerplate(
+                    spine_idx,
+                    total_spine_files,
+                    size,
+                    doc_href,
+                    blocks=parsed_doc.get("blocks", []),
+                ):
                     front_bp_files.add(nh)
                 elif boilerplate.is_end_boilerplate(spine_idx, total_spine_files, doc_href):
                     end_bp_files.add(nh)
@@ -113,14 +124,13 @@ def build_source_document(epub_path: str) -> SourceDocument:
                 tokens = set(clean_name.split())
                 front_keywords = {
                     "cover", "cvi", "cvr", "title", "tp", "copyright", "cop", "cpy",
-                    "dedication", "ded", "preface", "prf", "acknowledg", "ack", "foreword", "fwd",
                     "colophon", "col", "fm", "halftitle"
                 }
                 end_keywords = {
                     "index", "biblio", "bibliography", "bib", "about", "ads", "adc", "adv",
                     "advertisement", "colophon", "col", "copyright", "cop", "copy", "ata", "bm"
                 }
-                if tokens.intersection(front_keywords) or any(x in name_lower for x in ["cover", "title", "copyright", "dedicat"]):
+                if tokens.intersection(front_keywords) or any(x in name_lower for x in ["cover", "title", "copyright"]):
                     front_bp_files.add(nh)
                 elif tokens.intersection(end_keywords) or any(x in name_lower for x in ["index", "biblio", "copyright"]):
                     end_bp_files.add(nh)

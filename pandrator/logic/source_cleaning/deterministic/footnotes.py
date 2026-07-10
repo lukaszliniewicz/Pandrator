@@ -630,16 +630,54 @@ def reposition_footnotes_in_document(
         
     return cleaned_lines
 
-def is_footnote_file(href: str, size: int) -> bool:
+def _looks_like_dedicated_note_document(parsed_doc: dict | None) -> bool:
+    """Require local note evidence before trusting a generic ``notes`` name."""
+    if not parsed_doc:
+        return False
+
+    evidence = 0
+    note_id_re = re.compile(
+        r"(?:^|[-_:.])(?:fn|footnote|endnote|note|noteref|przypis|nts)[-_:.]?\d*\b",
+        re.IGNORECASE,
+    )
+    for block in parsed_doc.get("blocks", []):
+        values = [block.get("id", ""), *block.get("nested_ids", [])]
+        if any(note_id_re.search(str(value or "")) for value in values):
+            evidence += 1
+        for part in block.get("parts", []):
+            epub_type = str(part.get("epub_type", "")).lower()
+            href_value = str(part.get("href", "")).lower()
+            if "footnote" in epub_type or "noteref" in epub_type or "backlink" in href_value:
+                evidence += 1
+        if evidence >= 2:
+            return True
+    return False
+
+
+def is_footnote_file(
+    href: str,
+    size: int,
+    parsed_doc: dict | None = None,
+    spine_item: dict | None = None,
+) -> bool:
     """
     Determines if a file in the spine is a dedicated footnote/endnote container file.
     """
-    name_lower = os.path.basename(href).lower()
-    if re.search(r'(?:[_.-]|\b|\d)(?:fns?|footnotes?|endnotes?|przypisy?|nts)(?:\d+)?(?:\b|[_.-])', name_lower):
+    properties = {str(value).lower() for value in (spine_item or {}).get("properties", [])}
+    if properties.intersection({"footnotes", "endnotes", "doc-footnotes", "doc-endnotes"}):
         return True
-    base_name = os.path.splitext(name_lower)[0]
-    if base_name in ('fn', 'footnote', 'notes', 'endnotes', 'przypisy', 'przypis') or re.match(r'^(?:fn|footnote|notes|endnotes|przypisy|przypis)\d+$', base_name):
+
+    base_name = os.path.splitext(os.path.basename(href).lower())[0]
+    # Specific note names are useful filename signals. Deliberately exclude
+    # generic ``notes`` here: a title like ``Notes_Off_The_Cuff`` is ordinary
+    # narrative content.
+    if re.search(
+        r"(?:^|[_\-.])(?:fns?|footnotes?|endnotes?|przypisy?|nts)(?:\d+)?(?:$|[_\-.])",
+        base_name,
+    ):
         return True
-    if re.search(r'(?:[_.-]|\b|\d)notes(?:\d+)?(?:\b|[_.-])', name_lower) and size < 15000:
-        return True
+
+    if re.fullmatch(r"(?:notes?|endnotes?|przypisy?|przypis)(?:[_\-.]?\d+)?", base_name):
+        return _looks_like_dedicated_note_document(parsed_doc)
+
     return False

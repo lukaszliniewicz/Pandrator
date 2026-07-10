@@ -33,6 +33,18 @@ BOILERPLATE_TEXT_RE = re.compile(
     re.IGNORECASE,
 )
 
+FRONT_LEGAL_TEXT_RE = re.compile(
+    r"(?:all\s+rights\s+reserved|isbn\b|library\s+of\s+congress|"
+    r"copyright\b|published\s+by|this\s+book\s+is\s+a\s+work\s+of\s+fiction|"
+    r"registered\s+trademarks?|bulk\s+purchases|permissions\s+requests)",
+    re.IGNORECASE,
+)
+
+FB2_EXPORT_TEXT_RE = re.compile(
+    r"^(?:fb2\s+document\s+info|document\s+(?:authors?|version|creation\s+date)|source\s+urls?)\s*:?.*$",
+    re.IGNORECASE,
+)
+
 TITLEPAGE_TEXT_RE = re.compile(
     r"^(?:by\s+.+|illustrated\s+by\s+.+|translator:\s+.+|illustrator:\s+.+|"
     r"author:\s+.+|title:\s+.+|publisher:\s+.+|original\s+publication:\s+.+|"
@@ -40,7 +52,13 @@ TITLEPAGE_TEXT_RE = re.compile(
     re.IGNORECASE,
 )
 
-def is_front_boilerplate(idx: int, total_spine_files: int, size: int, href: str) -> bool:
+def is_front_boilerplate(
+    idx: int,
+    total_spine_files: int,
+    size: int,
+    href: str,
+    blocks: list[dict] | None = None,
+) -> bool:
     """
     Determines if a document is front-matter boilerplate (e.g. cover, title page, copyright).
     """
@@ -52,20 +70,32 @@ def is_front_boilerplate(idx: int, total_spine_files: int, size: int, href: str)
     
     # Position filter (first 5 files or first 15% of the book)
     if idx < 5 or (idx / max(1, total_spine_files)) < 0.15:
+        if is_front_legal_document(blocks):
+            return True
         # Size limit + keyword check
         if size < 3500:
             front_keywords = {
                 "cover", "cvi", "cvr", "title", "tp", "copyright", "cop", "cpy",
-                "dedication", "ded", "preface", "prf", "acknowledg", "ack", "foreword", "fwd",
                 "colophon", "col", "fm", "halftitle"
             }
             if tokens.intersection(front_keywords):
                 return True
-            substring_keywords = ["cover", "title", "copyright", "dedicat", "prefac", "acknowledg", "colophon", "halftitle"]
+            substring_keywords = ["cover", "title", "copyright", "colophon", "halftitle"]
             if any(x in name_lower for x in substring_keywords):
                 return True
                 
     return False
+
+
+def is_front_legal_document(blocks: list[dict] | None) -> bool:
+    """Identify a legal/publisher page without discarding a real preface."""
+    if not blocks:
+        return False
+    signals = sum(
+        bool(FRONT_LEGAL_TEXT_RE.search(str(block.get("text", ""))))
+        for block in blocks
+    )
+    return signals >= 2
 
 def is_end_boilerplate(idx: int, total_spine_files: int, href: str) -> bool:
     """
@@ -112,6 +142,7 @@ def is_boilerplate_text(text: str) -> bool:
         return False
     return bool(
         BOILERPLATE_TEXT_RE.search(normalized)
+        or FB2_EXPORT_TEXT_RE.match(normalized)
         or is_project_gutenberg_start(normalized)
         or is_project_gutenberg_end(normalized)
     )
@@ -126,6 +157,10 @@ def normalized_metadata_values(metadata: dict) -> set[str]:
         normalized = re.sub(r"\s+", " ", str(value)).strip().lower()
         if normalized:
             values.add(normalized)
+            if "," in normalized:
+                parts = [part.strip() for part in normalized.split(",") if part.strip()]
+                if len(parts) == 2:
+                    values.add(" ".join(reversed(parts)))
     return values
 
 
@@ -135,6 +170,12 @@ def is_titlepage_metadata_text(text: str, metadata: dict) -> bool:
         return False
     lowered = normalized.lower()
     if lowered in normalized_metadata_values(metadata):
+        return True
+    compact_lowered = re.sub(r"[^a-z0-9]", "", lowered)
+    if compact_lowered and compact_lowered in {
+        re.sub(r"[^a-z0-9]", "", value)
+        for value in normalized_metadata_values(metadata)
+    }:
         return True
     for value in normalized_metadata_values(metadata):
         if value and lowered in {f"by {value}", f"author: {value}", f"title: {value}"}:
