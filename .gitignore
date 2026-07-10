@@ -73,3 +73,6 @@ tts_voices/**/*.wav
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Linux compatibility documentation (untracked locally)
+LINUX_COMPATIBILITY.md
