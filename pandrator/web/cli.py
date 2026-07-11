@@ -90,12 +90,21 @@ def command_serve(args) -> int:
     if remote and not args.allow_insecure_remote:
         print("Refusing non-loopback HTTP without --allow-insecure-remote. Put Pandrator behind an HTTPS reverse proxy.", file=sys.stderr)
         return 3
+    if remote and not args.trusted_host:
+        print("Remote mode requires at least one --trusted-host value.", file=sys.stderr)
+        return 3
 
     bootstrap = BootstrapTokenStore()
     initial = str(os.environ.get("PANDRATOR_BOOTSTRAP_TOKEN") or "").strip()
     if initial:
         bootstrap.add(initial)
-    app = create_app(data_root=paths.root, trusted_hosts=args.trusted_host or None, bootstrap_tokens=bootstrap)
+    app = create_app(
+        data_root=paths.root,
+        trusted_hosts=args.trusted_host or None,
+        proxy_hops=args.proxy_hops,
+        secure_cookies=remote and not args.allow_insecure_remote,
+        bootstrap_tokens=bootstrap,
+    )
     url_host = "127.0.0.1" if args.host in {"0.0.0.0", "::"} else args.host
     if args.open_browser:
         token = bootstrap.issue()
@@ -293,6 +302,7 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--port", type=int, default=8097)
     serve.add_argument("--threads", type=int, default=12)
     serve.add_argument("--trusted-host", action="append", default=[])
+    serve.add_argument("--proxy-hops", type=int, choices=range(0, 4), default=0, help="Trust this many explicitly configured reverse proxies.")
     serve.add_argument("--allow-insecure-remote", action="store_true")
     serve.add_argument("--open-browser", action=argparse.BooleanOptionalAction, default=True)
     serve.set_defaults(handler=command_serve)

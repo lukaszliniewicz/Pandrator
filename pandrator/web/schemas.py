@@ -130,6 +130,10 @@ class VoiceTranscriptReview(StrictModel):
     language: str | None = Field(default=None, max_length=40)
 
 
+class SettingUpdate(StrictModel):
+    value: Any
+
+
 SCHEMA_MODELS = {
     model.__name__: model
     for model in (
@@ -143,9 +147,14 @@ SCHEMA_MODELS = {
         ProviderCreate,
         ModelCreate,
         ModelUpdate,
+        PdfRectInput,
+        PdfCropInput,
+        PdfWhiteoutInput,
         PdfEditRequest,
+        SubtitleSegmentInput,
         SubtitleReviewRequest,
         VoiceCreate,
         VoiceTranscriptReview,
+        SettingUpdate,
     )
 }

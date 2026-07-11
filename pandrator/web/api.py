@@ -19,18 +19,20 @@ from flask import Flask, Response, g, jsonify, request, send_file, send_from_dir
 from pydantic import ValidationError
 from sqlalchemy import select
 from werkzeug.exceptions import HTTPException
+from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.utils import secure_filename
 
 from pandrator.runtime import DataPaths
 
 from .artifacts import ArtifactService, sha256_file
 from .auth import AuthService, BootstrapTokenStore
+from .capabilities import probe_capabilities
 from .database import Database
 from .jobs import JobQueue
 from .legacy_migration import import_legacy_data
-from .models import Artifact, Provider, ProviderModel, SessionRecord, SourceRecord, Voice, VoiceSample
+from .models import AppSetting, AppSettingHistory, Artifact, Provider, ProviderModel, SessionRecord, SourceRecord, Voice, VoiceSample, utcnow
 from .openapi import build_openapi_document
-from .schemas import BootstrapRequest, JobCreate, LoginRequest, ModelCreate, ModelUpdate, PdfEditRequest, ProviderCreate, SessionCreate, SessionUpdate, SubtitleReviewRequest, TokenCreateRequest, VoiceCreate, VoiceTranscriptReview
+from .schemas import BootstrapRequest, JobCreate, LoginRequest, ModelCreate, ModelUpdate, PdfEditRequest, ProviderCreate, SessionCreate, SessionUpdate, SettingUpdate, SubtitleReviewRequest, TokenCreateRequest, VoiceCreate, VoiceTranscriptReview
 from .sessions import RevisionConflict, SessionService
 from .subtitle_review import SubtitleReviewService
 from .workflows import WorkflowService
@@ -93,6 +95,8 @@ def create_app(
     data_root: str | os.PathLike[str] | None = None,
     testing: bool = False,
     trusted_hosts: list[str] | None = None,
+    proxy_hops: int = 0,
+    secure_cookies: bool = False,
     bootstrap_tokens: BootstrapTokenStore | None = None,
 ) -> Flask:
     paths = DataPaths.from_value(data_root).ensure()
@@ -125,8 +129,11 @@ def create_app(
         MAX_CONTENT_LENGTH=10 * 1024 * 1024 * 1024,
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
-        TRUSTED_HOSTS=trusted_hosts,
+        SESSION_COOKIE_SECURE=secure_cookies,
+        TRUSTED_HOSTS=trusted_hosts or ["localhost", "127.0.0.1", "[::1]"],
     )
+    if proxy_hops:
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=proxy_hops, x_proto=proxy_hops, x_host=proxy_hops, x_port=proxy_hops)
     app.extensions["pandrator"] = {
         "paths": paths,
         "database": database,
@@ -264,27 +271,54 @@ def create_app(
     @app.get("/api/v1/capabilities")
     @require_auth
     def capabilities():
-        ffmpeg = shutil.which("ffmpeg")
-        pycrop_candidates = [paths.root / "PyCropPDF" / "run.py", paths.root.parent / "PyCropPDF" / "run.py"]
-        return jsonify(
-            {
-                "mode": "local" if request.remote_addr in {"127.0.0.1", "::1"} else "remote",
-                "ffmpeg": {"available": bool(ffmpeg), "path": ffmpeg},
-                "pycroppdf": {"available": any(path.is_file() for path in pycrop_candidates), "local_only": True},
-                "recording": {"browser_required": True, "normalization_available": bool(ffmpeg)},
-                "stt": {
-                    "whisperx": bool(shutil.which("whisperx") or (paths.root / "whisperX" / "pixi.toml").is_file()),
-                    "parakeet_onnx": bool((paths.root / "parakeet-tdt-0.6b-v3-onnx").exists() or (paths.root / "parakeet" / "pixi.toml").is_file()),
-                },
-                "rvc": {"available": False},
-                "features": ["sessions", "jobs", "providers", "voices", "uploads", "artifacts"],
-            }
-        )
+        return jsonify(probe_capabilities(paths, local_mode=request.remote_addr in {"127.0.0.1", "::1"}))
 
     @app.get("/api/v1/sessions")
     @require_auth
     def session_list():
         return jsonify({"items": [_session_payload(item) for item in sessions.list()]})
+
+    @app.get("/api/v1/settings/<setting_key>")
+    @require_auth
+    def setting_get(setting_key: str):
+        with database.session() as db_session:
+            record = db_session.get(AppSetting, setting_key)
+            if record is None:
+                return error_response("not_found", "Setting not found.", 404)
+            response = jsonify({"key": record.key, "value": record.value_json, "revision": record.revision, "updated_at": record.updated_at.isoformat()})
+            response.headers["ETag"] = f'"{record.revision}"'
+            return response
+
+    @app.put("/api/v1/settings/<setting_key>")
+    @require_auth
+    def setting_put(setting_key: str):
+        if not setting_key or len(setting_key) > 120:
+            return error_response("validation_error", "Invalid setting key.", 422)
+        payload = SettingUpdate.model_validate(request.get_json(silent=True) or {})
+        raw_etag = request.headers.get("If-Match", "").strip('W/" ')
+        with database.session() as db_session:
+            record = db_session.get(AppSetting, setting_key)
+            if record is None:
+                if raw_etag not in {"", "0", "*"}:
+                    return error_response("revision_conflict", "The setting does not exist at that revision.", 409)
+                record = AppSetting(key=setting_key, value_json=payload.value, revision=1)
+                db_session.add(record)
+            else:
+                try:
+                    expected = int(raw_etag)
+                except ValueError:
+                    return error_response("precondition_required", "If-Match must contain the current setting revision.", 428)
+                if expected != record.revision:
+                    return error_response("revision_conflict", "The setting changed in another client.", 409)
+                db_session.add(AppSettingHistory(key=record.key, value_json=record.value_json, revision=record.revision))
+                record.value_json = payload.value
+                record.revision += 1
+                record.updated_at = utcnow()
+            db_session.flush()
+            result = {"key": record.key, "value": record.value_json, "revision": record.revision, "updated_at": record.updated_at.isoformat()}
+        response = jsonify(result)
+        response.headers["ETag"] = f'"{result["revision"]}"'
+        return response
 
     @app.post("/api/v1/sessions")
     @require_auth

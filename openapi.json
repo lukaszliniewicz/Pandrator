@@ -1,0 +1,1441 @@
+{
+  "components": {
+    "schemas": {
+      "BootstrapRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "token": {
+            "title": "Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token"
+        ],
+        "title": "BootstrapRequest",
+        "type": "object"
+      },
+      "ErrorBody": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "details": {
+            "default": null,
+            "title": "Details"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "request_id"
+        ],
+        "title": "ErrorBody",
+        "type": "object"
+      },
+      "JobCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Kind",
+            "type": "string"
+          },
+          "max_attempts": {
+            "default": 1,
+            "maximum": 10,
+            "minimum": 1,
+            "title": "Max Attempts",
+            "type": "integer"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "JobCreate",
+        "type": "object"
+      },
+      "LoginRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "password": {
+            "title": "Password",
+            "type": "string"
+          }
+        },
+        "required": [
+          "password"
+        ],
+        "title": "LoginRequest",
+        "type": "object"
+      },
+      "ModelCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "cached_input_cost_per_million": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cached Input Cost Per Million"
+          },
+          "default_reasoning_effort": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Default Reasoning Effort"
+          },
+          "default_temperature": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Default Temperature"
+          },
+          "input_cost_per_million": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Input Cost Per Million"
+          },
+          "is_default": {
+            "default": false,
+            "title": "Is Default",
+            "type": "boolean"
+          },
+          "model_id": {
+            "title": "Model Id",
+            "type": "string"
+          },
+          "options": {
+            "additionalProperties": true,
+            "title": "Options",
+            "type": "object"
+          },
+          "output_cost_per_million": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Output Cost Per Million"
+          }
+        },
+        "required": [
+          "model_id"
+        ],
+        "title": "ModelCreate",
+        "type": "object"
+      },
+      "ModelUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "cached_input_cost_per_million": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cached Input Cost Per Million"
+          },
+          "default_reasoning_effort": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Default Reasoning Effort"
+          },
+          "default_temperature": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Default Temperature"
+          },
+          "input_cost_per_million": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Input Cost Per Million"
+          },
+          "is_default": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Is Default"
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model Id"
+          },
+          "options": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Options"
+          },
+          "output_cost_per_million": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Output Cost Per Million"
+          }
+        },
+        "title": "ModelUpdate",
+        "type": "object"
+      },
+      "PdfCropInput": {
+        "$defs": {
+          "PdfRectInput": {
+            "additionalProperties": false,
+            "properties": {
+              "x0": {
+                "title": "X0",
+                "type": "number"
+              },
+              "x1": {
+                "title": "X1",
+                "type": "number"
+              },
+              "y0": {
+                "title": "Y0",
+                "type": "number"
+              },
+              "y1": {
+                "title": "Y1",
+                "type": "number"
+              }
+            },
+            "required": [
+              "x0",
+              "y0",
+              "x1",
+              "y1"
+            ],
+            "title": "PdfRectInput",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "original_page": {
+            "minimum": 0,
+            "title": "Original Page",
+            "type": "integer"
+          },
+          "rect": {
+            "$ref": "#/components/schemas/PdfRectInput"
+          }
+        },
+        "required": [
+          "original_page",
+          "rect"
+        ],
+        "title": "PdfCropInput",
+        "type": "object"
+      },
+      "PdfEditRequest": {
+        "$defs": {
+          "PdfCropInput": {
+            "additionalProperties": false,
+            "properties": {
+              "original_page": {
+                "minimum": 0,
+                "title": "Original Page",
+                "type": "integer"
+              },
+              "rect": {
+                "$ref": "#/components/schemas/PdfRectInput"
+              }
+            },
+            "required": [
+              "original_page",
+              "rect"
+            ],
+            "title": "PdfCropInput",
+            "type": "object"
+          },
+          "PdfRectInput": {
+            "additionalProperties": false,
+            "properties": {
+              "x0": {
+                "title": "X0",
+                "type": "number"
+              },
+              "x1": {
+                "title": "X1",
+                "type": "number"
+              },
+              "y0": {
+                "title": "Y0",
+                "type": "number"
+              },
+              "y1": {
+                "title": "Y1",
+                "type": "number"
+              }
+            },
+            "required": [
+              "x0",
+              "y0",
+              "x1",
+              "y1"
+            ],
+            "title": "PdfRectInput",
+            "type": "object"
+          },
+          "PdfWhiteoutInput": {
+            "additionalProperties": false,
+            "properties": {
+              "color": {
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "title": "Color",
+                "type": "array"
+              },
+              "original_page": {
+                "minimum": 0,
+                "title": "Original Page",
+                "type": "integer"
+              },
+              "rect": {
+                "$ref": "#/components/schemas/PdfRectInput"
+              }
+            },
+            "required": [
+              "original_page",
+              "rect"
+            ],
+            "title": "PdfWhiteoutInput",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "crops": {
+            "items": {
+              "$ref": "#/components/schemas/PdfCropInput"
+            },
+            "title": "Crops",
+            "type": "array"
+          },
+          "deleted_pages": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Deleted Pages",
+            "type": "array"
+          },
+          "first_page_side": {
+            "default": "right",
+            "enum": [
+              "left",
+              "right"
+            ],
+            "title": "First Page Side",
+            "type": "string"
+          },
+          "source_artifact_id": {
+            "title": "Source Artifact Id",
+            "type": "string"
+          },
+          "whiteouts": {
+            "items": {
+              "$ref": "#/components/schemas/PdfWhiteoutInput"
+            },
+            "title": "Whiteouts",
+            "type": "array"
+          }
+        },
+        "required": [
+          "source_artifact_id"
+        ],
+        "title": "PdfEditRequest",
+        "type": "object"
+      },
+      "PdfRectInput": {
+        "additionalProperties": false,
+        "properties": {
+          "x0": {
+            "title": "X0",
+            "type": "number"
+          },
+          "x1": {
+            "title": "X1",
+            "type": "number"
+          },
+          "y0": {
+            "title": "Y0",
+            "type": "number"
+          },
+          "y1": {
+            "title": "Y1",
+            "type": "number"
+          }
+        },
+        "required": [
+          "x0",
+          "y0",
+          "x1",
+          "y1"
+        ],
+        "title": "PdfRectInput",
+        "type": "object"
+      },
+      "PdfWhiteoutInput": {
+        "$defs": {
+          "PdfRectInput": {
+            "additionalProperties": false,
+            "properties": {
+              "x0": {
+                "title": "X0",
+                "type": "number"
+              },
+              "x1": {
+                "title": "X1",
+                "type": "number"
+              },
+              "y0": {
+                "title": "Y0",
+                "type": "number"
+              },
+              "y1": {
+                "title": "Y1",
+                "type": "number"
+              }
+            },
+            "required": [
+              "x0",
+              "y0",
+              "x1",
+              "y1"
+            ],
+            "title": "PdfRectInput",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "color": {
+            "items": {
+              "type": "number"
+            },
+            "maxItems": 3,
+            "minItems": 3,
+            "title": "Color",
+            "type": "array"
+          },
+          "original_page": {
+            "minimum": 0,
+            "title": "Original Page",
+            "type": "integer"
+          },
+          "rect": {
+            "$ref": "#/components/schemas/PdfRectInput"
+          }
+        },
+        "required": [
+          "original_page",
+          "rect"
+        ],
+        "title": "PdfWhiteoutInput",
+        "type": "object"
+      },
+      "ProviderCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "base_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Base Url"
+          },
+          "kind": {
+            "default": "llm",
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "options": {
+            "additionalProperties": true,
+            "title": "Options",
+            "type": "object"
+          },
+          "provider_key": {
+            "title": "Provider Key",
+            "type": "string"
+          },
+          "secret_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Secret Ref"
+          }
+        },
+        "required": [
+          "provider_key",
+          "label"
+        ],
+        "title": "ProviderCreate",
+        "type": "object"
+      },
+      "SessionCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "included_stages": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Included Stages",
+            "type": "array"
+          },
+          "name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "workflow_kind": {
+            "default": "audiobook",
+            "enum": [
+              "audiobook",
+              "subtitles",
+              "voiceover"
+            ],
+            "title": "Workflow Kind",
+            "type": "string"
+          },
+          "workflow_preset": {
+            "default": "custom",
+            "title": "Workflow Preset",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "SessionCreate",
+        "type": "object"
+      },
+      "SessionUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "included_stages": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Included Stages"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Status"
+          },
+          "workflow_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "audiobook",
+                  "subtitles",
+                  "voiceover"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Workflow Kind"
+          },
+          "workflow_preset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Workflow Preset"
+          }
+        },
+        "title": "SessionUpdate",
+        "type": "object"
+      },
+      "SettingUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "title": "Value"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "title": "SettingUpdate",
+        "type": "object"
+      },
+      "SubtitleReviewRequest": {
+        "$defs": {
+          "SubtitleSegmentInput": {
+            "additionalProperties": false,
+            "properties": {
+              "end_ms": {
+                "exclusiveMinimum": 0,
+                "title": "End Ms",
+                "type": "integer"
+              },
+              "speaker": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Speaker"
+              },
+              "start_ms": {
+                "minimum": 0,
+                "title": "Start Ms",
+                "type": "integer"
+              },
+              "text": {
+                "minLength": 1,
+                "title": "Text",
+                "type": "string"
+              }
+            },
+            "required": [
+              "start_ms",
+              "end_ms",
+              "text"
+            ],
+            "title": "SubtitleSegmentInput",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "minimum": 1,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "segments": {
+            "items": {
+              "$ref": "#/components/schemas/SubtitleSegmentInput"
+            },
+            "minItems": 1,
+            "title": "Segments",
+            "type": "array"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "segments"
+        ],
+        "title": "SubtitleReviewRequest",
+        "type": "object"
+      },
+      "SubtitleSegmentInput": {
+        "additionalProperties": false,
+        "properties": {
+          "end_ms": {
+            "exclusiveMinimum": 0,
+            "title": "End Ms",
+            "type": "integer"
+          },
+          "speaker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Speaker"
+          },
+          "start_ms": {
+            "minimum": 0,
+            "title": "Start Ms",
+            "type": "integer"
+          },
+          "text": {
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "start_ms",
+          "end_ms",
+          "text"
+        ],
+        "title": "SubtitleSegmentInput",
+        "type": "object"
+      },
+      "TokenCreateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "default": "CLI token",
+            "maxLength": 160,
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "title": "TokenCreateRequest",
+        "type": "object"
+      },
+      "VoiceCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Description"
+          },
+          "language": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Language"
+          },
+          "name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "VoiceCreate",
+        "type": "object"
+      },
+      "VoiceTranscriptReview": {
+        "additionalProperties": false,
+        "properties": {
+          "language": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Language"
+          },
+          "transcript": {
+            "minLength": 1,
+            "title": "Transcript",
+            "type": "string"
+          }
+        },
+        "required": [
+          "transcript"
+        ],
+        "title": "VoiceTranscriptReview",
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "bearerToken": {
+        "scheme": "bearer",
+        "type": "http"
+      },
+      "cookieAuth": {
+        "in": "cookie",
+        "name": "session",
+        "type": "apiKey"
+      }
+    }
+  },
+  "info": {
+    "title": "Pandrator API",
+    "version": "1.0.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/artifacts": {
+      "get": {
+        "operationId": "listArtifacts",
+        "responses": {
+          "200": {
+            "description": "Artifacts"
+          }
+        }
+      }
+    },
+    "/api/v1/artifacts/{artifactId}/content": {
+      "get": {
+        "operationId": "getArtifactContent",
+        "responses": {
+          "200": {
+            "description": "Range-capable artifact content"
+          }
+        }
+      }
+    },
+    "/api/v1/artifacts/{artifactId}/pdf": {
+      "get": {
+        "operationId": "inspectPdf",
+        "responses": {
+          "200": {
+            "description": "PDF geometry"
+          }
+        }
+      }
+    },
+    "/api/v1/auth/login": {
+      "post": {
+        "operationId": "login",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Authenticated"
+          }
+        }
+      }
+    },
+    "/api/v1/auth/status": {
+      "get": {
+        "operationId": "getAuthStatus",
+        "responses": {
+          "200": {
+            "description": "Authentication status"
+          }
+        }
+      }
+    },
+    "/api/v1/auth/tokens": {
+      "get": {
+        "operationId": "listApiTokens",
+        "responses": {
+          "200": {
+            "description": "Tokens"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createApiToken",
+        "responses": {
+          "201": {
+            "description": "Created"
+          }
+        }
+      }
+    },
+    "/api/v1/capabilities": {
+      "get": {
+        "operationId": "getCapabilities",
+        "responses": {
+          "200": {
+            "description": "Runtime capabilities"
+          }
+        }
+      }
+    },
+    "/api/v1/events": {
+      "get": {
+        "operationId": "streamEvents",
+        "responses": {
+          "200": {
+            "description": "SSE job events"
+          }
+        }
+      }
+    },
+    "/api/v1/health": {
+      "get": {
+        "operationId": "getHealth",
+        "responses": {
+          "200": {
+            "description": "Healthy"
+          }
+        }
+      }
+    },
+    "/api/v1/jobs": {
+      "get": {
+        "operationId": "listJobs",
+        "responses": {
+          "200": {
+            "description": "Jobs"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createJob",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JobCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Queued"
+          }
+        }
+      }
+    },
+    "/api/v1/jobs/{jobId}": {
+      "get": {
+        "operationId": "getJob",
+        "responses": {
+          "200": {
+            "description": "Job"
+          }
+        }
+      }
+    },
+    "/api/v1/jobs/{jobId}/cancel": {
+      "post": {
+        "operationId": "cancelJob",
+        "responses": {
+          "200": {
+            "description": "Cancellation requested"
+          }
+        }
+      }
+    },
+    "/api/v1/providers": {
+      "get": {
+        "operationId": "listProviders",
+        "responses": {
+          "200": {
+            "description": "Providers"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createProvider",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created"
+          }
+        }
+      }
+    },
+    "/api/v1/providers/{providerId}/models": {
+      "get": {
+        "operationId": "listProviderModels",
+        "responses": {
+          "200": {
+            "description": "Models"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createProviderModel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModelCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created"
+          }
+        }
+      }
+    },
+    "/api/v1/providers/{providerId}/models/{modelId}": {
+      "delete": {
+        "operationId": "deleteProviderModel",
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "409": {
+            "description": "Replacement required"
+          }
+        }
+      },
+      "patch": {
+        "operationId": "updateProviderModel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModelUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Updated"
+          },
+          "409": {
+            "description": "Revision conflict"
+          }
+        }
+      }
+    },
+    "/api/v1/sessions": {
+      "get": {
+        "operationId": "listSessions",
+        "responses": {
+          "200": {
+            "description": "Sessions"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createSession",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created"
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{sessionId}": {
+      "get": {
+        "operationId": "getSession",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Session"
+          }
+        }
+      },
+      "patch": {
+        "operationId": "updateSession",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Updated"
+          },
+          "409": {
+            "description": "Revision conflict"
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{sessionId}/pdf/apply": {
+      "post": {
+        "operationId": "applyPdfEdits",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PdfEditRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Queued"
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{sessionId}/stages/{stageKey}/run": {
+      "post": {
+        "operationId": "runWorkflowStage",
+        "responses": {
+          "202": {
+            "description": "Queued"
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{sessionId}/subtitles": {
+      "get": {
+        "operationId": "getSubtitleComparison",
+        "responses": {
+          "200": {
+            "description": "Aligned subtitle revisions"
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{sessionId}/subtitles/{stage}/review": {
+      "post": {
+        "operationId": "saveSubtitleReview",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubtitleReviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Reviewed revision"
+          },
+          "409": {
+            "description": "Revision conflict"
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{sessionId}/workflow": {
+      "get": {
+        "operationId": "getWorkflow",
+        "responses": {
+          "200": {
+            "description": "Workflow snapshot"
+          }
+        }
+      }
+    },
+    "/api/v1/settings/{settingKey}": {
+      "get": {
+        "operationId": "getSetting",
+        "responses": {
+          "200": {
+            "description": "Setting"
+          }
+        }
+      },
+      "put": {
+        "operationId": "putSetting",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettingUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Saved"
+          },
+          "409": {
+            "description": "Revision conflict"
+          }
+        }
+      }
+    },
+    "/api/v1/uploads": {
+      "post": {
+        "operationId": "uploadSource",
+        "responses": {
+          "201": {
+            "description": "Uploaded"
+          }
+        }
+      }
+    },
+    "/api/v1/voices": {
+      "get": {
+        "operationId": "listVoices",
+        "responses": {
+          "200": {
+            "description": "Voices"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createVoice",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoiceCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created"
+          }
+        }
+      }
+    },
+    "/api/v1/voices/{voiceId}/samples": {
+      "get": {
+        "operationId": "listVoiceSamples",
+        "responses": {
+          "200": {
+            "description": "Samples"
+          }
+        }
+      },
+      "post": {
+        "operationId": "uploadVoiceSample",
+        "responses": {
+          "202": {
+            "description": "Queued"
+          }
+        }
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "/"
+    }
+  ]
+}

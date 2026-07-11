@@ -36,9 +36,15 @@
   let taskOpen = $state(false);
   let newSessionName = $state('');
   let newSessionKind = $state<'audiobook' | 'subtitles' | 'voiceover'>('audiobook');
+  let newSourceMode = $state<'upload' | 'paste' | 'later'>('upload');
+  let newSourceFile = $state<File | null>(null);
+  let newSourceText = $state('');
   let capabilities = $state<Record<string, any>>({});
   let selectedSession = $state<SessionRecord | null>(null);
   let currentView = $state<'home' | 'providers' | 'voices'>('home');
+  let wizardOpen = $state(false);
+  let wizardRevision = $state(0);
+  let disableWizard = $state(false);
 
   const tasks = [
     { kind: 'subtitles', title: 'Create subtitles', detail: 'Transcribe, correct, translate, review, and export.', icon: Captions },
@@ -69,6 +75,25 @@
     sessions = sessionPayload.items;
     jobs = jobPayload.items;
     capabilities = capabilityPayload;
+    try {
+      const wizard = await api<{ value: { visible?: boolean; version?: number; setup_completed?: boolean }; revision: number }>('/settings/wizard');
+      wizardRevision = wizard.revision;
+      wizardOpen = wizard.value.visible !== false;
+      setupOpen = !wizard.value.setup_completed;
+    } catch {
+      wizardRevision = 0;
+      wizardOpen = true;
+      setupOpen = true;
+    }
+  }
+
+  async function closeWizard() {
+    wizardOpen = false;
+    if (!disableWizard) return;
+    try {
+      const saved = await api<{revision:number}>('/settings/wizard', { method:'PUT', headers:{'If-Match': `"${wizardRevision}"`}, body:JSON.stringify({value:{visible:false,version:1,setup_completed:false}}) });
+      wizardRevision = saved.revision;
+    } catch (caught) { error = caught instanceof Error ? caught.message : String(caught); }
   }
 
   async function initialize() {
@@ -109,18 +134,29 @@
   function beginTask(kind: 'audiobook' | 'subtitles' | 'voiceover') {
     newSessionKind = kind;
     newSessionName = '';
+    newSourceMode = kind === 'audiobook' ? 'upload' : 'upload';
+    newSourceFile = null;
+    newSourceText = '';
     taskOpen = true;
   }
 
   async function createSession() {
     if (!newSessionName.trim()) return;
     try {
+      const included = newSessionKind === 'audiobook' ? ['clean_source','prepare_text','generate_audio','export'] : newSessionKind === 'voiceover' ? ['transcribe','correct','translate','generate_audio','export'] : ['transcribe','correct','translate','export'];
       const created = await api<SessionRecord>('/sessions', {
         method: 'POST',
-        body: JSON.stringify({ name: newSessionName.trim(), workflow_kind: newSessionKind })
+        body: JSON.stringify({ name: newSessionName.trim(), workflow_kind: newSessionKind, workflow_preset: newSessionKind === 'voiceover' ? 'voiceover' : 'custom', included_stages: included })
       });
+      const source = newSourceMode === 'paste' && newSourceText.trim() ? new File([newSourceText.trim()], `${newSessionName.trim()}.txt`, {type:'text/plain'}) : newSourceMode === 'upload' ? newSourceFile : null;
+      if (source) {
+        const form = new FormData(); form.set('session_id', created.id); form.set('file', source);
+        await api('/uploads', {method:'POST', body:form});
+      }
       sessions = [created, ...sessions];
       taskOpen = false;
+      selectedSession = created;
+      setupOpen = false;
     } catch (caught) {
       error = caught instanceof Error ? caught.message : String(caught);
     }
@@ -185,7 +221,7 @@
       {:else}
       <header class="mx-auto mb-10 flex max-w-7xl items-end justify-between gap-8">
         <div><div class="eyebrow mb-3">Workspace overview</div><h1 class="max-w-3xl text-3xl font-semibold tracking-[-.035em] sm:text-4xl lg:text-5xl">What would you like to make?</h1><p class="muted mt-4 max-w-2xl text-base leading-relaxed">Start with an outcome. Pandrator will prepare the right stages and keep every artifact reviewable.</p></div>
-        <button onclick={() => setupOpen = !setupOpen} class="hidden rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-2.5 text-sm font-semibold sm:flex sm:items-center sm:gap-2"><CircleHelp size={17}/> Setup guide</button>
+        <button onclick={() => wizardOpen = true} class="hidden rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-2.5 text-sm font-semibold sm:flex sm:items-center sm:gap-2"><CircleHelp size={17}/> Open wizard</button>
       </header>
 
       {#if error}<div class="mx-auto mb-6 max-w-7xl rounded-xl border border-red-400/40 bg-red-500/10 px-4 py-3 text-sm">{error}</div>{/if}
@@ -234,7 +270,8 @@
     <aside class="surface fixed right-5 bottom-5 z-30 w-[min(23rem,calc(100vw-2.5rem))] rounded-2xl p-5 shadow-2xl">
       <div class="flex items-start justify-between gap-4"><div><div class="eyebrow">Setup checklist</div><h2 class="mt-1 text-lg font-semibold">Three details to check</h2></div><button onclick={() => setupOpen = false} aria-label="Close setup checklist" class="rounded-lg p-1.5 hover:bg-[var(--accent-soft)]"><X size={18}/></button></div>
       <div class="mt-4 space-y-2">{#each setupItems as item}<button onclick={() => { if (item.label === 'LLM providers') currentView='providers'; else if (item.label === 'Voice references') currentView='voices'; if (item.label !== 'Local speech tools') { selectedSession=null; setupOpen=false; } }} class="flex w-full items-center gap-3 rounded-xl border border-[var(--line)] px-3 py-2.5 text-left text-sm"><span class:item-ready={item.ready} class="size-2 rounded-full bg-[var(--warning)]"></span><span class="flex-1 font-medium">{item.label}</span><ChevronRight class="muted" size={16}/></button>{/each}</div>
-      <button class="mt-4 w-full rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white">Return to guided setup</button>
+      {#if capabilities?.gpu?.guidance}<p class="muted mt-3 rounded-xl bg-[var(--accent-soft)]/30 p-3 text-xs leading-relaxed">{capabilities.gpu.guidance}</p>{/if}
+      <button onclick={() => wizardOpen=true} class="mt-4 w-full rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white">Return to guided setup</button>
     </aside>
   {:else}
     <button onclick={() => setupOpen = true} class="surface fixed right-5 bottom-5 z-30 flex items-center gap-2 rounded-full px-4 py-2.5 text-sm font-semibold"><Sparkles size={16} class="text-[var(--accent)]"/> Return to setup</button>
@@ -244,9 +281,24 @@
     <div class="fixed inset-0 z-50 grid place-items-center bg-black/35 p-5 backdrop-blur-sm" role="presentation" onclick={(event) => event.target === event.currentTarget && (taskOpen=false)}>
       <div class="surface w-full max-w-lg rounded-[1.8rem] p-7" role="dialog" aria-modal="true" aria-labelledby="new-task-title">
         <div class="flex justify-between gap-5"><div><div class="eyebrow">New {newSessionKind}</div><h2 id="new-task-title" class="mt-1 text-2xl font-semibold">Name this session</h2></div><button onclick={() => taskOpen=false} class="rounded-lg p-2"><X size={19}/></button></div>
-        <p class="muted mt-3 text-sm leading-relaxed">You can add the source and adjust every workflow stage next.</p>
+        <p class="muted mt-3 text-sm leading-relaxed">Choose a source now or leave it for the workspace. Pandrator will prepare the matching stages.</p>
         <label for="session-name" class="mt-6 mb-2 block text-sm font-semibold">Session name</label><input id="session-name" bind:value={newSessionName} onkeydown={(event) => event.key === 'Enter' && createSession()} placeholder="A descriptive title" class="w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3" />
+        <div class="mt-5 grid grid-cols-3 gap-2"><button onclick={() => newSourceMode='upload'} class:active={newSourceMode==='upload'} class="rounded-xl border border-[var(--line)] px-3 py-2 text-xs font-semibold">Upload</button><button onclick={() => newSourceMode='paste'} class:active={newSourceMode==='paste'} class="rounded-xl border border-[var(--line)] px-3 py-2 text-xs font-semibold">Paste text</button><button onclick={() => newSourceMode='later'} class:active={newSourceMode==='later'} class="rounded-xl border border-[var(--line)] px-3 py-2 text-xs font-semibold">Choose later</button></div>
+        {#if newSourceMode==='upload'}<label class="mt-4 block rounded-xl border border-dashed border-[var(--line)] p-4 text-sm"><span class="font-semibold">Source file</span><input type="file" class="mt-2 block w-full text-xs" onchange={(event) => { const file=(event.currentTarget as HTMLInputElement).files?.[0]??null; newSourceFile=file; if(file&&!newSessionName) newSessionName=file.name.replace(/\.[^.]+$/,''); }}/></label>{:else if newSourceMode==='paste'}<textarea bind:value={newSourceText} rows="5" placeholder="Paste the source text here…" class="mt-4 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] p-3 text-sm"></textarea>{/if}
         <div class="mt-6 flex justify-end gap-3"><button onclick={() => taskOpen=false} class="rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold">Cancel</button><button onclick={createSession} disabled={!newSessionName.trim()} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-40"><Plus size={17}/> Create session</button></div>
+      </div>
+    </div>
+  {/if}
+
+  {#if wizardOpen}
+    <div class="fixed inset-0 z-[70] grid place-items-center overflow-auto bg-black/45 p-4 backdrop-blur-md sm:p-8" role="presentation">
+      <div class="surface my-auto min-w-0 w-full max-w-[min(72rem,calc(100vw-2rem))] overflow-x-hidden rounded-[2rem] p-6 shadow-2xl sm:p-9" role="dialog" aria-modal="true" aria-labelledby="wizard-title">
+        <header class="flex flex-wrap items-start justify-between gap-5"><div><div class="eyebrow">Pandrator guide</div><h2 id="wizard-title" class="mt-2 text-3xl font-semibold tracking-[-.035em]">Where would you like to begin?</h2><p class="muted mt-3 max-w-2xl leading-relaxed">Resume a production or choose an outcome. The guide prepares the workspace while keeping every advanced control available later.</p></div><button onclick={closeWizard} aria-label="Close wizard" class="rounded-xl border border-[var(--line)] p-2"><X size={19}/></button></header>
+        <div class="mt-8 grid gap-7 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.35fr)]"><section class="min-w-0"><div class="eyebrow mb-3">Recent sessions</div><div class="overflow-hidden rounded-2xl border border-[var(--line)]">{#each sessions.slice(0,4) as item}<button onclick={() => { selectedSession=item; wizardOpen=false; setupOpen=false; }} class="flex w-full items-center gap-3 border-b border-[var(--line)] p-4 text-left last:border-0 hover:bg-[var(--accent-soft)]"><div class="grid size-9 place-items-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]">{#if item.workflow_kind==='audiobook'}<BookOpenText size={17}/>{:else}<Captions size={17}/>{/if}</div><div class="min-w-0 flex-1"><div class="truncate font-semibold">{item.name}</div><div class="muted text-xs capitalize">{item.workflow_kind} · {item.status}</div></div><ChevronRight size={16}/></button>{:else}<div class="muted p-7 text-center text-sm">No previous sessions yet.</div>{/each}</div></section>
+          <section class="min-w-0"><div class="eyebrow mb-3">Create something new</div><div class="grid gap-3 md:grid-cols-2 xl:grid-cols-[repeat(3,minmax(0,1fr))]">{#each tasks as task}{@const WizardIcon=task.icon}<button onclick={() => { beginTask(task.kind); wizardOpen=false; }} class="lift min-w-0 overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--paper-strong)] p-4 text-left"><div class="mb-5 grid size-10 place-items-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]"><WizardIcon size={19}/></div><h3 class="font-semibold">{task.title}</h3><p class="muted mt-1 text-xs leading-relaxed">{task.detail}</p></button>{/each}</div><button onclick={() => { wizardOpen=false; setupOpen=true; }} class="mt-4 flex w-full items-center gap-4 rounded-2xl border border-[var(--line)] bg-[var(--accent-soft)]/35 p-4 text-left"><Settings2 class="text-[var(--accent)]" size={21}/><div class="min-w-0 flex-1"><div class="font-semibold">Review setup and capabilities</div><p class="muted text-xs">Configure LLMs and voices; check local speech tools, FFmpeg, GPU readiness, privacy, and costs.</p></div><ChevronRight size={17}/></button></section></div>
+        <div class="mt-7 grid gap-3 rounded-2xl border border-[var(--line)] p-4 text-sm md:grid-cols-3"><div><div class="font-semibold">Language intelligence</div><p class="muted mt-1 text-xs leading-relaxed">LLMs correct and translate subtitles, optimize TTS segments, and help clean extracted documents.</p></div><div><div class="font-semibold">Local-first control</div><p class="muted mt-1 text-xs leading-relaxed">Capability checks explain what is installed; this wizard never installs components itself.</p></div><div><div class="font-semibold">Review before output</div><p class="muted mt-1 text-xs leading-relaxed">Artifacts, edits, API costs, and exports remain visible and independently rerunnable.</p></div></div>
+        <p class="muted mt-5 text-xs leading-relaxed">Privacy: local services keep media on this machine; cloud providers receive the content sent to them and may charge per token or audio unit. Outputs remain in Pandrator’s managed data directory and are never removed by cache retention.</p>
+        <footer class="mt-4 flex flex-wrap items-center justify-between gap-4"><label class="muted flex items-center gap-2 text-sm"><input type="checkbox" bind:checked={disableWizard} class="size-4 accent-[var(--accent)]"/> Don’t open this wizard again</label><button onclick={closeWizard} class="rounded-xl bg-[var(--accent)] px-5 py-2.5 text-sm font-semibold text-white">Continue to workspace</button></footer>
       </div>
     </div>
   {/if}
@@ -256,4 +308,5 @@
   .nav-item { color: var(--muted); }
   .nav-item:hover, .nav-item.active { color: var(--ink); background: var(--accent-soft); }
   .item-ready { background: var(--success); }
+  button.active { color: var(--accent); background: var(--accent-soft); }
 </style>
