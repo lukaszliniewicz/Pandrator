@@ -61,6 +61,10 @@ class ProviderCreate(StrictModel):
     options: dict[str, Any] = Field(default_factory=dict)
 
 
+class ProviderTestRequest(StrictModel):
+    model_id: str | None = None
+
+
 class ModelCreate(StrictModel):
     model_id: str
     is_default: bool = False
@@ -130,6 +134,25 @@ class VoiceTranscriptReview(StrictModel):
     language: str | None = Field(default=None, max_length=40)
 
 
+class RvcModelUploadRequest(StrictModel):
+    pth_artifact_id: str
+    index_artifact_id: str
+
+
+class RvcConvertRequest(StrictModel):
+    source_artifact_id: str
+    session_id: str | None = None
+    settings: dict[str, Any] = Field(default_factory=dict)
+
+
+class TrainingCreateRequest(StrictModel):
+    model_name: str = Field(min_length=1, max_length=255)
+    source_artifact_id: str
+    source_text_artifact_id: str | None = None
+    voice_id: str | None = None
+    settings: dict[str, Any] = Field(default_factory=dict)
+
+
 class SettingUpdate(StrictModel):
     value: Any
 
@@ -143,6 +166,14 @@ class BundleImportRequest(StrictModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
 
 
+class SourceUrlRequest(StrictModel):
+    url: str = Field(min_length=8, max_length=4096)
+
+
+class SourceReuseRequest(StrictModel):
+    artifact_id: str
+
+
 SCHEMA_MODELS = {
     model.__name__: model
     for model in (
@@ -154,6 +185,7 @@ SCHEMA_MODELS = {
         BootstrapRequest,
         TokenCreateRequest,
         ProviderCreate,
+        ProviderTestRequest,
         ModelCreate,
         ModelUpdate,
         PdfRectInput,
@@ -164,8 +196,13 @@ SCHEMA_MODELS = {
         SubtitleReviewRequest,
         VoiceCreate,
         VoiceTranscriptReview,
+        RvcModelUploadRequest,
+        RvcConvertRequest,
+        TrainingCreateRequest,
         SettingUpdate,
         BundleExportRequest,
         BundleImportRequest,
+        SourceUrlRequest,
+        SourceReuseRequest,
     )
 }

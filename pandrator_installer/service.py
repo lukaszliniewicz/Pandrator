@@ -44,6 +44,7 @@ class HeadlessInstaller(
             "kokoro_process",
             "chatterbox_process",
             "magpie_process",
+            "kobold_qwen_process",
             "rvc_process",
         ):
             setattr(self, process_attr, None)

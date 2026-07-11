@@ -3,6 +3,7 @@
 import logging
 import os
 import subprocess
+import sys
 import time
 
 import psutil
@@ -130,6 +131,25 @@ class RuntimeMixin:
             selected.append('magpie')
         return selected
 
+    def _selected_supervised_component_keys(self):
+        selected = []
+        for key, enabled, cpu in (
+            ("xtts", self.launch_xtts_var, self.xtts_cpu_launch_var),
+            ("fishs2", self.launch_fishs2_var, self.fishs2_cpu_launch_var),
+            ("kokoro", self.launch_kokoro_var, self.kokoro_cpu_launch_var),
+            ("chatterbox", self.launch_chatterbox_var, self.chatterbox_cpu_launch_var),
+            ("kobold_qwen", self.launch_kobold_qwen_var, self.kobold_qwen_cpu_launch_var),
+            ("magpie", self.launch_magpie_var, self.magpie_cpu_launch_var),
+        ):
+            if enabled:
+                selected.append(f"{key}_cpu" if cpu else key)
+        for key, enabled in (("voxcpm", self.launch_voxcpm_var), ("voxtral", self.launch_voxtral_var), ("silero", self.launch_silero_var)):
+            if enabled:
+                selected.append(key)
+        if self.launch_rvc_var:
+            selected.append("rvc_cpu" if self.rvc_cpu_launch_var else "rvc")
+        return selected
+
     def _apply_launch_selection_state(self, selection):
         self.launch_pandrator_var = selection.pandrator
         self.launch_rvc_var = selection.rvc
@@ -215,6 +235,25 @@ class RuntimeMixin:
 
         install_config = self.load_install_config(pandrator_path)
         shared_pixi_path = self.get_pixi_executable(pandrator_path)
+
+        pandrator_repo_path = os.path.join(pandrator_path, 'Pandrator')
+        web_runtime = self.launch_pandrator_var and os.path.isfile(os.path.join(pandrator_repo_path, "pyproject.toml")) and os.path.isfile(
+            os.path.join(pandrator_repo_path, "pandrator", "web", "static", "index.html")
+        )
+        if web_runtime:
+            self.reporter.status("Starting supervised Pandrator web runtime...")
+            self.pandrator_process = self.run_web_supervisor(
+                pandrator_repo_path,
+                self._selected_supervised_component_keys(),
+            )
+            self.ensure_process_started(
+                self.pandrator_process,
+                'Pandrator supervisor',
+                getattr(self.pandrator_process, 'log_file_path', ''),
+            )
+            self.reporter.progress(1.0)
+            self.reporter.status("Pandrator and selected services are running.")
+            return
 
         selected_backend_keys = self._selected_launch_backend_keys()
         selected_backend_key = selected_backend_keys[0] if selected_backend_keys else None
@@ -658,6 +697,9 @@ class RuntimeMixin:
                 self.reporter.progress(0.9)
                 self.reporter.status("Starting Pandrator...")
                 pandrator_repo_path = os.path.join(pandrator_path, 'Pandrator')
+                web_runtime = os.path.isfile(os.path.join(pandrator_repo_path, "pyproject.toml")) and os.path.isfile(
+                    os.path.join(pandrator_repo_path, "pandrator", "web", "static", "index.html")
+                )
                 pandrator_script_candidates = [
                     os.path.join(pandrator_repo_path, 'main.py'),
                     os.path.join(pandrator_repo_path, 'pandrator.py'),
@@ -667,7 +709,9 @@ class RuntimeMixin:
                     '',
                 )
 
-                if pandrator_script_path:
+                if web_runtime:
+                    logging.info("Pandrator browser runtime detected: %s", pandrator_repo_path)
+                elif pandrator_script_path:
                     logging.info(f"Pandrator script path: {pandrator_script_path}")
                 else:
                     logging.error(
@@ -682,7 +726,10 @@ class RuntimeMixin:
                     raise FileNotFoundError(error_msg)
 
                 try:
-                    self.pandrator_process = self.run_script(pandrator_path, 'pandrator_installer', pandrator_script_path, pandrator_args)
+                    if web_runtime:
+                        self.pandrator_process = self.run_web_supervisor(pandrator_repo_path)
+                    else:
+                        self.pandrator_process = self.run_script(pandrator_path, 'pandrator_installer', pandrator_script_path, pandrator_args)
                     self.ensure_process_started(
                         self.pandrator_process,
                         'Pandrator',
@@ -737,6 +784,32 @@ class RuntimeMixin:
         process.log_handle = log_handle
         process.log_file_path = pandrator_log_file
         logging.info(f"Pandrator startup log: {pandrator_log_file}")
+        return process
+
+    def run_web_supervisor(self, pandrator_repo_path, components=None):
+        """Launch the shared API/worker supervisor from the Qt installer process."""
+        workspace = self.initial_working_dir
+        if getattr(sys, "frozen", False):
+            command = [sys.executable, "launch", "--workspace", workspace]
+        else:
+            command = [sys.executable, "-m", "pandrator_installer.lifecycle", "launch", "--workspace", workspace]
+        if components:
+            command.extend(["--components", ",".join(components)])
+        log_path = os.path.join(pandrator_repo_path, "pandrator_web_supervisor.log")
+        log_handle = open(log_path, "a", encoding="utf-8")
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=pandrator_repo_path,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                **self.get_hidden_subprocess_kwargs(),
+            )
+        except Exception:
+            log_handle.close()
+            raise
+        process.log_handle = log_handle
+        process.log_file_path = log_path
         return process
 
     def ensure_process_started(self, process, process_name, startup_log_file, grace_period_seconds=2):
@@ -1366,6 +1439,11 @@ class RuntimeMixin:
 
     def shutdown_apps(self):
         """Shut down all running applications"""
+        if self.pandrator_process:
+            logging.info("Terminating Pandrator process with PID: %s", self.pandrator_process.pid)
+            self.terminate_process_tree(self.pandrator_process)
+            self._close_process_log_handle(self.pandrator_process)
+            self.pandrator_process = None
         self.shutdown_voxcpm()
         self.shutdown_fishs2()
         self.shutdown_xtts()

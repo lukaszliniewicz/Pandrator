@@ -22,9 +22,12 @@ from .models import (
     Segment,
     SegmentLineage,
     SessionRecord,
+    SourceRecord,
+    TrainingRun,
     UsageEvent,
     Voice,
     VoiceSample,
+    utcnow,
 )
 
 
@@ -54,10 +57,154 @@ class WorkflowHandlers:
             "export.create": self.export,
             "voice.transcribe": self.transcribe_voice,
             "voice.normalize_recording": self.normalize_voice_recording,
+            "rvc.model.upload": self.upload_rvc_model,
+            "rvc.convert": self.convert_with_rvc,
+            "training.xtts": self.train_xtts,
             "pdf.apply_edits": self.apply_pdf_edits,
             "session.bundle.export": self.export_session_bundle,
             "session.bundle.import": self.import_session_bundle,
+            "workflow.continue": self.continue_workflow,
+            "source.download_url": self.download_source_url,
+            "source.reuse": self.reuse_source,
         }
+
+    @staticmethod
+    def _validate_download_url(raw_url: str) -> str:
+        import ipaddress
+        import socket
+        from urllib.parse import urlparse
+
+        parsed = urlparse(str(raw_url or "").strip())
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("Source URL must use http or https.")
+        for _family, _type, _proto, _canon, address in socket.getaddrinfo(parsed.hostname, parsed.port or 443):
+            ip = ipaddress.ip_address(address[0])
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+                raise ValueError("Source URL resolves to a non-public network address.")
+        return parsed.geturl()
+
+    def download_source_url(self, payload, progress, cancel_event):
+        import yt_dlp
+
+        session_id = str(payload.get("session_id") or "")
+        url = self._validate_download_url(str(payload.get("url") or ""))
+        destination_dir = self._session_dir(session_id) / "sources"
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        progress(0.05, "Inspecting source URL")
+        options = {
+            "outtmpl": str(destination_dir / "%(title).160B-%(id)s.%(ext)s"),
+            "restrictfilenames": True,
+            "noplaylist": True,
+            "quiet": True,
+            "no_warnings": True,
+        }
+        with yt_dlp.YoutubeDL(options) as downloader:
+            information = downloader.extract_info(url, download=True)
+            output = Path(downloader.prepare_filename(information)).resolve()
+        if cancel_event.is_set():
+            return {}
+        if destination_dir.resolve() not in output.parents or not output.is_file():
+            raise RuntimeError("Downloaded source was not created in the managed session directory.")
+        artifact = self.artifacts.register(output, kind="source", role="upload", session_id=session_id, metadata={"original_filename": output.name, "source_url": url})
+        with self.database.session() as session:
+            session.add(SourceRecord(session_id=session_id, kind=output.suffix.lower().lstrip(".") or "url", display_name=output.name, artifact_id=artifact.id, content_hash=artifact.content_hash, metadata_json={"url": url}))
+        progress(1.0, "Source download ready")
+        return {"artifact_id": artifact.id, "filename": output.name}
+
+    def reuse_source(self, payload, progress, cancel_event):
+        session_id = str(payload.get("session_id") or "")
+        source, source_path = self._resolve_input(str(payload.get("artifact_id") or ""))
+        destination_dir = self._session_dir(session_id) / "sources"
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        destination = destination_dir / f"{source.id}-{source_path.name}"
+        progress(0.2, "Copying reusable source")
+        shutil.copy2(source_path, destination)
+        if cancel_event.is_set():
+            destination.unlink(missing_ok=True)
+            return {}
+        artifact = self.artifacts.register(destination, kind="source", role="upload", session_id=session_id, parent_ids=[source.id], metadata={"original_filename": source_path.name, "reused_from": source.id})
+        with self.database.session() as session:
+            session.add(SourceRecord(session_id=session_id, kind=destination.suffix.lower().lstrip(".") or "file", display_name=source_path.name, artifact_id=artifact.id, content_hash=artifact.content_hash, metadata_json={"reused_from": source.id}))
+        progress(1.0, "Reusable source ready")
+        return {"artifact_id": artifact.id, "filename": source_path.name}
+
+    def _latest_stage_input(self, session_id: str, prerequisite_roles: tuple[str, ...]) -> Artifact | None:
+        with self.database.session() as session:
+            candidates = list(
+                session.scalars(
+                    select(Artifact).where(
+                        Artifact.session_id == session_id,
+                        Artifact.state == "current",
+                        Artifact.role.in_(prerequisite_roles),
+                    ).order_by(Artifact.created_at.desc())
+                ).all()
+            )
+            by_role = {item.role: item for item in candidates}
+            result = next((by_role[role] for role in prerequisite_roles if role in by_role), None)
+            if result is not None:
+                session.expunge(result)
+            return result
+
+    def continue_workflow(self, payload, progress, cancel_event):
+        """Run only missing/stale included prerequisites, then the requested outcome stage."""
+        from .workflows import AUDIOBOOK_STAGES, DUBBING_STAGES
+
+        session_id = str(payload.get("session_id") or "")
+        target_key = str(payload.get("target_stage") or "generate_audio")
+        record = self._session_record(session_id)
+        definitions = AUDIOBOOK_STAGES if record.workflow_kind == "audiobook" else DUBBING_STAGES
+        if record.workflow_kind != "audiobook":
+            with self.database.session() as session:
+                upload = session.scalar(select(Artifact).where(Artifact.session_id == session_id, Artifact.role == "upload", Artifact.state == "current").order_by(Artifact.created_at.desc()))
+            filename = str((upload.metadata_json or {}).get("original_filename") or upload.relative_path).lower() if upload else ""
+            if filename.endswith(".srt"):
+                definitions = tuple(item for item in definitions if item.key != "transcribe")
+        target_index = next((index for index, item in enumerate(definitions) if item.key == target_key), None)
+        if target_index is None:
+            raise ValueError(f"Unknown continuation stage: {target_key}")
+        included = set(record.included_stages_json or [])
+        stage_settings = payload.get("stage_settings") if isinstance(payload.get("stage_settings"), dict) else {}
+        direct_settings = payload.get("settings") if isinstance(payload.get("settings"), dict) else {}
+        runnable = [
+            item for index, item in enumerate(definitions)
+            if index <= target_index and item.executable and item.job_kind and (item.key in included or item.key == target_key)
+        ]
+        produced: list[dict[str, Any]] = []
+        handlers = self.handlers()
+        for index, definition in enumerate(runnable):
+            if cancel_event.is_set():
+                return {"artifacts": produced}
+            settings = stage_settings.get(definition.key) if isinstance(stage_settings.get(definition.key), dict) else {}
+            if definition.key == target_key:
+                settings = {**settings, **direct_settings}
+            expected_settings_hash = hashlib.sha256(
+                json.dumps(settings, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+            ).hexdigest()
+            with self.database.session() as session:
+                existing = session.scalar(
+                    select(Artifact).where(
+                        Artifact.session_id == session_id,
+                        Artifact.role == definition.output_role,
+                        Artifact.state == "current",
+                    ).order_by(Artifact.created_at.desc())
+                ) if definition.output_role else None
+            if existing is not None and definition.key != target_key and existing.settings_hash == expected_settings_hash:
+                continue
+            source = self._latest_stage_input(session_id, definition.prerequisite_roles)
+            if definition.prerequisite_roles and source is None:
+                raise ValueError(f"Stage '{definition.key}' is missing a required input artifact.")
+            handler = handlers[definition.job_kind]
+            start = index / max(1, len(runnable))
+            width = 1 / max(1, len(runnable))
+            result = handler(
+                {"session_id": session_id, "source_artifact_id": source.id if source else None, "settings": settings},
+                lambda value, detail=None: progress(min(0.99, start + float(value) * width), detail),
+                cancel_event,
+            )
+            if result:
+                produced.append({"stage": definition.key, **result})
+        progress(1.0, "Workflow continuation finished")
+        return {"artifacts": produced, "target_stage": target_key}
 
     def _session_dir(self, session_id: str) -> Path:
         with self.database.session() as session:
@@ -162,7 +309,9 @@ class WorkflowHandlers:
     def _record_usage(self, session_id: str, stage: str, settings: dict[str, Any], result) -> None:
         cost = float(getattr(result, "cost", 0.0) or 0.0)
         response_count = int(getattr(result, "response_count", 0) or 0)
-        if not cost and not response_count:
+        raw_usage = getattr(result, "usage", {})
+        usage = raw_usage if isinstance(raw_usage, dict) else {}
+        if not cost and not response_count and not usage:
             return
         model = str(settings.get(f"{stage}_model") or settings.get("default_model") or "default")
         provider = model.split("/", 1)[0] if "/" in model else "default"
@@ -174,11 +323,36 @@ class WorkflowHandlers:
                     stage=stage,
                     provider_key=provider,
                     model_id=model,
+                    input_tokens=int(usage.get("prompt_tokens") or 0),
+                    cached_input_tokens=int(usage.get("cached_prompt_tokens") or 0),
+                    output_tokens=int(usage.get("completion_tokens") or 0),
                     cost_usd=cost,
                     cost_source=",".join(sources) or None,
-                    raw_usage_json={"response_count": response_count},
+                    raw_usage_json={"response_count": response_count, **usage},
                 )
             )
+
+    def _with_database_llm_settings(self, settings: dict[str, Any], stage: str) -> dict[str, Any]:
+        from .provider_settings import build_llm_settings
+
+        aliases = {
+            "correction": ("correction_model", "correct_model"),
+            "translation": ("translation_model", "translate_model"),
+        }
+        requested = str(settings.get("model_name") or "").strip()
+        for key in aliases[stage]:
+            requested = requested or str(settings.get(key) or "").strip()
+        if requested == "default":
+            requested = ""
+        llm_settings, resolved_model = build_llm_settings(self.database, self.paths, requested_model=requested)
+        hydrated = {
+            **settings,
+            "llm_provider_configs": llm_settings.provider_configs,
+            "llm_default_model": llm_settings.default_model,
+            "request_timeout_seconds": llm_settings.request_timeout_seconds,
+        }
+        hydrated[aliases[stage][0]] = requested or resolved_model
+        return hydrated
 
     def transcribe(self, payload, progress, cancel_event):
         from pandrator.logic.dubbing.transcription import transcribe_source_file
@@ -225,13 +399,13 @@ class WorkflowHandlers:
         session_id = str(payload.get("session_id") or "")
         source_artifact, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
         session_dir = self._session_dir(session_id)
-        settings = dict(payload.get("settings") or {})
+        settings = self._with_database_llm_settings(dict(payload.get("settings") or {}), "correction")
         progress(0.05, "Correcting subtitles")
         result = correct_srt_file_with_result(
             session_dir,
             source_path,
             settings,
-            correction_instructions=str(payload.get("instructions") or ""),
+            correction_instructions=str(payload.get("instructions") or settings.get("instructions") or ""),
         )
         if cancel_event.is_set():
             return {}
@@ -268,11 +442,12 @@ class WorkflowHandlers:
         if str(settings.get("translation_backend") or "llm").lower() == "deepl":
             result = translate_srt_file_deepl_with_result(session_dir, source_path, settings)
         else:
+            settings = self._with_database_llm_settings(settings, "translation")
             result = translate_srt_file_with_result(
                 session_dir,
                 source_path,
                 settings,
-                translation_instructions=str(payload.get("instructions") or ""),
+                translation_instructions=str(payload.get("instructions") or settings.get("instructions") or ""),
             )
         if cancel_event.is_set():
             return {}
@@ -352,8 +527,153 @@ class WorkflowHandlers:
         progress(1.0, "Voice sample ready")
         return {"sample_id": sample_id, "artifact_id": artifact.id, "path": artifact.relative_path}
 
+    def upload_rvc_model(self, payload, progress, cancel_event):
+        from pandrator.logic import rvc_handler
+
+        pth_artifact, pth_path = self._resolve_input(str(payload.get("pth_artifact_id") or ""))
+        index_artifact, index_path = self._resolve_input(str(payload.get("index_artifact_id") or ""))
+        if pth_path.suffix.lower() != ".pth":
+            raise ValueError("The RVC weights artifact must be a .pth file.")
+        if index_path.suffix.lower() not in {".index", ".idx"}:
+            raise ValueError("The RVC index artifact must be an .index or .idx file.")
+        if not rvc_handler.is_rvc_available():
+            raise RuntimeError("The RVC service is not available.")
+        progress(0.15, "Installing RVC model")
+        model_root = self.paths.models / "rvc"
+        model_root.mkdir(parents=True, exist_ok=True)
+        model_name = rvc_handler.upload_rvc_model(str(pth_path), str(index_path), str(model_root))
+        if cancel_event.is_set():
+            return {}
+        manifest = model_root / model_name / "pandrator-model.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "kind": "rvc",
+                    "model_name": model_name,
+                    "weights_artifact_id": pth_artifact.id,
+                    "index_artifact_id": index_artifact.id,
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        artifact = self.artifacts.register(
+            manifest,
+            kind="model",
+            role="rvc_model",
+            parent_ids=[pth_artifact.id, index_artifact.id],
+            metadata={"model_name": model_name},
+        )
+        progress(1.0, "RVC model ready")
+        return {"model_name": model_name, "artifact_id": artifact.id, "path": artifact.relative_path}
+
+    def convert_with_rvc(self, payload, progress, cancel_event):
+        from pydub import AudioSegment
+        from pandrator.logic import rvc_handler
+
+        source_artifact, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
+        session_id = str(payload.get("session_id") or "") or source_artifact.session_id
+        settings = dict(payload.get("settings") or {})
+        if not str(settings.get("rvc_model") or "").strip():
+            raise ValueError("Select an RVC model before conversion.")
+        if not rvc_handler.is_rvc_available():
+            raise RuntimeError("The RVC service is not available.")
+        progress(0.1, "Loading source audio")
+        audio = AudioSegment.from_file(source_path)
+        if cancel_event.is_set():
+            return {}
+        progress(0.3, "Converting voice with RVC")
+        converted = rvc_handler.process_with_rvc(audio, {**settings, "raise_on_error": True})
+        destination_dir = self._session_dir(session_id) if session_id else self.paths.artifacts / "rvc"
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        destination = destination_dir / f"{source_path.stem}-rvc-{hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()[:10]}.wav"
+        converted.export(destination, format="wav")
+        artifact = self.artifacts.register(
+            destination,
+            kind="audio",
+            role="rvc_audio",
+            session_id=session_id,
+            parent_ids=[source_artifact.id],
+            settings=settings,
+            metadata={"rvc_model": settings["rvc_model"]},
+        )
+        progress(1.0, "RVC audio ready")
+        return {"artifact_id": artifact.id, "path": artifact.relative_path, "model_name": settings["rvc_model"]}
+
+    def train_xtts(self, payload, progress, cancel_event):
+        from pandrator.logic import xtts_trainer_handler
+
+        training_id = str(payload.get("training_id") or "")
+        source_artifact, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
+        source_text_path = ""
+        source_text_id = str(payload.get("source_text_artifact_id") or "")
+        if source_text_id:
+            _text_artifact, text_path = self._resolve_input(source_text_id)
+            source_text_path = str(text_path)
+        settings = dict(payload.get("settings") or {})
+        model_name = str(payload.get("model_name") or settings.get("model_name") or "").strip()
+        if not model_name:
+            raise ValueError("An XTTS model name is required.")
+        with self.database.session() as session:
+            training = session.get(TrainingRun, training_id)
+            if training is None:
+                raise ValueError("Training record not found.")
+            training.status = "running"
+            training.updated_at = utcnow()
+        progress(0.02, "Validating XTTS trainer")
+        try:
+            success, message = xtts_trainer_handler.start_training(
+                {
+                    **settings,
+                    "model_name": model_name,
+                    "source_audio_path": str(source_path),
+                    "source_text_path": source_text_path,
+                },
+                output_callback=lambda line: progress(0.5, line[-500:]),
+                status_callback=lambda line: progress(0.25, line[-500:]),
+                stop_event=cancel_event,
+            )
+            if cancel_event.is_set():
+                with self.database.session() as session:
+                    training = session.get(TrainingRun, training_id)
+                    training.status = "canceled"
+                return {}
+            if not success:
+                raise RuntimeError(message)
+            manifest_dir = self.paths.models / "xtts" / model_name
+            manifest_dir.mkdir(parents=True, exist_ok=True)
+            manifest = manifest_dir / "pandrator-training.json"
+            manifest.write_text(
+                json.dumps({"kind": "xtts", "model_name": model_name, "message": message}, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            artifact = self.artifacts.register(
+                manifest,
+                kind="model",
+                role="xtts_model",
+                parent_ids=[source_artifact.id] + ([source_text_id] if source_text_id else []),
+                settings=settings,
+                metadata={"model_name": model_name},
+            )
+            with self.database.session() as session:
+                training = session.get(TrainingRun, training_id)
+                training.status = "succeeded"
+                training.output_artifact_id = artifact.id
+                training.updated_at = utcnow()
+            progress(1.0, "XTTS model ready")
+            return {"training_id": training_id, "artifact_id": artifact.id, "model_name": model_name, "message": message}
+        except Exception as error:
+            with self.database.session() as session:
+                training = session.get(TrainingRun, training_id)
+                if training is not None:
+                    training.status = "failed"
+                    training.error_message = str(error)
+                    training.updated_at = utcnow()
+            raise
+
     def clean_source(self, payload, progress, cancel_event):
-        """Run deterministic extraction; agentic cleanup remains an explicit option."""
+        """Run deterministic extraction and the optional auditable agentic pipeline."""
         from pandrator.logic import file_handler
         from pandrator.logic import source_cleaning
 
@@ -386,11 +706,89 @@ class WorkflowHandlers:
             raise ValueError(f"Unsupported document type: {extension or 'unknown'}")
         if cancel_event.is_set():
             return {}
+        extraction = "deterministic"
+        report: dict[str, Any] = {}
         if bool(settings.get("agentic", False)):
-            raise ValueError(
-                "Agentic source cleaning needs a configured provider and is not implied by deterministic extraction. "
-                "Disable agentic cleaning or configure it in the stage settings."
+            from .provider_settings import build_llm_settings
+
+            progress(0.4, "Building source-cleaning index")
+            if extension in {".epub", ".pdf"}:
+                document = source_cleaning.build_source_document(
+                    str(source_path),
+                    extracted_text=cleaned_text if extension == ".epub" else None,
+                    artifact_dir=str(self._session_dir(session_id) / "source_ingestion"),
+                    progress_callback=lambda message: progress(0.45, str(message)),
+                )
+            else:
+                from pandrator.logic.source_cleaning.pdf_text_adapter import build_source_document_from_text
+
+                document = build_source_document_from_text(
+                    cleaned_text,
+                    source_path=str(source_path),
+                    filename=source_path.name,
+                )
+            llm_settings, model_name = build_llm_settings(
+                self.database,
+                self.paths,
+                requested_model=str(settings.get("model_name") or settings.get("default_model") or ""),
             )
+            total_iterations = max(1, int(settings.get("max_iterations") or 53))
+            phase_iterations = settings.get("phase_max_iterations")
+            pipeline = source_cleaning.run_cleaning_pipeline(
+                document,
+                llm_settings=llm_settings,
+                config=source_cleaning.SourceCleaningPipelineConfig(
+                    model_name=model_name,
+                    remove_footnotes=bool(settings.get("remove_footnotes", False)),
+                    filter_citations=bool(settings.get("filter_citations", True)),
+                    total_max_iterations=total_iterations,
+                    phase_max_iterations=phase_iterations if isinstance(phase_iterations, dict) else None,
+                    phase_names=settings.get("phase_names") if isinstance(settings.get("phase_names"), list) else None,
+                ),
+                progress_callback=lambda message: progress(0.45, str(message)),
+                stop_event=cancel_event,
+            )
+            if cancel_event.is_set():
+                return {}
+            cleaning_result = source_cleaning.apply_cleaning_operations(document, pipeline.all_operations)
+            validation = source_cleaning.validate_cleaning_result(
+                document,
+                cleaning_result,
+                remove_footnotes=bool(settings.get("remove_footnotes", False)),
+            )
+            cleaned_text = cleaning_result.cleaned_text
+            report = {
+                **cleaning_result.report,
+                "pipeline": pipeline.to_dict(),
+                "validation": validation.to_dict(),
+                "warnings": pipeline.warnings + validation.warnings + cleaning_result.warnings,
+            }
+            audit_dir = self._session_dir(session_id) / "source_cleaning"
+            source_cleaning.write_cleaning_artifacts(
+                document,
+                pipeline.all_operations,
+                cleaning_result,
+                str(audit_dir),
+            )
+            usage = pipeline.llm_usage
+            models = list(usage.get("models") or [])
+            details = usage.get("token_details") if isinstance(usage.get("token_details"), dict) else {}
+            with self.database.session() as session:
+                session.add(
+                    UsageEvent(
+                        session_id=session_id,
+                        stage="source_cleaning",
+                        provider_key=(models[0].split("/", 1)[0] if models else model_name.split("/", 1)[0]),
+                        model_id=(models[0] if models else model_name),
+                        input_tokens=int(usage.get("prompt_tokens") or 0),
+                        cached_input_tokens=int(details.get("cached_tokens") or 0),
+                        output_tokens=int(usage.get("completion_tokens") or 0),
+                        cost_usd=float(usage["cost_usd"]) if usage.get("cost_usd") is not None else None,
+                        cost_source=",".join(usage.get("cost_sources") or []) or None,
+                        raw_usage_json=usage,
+                    )
+                )
+            extraction = "agentic"
         destination = self._session_dir(session_id) / f"{source_path.stem}_cleaned.txt"
         destination.write_text(cleaned_text, encoding="utf-8", newline="\n")
         artifact = self.artifacts.register(
@@ -400,10 +798,10 @@ class WorkflowHandlers:
             session_id=session_id,
             parent_ids=[source_artifact.id],
             settings=settings,
-            metadata={"extraction": "deterministic"},
+            metadata={"extraction": extraction, "report": report},
         )
         progress(1.0, "Source text ready")
-        return {"artifact_id": artifact.id, "path": artifact.relative_path, "characters": len(cleaned_text)}
+        return {"artifact_id": artifact.id, "path": artifact.relative_path, "characters": len(cleaned_text), "report": report}
 
     def prepare_text(self, payload, progress, cancel_event):
         from pandrator.logic.text_preprocessor import preprocess_text

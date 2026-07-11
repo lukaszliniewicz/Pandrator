@@ -1,0 +1,60 @@
+name: Web migration preview
+
+on:
+  push:
+    branches: [codex/webui-migration, codex/webui-**]
+  pull_request:
+    branches: [codex/webui-migration, main]
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install Python preview dependencies
+        run: python -m pip install -e ".[dev,legacy]" build
+      - name: Install frontend dependencies
+        run: npm ci --prefix web
+      - name: Check generated API contract
+        shell: bash
+        run: |
+          python scripts/generate_web_contract.py
+          npm --prefix web run generate-api
+          git diff --exit-code -- openapi.json web/src/lib/api.generated.ts
+      - name: Check and build frontend
+        run: |
+          npm --prefix web run check
+          npm --prefix web run build
+      - name: Run web and installer tests
+        run: python -m pytest -q tests -k "web or installer_lifecycle"
+      - name: Install Playwright browsers
+        run: npx --prefix web playwright install chromium firefox
+      - name: Run Chromium and Firefox workflows
+        run: npm --prefix web run test:e2e
+      - name: Build Pandrator and installer wheels
+        run: |
+          python -m build
+          python -m build pandrator_installer
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pandrator-web-preview-${{ matrix.os }}
+          path: |
+            dist/*.whl
+            pandrator_installer/dist/*.whl
+          if-no-files-found: error

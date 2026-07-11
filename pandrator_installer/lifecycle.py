@@ -11,18 +11,42 @@ import shutil
 import signal
 import sys
 import webbrowser
+import subprocess
+import sqlite3
+import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 from .catalog import COMPONENTS
-from .models import InstallSelection, WorkspacePaths
+from .models import InstallSelection, LaunchSelection, WorkspacePaths
 from .platforms import is_windows, resolve_launcher_workspace
 from .service import HeadlessInstaller
 from .supervisor import ManagedProcessSpec, ProcessSupervisor
+from .update import health_check, install_wheel, restore_database, restore_installed_package, run_migrations, snapshot_installed_package, snapshot_sqlite, verify_release_manifest
 
 
-LIFECYCLE_COMMANDS = {"list", "probe", "plan", "install", "update", "repair", "launch", "stop", "uninstall"}
+LIFECYCLE_COMMANDS = {"list", "probe", "plan", "install", "update", "repair", "launch", "service", "stop", "uninstall"}
+
+SERVICE_HEALTH_URLS = {
+    "xtts": "http://127.0.0.1:8020/docs",
+    "xtts_cpu": "http://127.0.0.1:8020/docs",
+    "voxcpm": "http://127.0.0.1:8020/docs",
+    "fishs2": "http://127.0.0.1:8020/docs",
+    "fishs2_cpu": "http://127.0.0.1:8020/docs",
+    "voxtral": "http://127.0.0.1:8000/docs",
+    "silero": "http://127.0.0.1:8001/docs",
+    "kokoro": "http://127.0.0.1:8880/docs",
+    "kokoro_cpu": "http://127.0.0.1:8880/docs",
+    "chatterbox": "http://127.0.0.1:8040/docs",
+    "chatterbox_cpu": "http://127.0.0.1:8040/docs",
+    "kobold_qwen": "http://127.0.0.1:8042/docs",
+    "kobold_qwen_cpu": "http://127.0.0.1:8042/docs",
+    "magpie": "http://127.0.0.1:8030/docs",
+    "magpie_cpu": "http://127.0.0.1:8030/docs",
+    "rvc": "http://127.0.0.1:8050/health",
+    "rvc_cpu": "http://127.0.0.1:8050/health",
+}
 
 
 def _emit(payload: Any, json_output: bool) -> None:
@@ -133,7 +157,25 @@ def _runtime_specs(paths: WorkspacePaths, args, bootstrap_token: str) -> list[Ma
     cwd = str(paths.pandrator_repo if paths.pandrator_repo.is_dir() else Path.cwd())
     host = str(args.host)
     port = int(args.port)
+    raw_components = [item.strip() for raw in (getattr(args, "components", []) or []) for item in raw.split(",") if item.strip()]
+    unknown = sorted(set(raw_components).difference(SERVICE_HEALTH_URLS))
+    if unknown:
+        raise ValueError("Unsupported supervised service(s): " + ", ".join(unknown))
+    launcher = [sys.executable] if getattr(sys, "frozen", False) else [sys.executable, "-m", "pandrator_installer.lifecycle"]
+    service_specs = [
+        ManagedProcessSpec(
+            key=f"service-{component}",
+            label=f"Pandrator service {component}",
+            command=tuple([*launcher, "service", "--workspace", str(paths.workspace), "--component", component]),
+            cwd=cwd,
+            health_url=SERVICE_HEALTH_URLS[component],
+            restart_limit=1,
+            startup_timeout_seconds=180,
+        )
+        for component in raw_components
+    ]
     return [
+        *service_specs,
         ManagedProcessSpec(
             key="api",
             label="Pandrator API",
@@ -152,6 +194,60 @@ def _runtime_specs(paths: WorkspacePaths, args, bootstrap_token: str) -> list[Ma
             restart_limit=2,
         ),
     ]
+
+
+def _service_selection(component: str) -> LaunchSelection:
+    values = {"pandrator": False}
+    base = component[:-4] if component.endswith("_cpu") else component
+    if base == "rvc":
+        values.update(rvc=True, rvc_cpu=component.endswith("_cpu"))
+    else:
+        values[base] = True
+        cpu_field = f"{base}_cpu"
+        if cpu_field in LaunchSelection.__dataclass_fields__:
+            values[cpu_field] = component.endswith("_cpu")
+    return LaunchSelection(**values)
+
+
+def command_service(args) -> int:
+    """Internal owned child used by ProcessSupervisor for one speech service."""
+    if args.component not in SERVICE_HEALTH_URLS:
+        raise ValueError(f"Unsupported supervised service: {args.component}")
+    paths = _workspace(args)
+    installer = HeadlessInstaller(working_dir=str(paths.workspace))
+    stop_requested = False
+
+    def request_stop(_signum, _frame):
+        nonlocal stop_requested
+        stop_requested = True
+
+    previous = {}
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        try:
+            previous[signum] = signal.getsignal(signum)
+            signal.signal(signum, request_stop)
+        except (OSError, ValueError):
+            pass
+    try:
+        installer.launch_process(_service_selection(args.component))
+        owned = [process for _key, process, _url in installer._collect_running_backends() if process is not None]
+        if installer._get_running_rvc_process() is not None:
+            owned.append(installer._get_running_rvc_process())
+        if not owned:
+            raise RuntimeError(f"Service {args.component} is available but is not owned by this supervisor.")
+        while not stop_requested:
+            if any(process.poll() is not None for process in owned):
+                return 1
+            time.sleep(0.5)
+        return 0
+    finally:
+        installer.shutdown_apps()
+        installer.shutdown_logging()
+        for signum, handler in previous.items():
+            try:
+                signal.signal(signum, handler)
+            except (OSError, ValueError):
+                pass
 
 
 def command_launch(args) -> int:
@@ -200,11 +296,96 @@ def command_update(args) -> int:
     digest = _sha256(wheel)
     if args.sha256 and not secrets.compare_digest(digest.lower(), args.sha256.lower()):
         raise ValueError("Wheel hash verification failed.")
-    plan = {"workspace": str(paths.workspace), "wheel": str(wheel), "sha256": digest, "operations": ["stop", "snapshot", "install_wheel", "migrate", "health_check", "rollback_on_failure"]}
+    plan = {"workspace": str(paths.workspace), "wheel": str(wheel), "sha256": digest, "operations": ["verify_signature", "stop_intake", "drain_or_cancel", "stop", "snapshot", "install_wheel", "migrate", "health_check", "rollback_on_failure", "restart"]}
     if args.dry_run:
         _emit({**plan, "dry_run": True}, args.json)
         return 0
-    raise RuntimeError("Live update activation requires a signed release manifest; use --dry-run for local wheel validation.")
+    if not args.manifest or not args.public_key:
+        raise RuntimeError("Live update requires --manifest and --public-key for Ed25519 verification.")
+    verified = verify_release_manifest(Path(args.manifest).expanduser().resolve(), Path(args.public_key).expanduser().resolve())
+    if verified.wheel_name != wheel.name or not secrets.compare_digest(verified.wheel_sha256, digest.lower()):
+        raise ValueError("The selected wheel does not match the signed release manifest.")
+
+    data_root = paths.install_root
+    data_root.mkdir(parents=True, exist_ok=True)
+    maintenance = data_root / "maintenance.json"
+    maintenance.write_text(json.dumps({"reason": "update", "version": verified.version, "started_at": time.time()}), encoding="utf-8")
+    runtime_state = data_root / "runtime-processes.json"
+    restart_command = None
+    restart_cwd = None
+    database_path = data_root / "pandrator.sqlite3"
+    if database_path.is_file():
+        deadline = time.monotonic() + max(0.0, float(args.drain_timeout))
+        while True:
+            try:
+                with sqlite3.connect(database_path) as connection:
+                    running = int(connection.execute("SELECT COUNT(*) FROM jobs WHERE status = 'running'").fetchone()[0])
+                    if running and args.cancel_running:
+                        connection.execute("UPDATE jobs SET status = 'cancel_requested' WHERE status = 'running'")
+                        connection.commit()
+            except sqlite3.OperationalError:
+                running = 0
+            if not running:
+                break
+            if time.monotonic() >= deadline:
+                if not args.cancel_running:
+                    maintenance.unlink(missing_ok=True)
+                    raise RuntimeError("Running jobs did not drain before the update timeout; retry with --cancel-running to request cancellation.")
+                break
+            time.sleep(0.5)
+    if runtime_state.is_file():
+        runtime = json.loads(runtime_state.read_text(encoding="utf-8"))
+        supervisor_pid = int(runtime.get("supervisor_pid") or 0)
+        try:
+            import psutil
+            supervisor = psutil.Process(supervisor_pid)
+            restart_command = supervisor.cmdline()
+            restart_cwd = supervisor.cwd()
+        except Exception:
+            restart_command = None
+        os.kill(supervisor_pid, signal.SIGTERM)
+        deadline = time.monotonic() + 40
+        while runtime_state.exists() and time.monotonic() < deadline:
+            time.sleep(0.25)
+        if runtime_state.exists():
+            maintenance.unlink(missing_ok=True)
+            raise RuntimeError("The running Pandrator supervisor did not stop cleanly.")
+
+    python = _runtime_python(paths)
+    backup_dir = data_root / "backups" / f"update-{int(time.time())}-{verified.version}"
+    backup_dir.mkdir(parents=True, exist_ok=False)
+    database_snapshot = backup_dir / "pandrator.sqlite3"
+    snapshot_sqlite(data_root / "pandrator.sqlite3", database_snapshot)
+    package_snapshot = backup_dir / "installed-package.zip"
+    site_packages = snapshot_installed_package(python, package_snapshot)
+    activation_error = None
+    try:
+        install_wheel(python, wheel)
+        run_migrations(python, data_root)
+        health_check(python, data_root)
+        status = "updated"
+    except Exception as error:
+        restore_installed_package(package_snapshot, site_packages)
+        restore_database(database_snapshot, data_root / "pandrator.sqlite3")
+        health_check(python, data_root)
+        activation_error = error
+        status = "rolled_back"
+    finally:
+        maintenance.unlink(missing_ok=True)
+    if restart_command:
+        subprocess.Popen(
+            restart_command,
+            cwd=restart_cwd or None,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW) if os.name == "nt" else 0,
+            start_new_session=os.name != "nt",
+        )
+    if activation_error is not None:
+        raise RuntimeError(f"Update activation failed and the previous package/database were restored: {activation_error}") from activation_error
+    _emit({**plan, "status": status, "version": verified.version, "backup": str(backup_dir)}, args.json)
+    return 0
 
 
 def command_repair(args) -> int:
@@ -270,6 +451,10 @@ def build_parser() -> argparse.ArgumentParser:
     update = commands.add_parser("update")
     update.add_argument("--wheel", required=True)
     update.add_argument("--sha256")
+    update.add_argument("--manifest")
+    update.add_argument("--public-key")
+    update.add_argument("--drain-timeout", type=float, default=300.0)
+    update.add_argument("--cancel-running", action="store_true")
     update.add_argument("--dry-run", action="store_true")
     update.set_defaults(handler=command_update)
     repair = commands.add_parser("repair")
@@ -280,7 +465,11 @@ def build_parser() -> argparse.ArgumentParser:
     launch.add_argument("--host", default="127.0.0.1")
     launch.add_argument("--port", type=int, default=8097)
     launch.add_argument("--no-browser", action="store_true")
+    launch.add_argument("--components", action="append", default=[])
     launch.set_defaults(handler=command_launch)
+    service = commands.add_parser("service", help=argparse.SUPPRESS)
+    service.add_argument("--component", required=True)
+    service.set_defaults(handler=command_service)
     commands.add_parser("stop").set_defaults(handler=command_stop)
     uninstall = commands.add_parser("uninstall")
     uninstall.add_argument("--dry-run", action="store_true")
@@ -310,3 +499,7 @@ def main(argv: list[str] | None = None) -> int:
     except (ValueError, RuntimeError, OSError) as error:
         print(str(error), file=sys.stderr)
         return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

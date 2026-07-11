@@ -5,3 +5,4 @@ psutil
 dulwich
 certifi
 packaging
+cryptography>=43,<46

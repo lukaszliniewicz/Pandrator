@@ -7,10 +7,12 @@
     "dev": "vite",
     "build": "vite build",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-    "generate-api": "openapi-typescript ../openapi.json -o src/lib/api.generated.ts"
+    "generate-api": "openapi-typescript ../openapi.json -o src/lib/api.generated.ts",
+    "test:e2e": "playwright test"
   },
   "devDependencies": {
     "@sveltejs/adapter-static": "^3.0.10",
+    "@playwright/test": "^1.55.0",
     "@sveltejs/kit": "^2.48.0",
     "@sveltejs/vite-plugin-svelte": "^6.2.1",
     "@tailwindcss/vite": "^4.1.18",
@@ -24,5 +26,8 @@
   "dependencies": {
     "@lucide/svelte": "^0.562.0",
     "pdfjs-dist": "^5.4.394"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true
   }
 }

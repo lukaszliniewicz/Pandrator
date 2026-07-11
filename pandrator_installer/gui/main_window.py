@@ -6,11 +6,11 @@ import os
 import sys
 
 from PyQt6.QtCore import QThread, Qt, QTimer
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QAction, QFont
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
     QFileDialog, QLabel, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar,
-    QPushButton, QScrollArea, QSizePolicy, QTabWidget, QVBoxLayout, QWidget, QComboBox, QDialog,
+    QPushButton, QScrollArea, QSizePolicy, QTabWidget, QVBoxLayout, QWidget, QComboBox, QDialog, QMenu, QSystemTrayIcon,
 )
 
 from ..catalog import LINUX_DEFERRED_INSTALL_COMPONENT_KEYS
@@ -214,7 +214,45 @@ class PandratorInstaller(
         self.backend_status_timer = QTimer(self)
         self.backend_status_timer.timeout.connect(self.update_backend_runtime_controls)
         self.backend_status_timer.start(2000)
+        self._quit_requested = False
+        self.setup_system_tray()
         atexit.register(self.shutdown_apps)
+
+    def setup_system_tray(self):
+        """Keep locally supervised services available when the launcher is minimized."""
+        self.tray_icon = QSystemTrayIcon(self.windowIcon(), self)
+        menu = QMenu(self)
+        show_action = QAction("Show Pandrator Launcher", self)
+        show_action.triggered.connect(self.restore_from_tray)
+        stop_action = QAction("Stop Everything", self)
+        stop_action.triggered.connect(self.stop_everything_from_tray)
+        quit_action = QAction("Quit Launcher", self)
+        quit_action.triggered.connect(self.quit_from_tray)
+        menu.addAction(show_action)
+        menu.addAction(stop_action)
+        menu.addSeparator()
+        menu.addAction(quit_action)
+        self.tray_icon.setContextMenu(menu)
+        self.tray_icon.activated.connect(
+            lambda reason: self.restore_from_tray()
+            if reason == QSystemTrayIcon.ActivationReason.Trigger
+            else None
+        )
+        self.tray_icon.show()
+
+    def restore_from_tray(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def stop_everything_from_tray(self):
+        self.shutdown_apps()
+        self.update_status("All supervised processes stopped.")
+
+    def quit_from_tray(self):
+        self._quit_requested = True
+        self.shutdown_apps()
+        QApplication.instance().quit()
 
     def set_startup_tab(self):
         pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')

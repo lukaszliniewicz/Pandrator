@@ -8,7 +8,7 @@ import os
 import re
 import tempfile
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +66,7 @@ class CorrectionResult:
     response_count: int = 0
     output_path: str = ""
     cost_sources: tuple[str, ...] = ()
+    usage: dict[str, Any] = field(default_factory=dict)
 
 
 def _coerce_int(value: Any, default: int) -> int:
@@ -264,6 +265,15 @@ def _coerce_completion_content_and_cost(result: Any) -> tuple[str, float, str]:
     return content, normalized_cost, str(getattr(result, "cost_source", "") or "")
 
 
+def _merge_completion_usage(totals: dict[str, Any], result: Any) -> None:
+    raw = getattr(result, "usage", {})
+    if hasattr(raw, "model_dump"):
+        raw = raw.model_dump(mode="json")
+    normalized = llm_handler.normalize_usage_tokens(raw if isinstance(raw, dict) else {})
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens", "cached_prompt_tokens", "uncached_prompt_tokens"):
+        totals[key] = int(totals.get(key) or 0) + int(normalized.get(key) or 0)
+
+
 def correct_srt_content(
     srt_content: str,
     settings: dict[str, Any],
@@ -294,6 +304,7 @@ def correct_srt_content(
     total_cost = 0.0
     response_count = 0
     cost_sources: list[str] = []
+    usage: dict[str, Any] = {}
 
     for block_number, block in enumerate(blocks, start=1):
         prompt = build_correction_prompt(
@@ -314,6 +325,7 @@ def correct_srt_content(
                     llm_settings=resolved.llm_settings,
                 )
                 content, cost, cost_source = _coerce_completion_content_and_cost(result)
+                _merge_completion_usage(usage, result)
                 total_cost += cost
                 if cost_source and cost_source not in cost_sources:
                     cost_sources.append(cost_source)
@@ -360,6 +372,7 @@ def correct_srt_content(
         cost=total_cost,
         response_count=response_count,
         cost_sources=tuple(cost_sources),
+        usage=usage,
     )
 
 
@@ -405,6 +418,7 @@ def correct_srt_file_with_result(
         response_count=result.response_count,
         output_path=str(output_path),
         cost_sources=result.cost_sources,
+        usage=result.usage,
     )
     logger.info(
         "Corrected subtitles written to %s (%d LLM response(s), cost %.6f).",

@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pandrator-installer"
+version = "0.48.0.dev0"
+description = "Headless lifecycle manager and optional Qt launcher for Pandrator"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "certifi>=2024.8",
+  "cryptography>=43,<46",
+  "dulwich>=0.22,<1",
+  "packaging>=24,<26",
+  "psutil>=6,<8",
+  "requests>=2.32,<3",
+]
+
+[project.optional-dependencies]
+gui = ["PyQt6==6.7.1"]
+build = ["PyInstaller==6.20.0"]
+
+[project.scripts]
+pandrator-installer = "pandrator_installer.lifecycle:main"
+pandrator-installer-gui = "pandrator_installer.cli:main"
+
+[tool.setuptools]
+packages = ["pandrator_installer", "pandrator_installer.gui"]
+package-dir = { pandrator_installer = ".", "pandrator_installer.gui" = "gui" }

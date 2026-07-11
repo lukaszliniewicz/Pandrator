@@ -244,6 +244,54 @@ export interface paths {
         patch: operations["updateProviderModel"];
         trace?: never;
     };
+    "/api/v1/providers/{providerId}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["testProvider"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/rvc/convert": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["convertWithRvc"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/rvc/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listRvcModels"];
+        put?: never;
+        post: operations["uploadRvcModel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/session-bundles/import": {
         parameters: {
             query?: never;
@@ -324,6 +372,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/sources/reuse": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["reuseSource"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/sources/url": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["downloadSourceUrl"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/stages/{stageKey}/run": {
         parameters: {
             query?: never;
@@ -398,6 +478,38 @@ export interface paths {
         get: operations["getSetting"];
         put: operations["putSetting"];
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/training": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listTrainingRuns"];
+        put?: never;
+        post: operations["createTrainingRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/training/{trainingId}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["cancelTrainingRun"];
         delete?: never;
         options?: never;
         head?: never;
@@ -722,6 +834,35 @@ export interface components {
              */
             secret_ref: string | null;
         };
+        /** ProviderTestRequest */
+        ProviderTestRequest: {
+            /**
+             * Model Id
+             * @default null
+             */
+            model_id: string | null;
+        };
+        /** RvcConvertRequest */
+        RvcConvertRequest: {
+            /**
+             * Session Id
+             * @default null
+             */
+            session_id: string | null;
+            /** Settings */
+            settings?: {
+                [key: string]: unknown;
+            };
+            /** Source Artifact Id */
+            source_artifact_id: string;
+        };
+        /** RvcModelUploadRequest */
+        RvcModelUploadRequest: {
+            /** Index Artifact Id */
+            index_artifact_id: string;
+            /** Pth Artifact Id */
+            pth_artifact_id: string;
+        };
         /** SessionCreate */
         SessionCreate: {
             /** Included Stages */
@@ -773,6 +914,16 @@ export interface components {
             /** Value */
             value: unknown;
         };
+        /** SourceReuseRequest */
+        SourceReuseRequest: {
+            /** Artifact Id */
+            artifact_id: string;
+        };
+        /** SourceUrlRequest */
+        SourceUrlRequest: {
+            /** Url */
+            url: string;
+        };
         /** SubtitleReviewRequest */
         SubtitleReviewRequest: {
             /** Expected Revision */
@@ -817,6 +968,27 @@ export interface components {
              * @default CLI token
              */
             label: string;
+        };
+        /** TrainingCreateRequest */
+        TrainingCreateRequest: {
+            /** Model Name */
+            model_name: string;
+            /** Settings */
+            settings?: {
+                [key: string]: unknown;
+            };
+            /** Source Artifact Id */
+            source_artifact_id: string;
+            /**
+             * Source Text Artifact Id
+             * @default null
+             */
+            source_text_artifact_id: string | null;
+            /**
+             * Voice Id
+             * @default null
+             */
+            voice_id: string | null;
         };
         /** VoiceCreate */
         VoiceCreate: {
@@ -1246,6 +1418,97 @@ export interface operations {
             };
         };
     };
+    testProvider: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProviderTestRequest"];
+            };
+        };
+        responses: {
+            /** @description Provider ready */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Provider test failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    convertWithRvc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RvcConvertRequest"];
+            };
+        };
+        responses: {
+            /** @description Queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listRvcModels: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description RVC readiness and models */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    uploadRvcModel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RvcModelUploadRequest"];
+            };
+        };
+        responses: {
+            /** @description Queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     importSessionBundle: {
         parameters: {
             query?: never;
@@ -1405,6 +1668,50 @@ export interface operations {
             };
         };
     };
+    reuseSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SourceReuseRequest"];
+            };
+        };
+        responses: {
+            /** @description Queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    downloadSourceUrl: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SourceUrlRequest"];
+            };
+        };
+        responses: {
+            /** @description Queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     runWorkflowStage: {
         parameters: {
             query?: never;
@@ -1528,6 +1835,64 @@ export interface operations {
             };
             /** @description Revision conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listTrainingRuns: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Training runs */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createTrainingRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TrainingCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cancelTrainingRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cancellation requested */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };

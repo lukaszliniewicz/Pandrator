@@ -644,6 +644,75 @@
         "title": "ProviderCreate",
         "type": "object"
       },
+      "ProviderTestRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "model_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model Id"
+          }
+        },
+        "title": "ProviderTestRequest",
+        "type": "object"
+      },
+      "RvcConvertRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "settings": {
+            "additionalProperties": true,
+            "title": "Settings",
+            "type": "object"
+          },
+          "source_artifact_id": {
+            "title": "Source Artifact Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_artifact_id"
+        ],
+        "title": "RvcConvertRequest",
+        "type": "object"
+      },
+      "RvcModelUploadRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "index_artifact_id": {
+            "title": "Index Artifact Id",
+            "type": "string"
+          },
+          "pth_artifact_id": {
+            "title": "Pth Artifact Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pth_artifact_id",
+          "index_artifact_id"
+        ],
+        "title": "RvcModelUploadRequest",
+        "type": "object"
+      },
       "SessionCreate": {
         "additionalProperties": false,
         "properties": {
@@ -772,6 +841,36 @@
         "title": "SettingUpdate",
         "type": "object"
       },
+      "SourceReuseRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "title": "Artifact Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id"
+        ],
+        "title": "SourceReuseRequest",
+        "type": "object"
+      },
+      "SourceUrlRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "url": {
+            "maxLength": 4096,
+            "minLength": 8,
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "title": "SourceUrlRequest",
+        "type": "object"
+      },
       "SubtitleReviewRequest": {
         "$defs": {
           "SubtitleSegmentInput": {
@@ -887,6 +986,56 @@
           }
         },
         "title": "TokenCreateRequest",
+        "type": "object"
+      },
+      "TrainingCreateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "model_name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Model Name",
+            "type": "string"
+          },
+          "settings": {
+            "additionalProperties": true,
+            "title": "Settings",
+            "type": "object"
+          },
+          "source_artifact_id": {
+            "title": "Source Artifact Id",
+            "type": "string"
+          },
+          "source_text_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Text Artifact Id"
+          },
+          "voice_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Voice Id"
+          }
+        },
+        "required": [
+          "model_name",
+          "source_artifact_id"
+        ],
+        "title": "TrainingCreateRequest",
         "type": "object"
       },
       "VoiceCreate": {
@@ -1223,6 +1372,77 @@
         }
       }
     },
+    "/api/v1/providers/{providerId}/test": {
+      "post": {
+        "operationId": "testProvider",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderTestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Provider ready"
+          },
+          "422": {
+            "description": "Provider test failed"
+          }
+        }
+      }
+    },
+    "/api/v1/rvc/convert": {
+      "post": {
+        "operationId": "convertWithRvc",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RvcConvertRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Queued"
+          }
+        }
+      }
+    },
+    "/api/v1/rvc/models": {
+      "get": {
+        "operationId": "listRvcModels",
+        "responses": {
+          "200": {
+            "description": "RVC readiness and models"
+          }
+        }
+      },
+      "post": {
+        "operationId": "uploadRvcModel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RvcModelUploadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Queued"
+          }
+        }
+      }
+    },
     "/api/v1/session-bundles/import": {
       "post": {
         "operationId": "importSessionBundle",
@@ -1372,6 +1592,46 @@
         }
       }
     },
+    "/api/v1/sessions/{sessionId}/sources/reuse": {
+      "post": {
+        "operationId": "reuseSource",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SourceReuseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Queued"
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{sessionId}/sources/url": {
+      "post": {
+        "operationId": "downloadSourceUrl",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SourceUrlRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Queued"
+          }
+        }
+      }
+    },
     "/api/v1/sessions/{sessionId}/stages/{stageKey}/run": {
       "post": {
         "operationId": "runWorkflowStage",
@@ -1452,6 +1712,44 @@
           },
           "409": {
             "description": "Revision conflict"
+          }
+        }
+      }
+    },
+    "/api/v1/training": {
+      "get": {
+        "operationId": "listTrainingRuns",
+        "responses": {
+          "200": {
+            "description": "Training runs"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createTrainingRun",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TrainingCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Queued"
+          }
+        }
+      }
+    },
+    "/api/v1/training/{trainingId}/cancel": {
+      "post": {
+        "operationId": "cancelTrainingRun",
+        "responses": {
+          "202": {
+            "description": "Cancellation requested"
           }
         }
       }

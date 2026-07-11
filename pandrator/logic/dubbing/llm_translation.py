@@ -7,7 +7,7 @@ import logging
 import os
 import tempfile
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -113,6 +113,7 @@ class TranslationResult:
     response_count: int = 0
     output_path: str = ""
     cost_sources: tuple[str, ...] = ()
+    usage: dict[str, Any] = field(default_factory=dict)
 
 
 def get_deepl_language_code(language: str) -> str:
@@ -348,6 +349,15 @@ def _coerce_completion_content_and_cost(result: Any) -> tuple[str, float, str]:
     return content, normalized_cost, str(getattr(result, "cost_source", "") or "")
 
 
+def _merge_completion_usage(totals: dict[str, Any], result: Any) -> None:
+    raw = getattr(result, "usage", {})
+    if hasattr(raw, "model_dump"):
+        raw = raw.model_dump(mode="json")
+    normalized = llm_handler.normalize_usage_tokens(raw if isinstance(raw, dict) else {})
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens", "cached_prompt_tokens", "uncached_prompt_tokens"):
+        totals[key] = int(totals.get(key) or 0) + int(normalized.get(key) or 0)
+
+
 def translation_responses_to_srt(
     translated_responses: list[dict[str, Any]],
     original_srt: str,
@@ -410,6 +420,7 @@ def translate_srt_content(
     translated_responses: list[dict[str, Any]] = []
     total_cost = 0.0
     cost_sources: list[str] = []
+    usage: dict[str, Any] = {}
 
     for index, block in enumerate(blocks):
         prompt = build_translation_prompt(
@@ -429,6 +440,7 @@ def translate_srt_content(
             max_tokens=3000,
         )
         content, cost, cost_source = _coerce_completion_content_and_cost(result)
+        _merge_completion_usage(usage, result)
         if not content:
             raise ValueError("LLM translation returned an empty response.")
 
@@ -455,6 +467,7 @@ def translate_srt_content(
         cost=total_cost,
         response_count=len(translated_responses),
         cost_sources=tuple(cost_sources),
+        usage=usage,
     )
 
 
@@ -496,6 +509,7 @@ def translate_srt_file_with_result(
         response_count=result.response_count,
         output_path=str(output_path),
         cost_sources=result.cost_sources,
+        usage=result.usage,
     )
     logger.info(
         "Translated subtitles written to %s (%d LLM response(s), cost %.6f).",

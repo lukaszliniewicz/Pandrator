@@ -280,6 +280,7 @@ def start_training(
     settings: dict,
     output_callback: Callable[[str], None] | None = None,
     status_callback: Callable[[str], None] | None = None,
+    stop_event=None,
 ) -> tuple[bool, str]:
     """Runs XTTS training and returns `(success, message)`."""
     model_name = str(settings.get("model_name", "")).strip()
@@ -399,6 +400,10 @@ def start_training(
         
         if process.stdout is not None:
             for line in process.stdout:
+                if stop_event is not None and stop_event.is_set():
+                    process.terminate()
+                    process.wait(timeout=15)
+                    return False, "XTTS training was canceled."
                 cleaned = line.strip()
                 if not cleaned:
                     continue

@@ -6,11 +6,14 @@ import argparse
 import json
 import os
 import socket
+import shutil
 import sys
 import uuid
 import webbrowser
 from pathlib import Path
 from typing import Any
+
+import requests
 
 from waitress import serve as waitress_serve
 from sqlalchemy import select
@@ -24,7 +27,7 @@ from .bundles import SessionBundleService
 from .database import Database
 from .jobs import JobQueue, Worker, noop_handler
 from .legacy_migration import import_legacy_data
-from .models import Artifact, Provider, ProviderModel, SessionRecord, SourceRecord, Voice, VoiceSample
+from .models import Artifact, Provider, ProviderModel, SessionRecord, SourceRecord, TrainingRun, Voice, VoiceSample, new_id, utcnow
 from .openapi import build_openapi_document
 from .sessions import SessionService
 from .subtitle_review import SubtitleReviewService
@@ -50,8 +53,111 @@ def _paths(args) -> DataPaths:
 
 def _database(args) -> tuple[DataPaths, Database]:
     paths = _paths(args)
+    lock_path = paths.instance_lock
+    if lock_path.is_file() and getattr(args, "command", "") not in {"serve", "worker"}:
+        try:
+            lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            lock = {}
+        expected = str(os.environ.get("PANDRATOR_SUPERVISOR_INSTANCE") or "")
+        owner = str(lock.get("instance_id") or "")
+        pid = int(lock.get("pid") or 0)
+        try:
+            import psutil
+            alive = pid > 0 and psutil.pid_exists(pid)
+        except ImportError:
+            alive = pid > 0
+        if alive and (not expected or expected != owner):
+            raise RuntimeError(f"Data root is owned by running Pandrator supervisor PID {pid}; use --server instead of standalone access.")
     import_legacy_data(paths)
     return paths, Database(paths.database)
+
+
+def _remote_api(args, method: str, path: str, *, payload: Any = None, files: Any = None) -> Any:
+    base = str(args.server or "").rstrip("/")
+    token = str(args.token or os.environ.get("PANDRATOR_API_TOKEN") or "").strip()
+    if not token:
+        raise RuntimeError("API-client mode requires --token or PANDRATOR_API_TOKEN.")
+    headers = {"Authorization": f"Bearer {token}", "X-Request-ID": str(uuid.uuid4())}
+    try:
+        response = requests.request(method, f"{base}/api/v1{path}", headers=headers, json=payload if files is None else None, files=files, timeout=300)
+    except requests.RequestException as error:
+        raise RuntimeError(f"Could not reach Pandrator API: {error}") from error
+    if not response.ok:
+        body = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+        message = body.get("error", {}).get("message") if isinstance(body, dict) else None
+        raise RuntimeError(message or f"Pandrator API returned HTTP {response.status_code}.")
+    if response.status_code == 204:
+        return None
+    return response.json()
+
+
+def _remote_upload(args, source: str) -> str:
+    path = Path(source).expanduser().resolve(strict=True)
+    with path.open("rb") as handle:
+        result = _remote_api(args, "POST", "/uploads", files={"file": (path.name, handle)})
+    return str(result["artifact_id"])
+
+
+def command_remote(args) -> int:
+    """Dispatch supported operational commands through the versioned HTTP API."""
+
+    command = args.command
+    if command == "session":
+        if args.session_command == "list":
+            result = _remote_api(args, "GET", "/sessions")
+        elif args.session_command == "show":
+            result = _remote_api(args, "GET", f"/sessions/{args.session_id}")
+        elif args.session_command == "create":
+            result = _remote_api(args, "POST", "/sessions", payload={"name": args.name, "workflow_kind": args.kind, "workflow_preset": args.preset, "included_stages": args.include or []})
+        else:
+            raise RuntimeError("Remote session bundle transfer is not supported by this command; use managed artifact upload/download endpoints.")
+    elif command == "job":
+        if args.job_command == "list":
+            result = _remote_api(args, "GET", f"/jobs?limit={args.limit}")
+        elif args.job_command == "show":
+            result = _remote_api(args, "GET", f"/jobs/{args.job_id}")
+        elif args.job_command == "cancel":
+            result = _remote_api(args, "POST", f"/jobs/{args.job_id}/cancel")
+        else:
+            result = _remote_api(args, "POST", "/jobs", payload={"kind": args.kind, "session_id": args.session_id, "payload": json.loads(args.payload), "max_attempts": args.max_attempts})
+    elif command == "source":
+        snapshot = _remote_api(args, "GET", f"/sessions/{args.session_id}/workflow")
+        result = {"items": snapshot.get("sources", [])}
+    elif command == "workflow":
+        result = _remote_api(args, "GET", f"/sessions/{args.session_id}/workflow") if args.workflow_command == "show" else _remote_api(args, "POST", f"/sessions/{args.session_id}/stages/{args.stage}/run", payload=json.loads(args.settings))
+    elif command == "artifact":
+        query = f"?session_id={args.session_id}" if args.session_id else ""
+        result = _remote_api(args, "GET", f"/artifacts{query}")
+    elif command == "document":
+        result = _remote_api(args, "GET", f"/sessions/{args.session_id}/subtitles")
+    elif command == "provider":
+        result = _remote_api(args, "GET", "/providers")
+    elif command == "voice":
+        result = _remote_api(args, "GET", "/voices")
+    elif command == "export":
+        result = _remote_api(args, "POST", f"/sessions/{args.session_id}/stages/export/run", payload=json.loads(args.options))
+    elif command == "rvc":
+        if args.rvc_command == "list":
+            result = _remote_api(args, "GET", "/rvc/models")
+        elif args.rvc_command == "upload":
+            result = _remote_api(args, "POST", "/rvc/models", payload={"pth_artifact_id": _remote_upload(args, args.weights), "index_artifact_id": _remote_upload(args, args.index)})
+        else:
+            settings = json.loads(args.settings); settings["rvc_model"] = args.model
+            result = _remote_api(args, "POST", "/rvc/convert", payload={"source_artifact_id": args.artifact_id, "session_id": args.session_id, "settings": settings})
+    elif command == "training":
+        if args.training_command == "list":
+            result = _remote_api(args, "GET", "/training")
+        elif args.training_command == "cancel":
+            result = _remote_api(args, "POST", f"/training/{args.training_id}/cancel")
+        else:
+            result = _remote_api(args, "POST", "/training", payload={"model_name": args.model_name, "source_artifact_id": args.artifact_id, "source_text_artifact_id": args.text_artifact_id, "settings": json.loads(args.settings)})
+    elif command == "openapi":
+        result = _remote_api(args, "GET", "/openapi.json")
+    else:
+        raise RuntimeError(f"'{command}' is a standalone or server-management command and cannot use --server.")
+    _emit(result, args.json)
+    return 0
 
 
 def _session_dict(record) -> dict:
@@ -386,6 +492,98 @@ def command_voice_list(args) -> int:
         database.dispose()
 
 
+def command_rvc_list(args) -> int:
+    from pandrator.logic import rvc_handler
+
+    paths = _paths(args)
+    available = rvc_handler.is_rvc_available()
+    _emit({"available": available, "items": rvc_handler.get_rvc_models(str(paths.models / "rvc")) if available else []}, args.json)
+    return 0
+
+
+def _import_cli_artifact(paths: DataPaths, database: Database, source: str, role: str) -> Artifact:
+    source_path = Path(source).expanduser().resolve(strict=True)
+    destination = paths.uploads / f"{uuid.uuid4()}-{source_path.name}"
+    shutil.copy2(source_path, destination)
+    return ArtifactService(database, paths).register(destination, kind="source", role=role, metadata={"original_filename": source_path.name})
+
+
+def command_rvc_upload(args) -> int:
+    paths, database = _database(args)
+    try:
+        weights = _import_cli_artifact(paths, database, args.weights, "rvc_upload")
+        index = _import_cli_artifact(paths, database, args.index, "rvc_upload")
+        job = JobQueue(database).enqueue("rvc.model.upload", {"pth_artifact_id": weights.id, "index_artifact_id": index.id})
+        _emit(_job_dict(job), args.json)
+        return 0
+    finally:
+        database.dispose()
+
+
+def command_rvc_convert(args) -> int:
+    _, database = _database(args)
+    try:
+        settings = json.loads(args.settings)
+        settings["rvc_model"] = args.model
+        job = JobQueue(database).enqueue("rvc.convert", {"source_artifact_id": args.artifact_id, "session_id": args.session_id, "settings": settings}, session_id=args.session_id)
+        _emit(_job_dict(job), args.json)
+        return 0
+    finally:
+        database.dispose()
+
+
+def command_training_list(args) -> int:
+    _, database = _database(args)
+    try:
+        with database.session() as session:
+            records = list(session.scalars(select(TrainingRun).order_by(TrainingRun.created_at.desc())).all())
+            _emit([{"id": item.id, "model_name": item.model_name, "status": item.status, "job_id": item.job_id, "source_artifact_id": item.source_artifact_id, "output_artifact_id": item.output_artifact_id, "error": item.error_message} for item in records], args.json)
+        return 0
+    finally:
+        database.dispose()
+
+
+def command_training_start(args) -> int:
+    _, database = _database(args)
+    try:
+        settings = json.loads(args.settings)
+        training_id = new_id()
+        with database.session() as session:
+            if session.get(Artifact, args.artifact_id) is None:
+                raise KeyError(args.artifact_id)
+            if args.text_artifact_id and session.get(Artifact, args.text_artifact_id) is None:
+                raise KeyError(args.text_artifact_id)
+            session.add(TrainingRun(id=training_id, model_name=args.model_name, source_artifact_id=args.artifact_id, settings_json=settings))
+        job = JobQueue(database).enqueue("training.xtts", {"training_id": training_id, "model_name": args.model_name, "source_artifact_id": args.artifact_id, "source_text_artifact_id": args.text_artifact_id, "settings": settings})
+        with database.session() as session:
+            record = session.get(TrainingRun, training_id)
+            record.job_id = job.id
+            record.updated_at = utcnow()
+        payload = _job_dict(job); payload["training_id"] = training_id
+        _emit(payload, args.json)
+        return 0
+    finally:
+        database.dispose()
+
+
+def command_training_cancel(args) -> int:
+    _, database = _database(args)
+    try:
+        with database.session() as session:
+            record = session.get(TrainingRun, args.training_id)
+            if record is None:
+                raise KeyError(args.training_id)
+            job_id = record.job_id
+            record.status = "cancel_requested"
+            record.updated_at = utcnow()
+        if job_id:
+            JobQueue(database).request_cancel(job_id)
+        _emit({"id": args.training_id, "job_id": job_id, "status": "cancel_requested"}, args.json)
+        return 0
+    finally:
+        database.dispose()
+
+
 def command_export_create(args) -> int:
     _, database = _database(args)
     try:
@@ -418,6 +616,8 @@ def command_openapi(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="pandrator", description="Pandrator browser server and automation CLI")
     parser.add_argument("--data-dir", help="Pandrator data root (or PANDRATOR_DATA_DIR).")
+    parser.add_argument("--server", help="Use a running Pandrator API instead of standalone data-root access.")
+    parser.add_argument("--token", help="API token for --server (or PANDRATOR_API_TOKEN).")
     parser.add_argument("--json", action="store_true", help="Emit stable machine-readable JSON.")
     commands = parser.add_subparsers(dest="command", required=True)
 
@@ -539,6 +739,35 @@ def build_parser() -> argparse.ArgumentParser:
     voice_list = voice_commands.add_parser("list")
     voice_list.set_defaults(handler=command_voice_list)
 
+    rvc = commands.add_parser("rvc", help="Manage RVC models and conversion jobs.")
+    rvc_commands = rvc.add_subparsers(dest="rvc_command", required=True)
+    rvc_list = rvc_commands.add_parser("list")
+    rvc_list.set_defaults(handler=command_rvc_list)
+    rvc_upload = rvc_commands.add_parser("upload")
+    rvc_upload.add_argument("weights")
+    rvc_upload.add_argument("index")
+    rvc_upload.set_defaults(handler=command_rvc_upload)
+    rvc_convert = rvc_commands.add_parser("convert")
+    rvc_convert.add_argument("artifact_id")
+    rvc_convert.add_argument("--model", required=True)
+    rvc_convert.add_argument("--session-id")
+    rvc_convert.add_argument("--settings", default="{}")
+    rvc_convert.set_defaults(handler=command_rvc_convert)
+
+    training = commands.add_parser("training", help="Manage durable XTTS training runs.")
+    training_commands = training.add_subparsers(dest="training_command", required=True)
+    training_list = training_commands.add_parser("list")
+    training_list.set_defaults(handler=command_training_list)
+    training_start = training_commands.add_parser("start")
+    training_start.add_argument("model_name")
+    training_start.add_argument("artifact_id")
+    training_start.add_argument("--text-artifact-id")
+    training_start.add_argument("--settings", default="{}")
+    training_start.set_defaults(handler=command_training_start)
+    training_cancel = training_commands.add_parser("cancel")
+    training_cancel.add_argument("training_id")
+    training_cancel.set_defaults(handler=command_training_cancel)
+
     export = commands.add_parser("export", help="Queue a session export.")
     export_commands = export.add_subparsers(dest="export_command", required=True)
     export_create = export_commands.add_parser("create")
@@ -558,6 +787,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        if args.server:
+            return int(command_remote(args) or 0)
         return int(args.handler(args) or 0)
     except KeyError as error:
         print(f"Not found: {error.args[0]}", file=sys.stderr)

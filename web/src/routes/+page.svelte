@@ -2,6 +2,7 @@
   import '../app.css';
   import {
     AudioLines,
+    BrainCircuit,
     BookOpenText,
     Captions,
     ChevronRight,
@@ -24,6 +25,8 @@
   import SessionWorkspace from '$lib/SessionWorkspace.svelte';
   import ProviderManager from '$lib/ProviderManager.svelte';
   import VoiceManager from '$lib/VoiceManager.svelte';
+  import AdvancedTools from '$lib/AdvancedTools.svelte';
+  import GuidedTour from '$lib/GuidedTour.svelte';
 
   let theme = $state<'light' | 'dark'>('light');
   let authenticated = $state(false);
@@ -36,15 +39,28 @@
   let taskOpen = $state(false);
   let newSessionName = $state('');
   let newSessionKind = $state<'audiobook' | 'subtitles' | 'voiceover'>('audiobook');
-  let newSourceMode = $state<'upload' | 'paste' | 'later'>('upload');
+  let newSourceMode = $state<'upload' | 'paste' | 'url' | 'reuse' | 'later'>('upload');
   let newSourceFile = $state<File | null>(null);
   let newSourceText = $state('');
+  let newSourceUrl = $state('');
+  let reusableArtifactId = $state('');
+  let reusableSources = $state<{id:string;relative_path:string;metadata_json?:Record<string,unknown>}[]>([]);
+  let newPreset = $state('custom');
   let capabilities = $state<Record<string, any>>({});
   let selectedSession = $state<SessionRecord | null>(null);
-  let currentView = $state<'home' | 'providers' | 'voices'>('home');
+  let currentView = $state<'home' | 'providers' | 'voices' | 'advanced'>('home');
   let wizardOpen = $state(false);
   let wizardRevision = $state(0);
   let disableWizard = $state(false);
+  let providersReady = $state(false);
+  let voicesReady = $state(false);
+  let shellTour = $state(false);
+  const shellTourSteps = [
+    {section:'Workspace',title:'Start with an outcome',body:'The launcher tiles prepare a subtitle, voiceover, or audiobook workflow. Every generated result remains a reviewable artifact.'},
+    {section:'Workspace',title:'Resume without hunting',body:'Recent sessions keep their workflow state, revisions, jobs, and artifacts. Opening one never deletes completed work.'},
+    {section:'Setup',title:'Configuration stays within reach',body:'Provider, voice, and service setup can open full workspaces while Return to setup preserves your checklist.'},
+    {section:'Review',title:'Advanced tools are explicit',body:'Use the speech laboratory for RVC and XTTS training, and open each workflow stage’s settings only when you need them.'}
+  ];
 
   const tasks = [
     { kind: 'subtitles', title: 'Create subtitles', detail: 'Transcribe, correct, translate, review, and export.', icon: Captions },
@@ -58,23 +74,30 @@
     { label: 'Voices', icon: Library },
     { label: 'Workflows', icon: Workflow },
     { label: 'Providers', icon: Settings2 }
+    ,{ label: 'Speech lab', icon: BrainCircuit }
   ];
 
   const setupItems = $derived([
-    { label: 'LLM providers', ready: true },
-    { label: 'Voice references', ready: false },
+    { label: 'LLM providers', ready: providersReady },
+    { label: 'Voice references', ready: voicesReady },
     { label: 'Local speech tools', ready: Boolean(capabilities?.ffmpeg?.available) }
   ]);
 
   async function loadWorkspace() {
-    const [sessionPayload, jobPayload, capabilityPayload] = await Promise.all([
+    const [sessionPayload, jobPayload, capabilityPayload, artifactPayload, providerPayload, voicePayload] = await Promise.all([
       api<{ items: SessionRecord[] }>('/sessions'),
       api<{ items: JobRecord[] }>('/jobs?limit=8'),
-      api<Record<string, any>>('/capabilities')
+      api<Record<string, any>>('/capabilities'),
+      api<{items:{id:string;role:string;relative_path:string;metadata_json?:Record<string,unknown>}[]}>('/artifacts?limit=100'),
+      api<{items:unknown[]}>('/providers'),
+      api<{items:unknown[]}>('/voices')
     ]);
     sessions = sessionPayload.items;
     jobs = jobPayload.items;
     capabilities = capabilityPayload;
+    reusableSources = artifactPayload.items.filter((item) => item.role === 'upload');
+    providersReady = providerPayload.items.length > 0;
+    voicesReady = voicePayload.items.length > 0;
     try {
       const wizard = await api<{ value: { visible?: boolean; version?: number; setup_completed?: boolean }; revision: number }>('/settings/wizard');
       wizardRevision = wizard.revision;
@@ -108,6 +131,7 @@
       authenticated = status.authenticated;
       setCsrfToken(status.csrf_token);
       if (authenticated) await loadWorkspace();
+      if (authenticated && localStorage.getItem('pandrator-tour-workspace') !== 'complete') shellTour = true;
     } catch (caught) {
       error = caught instanceof Error ? caught.message : String(caught);
     } finally {
@@ -133,25 +157,36 @@
 
   function beginTask(kind: 'audiobook' | 'subtitles' | 'voiceover') {
     newSessionKind = kind;
+    newPreset = kind === 'audiobook' ? 'custom' : kind === 'voiceover' ? 'voiceover' : 'translate_subtitles';
     newSessionName = '';
     newSourceMode = kind === 'audiobook' ? 'upload' : 'upload';
     newSourceFile = null;
     newSourceText = '';
+    newSourceUrl = '';
+    reusableArtifactId = reusableSources[0]?.id ?? '';
     taskOpen = true;
   }
 
   async function createSession() {
     if (!newSessionName.trim()) return;
     try {
-      const included = newSessionKind === 'audiobook' ? ['clean_source','prepare_text','generate_audio','export'] : newSessionKind === 'voiceover' ? ['transcribe','correct','translate','generate_audio','export'] : ['transcribe','correct','translate','export'];
+      const presets:Record<string,string[]> = {transcribe:['transcribe'],clean_subtitles:['transcribe','correct'],translate_subtitles:['transcribe','correct','translate','export'],voiceover:['transcribe','correct','translate','generate_audio','export'],custom:newSessionKind==='audiobook'?['clean_source','prepare_text','generate_audio','export']:[]};
+      const included = presets[newPreset] ?? presets.custom;
+      const baseName = newSessionName.trim();
+      const existing = new Set(sessions.map((item)=>item.name.toLocaleLowerCase()));
+      let uniqueName=baseName; let suffix=2; while(existing.has(uniqueName.toLocaleLowerCase())) uniqueName=`${baseName} ${suffix++}`;
       const created = await api<SessionRecord>('/sessions', {
         method: 'POST',
-        body: JSON.stringify({ name: newSessionName.trim(), workflow_kind: newSessionKind, workflow_preset: newSessionKind === 'voiceover' ? 'voiceover' : 'custom', included_stages: included })
+        body: JSON.stringify({ name: uniqueName, workflow_kind: newSessionKind, workflow_preset: newPreset, included_stages: included })
       });
       const source = newSourceMode === 'paste' && newSourceText.trim() ? new File([newSourceText.trim()], `${newSessionName.trim()}.txt`, {type:'text/plain'}) : newSourceMode === 'upload' ? newSourceFile : null;
       if (source) {
         const form = new FormData(); form.set('session_id', created.id); form.set('file', source);
         await api('/uploads', {method:'POST', body:form});
+      } else if (newSourceMode === 'url' && newSourceUrl.trim()) {
+        await api(`/sessions/${created.id}/sources/url`, {method:'POST', body:JSON.stringify({url:newSourceUrl.trim()})});
+      } else if (newSourceMode === 'reuse' && reusableArtifactId) {
+        await api(`/sessions/${created.id}/sources/reuse`, {method:'POST', body:JSON.stringify({artifact_id:reusableArtifactId})});
       }
       sessions = [created, ...sessions];
       taskOpen = false;
@@ -203,7 +238,7 @@
       <nav class="hidden space-y-1 md:block" aria-label="Workspace">
         {#each navigation as item, index}
           {@const Icon = item.icon}
-          <button onclick={() => { selectedSession=null; currentView=item.label === 'Providers' ? 'providers' : item.label === 'Voices' ? 'voices' : 'home'; setupOpen=currentView === 'home' ? setupOpen : false; }} class:active={(index === 0 && currentView === 'home') || (item.label === 'Providers' && currentView === 'providers') || (item.label === 'Voices' && currentView === 'voices')} class="nav-item flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm font-medium"><Icon size={18}/>{item.label}</button>
+          <button onclick={() => { selectedSession=null; currentView=item.label === 'Providers' ? 'providers' : item.label === 'Voices' ? 'voices' : item.label === 'Speech lab' ? 'advanced' : 'home'; setupOpen=currentView === 'home' ? setupOpen : false; }} class:active={(index === 0 && currentView === 'home') || (item.label === 'Providers' && currentView === 'providers') || (item.label === 'Voices' && currentView === 'voices') || (item.label === 'Speech lab' && currentView === 'advanced')} class="nav-item flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm font-medium"><Icon size={18}/>{item.label}</button>
         {/each}
       </nav>
       <div class="absolute bottom-6 hidden left-5 right-5 md:block">
@@ -218,10 +253,12 @@
         <ProviderManager onback={() => currentView='home'}/>
       {:else if currentView === 'voices'}
         <VoiceManager onback={() => currentView='home'}/>
+      {:else if currentView === 'advanced'}
+        <AdvancedTools capabilities={capabilities} onback={() => currentView='home'}/>
       {:else}
       <header class="mx-auto mb-10 flex max-w-7xl items-end justify-between gap-8">
         <div><div class="eyebrow mb-3">Workspace overview</div><h1 class="max-w-3xl text-3xl font-semibold tracking-[-.035em] sm:text-4xl lg:text-5xl">What would you like to make?</h1><p class="muted mt-4 max-w-2xl text-base leading-relaxed">Start with an outcome. Pandrator will prepare the right stages and keep every artifact reviewable.</p></div>
-        <button onclick={() => wizardOpen = true} class="hidden rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-2.5 text-sm font-semibold sm:flex sm:items-center sm:gap-2"><CircleHelp size={17}/> Open wizard</button>
+        <div class="hidden gap-2 sm:flex"><button onclick={() => shellTour = true} class="rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-2.5 text-sm font-semibold"><CircleHelp size={17} class="inline"/> Tour</button><button onclick={() => wizardOpen = true} class="rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-2.5 text-sm font-semibold"><Sparkles size={17} class="inline"/> Open wizard</button></div>
       </header>
 
       {#if error}<div class="mx-auto mb-6 max-w-7xl rounded-xl border border-red-400/40 bg-red-500/10 px-4 py-3 text-sm">{error}</div>{/if}
@@ -282,9 +319,11 @@
       <div class="surface w-full max-w-lg rounded-[1.8rem] p-7" role="dialog" aria-modal="true" aria-labelledby="new-task-title">
         <div class="flex justify-between gap-5"><div><div class="eyebrow">New {newSessionKind}</div><h2 id="new-task-title" class="mt-1 text-2xl font-semibold">Name this session</h2></div><button onclick={() => taskOpen=false} class="rounded-lg p-2"><X size={19}/></button></div>
         <p class="muted mt-3 text-sm leading-relaxed">Choose a source now or leave it for the workspace. Pandrator will prepare the matching stages.</p>
+        {#if newSessionKind!=='audiobook'}<label class="mt-5 block text-sm font-semibold">Desired outcome<select bind:value={newPreset} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="transcribe">Transcribe only</option><option value="clean_subtitles">Transcribe and correct</option><option value="translate_subtitles">Correct, translate, and export subtitles</option><option value="voiceover">Correct, translate, generate voiceover, and export</option><option value="custom">Choose stages myself</option></select></label>{/if}
         <label for="session-name" class="mt-6 mb-2 block text-sm font-semibold">Session name</label><input id="session-name" bind:value={newSessionName} onkeydown={(event) => event.key === 'Enter' && createSession()} placeholder="A descriptive title" class="w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3" />
-        <div class="mt-5 grid grid-cols-3 gap-2"><button onclick={() => newSourceMode='upload'} class:active={newSourceMode==='upload'} class="rounded-xl border border-[var(--line)] px-3 py-2 text-xs font-semibold">Upload</button><button onclick={() => newSourceMode='paste'} class:active={newSourceMode==='paste'} class="rounded-xl border border-[var(--line)] px-3 py-2 text-xs font-semibold">Paste text</button><button onclick={() => newSourceMode='later'} class:active={newSourceMode==='later'} class="rounded-xl border border-[var(--line)] px-3 py-2 text-xs font-semibold">Choose later</button></div>
-        {#if newSourceMode==='upload'}<label class="mt-4 block rounded-xl border border-dashed border-[var(--line)] p-4 text-sm"><span class="font-semibold">Source file</span><input type="file" class="mt-2 block w-full text-xs" onchange={(event) => { const file=(event.currentTarget as HTMLInputElement).files?.[0]??null; newSourceFile=file; if(file&&!newSessionName) newSessionName=file.name.replace(/\.[^.]+$/,''); }}/></label>{:else if newSourceMode==='paste'}<textarea bind:value={newSourceText} rows="5" placeholder="Paste the source text here…" class="mt-4 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] p-3 text-sm"></textarea>{/if}
+        <div class="mt-5 grid grid-cols-3 gap-2 sm:grid-cols-5"><button onclick={() => newSourceMode='upload'} class:active={newSourceMode==='upload'} class="rounded-xl border border-[var(--line)] px-2 py-2 text-xs font-semibold">Upload</button><button onclick={() => newSourceMode='paste'} class:active={newSourceMode==='paste'} class="rounded-xl border border-[var(--line)] px-2 py-2 text-xs font-semibold">Paste</button><button onclick={() => newSourceMode='url'} class:active={newSourceMode==='url'} class="rounded-xl border border-[var(--line)] px-2 py-2 text-xs font-semibold">URL</button><button onclick={() => newSourceMode='reuse'} class:active={newSourceMode==='reuse'} class="rounded-xl border border-[var(--line)] px-2 py-2 text-xs font-semibold">Reuse</button><button onclick={() => newSourceMode='later'} class:active={newSourceMode==='later'} class="rounded-xl border border-[var(--line)] px-2 py-2 text-xs font-semibold">Later</button></div>
+        {#if newSourceMode==='upload'}<label class="mt-4 block rounded-xl border border-dashed border-[var(--line)] p-4 text-sm"><span class="font-semibold">Source file</span><input type="file" class="mt-2 block w-full text-xs" onchange={(event) => { const file=(event.currentTarget as HTMLInputElement).files?.[0]??null; newSourceFile=file; if(file&&!newSessionName) newSessionName=file.name.replace(/\.[^.]+$/,''); }}/></label>{:else if newSourceMode==='paste'}<textarea bind:value={newSourceText} rows="5" placeholder="Paste the source text here…" class="mt-4 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] p-3 text-sm"></textarea>{:else if newSourceMode==='url'}<label class="mt-4 block text-sm font-semibold">Public media URL<input bind:value={newSourceUrl} type="url" placeholder="https://…" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/></label>{:else if newSourceMode==='reuse'}<label class="mt-4 block text-sm font-semibold">Reusable source<select bind:value={reusableArtifactId} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal">{#each reusableSources as item}<option value={item.id}>{item.relative_path.split('/').at(-1)}</option>{:else}<option value="">No reusable sources yet</option>{/each}</select></label>{/if}
+        <div class="mt-4 rounded-xl bg-[var(--accent-soft)]/35 p-3 text-xs"><span class="font-semibold">Prepared stages:</span> {newPreset==='transcribe'?'Transcribe':newPreset==='clean_subtitles'?'Transcribe → Correct':newPreset==='translate_subtitles'?'Transcribe → Correct → Translate → Export':newPreset==='voiceover'?'Transcribe → Correct → Translate → Generate audio → Export':'You will choose stages in the workspace.'}</div>
         <div class="mt-6 flex justify-end gap-3"><button onclick={() => taskOpen=false} class="rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold">Cancel</button><button onclick={createSession} disabled={!newSessionName.trim()} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-40"><Plus size={17}/> Create session</button></div>
       </div>
     </div>
@@ -303,6 +342,7 @@
     </div>
   {/if}
 {/if}
+<GuidedTour tourId="workspace" steps={shellTourSteps} bind:open={shellTour}/>
 
 <style>
   .nav-item { color: var(--muted); }

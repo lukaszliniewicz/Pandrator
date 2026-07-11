@@ -85,3 +85,8 @@ LINUX_COMPATIBILITY.md
 
 # Local documentation
 docs/
+!docs/
+docs/*
+!docs/web-migration-status.md
+web/playwright-report/
+web/test-results/
