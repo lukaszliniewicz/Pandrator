@@ -15,6 +15,7 @@
   } from '@lucide/svelte';
   import { api, type JobRecord, type SessionRecord } from './api';
   import PdfEditor from './PdfEditor.svelte';
+  import SubtitleReview from './SubtitleReview.svelte';
   import { onMount } from 'svelte';
 
   type Stage = {
@@ -48,6 +49,7 @@
   let targetLanguage = $state('en');
   let model = $state('default');
   let pdfSource = $state<{ id: string; filename: string } | null>(null);
+  let reviewOpen = $state(false);
 
   async function load() {
     loading = true;
@@ -78,6 +80,10 @@
   }
 
   async function run(stage: Stage) {
+    if (stage.key === 'preview') {
+      reviewOpen = true;
+      return;
+    }
     error = '';
     try {
       await api<JobRecord>(`/sessions/${session.id}/stages/${stage.key}/run`, {
@@ -157,7 +163,7 @@
                 <button onclick={() => settingsStage = stage} class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3.5 py-2.5 text-sm font-semibold"><Settings2 size={16}/> Settings</button>
                 <button onclick={() => run(stage)} disabled={stage.status === 'unavailable' || stage.status === 'running'} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35"><Play size={16}/>{stage.status === 'running' ? 'Running' : 'Run now'}</button>
               {:else}
-                <button disabled={stage.status === 'unavailable'} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35"><Sparkles size={16}/> Open comparison</button>
+                <button onclick={() => run(stage)} disabled={stage.status === 'unavailable'} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35"><Sparkles size={16}/> Open comparison</button>
               {/if}
             </div>
           </div>
@@ -178,6 +184,7 @@
 {/if}
 
 {#if pdfSource}<PdfEditor sessionId={session.id} source={pdfSource} onclose={() => pdfSource=null}/>{/if}
+{#if reviewOpen}<SubtitleReview sessionId={session.id} sourceArtifactId={snapshot?.sources[0]?.id} onclose={() => reviewOpen=false} onsaved={load}/>{/if}
 
 <style>
   .status-chip { color: var(--muted); background: color-mix(in srgb, var(--muted) 10%, transparent); }

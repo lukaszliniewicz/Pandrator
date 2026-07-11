@@ -22,6 +22,8 @@
   import { onMount } from 'svelte';
   import { api, exchangeBootstrapToken, setCsrfToken, type JobRecord, type SessionRecord } from '$lib/api';
   import SessionWorkspace from '$lib/SessionWorkspace.svelte';
+  import ProviderManager from '$lib/ProviderManager.svelte';
+  import VoiceManager from '$lib/VoiceManager.svelte';
 
   let theme = $state<'light' | 'dark'>('light');
   let authenticated = $state(false);
@@ -36,6 +38,7 @@
   let newSessionKind = $state<'audiobook' | 'subtitles' | 'voiceover'>('audiobook');
   let capabilities = $state<Record<string, any>>({});
   let selectedSession = $state<SessionRecord | null>(null);
+  let currentView = $state<'home' | 'providers' | 'voices'>('home');
 
   const tasks = [
     { kind: 'subtitles', title: 'Create subtitles', detail: 'Transcribe, correct, translate, review, and export.', icon: Captions },
@@ -48,7 +51,7 @@
     { label: 'Sessions', icon: FolderClock },
     { label: 'Voices', icon: Library },
     { label: 'Workflows', icon: Workflow },
-    { label: 'Settings', icon: Settings2 }
+    { label: 'Providers', icon: Settings2 }
   ];
 
   const setupItems = $derived([
@@ -164,7 +167,7 @@
       <nav class="hidden space-y-1 md:block" aria-label="Workspace">
         {#each navigation as item, index}
           {@const Icon = item.icon}
-          <button class:active={index === 0} class="nav-item flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm font-medium"><Icon size={18}/>{item.label}</button>
+          <button onclick={() => { selectedSession=null; currentView=item.label === 'Providers' ? 'providers' : item.label === 'Voices' ? 'voices' : 'home'; setupOpen=currentView === 'home' ? setupOpen : false; }} class:active={(index === 0 && currentView === 'home') || (item.label === 'Providers' && currentView === 'providers') || (item.label === 'Voices' && currentView === 'voices')} class="nav-item flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm font-medium"><Icon size={18}/>{item.label}</button>
         {/each}
       </nav>
       <div class="absolute bottom-6 hidden left-5 right-5 md:block">
@@ -175,6 +178,10 @@
     <main class="px-5 py-7 sm:px-8 lg:px-12 lg:py-10 xl:px-16">
       {#if selectedSession}
         <SessionWorkspace session={selectedSession} onback={() => selectedSession = null} onupdated={(updated) => { selectedSession = updated; sessions = sessions.map((item) => item.id === updated.id ? updated : item); }}/>
+      {:else if currentView === 'providers'}
+        <ProviderManager onback={() => currentView='home'}/>
+      {:else if currentView === 'voices'}
+        <VoiceManager onback={() => currentView='home'}/>
       {:else}
       <header class="mx-auto mb-10 flex max-w-7xl items-end justify-between gap-8">
         <div><div class="eyebrow mb-3">Workspace overview</div><h1 class="max-w-3xl text-3xl font-semibold tracking-[-.035em] sm:text-4xl lg:text-5xl">What would you like to make?</h1><p class="muted mt-4 max-w-2xl text-base leading-relaxed">Start with an outcome. Pandrator will prepare the right stages and keep every artifact reviewable.</p></div>
@@ -226,7 +233,7 @@
   {#if setupOpen}
     <aside class="surface fixed right-5 bottom-5 z-30 w-[min(23rem,calc(100vw-2.5rem))] rounded-2xl p-5 shadow-2xl">
       <div class="flex items-start justify-between gap-4"><div><div class="eyebrow">Setup checklist</div><h2 class="mt-1 text-lg font-semibold">Three details to check</h2></div><button onclick={() => setupOpen = false} aria-label="Close setup checklist" class="rounded-lg p-1.5 hover:bg-[var(--accent-soft)]"><X size={18}/></button></div>
-      <div class="mt-4 space-y-2">{#each setupItems as item}<button class="flex w-full items-center gap-3 rounded-xl border border-[var(--line)] px-3 py-2.5 text-left text-sm"><span class:item-ready={item.ready} class="size-2 rounded-full bg-[var(--warning)]"></span><span class="flex-1 font-medium">{item.label}</span><ChevronRight class="muted" size={16}/></button>{/each}</div>
+      <div class="mt-4 space-y-2">{#each setupItems as item}<button onclick={() => { if (item.label === 'LLM providers') currentView='providers'; else if (item.label === 'Voice references') currentView='voices'; if (item.label !== 'Local speech tools') { selectedSession=null; setupOpen=false; } }} class="flex w-full items-center gap-3 rounded-xl border border-[var(--line)] px-3 py-2.5 text-left text-sm"><span class:item-ready={item.ready} class="size-2 rounded-full bg-[var(--warning)]"></span><span class="flex-1 font-medium">{item.label}</span><ChevronRight class="muted" size={16}/></button>{/each}</div>
       <button class="mt-4 w-full rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white">Return to guided setup</button>
     </aside>
   {:else}

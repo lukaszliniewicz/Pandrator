@@ -28,10 +28,11 @@ from .auth import AuthService, BootstrapTokenStore
 from .database import Database
 from .jobs import JobQueue
 from .legacy_migration import import_legacy_data
-from .models import Artifact, Provider, ProviderModel, SourceRecord, Voice
+from .models import Artifact, Provider, ProviderModel, SessionRecord, SourceRecord, Voice, VoiceSample
 from .openapi import build_openapi_document
-from .schemas import BootstrapRequest, JobCreate, LoginRequest, ModelCreate, PdfEditRequest, ProviderCreate, SessionCreate, SessionUpdate, TokenCreateRequest
+from .schemas import BootstrapRequest, JobCreate, LoginRequest, ModelCreate, ModelUpdate, PdfEditRequest, ProviderCreate, SessionCreate, SessionUpdate, SubtitleReviewRequest, TokenCreateRequest, VoiceCreate, VoiceTranscriptReview
 from .sessions import RevisionConflict, SessionService
+from .subtitle_review import SubtitleReviewService
 from .workflows import WorkflowService
 
 
@@ -102,6 +103,17 @@ def create_app(
     sessions = SessionService(database)
     artifacts = ArtifactService(database, paths)
     workflows = WorkflowService(database, jobs)
+
+    def session_dir(session_id: str) -> Path:
+        with database.session() as db_session:
+            record = db_session.get(SessionRecord, session_id)
+            if record is None:
+                raise KeyError(session_id)
+            destination = paths.sessions / record.storage_key
+        destination.mkdir(parents=True, exist_ok=True)
+        return destination
+
+    subtitle_review = SubtitleReviewService(database, artifacts, session_dir)
     bootstrap = bootstrap_tokens or BootstrapTokenStore()
 
     static_dir = Path(__file__).with_name("static")
@@ -260,7 +272,10 @@ def create_app(
                 "ffmpeg": {"available": bool(ffmpeg), "path": ffmpeg},
                 "pycroppdf": {"available": any(path.is_file() for path in pycrop_candidates), "local_only": True},
                 "recording": {"browser_required": True, "normalization_available": bool(ffmpeg)},
-                "stt": {"whisperx": False, "parakeet_onnx": False},
+                "stt": {
+                    "whisperx": bool(shutil.which("whisperx") or (paths.root / "whisperX" / "pixi.toml").is_file()),
+                    "parakeet_onnx": bool((paths.root / "parakeet-tdt-0.6b-v3-onnx").exists() or (paths.root / "parakeet" / "pixi.toml").is_file()),
+                },
                 "rvc": {"available": False},
                 "features": ["sessions", "jobs", "providers", "voices", "uploads", "artifacts"],
             }
@@ -361,6 +376,34 @@ def create_app(
         except ValueError as error:
             return error_response("stage_unavailable", str(error), 409)
         return jsonify(_job_payload(job)), 202
+
+    @app.get("/api/v1/sessions/<session_id>/subtitles")
+    @require_auth
+    def subtitle_documents(session_id: str):
+        try:
+            sessions.get(session_id)
+            return jsonify(subtitle_review.documents(session_id))
+        except KeyError:
+            return error_response("not_found", "Session or subtitle document not found.", 404)
+
+    @app.post("/api/v1/sessions/<session_id>/subtitles/<stage>/review")
+    @require_auth
+    def subtitle_save_review(session_id: str, stage: str):
+        payload = SubtitleReviewRequest.model_validate(request.get_json(silent=True) or {})
+        try:
+            result = subtitle_review.save_review(
+                session_id,
+                stage,
+                payload.expected_revision,
+                [item.model_dump() for item in payload.segments],
+            )
+        except KeyError:
+            return error_response("not_found", "Subtitle document not found.", 404)
+        except RuntimeError as error:
+            return error_response("revision_conflict", str(error), 409)
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
+        return jsonify(result), 201
 
     @app.post("/api/v1/jobs/<job_id>/cancel")
     @require_auth
@@ -521,12 +564,163 @@ def create_app(
             result = _model_dict(model, ("id", "provider_id", "model_id", "is_default", "default_temperature", "default_reasoning_effort", "input_cost_per_million", "cached_input_cost_per_million", "output_cost_per_million", "options_json", "revision"))
         return jsonify(result), 201
 
+    @app.get("/api/v1/providers/<provider_id>/models")
+    @require_auth
+    def model_list(provider_id: str):
+        with database.session() as db_session:
+            if db_session.get(Provider, provider_id) is None:
+                return error_response("not_found", "Provider not found.", 404)
+            records = list(db_session.scalars(select(ProviderModel).where(ProviderModel.provider_id == provider_id).order_by(ProviderModel.model_id)).all())
+            return jsonify({"items": [_model_dict(item, ("id", "provider_id", "model_id", "is_default", "default_temperature", "default_reasoning_effort", "input_cost_per_million", "cached_input_cost_per_million", "output_cost_per_million", "options_json", "revision")) for item in records]})
+
+    @app.patch("/api/v1/providers/<provider_id>/models/<model_record_id>")
+    @require_auth
+    def model_update(provider_id: str, model_record_id: str):
+        raw_etag = request.headers.get("If-Match", "").strip('W/" ')
+        try:
+            expected_revision = int(raw_etag)
+        except ValueError:
+            return error_response("precondition_required", "If-Match must contain the current model revision.", 428)
+        payload = ModelUpdate.model_validate(request.get_json(silent=True) or {})
+        with database.session() as db_session:
+            model = db_session.get(ProviderModel, model_record_id)
+            if model is None or model.provider_id != provider_id:
+                return error_response("not_found", "Model not found.", 404)
+            if model.revision != expected_revision:
+                return error_response("revision_conflict", "The model settings changed in another client.", 409)
+            changes = payload.model_dump(exclude_unset=True)
+            if changes.pop("is_default", False):
+                for existing in db_session.scalars(select(ProviderModel).where(ProviderModel.provider_id == provider_id)):
+                    existing.is_default = existing.id == model.id
+            if "options" in changes:
+                changes["options_json"] = changes.pop("options")
+            for key, value in changes.items():
+                setattr(model, key, value)
+            model.revision += 1
+            db_session.flush()
+            result = _model_dict(model, ("id", "provider_id", "model_id", "is_default", "default_temperature", "default_reasoning_effort", "input_cost_per_million", "cached_input_cost_per_million", "output_cost_per_million", "options_json", "revision"))
+        response = jsonify(result)
+        response.headers["ETag"] = f'"{result["revision"]}"'
+        return response
+
+    @app.delete("/api/v1/providers/<provider_id>/models/<model_record_id>")
+    @require_auth
+    def model_delete(provider_id: str, model_record_id: str):
+        replacement_id = str((request.get_json(silent=True) or {}).get("replacement_model_id") or "")
+        with database.session() as db_session:
+            model = db_session.get(ProviderModel, model_record_id)
+            if model is None or model.provider_id != provider_id:
+                return error_response("not_found", "Model not found.", 404)
+            if model.is_default:
+                replacement = db_session.scalar(select(ProviderModel).where(ProviderModel.provider_id == provider_id, ProviderModel.model_id == replacement_id)) if replacement_id else None
+                if replacement is None or replacement.id == model.id:
+                    return error_response("replacement_required", "Select a replacement before deleting the active default model.", 409)
+                replacement.is_default = True
+            db_session.delete(model)
+        return "", 204
+
+    @app.post("/api/v1/providers/<provider_id>/models/refresh")
+    @require_auth
+    def model_refresh(provider_id: str):
+        from pandrator.logic.llm_handler import _detect_models_for_builtin_provider
+
+        with database.session() as db_session:
+            provider = db_session.get(Provider, provider_id)
+            if provider is None:
+                return error_response("not_found", "Provider not found.", 404)
+            existing = list(db_session.scalars(select(ProviderModel).where(ProviderModel.provider_id == provider_id)).all())
+            detected = _detect_models_for_builtin_provider({
+                "provider": provider.provider_key,
+                "api_base": provider.base_url,
+                "api_key_env": str((provider.options_json or {}).get("api_key_env") or ""),
+                "models": [item.model_id for item in existing],
+            })
+            known = {item.model_id for item in existing}
+            added = []
+            for model_id in detected:
+                if model_id in known:
+                    continue
+                model = ProviderModel(provider_id=provider_id, model_id=model_id, is_default=not existing and not added)
+                db_session.add(model)
+                added.append(model_id)
+            return jsonify({"detected": detected, "added": added, "preserved": sorted(known)})
+
     @app.get("/api/v1/voices")
     @require_auth
     def voice_list():
         with database.session() as db_session:
             records = list(db_session.scalars(select(Voice).order_by(Voice.name)).all())
             return jsonify({"items": [_model_dict(item, ("id", "name", "language", "description", "rvc_model_ref", "metadata_json", "revision")) for item in records]})
+
+    @app.post("/api/v1/voices")
+    @require_auth
+    def voice_create():
+        payload = VoiceCreate.model_validate(request.get_json(silent=True) or {})
+        with database.session() as db_session:
+            if db_session.scalar(select(Voice).where(Voice.name == payload.name)) is not None:
+                return error_response("already_exists", "A voice with that name already exists.", 409)
+            voice = Voice(name=payload.name, language=payload.language, description=payload.description)
+            db_session.add(voice)
+            db_session.flush()
+            result = _model_dict(voice, ("id", "name", "language", "description", "rvc_model_ref", "metadata_json", "revision"))
+        return jsonify(result), 201
+
+    @app.get("/api/v1/voices/<voice_id>/samples")
+    @require_auth
+    def voice_sample_list(voice_id: str):
+        with database.session() as db_session:
+            if db_session.get(Voice, voice_id) is None:
+                return error_response("not_found", "Voice not found.", 404)
+            records = list(db_session.scalars(select(VoiceSample).where(VoiceSample.voice_id == voice_id).order_by(VoiceSample.created_at.desc())).all())
+            return jsonify({"items": [_model_dict(item, ("id", "voice_id", "artifact_id", "transcript", "transcript_language", "transcript_reviewed", "created_at")) for item in records]})
+
+    @app.post("/api/v1/voices/<voice_id>/samples")
+    @require_auth
+    def voice_sample_upload(voice_id: str):
+        incoming = request.files.get("file")
+        if incoming is None or not incoming.filename:
+            return error_response("missing_file", "An audio recording is required.", 400)
+        with database.session() as db_session:
+            if db_session.get(Voice, voice_id) is None:
+                return error_response("not_found", "Voice not found.", 404)
+        suffix = Path(secure_filename(incoming.filename)).suffix or ".webm"
+        temporary = paths.temporary / f"voice-{uuid.uuid4()}{suffix}"
+        incoming.save(temporary)
+        source_artifact = artifacts.register(temporary, kind="audio", role="recording_upload")
+        job = jobs.enqueue(
+            "voice.normalize_recording",
+            {"voice_id": voice_id, "source_artifact_id": source_artifact.id, "ffmpeg_executable": shutil.which("ffmpeg") or "ffmpeg"},
+        )
+        return jsonify(_job_payload(job)), 202
+
+    @app.post("/api/v1/voices/<voice_id>/samples/<sample_id>/transcribe")
+    @require_auth
+    def voice_sample_transcribe(voice_id: str, sample_id: str):
+        settings = request.get_json(silent=True) or {}
+        with database.session() as db_session:
+            sample = db_session.get(VoiceSample, sample_id)
+            if sample is None or sample.voice_id != voice_id:
+                return error_response("not_found", "Voice sample not found.", 404)
+            artifact_id = sample.artifact_id
+        job = jobs.enqueue(
+            "voice.transcribe",
+            {"voice_id": voice_id, "sample_id": sample_id, "sample_artifact_id": artifact_id, "settings": settings},
+        )
+        return jsonify(_job_payload(job)), 202
+
+    @app.patch("/api/v1/voices/<voice_id>/samples/<sample_id>/transcript")
+    @require_auth
+    def voice_sample_transcript(voice_id: str, sample_id: str):
+        payload = VoiceTranscriptReview.model_validate(request.get_json(silent=True) or {})
+        with database.session() as db_session:
+            sample = db_session.get(VoiceSample, sample_id)
+            if sample is None or sample.voice_id != voice_id:
+                return error_response("not_found", "Voice sample not found.", 404)
+            sample.transcript = payload.transcript
+            sample.transcript_language = payload.language
+            sample.transcript_reviewed = True
+            result = _model_dict(sample, ("id", "voice_id", "artifact_id", "transcript", "transcript_language", "transcript_reviewed", "created_at"))
+        return jsonify(result)
 
     @app.get("/_app/<path:asset_path>")
     def frontend_asset(asset_path: str):

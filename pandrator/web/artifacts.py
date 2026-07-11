@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import mimetypes
 from pathlib import Path
 from typing import BinaryIO
@@ -50,12 +51,34 @@ class ArtifactService:
         parent_ids: list[str] | None = None,
         calculate_hash: bool = True,
         metadata: dict | None = None,
+        settings: dict | None = None,
     ) -> Artifact:
         relative_path = self.paths.relative_managed_path(path)
         stat = path.stat()
         content_hash = sha256_file(path) if calculate_hash else None
+        settings_hash = (
+            hashlib.sha256(
+                json.dumps(settings, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+            ).hexdigest()
+            if settings is not None
+            else None
+        )
         mime_type = mimetypes.guess_type(path.name)[0]
         with self.database.session() as session:
+            replaced = list(
+                session.scalars(
+                    select(Artifact).where(
+                        Artifact.session_id == session_id,
+                        Artifact.role == role,
+                        Artifact.state == "current",
+                        Artifact.relative_path != relative_path,
+                    )
+                ).all()
+            ) if session_id and role != "upload" else []
+            for previous in replaced:
+                previous.state = "stale"
+                self._mark_descendants_stale(session, previous.id)
+
             artifact = session.scalar(select(Artifact).where(Artifact.relative_path == relative_path))
             if artifact is None:
                 artifact = Artifact(
@@ -66,6 +89,7 @@ class ArtifactService:
                     mime_type=mime_type,
                     size_bytes=stat.st_size,
                     content_hash=content_hash,
+                    settings_hash=settings_hash,
                     metadata_json=metadata or {},
                 )
                 session.add(artifact)
@@ -77,6 +101,8 @@ class ArtifactService:
                 artifact.mime_type = mime_type
                 artifact.size_bytes = stat.st_size
                 artifact.content_hash = content_hash or artifact.content_hash
+                artifact.settings_hash = settings_hash or artifact.settings_hash
+                artifact.state = "current"
                 artifact.metadata_json = metadata or artifact.metadata_json
                 artifact.updated_at = utcnow()
 
@@ -87,6 +113,33 @@ class ArtifactService:
             session.flush()
             session.expunge(artifact)
             return artifact
+
+    @staticmethod
+    def _mark_descendants_stale(session, artifact_id: str) -> None:
+        """Invalidate derived artifacts while preserving every file for review."""
+        pending = [artifact_id]
+        visited: set[str] = set()
+        while pending:
+            parent_id = pending.pop()
+            if parent_id in visited:
+                continue
+            visited.add(parent_id)
+            child_ids = list(
+                session.scalars(
+                    select(ArtifactEdge.child_artifact_id).where(ArtifactEdge.parent_artifact_id == parent_id)
+                ).all()
+            )
+            for child_id in child_ids:
+                child = session.get(Artifact, child_id)
+                if child is not None and child.state == "current":
+                    child.state = "stale"
+                pending.append(child_id)
+
+    def invalidate_descendants(self, artifact_id: str) -> None:
+        with self.database.session() as session:
+            if session.get(Artifact, artifact_id) is None:
+                raise KeyError(artifact_id)
+            self._mark_descendants_stale(session, artifact_id)
 
     def resolve(self, artifact_id: str) -> tuple[Artifact, Path]:
         with self.database.session() as session:
