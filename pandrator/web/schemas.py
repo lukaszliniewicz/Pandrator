@@ -134,6 +134,15 @@ class SettingUpdate(StrictModel):
     value: Any
 
 
+class BundleExportRequest(StrictModel):
+    include_sources: bool = True
+
+
+class BundleImportRequest(StrictModel):
+    source_artifact_id: str
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+
+
 SCHEMA_MODELS = {
     model.__name__: model
     for model in (
@@ -156,5 +165,7 @@ SCHEMA_MODELS = {
         VoiceCreate,
         VoiceTranscriptReview,
         SettingUpdate,
+        BundleExportRequest,
+        BundleImportRequest,
     )
 }

@@ -32,7 +32,7 @@ from .jobs import JobQueue
 from .legacy_migration import import_legacy_data
 from .models import AppSetting, AppSettingHistory, Artifact, Provider, ProviderModel, SessionRecord, SourceRecord, Voice, VoiceSample, utcnow
 from .openapi import build_openapi_document
-from .schemas import BootstrapRequest, JobCreate, LoginRequest, ModelCreate, ModelUpdate, PdfEditRequest, ProviderCreate, SessionCreate, SessionUpdate, SettingUpdate, SubtitleReviewRequest, TokenCreateRequest, VoiceCreate, VoiceTranscriptReview
+from .schemas import BootstrapRequest, BundleExportRequest, BundleImportRequest, JobCreate, LoginRequest, ModelCreate, ModelUpdate, PdfEditRequest, ProviderCreate, SessionCreate, SessionUpdate, SettingUpdate, SubtitleReviewRequest, TokenCreateRequest, VoiceCreate, VoiceTranscriptReview
 from .sessions import RevisionConflict, SessionService
 from .subtitle_review import SubtitleReviewService
 from .workflows import WorkflowService
@@ -368,6 +368,28 @@ def create_app(
         response = jsonify(_session_payload(record))
         response.headers["ETag"] = f'"{record.revision}"'
         return response
+
+    @app.post("/api/v1/sessions/<session_id>/bundle")
+    @require_auth
+    def session_bundle_export(session_id: str):
+        payload = BundleExportRequest.model_validate(request.get_json(silent=True) or {})
+        try:
+            sessions.get(session_id)
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
+        job = jobs.enqueue("session.bundle.export", {"session_id": session_id, "include_sources": payload.include_sources}, session_id=session_id)
+        return jsonify(_job_payload(job)), 202
+
+    @app.post("/api/v1/session-bundles/import")
+    @require_auth
+    def session_bundle_import():
+        payload = BundleImportRequest.model_validate(request.get_json(silent=True) or {})
+        try:
+            artifacts.resolve(payload.source_artifact_id)
+        except KeyError:
+            return error_response("not_found", "Bundle artifact not found.", 404)
+        job = jobs.enqueue("session.bundle.import", payload.model_dump())
+        return jsonify(_job_payload(job)), 202
 
     @app.get("/api/v1/jobs")
     @require_auth

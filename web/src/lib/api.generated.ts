@@ -244,6 +244,22 @@ export interface paths {
         patch: operations["updateProviderModel"];
         trace?: never;
     };
+    "/api/v1/session-bundles/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["importSessionBundle"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions": {
         parameters: {
             query?: never;
@@ -274,6 +290,22 @@ export interface paths {
         options?: never;
         head?: never;
         patch: operations["updateSession"];
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/bundle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["exportSessionBundle"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/sessions/{sessionId}/pdf/apply": {
@@ -428,6 +460,24 @@ export interface components {
         BootstrapRequest: {
             /** Token */
             token: string;
+        };
+        /** BundleExportRequest */
+        BundleExportRequest: {
+            /**
+             * Include Sources
+             * @default true
+             */
+            include_sources: boolean;
+        };
+        /** BundleImportRequest */
+        BundleImportRequest: {
+            /**
+             * Name
+             * @default null
+             */
+            name: string | null;
+            /** Source Artifact Id */
+            source_artifact_id: string;
         };
         /** ErrorBody */
         ErrorBody: {
@@ -1196,6 +1246,28 @@ export interface operations {
             };
         };
     };
+    importSessionBundle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BundleImportRequest"];
+            };
+        };
+        responses: {
+            /** @description Queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     listSessions: {
         parameters: {
             query?: never;
@@ -1282,6 +1354,28 @@ export interface operations {
             };
             /** @description Revision conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    exportSessionBundle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BundleExportRequest"];
+            };
+        };
+        responses: {
+            /** @description Queued */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
