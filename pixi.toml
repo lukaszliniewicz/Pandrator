@@ -6,9 +6,18 @@ platforms = ["win-64", "linux-64"]
 [dependencies]
 python = "3.11.*"
 numpy = "==1.26.4"
+flask = ">=3.1,<4"
+sqlalchemy = ">=2.0,<3"
+alembic = ">=1.14,<2"
+pydantic = ">=2.10,<3"
+argon2-cffi = ">=23.1,<26"
+waitress = ">=3.0,<4"
 
 [tasks]
 test-dubbing = "python -m unittest tests.test_dubbing_subtitle_logic tests.test_dubbing_speech_blocks_integration tests.test_dubbing_llm_correction tests.test_dubbing_llm_translation tests.test_dubbing_transcription tests.test_dubbing_audio_sync tests.test_dubbing_boundary_correction tests.test_dubbing_manual_timing tests.test_dubbing_run_usage tests.test_dubbing_status_definitions tests.test_dubbing_artifacts tests.test_dubbing_credentials tests.test_dubbing_settings tests.test_llm_handler tests.test_state_db_handler"
+serve-web = "python -m pandrator serve"
+run-worker = "python -m pandrator worker"
+test-web-foundation = "python -m unittest tests.test_web_foundation tests.test_web_supervisor"
 
 [feature.smoke.dependencies]
 ffmpeg = "*"
@@ -28,6 +37,15 @@ packaging = "*"
 [feature.gui-tests.tasks]
 test-dubbing-ui = { cmd = "python -m unittest tests.test_dubbing_ui", env = { QT_QPA_PLATFORM = "offscreen" } }
 
+[feature.web-build.dependencies]
+nodejs = ">=24,<25"
+
+[feature.web-build.tasks]
+web-install = { cmd = "npm install", cwd = "web" }
+web-check = { cmd = "npm run check", cwd = "web", depends-on = ["web-install"] }
+web-build = { cmd = "npm run build", cwd = "web", depends-on = ["web-install"] }
+
 [environments]
 smoke = ["smoke"]
 gui-tests = ["gui-tests"]
+web-build = ["web-build"]

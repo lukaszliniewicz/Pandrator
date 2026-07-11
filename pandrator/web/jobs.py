@@ -1,0 +1,270 @@
+"""SQLite-backed durable jobs and worker execution."""
+
+from __future__ import annotations
+
+import logging
+import threading
+import time
+import traceback
+from collections.abc import Callable
+from datetime import timedelta
+from typing import Any
+
+from sqlalchemy import and_, or_, select
+
+from .database import Database
+from .models import Job, JobEvent, utcnow
+
+
+JobHandler = Callable[[dict[str, Any], Callable[[float, str | None], None], threading.Event], dict[str, Any] | None]
+
+
+class JobQueue:
+    def __init__(self, database: Database):
+        self.database = database
+
+    def _event(self, session, job_id: str | None, event_type: str, payload: dict | None = None) -> JobEvent:
+        event = JobEvent(job_id=job_id, event_type=event_type, payload_json=payload or {})
+        session.add(event)
+        return event
+
+    def enqueue(
+        self,
+        kind: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        session_id: str | None = None,
+        workflow_run_id: str | None = None,
+        max_attempts: int = 1,
+    ) -> Job:
+        job = Job(
+            kind=kind,
+            payload_json=payload or {},
+            session_id=session_id,
+            workflow_run_id=workflow_run_id,
+            max_attempts=max(1, int(max_attempts)),
+        )
+        with self.database.session() as session:
+            session.add(job)
+            session.flush()
+            self._event(session, job.id, "job.queued", {"kind": kind, "session_id": session_id})
+            session.flush()
+            session.expunge(job)
+            return job
+
+    def list(self, limit: int = 100) -> list[Job]:
+        with self.database.session() as session:
+            jobs = list(session.scalars(select(Job).order_by(Job.created_at.desc()).limit(max(1, min(limit, 500)))).all())
+            for job in jobs:
+                session.expunge(job)
+            return jobs
+
+    def get(self, job_id: str) -> Job:
+        with self.database.session() as session:
+            job = session.get(Job, job_id)
+            if job is None:
+                raise KeyError(job_id)
+            session.expunge(job)
+            return job
+
+    def claim(self, worker_id: str, lease_seconds: int = 30) -> Job | None:
+        now = utcnow()
+        with self.database.session() as session:
+            running_session_ids = select(Job.session_id).where(
+                Job.status == "running",
+                Job.session_id.is_not(None),
+                Job.lease_expires_at.is_not(None),
+                Job.lease_expires_at > now,
+            )
+            statement = (
+                select(Job)
+                .where(
+                    or_(
+                        Job.status == "queued",
+                        and_(Job.status == "running", Job.lease_expires_at <= now),
+                    ),
+                    or_(Job.session_id.is_(None), Job.session_id.not_in(running_session_ids)),
+                    Job.attempts < Job.max_attempts,
+                )
+                .order_by(Job.created_at.asc())
+                .limit(1)
+            )
+            job = session.scalar(statement)
+            if job is None:
+                return None
+            reclaimed = job.status == "running"
+            job.status = "running"
+            job.lease_owner = worker_id
+            job.lease_expires_at = now + timedelta(seconds=max(5, lease_seconds))
+            job.attempts += 1
+            job.started_at = job.started_at or now
+            job.updated_at = now
+            self._event(session, job.id, "job.reclaimed" if reclaimed else "job.started", {"worker_id": worker_id})
+            session.flush()
+            session.expunge(job)
+            return job
+
+    def heartbeat(self, job_id: str, worker_id: str, *, progress: float | None = None, detail: str | None = None, lease_seconds: int = 30) -> bool:
+        now = utcnow()
+        with self.database.session() as session:
+            job = session.get(Job, job_id)
+            if job is None or job.status != "running" or job.lease_owner != worker_id:
+                return False
+            job.lease_expires_at = now + timedelta(seconds=max(5, lease_seconds))
+            job.updated_at = now
+            payload: dict[str, Any] = {}
+            if progress is not None:
+                job.progress = max(0.0, min(1.0, float(progress)))
+                payload["progress"] = job.progress
+            if detail:
+                payload["detail"] = detail
+            if payload:
+                self._event(session, job.id, "job.progress", payload)
+            return True
+
+    def should_cancel(self, job_id: str, worker_id: str) -> bool:
+        with self.database.session() as session:
+            job = session.get(Job, job_id)
+            return bool(job and job.lease_owner == worker_id and job.status == "cancel_requested")
+
+    def request_cancel(self, job_id: str) -> Job:
+        with self.database.session() as session:
+            job = session.get(Job, job_id)
+            if job is None:
+                raise KeyError(job_id)
+            if job.status == "queued":
+                job.status = "canceled"
+                job.finished_at = utcnow()
+                event_type = "job.canceled"
+            elif job.status == "running":
+                job.status = "cancel_requested"
+                event_type = "job.cancel_requested"
+            else:
+                event_type = "job.cancel_ignored"
+            job.updated_at = utcnow()
+            self._event(session, job.id, event_type)
+            session.flush()
+            session.expunge(job)
+            return job
+
+    def complete(self, job_id: str, worker_id: str, result: dict[str, Any] | None = None) -> None:
+        with self.database.session() as session:
+            job = session.get(Job, job_id)
+            if job is None or job.lease_owner != worker_id:
+                raise RuntimeError("Job lease is no longer owned by this worker.")
+            job.status = "succeeded"
+            job.progress = 1.0
+            job.result_json = result or {}
+            job.lease_owner = None
+            job.lease_expires_at = None
+            job.finished_at = utcnow()
+            job.updated_at = job.finished_at
+            self._event(session, job.id, "job.succeeded", job.result_json)
+
+    def fail(self, job_id: str, worker_id: str, code: str, message: str, *, trace: str | None = None) -> None:
+        with self.database.session() as session:
+            job = session.get(Job, job_id)
+            if job is None or job.lease_owner != worker_id:
+                return
+            retry = job.attempts < job.max_attempts
+            job.status = "queued" if retry else "failed"
+            job.error_code = code
+            job.error_message = message
+            job.lease_owner = None
+            job.lease_expires_at = None
+            job.finished_at = None if retry else utcnow()
+            job.updated_at = utcnow()
+            self._event(
+                session,
+                job.id,
+                "job.retry_scheduled" if retry else "job.failed",
+                {"code": code, "message": message, "trace": trace or ""},
+            )
+
+    def cancel_owned(self, job_id: str, worker_id: str) -> None:
+        with self.database.session() as session:
+            job = session.get(Job, job_id)
+            if job is None or job.lease_owner != worker_id:
+                return
+            job.status = "canceled"
+            job.lease_owner = None
+            job.lease_expires_at = None
+            job.finished_at = utcnow()
+            job.updated_at = job.finished_at
+            self._event(session, job.id, "job.canceled")
+
+    def events_after(self, event_id: int = 0, limit: int = 250) -> list[JobEvent]:
+        with self.database.session() as session:
+            events = list(
+                session.scalars(
+                    select(JobEvent).where(JobEvent.id > max(0, event_id)).order_by(JobEvent.id.asc()).limit(limit)
+                ).all()
+            )
+            for event in events:
+                session.expunge(event)
+            return events
+
+
+class Worker:
+    def __init__(self, queue: JobQueue, worker_id: str, handlers: dict[str, JobHandler] | None = None):
+        self.queue = queue
+        self.worker_id = worker_id
+        self.handlers = handlers or {}
+        self.stop_event = threading.Event()
+
+    def register(self, kind: str, handler: JobHandler) -> None:
+        self.handlers[kind] = handler
+
+    def stop(self) -> None:
+        self.stop_event.set()
+
+    def run_once(self) -> bool:
+        job = self.queue.claim(self.worker_id)
+        if job is None:
+            return False
+        handler = self.handlers.get(job.kind)
+        if handler is None:
+            self.queue.fail(job.id, self.worker_id, "unknown_job_kind", f"No handler is registered for '{job.kind}'.")
+            return True
+
+        cancel_event = threading.Event()
+
+        def progress(value: float, detail: str | None = None) -> None:
+            if self.queue.should_cancel(job.id, self.worker_id):
+                cancel_event.set()
+            self.queue.heartbeat(job.id, self.worker_id, progress=value, detail=detail)
+
+        try:
+            result = handler(job.payload_json, progress, cancel_event)
+            if cancel_event.is_set() or self.queue.should_cancel(job.id, self.worker_id):
+                self.queue.cancel_owned(job.id, self.worker_id)
+            else:
+                self.queue.complete(job.id, self.worker_id, result)
+        except Exception as error:
+            logging.exception("Worker job %s failed", job.id)
+            self.queue.fail(
+                job.id,
+                self.worker_id,
+                type(error).__name__,
+                str(error),
+                trace=traceback.format_exc(),
+            )
+        return True
+
+    def run_forever(self, poll_interval: float = 0.5) -> None:
+        while not self.stop_event.is_set():
+            if not self.run_once():
+                self.stop_event.wait(max(0.05, poll_interval))
+
+
+def noop_handler(payload: dict[str, Any], progress, cancel_event: threading.Event) -> dict[str, Any]:
+    duration = max(0.0, min(float(payload.get("duration", 0.0) or 0.0), 30.0))
+    if duration:
+        steps = max(1, int(duration * 4))
+        for index in range(steps):
+            if cancel_event.is_set():
+                break
+            time.sleep(duration / steps)
+            progress((index + 1) / steps, "Checking the worker pipeline")
+    return {"echo": payload.get("echo"), "worker": "ready"}
+
