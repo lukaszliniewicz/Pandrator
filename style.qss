@@ -463,3 +463,114 @@ QPushButton#generateDubAudioButton[accentActive="true"]:disabled {
     border: 1px solid #3f454c;
     color: #9aa1aa;
 }
+
+QDialog#startupWizard {
+    background-color: #29292d;
+}
+
+QLabel#wizardLead {
+    color: #c9c4d3;
+    font-size: 14px;
+    padding-bottom: 4px;
+}
+
+QLabel#wizardEyebrow {
+    color: #a98ee6;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    padding-top: 5px;
+}
+
+QLabel#wizardSectionTitle {
+    color: #f5f2fb;
+    font-size: 18px;
+    font-weight: 700;
+}
+
+QLabel#wizardCardTitle {
+    color: #f5f2fb;
+    font-size: 14px;
+    font-weight: 700;
+}
+
+QLabel#wizardSectionBody {
+    color: #bbb5c5;
+    font-size: 12px;
+}
+
+QCommandLinkButton#wizardTile {
+    background-color: #343438;
+    border: 1px solid #50505a;
+    border-radius: 10px;
+    color: #f3effb;
+    padding: 12px 14px;
+    text-align: left;
+}
+
+QCommandLinkButton#wizardTile:hover {
+    background-color: #3d3947;
+    border-color: #8f73cf;
+}
+
+QCommandLinkButton#wizardTile:checked {
+    background-color: #44375d;
+    border: 2px solid #a98ee6;
+}
+
+QCommandLinkButton#wizardTile:disabled {
+    background-color: #303034;
+    border-color: #3f3f46;
+    color: #77727f;
+}
+
+QFrame#wizardInfoCard {
+    background-color: #343438;
+    border: 1px solid #4d4d57;
+    border-radius: 10px;
+}
+
+QScrollArea#wizardSetupScroll,
+QScrollArea#wizardSetupScroll > QWidget > QWidget {
+    background: transparent;
+    border: none;
+}
+
+QListWidget#wizardSessionList {
+    background-color: transparent;
+    border: none;
+    outline: none;
+}
+
+QListWidget#wizardSessionList::item {
+    background-color: #343438;
+    border: 1px solid #484852;
+    border-radius: 8px;
+    color: #ece8f3;
+    padding: 8px 12px;
+}
+
+QListWidget#wizardSessionList::item:hover {
+    background-color: #3d3947;
+    border-color: #745e9f;
+}
+
+QListWidget#wizardSessionList::item:selected {
+    background-color: #493a63;
+    border: 1px solid #a98ee6;
+}
+
+QPushButton#returnToWizardButton {
+    background-color: #7e57c2;
+    border: 1px solid #b39ddb;
+    border-radius: 20px;
+    color: white;
+    font-weight: 700;
+    min-height: 38px;
+    padding: 2px 18px;
+}
+
+QPushButton#returnToWizardButton:hover {
+    background-color: #9575cd;
+    border-color: #d1c4e9;
+}
