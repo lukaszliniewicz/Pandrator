@@ -144,10 +144,12 @@ class ProcessSupervisor:
         data_root: str | os.PathLike[str],
         specs: list[ManagedProcessSpec],
         status_callback=None,
+        ready_callback=None,
     ):
         self.data_root = Path(data_root).expanduser().resolve()
         self.specs = list(specs)
         self.status_callback = status_callback or (lambda _message: None)
+        self.ready_callback = ready_callback or (lambda: None)
         self.lock = InstanceLock(self.data_root / "pandrator.instance.lock")
         self.processes: dict[str, ManagedProcess] = {}
         self.stop_event = threading.Event()
@@ -248,6 +250,7 @@ class ProcessSupervisor:
                         raise
                     logging.exception("Optional managed process %s failed to start", spec.key)
             self._write_state()
+            self.ready_callback()
         except Exception:
             self.stop_all()
             raise
