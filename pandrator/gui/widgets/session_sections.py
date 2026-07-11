@@ -70,12 +70,14 @@ class SessionControlsSection(QFrame):
 
         self.new_session_button = QPushButton("New Session")
         self.load_session_button = QPushButton("Load Session")
+        self.open_wizard_button = QPushButton("Open Wizard")
         self.view_session_folder_button = QPushButton("View Session Folder")
         self.delete_session_button = QPushButton("Delete Session")
         self.delete_session_button.setObjectName("dangerButton")
 
         layout.addWidget(self.new_session_button)
         layout.addWidget(self.load_session_button)
+        layout.addWidget(self.open_wizard_button)
         layout.addWidget(self.view_session_folder_button)
         layout.addWidget(self.delete_session_button)
 
@@ -899,6 +901,70 @@ class DubbingSection(QFrame):
         layout = QVBoxLayout(self)
         layout.setSpacing(8)
 
+        workflow_header = QHBoxLayout()
+        self.workflow_mode_label = QLabel("Subtitles · Custom")
+        self.workflow_mode_label.setObjectName("subSectionLabel")
+        self.change_workflow_button = QPushButton("Change Workflow")
+        workflow_header.addWidget(self.workflow_mode_label)
+        workflow_header.addStretch(1)
+        workflow_header.addWidget(self.change_workflow_button)
+        layout.addLayout(workflow_header)
+
+        self.workflow_hint_label = QLabel(
+            "Run a stage on its own, or include it so Generate Dubbing Audio completes missing prerequisites automatically."
+        )
+        self.workflow_hint_label.setWordWrap(True)
+        self.workflow_hint_label.setObjectName("secondaryInfoLabel")
+        layout.addWidget(self.workflow_hint_label)
+
+        self.stage_cards: dict[str, dict[str, QWidget]] = {}
+        stage_definitions = (
+            ("transcribe", "Transcribe", "Create timed subtitles from the selected audio or video."),
+            ("correct", "Correct", "Clean punctuation, spelling, filler, and subtitle segmentation with an LLM."),
+            ("translate", "Translate", "Create a separate translated subtitle artifact."),
+            ("preview", "Preview", "Compare source, corrected, and translated subtitles; review timing and edits."),
+            ("generate_audio", "Generate Dubbing Audio", "Build speech blocks and synthesize the selected subtitle track."),
+            ("export", "Export", "Export subtitles, audio, or a video with soft or burned subtitle tracks."),
+        )
+        for number, (stage, title, description) in enumerate(stage_definitions, start=1):
+            card = QFrame()
+            card.setObjectName("workflowStageCard")
+            card_layout = QGridLayout(card)
+            number_label = QLabel(str(number))
+            number_label.setObjectName("workflowStageNumber")
+            title_label = QLabel(title)
+            title_label.setObjectName("subSectionLabel")
+            description_label = QLabel(description)
+            description_label.setWordWrap(True)
+            description_label.setObjectName("secondaryInfoLabel")
+            status_label = QLabel("Ready")
+            status_label.setObjectName("taskStageBadge")
+            include_check = QCheckBox("Include when continuing")
+            settings_button = QPushButton("Settings")
+            run_button = QPushButton("Run Now")
+            card_layout.addWidget(number_label, 0, 0, 2, 1)
+            card_layout.addWidget(title_label, 0, 1)
+            card_layout.addWidget(status_label, 0, 2)
+            card_layout.addWidget(description_label, 1, 1, 1, 2)
+            card_layout.addWidget(include_check, 2, 1)
+            actions = QHBoxLayout()
+            actions.addWidget(settings_button)
+            actions.addWidget(run_button)
+            actions.addStretch(1)
+            card_layout.addLayout(actions, 2, 2)
+            layout.addWidget(card)
+            self.stage_cards[stage] = {
+                "frame": card,
+                "number": number_label,
+                "status": status_label,
+                "include": include_check,
+                "settings": settings_button,
+                "run": run_button,
+            }
+
+        self.stage_cards["preview"]["include"].setVisible(False)
+        self.stage_cards["export"]["include"].setVisible(False)
+
         self.transcription_heading = QLabel("Transcription Options")
         self.transcription_heading.setObjectName("subSectionLabel")
         layout.addWidget(self.transcription_heading)
@@ -1059,6 +1125,14 @@ class DubbingSection(QFrame):
         buttons_layout.addWidget(self.add_dub_to_video_button)
         buttons_layout.addWidget(self.generate_dub_audio_button)
 
+        # Detailed controls remain available through each stage's Settings action.
+        self.transcription_heading.setVisible(False)
+        self.transcription_frame.setVisible(False)
+        self.translation_heading.setVisible(False)
+        self.dub_translate_check.setVisible(False)
+        self.translation_frame.setVisible(False)
+        self.buttons_frame.setVisible(False)
+
     def set_stt_backend(self, backend: str):
         selected_is_whisperx = normalize_stt_backend(backend) == STT_BACKEND_WHISPERX
         self.dub_whisper_model_label.setVisible(selected_is_whisperx)
@@ -1093,18 +1167,51 @@ class DubbingSection(QFrame):
             translation_model,
         )
 
+    def update_workflow(self, snapshot: dict):
+        kind = str(snapshot.get("workflow_kind") or "subtitles").replace("_", " ").title()
+        preset = str(snapshot.get("workflow_preset") or "custom").replace("_", " ").title()
+        self.workflow_mode_label.setText(f"{kind} · {preset}")
+        applicable = list(snapshot.get("applicable_stages") or [])
+        included = set(snapshot.get("included_stages") or [])
+        states = snapshot.get("states") if isinstance(snapshot.get("states"), dict) else {}
+        visible_number = 0
+        labels = {
+            "ready": "Ready",
+            "running": "Running",
+            "completed": "Completed",
+            "stale": "Needs rerun",
+            "failed": "Failed",
+            "unavailable": "Unavailable",
+        }
+        for stage, widgets in self.stage_cards.items():
+            visible = stage in applicable
+            widgets["frame"].setVisible(visible)
+            if not visible:
+                continue
+            visible_number += 1
+            widgets["number"].setText(str(visible_number))
+            include = widgets["include"]
+            include.blockSignals(True)
+            include.setChecked(stage in included)
+            include.blockSignals(False)
+            state = str(states.get(stage) or "ready")
+            status = widgets["status"]
+            status.setText(labels.get(state, state.title()))
+            status.setProperty("stepState", state)
+            if status.style() is not None:
+                status.style().unpolish(status)
+                status.style().polish(status)
+            widgets["run"].setEnabled(state != "running")
+
 
 class TaskStatusPanel(QFrame):
     DUBBING_STAGE_DEFINITIONS = (
         ("transcribe", "Transcribe"),
         ("correct", "Correct"),
         ("translate", "Translate"),
-        ("manual_timing", "Manual Timing"),
-        ("speech_blocks", "Speech Blocks"),
-        ("tts_generation", "Generate Audio"),
-        ("sync", "Sync"),
-        ("equalize", "Equalize"),
-        ("render", "Render"),
+        ("preview", "Preview"),
+        ("generate_audio", "Generate Audio"),
+        ("export", "Export"),
     )
 
     def __init__(self, parent=None):
@@ -1177,7 +1284,7 @@ class TaskStatusPanel(QFrame):
         normalized_states = stage_states if isinstance(stage_states, dict) else {}
         for stage_key, badge in self._stage_badges.items():
             state = str(normalized_states.get(stage_key) or "pending").strip().lower()
-            if state not in {"pending", "running", "completed", "failed"}:
+            if state not in {"pending", "ready", "running", "completed", "stale", "failed", "unavailable"}:
                 state = "pending"
 
             if badge.property("stepState") != state:

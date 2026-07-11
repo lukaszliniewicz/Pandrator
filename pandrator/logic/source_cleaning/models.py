@@ -164,7 +164,7 @@ class CleaningResult:
 
 @dataclass
 class PhaseResult:
-    """Outcome of a single pipeline phase."""
+    """Outcome and auditable evidence of a single pipeline phase."""
 
     phase_name: str
     phase_description: str
@@ -173,6 +173,12 @@ class PhaseResult:
     max_iterations: int = 0
     warnings: list[str] = field(default_factory=list)
     llm_usage: dict[str, Any] = field(default_factory=dict)
+    summary: str = ""
+    confidence: float = 0.0
+    tool_trace: list[dict[str, Any]] = field(default_factory=list)
+    finish_reviews: list[dict[str, Any]] = field(default_factory=list)
+    raw_final_command: dict[str, Any] = field(default_factory=dict)
+    llm_calls: list[dict[str, Any]] = field(default_factory=list)
     stopped: bool = False
 
     def to_dict(self) -> dict[str, Any]:

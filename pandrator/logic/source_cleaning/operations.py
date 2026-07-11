@@ -120,6 +120,20 @@ def apply_cleaning_operations(
             applied.append(_applied(index, operation, {"block_id": block.block_id, "title": title}))
             continue
 
+        if op == "unmark_chapter":
+            block = _resolve_operation_block(document, operation)
+            if block is None:
+                skipped.append({"index": index, "operation": operation, "reason": "chapter target not found"})
+                continue
+            if block.block_id not in chapter_marks:
+                skipped.append(
+                    {"index": index, "operation": operation, "reason": "chapter target is not currently marked"}
+                )
+                continue
+            chapter_marks.pop(block.block_id, None)
+            applied.append(_applied(index, operation, {"block_id": block.block_id, "unmarked_chapter": True}))
+            continue
+
         if op == "mark_chapters_by_selector":
             selector = operation.get("selector")
             if not isinstance(selector, dict) or not selector:

@@ -1,6 +1,11 @@
 import os
+import shutil
+import subprocess
+import tempfile
+import threading
+import time
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QTimer, QUrl, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -20,7 +25,16 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+try:
+    from PyQt6.QtMultimedia import QAudioInput, QMediaCaptureSession, QMediaDevices, QMediaRecorder
+except ImportError:  # pragma: no cover - optional runtime capability
+    QAudioInput = QMediaCaptureSession = QMediaDevices = QMediaRecorder = None
+
 from ...constants import LANGUAGE_DISPLAY_NAMES, XTTS_LANGUAGES
+from ...logic.dubbing.stt_backends import (
+    detect_stt_backend_statuses,
+    language_options_for_backend,
+)
 
 
 VOICE_UPLOAD_SERVICES = {"XTTS", "VoxCPM", "FishS2", "Chatterbox", "Qwen3 TTS"}
@@ -29,6 +43,9 @@ VOICE_LANGUAGE_DEFAULT_LABEL = "Use Current Service Language"
 
 
 class VoiceLibraryDialog(QDialog):
+    transcription_finished = pyqtSignal(object)
+    transcription_progress = pyqtSignal(int, int, str)
+
     def __init__(self, logic, parent=None):
         super().__init__(parent)
         self.logic = logic
@@ -36,10 +53,28 @@ class VoiceLibraryDialog(QDialog):
         self._updating_tables = False
 
         self.setWindowTitle("Manage Voices")
-        self.resize(1080, 680)
+        screen = self.screen() or (parent.screen() if parent is not None else None)
+        available = screen.availableGeometry() if screen is not None else None
+        if available is not None:
+            self.resize(min(1320, available.width()), max(680, available.height() - 40))
+        else:
+            self.resize(1180, 820)
+        self._stt_running = False
+        self._capture_session = None
+        self._audio_input = None
+        self._media_recorder = None
+        self._recorded_source_path = ""
+        self._recorded_wav_path = ""
+        self._recording_dir = tempfile.mkdtemp(prefix="pandrator_voice_recording_")
+        self._recording_started_at = 0.0
+        self._recording_timer = QTimer(self)
+        self._recording_timer.setInterval(250)
+        self._recording_timer.timeout.connect(self._update_recording_timer)
 
         self._build_ui()
         self._connect_signals()
+        self.transcription_finished.connect(self._on_transcription_finished)
+        self.transcription_progress.connect(self._on_transcription_progress)
         self.reload_library()
 
     def _build_ui(self):
@@ -157,12 +192,55 @@ class VoiceLibraryDialog(QDialog):
         sample_actions_layout = QHBoxLayout()
         self.add_sample_button = QPushButton("Add WAV Sample(s)")
         self.remove_sample_button = QPushButton("Remove Sample")
+        self.play_sample_button = QPushButton("Play")
+        self.stop_sample_button = QPushButton("Stop")
         self.upload_button = QPushButton("Upload")
         sample_actions_layout.addWidget(self.add_sample_button)
         sample_actions_layout.addWidget(self.remove_sample_button)
+        sample_actions_layout.addWidget(self.play_sample_button)
+        sample_actions_layout.addWidget(self.stop_sample_button)
         sample_actions_layout.addStretch(1)
         sample_actions_layout.addWidget(self.upload_button)
         right_layout.addLayout(sample_actions_layout)
+
+        stt_actions_layout = QHBoxLayout()
+        self.stt_backend_combo = QComboBox()
+        for backend, status in detect_stt_backend_statuses().items():
+            if status.installed:
+                self.stt_backend_combo.addItem(status.label, backend)
+        self.stt_language_combo = QComboBox()
+        self.transcribe_sample_button = QPushButton("Transcribe Selected")
+        self.transcribe_missing_button = QPushButton("Transcribe Missing")
+        stt_actions_layout.addWidget(QLabel("Local STT:"))
+        stt_actions_layout.addWidget(self.stt_backend_combo)
+        stt_actions_layout.addWidget(QLabel("Language:"))
+        stt_actions_layout.addWidget(self.stt_language_combo)
+        stt_actions_layout.addWidget(self.transcribe_sample_button)
+        stt_actions_layout.addWidget(self.transcribe_missing_button)
+        right_layout.addLayout(stt_actions_layout)
+
+        recording_layout = QHBoxLayout()
+        self.microphone_combo = QComboBox()
+        if QMediaDevices is not None:
+            for device in QMediaDevices.audioInputs():
+                self.microphone_combo.addItem(device.description(), device)
+        self.record_button = QPushButton("Record Sample")
+        self.stop_record_button = QPushButton("Stop Recording")
+        self.stop_record_button.setEnabled(False)
+        self.play_recording_button = QPushButton("Play Recording")
+        self.save_recording_button = QPushButton("Save Recording")
+        self.discard_recording_button = QPushButton("Discard")
+        self.recording_status_label = QLabel("Ready")
+        self.recording_status_label.setObjectName("secondaryInfoLabel")
+        recording_layout.addWidget(QLabel("Microphone:"))
+        recording_layout.addWidget(self.microphone_combo, 1)
+        recording_layout.addWidget(self.record_button)
+        recording_layout.addWidget(self.stop_record_button)
+        recording_layout.addWidget(self.play_recording_button)
+        recording_layout.addWidget(self.save_recording_button)
+        recording_layout.addWidget(self.discard_recording_button)
+        right_layout.addLayout(recording_layout)
+        right_layout.addWidget(self.recording_status_label)
 
         self.sample_hint_label = QLabel(
             "Tip: if a WAV has a same-name .txt file next to it, transcript is imported automatically."
@@ -185,6 +263,7 @@ class VoiceLibraryDialog(QDialog):
         self.voice_table.itemSelectionChanged.connect(self._on_voice_selection_changed)
         self.sample_table.itemSelectionChanged.connect(self._refresh_action_state)
         self.sample_table.itemChanged.connect(self._on_sample_item_changed)
+        self.stt_backend_combo.currentIndexChanged.connect(self._refresh_stt_language_options)
         self.voice_prompt_edit.textChanged.connect(self._refresh_action_state)
         self.voice_language_combo.currentIndexChanged.connect(self._on_voice_language_changed)
 
@@ -198,9 +277,21 @@ class VoiceLibraryDialog(QDialog):
 
         self.add_sample_button.clicked.connect(self._on_add_samples)
         self.remove_sample_button.clicked.connect(self._on_remove_sample)
+        self.play_sample_button.clicked.connect(self._on_play_sample)
+        self.stop_sample_button.clicked.connect(self.logic.stop_playback)
+        self.transcribe_sample_button.clicked.connect(self._on_transcribe_selected)
+        self.transcribe_missing_button.clicked.connect(self._on_transcribe_missing)
+        self.record_button.clicked.connect(self._on_start_recording)
+        self.stop_record_button.clicked.connect(self._on_stop_recording)
+        self.play_recording_button.clicked.connect(
+            lambda: self.logic.play_audio_file(self._recorded_wav_path)
+        )
+        self.save_recording_button.clicked.connect(self._on_save_recording)
+        self.discard_recording_button.clicked.connect(self._discard_recording)
         self.upload_button.clicked.connect(self._on_upload)
 
         self.logic.state_changed.connect(self._refresh_action_state)
+        self._refresh_stt_language_options()
 
     @staticmethod
     def _format_duration(seconds: float) -> str:
@@ -370,6 +461,33 @@ class VoiceLibraryDialog(QDialog):
         self.save_voice_notes_button.setEnabled(selected_voice is not None)
         self.add_sample_button.setEnabled(selected_voice is not None)
         self.remove_sample_button.setEnabled(bool(selected_sample_id))
+        self.play_sample_button.setEnabled(bool(selected_sample_id))
+        self.stop_sample_button.setEnabled(bool(selected_sample_id))
+        stt_available = self.stt_backend_combo.count() > 0 and not self._stt_running
+        self.stt_backend_combo.setEnabled(stt_available)
+        self.stt_language_combo.setEnabled(stt_available and self.stt_language_combo.count() > 0)
+        self.transcribe_sample_button.setEnabled(bool(selected_sample_id) and stt_available)
+        self.transcribe_missing_button.setEnabled(
+            bool(selected_voice is not None and sample_count and stt_available)
+        )
+        ffmpeg_available = bool(shutil.which("ffmpeg"))
+        can_record = (
+            QMediaRecorder is not None
+            and self.microphone_combo.count() > 0
+            and ffmpeg_available
+        )
+        self.record_button.setEnabled(bool(selected_voice is not None and can_record and self._media_recorder is None))
+        if not ffmpeg_available:
+            self.record_button.setToolTip("FFmpeg is required to normalize microphone recordings.")
+        elif self.microphone_combo.count() == 0:
+            self.record_button.setToolTip("No microphone input is available.")
+        else:
+            self.record_button.setToolTip("")
+        self.play_recording_button.setEnabled(bool(self._recorded_wav_path and os.path.isfile(self._recorded_wav_path)))
+        self.save_recording_button.setEnabled(
+            bool(selected_voice is not None and self._recorded_wav_path and os.path.isfile(self._recorded_wav_path))
+        )
+        self.discard_recording_button.setEnabled(bool(self._recorded_source_path or self._recorded_wav_path))
         self.voice_notes_edit.setEnabled(selected_voice is not None)
         self.voice_language_combo.setEnabled(selected_voice is not None)
         self.voice_prompt_edit.setEnabled(selected_voice is not None)
@@ -693,6 +811,244 @@ class VoiceLibraryDialog(QDialog):
                 preferred_sample_id=sample_id,
             )
 
+    def _on_play_sample(self):
+        voice_id = self._selected_voice_id()
+        sample_id = self._selected_sample_id()
+        path = self.logic.get_voice_library_sample_path(voice_id, sample_id)
+        if path:
+            self.logic.play_audio_file(path)
+
+    def _refresh_stt_language_options(self):
+        backend = str(self.stt_backend_combo.currentData() or "")
+        current = str(self.stt_language_combo.currentData() or "")
+        self.stt_language_combo.blockSignals(True)
+        self.stt_language_combo.clear()
+        for option in language_options_for_backend(backend):
+            self.stt_language_combo.addItem(option.name, option.code or option.name)
+        preferred = str(self.voice_language_combo.currentData() or current or "")
+        index = self.stt_language_combo.findData(preferred)
+        self.stt_language_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.stt_language_combo.blockSignals(False)
+
+    def _transcription_targets(self, missing_only: bool) -> list[str]:
+        voice = self._selected_voice()
+        if voice is None:
+            return []
+        if not missing_only:
+            selected = self._selected_sample_id()
+            return [selected] if selected else []
+        return [
+            str(sample.get("id") or "")
+            for sample in voice.get("samples", [])
+            if not str(sample.get("transcript") or "").strip()
+        ]
+
+    def _start_transcription(self, missing_only: bool):
+        targets = self._transcription_targets(missing_only)
+        if not targets:
+            QMessageBox.information(self, "Voice Transcription", "No matching samples need transcription.")
+            return
+        voice_id = self._selected_voice_id()
+        backend = str(self.stt_backend_combo.currentData() or "")
+        language = str(self.stt_language_combo.currentData() or "en")
+        self._stt_running = True
+        self.recording_status_label.setText(f"Transcribing {len(targets)} sample(s)…")
+        self._refresh_action_state()
+
+        def worker():
+            errors = []
+            transcripts = []
+            total = len(targets)
+            for index, sample_id in enumerate(targets, start=1):
+                try:
+                    transcript = self.logic.transcribe_voice_library_sample(
+                        voice_id,
+                        sample_id,
+                        backend=backend,
+                        language=language,
+                    )
+                    transcripts.append({"sample_id": sample_id, "transcript": transcript})
+                except Exception as error:
+                    errors.append(f"{sample_id}: {error}")
+                self.transcription_progress.emit(index, total, sample_id)
+            self.transcription_finished.emit(
+                {"voice_id": voice_id, "transcripts": transcripts, "errors": errors}
+            )
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_transcribe_selected(self):
+        self._start_transcription(False)
+
+    def _on_transcribe_missing(self):
+        self._start_transcription(True)
+
+    def _on_transcription_progress(self, current: int, total: int, sample_id: str):
+        self.recording_status_label.setText(
+            f"Transcribing sample {current}/{total}: {sample_id}"
+        )
+
+    def _on_transcription_finished(self, payload: dict):
+        self._stt_running = False
+        errors = list(payload.get("errors") or [])
+        voice_id = str(payload.get("voice_id") or "")
+        saved = 0
+        for draft in payload.get("transcripts") or []:
+            sample_id = str(draft.get("sample_id") or "")
+            transcript, accepted = QInputDialog.getMultiLineText(
+                self,
+                "Review Voice Transcript",
+                f"Review transcript for {sample_id}. Save only if it is correct:",
+                str(draft.get("transcript") or ""),
+            )
+            if not accepted:
+                continue
+            try:
+                self.logic.update_voice_library_sample(
+                    voice_id,
+                    sample_id,
+                    transcript=transcript.strip(),
+                )
+                saved += 1
+            except Exception as error:
+                errors.append(f"{sample_id}: {error}")
+        self.reload_library(preferred_voice_id=voice_id)
+        self.recording_status_label.setText(f"Saved {saved} reviewed transcript(s).")
+        if errors:
+            QMessageBox.warning(self, "Voice Transcription", "\n".join(errors))
+
+    def _on_start_recording(self):
+        if QMediaRecorder is None or QMediaCaptureSession is None or QAudioInput is None:
+            QMessageBox.warning(self, "Recording", "Qt Multimedia recording is unavailable.")
+            return
+        device = self.microphone_combo.currentData()
+        if device is None:
+            QMessageBox.warning(self, "Recording", "No microphone is available.")
+            return
+        self._discard_recording()
+        os.makedirs(self._recording_dir, exist_ok=True)
+        target = os.path.join(self._recording_dir, "capture.m4a")
+        try:
+            self._capture_session = QMediaCaptureSession(self)
+            self._audio_input = QAudioInput(device, self)
+            self._media_recorder = QMediaRecorder(self)
+            self._capture_session.setAudioInput(self._audio_input)
+            self._capture_session.setRecorder(self._media_recorder)
+            self._media_recorder.setOutputLocation(QUrl.fromLocalFile(target))
+            if hasattr(self._media_recorder, "errorOccurred"):
+                self._media_recorder.errorOccurred.connect(self._on_recording_error)
+            if hasattr(self._media_recorder, "actualLocationChanged"):
+                self._media_recorder.actualLocationChanged.connect(
+                    lambda url: setattr(self, "_recorded_source_path", url.toLocalFile())
+                )
+            self._recorded_source_path = target
+            self._media_recorder.record()
+            self._recording_started_at = time.monotonic()
+            self._recording_timer.start()
+        except Exception as error:
+            self._media_recorder = None
+            QMessageBox.warning(self, "Recording", f"Could not start recording: {error}")
+            return
+        self.record_button.setEnabled(False)
+        self.stop_record_button.setEnabled(True)
+        self.recording_status_label.setText("Recording 00:00")
+
+    def _update_recording_timer(self):
+        if not self._recording_started_at:
+            return
+        elapsed = max(0, int(time.monotonic() - self._recording_started_at))
+        minutes, seconds = divmod(elapsed, 60)
+        self.recording_status_label.setText(f"Recording {minutes:02d}:{seconds:02d}")
+
+    def _on_recording_error(self, *_args):
+        message = self._media_recorder.errorString() if self._media_recorder is not None else ""
+        self.recording_status_label.setText(
+            f"Recording error: {message or 'the audio device reported an error.'}"
+        )
+
+    def _on_stop_recording(self):
+        if self._media_recorder is None:
+            return
+        try:
+            location = self._media_recorder.outputLocation().toLocalFile()
+            if location:
+                self._recorded_source_path = location
+            self._media_recorder.stop()
+        finally:
+            self._recording_timer.stop()
+            self._recording_started_at = 0.0
+            self.stop_record_button.setEnabled(False)
+            self.recording_status_label.setText("Finalizing recording…")
+            QTimer.singleShot(600, self._finish_recording)
+
+    def _finish_recording(self):
+        candidates = [
+            os.path.join(self._recording_dir, name)
+            for name in os.listdir(self._recording_dir)
+            if os.path.isfile(os.path.join(self._recording_dir, name))
+        ]
+        if self._recorded_source_path and os.path.isfile(self._recorded_source_path):
+            source = self._recorded_source_path
+        elif candidates:
+            source = max(candidates, key=os.path.getmtime)
+        else:
+            source = ""
+        self._media_recorder = None
+        self._capture_session = None
+        self._audio_input = None
+        if not source:
+            self.recording_status_label.setText("Recording failed: no audio file was created.")
+            self._refresh_action_state()
+            return
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            self.recording_status_label.setText("FFmpeg is required to normalize the recording.")
+            self._refresh_action_state()
+            return
+        output_path = os.path.join(self._recording_dir, "recorded_sample.wav")
+        process = subprocess.run(
+            [ffmpeg, "-y", "-i", source, "-ac", "1", "-ar", "24000", "-c:a", "pcm_s16le", output_path],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if process.returncode != 0 or not os.path.isfile(output_path):
+            self.recording_status_label.setText("Could not convert the recording to WAV.")
+            self._refresh_action_state()
+            return
+        self._recorded_wav_path = output_path
+        self.recording_status_label.setText("Recording ready. Play, save, or discard it.")
+        self._refresh_action_state()
+
+    def _on_save_recording(self):
+        voice_id = self._selected_voice_id()
+        if not voice_id or not self._recorded_wav_path:
+            return
+        try:
+            added = self.logic.add_voice_library_samples(voice_id, [self._recorded_wav_path])
+        except Exception as error:
+            QMessageBox.warning(self, "Recording", str(error))
+            return
+        sample_id = str(added[0].get("id") or "") if added else ""
+        self._discard_recording()
+        self.reload_library(preferred_voice_id=voice_id, preferred_sample_id=sample_id)
+
+    def _discard_recording(self):
+        self._recording_timer.stop()
+        self._recording_started_at = 0.0
+        self.logic.stop_playback()
+        for path in {self._recorded_source_path, self._recorded_wav_path}:
+            if path and os.path.isfile(path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+        self._recorded_source_path = ""
+        self._recorded_wav_path = ""
+        self.recording_status_label.setText("Ready")
+        self._refresh_action_state()
+
     def _on_upload(self):
         selected_voice = self._selected_voice()
         if selected_voice is None:
@@ -729,3 +1085,13 @@ class VoiceLibraryDialog(QDialog):
                 "Upload Voice",
                 f"Uploaded successfully as '{uploaded_voice_name}'.",
             )
+
+    def closeEvent(self, event):
+        if self._media_recorder is not None:
+            try:
+                self._media_recorder.stop()
+            except Exception:
+                pass
+        self.logic.stop_playback()
+        shutil.rmtree(self._recording_dir, ignore_errors=True)
+        super().closeEvent(event)

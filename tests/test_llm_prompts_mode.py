@@ -3,6 +3,7 @@ from unittest.mock import patch
 import os
 import sqlite3
 import tempfile
+from contextlib import closing
 
 from pandrator.app_state import AppState
 from pandrator.app_logic import AppLogic
@@ -177,7 +178,7 @@ class LLMPromptsModeTests(unittest.TestCase):
         logic = AppLogic()
         logic.load_session(session_name)
 
-        with sqlite3.connect(state_db_handler.get_db_path()) as connection:
+        with closing(sqlite3.connect(state_db_handler.get_db_path())) as connection:
             indexed_modified_at = connection.execute(
                 "SELECT config_modified_at FROM sessions WHERE session_name = ?",
                 (session_name,),

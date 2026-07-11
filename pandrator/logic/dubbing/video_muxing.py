@@ -96,3 +96,36 @@ def build_replace_video_audio_command(
         "-shortest",
         temp_output_path,
     ]
+
+
+def build_multi_soft_subtitle_command(
+    video_path: str,
+    subtitle_tracks: list[dict[str, str]],
+    output_path: str,
+    *,
+    ffmpeg_executable: str = "ffmpeg",
+) -> list[str]:
+    """Build an MP4 remux command with one or more language-labelled subtitle tracks."""
+    command = [ffmpeg_executable, "-y", "-i", video_path]
+    for track in subtitle_tracks:
+        command.extend(["-i", str(track.get("path") or "")])
+    command.extend(["-map", "0:v:0", "-map", "0:a?"])
+    for index in range(len(subtitle_tracks)):
+        command.extend(["-map", f"{index + 1}:0"])
+    command.extend(["-c:v", "copy", "-c:a", "copy", "-c:s", "mov_text"])
+    for index, track in enumerate(subtitle_tracks):
+        language = ffmpeg_subtitle_language_code(str(track.get("language") or "und"))
+        title = str(track.get("title") or language)
+        disposition = "default" if bool(track.get("default")) else "0"
+        command.extend(
+            [
+                f"-metadata:s:s:{index}",
+                f"language={language}",
+                f"-metadata:s:s:{index}",
+                f"title={title}",
+                f"-disposition:s:{index}",
+                disposition,
+            ]
+        )
+    command.append(output_path)
+    return command

@@ -94,24 +94,105 @@ class SourceCleaningTests(unittest.TestCase):
             "chapter_marking": 6,
         }
 
+        baseline_operations = [
+            {"op": "mark_chapter", "block_id": document.blocks[1].block_id, "reason": "deterministic candidate"}
+        ]
+
         with patch(
             "pandrator.logic.source_cleaning.pipeline.run_source_cleaning_agent",
-            return_value=SourceCleaningAgentResult(summary="done"),
+            return_value=SourceCleaningAgentResult(
+                summary="done",
+                confidence=0.9,
+                tool_trace=[{"action": "inspect_document_structure"}],
+                finish_reviews=[{"accepted": True}],
+                raw_final_command={"action": "finish"},
+                llm_calls=[{"iteration": 1, "model": "test-model"}],
+            ),
         ) as run_agent:
             result = run_cleaning_pipeline(
                 document,
-                config=SourceCleaningPipelineConfig(phase_max_iterations=limits),
+                config=SourceCleaningPipelineConfig(
+                    phase_max_iterations=limits,
+                    baseline_operations=baseline_operations,
+                ),
             )
 
         configured_limits = [
             call.kwargs["config"].max_iterations
             for call in run_agent.call_args_list
         ]
+        configured_baselines = [
+            call.kwargs["config"].baseline_operations
+            for call in run_agent.call_args_list
+        ]
         self.assertEqual(configured_limits, [limits[name] for name in PHASE_ORDER])
+        self.assertTrue(
+            all(not hasattr(call.kwargs["config"], "temperature") for call in run_agent.call_args_list)
+        )
+        self.assertEqual(configured_baselines, [[], [], [], [], baseline_operations])
         self.assertEqual(
             [phase.max_iterations for phase in result.phases],
             [limits[name] for name in PHASE_ORDER],
         )
+        self.assertEqual(result.phases[0].summary, "done")
+        self.assertEqual(result.phases[0].tool_trace, [{"action": "inspect_document_structure"}])
+        self.assertEqual(result.phases[0].finish_reviews, [{"accepted": True}])
+        self.assertEqual(result.phases[0].raw_final_command, {"action": "finish"})
+
+    def test_destructive_phase_requires_inspection_before_finishing(self):
+        document = build_source_document_from_text(
+            "Contents\nChapter One\nNarration.",
+            filename="sample.epub",
+        )
+        responses = iter(
+            [
+                json.dumps(
+                    {
+                        "action": "finish",
+                        "summary": "Remove contents.",
+                        "confidence": 0.9,
+                        "operations": [
+                            {
+                                "op": "delete_range",
+                                "start_line": 1,
+                                "end_line": 1,
+                                "reason": "contents heading",
+                            }
+                        ],
+                    }
+                ),
+                json.dumps({"action": "preview", "arguments": {"start_line": 1, "end_line": 2}}),
+                json.dumps(
+                    {
+                        "action": "finish",
+                        "summary": "Remove verified contents heading.",
+                        "confidence": 0.9,
+                        "operations": [
+                            {
+                                "op": "delete_range",
+                                "start_line": 1,
+                                "end_line": 1,
+                                "reason": "contents heading verified by preview",
+                            }
+                        ],
+                    }
+                ),
+            ]
+        )
+
+        result = run_source_cleaning_agent(
+            document,
+            config=SourceCleaningAgentConfig(
+                phase_name="navigation",
+                max_iterations=3,
+                require_verified_finish_for_long_sources=False,
+            ),
+            completion_func=lambda **_kwargs: next(responses),
+        )
+
+        self.assertEqual(len(result.operations), 1)
+        self.assertIn("workflow_review", [item["action"] for item in result.tool_trace])
+        self.assertIn("preview", [item["action"] for item in result.tool_trace])
 
     def test_legacy_total_turn_limit_is_distributed_across_phases(self):
         self.assertEqual(
@@ -1148,6 +1229,62 @@ class SourceCleaningTests(unittest.TestCase):
         self.assertIn("exceeds guard", result.skipped_operations[0]["reason"])
         self.assertIn("line 6", result.cleaned_text)
 
+    def test_unmark_chapter_reverses_an_earlier_deterministic_marker(self):
+        document = build_source_document_from_text("Running Header\nNarration.", filename="sample.pdf")
+        header = document.blocks[0]
+        result = apply_cleaning_operations(
+            document,
+            [
+                {"op": "mark_chapter", "block_id": header.block_id, "reason": "deterministic candidate"},
+                {"op": "unmark_chapter", "block_id": header.block_id, "reason": "reviewed as a running header"},
+            ],
+        )
+
+        self.assertNotIn("[[Chapter]]", result.cleaned_text)
+        self.assertEqual(result.report["chapter_count"], 0)
+        self.assertTrue(result.applied_operations[-1]["details"]["unmarked_chapter"])
+
+    def test_chapter_agent_can_unmark_a_deterministic_baseline_marker(self):
+        document = build_source_document_from_text("Running Header\nNarration.", filename="sample.pdf")
+        header = document.blocks[0]
+        response = json.dumps(
+            {
+                "action": "finish",
+                "summary": "The scheduled marker is a running header, not a chapter.",
+                "confidence": 0.95,
+                "operations": [
+                    {
+                        "op": "unmark_chapter",
+                        "block_id": header.block_id,
+                        "reason": "reviewed as a running header",
+                    }
+                ],
+            }
+        )
+
+        agent_result = run_source_cleaning_agent(
+            document,
+            config=SourceCleaningAgentConfig(
+                phase_name="chapter_marking",
+                max_iterations=1,
+                require_verified_finish_for_long_sources=False,
+                baseline_operations=[
+                    {"op": "mark_chapter", "block_id": header.block_id, "reason": "deterministic candidate"}
+                ],
+            ),
+            completion_func=lambda **_kwargs: response,
+        )
+        cleaned = apply_cleaning_operations(
+            document,
+            [
+                {"op": "mark_chapter", "block_id": header.block_id, "reason": "deterministic candidate"},
+                *agent_result.operations,
+            ],
+        )
+
+        self.assertEqual(agent_result.operations[0]["op"], "unmark_chapter")
+        self.assertEqual(cleaned.report["chapter_count"], 0)
+
     def test_agent_runs_json_tool_loop_with_fake_completion(self):
         document = build_source_document_from_text(
             "\n".join(
@@ -1556,6 +1693,45 @@ class SourceCleaningTests(unittest.TestCase):
         self.assertIn("Only one chapter marker", joined_warnings)
         self.assertIn("EPUB navigation title", joined_warnings)
 
+    def test_validator_does_not_treat_structured_pdf_footnotes_as_a_toc(self):
+        document = SourceDocument(
+            source_type="pdf_structured",
+            source_path="article.pdf",
+            filename="article.pdf",
+            blocks=[
+                SourceBlock(
+                    f"note-{index}",
+                    f"{index}. This numbered note is deliberately long enough to be prose rather than a section title.",
+                    index,
+                    index,
+                    page=2,
+                    role_candidates=["footnote"],
+                )
+                for index in range(1, 6)
+            ],
+        )
+        result = apply_cleaning_operations(document, [])
+
+        validation = validate_cleaning_result(document, result)
+
+        self.assertNotIn("table-of-contents-like", "\n".join(validation.warnings))
+
+    def test_validator_keeps_unstructured_numeric_toc_detection(self):
+        document = SourceDocument(
+            source_type="pdf_structured",
+            source_path="contents.pdf",
+            filename="contents.pdf",
+            blocks=[
+                SourceBlock(f"toc-{index}", f"{index}. Section {index}", index, index, page=1)
+                for index in range(1, 6)
+            ],
+        )
+        result = apply_cleaning_operations(document, [])
+
+        validation = validate_cleaning_result(document, result)
+
+        self.assertIn("table-of-contents-like", "\n".join(validation.warnings))
+
     def test_validator_warns_about_remaining_structured_cleanup_and_removed_bookends(self):
         document = SourceDocument(
             source_type="epub",
@@ -1657,6 +1833,9 @@ class SourceCleaningTests(unittest.TestCase):
         self.assertEqual(
             [call.kwargs["config"].max_iterations for call in run_agent.call_args_list],
             [phase_limits[name] for name in PHASE_ORDER],
+        )
+        self.assertTrue(
+            all(not hasattr(call.kwargs["config"], "temperature") for call in run_agent.call_args_list)
         )
         self.assertTrue(result["success"])
         self.assertIn("[[Chapter]]Chapter One", result["cleaned_text"])
@@ -1763,8 +1942,11 @@ class SourceCleaningTests(unittest.TestCase):
         dialog.save_phase_defaults_button.click()
         self.assertEqual(settings.phase_max_iterations["metadata"], 12)
         self.assertEqual(settings.max_iterations, 61)
+        self.assertIsNone(settings.llm_temperature)
         self.assertEqual(len(persist_calls), 1)
         self.assertIn("saved as defaults", dialog.status_label.text())
+
+        self.assertFalse(hasattr(dialog, "temperature_input"))
 
     def test_source_cleaning_dialog_refreshes_preview_in_background_with_page_progress(self):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")

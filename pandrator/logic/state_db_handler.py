@@ -41,12 +41,9 @@ DUBBING_STEPS = (
     "transcribe",
     "correct",
     "translate",
-    "manual_timing",
-    "speech_blocks",
-    "tts_generation",
-    "sync",
-    "equalize",
-    "render",
+    "preview",
+    "generate_audio",
+    "export",
 )
 
 

@@ -268,6 +268,32 @@ QStatusBar {
     color: #f1f1f1;
 }
 
+QFrame#workflowStageCard {
+    background-color: #343438;
+    border: 1px solid #4d5863;
+    border-radius: 9px;
+    padding: 6px;
+}
+
+QLabel#workflowStageNumber {
+    background-color: #7e57c2;
+    border-radius: 16px;
+    color: white;
+    font-size: 15px;
+    font-weight: bold;
+    min-width: 32px;
+    max-width: 32px;
+    min-height: 32px;
+    max-height: 32px;
+    qproperty-alignment: AlignCenter;
+}
+
+QLabel#taskStageBadge[stepState="stale"] {
+    background-color: #6a5730;
+    border: 1px solid #b89043;
+    color: #fff6df;
+}
+
 QTextEdit:disabled,
 QPlainTextEdit:disabled,
 QLineEdit:disabled,

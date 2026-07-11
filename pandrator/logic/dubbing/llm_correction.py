@@ -65,6 +65,7 @@ class CorrectionResult:
     cost: float = 0.0
     response_count: int = 0
     output_path: str = ""
+    cost_sources: tuple[str, ...] = ()
 
 
 def _coerce_int(value: Any, default: int) -> int:
@@ -251,16 +252,16 @@ def build_correction_prompt(
     return f"{base_prompt}\n\nThe subtitles:\n{subtitles}"
 
 
-def _coerce_completion_content_and_cost(result: Any) -> tuple[str, float]:
+def _coerce_completion_content_and_cost(result: Any) -> tuple[str, float, str]:
     if isinstance(result, str):
-        return result, 0.0
+        return result, 0.0, ""
     content = str(getattr(result, "content", "") or "")
     cost = getattr(result, "cost", 0.0)
     try:
         normalized_cost = float(cost or 0.0)
     except (TypeError, ValueError):
         normalized_cost = 0.0
-    return content, normalized_cost
+    return content, normalized_cost, str(getattr(result, "cost_source", "") or "")
 
 
 def correct_srt_content(
@@ -292,6 +293,7 @@ def correct_srt_content(
     corrected_subtitles: list[dict[str, Any]] = []
     total_cost = 0.0
     response_count = 0
+    cost_sources: list[str] = []
 
     for block_number, block in enumerate(blocks, start=1):
         prompt = build_correction_prompt(
@@ -311,8 +313,10 @@ def correct_srt_content(
                     model_name=resolved.model_name,
                     llm_settings=resolved.llm_settings,
                 )
-                content, cost = _coerce_completion_content_and_cost(result)
+                content, cost, cost_source = _coerce_completion_content_and_cost(result)
                 total_cost += cost
+                if cost_source and cost_source not in cost_sources:
+                    cost_sources.append(cost_source)
                 response_count += 1
                 if not content:
                     raise ValueError("LLM correction returned an empty response.")
@@ -355,6 +359,7 @@ def correct_srt_content(
         srt_content=compose_srt(segments),
         cost=total_cost,
         response_count=response_count,
+        cost_sources=tuple(cost_sources),
     )
 
 
@@ -399,6 +404,7 @@ def correct_srt_file_with_result(
         cost=result.cost,
         response_count=result.response_count,
         output_path=str(output_path),
+        cost_sources=result.cost_sources,
     )
     logger.info(
         "Corrected subtitles written to %s (%d LLM response(s), cost %.6f).",

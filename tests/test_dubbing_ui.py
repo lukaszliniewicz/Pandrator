@@ -180,6 +180,25 @@ Preview this segment.
         )
         self.assertEqual(section.transcription_frame.layout().indexOf(section.dub_advanced_button), -1)
 
+    def test_guided_workflow_cards_are_source_aware_and_numbered(self):
+        section = DubbingSection()
+        section.show()
+        section.update_workflow(
+            {
+                "workflow_kind": "voiceover",
+                "workflow_preset": "voiceover",
+                "included_stages": ["correct", "generate_audio", "export"],
+                "applicable_stages": ["correct", "translate", "preview", "generate_audio", "export"],
+                "states": {"correct": "completed", "translate": "stale"},
+            }
+        )
+        self.assertTrue(section.stage_cards["transcribe"]["frame"].isHidden())
+        self.assertEqual(section.stage_cards["correct"]["number"].text(), "1")
+        self.assertTrue(section.stage_cards["correct"]["include"].isChecked())
+        self.assertEqual(section.stage_cards["translate"]["status"].text(), "Needs rerun")
+        self.assertTrue(section.buttons_frame.isHidden())
+        section.close()
+
     def test_parakeet_advanced_dialog_shows_vad_group_not_whisper_group(self):
         state = DubbingSettings(stt_backend="parakeet_onnx")
         dialog = DubbingAdvancedDialog(state)

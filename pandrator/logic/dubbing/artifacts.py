@@ -9,9 +9,11 @@ from collections.abc import Callable, Mapping, Sequence
 logger = logging.getLogger(__name__)
 
 DEFAULT_SRT_ROLES: tuple[str, ...] = (
-    "manual_timing_srt",
+    "reviewed_translated_srt",
     "translated_srt",
+    "reviewed_corrected_srt",
     "corrected_srt",
+    "reviewed_source_srt",
     "transcribed_srt",
     "source_srt",
 )

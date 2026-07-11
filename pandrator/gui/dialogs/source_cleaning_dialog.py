@@ -42,9 +42,6 @@ class SourceCleaningDialog(QDialog):
     cleaning_finished = pyqtSignal(object)
     preview_finished = pyqtSignal(object)
 
-    _REASONING_EFFORT_OPTIONS = ["", "low", "medium", "high"]  # "" = don't send
-    _REASONING_EFFORT_LABELS = ["None (model default)", "Low", "Medium", "High"]
-
     def _load_phase_max_iterations(self) -> dict[str, int]:
         cleaning_settings = getattr(self.logic.state, "source_cleaning", None)
         return resolve_phase_max_iterations(
@@ -75,7 +72,7 @@ class SourceCleaningDialog(QDialog):
                 )
                 self.status_label.setText(f"Could not save cleaning phase defaults: {e}")
                 return
-        self.status_label.setText("Cleaning phase limits saved as defaults for future imports.")
+        self.status_label.setText("Advanced cleaning settings saved as defaults for future imports.")
 
     def _toggle_phase_limits(self, expanded: bool) -> None:
         self.phase_limits_content.setVisible(expanded)
@@ -85,25 +82,6 @@ class SourceCleaningDialog(QDialog):
     def _update_phase_limits_summary(self) -> None:
         total = sum(self._current_phase_max_iterations().values())
         self.phase_limits_summary.setText(f"{len(PHASE_ORDER)} phases | up to {total} LLM turns total")
-
-    def _load_reasoning_effort(self) -> str:
-        """Returns the current globally-configured reasoning_effort value."""
-        return str(getattr(self.logic.state.llm, "reasoning_effort", "") or "")
-
-    def _save_reasoning_effort(self) -> None:
-        """Persists the combo box selection back to LLMSettings."""
-        index = self.reasoning_effort_combo.currentIndex()
-        value = self._REASONING_EFFORT_OPTIONS[index] if 0 <= index < len(self._REASONING_EFFORT_OPTIONS) else ""
-        if hasattr(self.logic.state.llm, "reasoning_effort"):
-            self.logic.state.llm.reasoning_effort = value
-        persist = getattr(self.logic, "_persist_global_settings", None)
-        if callable(persist):
-            try:
-                persist()
-            except Exception as e:  # noqa: BLE001
-                logging.getLogger(__name__).warning(
-                    "Failed to persist LLM reasoning_effort: %s", e
-                )
 
     def __init__(self, logic, source_path_hint: str = "", parent=None):
         super().__init__(parent)
@@ -158,22 +136,6 @@ class SourceCleaningDialog(QDialog):
         self.filter_citations_checkbox.stateChanged.connect(self._on_deterministic_settings_changed)
         controls.addWidget(self.filter_citations_checkbox)
 
-        controls.addWidget(QLabel("Reasoning:"))
-        self.reasoning_effort_combo = QComboBox()
-        self.reasoning_effort_combo.addItems(self._REASONING_EFFORT_LABELS)
-        self.reasoning_effort_combo.setToolTip(
-            "Reasoning effort sent to the LLM for each cleaning turn.\n"
-            "'None' omits the parameter — the model uses its own default.\n"
-            "Low/Medium/High map to reasoning_effort=low/medium/high.\n"
-            "LiteLLM translates this for each provider and silently ignores it\n"
-            "for models that don't support it (e.g. Ollama, basic OpenAI models)."
-        )
-        # Initialise from global LLM settings
-        effort_value = self._load_reasoning_effort()
-        effort_index = self._REASONING_EFFORT_OPTIONS.index(effort_value) if effort_value in self._REASONING_EFFORT_OPTIONS else 0
-        self.reasoning_effort_combo.setCurrentIndex(effort_index)
-        controls.addWidget(self.reasoning_effort_combo)
-
         self.run_button = QPushButton("Run LLM Cleaning")
         controls.addWidget(self.run_button)
 
@@ -207,11 +169,13 @@ class SourceCleaningDialog(QDialog):
 
         phase_limits_header = QHBoxLayout()
         self.phase_limits_toggle = QToolButton()
-        self.phase_limits_toggle.setText("Cleaning phase limits")
+        self.phase_limits_toggle.setText("Advanced cleaning settings")
         self.phase_limits_toggle.setCheckable(True)
         self.phase_limits_toggle.setArrowType(Qt.ArrowType.RightArrow)
         self.phase_limits_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.phase_limits_toggle.setToolTip("Expand to set the maximum LLM turns for each cleaning phase.")
+        self.phase_limits_toggle.setToolTip(
+            "Expand to set the maximum LLM turns for each cleaning phase."
+        )
         phase_limits_header.addWidget(self.phase_limits_toggle)
         self.phase_limits_summary = QLabel()
         self.phase_limits_summary.setObjectName("secondaryInfoLabel")
@@ -239,7 +203,7 @@ class SourceCleaningDialog(QDialog):
             self.phase_iteration_spinboxes[phase_name] = spinbox
 
         phase_defaults_row = QHBoxLayout()
-        phase_defaults_hint = QLabel("These limits apply to this run unless saved as defaults.")
+        phase_defaults_hint = QLabel("These settings apply to this run unless saved as defaults.")
         phase_defaults_hint.setObjectName("secondaryInfoLabel")
         phase_defaults_row.addWidget(phase_defaults_hint)
         phase_defaults_row.addStretch(1)
@@ -350,7 +314,6 @@ class SourceCleaningDialog(QDialog):
         self.model_combo.setEnabled(not running)
         self.remove_footnotes_checkbox.setEnabled(not running)
         self.filter_citations_checkbox.setEnabled(not running and not self.remove_footnotes_checkbox.isChecked())
-        self.reasoning_effort_combo.setEnabled(not running)
         self.phase_limits_content.setEnabled(not running)
         self.pdf_controls_widget.setEnabled(not running)
         self.text_edit.setReadOnly(running)
@@ -459,15 +422,6 @@ class SourceCleaningDialog(QDialog):
         stop_event = self._stop_event
         extracted_text = self.text_edit.toPlainText()
 
-        # Save reasoning_effort selection to global settings before running.
-        self._save_reasoning_effort()
-        effort_index = self.reasoning_effort_combo.currentIndex()
-        reasoning_effort = (
-            self._REASONING_EFFORT_OPTIONS[effort_index]
-            if 0 <= effort_index < len(self._REASONING_EFFORT_OPTIONS)
-            else ""
-        )
-
         def worker():
             try:
                 result = self.logic.run_source_cleaning(
@@ -476,7 +430,6 @@ class SourceCleaningDialog(QDialog):
                     filter_citations=filter_citations,
                     model_name=model_name,
                     phase_max_iterations=phase_max_iterations,
-                    reasoning_effort=reasoning_effort,
                     progress_callback=self.status_updated.emit,
                     stop_event=stop_event,
                     extracted_text=extracted_text,
@@ -656,7 +609,6 @@ class SourceCleaningDialog(QDialog):
                 "Please wait for the current source-processing operation to finish before closing this dialog.",
             )
             return
-        self._save_reasoning_effort()
         self._save_pdf_settings()
         super().closeEvent(event)
 

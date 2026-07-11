@@ -6,6 +6,16 @@ from pandrator.logic import llm_handler
 
 
 class LlmHandlerTests(unittest.TestCase):
+    def test_legacy_models_migrate_and_refresh_merge_preserves_settings(self):
+        migrated = llm_handler.normalize_model_records(["manual-model"], "openai")
+        self.assertEqual(migrated, [llm_handler.default_model_record("manual-model")])
+        migrated[0]["default_temperature"] = 0.25
+        merged = llm_handler._merge_model_records(
+            migrated, ["discovered-model"], "openai"
+        )
+        self.assertEqual([record["id"] for record in merged], ["manual-model", "discovered-model"])
+        self.assertEqual(merged[0]["default_temperature"], 0.25)
+
     def test_chat_completion_with_metadata_forwards_max_tokens(self):
         captured_payload = {}
 
@@ -36,10 +46,24 @@ class LlmHandlerTests(unittest.TestCase):
                 model_name="openai/gpt-5.4-mini",
                 llm_settings={
                     "request_timeout_seconds": 30,
-                    "reasoning_effort": "medium",
+                    "provider_configs": [
+                        {
+                            **next(
+                                provider
+                                for provider in llm_handler.get_provider_configs(None)
+                                if provider["id"] == "openai"
+                            ),
+                            "models": [
+                                {
+                                    **llm_handler.default_model_record("gpt-5.4-mini"),
+                                    "default_temperature": 0.1,
+                                    "default_reasoning_effort": "medium",
+                                }
+                            ],
+                        }
+                    ],
                 },
                 max_tokens=1234,
-                temperature=0.1,
             )
 
         self.assertEqual(result.content, "Corrected text")
@@ -47,6 +71,30 @@ class LlmHandlerTests(unittest.TestCase):
         self.assertEqual(captured_payload["temperature"], 0.1)
         self.assertEqual(captured_payload["timeout"], 30)
         self.assertEqual(captured_payload["reasoning_effort"], "medium")
+
+    def test_custom_model_pricing_accounts_for_cached_prompt_tokens(self):
+        response = {
+            "model": "openai/demo",
+            "choices": [{"message": {"content": "ok"}}],
+            "usage": {
+                "prompt_tokens": 1000,
+                "completion_tokens": 200,
+                "prompt_tokens_details": {"cached_tokens": 400},
+            },
+        }
+        model = {
+            **llm_handler.default_model_record("demo"),
+            "input_cost_per_million": 10.0,
+            "cached_input_cost_per_million": 2.0,
+            "output_cost_per_million": 20.0,
+        }
+        result = llm_handler._extract_chat_completion_result(
+            response, requested_model="openai/demo", model_record=model
+        )
+        self.assertAlmostEqual(result.cost, 0.0108)
+        self.assertEqual(result.cost_source, "custom_model_pricing")
+        self.assertEqual(result.usage["cached_prompt_tokens"], 400)
+        self.assertEqual(result.usage["uncached_prompt_tokens"], 600)
 
     def test_chat_completion_with_metadata_uses_model_defaults_when_unset(self):
         captured_payload = {}
@@ -68,6 +116,53 @@ class LlmHandlerTests(unittest.TestCase):
         self.assertNotIn("max_tokens", captured_payload)
         self.assertNotIn("temperature", captured_payload)
         self.assertEqual(captured_payload["timeout"], 600)
+
+    def test_zero_temperature_and_custom_reasoning_are_sent_exactly(self):
+        captured_payload = {}
+
+        def fake_completion(**kwargs):
+            captured_payload.update(kwargs)
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+        provider = next(
+            item for item in llm_handler.get_provider_configs(None) if item["id"] == "openai"
+        )
+        provider["models"] = [
+            {
+                **llm_handler.default_model_record("gpt-5.4-mini"),
+                "default_temperature": 0,
+                "default_reasoning_effort": "provider-specific",
+            }
+        ]
+        with patch(
+            "pandrator.logic.llm_handler._get_litellm_clients",
+            return_value=(fake_completion, None),
+        ):
+            llm_handler.chat_completion_with_metadata(
+                messages=[{"role": "user", "content": "test"}],
+                model_name="openai/gpt-5.4-mini",
+                llm_settings={"provider_configs": [provider]},
+            )
+
+        self.assertEqual(captured_payload["temperature"], 0)
+        self.assertEqual(captured_payload["reasoning_effort"], "provider-specific")
+
+    def test_authoritative_response_cost_wins_over_custom_pricing(self):
+        response = {
+            "choices": [{"message": {"content": "ok"}}],
+            "usage": {"prompt_tokens": 1000, "completion_tokens": 1000},
+            "_hidden_params": {"response_cost": 0.0123},
+        }
+        model = {
+            **llm_handler.default_model_record("demo"),
+            "input_cost_per_million": 100.0,
+            "output_cost_per_million": 100.0,
+        }
+        result = llm_handler._extract_chat_completion_result(
+            response, requested_model="openai/demo", model_record=model
+        )
+        self.assertEqual(result.cost, 0.0123)
+        self.assertEqual(result.cost_source, "litellm_hidden_params")
 
     def test_chat_completion_uses_explicit_builtin_provider_api_key(self):
         captured_payload = {}

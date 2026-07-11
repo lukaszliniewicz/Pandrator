@@ -27,9 +27,12 @@ from ...constants import (
 )
 from ..dialogs.custom_prompt_dialog import CustomPromptDialog
 from ..dialogs.dubbing_advanced_dialog import DubbingAdvancedDialog
+from ..dialogs.dubbing_export_dialog import DubbingExportDialog
 from ..dialogs.paste_text_dialog import PasteTextDialog
 from ..dialogs.source_picker_dialog import SourcePickerDialog
 from ..dialogs.source_cleaning_dialog import SourceCleaningDialog
+from ..dialogs.subtitle_preview_dialog import SubtitlePreviewDialog
+from ..dialogs.workflow_preset_dialog import WorkflowPresetDialog
 from ..dialogs.voice_catalog_dialog import VoiceCatalogDialog
 from ..dialogs.voice_library_dialog import VoiceLibraryDialog
 from ...logic.dubbing.stt_backends import (
@@ -166,6 +169,7 @@ class SessionTab(ScrollableSettingsPage):
         # Session controls
         self.new_session_button = self.session_section.new_session_button
         self.load_session_button = self.session_section.load_session_button
+        self.open_wizard_button = self.session_section.open_wizard_button
         self.view_session_folder_button = self.session_section.view_session_folder_button
         self.delete_session_button = self.session_section.delete_session_button
 
@@ -330,6 +334,9 @@ class SessionTab(ScrollableSettingsPage):
     def _connect_session_signals(self):
         self.new_session_button.clicked.connect(self._on_new_session)
         self.load_session_button.clicked.connect(self._on_load_session)
+        self.open_wizard_button.clicked.connect(
+            lambda: getattr(self.window(), "open_startup_wizard", lambda: None)()
+        )
         self.view_session_folder_button.clicked.connect(self.logic.view_session_folder)
         self.delete_session_button.clicked.connect(self._on_delete_session)
         self.select_file_button.clicked.connect(self._on_select_file)
@@ -655,24 +662,40 @@ class SessionTab(ScrollableSettingsPage):
         self.adv_tts_apply_button.clicked.connect(self.logic.save_xtts_settings)
 
     def _connect_dubbing_signals(self):
+        cards = self.dubbing_frame.stage_cards
+        for stage in ("transcribe", "correct", "translate", "generate_audio"):
+            cards[stage]["include"].toggled.connect(
+                lambda checked, stage=stage: self.logic.set_dubbing_stage_included(stage, checked)
+            )
+        cards["transcribe"]["run"].clicked.connect(lambda: self.logic.run_dubbing_task("transcribe"))
+        cards["correct"]["run"].clicked.connect(lambda: self.logic.run_dubbing_task("correct"))
+        cards["translate"]["run"].clicked.connect(lambda: self.logic.run_dubbing_task("translate"))
+        cards["preview"]["run"].clicked.connect(self._on_preview_subtitles)
+        cards["generate_audio"]["run"].clicked.connect(self._on_generate_dubbing_audio)
+        cards["export"]["run"].clicked.connect(self._on_export_dubbing_workflow)
+        cards["transcribe"]["settings"].clicked.connect(self._on_open_dubbing_advanced)
+        cards["correct"]["settings"].clicked.connect(self._on_open_dubbing_advanced)
+        cards["translate"]["settings"].clicked.connect(self._on_open_dubbing_advanced)
+        cards["preview"]["settings"].setVisible(False)
+        cards["generate_audio"]["settings"].clicked.connect(
+            lambda: self.advanced_tts_checkbox.setChecked(True)
+        )
+        cards["export"]["settings"].clicked.connect(self._on_export_dubbing_workflow)
+        self.dubbing_frame.change_workflow_button.clicked.connect(self._on_change_workflow)
         self.dub_stt_backend_combo.currentIndexChanged.connect(
             self._on_dub_stt_backend_changed
         )
         self.dub_whisper_lang_combo.currentTextChanged.connect(
-            lambda t: setattr(self.logic.state.dubbing, "stt_language", t)
+            self._on_dub_stt_language_changed
         )
         self.dub_whisper_model_combo.currentTextChanged.connect(
-            lambda t: setattr(self.logic.state.dubbing, "whisper_model", t)
+            self._on_dub_whisper_model_changed
         )
         self.dub_correct_transcription_check.stateChanged.connect(
             self._on_dub_correction_toggled
         )
         self.dub_correction_model_combo.currentTextChanged.connect(
-            lambda model: setattr(
-                self.logic.state.dubbing,
-                "correction_model",
-                model.strip() or "default",
-            )
+            self._on_dub_correction_model_changed
         )
         self.dub_custom_prompt_button.clicked.connect(self._on_open_custom_prompt)
         self.dub_advanced_button.clicked.connect(self._on_open_dubbing_advanced)
@@ -680,7 +703,7 @@ class SessionTab(ScrollableSettingsPage):
             self._on_dub_translation_toggled
         )
         self.dub_from_lang_combo.currentTextChanged.connect(
-            lambda t: setattr(self.logic.state.dubbing, "original_language", t)
+            self._on_dub_source_language_changed
         )
         self.dub_to_lang_combo.currentIndexChanged.connect(
             self._on_dub_target_language_selected
@@ -714,8 +737,65 @@ class SessionTab(ScrollableSettingsPage):
             lambda: self.logic.run_dubbing_task("fine_tune_timings")
         )
 
+    def _on_change_workflow(self):
+        dialog = WorkflowPresetDialog(
+            self.logic.state.workflow.workflow_kind,
+            self.logic.state.workflow.workflow_preset,
+            self,
+        )
+        if dialog.exec():
+            kind, preset, translate_voiceover = dialog.selection()
+            self.logic.apply_workflow_preset(
+                kind, preset, translate_voiceover=translate_voiceover
+            )
+
+    def _on_preview_subtitles(self):
+        paths = self.logic.get_subtitle_preview_paths()
+        if not any(paths.values()):
+            QMessageBox.information(self, "Subtitle Preview", "Run transcription or select an SRT first.")
+            return
+        dialog = SubtitlePreviewDialog(
+            paths,
+            self,
+            lineage_paths=self.logic.get_subtitle_preview_lineage_paths(),
+            edit_callback=lambda: self.logic.run_dubbing_task("fine_tune_timings"),
+        )
+        dialog.exec()
+
+    def _on_export_dubbing_workflow(self):
+        paths = self.logic.get_subtitle_preview_paths()
+        state = self.logic.state
+        has_video = is_video_source(str(state.source_file_path or "")) or is_video_source(
+            str(state.dubbing.video_file_path or "")
+        )
+        dialog = DubbingExportDialog(
+            has_translation=bool(paths.get("translated")),
+            has_generated_audio=self.logic.has_any_generation_progress(),
+            has_video=has_video,
+            parent=self,
+        )
+        if dialog.exec():
+            self.logic.export_dubbing_workflow(dialog.options())
+
     def _on_dub_translation_model_changed(self, model_name: str):
         self.logic.state.dubbing.translation_model = model_name.strip() or "default"
+        self.logic.invalidate_dubbing_stage("translate")
+
+    def _on_dub_correction_model_changed(self, model_name: str):
+        self.logic.state.dubbing.correction_model = model_name.strip() or "default"
+        self.logic.invalidate_dubbing_stage("correct")
+
+    def _on_dub_stt_language_changed(self, language: str):
+        self.logic.state.dubbing.stt_language = language
+        self.logic.invalidate_dubbing_stage("transcribe")
+
+    def _on_dub_whisper_model_changed(self, model: str):
+        self.logic.state.dubbing.whisper_model = model
+        self.logic.invalidate_dubbing_stage("transcribe")
+
+    def _on_dub_source_language_changed(self, language: str):
+        self.logic.state.dubbing.original_language = language
+        self.logic.invalidate_dubbing_stage("translate")
 
     def _on_dub_correction_toggled(self):
         self.logic.state.dubbing.correction_enabled = (
@@ -745,6 +825,7 @@ class SessionTab(ScrollableSettingsPage):
             return
         self.logic.state.dubbing.translation_backend = backend
         self.logic.normalize_dubbing_settings_state(self.logic.state.dubbing)
+        self.logic.invalidate_dubbing_stage("translate")
         self.logic.state_changed.emit()
 
     def _connect_generation_signals(self):
@@ -1209,6 +1290,7 @@ class SessionTab(ScrollableSettingsPage):
             self.selected_video_file_label.setText(filename)
         else:
             self.selected_video_file_label.setText("No media selected")
+        self.dubbing_frame.update_workflow(self.logic.get_dubbing_workflow_snapshot())
 
     def _update_visibility_and_control_state(self, state):
         source_ext = ""
@@ -1433,6 +1515,7 @@ class SessionTab(ScrollableSettingsPage):
         )
         if self.start_button.text() != start_button_label:
             self.start_button.setText(start_button_label)
+        self.start_button.setVisible(not is_dubbing_source)
         self.start_button.setEnabled(can_start_or_resume)
         self.resume_button.setEnabled(can_start_or_resume)
         self._set_button_accent(self.start_button, not is_dubbing_source)
@@ -1619,10 +1702,29 @@ class SessionTab(ScrollableSettingsPage):
             dubbing_controls_enabled and has_dubbing_srt
         )
 
-        show_transcription_options = is_media
-        self.transcription_heading.setVisible(show_transcription_options)
-        self.transcription_frame.setVisible(show_transcription_options)
+        self.transcription_heading.setVisible(False)
+        self.transcription_frame.setVisible(False)
+        self.dubbing_frame.translation_heading.setVisible(False)
+        self.dub_translate_check.setVisible(False)
+        self.dubbing_frame.translation_frame.setVisible(False)
+        self.dubbing_frame.buttons_frame.setVisible(False)
         self.video_file_frame.setVisible(is_dubbing_source and is_srt)
+
+        cards = self.dubbing_frame.stage_cards
+        for stage, widgets in cards.items():
+            widgets["include"].setEnabled(dubbing_controls_enabled)
+            widgets["settings"].setEnabled(dubbing_controls_enabled)
+            widgets["run"].setEnabled(dubbing_controls_enabled)
+        cards["transcribe"]["run"].setEnabled(
+            dubbing_controls_enabled and transcription_source_selected and media_transcription_available
+        )
+        cards["correct"]["run"].setEnabled(dubbing_controls_enabled and has_dubbing_srt)
+        cards["translate"]["run"].setEnabled(dubbing_controls_enabled and has_dubbing_srt)
+        cards["preview"]["run"].setEnabled(dubbing_controls_enabled and has_dubbing_srt)
+        cards["generate_audio"]["run"].setEnabled(
+            dubbing_controls_enabled and (not generate_needs_transcription or media_transcription_available)
+        )
+        cards["export"]["run"].setEnabled(dubbing_controls_enabled and has_dubbing_srt)
 
     def _update_language_dropdown(self):
         service = self.logic.state.tts.service
@@ -1709,6 +1811,7 @@ class SessionTab(ScrollableSettingsPage):
         target_language = self._combo_backend_value(self.dub_to_lang_combo)
         if target_language:
             setattr(self.logic.state.dubbing, "target_language", target_language)
+            self.logic.invalidate_dubbing_stage("translate")
 
     def _on_speaker_selected(self, _text: str):
         speaker_value = self._combo_backend_value(self.speaker_combo)
@@ -2480,6 +2583,7 @@ class SessionTab(ScrollableSettingsPage):
         dialog = DubbingAdvancedDialog(self.logic.state.dubbing, self)
         if dialog.exec():
             dialog.apply_to_state(self.logic.state.dubbing)
+            self.logic.invalidate_dubbing_stage("transcribe")
             self.logic.state_changed.emit()
 
     def _on_select_video_file(self):

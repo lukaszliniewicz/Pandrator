@@ -1,19 +1,28 @@
 import re
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFrame,
     QGridLayout,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
+    QHeaderView,
+    QInputDialog,
+    QMessageBox,
     QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
+from ..dialogs.llm_model_settings_dialog import LLMModelSettingsDialog
+from ...logic.llm_handler import default_model_record
 from .responsive_page import ScrollableSettingsPage, configure_form_grid
 
 class ProvidersTab(QWidget):
@@ -90,9 +99,18 @@ class ProvidersTab(QWidget):
         self.llm_provider_api_key_edit = QLineEdit()
         self.llm_provider_api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.llm_provider_api_key_edit.setPlaceholderText("Optional API key")
-        self.llm_provider_models_edit = QTextEdit()
-        self.llm_provider_models_edit.setPlaceholderText("One model per line or comma-separated")
-        self.llm_provider_models_edit.setFixedHeight(90)
+        self.llm_provider_models_table = QTableWidget(0, 4)
+        self.llm_provider_models_table.setHorizontalHeaderLabels(
+            ["Model", "Temperature", "Reasoning", "Custom pricing"]
+        )
+        self.llm_provider_models_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.llm_provider_models_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.llm_provider_models_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.llm_provider_models_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.llm_provider_models_table.setMinimumHeight(180)
+        self.llm_add_model_button = QPushButton("Add Model")
+        self.llm_delete_model_button = QPushButton("Delete Model")
+        self.llm_model_settings_button = QPushButton("Model Settings")
 
         self.llm_new_provider_button = QPushButton("New")
         self.llm_save_provider_button = QPushButton("Save")
@@ -127,11 +145,17 @@ class ProvidersTab(QWidget):
         layout.addWidget(self.llm_provider_api_key_edit, 4, 1, 1, 3)
 
         layout.addWidget(QLabel("Models:"), 5, 0)
-        layout.addWidget(self.llm_provider_models_edit, 5, 1, 1, 3)
+        layout.addWidget(self.llm_provider_models_table, 5, 1, 1, 3)
+        model_actions = QHBoxLayout()
+        model_actions.addWidget(self.llm_add_model_button)
+        model_actions.addWidget(self.llm_delete_model_button)
+        model_actions.addWidget(self.llm_model_settings_button)
+        model_actions.addStretch(1)
+        layout.addLayout(model_actions, 6, 1, 1, 3)
 
-        layout.addWidget(self.llm_save_provider_button, 6, 2)
-        layout.addWidget(self.llm_refresh_builtin_models_button, 6, 3)
-        layout.addWidget(self.llm_feedback_label, 7, 0, 1, 4)
+        layout.addWidget(self.llm_save_provider_button, 7, 2)
+        layout.addWidget(self.llm_refresh_builtin_models_button, 7, 3)
+        layout.addWidget(self.llm_feedback_label, 8, 0, 1, 4)
 
         return frame
 
@@ -278,6 +302,12 @@ class ProvidersTab(QWidget):
         self.llm_save_provider_button.clicked.connect(self._on_save_llm_provider)
         self.llm_remove_provider_button.clicked.connect(self._on_remove_llm_provider)
         self.llm_refresh_builtin_models_button.clicked.connect(self._on_refresh_builtin_llm_models)
+        self.llm_add_model_button.clicked.connect(self._on_add_llm_model)
+        self.llm_delete_model_button.clicked.connect(self._on_delete_llm_model)
+        self.llm_model_settings_button.clicked.connect(self._on_edit_llm_model)
+        self.llm_provider_models_table.itemDoubleClicked.connect(
+            lambda _item: self._on_edit_llm_model()
+        )
 
         self.tts_provider_combo.currentIndexChanged.connect(self._on_tts_provider_selected)
         self.tts_service_combo.currentIndexChanged.connect(self._on_tts_service_selected)
@@ -308,6 +338,115 @@ class ProvidersTab(QWidget):
         if not isinstance(items, list):
             return ""
         return "\n".join(str(item).strip() for item in items if str(item).strip())
+
+    def _llm_model_records(self) -> list[dict]:
+        records: list[dict] = []
+        for row in range(self.llm_provider_models_table.rowCount()):
+            item = self.llm_provider_models_table.item(row, 0)
+            record = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+            if isinstance(record, dict):
+                records.append(dict(record))
+        return records
+
+    def _set_llm_model_records(self, records) -> None:
+        normalized = [
+            dict(value) if isinstance(value, dict) else default_model_record(str(value))
+            for value in (records if isinstance(records, list) else [])
+        ]
+        self.llm_provider_models_table.setRowCount(len(normalized))
+        for row, record in enumerate(normalized):
+            model_item = QTableWidgetItem(str(record.get("id") or ""))
+            model_item.setData(Qt.ItemDataRole.UserRole, record)
+            self.llm_provider_models_table.setItem(row, 0, model_item)
+            temperature = record.get("default_temperature")
+            self.llm_provider_models_table.setItem(
+                row, 1, QTableWidgetItem("Omit" if temperature is None else f"{float(temperature):g}")
+            )
+            reasoning = str(record.get("default_reasoning_effort") or "")
+            self.llm_provider_models_table.setItem(row, 2, QTableWidgetItem(reasoning or "Omit"))
+            custom_pricing = (
+                record.get("input_cost_per_million") is not None
+                and record.get("output_cost_per_million") is not None
+            )
+            self.llm_provider_models_table.setItem(
+                row, 3, QTableWidgetItem("Configured" if custom_pricing else "Provider")
+            )
+
+    def _selected_llm_model_row(self) -> int:
+        rows = self.llm_provider_models_table.selectionModel().selectedRows()
+        return rows[0].row() if rows else -1
+
+    def _on_add_llm_model(self):
+        model_id, ok = QInputDialog.getText(self, "Add LLM Model", "Model ID:")
+        model_id = str(model_id or "").strip()
+        if not ok or not model_id:
+            return
+        records = self._llm_model_records()
+        if any(str(record.get("id") or "") == model_id for record in records):
+            self.llm_feedback_label.setText(f"Model '{model_id}' is already listed.")
+            return
+        records.append(default_model_record(model_id))
+        self._set_llm_model_records(records)
+        self.llm_provider_models_table.selectRow(len(records) - 1)
+
+    def _on_delete_llm_model(self):
+        row = self._selected_llm_model_row()
+        if row < 0:
+            return
+        records = self._llm_model_records()
+        model_id = str(records[row].get("id") or "")
+        provider_id = str(self.llm_provider_combo.currentData() or "")
+        provider_key = self.llm_provider_type_combo.currentText().strip() or "openai"
+        provider = next(
+            (
+                item
+                for item in self._llm_providers()
+                if str(item.get("id") or "") == provider_id
+            ),
+            {},
+        )
+        is_custom = bool(provider.get("is_custom", False))
+        canonical = f"custom:{provider_id}/{model_id}" if is_custom else f"{provider_key}/{model_id}"
+        replacement = ""
+        if self.logic.state.llm.default_model in {canonical, model_id}:
+            replacement_ids = [
+                str(record.get("id") or "")
+                for index, record in enumerate(records)
+                if index != row and str(record.get("id") or "")
+            ]
+            if not replacement_ids:
+                QMessageBox.warning(
+                    self, "Default Model", "Add a replacement model before deleting the active default."
+                )
+                return
+            replacement, accepted = QInputDialog.getItem(
+                self,
+                "Replace Default Model",
+                "Select the new default model:",
+                replacement_ids,
+                0,
+                False,
+            )
+            if not accepted or not replacement:
+                return
+        del records[row]
+        self._set_llm_model_records(records)
+        if replacement:
+            self.logic.state.llm.default_model = (
+                f"custom:{provider_id}/{replacement}"
+                if is_custom else f"{provider_key}/{replacement}"
+            )
+
+    def _on_edit_llm_model(self):
+        row = self._selected_llm_model_row()
+        if row < 0:
+            return
+        records = self._llm_model_records()
+        dialog = LLMModelSettingsDialog(records[row], self)
+        if dialog.exec():
+            records[row] = dialog.model_record()
+            self._set_llm_model_records(records)
+            self.llm_provider_models_table.selectRow(row)
 
     @staticmethod
     def _adapter_config_from_record(record: dict) -> dict:
@@ -423,7 +562,7 @@ class ProvidersTab(QWidget):
             self.llm_provider_type_combo.setCurrentText("openai")
             self.llm_provider_api_base_edit.setText("")
             self.llm_provider_api_key_edit.setText("")
-            self.llm_provider_models_edit.setPlainText("")
+            self._set_llm_model_records([])
             self.llm_remove_provider_button.setEnabled(False)
             return
 
@@ -431,7 +570,7 @@ class ProvidersTab(QWidget):
         self.llm_provider_type_combo.setCurrentText(str(provider.get("provider") or "openai"))
         self.llm_provider_api_base_edit.setText(str(provider.get("api_base") or ""))
         self.llm_provider_api_key_edit.setText(str(provider.get("api_key") or ""))
-        self.llm_provider_models_edit.setPlainText(self._format_items(provider.get("models", [])))
+        self._set_llm_model_records(provider.get("models", []))
         self.llm_remove_provider_button.setEnabled(bool(provider.get("is_custom", False)))
 
     def _load_tts_provider_form(self, provider_id: str):
@@ -600,7 +739,7 @@ class ProvidersTab(QWidget):
         provider_key = self.llm_provider_type_combo.currentText().strip()
         api_base = self.llm_provider_api_base_edit.text().strip()
         api_key = self.llm_provider_api_key_edit.text().strip()
-        models = self._parse_items(self.llm_provider_models_edit.toPlainText())
+        models = self._llm_model_records()
 
         success, resolved_provider_id, error_message = self.logic.save_llm_provider(
             provider_id=provider_id,

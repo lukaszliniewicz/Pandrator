@@ -12,6 +12,8 @@ from pandrator.logic.source_cleaning import (
     propose_deterministic_operations,
 )
 from pandrator.logic.source_cleaning.pdf_adapter import build_source_document as build_pdf_source_document
+from pandrator.logic.source_cleaning.pdf_adapter import _annotate_structural_roles, _lines_to_blocks
+from pandrator.logic.source_cleaning.models import SourceBlock, SourceDocument
 
 
 class _FakeOCREngine:
@@ -63,6 +65,68 @@ class _ContinuationOCREngine:
 
 
 class PDFIngestionTests(unittest.TestCase):
+    def test_native_line_grouping_keeps_margins_and_headings_separate_from_body(self):
+        def line(text, bbox, font_size):
+            return {
+                "text": text,
+                "bbox": bbox,
+                "block_index": 0,
+                "font_size": font_size,
+                "font": "Fixture",
+                "confidence": None,
+            }
+
+        payloads = _lines_to_blocks(
+            [
+                line("JOURNAL TITLE", [72, 20, 180, 32], 10),
+                line("12", [420, 20, 432, 32], 10),
+                line("A Study of Extraction", [72, 82, 300, 106], 19),
+                line("Ada Example", [72, 132, 170, 148], 13),
+                line("I. INTRODUCTION", [72, 170, 200, 184], 11),
+                line("Narration begins on this line and continues through a substantial explanation", [72, 196, 430, 209], 11),
+                line("without becoming a separate paragraph, preserving the complete argument for narration.", [72, 210, 410, 223], 11),
+            ],
+            fitz.Rect(0, 0, 500, 700),
+            "native",
+        )
+        self.assertEqual(
+            [payload["text"] for payload in payloads],
+            [
+                "JOURNAL TITLE",
+                "12",
+                "A Study of Extraction",
+                "Ada Example",
+                "I. INTRODUCTION",
+                "Narration begins on this line and continues through a substantial explanation without becoming a separate paragraph, preserving the complete argument for narration.",
+            ],
+        )
+
+        document = SourceDocument(source_type="pdf_structured", source_path="fixture.pdf", filename="fixture.pdf")
+        for index, payload in enumerate(payloads, start=1):
+            document.blocks.append(
+                SourceBlock(
+                    block_id=f"b:{index}",
+                    text=payload["text"],
+                    line_start=index,
+                    line_end=index,
+                    source_index=index,
+                    page=1,
+                    tag="p",
+                    attributes={
+                        "bbox": payload["bbox"],
+                        "page_size": [500, 700],
+                        "font_size": payload["font_size"],
+                        "role_evidence": {},
+                    },
+                )
+            )
+        _annotate_structural_roles(document)
+        by_text = {block.text: block for block in document.blocks}
+        self.assertGreaterEqual(by_text["JOURNAL TITLE"].role_score("running_header"), 0.98)
+        self.assertGreaterEqual(by_text["12"].role_score("page_number"), 0.99)
+        self.assertGreaterEqual(by_text["I. INTRODUCTION"].role_score("deterministic_chapter"), 0.85)
+        self.assertLess(by_text["A Study of Extraction"].role_score("deterministic_chapter"), 0.85)
+
     def _write_native_fixture(self, path):
         document = fitz.open()
         for page_number in range(1, 4):

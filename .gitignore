@@ -54,6 +54,7 @@ pandrator_state.sqlite3.*
 
 # User-provided voices (keep repository samples)
 tts_voices/**/*.wav
+tts_voices/voice_library.json
 !tts_voices/sample_male_new.wav
 !tts_voices/VoiceCraft/sample_male_16k.wav
 

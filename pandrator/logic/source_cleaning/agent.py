@@ -45,11 +45,13 @@ class SourceCleaningAgentConfig:
     recent_detailed_turns: int = 1
     max_batch_commands: int = 8
     max_tokens: int = 2200
-    temperature: float = 0.2
     remove_footnotes: bool = False
     filter_citations: bool = True
     max_finish_reviews: int = 2
     require_verified_finish_for_long_sources: bool = True
+    # Operations already scheduled by an earlier deterministic pass. They are
+    # included in finish reviews, but not returned as this agent's proposal.
+    baseline_operations: list[dict[str, Any]] = field(default_factory=list)
     # Phase-pipeline extensions
     allowed_op_types: frozenset | None = None  # None = all ops permitted
     previous_phase_summaries: list = field(default_factory=list)
@@ -138,7 +140,6 @@ def run_source_cleaning_agent(
             model_name=resolved_config.model_name,
             llm_settings=llm_settings,
             max_tokens=resolved_config.max_tokens,
-            temperature=resolved_config.temperature,
         )
         response, call_metadata = _normalize_completion_response(completion_response)
         _record_llm_call(
@@ -184,8 +185,20 @@ def run_source_cleaning_agent(
                 ]
 
             workflow_gaps: list[str] = []
-            if resolved_config.require_verified_finish_for_long_sources and len(document.blocks) >= 40:
-                if not inspection_actions:
+            proposed_deletions = (
+                bool(proposed_operations)
+                and resolved_config.phase_name in {"navigation", "boilerplate", "repeated_elements"}
+            )
+            chapter_inspection_required = (
+                resolved_config.require_verified_finish_for_long_sources
+                and len(document.blocks) >= 40
+            )
+            if (proposed_deletions or chapter_inspection_required) and not inspection_actions:
+                if proposed_deletions:
+                    workflow_gaps.append(
+                        "Use at least one inspection tool to verify the proposed deletion before finishing."
+                    )
+                else:
                     workflow_gaps.append(
                         "Use at least one inspection tool chosen from the source structure before finishing."
                     )
@@ -230,7 +243,7 @@ def run_source_cleaning_agent(
             if _run_chapter_review:
                 finish_review = _review_finish_command(
                     document,
-                    proposed_operations,
+                    list(resolved_config.baseline_operations) + proposed_operations,
                     remove_footnotes=resolved_config.remove_footnotes,
                 )
                 result.finish_reviews.append(finish_review)
@@ -330,7 +343,7 @@ def run_source_cleaning_agent(
             ]
             observation = _review_finish_command(
                 document,
-                proposed_operations,
+                list(resolved_config.baseline_operations) + proposed_operations,
                 remove_footnotes=resolved_config.remove_footnotes,
             )
         else:

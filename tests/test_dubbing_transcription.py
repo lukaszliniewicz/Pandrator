@@ -313,7 +313,7 @@ class DubbingTranscriptionTests(unittest.TestCase):
                     )
                 )
 
-    def test_dubbing_handler_transcription_metadata_includes_correction_usage(self):
+    def test_dubbing_handler_transcription_is_independent_from_correction(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             transcribed_path = os.path.join(temp_dir, "clip.srt")
             corrected_path = os.path.join(temp_dir, "clip_corrected.srt")
@@ -343,12 +343,10 @@ class DubbingTranscriptionTests(unittest.TestCase):
                     correction_prompt="Fix punctuation.",
                 )
 
-            self.assertEqual(result.output_path, corrected_path)
-            self.assertEqual(result.correction_cost, 0.015)
-            self.assertEqual(result.correction_response_count, 2)
-            native_correction.assert_called_once()
-            self.assertEqual(native_correction.call_args.kwargs["srt_file"], transcribed_path)
-            self.assertEqual(native_correction.call_args.kwargs["correction_instructions"], "Fix punctuation.")
+            self.assertEqual(result.output_path, transcribed_path)
+            self.assertEqual(result.correction_cost, 0.0)
+            self.assertEqual(result.correction_response_count, 0)
+            native_correction.assert_not_called()
 
 
 if __name__ == "__main__":

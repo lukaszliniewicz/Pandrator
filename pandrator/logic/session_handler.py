@@ -91,7 +91,7 @@ def build_session_config_payload(state: AppState) -> Dict[str, Any]:
     """Builds a JSON-serializable state payload for session config persistence."""
     payload: Dict[str, Any] = asdict(state)
 
-    for transient_field in ("processed_sentences", "metadata", "raw_text"):
+    for transient_field in ("processed_sentences", "metadata", "raw_text", "wizard"):
         payload.pop(transient_field, None)
 
     tts_payload = payload.get("tts")

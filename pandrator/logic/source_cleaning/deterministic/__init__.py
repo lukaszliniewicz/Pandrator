@@ -116,24 +116,29 @@ def extract_clean_epub(epub_path: str, remove_footnotes: bool = False, filter_ci
             ):
                 chapter_titles[idx] = text
 
-        # TOC entries only validate a matching heading if there is no direct
-        # or explicit chapter evidence in the document.
-        if not chapter_titles:
-            for idx, block in enumerate(blocks):
-                text = block.get("text", "").strip()
-                matched_title = _matched_toc_title(
-                    doc_href,
-                    block,
-                    ids_by_block_index,
-                    global_toc,
-                )
-                if _is_toc_validated_heading(
-                    block,
-                    matched_title,
-                    metadata,
-                    detected_lang,
-                ):
-                    chapter_titles[idx] = text
+        # TOC entries validate matching headings when no stronger evidence is
+        # available. A strongly formatted all-caps TOC heading can also be an
+        # additive title inside a document containing another direct chapter
+        # boundary (common in older Gutenberg EPUBs).
+        for idx, block in enumerate(blocks):
+            if idx in chapter_titles:
+                continue
+            text = block.get("text", "").strip()
+            if chapter_titles and not _is_all_caps_heading(text):
+                continue
+            matched_title = _matched_toc_title(
+                doc_href,
+                block,
+                ids_by_block_index,
+                global_toc,
+            )
+            if _is_toc_validated_heading(
+                block,
+                matched_title,
+                metadata,
+                detected_lang,
+            ):
+                chapter_titles[idx] = text
 
         if not chapter_titles and _has_meaningful_text(blocks):
             raw_recovered_title = global_toc.get(doc_href.lower())
@@ -529,6 +534,11 @@ def _has_meaningful_text(blocks: list[dict]) -> bool:
             continue
         return True
     return False
+
+
+def _is_all_caps_heading(text: str) -> bool:
+    letters = [character for character in str(text or "") if character.isalpha()]
+    return bool(letters) and all(character.isupper() for character in letters)
 
 
 def _is_toc_validated_heading(

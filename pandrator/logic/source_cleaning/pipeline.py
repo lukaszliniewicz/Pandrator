@@ -18,7 +18,7 @@ apply_cleaning_operations().
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from .agent import SourceCleaningAgentConfig, run_source_cleaning_agent
@@ -74,7 +74,7 @@ _PHASE_ALLOWED_OPS: dict[str, frozenset[str] | None] = {
     "navigation": frozenset({"delete_range", "delete_blocks", "delete_by_selector"}),
     "boilerplate": frozenset({"delete_range", "delete_blocks", "delete_by_selector"}),
     "repeated_elements": frozenset({"delete_range", "delete_blocks", "delete_by_selector"}),
-    "chapter_marking": frozenset({"mark_chapter", "mark_chapters_by_selector"}),
+    "chapter_marking": frozenset({"mark_chapter", "unmark_chapter", "mark_chapters_by_selector"}),
 }
 
 # Source-overview components each phase needs (reduces pre-loop LLM-adjacent work)
@@ -122,11 +122,12 @@ class SourceCleaningPipelineConfig:
     # Exact per-phase limits. When supplied, these take precedence over the legacy total.
     phase_max_iterations: dict[str, int] | None = None
     max_tokens: int = 2200
-    temperature: float = 0.2
     max_tool_result_chars: int = 12000
     max_evidence_ledger_chars: int = 10000
     recent_detailed_turns: int = 1
     max_batch_commands: int = 8
+    # Existing deterministic chapter markers are reviewable by the chapter pass.
+    baseline_operations: list[dict[str, Any]] = field(default_factory=list)
     # Override which phases run (None = all five in order)
     phase_names: list[str] | None = None
 
@@ -189,7 +190,6 @@ def run_cleaning_pipeline(
             phase_name=phase_name,
             max_iterations=budgets[phase_name],
             max_tokens=resolved.max_tokens,
-            temperature=resolved.temperature,
             max_tool_result_chars=resolved.max_tool_result_chars,
             max_evidence_ledger_chars=resolved.max_evidence_ledger_chars,
             recent_detailed_turns=resolved.recent_detailed_turns,
@@ -204,6 +204,9 @@ def run_cleaning_pipeline(
             ),
             max_finish_reviews=phase_max_finish_reviews,
             require_verified_finish_for_long_sources=(phase_name == "chapter_marking"),
+            baseline_operations=(
+                list(resolved.baseline_operations) if phase_name == "chapter_marking" else []
+            ),
         )
 
         agent_result = run_source_cleaning_agent(
@@ -233,6 +236,12 @@ def run_cleaning_pipeline(
             max_iterations=budgets[phase_name],
             warnings=list(agent_result.warnings),
             llm_usage=dict(agent_result.llm_usage),
+            summary=agent_result.summary,
+            confidence=agent_result.confidence,
+            tool_trace=list(agent_result.tool_trace),
+            finish_reviews=list(agent_result.finish_reviews),
+            raw_final_command=dict(agent_result.raw_final_command),
+            llm_calls=list(agent_result.llm_calls),
             stopped=bool(stop_event and stop_event.is_set()),
         )
         pipeline_result.phases.append(phase_result)

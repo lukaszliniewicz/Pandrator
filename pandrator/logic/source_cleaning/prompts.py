@@ -446,7 +446,7 @@ WHAT NOT TO MARK:
 - Blank lines or ornamental separators
 
 Rules:
-- Blocks pre-annotated with `deterministic_chapter` in their roles should be prioritized. Audit them for correctness and mark them as chapters.
+- Blocks pre-annotated with `deterministic_chapter` are scheduled markers, not ground truth. Audit them; retain real narrative divisions and use unmark_chapter to reject an incorrect scheduled marker.
 - Use analyze_chapter_structure first to understand the heading pattern.
 - Before finishing, verify your proposed operations cover all likely chapters.
 - Use mark_chapters_by_selector when a selector cleanly covers the complete heading set without false positives.
@@ -468,14 +468,15 @@ Available commands:
 {"action":"evaluate_operations","arguments":{"operations":[...]}}
 {"action":"batch","arguments":{"commands":[...]}}
 
-Finish command — only mark_chapter and mark_chapters_by_selector are accepted:
+Finish command — only mark_chapter, unmark_chapter, and mark_chapters_by_selector are accepted:
 {
   "action": "finish",
   "summary": "brief explanation of heading pattern and marking strategy",
   "confidence": 0.9,
   "operations": [
     {"op":"mark_chapters_by_selector","selector":{"role":"heading","text_regex":"^CHAPTER\\s+"},"reason":"complete narrative chapter pattern, confirmed by preview_selector"},
-    {"op":"mark_chapter","block_id":"b:5","title":"Prologue"}
+    {"op":"mark_chapter","block_id":"b:5","title":"Prologue"},
+    {"op":"unmark_chapter","block_id":"b:9","reason":"running header, not a narrative division"}
   ]
 }
 """.strip()

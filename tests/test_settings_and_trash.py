@@ -3,6 +3,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 
 from pandrator.app_state import AppState
 from pandrator.logic import session_handler, settings_handler, state_db_handler
@@ -81,7 +82,7 @@ class SettingsAndTrashTests(unittest.TestCase):
         session_handler.save_session_config(session_name, payload)
         loaded = session_handler.load_session_config(session_name)
 
-        with sqlite3.connect(state_db_handler.get_db_path()) as connection:
+        with closing(sqlite3.connect(state_db_handler.get_db_path())) as connection:
             snapshot_count = connection.execute(
                 "SELECT COUNT(*) FROM session_config_snapshots WHERE session_name = ?",
                 (session_name,),
@@ -93,7 +94,7 @@ class SettingsAndTrashTests(unittest.TestCase):
 
         changed_payload = {**payload, "source_file_path": payload["source_file_path"] + ".changed"}
         session_handler.save_session_config(session_name, changed_payload)
-        with sqlite3.connect(state_db_handler.get_db_path()) as connection:
+        with closing(sqlite3.connect(state_db_handler.get_db_path())) as connection:
             changed_snapshot_count = connection.execute(
                 "SELECT COUNT(*) FROM session_config_snapshots WHERE session_name = ?",
                 (session_name,),
@@ -134,6 +135,32 @@ class SettingsAndTrashTests(unittest.TestCase):
             restored.source_cleaning.phase_max_iterations,
             state.source_cleaning.phase_max_iterations,
         )
+        self.assertIsNone(restored.source_cleaning.llm_temperature)
+
+        legacy_payload = {
+            "llm": {
+                "default_model": state.llm.default_model,
+                "provider_configs": [
+                    {
+                        **provider,
+                        "models": [model["id"] if isinstance(model, dict) else model for model in provider["models"]],
+                    }
+                    for provider in state.llm.provider_configs
+                ],
+            },
+            "source_cleaning": {"llm_temperature": 0.7},
+        }
+        migrated = AppState()
+        settings_handler.apply_global_settings_payload(migrated, legacy_payload)
+        default_model_id = migrated.llm.default_model.split("/", 1)[-1]
+        default_record = next(
+            model
+            for provider in migrated.llm.provider_configs
+            for model in provider["models"]
+            if model["id"] == default_model_id
+        )
+        self.assertEqual(default_record["default_temperature"], 0.7)
+        self.assertIsNone(migrated.source_cleaning.llm_temperature)
 
     def test_kokoro_default_voice_settings_normalize_language_keys(self):
         state = AppState()
@@ -268,7 +295,7 @@ class SettingsAndTrashTests(unittest.TestCase):
         self.assertTrue(moved_again)
 
         # Force expiry in DB for deterministic cleanup test.
-        with sqlite3.connect(state_db_handler.get_db_path()) as connection:
+        with closing(sqlite3.connect(state_db_handler.get_db_path())) as connection:
             connection.execute(
                 "UPDATE trash_entries SET expires_at = '2000-01-01T00:00:00+00:00' WHERE trash_path = ?",
                 (trash_path_again,),
@@ -318,7 +345,7 @@ class SettingsAndTrashTests(unittest.TestCase):
         rows = state_db_handler.list_sessions(include_trashed=True)
         self.assertNotIn(session_name, {row["session_name"] for row in rows})
 
-        with sqlite3.connect(state_db_handler.get_db_path()) as connection:
+        with closing(sqlite3.connect(state_db_handler.get_db_path())) as connection:
             deleted_at = connection.execute(
                 "SELECT deleted_at FROM trash_entries WHERE trash_path = ?",
                 (trash_path,),

@@ -136,7 +136,11 @@ def validate_cleaning_result(
             blocking=True,
         )
 
-    if _contains_toc_like_section(result.cleaned_text):
+    if _contains_toc_like_section(
+        result.cleaned_text,
+        document=document,
+        deleted_block_ids=deleted_ids,
+    ):
         add_warning("Cleaned text may still contain a table-of-contents-like section.", blocking=True)
 
     if remaining_toc_blocks >= 4:
@@ -181,7 +185,12 @@ def validate_cleaning_result(
     return report
 
 
-def _contains_toc_like_section(text: str) -> bool:
+def _contains_toc_like_section(
+    text: str,
+    *,
+    document: SourceDocument | None = None,
+    deleted_block_ids: set[str] | None = None,
+) -> bool:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if not lines:
         return False
@@ -197,11 +206,40 @@ def _contains_toc_like_section(text: str) -> bool:
         if sum(1 for item in following if _looks_like_toc_entry(item)) >= 4:
             return True
     front_lines = lines[:120]
+    if document is not None:
+        deleted = deleted_block_ids or set()
+        front_lines = [
+            block
+            for block in document.blocks
+            if block.block_id not in deleted and block.text.strip()
+        ][:120]
     for index in range(0, max(1, len(front_lines) - 7)):
         window = front_lines[index : index + 8]
-        if sum(_looks_like_chapter_heading(item) for item in window) >= 5:
+        if sum(
+            _looks_like_chapter_heading(_toc_candidate_text(item))
+            and not _is_non_narrative_toc_candidate(item)
+            for item in window
+        ) >= 5:
             return True
     return False
+
+
+def _toc_candidate_text(item: Any) -> str:
+    return str(getattr(item, "text", item) or "")
+
+
+def _is_non_narrative_toc_candidate(item: Any) -> bool:
+    roles = set(getattr(item, "role_candidates", []) or [])
+    return bool(
+        roles
+        & {
+            "footnote",
+            "deterministic_footnote",
+            "page_number",
+            "running_header",
+            "repeated_marginal",
+        }
+    )
 
 
 def _looks_like_toc_entry(line: str) -> bool:

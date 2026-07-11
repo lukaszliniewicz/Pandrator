@@ -40,8 +40,12 @@ from .logic.dubbing import (
     llm_correction as dubbing_llm_correction,
     llm_translation as dubbing_llm_translation,
     settings as dubbing_settings,
+    subtitle_comparison as dubbing_subtitle_comparison,
+    workflow as dubbing_workflow,
     zoom as dubbing_zoom,
 )
+from .logic.dubbing.bilingual_ass import write_bilingual_ass
+from .logic.dubbing.video_muxing import build_multi_soft_subtitle_command
 from .logic.source_media import (
     MEDIA_SOURCE_EXTENSIONS,
     is_audio_source,
@@ -206,11 +210,28 @@ class AppLogic(QObject):
         run_id = str(run.get("run_id") or "") if run else ""
         if not run_id:
             return {}
-
-        return {
+        legacy_states = {
             str(step.get("step_key") or ""): str(step.get("status") or "pending")
             for step in state_db_handler.get_dubbing_steps(run_id)
             if str(step.get("step_key") or "").strip()
+        }
+        run_dir = str(run.get("run_dir") or "")
+        if run_dir and os.path.isfile(dubbing_workflow.manifest_path(run_dir)):
+            workflow_states = dubbing_workflow.stage_states(
+                run_dir,
+                dubbing_workflow.applicable_stages(
+                    str(self.state.source_file_path or ""),
+                    str(self.state.dubbing.video_file_path or ""),
+                ),
+            )
+            return workflow_states
+        return {
+            {
+                "manual_timing": "preview",
+                "tts_generation": "generate_audio",
+                "render": "export",
+            }.get(key, key): value
+            for key, value in legacy_states.items()
         }
 
     def _initialize_state_index(self):
@@ -291,6 +312,111 @@ class AppLogic(QObject):
         """Returns True when the selected source uses dubbing workflow."""
         return self._is_dubbing_source_selected()
 
+    def apply_workflow_preset(
+        self,
+        workflow_kind: str,
+        preset: str,
+        *,
+        translate_voiceover: bool = False,
+        source_hint: str = "",
+    ) -> None:
+        kind = str(workflow_kind or "audiobook").strip().lower()
+        if kind not in {"audiobook", "subtitles", "voiceover"}:
+            kind = "audiobook"
+        normalized_preset = str(preset or "custom").strip().lower()
+        if normalized_preset not in dubbing_workflow.PRESET_STAGES:
+            normalized_preset = "custom"
+        self.state.workflow.workflow_kind = kind
+        self.state.workflow.workflow_preset = normalized_preset
+        self.state.workflow.included_stages = dubbing_workflow.preset_stages(
+            normalized_preset,
+            str(self.state.source_file_path or source_hint or ""),
+            translate_voiceover=translate_voiceover,
+        )
+        self.state.dubbing.correction_enabled = "correct" in self.state.workflow.included_stages
+        self.state.dubbing.translation_enabled = "translate" in self.state.workflow.included_stages
+        self._persist_session_config(force=True)
+        self.state_changed.emit()
+
+    def set_dubbing_stage_included(self, stage: str, included: bool) -> None:
+        normalized = str(stage or "").strip().lower()
+        if normalized not in dubbing_workflow.STAGE_ORDER:
+            return
+        selected = [
+            item for item in self.state.workflow.included_stages
+            if item in dubbing_workflow.STAGE_ORDER and item != normalized
+        ]
+        if included:
+            selected.append(normalized)
+        self.state.workflow.included_stages = [
+            item for item in dubbing_workflow.STAGE_ORDER if item in selected
+        ]
+        self.state.dubbing.correction_enabled = "correct" in self.state.workflow.included_stages
+        self.state.dubbing.translation_enabled = "translate" in self.state.workflow.included_stages
+        self._persist_session_config(force=True)
+        self.state_changed.emit()
+
+    def invalidate_dubbing_stage(self, stage: str) -> None:
+        run = self._synchronize_active_dubbing_run()
+        run_dir = str(run.get("run_dir") or "") if run else ""
+        if run_dir:
+            dubbing_workflow.invalidate_stage(run_dir, str(stage or ""))
+            self.state_changed.emit()
+
+    def get_dubbing_workflow_snapshot(self) -> dict:
+        source = str(self.state.source_file_path or "")
+        applicable = dubbing_workflow.applicable_stages(
+            source,
+            str(self.state.dubbing.video_file_path or ""),
+        )
+        run = self._synchronize_active_dubbing_run()
+        run_dir = str(run.get("run_dir") or "") if run else ""
+        has_manifest = bool(
+            run_dir and os.path.isfile(dubbing_workflow.manifest_path(run_dir))
+        )
+        if has_manifest:
+            states = dubbing_workflow.stage_states(run_dir, applicable)
+        else:
+            legacy_states = self.get_active_dubbing_step_states()
+            states = {
+                stage: (
+                    "unavailable"
+                    if stage not in applicable
+                    else legacy_states.get(stage, "ready")
+                )
+                for stage in dubbing_workflow.STAGE_ORDER
+            }
+        return {
+            "workflow_kind": self.state.workflow.workflow_kind,
+            "workflow_preset": self.state.workflow.workflow_preset,
+            "included_stages": list(self.state.workflow.included_stages),
+            "applicable_stages": applicable,
+            "states": states,
+        }
+
+    def get_subtitle_preview_paths(self) -> dict[str, str]:
+        return {
+            "source": self._get_active_dubbing_artifact_path(
+                ["reviewed_source_srt", "transcribed_srt", "source_srt"], suffixes=(".srt",)
+            ),
+            "corrected": self._get_active_dubbing_artifact_path(
+                ["reviewed_corrected_srt", "corrected_srt"], suffixes=(".srt",)
+            ),
+            "translated": self._get_active_dubbing_artifact_path(
+                ["reviewed_translated_srt", "translated_srt"], suffixes=(".srt",)
+            ),
+        }
+
+    def get_subtitle_preview_lineage_paths(self) -> dict[str, str]:
+        run = self._synchronize_active_dubbing_run()
+        run_dir = str(run.get("run_dir") or "") if run else ""
+        manifest = dubbing_workflow.load_manifest(run_dir) if run_dir else {}
+        stages = manifest.get("stages", {}) if isinstance(manifest.get("stages"), dict) else {}
+        return {
+            "corrected": str((stages.get("correct") or {}).get("lineage_path") or ""),
+            "translated": str((stages.get("translate") or {}).get("lineage_path") or ""),
+        }
+
     def _synchronize_active_dubbing_run(self) -> dict | None:
         if not self._is_named_session_active():
             self._active_dubbing_run_id = None
@@ -324,19 +450,18 @@ class AppLogic(QObject):
             getattr(self.state.llm, "default_model", "")
         )
         settings_snapshot["request_timeout_seconds"] = getattr(self.state.llm, "request_timeout_seconds", 600)
-        settings_snapshot["reasoning_effort"] = getattr(self.state.llm, "reasoning_effort", "")
         return settings_snapshot
 
     def _build_dubbing_run_snapshot(self) -> dict:
         """Build a reproducible, secret-free settings snapshot for persisted run metadata."""
         self.normalize_dubbing_settings_state(self.state.dubbing)
         settings_snapshot = copy.deepcopy(self.state.dubbing.__dict__)
-        settings_snapshot["settings_schema_version"] = 2
+        settings_snapshot["settings_schema_version"] = 3
+        settings_snapshot["workflow"] = copy.deepcopy(self.state.workflow.__dict__)
         settings_snapshot["llm_default_model"] = llm_handler.normalize_default_model(
             getattr(self.state.llm, "default_model", "")
         )
         settings_snapshot["request_timeout_seconds"] = getattr(self.state.llm, "request_timeout_seconds", 600)
-        settings_snapshot["reasoning_effort"] = getattr(self.state.llm, "reasoning_effort", "")
         return settings_snapshot
 
     def _build_zoom_correction_settings_payload(self) -> dict:
@@ -467,6 +592,14 @@ class AppLogic(QObject):
 
         try:
             state_db_handler.record_dubbing_step(run_id, step_key, status, detail)
+            run_dir = str(run.get("run_dir") or "")
+            workflow_stage = {
+                "manual_timing": "preview",
+                "tts_generation": "generate_audio",
+                "render": "export",
+            }.get(step_key, step_key)
+            if run_dir and workflow_stage in dubbing_workflow.STAGE_ORDER:
+                dubbing_workflow.set_stage_status(run_dir, workflow_stage, status)
             normalized_status = str(status or "").strip().lower()
             run_status = ""
             if normalized_status == "running":
@@ -482,6 +615,37 @@ class AppLogic(QObject):
             logging.warning("Could not record dubbing step '%s' (%s): %s", step_key, status, e)
         else:
             self.state_changed.emit()
+
+    def _record_workflow_stage(
+        self,
+        stage: str,
+        artifact_path: str = "",
+        *,
+        parent_path: str = "",
+        stage_settings: dict | None = None,
+    ) -> None:
+        run = self._synchronize_active_dubbing_run()
+        run_dir = str(run.get("run_dir") or "") if run else ""
+        if not run_dir:
+            return
+        lineage_path = ""
+        if parent_path and artifact_path and parent_path != artifact_path:
+            lineage_path = os.path.join(run_dir, f"{stage}_lineage.json")
+            try:
+                dubbing_subtitle_comparison.build_lineage(
+                    parent_path, artifact_path, lineage_path
+                )
+            except Exception as error:
+                logging.warning("Could not build subtitle lineage for %s: %s", stage, error)
+                lineage_path = ""
+        dubbing_workflow.record_stage(
+            run_dir,
+            stage,
+            artifact_path,
+            parent_path=parent_path,
+            stage_settings=stage_settings or {},
+            lineage_path=lineage_path,
+        )
 
     def _record_dubbing_llm_usage(
         self,
@@ -1551,6 +1715,27 @@ class AppLogic(QObject):
             )
 
         source_ext = os.path.splitext(restored_state.source_file_path)[1].lower() if restored_state.source_file_path else ""
+        has_saved_workflow = isinstance(saved_state_payload, dict) and isinstance(
+            saved_state_payload.get("workflow"), dict
+        )
+        if self._is_dubbing_source_extension(source_ext) and not has_saved_workflow:
+            restored_state.workflow.workflow_kind = (
+                "voiceover" if bool(restored_state.processed_sentences) else "subtitles"
+            )
+            if restored_state.dubbing.translation_enabled:
+                preset = "translate_subtitles"
+            elif restored_state.dubbing.correction_enabled:
+                preset = "clean_subtitles"
+            else:
+                preset = "transcribe"
+            if restored_state.workflow.workflow_kind == "voiceover":
+                preset = "voiceover"
+            restored_state.workflow.workflow_preset = preset
+            restored_state.workflow.included_stages = dubbing_workflow.preset_stages(
+                preset,
+                restored_state.source_file_path,
+                translate_voiceover=bool(restored_state.dubbing.translation_enabled),
+            )
         if source_ext == ".srt":
             video_path = restored_state.dubbing.video_file_path
             if video_path and not os.path.isabs(video_path):
@@ -1881,6 +2066,17 @@ class AppLogic(QObject):
                 self._set_processed_sentences_snapshot([])
                 self._active_dubbing_run_id = None
 
+            if self._is_dubbing_source_selected() and self.state.workflow.workflow_kind == "audiobook":
+                self.state.workflow.workflow_kind = "subtitles"
+                self.state.workflow.workflow_preset = "transcribe"
+                self.state.workflow.included_stages = dubbing_workflow.preset_stages(
+                    "transcribe", self.state.source_file_path
+                )
+            elif not self._is_dubbing_source_selected():
+                self.state.workflow.workflow_kind = "audiobook"
+                self.state.workflow.workflow_preset = "custom"
+                self.state.workflow.included_stages = []
+
             self.state.raw_text = raw_text
             if raw_text:
                 self.log_message.emit("Text extracted successfully.")
@@ -2140,7 +2336,6 @@ class AppLogic(QObject):
         model_name: str | None = None,
         max_iterations: int | None = None,
         phase_max_iterations: dict[str, int] | None = None,
-        reasoning_effort: str | None = None,
         progress_callback=None,
         stop_event=None,
         extracted_text: str | None = None,
@@ -2189,13 +2384,7 @@ class AppLogic(QObject):
         output_dir = os.path.join(session_dir, "_source_cleaning")
         resolved_model = str(model_name or "default").strip() or "default"
 
-        # Build an llm_settings view that reflects any per-run reasoning_effort
-        # override.  We copy rather than mutate so the global state stays clean.
         llm_settings_for_run = self.state.llm
-        if reasoning_effort is not None:
-            import copy as _copy
-            llm_settings_for_run = _copy.copy(self.state.llm)
-            llm_settings_for_run.reasoning_effort = str(reasoning_effort).strip()
 
         deterministic_operations = (
             self._pdf_deterministic_operations(document, remove_footnotes=remove_footnotes)
@@ -2226,6 +2415,11 @@ class AppLogic(QObject):
             filter_citations=filter_citations,
             total_max_iterations=int(max_iterations) if max_iterations is not None else 53,
             phase_max_iterations=resolved_phase_iterations,
+            baseline_operations=[
+                operation
+                for operation in deterministic_operations
+                if str(operation.get("op") or "") == "mark_chapter"
+            ],
         )
         emit_progress("Running source-cleaning pipeline...")
         pipeline_result = source_cleaning.run_cleaning_pipeline(
@@ -2252,6 +2446,11 @@ class AppLogic(QObject):
 
         cleaning_result.report["pipeline"] = pipeline_result.to_dict()
         cleaning_result.report["deterministic_operations"] = deterministic_operations
+        cleaning_result.report["deterministic_chapter_suggestions"] = [
+            operation
+            for operation in deterministic_operations
+            if str(operation.get("op") or "") == "mark_chapter"
+        ]
         cleaning_result.report["llm_usage"] = pipeline_result.llm_usage
         cleaning_result.report["validation"] = validation.to_dict()
         cleaning_result.report["artifacts_dir"] = output_dir
@@ -2540,8 +2739,20 @@ class AppLogic(QObject):
                 "success",
             )
             self.log_message.emit(f"Timing fine-tuning complete: {corrected_srt_abs}")
-            self._register_dubbing_artifact("manual_timing_srt", corrected_srt_abs, is_current=True)
-            self._register_dubbing_artifact("transcribed_srt", corrected_srt_abs, is_current=True)
+            preview_paths = self.get_subtitle_preview_paths()
+            if os.path.normcase(os.path.abspath(preview_paths.get("translated") or "")) == os.path.normcase(original_srt_abs):
+                reviewed_role = "reviewed_translated_srt"
+            elif os.path.normcase(os.path.abspath(preview_paths.get("corrected") or "")) == os.path.normcase(original_srt_abs):
+                reviewed_role = "reviewed_corrected_srt"
+            else:
+                reviewed_role = "reviewed_source_srt"
+            self._register_dubbing_artifact(reviewed_role, corrected_srt_abs, is_current=True)
+            self._record_workflow_stage(
+                "preview",
+                corrected_srt_abs,
+                parent_path=srt_file,
+                stage_settings={"reviewed_role": reviewed_role},
+            )
             self._mark_dubbing_step("manual_timing", "completed")
         else:
             self._set_session_activity(
@@ -2576,7 +2787,10 @@ class AppLogic(QObject):
             "correct",
             cost=result.cost,
             response_count=result.response_count,
-            metadata={"output_path": result.output_path},
+            metadata={
+                "output_path": result.output_path,
+                "cost_sources": list(result.cost_sources),
+            },
         )
         return result
 
@@ -2603,7 +2817,10 @@ class AppLogic(QObject):
             "translate",
             cost=result.cost,
             response_count=result.response_count,
-            metadata={"output_path": result.output_path},
+            metadata={
+                "output_path": result.output_path,
+                "cost_sources": list(result.cost_sources),
+            },
         )
         return result
 
@@ -2721,6 +2938,171 @@ class AppLogic(QObject):
         thread.start()
         return thread
 
+    def export_dubbing_workflow(self, options: dict) -> None:
+        if self.is_generation_or_regeneration_running():
+            self._notify_user("Wait for audio generation to finish before exporting.", level="warning")
+            return
+        self._run_threaded_task(self._export_dubbing_workflow_thread, dict(options or {}))
+
+    def _export_dubbing_workflow_thread(self, options: dict) -> None:
+        run = self._ensure_dubbing_run_for_task("export")
+        if run is None:
+            return
+        run_dir = str(run.get("run_dir") or self._get_dubbing_work_dir(ensure_exists=True))
+        output_dir = session_handler.get_session_final_output_path(self.state.session_name)
+        os.makedirs(output_dir, exist_ok=True)
+        preview_paths = self.get_subtitle_preview_paths()
+        source_srt = preview_paths.get("corrected") or preview_paths.get("source") or ""
+        translated_srt = preview_paths.get("translated") or ""
+        track_mode = str(options.get("track_mode") or "source")
+        selected_srts: list[tuple[str, str, str]] = []
+        source_language = str(self.state.dubbing.original_language or self.state.dubbing.stt_language or "und")
+        target_language = str(self.state.dubbing.target_language or "en")
+        if track_mode in {"source", "both"} and source_srt:
+            selected_srts.append((source_srt, source_language, "Source / corrected"))
+        if track_mode in {"translation", "both"} and translated_srt:
+            selected_srts.append((translated_srt, target_language, "Translation"))
+        if not selected_srts:
+            self.show_error.emit("Export Error", "No subtitle artifact is available to export.")
+            return
+
+        video_source = self._resolve_dubbing_video_source()
+        subtitle_mode = str(options.get("subtitle_mode") or "none")
+        audio_mode = str(options.get("audio_mode") or "source")
+        if video_source and os.path.isfile(video_source) and audio_mode != "source" and self.has_any_generation_progress():
+            configured_tracks = [
+                {
+                    "path": path,
+                    "language": language,
+                    "title": title,
+                    "default": title == "Translation",
+                }
+                for path, language, title in selected_srts
+            ] if subtitle_mode != "none" else []
+            self._orchestrate_add_to_video(
+                run_dir,
+                output_dir,
+                subtitle_mode=subtitle_mode,
+                dubbed_audio_only=audio_mode == "dubbed",
+                subtitle_tracks=configured_tracks,
+                export_options=options,
+            )
+            return
+
+        exported: list[str] = []
+        if video_source and os.path.isfile(video_source) and subtitle_mode != "none":
+            output_path = os.path.join(output_dir, f"{self.state.session_name}_{subtitle_mode}.mp4")
+            self._mark_dubbing_step("render", "running")
+            if subtitle_mode == "soft":
+                tracks = [
+                    {
+                        "path": path,
+                        "language": language,
+                        "title": title,
+                        "default": title == "Translation",
+                    }
+                    for path, language, title in selected_srts
+                ]
+                command = build_multi_soft_subtitle_command(video_source, tracks, output_path)
+                process = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
+                success = process.returncode == 0 and os.path.isfile(output_path)
+                if not success:
+                    logging.error("Soft subtitle export failed: %s", process.stdout or process.stderr)
+            else:
+                burn_path = selected_srts[-1][0]
+                if len(selected_srts) > 1:
+                    burn_path = write_bilingual_ass(
+                        selected_srts[0][0], selected_srts[-1][0], os.path.join(run_dir, "bilingual_subtitles.ass")
+                    )
+                success = dubbing_handler.add_subtitles_to_video(
+                    video_source,
+                    burn_path,
+                    output_path,
+                    subtitle_mode="burned",
+                    subtitle_language=target_language if translated_srt else source_language,
+                )
+            if not success:
+                self._mark_dubbing_step("render", "failed", "Subtitle video export failed.")
+                self.show_error.emit("Export Error", "Could not create the requested video output.")
+                return
+            exported.append(output_path)
+            self._register_dubbing_artifact(f"final_video_{subtitle_mode}", output_path, is_current=True)
+            self._record_workflow_stage("export", output_path, parent_path=selected_srts[-1][0], stage_settings=options)
+            self._mark_dubbing_step("render", "completed")
+        else:
+            for path, language, title in selected_srts:
+                suffix = "translation" if title == "Translation" else "source"
+                destination = os.path.join(output_dir, f"{self.state.session_name}_{suffix}_{language}.srt")
+                shutil.copy2(path, destination)
+                exported.append(destination)
+            media_source = self._resolve_dubbing_media_source()
+            if audio_mode == "source" and media_source and is_audio_source(media_source):
+                extension = os.path.splitext(media_source)[1] or ".wav"
+                audio_destination = os.path.join(
+                    output_dir, f"{self.state.session_name}_source_audio{extension}"
+                )
+                shutil.copy2(media_source, audio_destination)
+                exported.append(audio_destination)
+            elif audio_mode != "source" and self.has_any_generation_progress():
+                audio_destination = self._export_generated_dubbing_audio(output_dir)
+                if audio_destination:
+                    exported.append(audio_destination)
+            self._record_workflow_stage("export", exported[-1], parent_path=selected_srts[-1][0], stage_settings=options)
+            self._mark_dubbing_step("render", "completed")
+
+        self.dubbing_video_saved.emit(exported)
+        self._set_session_activity("Export complete", f"Saved {len(exported)} output file(s).", "success")
+
+    def _export_generated_dubbing_audio(self, output_dir: str) -> str:
+        wav_dir = next(
+            (
+                path
+                for path in self._get_candidate_sentence_wavs_dirs()
+                if self._session_dir_has_sentence_wavs(os.path.dirname(path))
+            ),
+            "",
+        )
+        if not wav_dir or not os.path.isdir(wav_dir):
+            return ""
+        wav_files = [
+            os.path.join(wav_dir, name)
+            for name in os.listdir(wav_dir)
+            if name.lower().endswith(".wav") and os.path.isfile(os.path.join(wav_dir, name))
+        ]
+        wav_files.sort(
+            key=lambda path: (
+                int(re.findall(r"(\d+)", os.path.basename(path))[-1])
+                if re.findall(r"(\d+)", os.path.basename(path))
+                else sys.maxsize,
+                os.path.basename(path).lower(),
+            )
+        )
+        if not wav_files:
+            return ""
+        list_path = ""
+        output_path = os.path.join(output_dir, f"{self.state.session_name}_dubbing_audio.wav")
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", delete=False, encoding="utf-8", suffix=".txt", dir=output_dir
+            ) as file_handle:
+                list_path = file_handle.name
+                for wav_path in wav_files:
+                    file_handle.write(f"file '{os.path.abspath(wav_path)}'\n")
+            process = subprocess.run(
+                ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path, "-c:a", "pcm_s16le", output_path],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            if process.returncode == 0 and os.path.isfile(output_path):
+                return output_path
+            logging.error("Dubbing audio export failed: %s", process.stdout or process.stderr)
+            return ""
+        finally:
+            if list_path and os.path.isfile(list_path):
+                os.remove(list_path)
+
     def run_dubbing_task(
         self,
         task: str,
@@ -2819,6 +3201,9 @@ class AppLogic(QObject):
             self._record_transcription_correction_usage(transcription_result)
             if transcribed_srt:
                 self._register_dubbing_artifact("transcribed_srt", transcribed_srt, is_current=True)
+                self._record_workflow_stage(
+                    "transcribe", transcribed_srt, stage_settings=dub_settings_payload
+                )
                 self._mark_dubbing_step("transcribe", "completed")
                 self._set_session_activity(
                     "Transcription complete",
@@ -2837,7 +3222,9 @@ class AppLogic(QObject):
                 )
                 self._mark_dubbing_step("transcribe", "failed", "No transcribed SRT was found.")
         elif task_name == "correct":
-            srt_file = self._find_latest_srt(dubbing_session_dir, must_not_be_equalized=True)
+            srt_file = self._get_active_dubbing_artifact_path(
+                ["transcribed_srt", "source_srt"], suffixes=(".srt",)
+            ) or self._find_latest_srt(dubbing_session_dir, must_not_be_equalized=True)
             if srt_file:
                 self._set_session_activity(
                     "Correcting subtitles",
@@ -2866,6 +3253,12 @@ class AppLogic(QObject):
                 corrected_srt = correction_result.output_path or self._find_latest_srt(dubbing_session_dir, must_not_be_equalized=True)
                 if corrected_srt:
                     self._register_dubbing_artifact("corrected_srt", corrected_srt, is_current=True)
+                    self._record_workflow_stage(
+                        "correct",
+                        corrected_srt,
+                        parent_path=srt_file,
+                        stage_settings=dub_settings_payload,
+                    )
                 self._mark_dubbing_step("correct", "completed")
                 self._set_session_activity(
                     "Subtitle correction complete",
@@ -2881,7 +3274,10 @@ class AppLogic(QObject):
                 self.log_message.emit("No SRT file found to correct.")
                 self._mark_dubbing_step("correct", "failed", "No SRT file was found.")
         elif task_name == "translate":
-            srt_file = self._find_latest_srt(dubbing_session_dir, must_not_be_equalized=True)
+            srt_file = self._get_active_dubbing_artifact_path(
+                ["reviewed_corrected_srt", "corrected_srt", "transcribed_srt", "source_srt"],
+                suffixes=(".srt",),
+            ) or self._find_latest_srt(dubbing_session_dir, must_not_be_equalized=True)
             if srt_file:
                 self._set_session_activity(
                     "Translating subtitles",
@@ -2909,6 +3305,12 @@ class AppLogic(QObject):
                 translated_srt = translation_result.output_path or self._find_latest_srt(dubbing_session_dir, must_not_be_equalized=True)
                 if translated_srt:
                     self._register_dubbing_artifact("translated_srt", translated_srt, is_current=True)
+                    self._record_workflow_stage(
+                        "translate",
+                        translated_srt,
+                        parent_path=srt_file,
+                        stage_settings=dub_settings_payload,
+                    )
                 self._mark_dubbing_step("translate", "completed")
                 self._set_session_activity(
                     "Translation complete",
@@ -2954,8 +3356,25 @@ class AppLogic(QObject):
         auto_add_to_video: bool = False,
     ):
         """Full workflow to generate dubbing audio from a video."""
-        # 1. Transcribe if no SRT exists
-        srt_file = self._find_latest_srt(session_dir, must_not_be_equalized=True)
+        included_stages = set(self.state.workflow.included_stages)
+        workflow_states = dubbing_workflow.stage_states(
+            session_dir,
+            dubbing_workflow.applicable_stages(
+                str(self.state.source_file_path or ""),
+                str(self.state.dubbing.video_file_path or ""),
+            ),
+        )
+        # 1. Begin from the source/transcription artifact, never from a stale
+        # correction or translation left by an earlier workflow configuration.
+        source_path = str(self.state.source_file_path or "")
+        srt_file = self._get_active_dubbing_artifact_path(
+            ["reviewed_source_srt", "transcribed_srt", "source_srt"],
+            suffixes=(".srt",),
+        )
+        if not srt_file and source_path.lower().endswith(".srt") and os.path.exists(source_path):
+            srt_file = source_path
+        if not srt_file:
+            srt_file = self._find_latest_srt(session_dir, must_not_be_equalized=True)
         if not srt_file:
             self._set_session_activity(
                 "Transcribing subtitles",
@@ -2989,6 +3408,7 @@ class AppLogic(QObject):
                 return
             self._record_transcription_correction_usage(transcription_result)
             self._register_dubbing_artifact("transcribed_srt", srt_file, is_current=True)
+            self._record_workflow_stage("transcribe", srt_file, stage_settings=dub_settings)
             self._mark_dubbing_step("transcribe", "completed")
 
             self.log_message.emit(
@@ -2997,43 +3417,87 @@ class AppLogic(QObject):
         else:
             self._register_dubbing_artifact("source_srt", srt_file, is_current=True)
 
-        # 2. Translate if enabled
-        if bool(dub_settings.get("translation_enabled")):
-            self._set_session_activity(
-                "Translating subtitles",
-                "Translation is enabled, so the subtitle text is being translated now.",
-                "active",
+        # 2. Correct when included and not already current for these settings.
+        if "correct" in included_stages:
+            corrected_current = self._get_active_dubbing_artifact_path(
+                ["reviewed_corrected_srt", "corrected_srt"], suffixes=(".srt",)
             )
-            self.log_message.emit("Translation is enabled, starting translation...")
-            self._mark_dubbing_step("translate", "running")
-            try:
-                translation_result = self._translate_dubbing_subtitles_native(
-                    session_dir,
-                    srt_file,
-                    dub_settings,
-                )
-            except Exception as error:
-                logging.error("Subtitle translation failed for '%s': %s", srt_file, error, exc_info=True)
-                self._mark_dubbing_step("translate", "failed", "Subtitle translation failed.")
+            if corrected_current and workflow_states.get("correct") == "completed":
+                srt_file = corrected_current
+            else:
+                parent_srt = srt_file
                 self._set_session_activity(
-                    "Translation failed",
-                    "The subtitle translation step did not complete successfully.",
-                    "error",
+                    "Correcting subtitles",
+                    "Correction is included, so subtitle text is being cleaned before translation or speech generation.",
+                    "active",
                 )
-                self.show_error.emit("Dubbing Error", "Translation failed. Check logs for details.")
-                return
-            srt_file = translation_result.output_path or self._find_latest_srt(session_dir, must_not_be_equalized=True)
-            if not srt_file:
-                self._mark_dubbing_step("translate", "failed", "No translated SRT was produced.")
+                self._mark_dubbing_step("correct", "running")
+                try:
+                    correction_result = self._correct_dubbing_subtitles_native(
+                        session_dir, parent_srt, dub_settings, correction_prompt
+                    )
+                except Exception as error:
+                    logging.error("Subtitle correction failed for '%s': %s", parent_srt, error, exc_info=True)
+                    self._mark_dubbing_step("correct", "failed", "Subtitle correction failed.")
+                    self.show_error.emit("Dubbing Error", "Subtitle correction failed. Check logs for details.")
+                    return
+                srt_file = correction_result.output_path
+                if not srt_file or not os.path.exists(srt_file):
+                    self._mark_dubbing_step("correct", "failed", "No corrected SRT was produced.")
+                    return
+                self._register_dubbing_artifact("corrected_srt", srt_file, is_current=True)
+                self._record_workflow_stage(
+                    "correct", srt_file, parent_path=parent_srt, stage_settings=dub_settings
+                )
+                self._mark_dubbing_step("correct", "completed")
+
+        # 3. Translate when included and not already current.
+        if "translate" in included_stages:
+            translated_current = self._get_active_dubbing_artifact_path(
+                ["reviewed_translated_srt", "translated_srt"], suffixes=(".srt",)
+            )
+            if translated_current and workflow_states.get("translate") == "completed":
+                srt_file = translated_current
+            else:
+                parent_srt = srt_file
                 self._set_session_activity(
-                    "Translation failed",
-                    "Translation completed without producing a new subtitle file.",
-                    "error",
+                    "Translating subtitles",
+                    "Translation is enabled, so the subtitle text is being translated now.",
+                    "active",
                 )
-                self.show_error.emit("Dubbing Error", "Translation did not produce a new SRT file.")
-                return
-            self._register_dubbing_artifact("translated_srt", srt_file, is_current=True)
-            self._mark_dubbing_step("translate", "completed")
+                self.log_message.emit("Translation is enabled, starting translation...")
+                self._mark_dubbing_step("translate", "running")
+                try:
+                    translation_result = self._translate_dubbing_subtitles_native(
+                        session_dir,
+                        parent_srt,
+                        dub_settings,
+                    )
+                except Exception as error:
+                    logging.error("Subtitle translation failed for '%s': %s", parent_srt, error, exc_info=True)
+                    self._mark_dubbing_step("translate", "failed", "Subtitle translation failed.")
+                    self._set_session_activity(
+                        "Translation failed",
+                        "The subtitle translation step did not complete successfully.",
+                        "error",
+                    )
+                    self.show_error.emit("Dubbing Error", "Translation failed. Check logs for details.")
+                    return
+                srt_file = translation_result.output_path or self._find_latest_srt(session_dir, must_not_be_equalized=True)
+                if not srt_file:
+                    self._mark_dubbing_step("translate", "failed", "No translated SRT was produced.")
+                    self._set_session_activity(
+                        "Translation failed",
+                        "Translation completed without producing a new subtitle file.",
+                        "error",
+                    )
+                    self.show_error.emit("Dubbing Error", "Translation did not produce a new SRT file.")
+                    return
+                self._register_dubbing_artifact("translated_srt", srt_file, is_current=True)
+                self._record_workflow_stage(
+                    "translate", srt_file, parent_path=parent_srt, stage_settings=dub_settings
+                )
+                self._mark_dubbing_step("translate", "completed")
         
         # 3. Generate speech blocks
         self._set_session_activity(
@@ -3097,16 +3561,73 @@ class AppLogic(QObject):
         self._mark_dubbing_step("tts_generation", "running")
         self.start_generation()
 
+    def _render_configured_dubbing_export(
+        self,
+        video_path: str,
+        output_dir: str,
+        subtitle_mode: str,
+        subtitle_tracks: list[dict],
+        options: dict,
+    ) -> None:
+        mode = str(subtitle_mode or "none").strip().lower()
+        audio_mode = str(options.get("audio_mode") or "mixed").strip().lower()
+        suffix = f"{audio_mode}_{mode if mode != 'none' else 'no_subtitles'}"
+        output_path = os.path.join(output_dir, f"{self.state.session_name}_{suffix}.mp4")
+        self._mark_dubbing_step("render", "running")
+        success = False
+        if mode == "none":
+            shutil.copy2(video_path, output_path)
+            success = os.path.isfile(output_path)
+        elif mode == "soft":
+            command = build_multi_soft_subtitle_command(video_path, subtitle_tracks, output_path)
+            process = subprocess.run(
+                command, capture_output=True, text=True, encoding="utf-8", errors="replace"
+            )
+            success = process.returncode == 0 and os.path.isfile(output_path)
+            if not success:
+                logging.error("Dubbed soft-subtitle export failed: %s", process.stdout or process.stderr)
+        elif mode == "burned" and subtitle_tracks:
+            burn_path = str(subtitle_tracks[-1].get("path") or "")
+            if len(subtitle_tracks) > 1:
+                burn_path = write_bilingual_ass(
+                    str(subtitle_tracks[0].get("path") or ""),
+                    str(subtitle_tracks[-1].get("path") or ""),
+                    os.path.join(self._get_dubbing_work_dir(ensure_exists=True), "bilingual_subtitles.ass"),
+                )
+            success = dubbing_handler.add_subtitles_to_video(
+                video_path,
+                burn_path,
+                output_path,
+                subtitle_mode="burned",
+                subtitle_language=str(subtitle_tracks[-1].get("language") or "und"),
+            )
+        if not success:
+            self._mark_dubbing_step("render", "failed", "Configured dubbing export failed.")
+            self.show_error.emit("Export Error", "Could not create the requested dubbed video output.")
+            return
+        self._register_dubbing_artifact(f"final_video_{suffix}", output_path, is_current=True)
+        parent_path = (
+            str(subtitle_tracks[-1].get("path") or "") if subtitle_tracks else video_path
+        )
+        self._record_workflow_stage(
+            "export", output_path, parent_path=parent_path, stage_settings=options
+        )
+        self._mark_dubbing_step("render", "completed")
+        self._set_session_activity("Export complete", f"Saved {os.path.basename(output_path)}.", "success")
+        self.dubbing_video_saved.emit([output_path])
+
     def _orchestrate_add_to_video(
         self,
         dubbing_session_dir: str,
         session_output_dir: str,
         subtitle_mode: str = "soft",
         dubbed_audio_only: bool = False,
+        subtitle_tracks: list[dict] | None = None,
+        export_options: dict | None = None,
     ):
         """Full workflow to synchronize audio and add subtitles."""
         normalized_subtitle_mode = str(subtitle_mode or "soft").strip().lower()
-        if normalized_subtitle_mode not in {"soft", "burned", "both"}:
+        if normalized_subtitle_mode not in {"none", "soft", "burned", "both"}:
             normalized_subtitle_mode = "soft"
 
         video_source = self._resolve_dubbing_video_source()
@@ -3268,6 +3789,16 @@ class AppLogic(QObject):
             self.log_message.emit(f"Using dubbed-only audio track: {dubbed_audio_path}")
             video_for_subtitles_path = dubbed_only_video_path
             self._register_dubbing_artifact("dubbed_only_video", dubbed_only_video_path, is_current=True)
+
+        if subtitle_tracks is not None:
+            self._render_configured_dubbing_export(
+                video_for_subtitles_path,
+                session_output_dir,
+                normalized_subtitle_mode,
+                subtitle_tracks,
+                dict(export_options or {}),
+            )
+            return
 
         # 2. Equalize Subtitles
         srt_file = sync_srt_file
@@ -5057,6 +5588,53 @@ class AppLogic(QObject):
     def add_voice_library_samples(self, voice_id: str, source_wav_paths: list[str]) -> list[dict]:
         """Copies WAV samples into the voice library and stores metadata."""
         return voice_library_handler.add_samples(voice_id, source_wav_paths)
+
+    def get_voice_library_sample_path(self, voice_id: str, sample_id: str) -> str:
+        voice = next(
+            (item for item in self.list_voice_library() if str(item.get("id") or "") == str(voice_id or "")),
+            None,
+        )
+        if not voice:
+            return ""
+        sample = next(
+            (item for item in voice.get("samples", []) if str(item.get("id") or "") == str(sample_id or "")),
+            None,
+        )
+        relative_path = str((sample or {}).get("relative_path") or "").strip()
+        return voice_library_handler.resolve_sample_path(relative_path) if relative_path else ""
+
+    def transcribe_voice_library_sample(
+        self,
+        voice_id: str,
+        sample_id: str,
+        *,
+        backend: str,
+        language: str,
+    ) -> str:
+        sample_path = self.get_voice_library_sample_path(voice_id, sample_id)
+        if not sample_path or not os.path.isfile(sample_path):
+            raise FileNotFoundError("The selected voice sample is missing.")
+        settings = self._build_dubbing_execution_settings()
+        settings["stt_backend"] = str(backend or settings.get("stt_backend") or "whisperx")
+        settings["stt_language"] = str(language or settings.get("stt_language") or "English")
+        settings["correction_enabled"] = False
+        with tempfile.TemporaryDirectory(prefix="pandrator_voice_stt_") as work_dir:
+            result = dubbing_handler.transcribe_source_with_metadata(
+                work_dir, sample_path, settings, ""
+            )
+            if not result.output_path or not os.path.isfile(result.output_path):
+                raise RuntimeError("The selected STT backend did not produce a transcript.")
+            from .logic.dubbing.srt_utils import parse_srt
+
+            with open(result.output_path, "r", encoding="utf-8-sig") as handle:
+                transcript = " ".join(
+                    str(segment.text or "").strip()
+                    for segment in parse_srt(handle.read())
+                    if str(segment.text or "").strip()
+                )
+        if not transcript:
+            raise RuntimeError("STT returned an empty transcript.")
+        return transcript
 
     def update_voice_library_sample(
         self,

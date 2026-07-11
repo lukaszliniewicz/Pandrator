@@ -10,7 +10,7 @@ from . import state_db_handler
 from . import tts_handler
 
 GLOBAL_SETTINGS_FILENAME = "pandrator_settings.json"
-GLOBAL_SETTINGS_VERSION = 3
+GLOBAL_SETTINGS_VERSION = 4
 APP_ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 SOURCE_CLEANING_MIN_ITERATIONS = 1
@@ -155,7 +155,6 @@ def build_global_settings_payload(state: AppState) -> Dict[str, Any]:
             "default_model": state.llm.default_model,
             "provider_configs": state.llm.provider_configs,
             "request_timeout_seconds": state.llm.request_timeout_seconds,
-            "reasoning_effort": str(getattr(state.llm, "reasoning_effort", "") or ""),
             "prompts": {
                 "combined": state.llm.combined_prompt.__dict__,
                 "first": state.llm.first_prompt.__dict__,
@@ -178,6 +177,11 @@ def build_global_settings_payload(state: AppState) -> Dict[str, Any]:
         "text_processing": {
             "remove_footnotes": _coerce_bool(getattr(state.text_processing, "remove_footnotes", False), False),
             "filter_citations": _coerce_bool(getattr(state.text_processing, "filter_citations", True), True),
+        },
+        "wizard": {
+            "show_on_startup": bool(getattr(state.wizard, "show_on_startup", True)),
+            "setup_completed_version": int(getattr(state.wizard, "setup_completed_version", 0) or 0),
+            "wizard_version": int(getattr(state.wizard, "wizard_version", 1) or 1),
         },
     }
 
@@ -207,10 +211,7 @@ def apply_global_settings_payload(state: AppState, payload: Dict[str, Any]):
         except (TypeError, ValueError):
             pass
 
-        raw_reasoning_effort = llm_payload.get("reasoning_effort", "")
-        if isinstance(raw_reasoning_effort, str) and raw_reasoning_effort in ("", "low", "medium", "high"):
-            if hasattr(state.llm, "reasoning_effort"):
-                state.llm.reasoning_effort = raw_reasoning_effort
+        raw_reasoning_effort = str(llm_payload.get("reasoning_effort", "") or "").strip()
 
         prompts_payload = llm_payload.get("prompts", {})
         if isinstance(prompts_payload, dict):
@@ -233,6 +234,13 @@ def apply_global_settings_payload(state: AppState, payload: Dict[str, Any]):
                         prompt_obj.model = str(prompt_data["model"])
 
         llm_handler.normalize_llm_settings(state.llm)
+        if raw_reasoning_effort:
+            migrated_configs = llm_handler.get_provider_configs(state.llm)
+            for provider in migrated_configs:
+                for model in provider.get("models", []):
+                    if isinstance(model, dict) and not model.get("default_reasoning_effort"):
+                        model["default_reasoning_effort"] = raw_reasoning_effort
+            state.llm.provider_configs = migrated_configs
 
     tts_payload = payload.get("tts", {})
     if isinstance(tts_payload, dict):
@@ -316,6 +324,32 @@ def apply_global_settings_payload(state: AppState, payload: Dict[str, Any]):
                 total=iterations,
             )
             state.source_cleaning.max_iterations = sum(state.source_cleaning.phase_max_iterations.values())
+            raw_temperature = source_cleaning_payload.get("llm_temperature")
+            try:
+                temperature = float(raw_temperature) if raw_temperature not in (None, "") else None
+            except (TypeError, ValueError):
+                temperature = None
+            state.source_cleaning.llm_temperature = None
+            if temperature is not None and 0.0 <= temperature <= 2.0:
+                default_model = llm_handler.normalize_default_model(state.llm.default_model)
+                migrated_configs = llm_handler.get_provider_configs(state.llm)
+                for provider in migrated_configs:
+                    provider_key = str(provider.get("provider") or "openai")
+                    provider_id = str(provider.get("id") or "")
+                    for model in provider.get("models", []):
+                        if not isinstance(model, dict):
+                            continue
+                        model_id = str(model.get("id") or "")
+                        candidate = (
+                            f"custom:{provider_id}/{model_id}"
+                            if provider.get("is_custom", False)
+                            else f"{provider_key}/{model_id}"
+                        )
+                        if default_model in {candidate, model_id}:
+                            if model.get("default_temperature") is None:
+                                model["default_temperature"] = temperature
+                            state.llm.provider_configs = migrated_configs
+                            break
             mode = str(source_cleaning_payload.get("pdf_ocr_mode", "auto") or "auto").lower()
             state.source_cleaning.pdf_ocr_mode = mode if mode in {"auto", "off", "force"} else "auto"
             state.source_cleaning.pdf_ocr_language = str(
@@ -341,6 +375,18 @@ def apply_global_settings_payload(state: AppState, payload: Dict[str, Any]):
         if "filter_citations" in text_processing_payload:
             if hasattr(state, "text_processing"):
                 state.text_processing.filter_citations = _coerce_bool(text_processing_payload["filter_citations"], True)
+
+    wizard_payload = payload.get("wizard")
+    if isinstance(wizard_payload, dict) and hasattr(state, "wizard"):
+        state.wizard.show_on_startup = _coerce_bool(
+            wizard_payload.get("show_on_startup", True), True
+        )
+        try:
+            state.wizard.setup_completed_version = max(
+                0, int(wizard_payload.get("setup_completed_version", 0) or 0)
+            )
+        except (TypeError, ValueError):
+            state.wizard.setup_completed_version = 0
 
 
 def save_global_settings(payload: Dict[str, Any]):

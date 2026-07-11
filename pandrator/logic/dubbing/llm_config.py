@@ -59,6 +59,5 @@ def resolve_dubbing_llm_settings(
             DUBBING_LLM_MIN_REQUEST_TIMEOUT_SECONDS,
             configured_timeout,
         ),
-        "reasoning_effort": settings.get("reasoning_effort", ""),
     }
     return DubbingLLMSettings(model_name=model_name, llm_settings=request_settings)

@@ -142,16 +142,6 @@ class TextProcessingTab(ScrollableSettingsPage):
         if default_model_line_edit is not None:
             default_model_line_edit.setPlaceholderText(DEFAULT_LITELLM_MODEL)
 
-        self.reasoning_effort_combo = QComboBox()
-        self.reasoning_effort_combo.addItems(["None (model default)", "Low", "Medium", "High"])
-        self.reasoning_effort_combo.setToolTip(
-            "Reasoning effort to request from the LLM.\n"
-            "'None' sends no reasoning_effort parameter — the model uses its own default.\n"
-            "Low/Medium/High map to reasoning_effort=low/medium/high via LiteLLM, which\n"
-            "translates them for each provider (OpenAI, Anthropic, Gemini, etc.).\n"
-            "Providers that don't support reasoning_effort will silently ignore it."
-        )
-
         self.providers_hint = QLabel(
             "Manage LLM providers and model catalogs in the Providers tab."
         )
@@ -178,11 +168,8 @@ class TextProcessingTab(ScrollableSettingsPage):
         layout.addWidget(QLabel("Default LiteLLM Model:"), 3, 0)
         layout.addWidget(self.default_llm_model_combo, 3, 1, 1, 2)
 
-        layout.addWidget(QLabel("Reasoning Effort:"), 4, 0)
-        layout.addWidget(self.reasoning_effort_combo, 4, 1)
-
-        layout.addWidget(self.providers_hint, 5, 0, 1, 3)
-        layout.addWidget(self.llm_feedback_label, 6, 0, 1, 3)
+        layout.addWidget(self.providers_hint, 4, 0, 1, 3)
+        layout.addWidget(self.llm_feedback_label, 5, 0, 1, 3)
 
         return frame
 
@@ -315,7 +302,6 @@ class TextProcessingTab(ScrollableSettingsPage):
         self.load_models_button.clicked.connect(self._on_load_llm_models)
         self.default_llm_model_combo.currentTextChanged.connect(self._on_default_model_changed)
         self.use_multi_stage_checkbox.stateChanged.connect(self._on_use_multi_stage_changed)
-        self.reasoning_effort_combo.currentIndexChanged.connect(self._on_reasoning_effort_changed)
 
         # Prompts
         for key in ["combined_prompt", "first_prompt", "second_prompt", "third_prompt"]:
@@ -395,20 +381,6 @@ class TextProcessingTab(ScrollableSettingsPage):
         normalized = value.strip() or DEFAULT_LITELLM_MODEL
         self.logic.state.llm.default_model = normalized
 
-    def _on_reasoning_effort_changed(self, index: int):
-        # 0 = None (empty), 1 = low, 2 = medium, 3 = high
-        mapping = ["", "low", "medium", "high"]
-        value = mapping[index] if 0 <= index < len(mapping) else ""
-        if hasattr(self.logic.state.llm, "reasoning_effort"):
-            self.logic.state.llm.reasoning_effort = value
-        # Persist immediately — this is a global setting.
-        persist = getattr(self.logic, "_persist_global_settings", None)
-        if callable(persist):
-            try:
-                persist()
-            except Exception:
-                pass
-
     def _on_prompt_changed(self, key):
         prompt_state = getattr(self.logic.state.llm, key)
         prompt_state.prompt_text = getattr(self, f"{key}_edit").toPlainText()
@@ -472,14 +444,6 @@ class TextProcessingTab(ScrollableSettingsPage):
         self.use_multi_stage_checkbox.blockSignals(True)
         self.use_multi_stage_checkbox.setChecked(llm_state.use_multi_stage)
         self.use_multi_stage_checkbox.blockSignals(False)
-
-        # Reasoning effort combo
-        effort_map = {"": 0, "low": 1, "medium": 2, "high": 3}
-        effort_value = str(getattr(llm_state, "reasoning_effort", "") or "")
-        effort_index = effort_map.get(effort_value, 0)
-        self.reasoning_effort_combo.blockSignals(True)
-        self.reasoning_effort_combo.setCurrentIndex(effort_index)
-        self.reasoning_effort_combo.blockSignals(False)
 
         self._update_prompt_visibility()
         self._update_model_dropdowns()

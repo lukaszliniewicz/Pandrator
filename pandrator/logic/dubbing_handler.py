@@ -118,21 +118,6 @@ def transcribe_video_with_metadata(
         )
         logging.info("Transcription completed: %s", output_path)
 
-        if settings.get("correction_enabled"):
-            correction_result = correct_srt_file_with_result(
-                session_dir=session_dir,
-                srt_file=output_path,
-                settings=settings,
-                correction_instructions=correction_prompt,
-            )
-            corrected_path = correction_result.output_path
-            logging.info("Transcription correction completed: %s", corrected_path)
-            return DubbingTranscriptionResult(
-                output_path=corrected_path,
-                correction_cost=correction_result.cost,
-                correction_response_count=correction_result.response_count,
-            )
-
         return DubbingTranscriptionResult(output_path=output_path)
     except Exception as error:
         logging.error(

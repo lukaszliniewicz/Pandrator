@@ -17,7 +17,7 @@ from .pdf_text_adapter import _front_matter_metadata, _metadata_from_filename
 
 
 ProgressCallback = Callable[[str], None]
-PDF_INGESTION_VERSION = 7
+PDF_INGESTION_VERSION = 8
 _LATIN_V6_LANGUAGES = {
     "auto", "latin", "en", "af", "az", "bs", "ca", "cs", "cy", "da", "de", "es",
     "et", "eu", "fi", "fr", "ga", "gl", "hr", "hu", "id", "is", "it", "ku", "la",
@@ -397,7 +397,12 @@ def propose_deterministic_operations(
     ]
     for block_id in chapter_ids:
         operations.append(
-            {"op": "mark_chapter", "block_id": block_id, "reason": "high-confidence PDF heading", "confidence": 0.88}
+            {
+                "op": "mark_chapter",
+                "block_id": block_id,
+                "reason": "high-confidence PDF heading",
+                "confidence": 0.88,
+            }
         )
     return operations
 
@@ -495,37 +500,120 @@ def _lines_to_blocks(lines: list[dict[str, Any]], page_rect: Any, source_method:
 
 def _geometry_order(lines: list[dict[str, Any]], page_width: float) -> tuple[list[dict[str, Any]], str]:
     if len(lines) < 8:
-        return sorted(lines, key=lambda line: (line["bbox"][1], line["bbox"][0])), "top_to_bottom"
+        return _sort_lines_by_visual_rows(lines), "top_to_bottom"
     middle = page_width / 2.0
     gutter = page_width * 0.01
     left = [line for line in lines if line["bbox"][2] < middle - gutter]
     right = [line for line in lines if line["bbox"][0] > middle + gutter]
-    if len(left) >= 4 and len(right) >= 4:
-        spanning = [line for line in lines if line not in left and line not in right]
+    spanning = [line for line in lines if line not in left and line not in right]
+    # A genuinely two-column page is dominated by column-confined lines.
+    # Marginal fragments and footnotes on an otherwise single-column
+    # page must not reorder the main body as two columns.
+    if (
+        len(left) >= 4
+        and len(right) >= 4
+        and len(spanning) <= len(lines) * 0.35
+    ):
         top = min(min(line["bbox"][1] for line in left), min(line["bbox"][1] for line in right))
         top_spanning = [line for line in spanning if line["bbox"][3] <= top + 14]
         rest_spanning = [line for line in spanning if line not in top_spanning]
-        ordered = sorted(top_spanning, key=lambda line: (line["bbox"][1], line["bbox"][0]))
-        ordered += sorted(left, key=lambda line: (line["bbox"][1], line["bbox"][0]))
-        ordered += sorted(right, key=lambda line: (line["bbox"][1], line["bbox"][0]))
-        ordered += sorted(rest_spanning, key=lambda line: (line["bbox"][1], line["bbox"][0]))
+        ordered = _sort_lines_by_visual_rows(top_spanning)
+        ordered += _sort_lines_by_visual_rows(left)
+        ordered += _sort_lines_by_visual_rows(right)
+        ordered += _sort_lines_by_visual_rows(rest_spanning)
         return ordered, "two_columns"
-    return sorted(lines, key=lambda line: (line["bbox"][1], line["bbox"][0])), "top_to_bottom"
+    return _sort_lines_by_visual_rows(lines), "top_to_bottom"
+
+
+def _sort_lines_by_visual_rows(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Order fragments on the same visual baseline from left to right.
+
+    Native PDF text dictionaries sometimes represent one printed heading as
+    several line records with tiny baseline differences.  Sorting solely by y
+    can scramble those fragments before paragraph grouping sees them.
+    """
+    rows: list[list[dict[str, Any]]] = []
+    for line in sorted(lines, key=lambda item: ((item["bbox"][1] + item["bbox"][3]) / 2.0, item["bbox"][0])):
+        center = (line["bbox"][1] + line["bbox"][3]) / 2.0
+        height = max(1.0, line["bbox"][3] - line["bbox"][1])
+        if rows:
+            row = rows[-1]
+            row_center = statistics.fmean((item["bbox"][1] + item["bbox"][3]) / 2.0 for item in row)
+            row_height = statistics.fmean(max(1.0, item["bbox"][3] - item["bbox"][1]) for item in row)
+            if abs(center - row_center) <= max(height, row_height) * 0.35:
+                row.append(line)
+                continue
+        rows.append([line])
+    return [line for row in rows for line in sorted(row, key=lambda item: item["bbox"][0])]
 
 
 def _same_paragraph(previous: dict[str, Any], current: dict[str, Any]) -> bool:
-    previous_block = previous.get("block_index")
-    current_block = current.get("block_index")
-    if previous_block is not None and current_block is not None and previous_block == current_block:
+    if _same_visual_row(previous, current):
         return True
     prev_box = previous["bbox"]
     box = current["bbox"]
     height = max(5.0, prev_box[3] - prev_box[1], box[3] - box[1])
     vertical_gap = box[1] - prev_box[3]
     left_gap = abs(box[0] - prev_box[0])
+    if _is_heading_like_line(previous) or _is_heading_like_line(current):
+        return False
+    previous_font = float(previous.get("font_size") or 0.0)
+    current_font = float(current.get("font_size") or 0.0)
+    if previous_font and current_font:
+        font_ratio = max(previous_font, current_font) / max(0.1, min(previous_font, current_font))
+        if font_ratio >= 1.18 and vertical_gap > height * 0.45:
+            return False
     if box[1] < prev_box[1] - height:
         return False
     return vertical_gap <= height * 1.15 and left_gap <= height * 2.5
+
+
+def _same_visual_row(previous: dict[str, Any], current: dict[str, Any]) -> bool:
+    previous_box = previous["bbox"]
+    current_box = current["bbox"]
+    previous_height = max(1.0, previous_box[3] - previous_box[1])
+    current_height = max(1.0, current_box[3] - current_box[1])
+    previous_center = (previous_box[1] + previous_box[3]) / 2.0
+    current_center = (current_box[1] + current_box[3]) / 2.0
+    horizontally_adjacent = current_box[0] <= previous_box[2] + max(previous_height, current_height) * 2.5
+    return (
+        horizontally_adjacent
+        and abs(previous_center - current_center) <= max(previous_height, current_height) * 0.35
+    )
+
+
+def _is_heading_like_line(line: dict[str, Any]) -> bool:
+    if _is_structural_heading_text(_normalize_space(line.get("text") or "")):
+        return True
+    text = _normalize_space(line.get("text") or "")
+    if not text or len(text) > 180 or len(text.split()) > 18:
+        return False
+    return bool(
+        _CHAPTER_RE.match(text)
+        or _NUMBERED_HEADING_RE.match(text)
+        or _MAJOR_SECTION_RE.match(text)
+        or (len(text) >= 4 and text.isupper() and re.search(r"[^\W\d_]", text))
+    )
+
+
+def _is_structural_heading_text(text: str) -> bool:
+    normalized = _normalize_space(text)
+    if not normalized or len(normalized) > 180 or len(normalized.split()) > 18:
+        return False
+    return bool(
+        _CHAPTER_RE.match(normalized)
+        or _NUMBERED_HEADING_RE.match(normalized)
+        or _is_major_section_heading_text(normalized)
+    )
+
+
+def _is_major_section_heading_text(text: str) -> bool:
+    normalized = _normalize_space(text)
+    return bool(
+        normalized
+        and normalized[0].isupper()
+        and _MAJOR_SECTION_RE.match(normalized)
+    )
 
 
 def _join_lines(lines: list[dict[str, Any]]) -> str:
@@ -544,12 +632,15 @@ def _join_lines(lines: list[dict[str, Any]]) -> str:
 def _annotate_structural_roles(document: SourceDocument) -> None:
     if not document.blocks:
         return
-    font_sizes = [
-        float(block.attributes.get("font_size") or 0.0)
+    font_samples = [
+        (
+            float(block.attributes.get("font_size") or 0.0),
+            max(1, int(block.attributes.get("source_lines") or 1)),
+        )
         for block in document.blocks
         if float(block.attributes.get("font_size") or 0.0) > 0
     ]
-    body_font = statistics.median(font_sizes) if font_sizes else 10.0
+    body_font = _weighted_median(font_samples) if font_samples else 10.0
     page_count = max((block.page or 0 for block in document.blocks), default=1)
     blocks_by_page: dict[int, list[SourceBlock]] = defaultdict(list)
     for block in document.blocks:
@@ -564,7 +655,7 @@ def _annotate_structural_roles(document: SourceDocument) -> None:
         y1 = float(bbox[3]) / max(1.0, float(page_size[1]))
         if y1 <= 0.16 or y0 >= 0.84:
             key = _normalized_marginal_key(block.text)
-            if key:
+            if key and not _is_structural_heading_text(block.text):
                 marginal_occurrences[key].append(block)
     repeated_threshold = max(3, min(8, int(page_count * 0.15) or 3))
     repeated_ids = {
@@ -590,7 +681,10 @@ def _annotate_structural_roles(document: SourceDocument) -> None:
         page_blocks = blocks_by_page.get(block.page or 0, [])
         is_toc_page = (block.page or 0) in toc_pages
         is_content_opener = _is_content_opener(block, page_blocks, body_font)
+        is_title_heading = _is_title_followed_by_byline(block, page_blocks, body_font)
         is_running_header = _is_probable_running_header(text, short, y1, font_size, body_font)
+        note_marker = bool(_NOTE_PREFIX_RE.match(text) or _SINGLE_NOTE_MARKER_RE.fullmatch(text))
+        likely_footnote = note_marker and (font_size <= body_font * 0.90 or y0 >= 0.72)
 
         page_number_shape = bool(re.fullmatch(r"(?:\d{1,4}|[ivxlcdm]{1,8})", text, re.IGNORECASE))
         page_number_size = font_size <= body_font * 1.15
@@ -606,6 +700,11 @@ def _annotate_structural_roles(document: SourceDocument) -> None:
                 "score": 0.98,
                 "reasons": ["top_marginal_position", "smaller_than_body_font", "variable_header_shape"],
             }
+        if is_title_heading:
+            evidence["title_heading"] = {
+                "score": 0.96,
+                "reasons": ["large_front_matter_text", "followed_by_smaller_byline"],
+            }
         if (block.page or 0) in boilerplate_pages:
             reasons = ["front_matter_page_with_multiple_publishing_signals"]
             if _COPYRIGHT_RE.search(text):
@@ -615,8 +714,8 @@ def _annotate_structural_roles(document: SourceDocument) -> None:
         heading_score = 0.0
         heading_reasons: list[str] = []
         explicit_chapter = short and bool(_CHAPTER_RE.match(text))
-        numbered_heading = short and bool(_NUMBERED_HEADING_RE.match(text))
-        major_section = short and bool(_MAJOR_SECTION_RE.match(text))
+        numbered_heading = short and not likely_footnote and bool(_NUMBERED_HEADING_RE.match(text))
+        major_section = short and _is_major_section_heading_text(text)
         non_narrative_section = short and bool(_NON_NARRATIVE_HEADING_RE.match(text))
         if short and font_ratio >= 1.45:
             heading_score += 0.65
@@ -642,6 +741,9 @@ def _annotate_structural_roles(document: SourceDocument) -> None:
         if short and is_content_opener:
             heading_score += 0.15
             heading_reasons.append("opens_substantial_page_content")
+        if numbered_heading and text.isupper() and is_content_opener:
+            heading_score += 0.10
+            heading_reasons.append("isolated_uppercase_numbered_heading")
         if heading_score >= 0.45:
             evidence["heading"] = {"score": min(0.99, heading_score), "reasons": heading_reasons}
         if non_narrative_section:
@@ -653,6 +755,7 @@ def _annotate_structural_roles(document: SourceDocument) -> None:
             heading_score >= 0.85
             and not evidence.get("repeated_marginal")
             and not evidence.get("running_header")
+            and not evidence.get("title_heading")
             and not is_toc_page
             and not non_narrative_section
             and (is_content_opener or explicit_chapter or major_section)
@@ -664,7 +767,6 @@ def _annotate_structural_roles(document: SourceDocument) -> None:
 
         footnote_reasons: list[str] = []
         footnote_score = 0.0
-        note_marker = bool(_NOTE_PREFIX_RE.match(text) or _SINGLE_NOTE_MARKER_RE.fullmatch(text))
         if y0 >= 0.80:
             footnote_score += 0.45
             footnote_reasons.append("bottom_page_region")
@@ -982,6 +1084,60 @@ def _is_content_opener(
     return False
 
 
+def _is_title_followed_by_byline(
+    block: SourceBlock, page_blocks: list[SourceBlock], body_font: float
+) -> bool:
+    """Recognize a front-matter title/byline pair without relying on its words.
+
+    This prevents a large article or book title from becoming an audiobook
+    chapter simply because it precedes substantial prose.
+    """
+    text = block.text.strip()
+    if not text or len(text) > 180 or len(text.split()) > 16:
+        return False
+    bbox = block.attributes.get("bbox") or [0, 0, 0, 0]
+    page_size = block.attributes.get("page_size") or [1, 1]
+    y0 = float(bbox[1]) / max(1.0, float(page_size[1]))
+    font_size = float(block.attributes.get("font_size") or body_font)
+    if y0 > 0.35 or font_size < body_font * 1.30:
+        return False
+    try:
+        index = next(i for i, candidate in enumerate(page_blocks) if candidate.block_id == block.block_id)
+    except StopIteration:
+        return False
+    following = page_blocks[index + 1 : index + 3]
+    for candidate in following:
+        candidate_text = candidate.text.strip()
+        candidate_box = candidate.attributes.get("bbox") or [0, 0, 0, 0]
+        candidate_font = float(candidate.attributes.get("font_size") or body_font)
+        vertical_distance = float(candidate_box[1]) - float(bbox[3])
+        if vertical_distance < -2.0 or vertical_distance > float(page_size[1]) * 0.14:
+            continue
+        if (
+            _looks_like_byline(candidate_text)
+            and len(candidate_text) <= 90
+            and candidate_font <= font_size * 0.88
+            and not _CHAPTER_RE.match(candidate_text)
+            and not _NUMBERED_HEADING_RE.match(candidate_text)
+            and not _MAJOR_SECTION_RE.match(candidate_text)
+        ):
+            return True
+    return False
+
+
+def _looks_like_byline(text: str) -> bool:
+    normalized = _normalize_space(text)
+    if normalized.endswith((".", "!", "?", ";", ":")):
+        return False
+    words = re.findall(r"[^\W\d_]+", normalized)
+    if not 2 <= len(words) <= 8:
+        return False
+    capitalized = sum(word[0].isupper() for word in words if word)
+    # Permit a connector such as "and", "de", or "van" in an otherwise
+    # name-like byline, but avoid treating a short sentence as an author line.
+    return capitalized >= len(words) - 1
+
+
 def _is_probable_running_header(
     text: str, short: bool, y1: float, font_size: float, body_font: float
 ) -> bool:
@@ -1038,6 +1194,18 @@ def _combined_bbox(lines: list[dict[str, Any]]) -> list[float]:
             max(line["bbox"][3] for line in lines),
         ]
     )
+
+
+def _weighted_median(samples: list[tuple[float, int]]) -> float:
+    """Return the median value when each sample represents several source lines."""
+    ordered = sorted((value, max(1, int(weight))) for value, weight in samples)
+    threshold = sum(weight for _, weight in ordered) / 2
+    cumulative = 0
+    for value, weight in ordered:
+        cumulative += weight
+        if cumulative >= threshold:
+            return value
+    return ordered[-1][0]
 
 
 def _round_bbox(value: Iterable[float]) -> list[float]:

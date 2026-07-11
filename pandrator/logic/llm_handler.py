@@ -9,6 +9,21 @@ from typing import Any
 DEFAULT_LITELLM_MODEL = "openai/gpt-5.4-mini"
 PLACEHOLDER_API_KEY = "sk-placeholder"
 
+
+def default_model_record(model_id: str) -> dict[str, Any]:
+    return {
+        "id": str(model_id or "").strip(),
+        "default_temperature": None,
+        "default_reasoning_effort": "",
+        "input_cost_per_million": None,
+        "cached_input_cost_per_million": None,
+        "output_cost_per_million": None,
+    }
+
+
+def _builtin_models(*model_ids: str) -> list[dict[str, Any]]:
+    return [default_model_record(model_id) for model_id in model_ids]
+
 BUILTIN_PROVIDER_ORDER = ["openai", "gemini", "anthropic"]
 BUILTIN_PROVIDER_CONFIGS: dict[str, dict[str, Any]] = {
     "openai": {
@@ -19,7 +34,7 @@ BUILTIN_PROVIDER_CONFIGS: dict[str, dict[str, Any]] = {
         "api_key_env": "OPENAI_API_KEY",
         "api_key": "",
         "is_custom": False,
-        "models": ["gpt-5.4", "gpt-5.4-mini"],
+        "models": _builtin_models("gpt-5.4", "gpt-5.4-mini"),
     },
     "gemini": {
         "id": "gemini",
@@ -29,7 +44,7 @@ BUILTIN_PROVIDER_CONFIGS: dict[str, dict[str, Any]] = {
         "api_key_env": "GEMINI_API_KEY",
         "api_key": "",
         "is_custom": False,
-        "models": ["gemini-3.1-pro-preview", "gemini-3-flash-preview"],
+        "models": _builtin_models("gemini-3.1-pro-preview", "gemini-3-flash-preview"),
     },
     "anthropic": {
         "id": "anthropic",
@@ -39,7 +54,7 @@ BUILTIN_PROVIDER_CONFIGS: dict[str, dict[str, Any]] = {
         "api_key_env": "ANTHROPIC_API_KEY",
         "api_key": "",
         "is_custom": False,
-        "models": ["claude-opus-4-7", "claude-sonnet-4-6"],
+        "models": _builtin_models("claude-opus-4-7", "claude-sonnet-4-6"),
     },
 }
 
@@ -236,7 +251,10 @@ def _to_litellm_model_name(provider: str, model_id: str) -> str:
 def _parse_models(raw_models: Any, provider: str) -> list[str]:
     candidate_items: list[str] = []
     if isinstance(raw_models, list):
-        candidate_items = [str(item) for item in raw_models]
+        candidate_items = [
+            str(item.get("id") or "") if isinstance(item, dict) else str(item)
+            for item in raw_models
+        ]
     elif isinstance(raw_models, str):
         split_items = re.split(r"[,\n;]", raw_models)
         candidate_items = [str(item) for item in split_items]
@@ -246,6 +264,57 @@ def _parse_models(raw_models: Any, provider: str) -> list[str]:
         for model in candidate_items
     ]
     return _dedupe_ordered(normalized_models)
+
+
+def _model_optional_float(value: Any) -> float | None:
+    if value is None or value == "" or isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def normalize_model_records(raw_models: Any, provider: str) -> list[dict[str, Any]]:
+    """Normalize legacy string model IDs and current model-setting records."""
+    raw_items = (
+        raw_models
+        if isinstance(raw_models, list)
+        else re.split(r"[,\n;]", str(raw_models or ""))
+    )
+    records_by_id: dict[str, dict[str, Any]] = {}
+    for item in raw_items:
+        source = item if isinstance(item, dict) else {"id": item}
+        model_id = _normalize_model_id(str(source.get("id") or ""), provider)
+        if not model_id:
+            continue
+        record = default_model_record(model_id)
+        temperature = _model_optional_float(source.get("default_temperature"))
+        if temperature is not None and temperature <= 2.0:
+            record["default_temperature"] = temperature
+        record["default_reasoning_effort"] = str(
+            source.get("default_reasoning_effort") or ""
+        ).strip()
+        for key in (
+            "input_cost_per_million",
+            "cached_input_cost_per_million",
+            "output_cost_per_million",
+        ):
+            record[key] = _model_optional_float(source.get(key))
+        records_by_id[model_id] = record
+    return list(records_by_id.values())
+
+
+def model_ids(raw_models: Any, provider: str) -> list[str]:
+    return [record["id"] for record in normalize_model_records(raw_models, provider)]
+
+
+def _merge_model_records(existing: Any, discovered: Any, provider: str) -> list[dict[str, Any]]:
+    merged = {record["id"]: record for record in normalize_model_records(existing, provider)}
+    for model_id in _parse_models(discovered, provider):
+        merged.setdefault(model_id, default_model_record(model_id))
+    return list(merged.values())
 
 
 def _parse_legacy_custom_endpoints(raw_json: str) -> list[dict[str, Any]]:
@@ -293,7 +362,7 @@ def _parse_legacy_custom_endpoints(raw_json: str) -> list[dict[str, Any]]:
                 "api_key_env": str(item.get("api_key_env", "")).strip(),
                 "api_key": str(item.get("api_key", "")).strip(),
                 "is_custom": True,
-                "models": _parse_models(raw_models, "openai"),
+                "models": normalize_model_records(raw_models, "openai"),
             }
         )
 
@@ -317,9 +386,10 @@ def _coerce_provider_record(item: Any) -> dict[str, Any] | None:
 
     if provider_id in BUILTIN_PROVIDER_CONFIGS:
         record = copy.deepcopy(BUILTIN_PROVIDER_CONFIGS[provider_id])
-        models = _parse_models(item.get("models", []), record["provider"])
-        if models:
+        models = normalize_model_records(item.get("models", []), record["provider"])
+        if "models" in item:
             record["models"] = models
+            record["models_explicit"] = True
 
         name = str(item.get("name") or "").strip()
         if name:
@@ -350,7 +420,8 @@ def _coerce_provider_record(item: Any) -> dict[str, Any] | None:
         "api_key_env": str(item.get("api_key_env") or "").strip(),
         "api_key": str(item.get("api_key") or "").strip(),
         "is_custom": True,
-        "models": _parse_models(item.get("models", []), explicit_provider or "openai"),
+        "models": normalize_model_records(item.get("models", []), explicit_provider or "openai"),
+        "models_explicit": True,
     }
 
 
@@ -401,11 +472,11 @@ def get_provider_configs(llm_settings: Any | None = None) -> list[dict[str, Any]
         provider["api_key_env"] = str(provider.get("api_key_env") or "").strip()
         provider["api_key"] = str(provider.get("api_key") or "").strip()
 
-        models = _parse_models(provider.get("models", []), provider["provider"])
+        models = normalize_model_records(provider.get("models", []), provider["provider"])
         if models:
             provider["models"] = models
-        elif provider["id"] in BUILTIN_PROVIDER_CONFIGS:
-            provider["models"] = list(BUILTIN_PROVIDER_CONFIGS[provider["id"]]["models"])
+        elif provider["id"] in BUILTIN_PROVIDER_CONFIGS and not provider.get("models_explicit", False):
+            provider["models"] = copy.deepcopy(BUILTIN_PROVIDER_CONFIGS[provider["id"]]["models"])
         else:
             provider["models"] = []
 
@@ -571,7 +642,9 @@ def refresh_builtin_provider_models(
 
         detected_models = _detect_models_for_builtin_provider(provider)
         if detected_models:
-            provider["models"] = detected_models
+            provider["models"] = _merge_model_records(
+                provider.get("models", []), detected_models, str(provider.get("provider") or "")
+            )
             status_lines.append(
                 f"{provider['name']}: loaded {len(detected_models)} model(s)."
             )
@@ -587,7 +660,7 @@ def save_custom_provider(
     provider_key: str,
     api_base: str,
     api_key: str = "",
-    models: list[str] | str | None = None,
+    models: Any = None,
 ) -> tuple[bool, list[dict[str, Any]], str, str]:
     display_name = str(provider_name or "").strip()
     if not display_name:
@@ -614,7 +687,20 @@ def save_custom_provider(
         return False, get_provider_configs(llm_settings), "", "API base URL is required."
 
     provider_configs = get_provider_configs(llm_settings)
-    normalized_models = _parse_models(models or [], normalized_provider_key)
+    existing_custom = next(
+        (
+            record for record in provider_configs
+            if record.get("id") == provider_id and record.get("is_custom", False)
+        ),
+        None,
+    )
+    normalized_models = (
+        normalize_model_records(models, normalized_provider_key)
+        if isinstance(models, list) and any(isinstance(item, dict) for item in models)
+        else _merge_model_records(
+            (existing_custom or {}).get("models", []), models or [], normalized_provider_key
+        )
+    )
 
     custom_record = {
         "id": provider_id,
@@ -625,6 +711,7 @@ def save_custom_provider(
         "api_key": str(api_key or "").strip(),
         "is_custom": True,
         "models": normalized_models,
+        "models_explicit": True,
     }
 
     custom_updated = False
@@ -653,7 +740,7 @@ def update_provider(
     provider_key: str,
     api_base: str,
     api_key: str,
-    models: list[str] | str | None,
+    models: Any,
 ) -> tuple[bool, list[dict[str, Any]], str]:
     normalized_provider_id = _normalize_provider_id(provider_id)
     if not normalized_provider_id:
@@ -695,12 +782,18 @@ def update_provider(
     if not display_name:
         display_name = str(updated_record.get("name") or normalized_provider_id)
 
-    parsed_models = _parse_models(models or [], normalized_provider_key)
+    parsed_models = (
+        normalize_model_records(models, normalized_provider_key)
+        if isinstance(models, list) and any(isinstance(item, dict) for item in models)
+        else _merge_model_records(
+            updated_record.get("models", []), models or [], normalized_provider_key
+        )
+    )
     if not parsed_models:
         if is_builtin:
-            parsed_models = list(BUILTIN_PROVIDER_CONFIGS[normalized_provider_id]["models"])
+            parsed_models = copy.deepcopy(BUILTIN_PROVIDER_CONFIGS[normalized_provider_id]["models"])
         else:
-            parsed_models = _parse_models(updated_record.get("models", []), normalized_provider_key)
+            parsed_models = normalize_model_records(updated_record.get("models", []), normalized_provider_key)
 
     updated_record.update(
         {
@@ -712,6 +805,7 @@ def update_provider(
             "api_key": str(api_key or "").strip(),
             "is_custom": not is_builtin,
             "models": parsed_models,
+            "models_explicit": True,
         }
     )
 
@@ -775,10 +869,21 @@ def _provider_models_for_catalog(provider_config: dict[str, Any]) -> list[str]:
         return models
 
     provider_id = str(provider_config.get("id") or "").strip().lower()
-    if provider_id in BUILTIN_PROVIDER_CONFIGS:
-        return list(BUILTIN_PROVIDER_CONFIGS[provider_id]["models"])
+    if provider_id in BUILTIN_PROVIDER_CONFIGS and not provider_config.get("models_explicit", False):
+        return _parse_models(BUILTIN_PROVIDER_CONFIGS[provider_id]["models"], provider)
 
     return []
+
+
+def _find_model_record(provider_config: dict[str, Any] | None, model_id: str) -> dict[str, Any] | None:
+    if not provider_config:
+        return None
+    provider = str(provider_config.get("provider") or "openai")
+    normalized_id = _normalize_model_id(model_id, provider)
+    for record in normalize_model_records(provider_config.get("models", []), provider):
+        if record["id"] == normalized_id:
+            return record
+    return None
 
 
 def list_models(llm_settings: Any | None = None) -> list[str]:
@@ -961,6 +1066,7 @@ def _resolve_model_request_details(
             "model": resolved_model,
             "request_overrides": request_overrides,
             "provider_config": provider,
+            "model_record": _find_model_record(provider, custom_model_id),
             "provider_key": custom_provider_key,
             "is_custom": True,
         }
@@ -983,6 +1089,7 @@ def _resolve_model_request_details(
         "model": normalized_model,
         "request_overrides": request_overrides,
         "provider_config": provider_config,
+        "model_record": _find_model_record(provider_config, normalized_model),
         "provider_key": provider_key,
         "is_custom": False,
     }
@@ -1162,12 +1269,76 @@ def _extract_response_cost(response_data: Any, payload: dict[str, Any]) -> tuple
     return None, ""
 
 
-def _extract_chat_completion_result(response_data: Any, requested_model: str = "") -> ChatCompletionResult:
+def _usage_int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def normalize_usage_tokens(usage: dict[str, Any]) -> dict[str, Any]:
+    normalized = copy.deepcopy(usage) if isinstance(usage, dict) else {}
+    prompt_tokens = _usage_int(normalized.get("prompt_tokens") or normalized.get("input_tokens"))
+    completion_tokens = _usage_int(
+        normalized.get("completion_tokens") or normalized.get("output_tokens")
+    )
+    cached_candidates = [
+        normalized.get("cache_read_input_tokens"),
+        normalized.get("cached_input_tokens"),
+    ]
+    for details_key in ("prompt_tokens_details", "input_tokens_details", "token_details"):
+        details = normalized.get(details_key)
+        if isinstance(details, dict):
+            cached_candidates.extend(
+                [details.get("cached_tokens"), details.get("cache_read_input_tokens")]
+            )
+    cached_tokens = max((_usage_int(value) for value in cached_candidates), default=0)
+    cached_tokens = min(prompt_tokens, cached_tokens) if prompt_tokens else cached_tokens
+    normalized["prompt_tokens"] = prompt_tokens
+    normalized["completion_tokens"] = completion_tokens
+    normalized["cached_prompt_tokens"] = cached_tokens
+    normalized["uncached_prompt_tokens"] = max(0, prompt_tokens - cached_tokens)
+    normalized.setdefault("total_tokens", prompt_tokens + completion_tokens)
+    return normalized
+
+
+def _custom_model_cost(
+    usage: dict[str, Any], model_record: dict[str, Any] | None
+) -> float | None:
+    if not model_record:
+        return None
+    input_rate = _model_optional_float(model_record.get("input_cost_per_million"))
+    output_rate = _model_optional_float(model_record.get("output_cost_per_million"))
+    if input_rate is None or output_rate is None:
+        return None
+    cached_rate = _model_optional_float(model_record.get("cached_input_cost_per_million"))
+    if cached_rate is None:
+        cached_rate = input_rate
+    normalized_usage = normalize_usage_tokens(usage)
+    return round(
+        (
+            normalized_usage["uncached_prompt_tokens"] * input_rate
+            + normalized_usage["cached_prompt_tokens"] * cached_rate
+            + normalized_usage["completion_tokens"] * output_rate
+        )
+        / 1_000_000.0,
+        12,
+    )
+
+
+def _extract_chat_completion_result(
+    response_data: Any,
+    requested_model: str = "",
+    model_record: dict[str, Any] | None = None,
+) -> ChatCompletionResult:
     payload = _response_payload(response_data)
     usage = payload.get("usage")
-    if not isinstance(usage, dict):
-        usage = {}
+    usage = normalize_usage_tokens(usage if isinstance(usage, dict) else {})
     cost, cost_source = _extract_response_cost(response_data, payload)
+    if cost is None:
+        cost = _custom_model_cost(usage, model_record)
+        if cost is not None:
+            cost_source = "custom_model_pricing"
     return ChatCompletionResult(
         content=_extract_choice_content(response_data),
         model=str(payload.get("model") or requested_model or ""),
@@ -1183,7 +1354,6 @@ def chat_completion_with_metadata(
     model_name: str | None = None,
     llm_settings: Any | None = None,
     max_tokens: int | None = None,
-    temperature: float | None = None,
 ) -> ChatCompletionResult:
     """Runs a LiteLLM chat completion and preserves usage/cost metadata."""
     completion, _ = _get_litellm_clients()
@@ -1192,7 +1362,9 @@ def chat_completion_with_metadata(
         return ChatCompletionResult()
 
     try:
-        resolved_model, request_overrides = _resolve_model_request(model_name, llm_settings)
+        details = _resolve_model_request_details(model_name, llm_settings)
+        resolved_model = str(details["model"])
+        request_overrides = dict(details.get("request_overrides") or {})
     except ValueError as e:
         logging.error("Could not resolve LLM model '%s': %s", model_name, e)
         return ChatCompletionResult()
@@ -1213,24 +1385,29 @@ def chat_completion_with_metadata(
             request_payload["max_tokens"] = max(1, int(max_tokens))
         except (TypeError, ValueError):
             logging.warning("Ignoring invalid max_tokens value: %r", max_tokens)
-    if temperature is not None:
-        try:
-            request_payload["temperature"] = float(temperature)
-        except (TypeError, ValueError):
-            logging.warning("Ignoring invalid temperature value: %r", temperature)
+    model_record = details.get("model_record")
+    if isinstance(model_record, dict):
+        temperature = _model_optional_float(model_record.get("default_temperature"))
+        if temperature is not None and temperature <= 2.0:
+            request_payload["temperature"] = temperature
     request_payload.update(request_overrides)
 
-    # Inject reasoning_effort when the caller has configured one.
-    # litellm.drop_params=True ensures this is silently ignored for models that
-    # don't support it (e.g. Ollama, older OpenAI, non-reasoning Gemini models).
-    reasoning_effort = str(_read_setting(llm_settings, "reasoning_effort", "") or "").strip()
-    if reasoning_effort in ("low", "medium", "high"):
+    reasoning_effort = str(
+        model_record.get("default_reasoning_effort", "")
+        if isinstance(model_record, dict)
+        else ""
+    ).strip()
+    if reasoning_effort:
         request_payload["reasoning_effort"] = reasoning_effort
 
     logging.info("LiteLLM chat request model=%s", resolved_model)
     try:
         response = completion(**request_payload)
-        result = _extract_chat_completion_result(response, requested_model=resolved_model)
+        result = _extract_chat_completion_result(
+            response,
+            requested_model=resolved_model,
+            model_record=model_record if isinstance(model_record, dict) else None,
+        )
         if not result.content:
             logging.warning("LiteLLM returned an empty chat response body.")
         return result
@@ -1244,7 +1421,6 @@ def chat_completion(
     model_name: str | None = None,
     llm_settings: Any | None = None,
     max_tokens: int | None = None,
-    temperature: float | None = None,
 ) -> str:
     """Runs a LiteLLM chat completion using Pandrator's configured providers."""
     result = chat_completion_with_metadata(
@@ -1252,7 +1428,6 @@ def chat_completion(
         model_name=model_name,
         llm_settings=llm_settings,
         max_tokens=max_tokens,
-        temperature=temperature,
     )
     return result.content
 
@@ -1287,7 +1462,9 @@ def _make_api_request(
 
     sanitized_text = text.replace("\n", " ").replace("\t", " ")
     try:
-        resolved_model, request_overrides = _resolve_model_request(model_name, llm_settings)
+        details = _resolve_model_request_details(model_name, llm_settings)
+        resolved_model = str(details["model"])
+        request_overrides = dict(details.get("request_overrides") or {})
     except ValueError as e:
         logging.error("Could not resolve LLM model '%s': %s", model_name, e)
         return ""
@@ -1301,15 +1478,17 @@ def _make_api_request(
     request_payload: dict[str, Any] = {
         "model": resolved_model,
         "messages": [{"role": "user", "content": f"{user_prompt}{sanitized_text}"}],
-        "temperature": 0.4,
         "timeout": request_timeout,
     }
+    model_record = details.get("model_record")
+    if isinstance(model_record, dict):
+        temperature = _model_optional_float(model_record.get("default_temperature"))
+        if temperature is not None and temperature <= 2.0:
+            request_payload["temperature"] = temperature
+        reasoning_effort = str(model_record.get("default_reasoning_effort") or "").strip()
+        if reasoning_effort:
+            request_payload["reasoning_effort"] = reasoning_effort
     request_payload.update(request_overrides)
-
-    # Inject reasoning_effort (silently dropped for unsupported models via drop_params=True).
-    reasoning_effort = str(_read_setting(llm_settings, "reasoning_effort", "") or "").strip()
-    if reasoning_effort in ("low", "medium", "high"):
-        request_payload["reasoning_effort"] = reasoning_effort
 
     logging.info("LiteLLM request model=%s", resolved_model)
     logging.debug("LiteLLM request payload: %s", request_payload)

@@ -143,7 +143,6 @@ def correct_transcript_chunks(
             model_name=llm_settings.model_name,
             llm_settings=llm_settings.llm_settings,
             max_tokens=max_tokens,
-            temperature=float(normalized_settings.get("temperature") or 0.2),
         )
         content = str(result.content or "").strip()
         if not content:

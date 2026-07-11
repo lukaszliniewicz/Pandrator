@@ -112,6 +112,7 @@ class TranslationResult:
     cost: float = 0.0
     response_count: int = 0
     output_path: str = ""
+    cost_sources: tuple[str, ...] = ()
 
 
 def get_deepl_language_code(language: str) -> str:
@@ -335,16 +336,16 @@ def build_translation_prompt(
     return f"{prompt}\n\nThe subtitles:\n{subtitles}"
 
 
-def _coerce_completion_content_and_cost(result: Any) -> tuple[str, float]:
+def _coerce_completion_content_and_cost(result: Any) -> tuple[str, float, str]:
     if isinstance(result, str):
-        return result, 0.0
+        return result, 0.0, ""
     content = str(getattr(result, "content", "") or "")
     cost = getattr(result, "cost", 0.0)
     try:
         normalized_cost = float(cost or 0.0)
     except (TypeError, ValueError):
         normalized_cost = 0.0
-    return content, normalized_cost
+    return content, normalized_cost, str(getattr(result, "cost_source", "") or "")
 
 
 def translation_responses_to_srt(
@@ -408,6 +409,7 @@ def translate_srt_content(
     previous_response = ""
     translated_responses: list[dict[str, Any]] = []
     total_cost = 0.0
+    cost_sources: list[str] = []
 
     for index, block in enumerate(blocks):
         prompt = build_translation_prompt(
@@ -425,9 +427,8 @@ def translate_srt_content(
             model_name=resolved.model_name,
             llm_settings=resolved.llm_settings,
             max_tokens=3000,
-            temperature=0.2,
         )
-        content, cost = _coerce_completion_content_and_cost(result)
+        content, cost, cost_source = _coerce_completion_content_and_cost(result)
         if not content:
             raise ValueError("LLM translation returned an empty response.")
 
@@ -444,6 +445,8 @@ def translate_srt_content(
         )
         previous_response = content
         total_cost += cost
+        if cost_source and cost_source not in cost_sources:
+            cost_sources.append(cost_source)
 
     return TranslationResult(
         srt_content=translation_responses_to_srt(translated_responses, srt_content),
@@ -451,6 +454,7 @@ def translate_srt_content(
         glossary=active_glossary,
         cost=total_cost,
         response_count=len(translated_responses),
+        cost_sources=tuple(cost_sources),
     )
 
 
@@ -491,6 +495,7 @@ def translate_srt_file_with_result(
         cost=result.cost,
         response_count=result.response_count,
         output_path=str(output_path),
+        cost_sources=result.cost_sources,
     )
     logger.info(
         "Translated subtitles written to %s (%d LLM response(s), cost %.6f).",
@@ -588,6 +593,7 @@ def translate_srt_file_deepl_with_result(
         cost=result.cost,
         response_count=result.response_count,
         output_path=str(output_path),
+        cost_sources=result.cost_sources,
     )
     logger.info(
         "Translated subtitles written to %s (%d DeepL response block(s)).",

@@ -2,6 +2,17 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Any
 
 
+def default_llm_model(model_id: str) -> Dict[str, Any]:
+    return {
+        "id": str(model_id),
+        "default_temperature": None,
+        "default_reasoning_effort": "",
+        "input_cost_per_million": None,
+        "cached_input_cost_per_million": None,
+        "output_cost_per_million": None,
+    }
+
+
 def default_llm_provider_configs() -> List[Dict[str, Any]]:
     return [
         {
@@ -12,7 +23,7 @@ def default_llm_provider_configs() -> List[Dict[str, Any]]:
             "api_key_env": "OPENAI_API_KEY",
             "api_key": "",
             "is_custom": False,
-            "models": ["gpt-5.4", "gpt-5.4-mini"],
+            "models": [default_llm_model("gpt-5.4"), default_llm_model("gpt-5.4-mini")],
         },
         {
             "id": "gemini",
@@ -22,7 +33,10 @@ def default_llm_provider_configs() -> List[Dict[str, Any]]:
             "api_key_env": "GEMINI_API_KEY",
             "api_key": "",
             "is_custom": False,
-            "models": ["gemini-3.1-pro-preview", "gemini-3-flash-preview"],
+            "models": [
+                default_llm_model("gemini-3.1-pro-preview"),
+                default_llm_model("gemini-3-flash-preview"),
+            ],
         },
         {
             "id": "anthropic",
@@ -32,7 +46,10 @@ def default_llm_provider_configs() -> List[Dict[str, Any]]:
             "api_key_env": "ANTHROPIC_API_KEY",
             "api_key": "",
             "is_custom": False,
-            "models": ["claude-opus-4-7", "claude-sonnet-4-6"],
+            "models": [
+                default_llm_model("claude-opus-4-7"),
+                default_llm_model("claude-sonnet-4-6"),
+            ],
         },
     ]
 
@@ -317,8 +334,7 @@ class LLMSettings:
     default_model: str = "openai/gpt-5.4-mini"
     provider_configs: List[Dict[str, Any]] = field(default_factory=default_llm_provider_configs)
     request_timeout_seconds: int = 600
-    # reasoning_effort: "" = don't send (model default), "low"/"medium"/"high" = explicit level.
-    # LiteLLM translates this to native provider format and drops it if unsupported.
+    # Retained for one settings migration cycle. Requests use per-model defaults.
     reasoning_effort: str = ""
     use_multi_stage: bool = False
     combined_prompt: PromptSettings = field(default_factory=lambda: PromptSettings(
@@ -379,10 +395,26 @@ class DubbingSettings:
     translation_model: str = "default"
     video_file_path: str = ""
 
+
+@dataclass
+class WorkflowSettings:
+    workflow_kind: str = "audiobook"
+    workflow_preset: str = "custom"
+    included_stages: List[str] = field(default_factory=list)
+
+
+@dataclass
+class WizardSettings:
+    show_on_startup: bool = True
+    setup_completed_version: int = 0
+    wizard_version: int = 1
+
 @dataclass
 class SourceCleaningSettings:
     max_iterations: int = 53
     phase_max_iterations: Dict[str, int] = field(default_factory=default_source_cleaning_phase_iterations)
+    # None deliberately omits temperature so the selected model uses its own default.
+    llm_temperature: float | None = None
     pdf_ocr_mode: str = "auto"
     pdf_ocr_language: str = "auto"
     pdf_ocr_dpi: int = 200
@@ -408,3 +440,5 @@ class AppState:
     llm: LLMSettings = field(default_factory=LLMSettings)
     dubbing: DubbingSettings = field(default_factory=DubbingSettings)
     source_cleaning: SourceCleaningSettings = field(default_factory=SourceCleaningSettings)
+    workflow: WorkflowSettings = field(default_factory=WorkflowSettings)
+    wizard: WizardSettings = field(default_factory=WizardSettings)

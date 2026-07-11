@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout,
     QTabWidget, QMessageBox
 )
-from PyQt6.QtCore import Qt, QUrl
+from PyQt6.QtCore import Qt, QTimer, QUrl
 from PyQt6.QtGui import QDesktopServices, QKeyEvent
 
 from .widgets.session_tab import SessionTab
@@ -16,6 +16,8 @@ from .widgets.logs_tab import LogsTab
 from .widgets.train_xtts_tab import TrainXttsTab
 from .widgets.generated_sentences_widget import GeneratedSentencesWidget
 from .widgets.session_workspace import SessionWorkspace
+from .dialogs.startup_wizard_dialog import StartupWizardDialog
+from .dialogs.voice_library_dialog import VoiceLibraryDialog
 
 class MainWindow(QMainWindow):
     def __init__(self, logic, parent=None):
@@ -40,6 +42,8 @@ class MainWindow(QMainWindow):
         self.logic.show_error.connect(self._on_show_error)
         self.logic.dubbing_video_saved.connect(self._on_dubbing_video_saved)
         self.statusBar().showMessage("Ready", 3000)
+        if bool(getattr(self.logic.state.wizard, "show_on_startup", True)):
+            QTimer.singleShot(250, self.open_startup_wizard)
 
     def _create_tabs(self):
         self.session_tab = SessionTab(self.logic)
@@ -72,6 +76,19 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"Pandrator - {self.logic.state.session_name}")
         self.session_tab.session_name_label.setText(self.logic.state.session_name)
 
+    def open_startup_wizard(self):
+        dialog = StartupWizardDialog(self.logic, self)
+        dialog.open_providers_requested.connect(
+            lambda: self.tab_widget.setCurrentWidget(self.providers_tab)
+        )
+        dialog.open_voices_requested.connect(
+            lambda: VoiceLibraryDialog(self.logic, self).exec()
+        )
+        dialog.open_rvc_requested.connect(
+            lambda: self.tab_widget.setCurrentWidget(self.audio_processing_tab)
+        )
+        dialog.exec()
+
     def _on_app_notification(self, message: str, timeout_ms: int = 5000):
         if message:
             self.statusBar().showMessage(message, max(0, int(timeout_ms or 0)))
@@ -94,17 +111,17 @@ class MainWindow(QMainWindow):
 
         dialog = QMessageBox(self)
         dialog.setIcon(QMessageBox.Icon.Information)
-        dialog.setWindowTitle("Dubbing Saved")
+        dialog.setWindowTitle("Export Saved")
 
         button_to_path = {}
         if len(paths) == 1:
             saved_path = paths[0]
-            dialog.setText("Dubbing was added to the video and saved.")
+            dialog.setText("The requested export was saved.")
             dialog.setInformativeText(os.path.basename(saved_path))
             open_file_button = dialog.addButton("Open File", QMessageBox.ButtonRole.AcceptRole)
             button_to_path[open_file_button] = saved_path
         else:
-            dialog.setText(f"Dubbing was added and {len(paths)} video files were saved.")
+            dialog.setText(f"The requested export produced {len(paths)} files.")
             dialog.setInformativeText("Choose a file to open.")
             for saved_path in paths:
                 button_label = f"Open {os.path.basename(saved_path)}"
