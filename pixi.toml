@@ -18,6 +18,8 @@ test-dubbing = "python -m unittest tests.test_dubbing_subtitle_logic tests.test_
 serve-web = "python -m pandrator serve"
 run-worker = "python -m pandrator worker"
 test-web-foundation = "python -m unittest tests.test_web_foundation tests.test_web_supervisor"
+generate-web-contract = "python scripts/generate_web_contract.py"
+check-web-contract = "python scripts/generate_web_contract.py && npm --prefix web run generate-api && git diff --exit-code -- openapi.json web/src/lib/api.generated.ts"
 
 [feature.smoke.dependencies]
 ffmpeg = "*"
