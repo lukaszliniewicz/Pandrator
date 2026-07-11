@@ -227,7 +227,7 @@ class ProcessSupervisor:
             if process.poll() is not None:
                 break
             if (spec.health_url and self._healthy(spec)) or (
-                not spec.health_url and time.monotonic() - started >= 0.25
+                not spec.health_url and time.monotonic() - started >= 1.0
             ):
                 self._status(f"{spec.label} is ready.")
                 self._write_state()
