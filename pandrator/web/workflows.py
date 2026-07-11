@@ -49,7 +49,7 @@ class WorkflowService:
         return AUDIOBOOK_STAGES if record.workflow_kind == "audiobook" else DUBBING_STAGES
 
     @staticmethod
-    def _usable_input(definition: StageDefinition, artifact: Artifact) -> bool:
+    def _usable_input(definition: StageDefinition, artifact: Artifact, workflow_kind: str) -> bool:
         if artifact.role != "upload":
             return artifact.role in definition.prerequisite_roles
         filename = str((artifact.metadata_json or {}).get("original_filename") or artifact.relative_path).lower()
@@ -61,7 +61,7 @@ class WorkflowService:
         if definition.key == "clean_source":
             return extension in {".txt", ".pdf", ".epub", ".docx", ".mobi"}
         if definition.key == "generate_audio":
-            return extension in {".srt", ".txt", ".pdf", ".epub", ".docx", ".mobi"}
+            return extension in ({".txt", ".json"} if workflow_kind == "audiobook" else {".srt"})
         return True
 
     def snapshot(self, session_id: str) -> dict[str, Any]:
@@ -89,7 +89,7 @@ class WorkflowService:
                     (
                         roles[role]
                         for role in definition.prerequisite_roles
-                        if role in roles and self._usable_input(definition, roles[role])
+                        if role in roles and self._usable_input(definition, roles[role], record.workflow_kind)
                     ),
                     None,
                 )
@@ -149,7 +149,15 @@ class WorkflowService:
                     ).order_by(Artifact.created_at.desc())
                 ).all()
             )
-            source = next((artifact for artifact in artifacts if self._usable_input(definition, artifact)), None)
+            by_role = {artifact.role: artifact for artifact in artifacts}
+            source = next(
+                (
+                    by_role[role]
+                    for role in definition.prerequisite_roles
+                    if role in by_role and self._usable_input(definition, by_role[role], record.workflow_kind)
+                ),
+                None,
+            )
             if definition.prerequisite_roles and source is None:
                 raise ValueError(f"Stage '{stage_key}' is missing a required input artifact.")
             payload = {

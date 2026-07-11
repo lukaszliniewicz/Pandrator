@@ -17,6 +17,7 @@ export type JobRecord = {
   status: string;
   progress: number;
   error_message?: string | null;
+  result_json?: Record<string, unknown> | null;
   created_at: string;
 };
 

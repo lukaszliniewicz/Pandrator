@@ -72,6 +72,17 @@ class ModelCreate(StrictModel):
     options: dict[str, Any] = Field(default_factory=dict)
 
 
+class ModelUpdate(StrictModel):
+    model_id: str | None = None
+    is_default: bool | None = None
+    default_temperature: float | None = None
+    default_reasoning_effort: str | None = None
+    input_cost_per_million: float | None = Field(default=None, ge=0)
+    cached_input_cost_per_million: float | None = Field(default=None, ge=0)
+    output_cost_per_million: float | None = Field(default=None, ge=0)
+    options: dict[str, Any] | None = None
+
+
 class PdfRectInput(StrictModel):
     x0: float
     y0: float
@@ -96,6 +107,29 @@ class PdfEditRequest(StrictModel):
     deleted_pages: list[int] = Field(default_factory=list)
 
 
+class SubtitleSegmentInput(StrictModel):
+    start_ms: int = Field(ge=0)
+    end_ms: int = Field(gt=0)
+    text: str = Field(min_length=1)
+    speaker: str | None = None
+
+
+class SubtitleReviewRequest(StrictModel):
+    expected_revision: int = Field(ge=1)
+    segments: list[SubtitleSegmentInput] = Field(min_length=1)
+
+
+class VoiceCreate(StrictModel):
+    name: str = Field(min_length=1, max_length=255)
+    language: str | None = Field(default=None, max_length=40)
+    description: str | None = None
+
+
+class VoiceTranscriptReview(StrictModel):
+    transcript: str = Field(min_length=1)
+    language: str | None = Field(default=None, max_length=40)
+
+
 SCHEMA_MODELS = {
     model.__name__: model
     for model in (
@@ -108,6 +142,10 @@ SCHEMA_MODELS = {
         TokenCreateRequest,
         ProviderCreate,
         ModelCreate,
+        ModelUpdate,
         PdfEditRequest,
+        SubtitleReviewRequest,
+        VoiceCreate,
+        VoiceTranscriptReview,
     )
 }
