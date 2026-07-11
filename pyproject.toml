@@ -12,7 +12,24 @@ license = { file = "LICENSE" }
 dependencies = [
   "alembic>=1.14,<2",
   "argon2-cffi>=23.1,<26",
+  "cryptography>=43,<46",
   "flask>=3.1,<4",
+  "beautifulsoup4>=4.12,<5",
+  "deepl>=1.20,<2",
+  "EbookLib>=0.18,<1",
+  "ffmpeg-python>=0.2,<1",
+  "hasami>=0.0.2,<1",
+  "litellm>=1.60,<2",
+  "mutagen>=1.47,<2",
+  "num2words>=0.5,<1",
+  "Pillow>=10,<13",
+  "pydub>=0.25,<1",
+  "PyMuPDF>=1.25,<2",
+  "regex>=2024.11",
+  "sentence-splitter>=1.4,<2",
+  "Unidecode>=1.3,<2",
+  "wtpsplit-lite==0.2.0",
+  "yt-dlp>=2025.1",
   "pydantic>=2.10,<3",
   "psutil>=6,<8",
   "requests>=2.32,<3",
@@ -23,8 +40,9 @@ dependencies = [
 [project.optional-dependencies]
 legacy = [
   "PyQt6==6.7.1",
-  "pydub",
 ]
+ocr = ["onnxruntime>=1.20,<2", "paddleocr==3.7.0"]
+text-normalization = ["nemo-text-processing==1.2.0"]
 gui = [
   "PyQt6==6.7.1",
 ]
@@ -34,10 +52,9 @@ dev = [
 
 [project.scripts]
 pandrator = "pandrator.web.cli:main"
-pandrator-installer = "pandrator_installer.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["pandrator", "pandrator_installer"]
+packages = ["pandrator"]
 include = [
   "pandrator/web/static/**",
 ]

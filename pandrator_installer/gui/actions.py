@@ -324,6 +324,30 @@ class GuiActionsMixin:
 
     def closeEvent(self, event):
         """Handle window close event"""
+        running = bool(
+            self.pandrator_process
+            or self._collect_running_backends()
+            or self._get_running_rvc_process()
+        )
+        if running and not getattr(self, "_quit_requested", False):
+            dialog = QMessageBox(self)
+            dialog.setWindowTitle("Pandrator is still running")
+            dialog.setText("The browser can close independently. What should the launcher do with the running services?")
+            minimize = dialog.addButton("Minimize to tray", QMessageBox.ButtonRole.AcceptRole)
+            stop = dialog.addButton("Stop everything", QMessageBox.ButtonRole.DestructiveRole)
+            cancel = dialog.addButton(QMessageBox.StandardButton.Cancel)
+            dialog.exec()
+            if dialog.clickedButton() is minimize:
+                event.ignore()
+                self.hide()
+                self.tray_icon.showMessage("Pandrator", "Services are still running. Use the tray menu to return or stop them.")
+                return
+            if dialog.clickedButton() is cancel:
+                event.ignore()
+                return
+            if dialog.clickedButton() is not stop:
+                event.ignore()
+                return
         self.shutdown_apps()
         self.shutdown_logging()
         event.accept()

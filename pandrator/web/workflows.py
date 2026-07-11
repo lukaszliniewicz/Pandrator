@@ -45,8 +45,12 @@ class WorkflowService:
         self.database = database
         self.jobs = jobs
 
-    def definitions(self, record: SessionRecord) -> tuple[StageDefinition, ...]:
-        return AUDIOBOOK_STAGES if record.workflow_kind == "audiobook" else DUBBING_STAGES
+    def definitions(self, record: SessionRecord, artifacts: list[Artifact] | None = None) -> tuple[StageDefinition, ...]:
+        if record.workflow_kind == "audiobook":
+            return AUDIOBOOK_STAGES
+        upload = next((item for item in (artifacts or []) if item.role == "upload" and item.state == "current"), None)
+        filename = str((upload.metadata_json or {}).get("original_filename") or upload.relative_path).lower() if upload else ""
+        return tuple(item for item in DUBBING_STAGES if not (filename.endswith(".srt") and item.key == "transcribe"))
 
     @staticmethod
     def _usable_input(definition: StageDefinition, artifact: Artifact, workflow_kind: str) -> bool:
@@ -74,16 +78,24 @@ class WorkflowService:
                     select(Artifact).where(Artifact.session_id == session_id).order_by(Artifact.created_at.desc())
                 ).all()
             )
-            active_jobs = list(
+            latest_jobs = list(
                 session.scalars(
-                    select(Job).where(Job.session_id == session_id, Job.status.in_(["queued", "running", "cancel_requested"]))
+                    select(Job).where(Job.session_id == session_id).order_by(Job.created_at.desc())
                 ).all()
             )
             roles = {artifact.role: artifact for artifact in artifacts if artifact.state == "current"}
-            job_by_kind = {job.kind: job for job in active_jobs}
+            latest_roles = {}
+            for artifact_record in artifacts:
+                latest_roles.setdefault(artifact_record.role, artifact_record)
+            job_by_kind = {}
+            for job in latest_jobs:
+                job_by_kind.setdefault(job.kind, job)
+            if "workflow.continue" in job_by_kind:
+                job_by_kind["dubbing.generate_audio"] = job_by_kind["workflow.continue"]
+                job_by_kind["audiobook.generate_audio"] = job_by_kind["workflow.continue"]
             stages = []
-            for index, definition in enumerate(self.definitions(record), start=1):
-                artifact = roles.get(definition.output_role or "")
+            for index, definition in enumerate(self.definitions(record, artifacts), start=1):
+                artifact = latest_roles.get(definition.output_role or "")
                 active = job_by_kind.get(definition.job_kind or "")
                 prerequisite = next(
                     (
@@ -93,8 +105,10 @@ class WorkflowService:
                     ),
                     None,
                 )
-                if active:
+                if active and active.status in {"queued", "running", "cancel_requested"}:
                     status = "running"
+                elif active and active.status in {"failed", "interrupted"} and (artifact is None or active.created_at >= artifact.updated_at):
+                    status = "failed"
                 elif artifact:
                     status = "stale" if artifact.state == "stale" else "completed"
                 elif definition.prerequisite_roles and prerequisite is None:
@@ -110,8 +124,11 @@ class WorkflowService:
                         "status": status,
                         "executable": definition.executable,
                         "included": definition.key in record.included_stages_json,
+                        "required": definition.key == "transcribe" and any(key in record.included_stages_json for key in ("correct", "translate", "generate_audio")),
                         "artifact": {"id": artifact.id, "role": artifact.role, "path": artifact.relative_path} if artifact else None,
                         "job_id": active.id if active else None,
+                        "progress": active.progress if active and status in {"running", "failed"} else None,
+                        "detail": active.error_message if active and status == "failed" else None,
                     }
                 )
             return {
@@ -137,7 +154,8 @@ class WorkflowService:
             record = session.get(SessionRecord, session_id)
             if record is None:
                 raise KeyError(session_id)
-            definition = next((item for item in self.definitions(record) if item.key == stage_key), None)
+            all_artifacts = list(session.scalars(select(Artifact).where(Artifact.session_id == session_id).order_by(Artifact.created_at.desc())).all())
+            definition = next((item for item in self.definitions(record, all_artifacts) if item.key == stage_key), None)
             if definition is None or not definition.executable or not definition.job_kind:
                 raise ValueError(f"Stage '{stage_key}' cannot be run directly.")
             artifacts = list(
@@ -165,4 +183,8 @@ class WorkflowService:
                 "source_artifact_id": source.id if source else None,
                 "settings": settings or {},
             }
+        if stage_key == "generate_audio":
+            stage_settings = payload["settings"].pop("stage_settings", {})
+            payload.update({"target_stage": stage_key, "stage_settings": stage_settings})
+            return self.jobs.enqueue("workflow.continue", payload, session_id=session_id)
         return self.jobs.enqueue(definition.job_kind, payload, session_id=session_id)

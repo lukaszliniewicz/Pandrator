@@ -274,7 +274,8 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(uploaded.status_code, 201)
         snapshot = self.client.get(f"/api/v1/sessions/{session_id}/workflow").get_json()
         by_key = {stage["key"]: stage for stage in snapshot["stages"]}
-        self.assertEqual(by_key["transcribe"]["status"], "unavailable")
+        self.assertNotIn("transcribe", by_key)
+        self.assertEqual(by_key["correct"]["number"], 1)
         self.assertEqual(by_key["correct"]["status"], "ready")
 
         queued = self.client.post(

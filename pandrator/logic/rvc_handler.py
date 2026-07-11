@@ -84,6 +84,8 @@ def process_with_rvc(audio_segment: AudioSegment, settings: dict) -> AudioSegmen
         return AudioSegment.from_file(io.BytesIO(response.content), format="wav")
     except (requests.RequestException, RuntimeError, ValueError) as exc:
         logging.error("RVC processing failed: %s", exc)
+        if settings.get("raise_on_error"):
+            raise RuntimeError(f"RVC processing failed: {exc}") from exc
         return audio_segment
 
 

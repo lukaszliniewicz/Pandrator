@@ -30,9 +30,9 @@ from .capabilities import probe_capabilities
 from .database import Database
 from .jobs import JobQueue
 from .legacy_migration import import_legacy_data
-from .models import AppSetting, AppSettingHistory, Artifact, Provider, ProviderModel, SessionRecord, SourceRecord, Voice, VoiceSample, utcnow
+from .models import AppSetting, AppSettingHistory, Artifact, Provider, ProviderModel, SessionRecord, SourceRecord, TrainingRun, Voice, VoiceSample, new_id, utcnow
 from .openapi import build_openapi_document
-from .schemas import BootstrapRequest, BundleExportRequest, BundleImportRequest, JobCreate, LoginRequest, ModelCreate, ModelUpdate, PdfEditRequest, ProviderCreate, SessionCreate, SessionUpdate, SettingUpdate, SubtitleReviewRequest, TokenCreateRequest, VoiceCreate, VoiceTranscriptReview
+from .schemas import BootstrapRequest, BundleExportRequest, BundleImportRequest, JobCreate, LoginRequest, ModelCreate, ModelUpdate, PdfEditRequest, ProviderCreate, ProviderTestRequest, RvcConvertRequest, RvcModelUploadRequest, SessionCreate, SessionUpdate, SettingUpdate, SourceReuseRequest, SourceUrlRequest, SubtitleReviewRequest, TokenCreateRequest, TrainingCreateRequest, VoiceCreate, VoiceTranscriptReview
 from .sessions import RevisionConflict, SessionService
 from .subtitle_review import SubtitleReviewService
 from .workflows import WorkflowService
@@ -170,6 +170,14 @@ def create_app(
     @app.before_request
     def _request_context():
         g.request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        if (paths.root / "maintenance.json").is_file() and request.method in {"POST", "PUT", "PATCH", "DELETE"} and request.endpoint not in {
+            "auth_login",
+            "auth_logout",
+            "auth_bootstrap",
+            "job_cancel",
+            "training_cancel",
+        }:
+            return error_response("maintenance", "Pandrator is draining work for an update. Try again after it restarts.", 503)
         if request.method in {"POST", "PUT", "PATCH", "DELETE"} and request.endpoint not in {
             "auth_login",
             "auth_bootstrap",
@@ -532,11 +540,45 @@ def create_app(
             if temporary.exists():
                 temporary.unlink()
 
+    @app.post("/api/v1/sessions/<session_id>/sources/url")
+    @require_auth
+    def source_download_url(session_id: str):
+        try:
+            sessions.get(session_id)
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
+        payload = SourceUrlRequest.model_validate(request.get_json(silent=True) or {})
+        job = jobs.enqueue("source.download_url", {"session_id": session_id, "url": payload.url}, session_id=session_id)
+        return jsonify(_job_payload(job)), 202
+
+    @app.post("/api/v1/sessions/<session_id>/sources/reuse")
+    @require_auth
+    def source_reuse(session_id: str):
+        try:
+            sessions.get(session_id)
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
+        payload = SourceReuseRequest.model_validate(request.get_json(silent=True) or {})
+        try:
+            artifacts.resolve(payload.artifact_id)
+        except KeyError:
+            return error_response("not_found", "Reusable source artifact not found.", 404)
+        job = jobs.enqueue("source.reuse", {"session_id": session_id, "artifact_id": payload.artifact_id}, session_id=session_id)
+        return jsonify(_job_payload(job)), 202
+
     @app.get("/api/v1/artifacts")
     @require_auth
     def artifact_list():
         with database.session() as db_session:
-            records = list(db_session.scalars(select(Artifact).order_by(Artifact.created_at.desc()).limit(500)).all())
+            statement = select(Artifact).order_by(Artifact.created_at.desc())
+            requested_session = str(request.args.get("session_id") or "")
+            if requested_session:
+                statement = statement.where(Artifact.session_id == requested_session)
+            try:
+                limit = max(1, min(500, int(request.args.get("limit") or 500)))
+            except ValueError:
+                limit = 500
+            records = list(db_session.scalars(statement.limit(limit)).all())
             return jsonify({"items": [_model_dict(item, ("id", "session_id", "kind", "role", "relative_path", "mime_type", "size_bytes", "content_hash", "state", "created_at")) for item in records]})
 
     @app.get("/api/v1/artifacts/<artifact_id>/content")
@@ -619,6 +661,24 @@ def create_app(
             db_session.flush()
             result = _model_dict(model, ("id", "provider_id", "model_id", "is_default", "default_temperature", "default_reasoning_effort", "input_cost_per_million", "cached_input_cost_per_million", "output_cost_per_million", "options_json", "revision"))
         return jsonify(result), 201
+
+    @app.post("/api/v1/providers/<provider_id>/test")
+    @require_auth
+    def provider_test(provider_id: str):
+        from pandrator.logic.llm_handler import chat_completion_with_metadata
+        from .provider_settings import build_llm_settings
+
+        payload = ProviderTestRequest.model_validate(request.get_json(silent=True) or {})
+        with database.session() as db_session:
+            provider = db_session.get(Provider, provider_id)
+            if provider is None:
+                return error_response("not_found", "Provider not found.", 404)
+            selected = payload.model_id or db_session.scalar(select(ProviderModel.model_id).where(ProviderModel.provider_id == provider_id, ProviderModel.is_default.is_(True)))
+        settings, model_name = build_llm_settings(database, paths, requested_model=selected)
+        result = chat_completion_with_metadata(messages=[{"role": "user", "content": "Reply with exactly OK."}], model_name=model_name, llm_settings=settings, max_tokens=8)
+        if not result.content:
+            return error_response("provider_test_failed", "The provider returned no usable response. Check its URL, secret reference, and model ID.", 422)
+        return jsonify({"ok": True, "model": result.model or model_name, "response": result.content[:80], "cost": result.cost, "cost_source": result.cost_source})
 
     @app.get("/api/v1/providers/<provider_id>/models")
     @require_auth
@@ -777,6 +837,107 @@ def create_app(
             sample.transcript_reviewed = True
             result = _model_dict(sample, ("id", "voice_id", "artifact_id", "transcript", "transcript_language", "transcript_reviewed", "created_at"))
         return jsonify(result)
+
+    @app.get("/api/v1/rvc/models")
+    @require_auth
+    def rvc_model_list():
+        from pandrator.logic import rvc_handler
+
+        available = rvc_handler.is_rvc_available()
+        return jsonify({"available": available, "items": rvc_handler.get_rvc_models(str(paths.models / "rvc")) if available else []})
+
+    @app.post("/api/v1/rvc/models")
+    @require_auth
+    def rvc_model_upload():
+        payload = RvcModelUploadRequest.model_validate(request.get_json(silent=True) or {})
+        for artifact_id in (payload.pth_artifact_id, payload.index_artifact_id):
+            try:
+                _record, source = artifacts.resolve(artifact_id)
+            except KeyError:
+                return error_response("not_found", "An RVC upload artifact was not found.", 404)
+            if not source.is_file():
+                return error_response("artifact_missing", "An RVC upload artifact is missing.", 410)
+        job = jobs.enqueue("rvc.model.upload", payload.model_dump())
+        return jsonify(_job_payload(job)), 202
+
+    @app.post("/api/v1/rvc/convert")
+    @require_auth
+    def rvc_convert():
+        payload = RvcConvertRequest.model_validate(request.get_json(silent=True) or {})
+        try:
+            artifacts.resolve(payload.source_artifact_id)
+            if payload.session_id:
+                sessions.get(payload.session_id)
+        except KeyError:
+            return error_response("not_found", "The requested session or source artifact was not found.", 404)
+        job = jobs.enqueue("rvc.convert", payload.model_dump(), session_id=payload.session_id)
+        return jsonify(_job_payload(job)), 202
+
+    @app.get("/api/v1/training")
+    @require_auth
+    def training_list():
+        with database.session() as db_session:
+            records = list(db_session.scalars(select(TrainingRun).order_by(TrainingRun.created_at.desc()).limit(200)).all())
+            return jsonify({"items": [_model_dict(item, ("id", "kind", "voice_id", "job_id", "source_artifact_id", "output_artifact_id", "model_name", "status", "settings_json", "error_message", "created_at", "updated_at")) for item in records]})
+
+    @app.post("/api/v1/training")
+    @require_auth
+    def training_create():
+        payload = TrainingCreateRequest.model_validate(request.get_json(silent=True) or {})
+        try:
+            artifacts.resolve(payload.source_artifact_id)
+            if payload.source_text_artifact_id:
+                artifacts.resolve(payload.source_text_artifact_id)
+        except KeyError:
+            return error_response("not_found", "A training source artifact was not found.", 404)
+        training_id = new_id()
+        with database.session() as db_session:
+            if payload.voice_id and db_session.get(Voice, payload.voice_id) is None:
+                return error_response("not_found", "Voice not found.", 404)
+            db_session.add(
+                TrainingRun(
+                    id=training_id,
+                    kind="xtts",
+                    voice_id=payload.voice_id,
+                    source_artifact_id=payload.source_artifact_id,
+                    model_name=payload.model_name,
+                    settings_json=payload.settings,
+                )
+            )
+        job = jobs.enqueue(
+            "training.xtts",
+            {
+                "training_id": training_id,
+                "model_name": payload.model_name,
+                "source_artifact_id": payload.source_artifact_id,
+                "source_text_artifact_id": payload.source_text_artifact_id,
+                "settings": payload.settings,
+            },
+        )
+        with database.session() as db_session:
+            training = db_session.get(TrainingRun, training_id)
+            training.job_id = job.id
+            training.updated_at = utcnow()
+        response = _job_payload(job)
+        response["training_id"] = training_id
+        return jsonify(response), 202
+
+    @app.post("/api/v1/training/<training_id>/cancel")
+    @require_auth
+    def training_cancel(training_id: str):
+        with database.session() as db_session:
+            training = db_session.get(TrainingRun, training_id)
+            if training is None:
+                return error_response("not_found", "Training run not found.", 404)
+            job_id = training.job_id
+            training.status = "cancel_requested"
+            training.updated_at = utcnow()
+        if job_id:
+            try:
+                jobs.request_cancel(job_id)
+            except KeyError:
+                pass
+        return jsonify({"id": training_id, "job_id": job_id, "status": "cancel_requested"}), 202
 
     @app.get("/_app/<path:asset_path>")
     def frontend_asset(asset_path: str):
