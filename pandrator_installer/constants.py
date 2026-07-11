@@ -103,6 +103,10 @@ MAGPIE_API_REPO_DIRNAME = COMPONENTS['magpie'].repo_dirname
 RVC_API_REPO_URL = COMPONENTS['rvc'].repo_url
 RVC_API_REPO_DIRNAME = COMPONENTS['rvc'].repo_dirname
 PANDRATOR_REPO_URL = 'https://github.com/lukaszliniewicz/Pandrator.git'
+# Integration builds are preview installers: they must install the web migration
+# branch instead of silently cloning the still-stable Qt default branch. Change
+# this to ``main`` as part of the final web cutover.
+PANDRATOR_REPO_BRANCH = 'codex/webui-migration'
 PYCROPPDF_REPO_URL = 'https://github.com/lukaszliniewicz/PyCropPDF.git'
 EASY_XTTS_TRAINER_REPO_URL = COMPONENTS['xtts_finetuning'].repo_url
 

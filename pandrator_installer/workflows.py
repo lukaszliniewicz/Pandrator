@@ -35,6 +35,7 @@ from .constants import (
     PARAKEET_ONNX_ENV_NAME,
     PARAKEET_ONNX_PYTHON_VERSION,
     PANDRATOR_PYTHON_VERSION,
+    PANDRATOR_REPO_BRANCH,
     PANDRATOR_REPO_URL,
     PYCROPPDF_REPO_URL,
     RVC_API_REPO_DIRNAME,
@@ -236,7 +237,11 @@ class WorkflowMixin:
 
             # Git repositories tasks
             if pandrator_var or not pandrator_already_installed or pandrator_repo_missing:
-                concurrent_tasks["Clone Pandrator"] = (self.clone_repo, (PANDRATOR_REPO_URL, pandrator_repo_path), {})
+                concurrent_tasks["Clone Pandrator"] = (
+                    self.clone_repo,
+                    (PANDRATOR_REPO_URL, pandrator_repo_path),
+                    {'branch': PANDRATOR_REPO_BRANCH},
+                )
             if (xtts_var or xtts_cpu_var) and not os.path.exists(xtts_repo_path):
                 concurrent_tasks["Clone XTTS"] = (self.clone_repo, (XTTS_API_REPO_URL, xtts_repo_path), {})
             if voxcpm_var and not os.path.exists(voxcpm_repo_path):

@@ -17,10 +17,43 @@ from pandrator_installer.models import InstallSelection, LaunchSelection, Worksp
 from pandrator_installer import platforms
 from pandrator_installer.reporting import HeadlessReporter
 from pandrator_installer.service import HeadlessInstaller
-from pandrator_installer.constants import NEMO_PYNINI_CONDA_SPEC, ONNX_ASR_INSTALL_SPEC, PANDRATOR_NUMPY_SPEC
+from pandrator_installer.constants import (
+    NEMO_PYNINI_CONDA_SPEC,
+    ONNX_ASR_INSTALL_SPEC,
+    PANDRATOR_NUMPY_SPEC,
+    PANDRATOR_REPO_BRANCH,
+)
 
 
 class InstallerArchitectureTests(unittest.TestCase):
+    def test_preview_branch_is_explicit(self):
+        self.assertEqual(PANDRATOR_REPO_BRANCH, "codex/webui-migration")
+
+    def test_clone_repo_checks_out_requested_branch(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        with tempfile.TemporaryDirectory() as workspace:
+            target = os.path.join(workspace, "checkout")
+            with patch.object(installer, "configure_tls_certificates"), \
+                 patch.object(installer, "run_git_command") as run_git, \
+                 patch.object(installer, "pull_repo"):
+                installer.clone_repo(
+                    "https://example.invalid/Pandrator.git",
+                    target,
+                    branch=PANDRATOR_REPO_BRANCH,
+                )
+
+        self.assertEqual(
+            run_git.call_args_list[0].args[0],
+            [
+                "clone",
+                "--branch",
+                PANDRATOR_REPO_BRANCH,
+                "--single-branch",
+                "https://example.invalid/Pandrator.git",
+                target,
+            ],
+        )
+
     def test_install_selection_resolves_dependencies(self):
         selection = InstallSelection.from_components(["xtts_finetuning"])
         self.assertEqual(

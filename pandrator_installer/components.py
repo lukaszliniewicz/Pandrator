@@ -1161,8 +1161,9 @@ class ComponentOperationsMixin:
         git_metadata_path = os.path.join(repo_path, '.git')
         return os.path.isdir(git_metadata_path) or os.path.isfile(git_metadata_path)
 
-    def clone_repo(self, repo_url, target_dir):
-        logging.info(f"Cloning repository {repo_url} to {target_dir}...")
+    def clone_repo(self, repo_url, target_dir, branch=None):
+        branch_description = f" (branch {branch})" if branch else ""
+        logging.info(f"Cloning repository {repo_url}{branch_description} to {target_dir}...")
         self.configure_tls_certificates()
 
         if os.path.exists(target_dir):
@@ -1175,7 +1176,12 @@ class ComponentOperationsMixin:
                 logging.info(
                     f"Repository already exists at {target_dir}; skipping clone and pulling latest changes instead."
                 )
-                self.pull_repo(target_dir)
+                if branch:
+                    self.run_git_command(['fetch', 'origin', branch], cwd=target_dir)
+                    self.run_git_command(['checkout', branch], cwd=target_dir)
+                    self.run_git_command(['pull', '--ff-only', 'origin', branch], cwd=target_dir)
+                else:
+                    self.pull_repo(target_dir)
                 return
 
             if any(os.scandir(target_dir)):
@@ -1184,13 +1190,18 @@ class ComponentOperationsMixin:
                 )
 
         try:
-            self.run_git_command(['clone', repo_url, target_dir])
+            clone_arguments = ['clone']
+            if branch:
+                clone_arguments.extend(['--branch', branch, '--single-branch'])
+            clone_arguments.extend([repo_url, target_dir])
+            self.run_git_command(clone_arguments)
             logging.info("Repository cloned successfully with git.")
         except Exception as git_error:
             logging.warning(f"git clone failed, falling back to Dulwich: {str(git_error)}")
             try:
                 porcelain = self.get_dulwich_porcelain()
-                porcelain.clone(repo_url, target_dir)
+                clone_options = {'branch': branch.encode('utf-8')} if branch else {}
+                porcelain.clone(repo_url, target_dir, **clone_options)
                 logging.info("Repository cloned successfully with Dulwich.")
             except Exception as dulwich_error:
                 if self.is_certificate_error(dulwich_error):
@@ -1201,7 +1212,8 @@ class ComponentOperationsMixin:
                     self.configure_tls_certificates(force=True)
                     try:
                         porcelain = self.get_dulwich_porcelain()
-                        porcelain.clone(repo_url, target_dir)
+                        clone_options = {'branch': branch.encode('utf-8')} if branch else {}
+                        porcelain.clone(repo_url, target_dir, **clone_options)
                         logging.info("Repository cloned successfully with Dulwich after certificate refresh.")
                         logging.info("Pulling latest changes...")
                         self.pull_repo(target_dir)
