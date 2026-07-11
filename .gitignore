@@ -40,6 +40,8 @@ pip-wheel-metadata/
 .coverage
 .coverage.*
 htmlcov/
+web/node_modules/
+web/.svelte-kit/
 
 # Runtime data
 Outputs/
@@ -51,6 +53,9 @@ logs/*
 pandrator_settings.json
 pandrator_state.sqlite3
 pandrator_state.sqlite3.*
+pandrator.sqlite3
+pandrator.sqlite3.*
+migration-web-v1.json
 
 # User-provided voices (keep repository samples)
 tts_voices/**/*.wav

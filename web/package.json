@@ -1,0 +1,28 @@
+{
+  "name": "pandrator-web",
+  "private": true,
+  "version": "0.48.0-dev.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "generate-api": "openapi-typescript ../openapi.json -o src/lib/api.generated.ts"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-static": "^3.0.10",
+    "@sveltejs/kit": "^2.48.0",
+    "@sveltejs/vite-plugin-svelte": "^6.2.1",
+    "@tailwindcss/vite": "^4.1.18",
+    "openapi-typescript": "^7.10.1",
+    "svelte": "^5.45.0",
+    "svelte-check": "^4.3.4",
+    "tailwindcss": "^4.1.18",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.4"
+  },
+  "dependencies": {
+    "@lucide/svelte": "^0.562.0",
+    "pdfjs-dist": "^5.4.394"
+  }
+}
