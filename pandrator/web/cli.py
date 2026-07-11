@@ -13,18 +13,23 @@ from pathlib import Path
 from typing import Any
 
 from waitress import serve as waitress_serve
+from sqlalchemy import select
 
 from pandrator.runtime import DataPaths
 
 from .api import create_app
 from .artifacts import ArtifactService, sha256_file
 from .auth import AuthService, BootstrapTokenStore
+from .bundles import SessionBundleService
 from .database import Database
 from .jobs import JobQueue, Worker, noop_handler
 from .legacy_migration import import_legacy_data
+from .models import Artifact, Provider, ProviderModel, SessionRecord, SourceRecord, Voice, VoiceSample
 from .openapi import build_openapi_document
 from .sessions import SessionService
+from .subtitle_review import SubtitleReviewService
 from .workflow_handlers import WorkflowHandlers
+from .workflows import WorkflowService
 
 
 def _emit(value: Any, json_output: bool = False) -> None:
@@ -232,6 +237,27 @@ def command_session_show(args) -> int:
     return 0
 
 
+def command_session_export(args) -> int:
+    paths, database = _database(args)
+    try:
+        destination = Path(args.output).expanduser().resolve()
+        result = SessionBundleService(database, paths).export_bundle(args.session_id, destination, include_sources=not args.exclude_sources)
+        _emit(result, args.json)
+        return 0
+    finally:
+        database.dispose()
+
+
+def command_session_import(args) -> int:
+    paths, database = _database(args)
+    try:
+        result = SessionBundleService(database, paths).import_bundle(Path(args.bundle), name=args.name)
+        _emit(result, args.json)
+        return 0
+    finally:
+        database.dispose()
+
+
 def command_job_list(args) -> int:
     _, database = _database(args)
     records = JobQueue(database).list(args.limit)
@@ -267,6 +293,107 @@ def command_job_cancel(args) -> int:
     database.dispose()
     _emit(_job_dict(record), args.json)
     return 0
+
+
+def command_source_list(args) -> int:
+    _, database = _database(args)
+    try:
+        with database.session() as session:
+            records = list(session.scalars(select(SourceRecord).where(SourceRecord.session_id == args.session_id).order_by(SourceRecord.created_at)).all())
+            _emit([{"id": item.id, "kind": item.kind, "name": item.display_name, "artifact_id": item.artifact_id, "content_hash": item.content_hash} for item in records], args.json)
+        return 0
+    finally:
+        database.dispose()
+
+
+def command_workflow_show(args) -> int:
+    _, database = _database(args)
+    try:
+        _emit(WorkflowService(database, JobQueue(database)).snapshot(args.session_id), args.json)
+        return 0
+    finally:
+        database.dispose()
+
+
+def command_workflow_run(args) -> int:
+    _, database = _database(args)
+    try:
+        settings = json.loads(args.settings)
+        job = WorkflowService(database, JobQueue(database)).run_stage(args.session_id, args.stage, settings)
+        _emit(_job_dict(job), args.json)
+        return 0
+    finally:
+        database.dispose()
+
+
+def command_artifact_list(args) -> int:
+    _, database = _database(args)
+    try:
+        with database.session() as session:
+            statement = select(Artifact).order_by(Artifact.created_at.desc()).limit(args.limit)
+            if args.session_id:
+                statement = statement.where(Artifact.session_id == args.session_id)
+            records = list(session.scalars(statement).all())
+            _emit([{"id": item.id, "session_id": item.session_id, "role": item.role, "kind": item.kind, "path": item.relative_path, "state": item.state, "sha256": item.content_hash} for item in records], args.json)
+        return 0
+    finally:
+        database.dispose()
+
+
+def command_document_show(args) -> int:
+    paths, database = _database(args)
+    try:
+        def session_dir(session_id):
+            with database.session() as session:
+                record = session.get(SessionRecord, session_id)
+                if record is None:
+                    raise KeyError(session_id)
+                return paths.sessions / record.storage_key
+        review = SubtitleReviewService(database, ArtifactService(database, paths), session_dir)
+        _emit(review.documents(args.session_id), args.json)
+        return 0
+    finally:
+        database.dispose()
+
+
+def command_provider_list(args) -> int:
+    _, database = _database(args)
+    try:
+        with database.session() as session:
+            providers = list(session.scalars(select(Provider).order_by(Provider.label)).all())
+            payload = []
+            for provider in providers:
+                models = list(session.scalars(select(ProviderModel).where(ProviderModel.provider_id == provider.id).order_by(ProviderModel.model_id)).all())
+                payload.append({"id": provider.id, "key": provider.provider_key, "label": provider.label, "base_url": provider.base_url, "models": [{"id": item.model_id, "default": item.is_default, "temperature": item.default_temperature, "reasoning": item.default_reasoning_effort} for item in models]})
+            _emit(payload, args.json)
+        return 0
+    finally:
+        database.dispose()
+
+
+def command_voice_list(args) -> int:
+    _, database = _database(args)
+    try:
+        with database.session() as session:
+            voices = list(session.scalars(select(Voice).order_by(Voice.name)).all())
+            payload = []
+            for voice in voices:
+                samples = list(session.scalars(select(VoiceSample).where(VoiceSample.voice_id == voice.id)).all())
+                payload.append({"id": voice.id, "name": voice.name, "language": voice.language, "samples": len(samples), "reviewed_transcripts": sum(item.transcript_reviewed for item in samples)})
+            _emit(payload, args.json)
+        return 0
+    finally:
+        database.dispose()
+
+
+def command_export_create(args) -> int:
+    _, database = _database(args)
+    try:
+        job = WorkflowService(database, JobQueue(database)).run_stage(args.session_id, "export", json.loads(args.options))
+        _emit(_job_dict(job), args.json)
+        return 0
+    finally:
+        database.dispose()
 
 
 def command_doctor(args) -> int:
@@ -344,6 +471,15 @@ def build_parser() -> argparse.ArgumentParser:
     session_show = session_commands.add_parser("show")
     session_show.add_argument("session_id")
     session_show.set_defaults(handler=command_session_show)
+    session_export = session_commands.add_parser("export")
+    session_export.add_argument("session_id")
+    session_export.add_argument("output")
+    session_export.add_argument("--exclude-sources", action="store_true")
+    session_export.set_defaults(handler=command_session_export)
+    session_import = session_commands.add_parser("import")
+    session_import.add_argument("bundle")
+    session_import.add_argument("--name")
+    session_import.set_defaults(handler=command_session_import)
 
     job = commands.add_parser("job", help="Inspect and control durable jobs.")
     job_commands = job.add_subparsers(dest="job_command", required=True)
@@ -362,6 +498,53 @@ def build_parser() -> argparse.ArgumentParser:
     job_cancel = job_commands.add_parser("cancel")
     job_cancel.add_argument("job_id")
     job_cancel.set_defaults(handler=command_job_cancel)
+
+    source = commands.add_parser("source", help="Inspect imported session sources.")
+    source_commands = source.add_subparsers(dest="source_command", required=True)
+    source_list = source_commands.add_parser("list")
+    source_list.add_argument("session_id")
+    source_list.set_defaults(handler=command_source_list)
+
+    workflow = commands.add_parser("workflow", help="Inspect and run workflow stages.")
+    workflow_commands = workflow.add_subparsers(dest="workflow_command", required=True)
+    workflow_show = workflow_commands.add_parser("show")
+    workflow_show.add_argument("session_id")
+    workflow_show.set_defaults(handler=command_workflow_show)
+    workflow_run = workflow_commands.add_parser("run")
+    workflow_run.add_argument("session_id")
+    workflow_run.add_argument("stage")
+    workflow_run.add_argument("--settings", default="{}")
+    workflow_run.set_defaults(handler=command_workflow_run)
+
+    artifact = commands.add_parser("artifact", help="Inspect managed artifacts.")
+    artifact_commands = artifact.add_subparsers(dest="artifact_command", required=True)
+    artifact_list = artifact_commands.add_parser("list")
+    artifact_list.add_argument("--session-id")
+    artifact_list.add_argument("--limit", type=int, default=100)
+    artifact_list.set_defaults(handler=command_artifact_list)
+
+    document = commands.add_parser("document", help="Inspect subtitle revisions and comparison lineage.")
+    document_commands = document.add_subparsers(dest="document_command", required=True)
+    document_show = document_commands.add_parser("show")
+    document_show.add_argument("session_id")
+    document_show.set_defaults(handler=command_document_show)
+
+    provider = commands.add_parser("provider", help="Inspect configured providers and model defaults.")
+    provider_commands = provider.add_subparsers(dest="provider_command", required=True)
+    provider_list = provider_commands.add_parser("list")
+    provider_list.set_defaults(handler=command_provider_list)
+
+    voice = commands.add_parser("voice", help="Inspect voice references and transcript readiness.")
+    voice_commands = voice.add_subparsers(dest="voice_command", required=True)
+    voice_list = voice_commands.add_parser("list")
+    voice_list.set_defaults(handler=command_voice_list)
+
+    export = commands.add_parser("export", help="Queue a session export.")
+    export_commands = export.add_subparsers(dest="export_command", required=True)
+    export_create = export_commands.add_parser("create")
+    export_create.add_argument("session_id")
+    export_create.add_argument("--options", default="{}")
+    export_create.set_defaults(handler=command_export_create)
 
     doctor = commands.add_parser("doctor", help="Validate managed artifacts and state.")
     doctor.set_defaults(handler=command_doctor)

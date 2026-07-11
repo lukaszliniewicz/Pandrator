@@ -55,6 +55,8 @@ class WorkflowHandlers:
             "voice.transcribe": self.transcribe_voice,
             "voice.normalize_recording": self.normalize_voice_recording,
             "pdf.apply_edits": self.apply_pdf_edits,
+            "session.bundle.export": self.export_session_bundle,
+            "session.bundle.import": self.import_session_bundle,
         }
 
     def _session_dir(self, session_id: str) -> Path:
@@ -656,3 +658,32 @@ class WorkflowHandlers:
             "manifest_artifact_id": manifest_artifact.id,
             "page_count": provenance["output"]["page_count"],
         }
+
+    def export_session_bundle(self, payload, progress, cancel_event):
+        from .bundles import SessionBundleService
+
+        session_id = str(payload.get("session_id") or "")
+        record = self._session_record(session_id)
+        destination = self._session_dir(session_id) / "exports" / f"{record.storage_key}.pandrator-session"
+        progress(0.05, "Collecting session records")
+        result = SessionBundleService(self.database, self.paths).export_bundle(
+            session_id,
+            destination,
+            include_sources=bool(payload.get("include_sources", True)),
+        )
+        if cancel_event.is_set():
+            return {}
+        artifact = self.artifacts.register(destination, kind="bundle", role="session_bundle", session_id=session_id)
+        progress(1.0, "Session bundle ready")
+        return {**result, "artifact_id": artifact.id}
+
+    def import_session_bundle(self, payload, progress, cancel_event):
+        from .bundles import SessionBundleService
+
+        _artifact, source = self._resolve_input(str(payload.get("source_artifact_id") or ""))
+        progress(0.05, "Validating session bundle")
+        if cancel_event.is_set():
+            return {}
+        result = SessionBundleService(self.database, self.paths).import_bundle(source, name=payload.get("name"))
+        progress(1.0, "Session imported")
+        return result

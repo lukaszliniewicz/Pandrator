@@ -15,6 +15,46 @@
         "title": "BootstrapRequest",
         "type": "object"
       },
+      "BundleExportRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "include_sources": {
+            "default": true,
+            "title": "Include Sources",
+            "type": "boolean"
+          }
+        },
+        "title": "BundleExportRequest",
+        "type": "object"
+      },
+      "BundleImportRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          },
+          "source_artifact_id": {
+            "title": "Source Artifact Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_artifact_id"
+        ],
+        "title": "BundleImportRequest",
+        "type": "object"
+      },
       "ErrorBody": {
         "additionalProperties": false,
         "properties": {
@@ -1183,6 +1223,26 @@
         }
       }
     },
+    "/api/v1/session-bundles/import": {
+      "post": {
+        "operationId": "importSessionBundle",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BundleImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Queued"
+          }
+        }
+      }
+    },
     "/api/v1/sessions": {
       "get": {
         "operationId": "listSessions",
@@ -1268,6 +1328,26 @@
           },
           "409": {
             "description": "Revision conflict"
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{sessionId}/bundle": {
+      "post": {
+        "operationId": "exportSessionBundle",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BundleExportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Queued"
           }
         }
       }
