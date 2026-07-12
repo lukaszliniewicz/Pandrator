@@ -9,24 +9,34 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from pandrator.runtime import DataPaths
 
 from .artifacts import ArtifactService
 from .database import Database
 from .models import (
+    AgentRun,
+    AgentStep,
     Artifact,
+    AudioTake,
     Document,
     DocumentRevision,
+    GenerationRun,
+    GenerationPlan,
+    GenerationPlanRevision,
+    GenerationSegment,
+    OutcomePlan,
     Segment,
     SegmentLineage,
     SessionRecord,
     SourceRecord,
     TrainingRun,
+    TimedWord,
     UsageEvent,
     Voice,
     VoiceSample,
+    new_id,
     utcnow,
 )
 
@@ -66,6 +76,8 @@ class WorkflowHandlers:
             "workflow.continue": self.continue_workflow,
             "source.download_url": self.download_source_url,
             "source.reuse": self.reuse_source,
+            "generation.run": self.run_generation,
+            "audio.waveform": self.generate_waveform,
         }
 
     @staticmethod
@@ -85,6 +97,7 @@ class WorkflowHandlers:
 
     def download_source_url(self, payload, progress, cancel_event):
         import yt_dlp
+        from .workspace import SourceLibraryService
 
         session_id = str(payload.get("session_id") or "")
         url = self._validate_download_url(str(payload.get("url") or ""))
@@ -108,10 +121,14 @@ class WorkflowHandlers:
         artifact = self.artifacts.register(output, kind="source", role="upload", session_id=session_id, metadata={"original_filename": output.name, "source_url": url})
         with self.database.session() as session:
             session.add(SourceRecord(session_id=session_id, kind=output.suffix.lower().lstrip(".") or "url", display_name=output.name, artifact_id=artifact.id, content_hash=artifact.content_hash, metadata_json={"url": url}))
+        library = SourceLibraryService(self.database)
+        asset = library.ensure_for_artifact(artifact.id, display_name=output.name, kind=output.suffix.lower().lstrip(".") or "url")
+        library.attach(session_id, asset.id)
         progress(1.0, "Source download ready")
         return {"artifact_id": artifact.id, "filename": output.name}
 
     def reuse_source(self, payload, progress, cancel_event):
+        from .workspace import SourceLibraryService
         session_id = str(payload.get("session_id") or "")
         source, source_path = self._resolve_input(str(payload.get("artifact_id") or ""))
         destination_dir = self._session_dir(session_id) / "sources"
@@ -125,6 +142,9 @@ class WorkflowHandlers:
         artifact = self.artifacts.register(destination, kind="source", role="upload", session_id=session_id, parent_ids=[source.id], metadata={"original_filename": source_path.name, "reused_from": source.id})
         with self.database.session() as session:
             session.add(SourceRecord(session_id=session_id, kind=destination.suffix.lower().lstrip(".") or "file", display_name=source_path.name, artifact_id=artifact.id, content_hash=artifact.content_hash, metadata_json={"reused_from": source.id}))
+        library = SourceLibraryService(self.database)
+        asset = library.ensure_for_artifact(artifact.id, display_name=source_path.name, kind=destination.suffix.lower().lstrip(".") or "file")
+        library.attach(session_id, asset.id)
         progress(1.0, "Reusable source ready")
         return {"artifact_id": artifact.id, "filename": source_path.name}
 
@@ -163,6 +183,10 @@ class WorkflowHandlers:
         if target_index is None:
             raise ValueError(f"Unknown continuation stage: {target_key}")
         included = set(record.included_stages_json or [])
+        with self.database.session() as session:
+            outcome = session.scalar(select(OutcomePlan).where(OutcomePlan.session_id == session_id))
+            outcome_value = dict(outcome.value_json or {}) if outcome else {}
+        input_choices = outcome_value.get("inputs") if isinstance(outcome_value.get("inputs"), dict) else {}
         stage_settings = payload.get("stage_settings") if isinstance(payload.get("stage_settings"), dict) else {}
         direct_settings = payload.get("settings") if isinstance(payload.get("settings"), dict) else {}
         runnable = [
@@ -190,7 +214,18 @@ class WorkflowHandlers:
                 ) if definition.output_role else None
             if existing is not None and definition.key != target_key and existing.settings_hash == expected_settings_hash:
                 continue
-            source = self._latest_stage_input(session_id, definition.prerequisite_roles)
+            input_roles = definition.prerequisite_roles
+            if definition.key == "translate":
+                translation_parent = str(input_choices.get("translation") or "correction")
+                input_roles = ("correction",) if translation_parent == "correction" else ("transcription", "upload")
+            elif definition.key == "generate_audio":
+                generation_parent = str(input_choices.get("generation") or "translation")
+                input_roles = {
+                    "translation": ("translation",),
+                    "correction": ("correction",),
+                    "source": ("transcription", "upload"),
+                }.get(generation_parent, definition.prerequisite_roles)
+            source = self._latest_stage_input(session_id, input_roles)
             if definition.prerequisite_roles and source is None:
                 raise ValueError(f"Stage '{definition.key}' is missing a required input artifact.")
             handler = handlers[definition.job_kind]
@@ -306,6 +341,33 @@ class WorkflowHandlers:
             }
             return document.id, revision.id
 
+    def _store_timed_words(self, revision_id: str, metadata_path: Path) -> int:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        transcription = payload.get("transcription") if isinstance(payload, dict) else []
+        words: list[dict[str, Any]] = []
+        for group in transcription if isinstance(transcription, list) else []:
+            if not isinstance(group, dict):
+                continue
+            speaker = str(group.get("speaker") or "") or None
+            for word in group.get("words") if isinstance(group.get("words"), list) else []:
+                if not isinstance(word, dict) or not isinstance(word.get("offsets"), dict):
+                    continue
+                offsets = word["offsets"]
+                try:
+                    start_ms = int(offsets["from"])
+                    end_ms = int(offsets["to"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                text = str(word.get("text") or word.get("word") or "").strip()
+                if text and end_ms > start_ms >= 0:
+                    words.append({"text": text, "start_ms": start_ms, "end_ms": end_ms, "speaker": str(word.get("speaker") or "") or speaker, "confidence": word.get("confidence") or word.get("probability"), "metadata": {key: value for key, value in word.items() if key not in {"text", "word", "offsets", "speaker", "confidence", "probability"}}})
+        with self.database.session() as session:
+            segments = list(session.scalars(select(Segment).where(Segment.revision_id == revision_id).order_by(Segment.ordinal)).all())
+            for ordinal, word in enumerate(words):
+                owner = next((segment for segment in segments if segment.start_ms is not None and segment.end_ms is not None and min(segment.end_ms, word["end_ms"]) > max(segment.start_ms, word["start_ms"])), None)
+                session.add(TimedWord(revision_id=revision_id, segment_id=owner.id if owner else None, ordinal=ordinal, text=word["text"], start_ms=word["start_ms"], end_ms=word["end_ms"], speaker=word["speaker"], confidence=float(word["confidence"]) if word["confidence"] is not None else None, metadata_json=word["metadata"]))
+        return len(words)
+
     def _record_usage(self, session_id: str, stage: str, settings: dict[str, Any], result) -> None:
         cost = float(getattr(result, "cost", 0.0) or 0.0)
         response_count = int(getattr(result, "response_count", 0) or 0)
@@ -344,7 +406,12 @@ class WorkflowHandlers:
             requested = requested or str(settings.get(key) or "").strip()
         if requested == "default":
             requested = ""
-        llm_settings, resolved_model = build_llm_settings(self.database, self.paths, requested_model=requested)
+        llm_settings, resolved_model = build_llm_settings(
+            self.database,
+            self.paths,
+            requested_model=requested,
+            request_timeout_seconds=int(settings.get("request_timeout_seconds") or 600),
+        )
         hydrated = {
             **settings,
             "llm_provider_configs": llm_settings.provider_configs,
@@ -392,18 +459,21 @@ class WorkflowHandlers:
                 "stt_compute_backend": transcription_result.compute_backend,
             },
         )
-        self._store_srt_document(
+        _document_id, revision_id = self._store_srt_document(
             session_id,
             artifact,
             "transcription",
             language=str((payload.get("settings") or {}).get("original_language") or "") or None,
         )
+        word_count = self._store_timed_words(revision_id, Path(transcription_result.word_timestamps_path))
         progress(1.0, "Transcription ready")
         return {
             "artifact_id": artifact.id,
             "path": artifact.relative_path,
             "word_timestamps_artifact_id": timing_artifact.id,
             "word_timestamps_path": timing_artifact.relative_path,
+            "word_count": word_count,
+            "revision_id": revision_id,
         }
 
     def correct(self, payload, progress, cancel_event):
@@ -700,6 +770,13 @@ class WorkflowHandlers:
         from pandrator.logic import source_cleaning
 
         session_id = str(payload.get("session_id") or "")
+        agent_run_id = str(payload.get("agent_run_id") or "")
+        if agent_run_id:
+            with self.database.session() as session:
+                run = session.get(AgentRun, agent_run_id)
+                if run is not None:
+                    run.status = "running"
+                    run.updated_at = utcnow()
         source_artifact, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
         settings = dict(payload.get("settings") or {})
         progress(0.05, "Extracting source text")
@@ -753,6 +830,7 @@ class WorkflowHandlers:
                 self.database,
                 self.paths,
                 requested_model=str(settings.get("model_name") or settings.get("default_model") or ""),
+                request_timeout_seconds=int(settings.get("request_timeout_seconds") or 600),
             )
             total_iterations = max(1, int(settings.get("max_iterations") or 53))
             phase_iterations = settings.get("phase_max_iterations")
@@ -822,6 +900,37 @@ class WorkflowHandlers:
             settings=settings,
             metadata={"extraction": extraction, "report": report},
         )
+        if agent_run_id:
+            pipeline_report = report.get("pipeline") if isinstance(report.get("pipeline"), dict) else {}
+            phases = pipeline_report.get("phases") if isinstance(pipeline_report.get("phases"), list) else []
+            with self.database.session() as session:
+                run = session.get(AgentRun, agent_run_id)
+                if run is not None:
+                    run.status = "completed"
+                    run.result_artifact_id = artifact.id
+                    run.updated_at = utcnow()
+                    for ordinal, phase in enumerate(phases):
+                        safe_phase = phase if isinstance(phase, dict) else {"name": str(phase)}
+                        operations = safe_phase.get("operations") if isinstance(safe_phase.get("operations"), list) else []
+                        warnings = safe_phase.get("warnings") if isinstance(safe_phase.get("warnings"), list) else []
+                        operation_types = sorted(
+                            {
+                                str(item.get("type") or item.get("operation") or "edit")
+                                for item in operations
+                                if isinstance(item, dict)
+                            }
+                        )
+                        session.add(
+                            AgentStep(
+                                agent_run_id=agent_run_id,
+                                ordinal=ordinal,
+                                phase=str(safe_phase.get("name") or safe_phase.get("phase") or f"Phase {ordinal + 1}"),
+                                status=str(safe_phase.get("status") or "completed"),
+                                summary=str(safe_phase.get("summary") or f"{len(operations)} proposed operation(s), {len(warnings)} warning(s)."),
+                                input_json={"operation_count": len(operations)},
+                                output_json={"warnings": warnings, "operation_types": operation_types},
+                            )
+                        )
         progress(1.0, "Source text ready")
         return {"artifact_id": artifact.id, "path": artifact.relative_path, "characters": len(cleaned_text), "report": report}
 
@@ -863,8 +972,52 @@ class WorkflowHandlers:
             settings=settings,
             metadata={"segment_count": len(prepared)},
         )
+        generation_revision_id, _segment_ids = self._store_generation_plan(
+            session_id,
+            prepared,
+            settings=settings,
+            source_revision_id=str((source_artifact.metadata_json or {}).get("revision_id") or "") or None,
+        )
         progress(1.0, "Narration segments ready")
-        return {"artifact_id": artifact.id, "path": artifact.relative_path, "segments": len(prepared)}
+        return {"artifact_id": artifact.id, "path": artifact.relative_path, "segments": len(prepared), "generation_plan_revision_id": generation_revision_id}
+
+    def _store_generation_plan(
+        self,
+        session_id: str,
+        records: list[dict[str, Any]],
+        *,
+        settings: dict[str, Any],
+        source_revision_id: str | None = None,
+    ) -> tuple[str, list[str]]:
+        clean = [item for item in records if str(item.get("text") or item.get("original_sentence") or "").strip()]
+        digest = hashlib.sha256(json.dumps({"records": clean, "settings": settings}, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+        with self.database.session() as session:
+            plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
+            if plan is None:
+                plan = GenerationPlan(session_id=session_id)
+                session.add(plan)
+                session.flush()
+            maximum = session.scalar(select(func.max(GenerationPlanRevision.revision_number)).where(GenerationPlanRevision.plan_id == plan.id)) or 0
+            revision = GenerationPlanRevision(plan_id=plan.id, source_revision_id=source_revision_id, revision_number=int(maximum) + 1, settings_json=settings, content_hash=digest)
+            session.add(revision)
+            session.flush()
+            segment_ids = []
+            for ordinal, record in enumerate(clean):
+                segment = GenerationSegment(
+                    plan_revision_id=revision.id,
+                    ordinal=ordinal,
+                    source_segment_ids_json=list(record.get("source_segment_ids") or []),
+                    text=str(record.get("text") or record.get("original_sentence") or "").strip(),
+                    language=str(record.get("language") or settings.get("language") or settings.get("target_language") or "") or None,
+                    silence_after_ms=max(0, int(record.get("silence_after_ms") or 0)),
+                    marked=bool(record.get("marked", False)),
+                )
+                session.add(segment)
+                session.flush()
+                segment_ids.append(segment.id)
+            plan.active_revision_id = revision.id
+            plan.updated_at = utcnow()
+            return revision.id, segment_ids
 
     @staticmethod
     def _tts_urls(settings: dict[str, Any]) -> dict[str, str]:
@@ -890,10 +1043,17 @@ class WorkflowHandlers:
         records = json.loads(source_path.read_text(encoding="utf-8-sig"))
         if not isinstance(records, list) or not records:
             raise ValueError("No narration segments were found.")
+        records = [record for record in records if str(record.get("text") or record.get("original_sentence") or "").strip()]
+        if not records:
+            raise ValueError("No non-empty narration segments were found.")
         combined = AudioSegment.empty()
-        wav_dir = self._session_dir(session_id) / "sentence_wavs"
-        wav_dir.mkdir(parents=True, exist_ok=True)
-        for index, record in enumerate(records, start=1):
+        revision_id, generation_segment_ids = self._store_generation_plan(
+            session_id,
+            records,
+            settings=settings,
+            source_revision_id=str((source_artifact.metadata_json or {}).get("revision_id") or "") or None,
+        )
+        for index, (record, generation_segment_id) in enumerate(zip(records, generation_segment_ids), start=1):
             if cancel_event.is_set():
                 return {}
             text = str(record.get("text") or record.get("original_sentence") or "").strip()
@@ -903,9 +1063,24 @@ class WorkflowHandlers:
             audio = tts_handler.text_to_audio(text, settings, max_attempts=int(settings.get("max_attempts") or 3), **self._tts_urls(settings))
             if audio is None:
                 raise RuntimeError(f"Speech generation failed at segment {index}.")
-            sentence_path = wav_dir / f"sentence_{index:06d}.wav"
+            take_dir = self._session_dir(session_id) / "generation" / revision_id / generation_segment_id
+            take_dir.mkdir(parents=True, exist_ok=True)
+            sentence_path = take_dir / f"tts-{new_id()}.wav"
             exported = audio.export(sentence_path, format="wav")
             exported.close()
+            take_artifact = self.artifacts.register(
+                sentence_path,
+                kind="audio",
+                role="generation_take",
+                session_id=session_id,
+                parent_ids=[source_artifact.id],
+                settings=settings,
+                metadata={"generation_segment_id": generation_segment_id, "kind": "tts"},
+            )
+            with self.database.session() as session:
+                segment = session.get(GenerationSegment, generation_segment_id)
+                segment.status = "completed"
+                session.add(AudioTake(generation_segment_id=generation_segment_id, artifact_id=take_artifact.id, kind="tts", status="completed", settings_hash=take_artifact.settings_hash, duration_ms=len(audio), is_active=True))
             combined += audio
         if not combined:
             raise RuntimeError("The speech service returned no audio.")
@@ -922,7 +1097,7 @@ class WorkflowHandlers:
             metadata={"segment_count": len(records), "service": settings.get("service") or settings.get("tts_service") or "XTTS"},
         )
         progress(1.0, "Audio ready")
-        return {"artifact_id": artifact.id, "path": artifact.relative_path, "segments": len(records)}
+        return {"artifact_id": artifact.id, "path": artifact.relative_path, "segments": len(records), "generation_plan_revision_id": revision_id}
 
     def generate_dubbing_audio(self, payload, progress, cancel_event):
         from pandrator.logic.dubbing.speech_blocks import generate_speech_blocks_file
@@ -961,6 +1136,178 @@ class WorkflowHandlers:
         source_artifact, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
         settings = dict(payload.get("settings") or {})
         return self._generate_audio(session_id, source_artifact, source_path, settings, progress, cancel_event, role="audiobook_audio")
+
+    def run_generation(self, payload, progress, cancel_event):
+        """Generate immutable per-segment takes with safe pause and resume boundaries."""
+        from pydub import AudioSegment
+        from pandrator.logic import rvc_handler, tts_handler
+
+        run_id = str(payload.get("generation_run_id") or "")
+        selected_ids = {str(value) for value in (payload.get("segment_ids") or []) if str(value)}
+        operation = str(payload.get("operation") or "generate")
+        with self.database.session() as session:
+            run = session.get(GenerationRun, run_id)
+            if run is None:
+                raise KeyError(run_id)
+            run.status = "running"
+            run.updated_at = utcnow()
+            settings_snapshot = dict(run.settings_snapshot_json or {})
+            session_id = run.session_id
+            plan_revision_id = run.plan_revision_id
+
+        statement = select(GenerationSegment).where(
+            GenerationSegment.plan_revision_id == plan_revision_id,
+            GenerationSegment.removed.is_(False),
+        ).order_by(GenerationSegment.ordinal)
+        if selected_ids:
+            statement = statement.where(GenerationSegment.id.in_(selected_ids))
+        with self.database.session() as session:
+            segment_ids = [item.id for item in session.scalars(statement).all()]
+        if not segment_ids:
+            raise ValueError("No generation segments match this request.")
+
+        from .workspace import adapt_runtime_settings
+
+        tts_settings = {
+            **adapt_runtime_settings("tts", dict(settings_snapshot.get("tts") or {})),
+            **adapt_runtime_settings("audio", dict(settings_snapshot.get("audio") or {})),
+        }
+        rvc_settings = adapt_runtime_settings("rvc", dict(settings_snapshot.get("rvc") or {}))
+        generated = 0
+        skipped = 0
+        for index, segment_id in enumerate(segment_ids):
+            with self.database.session() as session:
+                run = session.get(GenerationRun, run_id)
+                segment = session.get(GenerationSegment, segment_id)
+                if run.cancel_requested or cancel_event.is_set():
+                    run.status = "canceled"
+                    run.updated_at = utcnow()
+                    return {"generation_run_id": run_id, "status": "canceled", "generated": generated}
+                if run.pause_requested:
+                    run.status = "paused"
+                    run.updated_at = utcnow()
+                    return {"generation_run_id": run_id, "status": "paused", "generated": generated}
+                if operation == "resume" and segment.status == "completed":
+                    skipped += 1
+                    continue
+                segment.status = "running"
+                segment.updated_at = utcnow()
+                text = segment.text
+            progress(index / len(segment_ids), f"Generating segment {index + 1} of {len(segment_ids)}")
+            try:
+                if operation == "rvc":
+                    with self.database.session() as session:
+                        source_take = session.scalar(select(AudioTake).where(AudioTake.generation_segment_id == segment_id, AudioTake.is_active.is_(True), AudioTake.status == "completed").order_by(AudioTake.created_at.desc()))
+                        if source_take is None or source_take.artifact_id is None:
+                            raise ValueError("The selected segment has no active audio take for RVC.")
+                        source_artifact = session.get(Artifact, source_take.artifact_id)
+                        source_take_id = source_take.id
+                    source_path = self.paths.managed_path(source_artifact.relative_path)
+                    source_audio = AudioSegment.from_file(source_path)
+                    audio = rvc_handler.process_with_rvc(source_audio, rvc_settings)
+                    take_kind = "rvc"
+                    parent_take_id = source_take_id
+                    take_settings = rvc_settings
+                else:
+                    audio = tts_handler.text_to_audio(text, tts_settings, max_attempts=int(tts_settings.get("max_attempts") or 3), **self._tts_urls(tts_settings))
+                    if audio is None:
+                        raise RuntimeError("The speech service returned no audio.")
+                    take_kind = "tts"
+                    parent_take_id = None
+                    take_settings = tts_settings
+                take_dir = self._session_dir(session_id) / "generation" / plan_revision_id / segment_id
+                take_dir.mkdir(parents=True, exist_ok=True)
+                take_path = take_dir / f"{take_kind}-{new_id()}.wav"
+                exported = audio.export(take_path, format="wav")
+                exported.close()
+                artifact = self.artifacts.register(
+                    take_path,
+                    kind="audio",
+                    role="generation_take",
+                    session_id=session_id,
+                    parent_ids=[source_artifact.id] if operation == "rvc" else [],
+                    settings=take_settings,
+                    metadata={"generation_segment_id": segment_id, "kind": take_kind},
+                )
+                with self.database.session() as session:
+                    segment = session.get(GenerationSegment, segment_id)
+                    for previous in session.scalars(select(AudioTake).where(AudioTake.generation_segment_id == segment_id, AudioTake.is_active.is_(True))).all():
+                        previous.is_active = False
+                        previous.revision += 1
+                    session.add(
+                        AudioTake(
+                            generation_segment_id=segment_id,
+                            artifact_id=artifact.id,
+                            parent_take_id=parent_take_id,
+                            kind=take_kind,
+                            status="completed",
+                            settings_hash=artifact.settings_hash,
+                            duration_ms=len(audio),
+                            is_active=True,
+                        )
+                    )
+                    segment.status = "completed"
+                    segment.updated_at = utcnow()
+                generated += 1
+            except Exception:
+                with self.database.session() as session:
+                    segment = session.get(GenerationSegment, segment_id)
+                    if segment is not None:
+                        segment.status = "failed"
+                        segment.updated_at = utcnow()
+                    run = session.get(GenerationRun, run_id)
+                    if run is not None:
+                        run.status = "failed"
+                        run.updated_at = utcnow()
+                raise
+
+        with self.database.session() as session:
+            run = session.get(GenerationRun, run_id)
+            run.status = "completed"
+            run.updated_at = utcnow()
+        progress(1.0, "Generation run complete")
+        return {"generation_run_id": run_id, "status": "completed", "generated": generated, "skipped": skipped}
+
+    def generate_waveform(self, payload, progress, cancel_event):
+        """Create a compact, reusable peak artifact for browser review."""
+        from pydub import AudioSegment
+
+        source, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
+        max_points = max(128, min(5000, int(payload.get("max_points") or 1600)))
+        progress(0.1, "Decoding audio for waveform")
+        audio = AudioSegment.from_file(source_path)
+        samples = audio.get_array_of_samples()
+        channels = max(1, int(audio.channels or 1))
+        frames = max(1, len(samples) // channels)
+        frame_step = max(1, frames // max_points)
+        ceiling = float(1 << (8 * audio.sample_width - 1))
+        peaks: list[float] = []
+        for start in range(0, frames, frame_step):
+            if cancel_event.is_set():
+                return {}
+            end = min(frames, start + frame_step)
+            value = 0
+            for frame in range(start, end):
+                offset = frame * channels
+                value = max(value, *(abs(int(samples[offset + channel])) for channel in range(channels)))
+            peaks.append(round(min(1.0, value / ceiling), 5))
+            if len(peaks) % 200 == 0:
+                progress(min(0.9, end / frames), "Calculating waveform peaks")
+        destination_dir = self._session_dir(source.session_id) if source.session_id else self.paths.artifacts / "waveforms"
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        destination = destination_dir / f"waveform-{source.id}-{max_points}.json"
+        destination.write_text(json.dumps({"duration_ms": len(audio), "channels": channels, "points": peaks}, separators=(",", ":")) + "\n", encoding="utf-8")
+        artifact = self.artifacts.register(
+            destination,
+            kind="json",
+            role="waveform_peaks",
+            session_id=source.session_id,
+            parent_ids=[source.id],
+            settings={"max_points": max_points},
+            metadata={"source_artifact_id": source.id, "duration_ms": len(audio)},
+        )
+        progress(1.0, "Waveform ready")
+        return {"artifact_id": artifact.id, "source_artifact_id": source.id, "point_count": len(peaks)}
 
     def export(self, payload, progress, cancel_event):
         """Create immutable, managed exports without requiring generated audio."""

@@ -14,6 +14,8 @@ export type SessionRecord = {
 export type JobRecord = {
   id: string;
   kind: string;
+  session_id?: string | null;
+  payload_json?: Record<string, unknown>;
   status: string;
   progress: number;
   error_message?: string | null;
@@ -51,5 +53,29 @@ export async function exchangeBootstrapToken(token: string) {
   });
   setCsrfToken(result.csrf_token);
   return result;
+}
+
+export async function uploadManagedFile(file: File, sessionId?: string, onProgress?: (fraction: number) => void) {
+  if (file.size <= 32 * 1024 * 1024) {
+    const form = new FormData();
+    if (sessionId) form.set('session_id', sessionId);
+    form.set('file', file);
+    const result = await api<Record<string, any>>('/uploads', { method: 'POST', body: form });
+    onProgress?.(1);
+    return result;
+  }
+  const upload = await api<{ id: string; chunk_size: number; chunk_count: number; received: number[] }>('/uploads/init', {
+    method: 'POST',
+    body: JSON.stringify({ filename: file.name, size_bytes: file.size, mime_type: file.type || null, session_id: sessionId || null })
+  });
+  const received = new Set(upload.received);
+  for (let index = 0; index < upload.chunk_count; index += 1) {
+    if (received.has(index)) continue;
+    const start = index * upload.chunk_size;
+    const body = file.slice(start, Math.min(file.size, start + upload.chunk_size));
+    await api(`/uploads/${upload.id}/chunks/${index}`, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body });
+    onProgress?.((index + 1) / upload.chunk_count);
+  }
+  return api<Record<string, any>>(`/uploads/${upload.id}/complete`, { method: 'POST' });
 }
 

@@ -56,6 +56,7 @@ def build_llm_settings(
     paths: DataPaths,
     *,
     requested_model: str | None = None,
+    request_timeout_seconds: int | None = None,
 ) -> tuple[SimpleNamespace, str]:
     """Build the legacy-compatible settings object consumed by the shared LLM engine."""
 
@@ -129,7 +130,7 @@ def build_llm_settings(
         SimpleNamespace(
             provider_configs=provider_configs,
             default_model=resolved_model,
-            request_timeout_seconds=180,
+            request_timeout_seconds=max(1, int(request_timeout_seconds or 600)),
         ),
         resolved_model,
     )

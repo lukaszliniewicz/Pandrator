@@ -145,9 +145,14 @@ class ComponentOperationsMixin:
         env['MODEL_DIR'] = 'src/models'
         env['VOICES_DIR'] = 'src/voices/v1_0'
         env['WEB_PLAYER_PATH'] = os.path.join(kokoro_repo_path, 'web')
-        env['PYTHONPATH'] = os.pathsep.join(
-            [kokoro_repo_path, os.path.join(kokoro_repo_path, 'api')]
-        )
+        python_paths = [kokoro_repo_path, os.path.join(kokoro_repo_path, 'api')]
+        short_site_packages = self.get_kokoro_short_site_packages(pandrator_path)
+        if short_site_packages:
+            # eSpeak NG 1.52 uses a small fixed path buffer internally.  With a
+            # deeply nested install, misaki's bundled espeakng-loader otherwise
+            # truncates its data path and reports a misleading missing phontab.
+            python_paths.insert(0, short_site_packages)
+        env['PYTHONPATH'] = os.pathsep.join(python_paths)
 
         dll_path, data_path = self.resolve_espeak_paths()
         if dll_path:
@@ -157,6 +162,47 @@ class ComponentOperationsMixin:
             env['ESPEAK_DATA_PATH'] = data_path
 
         return env
+
+    def get_kokoro_short_site_packages(self, pandrator_path):
+        """Return a short import root for Kokoro's bundled eSpeak data."""
+        if os.name == 'nt':
+            return ''
+        manifest_path = Path(self.get_pixi_manifest_path(pandrator_path, KOKORO_ENV_NAME))
+        environment_root = manifest_path.parent / '.pixi' / 'envs' / 'default' / 'lib'
+        candidates = sorted(environment_root.glob('python*/site-packages'))
+        site_packages = next(
+            (
+                candidate
+                for candidate in candidates
+                if (candidate / 'espeakng_loader' / 'espeak-ng-data' / 'phontab').is_file()
+            ),
+            None,
+        )
+        if site_packages is None:
+            return ''
+        data_path = site_packages / 'espeakng_loader' / 'espeak-ng-data'
+        if len(str(data_path)) < 180:
+            return ''
+
+        loader_source = site_packages / 'espeakng_loader'
+        identity_value = f"{site_packages.resolve()}:{(loader_source / 'espeak-ng-data' / 'phontab').stat().st_mtime_ns}"
+        identity = hashlib.sha256(identity_value.encode('utf-8')).hexdigest()[:12]
+        uid = str(os.getuid()) if hasattr(os, 'getuid') else 'user'
+        alias = Path(tempfile.gettempdir()) / f'pandrator-kokoro-{uid}-{identity}'
+        copied_loader = alias / 'espeakng_loader'
+        if (copied_loader / 'espeak-ng-data' / 'phontab').is_file():
+            return str(alias)
+        if alias.exists():
+            logging.warning("Cannot create the Kokoro short-path alias because %s already exists.", alias)
+            return ''
+        try:
+            alias.mkdir(mode=0o700)
+            shutil.copytree(loader_source, copied_loader)
+        except OSError as error:
+            logging.warning("Could not create the Kokoro short-path alias: %s", error)
+            return ''
+        logging.info("Using short Kokoro site-packages path for eSpeak: %s", alias)
+        return str(alias)
 
     def is_kokoro_runtime_ready(self, pandrator_path, kokoro_repo_path, use_gpu=False):
         manifest_path = self.get_pixi_manifest_path(pandrator_path, KOKORO_ENV_NAME)
@@ -458,6 +504,8 @@ class ComponentOperationsMixin:
                 self.terminate_process_tree(process)
                 if hasattr(process, 'log_handle') and process.log_handle:
                     process.log_handle.close()
+                if self.kokoro_process is process:
+                    self.kokoro_process = None
 
     def run_kokoro_api_server(self, pandrator_path, env_name, kokoro_server_path, use_gpu=False):
         """Run the Kokoro API server in a dedicated Pixi environment."""

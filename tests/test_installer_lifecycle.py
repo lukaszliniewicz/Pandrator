@@ -9,7 +9,7 @@ from unittest import mock
 from pathlib import Path
 
 from pandrator_installer.cli import parse_launcher_cli_args
-from pandrator_installer.lifecycle import _runtime_specs, main
+from pandrator_installer.lifecycle import _owned_service_processes, _runtime_specs, main
 from pandrator_installer.models import WorkspacePaths
 from pandrator_installer.update import verify_release_manifest
 
@@ -61,10 +61,36 @@ class InstallerLifecycleTests(unittest.TestCase):
             self.assertEqual(specs[0].health_url, "http://127.0.0.1:8050/health")
             self.assertIn("service", specs[0].command)
 
+    def test_service_process_collection_uses_runtime_tuple_contract(self):
+        first = object()
+        rvc = object()
+        installer = mock.Mock()
+        installer._collect_running_backends.return_value = [("kokoro", "Kokoro", first)]
+        installer._get_running_rvc_process.return_value = rvc
+        self.assertEqual([first, rvc], _owned_service_processes(installer))
+
     def test_legacy_headless_install_alias_remains_parseable(self):
         parsed = parse_launcher_cli_args(["--headless-install", "--workspace", "example", "--components", "whisperx"])
         self.assertTrue(parsed.headless_install)
         self.assertEqual(parsed.components, "whisperx")
+
+    def test_successful_install_does_not_repeat_broad_process_shutdown(self):
+        with tempfile.TemporaryDirectory() as workspace, mock.patch("pandrator_installer.lifecycle.HeadlessInstaller") as factory:
+            code, output, error = self.invoke([
+                "install", "--workspace", workspace, "--components", "crispasr", "--crispasr-backend", "vulkan", "--json"
+            ])
+        self.assertEqual(0, code, error)
+        self.assertEqual("installed", json.loads(output)["status"])
+        factory.return_value.run_headless_install.assert_called_once()
+        factory.return_value.shutdown_apps.assert_not_called()
+
+    def test_failed_install_still_cleans_up_owned_processes(self):
+        with tempfile.TemporaryDirectory() as workspace, mock.patch("pandrator_installer.lifecycle.HeadlessInstaller") as factory:
+            factory.return_value.run_headless_install.side_effect = RuntimeError("bootstrap failed")
+            code, _output, error = self.invoke(["install", "--workspace", workspace, "--components", "crispasr"])
+        self.assertEqual(2, code)
+        self.assertIn("bootstrap failed", error)
+        factory.return_value.shutdown_apps.assert_called_once()
 
     def _signed_release(self, root: Path, wheel: Path):
         from cryptography.hazmat.primitives import serialization

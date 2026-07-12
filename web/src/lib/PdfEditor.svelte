@@ -5,6 +5,7 @@
   import * as pdfjs from 'pdfjs-dist';
   import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
   import GuidedTour from './GuidedTour.svelte';
+  import PdfPageThumbnail from './PdfPageThumbnail.svelte';
 
   pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -32,7 +33,10 @@
   let dragStart = $state<{ x: number; y: number } | null>(null);
   let dragCurrent = $state<{ x: number; y: number } | null>(null);
   let activeViewport = $state<any>(null);
+  let activeOffset = $state({ x: 0, y: 0 });
   let activePageIndex = $state(0);
+  let renderEpoch = 0;
+  let renderProgress = $state('');
   let plan = $state<Plan>({ first_page_side: 'right', crops: [], whiteouts: [], deleted_pages: [] });
   let undoStack = $state<Plan[]>([]);
   let redoStack = $state<Plan[]>([]);
@@ -84,31 +88,48 @@
 
   async function render() {
     if (!canvas || !document || !metadata) return;
+    const epoch = ++renderEpoch;
     const pages = visiblePages().filter((page) => !plan.deleted_pages.includes(page));
     if (!pages.length) return;
     const representative = pages.includes(selectedPage) ? selectedPage : pages[0];
     activePageIndex = representative;
     const first = await document.getPage(representative + 1);
     const baseViewport = first.getViewport({ scale: 1 });
-    const scale = Math.min(1.6, 840 / baseViewport.width);
+    const isStack = pages.length > 1;
+    const widest = Math.max(...pages.map((index) => {
+      const info = metadata!.pages[index];
+      return info.rotation % 180 ? info.height : info.width;
+    }));
+    const scale = Math.min(isStack ? 0.5 : 1.6, 840 / (isStack ? widest : baseViewport.width));
     const viewport = first.getViewport({ scale });
     activeViewport = viewport;
-    canvas.width = Math.ceil(viewport.width);
-    canvas.height = Math.ceil(viewport.height);
+    const dimensions = pages.map((index) => {
+      const info = metadata!.pages[index];
+      const rotated = info.rotation % 180;
+      return { width: (rotated ? info.height : info.width) * scale, height: (rotated ? info.width : info.height) * scale };
+    });
+    canvas.width = Math.ceil(Math.max(...dimensions.map((item) => item.width)));
+    canvas.height = Math.ceil(Math.max(...dimensions.map((item) => item.height)));
+    activeOffset = { x: (canvas.width - viewport.width) / 2, y: (canvas.height - viewport.height) / 2 };
     const context = canvas.getContext('2d')!;
     context.clearRect(0, 0, canvas.width, canvas.height);
     let drawn = 0;
     for (const pageIndex of pages) {
+      if (epoch !== renderEpoch) return;
       const page = await document.getPage(pageIndex + 1);
       const pageViewport = page.getViewport({ scale });
-      const offscreen = document.createElement ? document.createElement('canvas') : window.document.createElement('canvas');
+      const offscreen = window.document.createElement('canvas');
       offscreen.width = Math.ceil(pageViewport.width); offscreen.height = Math.ceil(pageViewport.height);
       await page.render({ canvasContext: offscreen.getContext('2d')!, viewport: pageViewport }).promise;
+      if (epoch !== renderEpoch) return;
       context.globalAlpha = drawn === 0 ? 1 : opacity;
       context.drawImage(offscreen, (canvas.width - offscreen.width) / 2, (canvas.height - offscreen.height) / 2);
       drawn += 1;
+      renderProgress = `${drawn} / ${pages.length}`;
+      if (drawn % 4 === 0) await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     }
     context.globalAlpha = 1;
+    if (epoch === renderEpoch) renderProgress = '';
   }
 
   function point(event: PointerEvent) {
@@ -128,8 +149,8 @@
     if (!drawing || !dragStart || !dragCurrent || !metadata || !activeViewport) return;
     dragCurrent = point(event); drawing = false;
     if (Math.abs(dragCurrent.x - dragStart.x) < 5 || Math.abs(dragCurrent.y - dragStart.y) < 5) { dragStart = null; dragCurrent = null; return; }
-    const [ax, ay] = activeViewport.convertToPdfPoint(dragStart.x, dragStart.y);
-    const [bx, by] = activeViewport.convertToPdfPoint(dragCurrent.x, dragCurrent.y);
+    const [ax, ay] = activeViewport.convertToPdfPoint(dragStart.x - activeOffset.x, dragStart.y - activeOffset.y);
+    const [bx, by] = activeViewport.convertToPdfPoint(dragCurrent.x - activeOffset.x, dragCurrent.y - activeOffset.y);
     const activeInfo = metadata.pages[activePageIndex];
     const normalized = {
       x0: (Math.min(ax, bx) - activeInfo.media_box.x0) / activeInfo.width,
@@ -152,6 +173,23 @@
       } else {
         const color = [1,3,5].map((offset)=>parseInt(whiteoutColor.slice(offset,offset+2),16)/255);
         plan.whiteouts = [...plan.whiteouts, { original_page: page.original_page, rect, color }];
+      }
+    }
+    // In facing-page stack modes, keep crop dimensions paired while each
+    // side retains its own horizontal/vertical position.
+    if (tool === 'crop' && (mode === 'left' || mode === 'right')) {
+      const pairedSide = mode === 'left' ? 'right' : 'left';
+      const widthRatio = normalized.x1 - normalized.x0;
+      const heightRatio = normalized.y1 - normalized.y0;
+      for (const page of metadata.pages.filter((item) => item.side === pairedSide)) {
+        const existing = plan.crops.find((item) => item.original_page === page.original_page);
+        if (!existing) continue;
+        const centerX = ((existing.rect.x0 + existing.rect.x1) / 2 - page.media_box.x0) / page.width;
+        const centerY = ((existing.rect.y0 + existing.rect.y1) / 2 - page.media_box.y0) / page.height;
+        const x0 = Math.max(0, Math.min(1 - widthRatio, centerX - widthRatio / 2));
+        const y0 = Math.max(0, Math.min(1 - heightRatio, centerY - heightRatio / 2));
+        const rect = { x0: page.media_box.x0 + x0 * page.width, y0: page.media_box.y0 + y0 * page.height, x1: page.media_box.x0 + (x0 + widthRatio) * page.width, y1: page.media_box.y0 + (y0 + heightRatio) * page.height };
+        plan.crops = [...plan.crops.filter((item) => item.original_page !== page.original_page), { original_page: page.original_page, rect }];
       }
     }
     dragStart = null; dragCurrent = null;
@@ -197,12 +235,12 @@
   </header>
   <div class="grid min-h-0 flex-1 lg:grid-cols-[14rem_1fr]">
     <aside class="overflow-auto border-r border-[var(--line)] bg-[var(--paper-strong)] p-3">
-      <div class="eyebrow mb-3 px-1">Pages</div><div class="grid grid-cols-3 gap-2 lg:grid-cols-2">{#each metadata?.pages ?? [] as page}<button onclick={() => {selectedPage=page.original_page; mode='single';}} class:selected={selectedPage===page.original_page} class:deleted={plan.deleted_pages.includes(page.original_page)} class="page-chip relative rounded-xl border border-[var(--line)] p-3 text-left"><div class="text-lg font-semibold">{page.page_number}</div><div class="muted mt-1 text-[.65rem] uppercase">{page.side}</div><span onclick={(event) => {event.stopPropagation(); toggleDelete(page.original_page)}} onkeydown={(event) => event.key==='Enter' && toggleDelete(page.original_page)} role="button" tabindex="0" aria-label={`Delete page ${page.page_number}`} class="absolute right-1.5 top-1.5 rounded-md p-1 hover:bg-red-500/15"><Trash2 size={13}/></span></button>{/each}</div>
+      <div class="eyebrow mb-3 px-1">Pages</div><div class="grid grid-cols-3 gap-2 lg:grid-cols-2">{#each metadata?.pages ?? [] as page}<button onclick={() => {selectedPage=page.original_page; mode='single';}} class:selected={selectedPage===page.original_page} class:deleted={plan.deleted_pages.includes(page.original_page)} class="page-chip relative rounded-xl border border-[var(--line)] p-2 text-left">{#if document}<PdfPageThumbnail {document} pageIndex={page.original_page}/>{/if}<div class="px-1 text-sm font-semibold">{page.page_number}</div><div class="muted px-1 text-[.6rem] uppercase">{page.side}</div><span onclick={(event) => {event.stopPropagation(); toggleDelete(page.original_page)}} onkeydown={(event) => event.key==='Enter' && toggleDelete(page.original_page)} role="button" tabindex="0" aria-label={`Delete page ${page.page_number}`} class="absolute right-1.5 top-1.5 rounded-md bg-[var(--paper)]/80 p-1 hover:bg-red-500/15"><Trash2 size={13}/></span></button>{/each}</div>
     </aside>
     <main class="relative min-h-0 overflow-auto bg-[color-mix(in_srgb,var(--paper)_88%,#000)] p-5">
       <div class="sticky top-0 z-10 mx-auto mb-4 flex w-fit flex-wrap items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)]/95 p-2 shadow-lg backdrop-blur"><button class:active={tool==='crop'} onclick={() => tool='crop'} class="tool"><Crop size={16}/> Crop</button><button class:active={tool==='whiteout'} onclick={() => tool='whiteout'} class="tool"><Eraser size={16}/> Whiteout</button>{#if tool==='whiteout'}<label class="muted flex items-center gap-2 px-2 text-xs">Color<input type="color" bind:value={whiteoutColor} class="size-7"/></label>{/if}{#if mode==='selection'}<label class="muted flex items-center gap-2 px-2 text-xs">Pages<input bind:value={pageSelection} oninput={render} placeholder="1-3, 7" class="w-24 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-2 py-1"/></label>{/if}<label class="muted flex items-center gap-2 px-2 text-xs">Stack opacity<input type="range" bind:value={opacity} min="0.05" max="0.5" step="0.01" class="w-24 accent-[var(--accent)]"/></label></div>
       {#if error}<div class="mx-auto mb-4 max-w-3xl rounded-xl border border-red-400/40 bg-red-500/10 p-3 text-sm">{error}</div>{/if}{#if resultMessage}<div class="mx-auto mb-4 flex max-w-3xl items-center gap-2 rounded-xl border border-green-500/30 bg-green-500/10 p-3 text-sm"><Check size={16}/>{resultMessage}</div>{/if}
-      <div class="relative mx-auto w-fit shadow-2xl"><canvas bind:this={canvas} onpointerdown={pointerDown} onpointermove={pointerMove} onpointerup={pointerUp} class="block max-h-[calc(100vh-13rem)] max-w-full cursor-crosshair bg-white"></canvas>{#if drawing && dragStart && dragCurrent}<div class:mask={tool==='whiteout'} class="selection-box pointer-events-none absolute" style={`left:${Math.min(dragStart.x,dragCurrent.x)/canvas.width*100}%;top:${Math.min(dragStart.y,dragCurrent.y)/canvas.height*100}%;width:${Math.abs(dragCurrent.x-dragStart.x)/canvas.width*100}%;height:${Math.abs(dragCurrent.y-dragStart.y)/canvas.height*100}%`}></div>{/if}{#if loading}<div class="absolute inset-0 grid place-items-center bg-[var(--paper)]/80"><LoaderCircle class="animate-spin text-[var(--accent)]" size={28}/></div>{/if}</div>
+      <div class="relative mx-auto w-fit shadow-2xl"><canvas bind:this={canvas} onpointerdown={pointerDown} onpointermove={pointerMove} onpointerup={pointerUp} class="block max-h-[calc(100vh-13rem)] max-w-full cursor-crosshair bg-white"></canvas>{#if drawing && dragStart && dragCurrent}<div class:mask={tool==='whiteout'} class="selection-box pointer-events-none absolute" style={`left:${Math.min(dragStart.x,dragCurrent.x)/canvas.width*100}%;top:${Math.min(dragStart.y,dragCurrent.y)/canvas.height*100}%;width:${Math.abs(dragCurrent.x-dragStart.x)/canvas.width*100}%;height:${Math.abs(dragCurrent.y-dragStart.y)/canvas.height*100}%`}></div>{/if}{#if loading}<div class="absolute inset-0 grid place-items-center bg-[var(--paper)]/80"><LoaderCircle class="animate-spin text-[var(--accent)]" size={28}/></div>{:else if renderProgress}<div class="absolute right-3 bottom-3 rounded-lg bg-black/70 px-2 py-1 text-xs text-white">Stacking {renderProgress}</div>{/if}</div>
       <p class="muted mx-auto mt-4 max-w-2xl text-center text-xs">Draw on the stack to apply a synchronized {tool} to {mode === 'all' ? 'all pages' : mode === 'single' ? `page ${selectedPage+1}` : `${mode} pages`}. Original pages are never overwritten.</p>
     </main>
   </div>

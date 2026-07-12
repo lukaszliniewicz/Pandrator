@@ -1,6 +1,25 @@
 {
   "components": {
     "schemas": {
+      "AgentRunCreateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "settings": {
+            "additionalProperties": true,
+            "title": "Settings",
+            "type": "object"
+          },
+          "source_artifact_id": {
+            "title": "Source Artifact Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_artifact_id"
+        ],
+        "title": "AgentRunCreateRequest",
+        "type": "object"
+      },
       "BootstrapRequest": {
         "additionalProperties": false,
         "properties": {
@@ -55,6 +74,74 @@
         "title": "BundleImportRequest",
         "type": "object"
       },
+      "ChunkUploadInitialize": {
+        "additionalProperties": false,
+        "properties": {
+          "chunk_size": {
+            "default": 8388608,
+            "maximum": 16777216,
+            "minimum": 1048576,
+            "title": "Chunk Size",
+            "type": "integer"
+          },
+          "filename": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Filename",
+            "type": "string"
+          },
+          "mime_type": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Mime Type"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "sha256": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sha256"
+          },
+          "size_bytes": {
+            "exclusiveMinimum": 0,
+            "title": "Size Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "filename",
+          "size_bytes"
+        ],
+        "title": "ChunkUploadInitialize",
+        "type": "object"
+      },
       "ErrorBody": {
         "additionalProperties": false,
         "properties": {
@@ -81,6 +168,260 @@
           "request_id"
         ],
         "title": "ErrorBody",
+        "type": "object"
+      },
+      "GenerationPlanCreate": {
+        "$defs": {
+          "GenerationSegmentCreate": {
+            "additionalProperties": false,
+            "properties": {
+              "language": {
+                "anyOf": [
+                  {
+                    "maxLength": 40,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Language"
+              },
+              "silence_after_ms": {
+                "default": 0,
+                "minimum": 0,
+                "title": "Silence After Ms",
+                "type": "integer"
+              },
+              "source_segment_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "title": "Source Segment Ids",
+                "type": "array"
+              },
+              "text": {
+                "minLength": 1,
+                "title": "Text",
+                "type": "string"
+              },
+              "voice_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Voice Id"
+              }
+            },
+            "required": [
+              "text"
+            ],
+            "title": "GenerationSegmentCreate",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "segments": {
+            "items": {
+              "$ref": "#/components/schemas/GenerationSegmentCreate"
+            },
+            "minItems": 1,
+            "title": "Segments",
+            "type": "array"
+          },
+          "settings": {
+            "additionalProperties": true,
+            "title": "Settings",
+            "type": "object"
+          },
+          "source_revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Revision Id"
+          }
+        },
+        "required": [
+          "segments"
+        ],
+        "title": "GenerationPlanCreate",
+        "type": "object"
+      },
+      "GenerationSegmentCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "language": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Language"
+          },
+          "silence_after_ms": {
+            "default": 0,
+            "minimum": 0,
+            "title": "Silence After Ms",
+            "type": "integer"
+          },
+          "source_segment_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Segment Ids",
+            "type": "array"
+          },
+          "text": {
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          },
+          "voice_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Voice Id"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "GenerationSegmentCreate",
+        "type": "object"
+      },
+      "GenerationSegmentUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "language": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Language"
+          },
+          "marked": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Marked"
+          },
+          "removed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Removed"
+          },
+          "silence_after_ms": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Silence After Ms"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Text"
+          },
+          "voice_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Voice Id"
+          }
+        },
+        "title": "GenerationSegmentUpdate",
+        "type": "object"
+      },
+      "GenerationStartRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "operation": {
+            "default": "generate",
+            "enum": [
+              "generate",
+              "regenerate",
+              "rvc"
+            ],
+            "title": "Operation",
+            "type": "string"
+          },
+          "run_override": {
+            "additionalProperties": true,
+            "title": "Run Override",
+            "type": "object"
+          },
+          "segment_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Segment Ids",
+            "type": "array"
+          }
+        },
+        "title": "GenerationStartRequest",
         "type": "object"
       },
       "JobCreate": {
@@ -329,6 +670,21 @@
           }
         },
         "title": "ModelUpdate",
+        "type": "object"
+      },
+      "OutcomePlanUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "additionalProperties": true,
+            "title": "Value",
+            "type": "object"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "title": "OutcomePlanUpdate",
         "type": "object"
       },
       "PdfCropInput": {
@@ -751,6 +1107,18 @@
         "title": "SessionCreate",
         "type": "object"
       },
+      "SessionSettingsUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "additionalProperties": true,
+            "title": "Value",
+            "type": "object"
+          }
+        },
+        "title": "SessionSettingsUpdate",
+        "type": "object"
+      },
       "SessionUpdate": {
         "additionalProperties": false,
         "properties": {
@@ -839,6 +1207,27 @@
           "value"
         ],
         "title": "SettingUpdate",
+        "type": "object"
+      },
+      "SourceAttachRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "role": {
+            "default": "primary",
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Role",
+            "type": "string"
+          },
+          "source_asset_id": {
+            "title": "Source Asset Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_asset_id"
+        ],
+        "title": "SourceAttachRequest",
         "type": "object"
       },
       "SourceReuseRequest": {
@@ -1038,6 +1427,22 @@
         "title": "TrainingCreateRequest",
         "type": "object"
       },
+      "TtsEndpointDiscoveryRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "base_url": {
+            "maxLength": 2048,
+            "minLength": 8,
+            "title": "Base Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "base_url"
+        ],
+        "title": "TtsEndpointDiscoveryRequest",
+        "type": "object"
+      },
       "VoiceCreate": {
         "additionalProperties": false,
         "properties": {
@@ -1126,6 +1531,26 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/agent-runs/{runId}/accept": {
+      "post": {
+        "operationId": "acceptAgentRun",
+        "responses": {
+          "200": {
+            "description": "Cleaning result accepted"
+          }
+        }
+      }
+    },
+    "/api/v1/agent-runs/{runId}/steps": {
+      "get": {
+        "operationId": "listAgentSteps",
+        "responses": {
+          "200": {
+            "description": "Auditable agent phase summaries"
+          }
+        }
+      }
+    },
     "/api/v1/artifacts": {
       "get": {
         "operationId": "listArtifacts",
@@ -1152,6 +1577,16 @@
         "responses": {
           "200": {
             "description": "PDF geometry"
+          }
+        }
+      }
+    },
+    "/api/v1/artifacts/{artifactId}/waveform": {
+      "get": {
+        "operationId": "getArtifactWaveform",
+        "responses": {
+          "200": {
+            "description": "Waveform peaks or queued generation"
           }
         }
       }
@@ -1214,12 +1649,92 @@
         }
       }
     },
+    "/api/v1/defaults/{section}": {
+      "get": {
+        "operationId": "getGlobalDefaults",
+        "responses": {
+          "200": {
+            "description": "Built-in and configured global defaults"
+          }
+        }
+      }
+    },
+    "/api/v1/document-revisions/{revisionId}/words": {
+      "get": {
+        "operationId": "listTimedWords",
+        "responses": {
+          "200": {
+            "description": "Immutable timed words"
+          }
+        }
+      }
+    },
     "/api/v1/events": {
       "get": {
         "operationId": "streamEvents",
         "responses": {
           "200": {
             "description": "SSE job events"
+          }
+        }
+      }
+    },
+    "/api/v1/generation-runs/{runId}/cancel": {
+      "post": {
+        "operationId": "cancelGenerationRun",
+        "responses": {
+          "202": {
+            "description": "Cancellation requested"
+          }
+        }
+      }
+    },
+    "/api/v1/generation-runs/{runId}/pause": {
+      "post": {
+        "operationId": "pauseGenerationRun",
+        "responses": {
+          "202": {
+            "description": "Safe pause requested"
+          }
+        }
+      }
+    },
+    "/api/v1/generation-runs/{runId}/resume": {
+      "post": {
+        "operationId": "resumeGenerationRun",
+        "responses": {
+          "202": {
+            "description": "Generation resumed"
+          }
+        }
+      }
+    },
+    "/api/v1/generation-segments/{segmentId}": {
+      "patch": {
+        "operationId": "updateGenerationSegment",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerationSegmentUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Generation segment updated"
+          }
+        }
+      }
+    },
+    "/api/v1/generation-segments/{segmentId}/takes/{takeId}/select": {
+      "post": {
+        "operationId": "selectGenerationTake",
+        "responses": {
+          "200": {
+            "description": "Active audio take selected"
           }
         }
       }
@@ -1278,6 +1793,16 @@
         "responses": {
           "200": {
             "description": "Cancellation requested"
+          }
+        }
+      }
+    },
+    "/api/v1/parity": {
+      "get": {
+        "operationId": "getParityRegistry",
+        "responses": {
+          "200": {
+            "description": "Qt-to-web parity registry"
           }
         }
       }
@@ -1443,6 +1968,36 @@
         }
       }
     },
+    "/api/v1/services/tts": {
+      "get": {
+        "operationId": "listTtsServices",
+        "responses": {
+          "200": {
+            "description": "TTS readiness and catalogues"
+          }
+        }
+      }
+    },
+    "/api/v1/services/tts/discover": {
+      "post": {
+        "operationId": "discoverTtsService",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TtsEndpointDiscoveryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Discovered endpoint"
+          }
+        }
+      }
+    },
     "/api/v1/session-bundles/import": {
       "post": {
         "operationId": "importSessionBundle",
@@ -1552,6 +2107,34 @@
         }
       }
     },
+    "/api/v1/sessions/{sessionId}/agent-runs": {
+      "get": {
+        "operationId": "listAgentRuns",
+        "responses": {
+          "200": {
+            "description": "Agentic cleaning runs"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createAgentRun",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentRunCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Agentic cleaning queued"
+          }
+        }
+      }
+    },
     "/api/v1/sessions/{sessionId}/bundle": {
       "post": {
         "operationId": "exportSessionBundle",
@@ -1572,6 +2155,104 @@
         }
       }
     },
+    "/api/v1/sessions/{sessionId}/documents": {
+      "get": {
+        "operationId": "listSessionDocuments",
+        "responses": {
+          "200": {
+            "description": "Document and subtitle revisions"
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{sessionId}/generation-plan": {
+      "post": {
+        "operationId": "createGenerationPlan",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerationPlanCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Generation plan created"
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{sessionId}/generation-runs": {
+      "post": {
+        "operationId": "startGenerationRun",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerationStartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Generation queued"
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{sessionId}/generation-runs/latest": {
+      "get": {
+        "operationId": "getLatestGenerationRun",
+        "responses": {
+          "200": {
+            "description": "Latest generation run"
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{sessionId}/generation-segments": {
+      "get": {
+        "operationId": "listGenerationSegments",
+        "responses": {
+          "200": {
+            "description": "Cursor-paginated generation segments"
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{sessionId}/outcome-plan": {
+      "get": {
+        "operationId": "getOutcomePlan",
+        "responses": {
+          "200": {
+            "description": "Revisioned outcome plan"
+          }
+        }
+      },
+      "put": {
+        "operationId": "putOutcomePlan",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OutcomePlanUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Outcome plan saved"
+          }
+        }
+      }
+    },
     "/api/v1/sessions/{sessionId}/pdf/apply": {
       "post": {
         "operationId": "applyPdfEdits",
@@ -1588,6 +2269,92 @@
         "responses": {
           "202": {
             "description": "Queued"
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{sessionId}/reindex": {
+      "post": {
+        "operationId": "reindexSession",
+        "responses": {
+          "200": {
+            "description": "Reconciliation report"
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{sessionId}/restore": {
+      "post": {
+        "operationId": "restoreSession",
+        "responses": {
+          "200": {
+            "description": "Session restored"
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{sessionId}/settings/resolve": {
+      "post": {
+        "operationId": "resolveSessionSettings",
+        "responses": {
+          "200": {
+            "description": "Immutable effective settings snapshot"
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{sessionId}/settings/{section}": {
+      "get": {
+        "operationId": "getSessionSettings",
+        "responses": {
+          "200": {
+            "description": "Effective settings and inheritance"
+          }
+        }
+      },
+      "put": {
+        "operationId": "putSessionSettings",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionSettingsUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Session override saved"
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{sessionId}/sources": {
+      "get": {
+        "operationId": "listSessionSources",
+        "responses": {
+          "200": {
+            "description": "Session source attachments"
+          }
+        }
+      },
+      "post": {
+        "operationId": "attachSessionSource",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SourceAttachRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Source attached"
           }
         }
       }
@@ -1716,6 +2483,16 @@
         }
       }
     },
+    "/api/v1/sources": {
+      "get": {
+        "operationId": "listSourceAssets",
+        "responses": {
+          "200": {
+            "description": "Reusable source library"
+          }
+        }
+      }
+    },
     "/api/v1/training": {
       "get": {
         "operationId": "listTrainingRuns",
@@ -1760,6 +2537,64 @@
         "responses": {
           "201": {
             "description": "Uploaded"
+          }
+        }
+      }
+    },
+    "/api/v1/uploads/init": {
+      "post": {
+        "operationId": "initializeChunkUpload",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChunkUploadInitialize"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Chunk upload initialized"
+          }
+        }
+      }
+    },
+    "/api/v1/uploads/{uploadId}": {
+      "delete": {
+        "operationId": "cancelChunkUpload",
+        "responses": {
+          "204": {
+            "description": "Chunk upload canceled"
+          }
+        }
+      },
+      "get": {
+        "operationId": "getChunkUpload",
+        "responses": {
+          "200": {
+            "description": "Chunk upload status"
+          }
+        }
+      }
+    },
+    "/api/v1/uploads/{uploadId}/chunks/{index}": {
+      "put": {
+        "operationId": "putUploadChunk",
+        "responses": {
+          "200": {
+            "description": "Chunk accepted"
+          }
+        }
+      }
+    },
+    "/api/v1/uploads/{uploadId}/complete": {
+      "post": {
+        "operationId": "completeChunkUpload",
+        "responses": {
+          "201": {
+            "description": "Upload promoted"
           }
         }
       }

@@ -16,11 +16,24 @@ export default defineConfig({
   webServer: {
     command: 'python ../scripts/run_web_e2e_server.py',
     url: 'http://127.0.0.1:8098/api/v1/health',
-    reuseExistingServer: false,
+    reuseExistingServer: !process.env.CI,
     timeout: 45_000
   },
   projects: [
-    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
-    { name: 'firefox', use: { ...devices['Desktop Firefox'] } }
+    {
+      name: 'chromium',
+      use: {
+        ...devices['Desktop Chrome'],
+        permissions: ['microphone'],
+        launchOptions: { args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--autoplay-policy=no-user-gesture-required'] }
+      }
+    },
+    {
+      name: 'firefox',
+      use: {
+        ...devices['Desktop Firefox'],
+        launchOptions: { firefoxUserPrefs: { 'media.navigator.streams.fake': true, 'media.navigator.permission.disabled': true } }
+      }
+    }
   ]
 });

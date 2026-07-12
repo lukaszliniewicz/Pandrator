@@ -16,6 +16,22 @@ from .database import Database
 from .models import Artifact, ArtifactEdge, utcnow
 
 
+SINGLETON_SESSION_ROLES = {
+    "transcription",
+    "correction",
+    "translation",
+    "reviewed_transcription",
+    "reviewed_correction",
+    "reviewed_translation",
+    "clean_text",
+    "prepared_text",
+    "speech_blocks",
+    "dubbing_audio",
+    "audiobook_audio",
+    "export",
+}
+
+
 def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -74,7 +90,7 @@ class ArtifactService:
                         Artifact.relative_path != relative_path,
                     )
                 ).all()
-            ) if session_id and role != "upload" else []
+            ) if session_id and role in SINGLETON_SESSION_ROLES else []
             for previous in replaced:
                 previous.state = "stale"
                 self._mark_descendants_stale(session, previous.id)
@@ -150,10 +166,13 @@ class ArtifactService:
             session.expunge(artifact)
         return artifact, path
 
-    def reconcile(self) -> list[dict]:
+    def reconcile(self, session_id: str | None = None) -> list[dict]:
         reports: list[dict] = []
         with self.database.session() as session:
-            artifacts = list(session.scalars(select(Artifact)).all())
+            statement = select(Artifact)
+            if session_id:
+                statement = statement.where(Artifact.session_id == session_id)
+            artifacts = list(session.scalars(statement).all())
             for artifact in artifacts:
                 try:
                     path = self.paths.managed_path(artifact.relative_path)

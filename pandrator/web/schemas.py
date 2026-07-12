@@ -174,6 +174,66 @@ class SourceReuseRequest(StrictModel):
     artifact_id: str
 
 
+class SessionSettingsUpdate(StrictModel):
+    value: dict[str, Any] = Field(default_factory=dict)
+
+
+class OutcomePlanUpdate(StrictModel):
+    value: dict[str, Any]
+
+
+class SourceAttachRequest(StrictModel):
+    source_asset_id: str
+    role: str = Field(default="primary", min_length=1, max_length=80)
+
+
+class ChunkUploadInitialize(StrictModel):
+    filename: str = Field(min_length=1, max_length=255)
+    size_bytes: int = Field(gt=0)
+    mime_type: str | None = Field(default=None, max_length=160)
+    session_id: str | None = None
+    sha256: str | None = Field(default=None, min_length=64, max_length=64)
+    chunk_size: int = Field(default=8 * 1024 * 1024, ge=1024 * 1024, le=16 * 1024 * 1024)
+
+
+class GenerationSegmentCreate(StrictModel):
+    text: str = Field(min_length=1)
+    source_segment_ids: list[str] = Field(default_factory=list)
+    voice_id: str | None = None
+    language: str | None = Field(default=None, max_length=40)
+    silence_after_ms: int = Field(default=0, ge=0)
+
+
+class GenerationPlanCreate(StrictModel):
+    source_revision_id: str | None = None
+    segments: list[GenerationSegmentCreate] = Field(min_length=1)
+    settings: dict[str, Any] = Field(default_factory=dict)
+
+
+class GenerationSegmentUpdate(StrictModel):
+    text: str | None = Field(default=None, min_length=1)
+    voice_id: str | None = None
+    language: str | None = Field(default=None, max_length=40)
+    silence_after_ms: int | None = Field(default=None, ge=0)
+    marked: bool | None = None
+    removed: bool | None = None
+
+
+class GenerationStartRequest(StrictModel):
+    run_override: dict[str, Any] = Field(default_factory=dict)
+    segment_ids: list[str] = Field(default_factory=list)
+    operation: Literal["generate", "regenerate", "rvc"] = "generate"
+
+
+class TtsEndpointDiscoveryRequest(StrictModel):
+    base_url: str = Field(min_length=8, max_length=2048)
+
+
+class AgentRunCreateRequest(StrictModel):
+    source_artifact_id: str
+    settings: dict[str, Any] = Field(default_factory=dict)
+
+
 SCHEMA_MODELS = {
     model.__name__: model
     for model in (
@@ -204,5 +264,15 @@ SCHEMA_MODELS = {
         BundleImportRequest,
         SourceUrlRequest,
         SourceReuseRequest,
+        SessionSettingsUpdate,
+        OutcomePlanUpdate,
+        SourceAttachRequest,
+        ChunkUploadInitialize,
+        GenerationSegmentCreate,
+        GenerationPlanCreate,
+        GenerationSegmentUpdate,
+        GenerationStartRequest,
+        TtsEndpointDiscoveryRequest,
+        AgentRunCreateRequest,
     )
 }

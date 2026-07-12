@@ -108,6 +108,47 @@ class SessionRecord(Base):
     trashed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class SessionSetting(Base):
+    __tablename__ = "session_settings"
+
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id", ondelete="CASCADE"), primary_key=True)
+    section: Mapped[str] = mapped_column(String(80), primary_key=True)
+    value_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class SessionSettingHistory(Base):
+    __tablename__ = "session_settings_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    section: Mapped[str] = mapped_column(String(80), nullable=False)
+    value_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class OutcomePlan(Base):
+    __tablename__ = "outcome_plans"
+
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id", ondelete="CASCADE"), primary_key=True)
+    value_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class OutcomePlanHistory(Base):
+    __tablename__ = "outcome_plan_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    value_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
 class SourceRecord(Base):
     __tablename__ = "sources"
 
@@ -120,6 +161,39 @@ class SourceRecord(Base):
     content_hash: Mapped[str | None] = mapped_column(String(128))
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class SourceAsset(Base):
+    __tablename__ = "source_assets"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    artifact_id: Mapped[str | None] = mapped_column(ForeignKey("artifacts.id", ondelete="SET NULL"), index=True)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    kind: Mapped[str] = mapped_column(String(48), nullable=False)
+    mime_type: Mapped[str | None] = mapped_column(String(160))
+    external_path: Mapped[str | None] = mapped_column(Text)
+    size_bytes: Mapped[int | None] = mapped_column(Integer)
+    content_hash: Mapped[str | None] = mapped_column(String(128), index=True)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="current", index=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class SessionSource(Base):
+    __tablename__ = "session_sources"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    source_asset_id: Mapped[str] = mapped_column(ForeignKey("source_assets.id", ondelete="RESTRICT"), nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String(80), nullable=False, default="primary")
+    is_current: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (UniqueConstraint("session_id", "source_asset_id", "role", name="uq_session_source_attachment"),)
 
 
 class WorkflowRun(Base):
@@ -159,6 +233,7 @@ class Job(Base):
     workflow_run_id: Mapped[str | None] = mapped_column(ForeignKey("workflow_runs.id", ondelete="CASCADE"))
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued", index=True)
     payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    resource_keys_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     result_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     progress: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     error_code: Mapped[str | None] = mapped_column(String(120))
@@ -243,6 +318,7 @@ class Segment(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     revision_id: Mapped[str] = mapped_column(ForeignKey("document_revisions.id", ondelete="CASCADE"), nullable=False, index=True)
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    node_kind: Mapped[str] = mapped_column(String(40), nullable=False, default="subtitle_cue")
     start_ms: Mapped[int | None] = mapped_column(Integer)
     end_ms: Mapped[int | None] = mapped_column(Integer)
     text: Mapped[str] = mapped_column(Text, nullable=False)
@@ -259,6 +335,187 @@ class SegmentLineage(Base):
     child_segment_id: Mapped[str] = mapped_column(ForeignKey("segments.id", ondelete="CASCADE"), primary_key=True)
     relation: Mapped[str] = mapped_column(String(40), nullable=False, default="derived")
     sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class TimedWord(Base):
+    __tablename__ = "timed_words"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    revision_id: Mapped[str] = mapped_column(ForeignKey("document_revisions.id", ondelete="CASCADE"), nullable=False, index=True)
+    segment_id: Mapped[str | None] = mapped_column(ForeignKey("segments.id", ondelete="SET NULL"), index=True)
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    start_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    speaker: Mapped[str | None] = mapped_column(String(160))
+    confidence: Mapped[float | None] = mapped_column(Float)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+
+    __table_args__ = (UniqueConstraint("revision_id", "ordinal", name="uq_timed_word_ordinal"),)
+
+
+class GenerationPlan(Base):
+    __tablename__ = "generation_plans"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    active_revision_id: Mapped[str | None] = mapped_column(String(36))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class GenerationPlanRevision(Base):
+    __tablename__ = "generation_plan_revisions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    plan_id: Mapped[str] = mapped_column(ForeignKey("generation_plans.id", ondelete="CASCADE"), nullable=False, index=True)
+    source_revision_id: Mapped[str | None] = mapped_column(ForeignKey("document_revisions.id", ondelete="SET NULL"), index=True)
+    revision_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    settings_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    content_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (UniqueConstraint("plan_id", "revision_number", name="uq_generation_plan_revision"),)
+
+
+class GenerationRun(Base):
+    __tablename__ = "generation_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    plan_revision_id: Mapped[str] = mapped_column(ForeignKey("generation_plan_revisions.id", ondelete="RESTRICT"), nullable=False, index=True)
+    job_id: Mapped[str | None] = mapped_column(ForeignKey("jobs.id", ondelete="SET NULL"), index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="ready", index=True)
+    pause_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    settings_snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    settings_hash: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class GenerationSegment(Base):
+    __tablename__ = "generation_segments"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    plan_revision_id: Mapped[str] = mapped_column(ForeignKey("generation_plan_revisions.id", ondelete="CASCADE"), nullable=False, index=True)
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_segment_ids_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    voice_id: Mapped[str | None] = mapped_column(ForeignKey("voices.id", ondelete="SET NULL"), index=True)
+    language: Mapped[str | None] = mapped_column(String(40))
+    silence_after_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    marked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    removed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="ready", index=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (UniqueConstraint("plan_revision_id", "ordinal", name="uq_generation_segment_ordinal"),)
+
+
+class GenerationSegmentRevision(Base):
+    __tablename__ = "generation_segment_revisions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    generation_segment_id: Mapped[str] = mapped_column(ForeignKey("generation_segments.id", ondelete="CASCADE"), nullable=False, index=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    marked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    removed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    voice_id: Mapped[str | None] = mapped_column(String(36))
+    language: Mapped[str | None] = mapped_column(String(40))
+    silence_after_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class AudioTake(Base):
+    __tablename__ = "audio_takes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    generation_segment_id: Mapped[str] = mapped_column(ForeignKey("generation_segments.id", ondelete="CASCADE"), nullable=False, index=True)
+    artifact_id: Mapped[str | None] = mapped_column(ForeignKey("artifacts.id", ondelete="SET NULL"), index=True)
+    parent_take_id: Mapped[str | None] = mapped_column(ForeignKey("audio_takes.id", ondelete="SET NULL"), index=True)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False, default="tts")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued", index=True)
+    settings_hash: Mapped[str | None] = mapped_column(String(128))
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class OutputAssembly(Base):
+    __tablename__ = "output_assemblies"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    generation_run_id: Mapped[str | None] = mapped_column(ForeignKey("generation_runs.id", ondelete="SET NULL"), index=True)
+    artifact_id: Mapped[str | None] = mapped_column(ForeignKey("artifacts.id", ondelete="SET NULL"))
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
+    settings_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class ResourceClaim(Base):
+    __tablename__ = "resource_claims"
+
+    resource_key: Mapped[str] = mapped_column(String(160), primary_key=True)
+    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False, index=True)
+    lease_owner: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class UploadSessionRecord(Base):
+    __tablename__ = "upload_sessions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    session_id: Mapped[str | None] = mapped_column(ForeignKey("sessions.id", ondelete="CASCADE"), index=True)
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    mime_type: Mapped[str | None] = mapped_column(String(160))
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    chunk_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    chunk_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    received_json: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)
+    expected_hash: Mapped[str | None] = mapped_column(String(128))
+    temporary_relative_path: Mapped[str] = mapped_column(Text, nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="open", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+
+class AgentRun(Base):
+    __tablename__ = "agent_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    source_artifact_id: Mapped[str | None] = mapped_column(ForeignKey("artifacts.id", ondelete="SET NULL"))
+    result_artifact_id: Mapped[str | None] = mapped_column(ForeignKey("artifacts.id", ondelete="SET NULL"))
+    job_id: Mapped[str | None] = mapped_column(ForeignKey("jobs.id", ondelete="SET NULL"))
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="ready", index=True)
+    settings_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class AgentStep(Base):
+    __tablename__ = "agent_steps"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    agent_run_id: Mapped[str] = mapped_column(ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    phase: Mapped[str] = mapped_column(String(80), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="completed")
+    summary: Mapped[str | None] = mapped_column(Text)
+    input_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    output_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    cost_usd: Mapped[float | None] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (UniqueConstraint("agent_run_id", "ordinal", name="uq_agent_step_ordinal"),)
 
 
 class Voice(Base):

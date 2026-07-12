@@ -7,7 +7,7 @@ from .schemas import SCHEMA_MODELS
 
 def build_openapi_document() -> dict:
     schemas = {name: model.model_json_schema(ref_template="#/components/schemas/{model}") for name, model in SCHEMA_MODELS.items()}
-    return {
+    document = {
         "openapi": "3.1.0",
         "info": {"title": "Pandrator API", "version": "1.0.0"},
         "servers": [{"url": "/"}],
@@ -81,4 +81,65 @@ def build_openapi_document() -> dict:
             },
         },
     }
+    paths = document["paths"]
+
+    def operation(operation_id: str, description: str, schema: str | None = None, status: str = "200") -> dict:
+        value = {"operationId": operation_id, "responses": {status: {"description": description}}}
+        if schema:
+            value["requestBody"] = {
+                "required": True,
+                "content": {"application/json": {"schema": {"$ref": f"#/components/schemas/{schema}"}}},
+            }
+        return value
+
+    # Parity-workspace operations are declared alongside their Pydantic DTOs;
+    # this block is also the source used to generate the checked-in TS client.
+    paths.update({
+        "/api/v1/parity": {"get": operation("getParityRegistry", "Qt-to-web parity registry")},
+        "/api/v1/defaults/{section}": {"get": operation("getGlobalDefaults", "Built-in and configured global defaults")},
+        "/api/v1/services/tts": {"get": operation("listTtsServices", "TTS readiness and catalogues")},
+        "/api/v1/services/tts/discover": {"post": operation("discoverTtsService", "Discovered endpoint", "TtsEndpointDiscoveryRequest")},
+        "/api/v1/sessions/{sessionId}/settings/{section}": {
+            "get": operation("getSessionSettings", "Effective settings and inheritance"),
+            "put": operation("putSessionSettings", "Session override saved", "SessionSettingsUpdate"),
+        },
+        "/api/v1/sessions/{sessionId}/settings/resolve": {"post": operation("resolveSessionSettings", "Immutable effective settings snapshot")},
+        "/api/v1/sessions/{sessionId}/outcome-plan": {
+            "get": operation("getOutcomePlan", "Revisioned outcome plan"),
+            "put": operation("putOutcomePlan", "Outcome plan saved", "OutcomePlanUpdate"),
+        },
+        "/api/v1/sources": {"get": operation("listSourceAssets", "Reusable source library")},
+        "/api/v1/sessions/{sessionId}/sources": {
+            "get": operation("listSessionSources", "Session source attachments"),
+            "post": operation("attachSessionSource", "Source attached", "SourceAttachRequest", "201"),
+        },
+        "/api/v1/sessions/{sessionId}/documents": {"get": operation("listSessionDocuments", "Document and subtitle revisions")},
+        "/api/v1/document-revisions/{revisionId}/words": {"get": operation("listTimedWords", "Immutable timed words")},
+        "/api/v1/artifacts/{artifactId}/waveform": {"get": operation("getArtifactWaveform", "Waveform peaks or queued generation", status="200")},
+        "/api/v1/sessions/{sessionId}/generation-plan": {"post": operation("createGenerationPlan", "Generation plan created", "GenerationPlanCreate", "201")},
+        "/api/v1/sessions/{sessionId}/generation-segments": {"get": operation("listGenerationSegments", "Cursor-paginated generation segments")},
+        "/api/v1/generation-segments/{segmentId}": {"patch": operation("updateGenerationSegment", "Generation segment updated", "GenerationSegmentUpdate")},
+        "/api/v1/generation-segments/{segmentId}/takes/{takeId}/select": {"post": operation("selectGenerationTake", "Active audio take selected")},
+        "/api/v1/sessions/{sessionId}/generation-runs/latest": {"get": operation("getLatestGenerationRun", "Latest generation run")},
+        "/api/v1/sessions/{sessionId}/generation-runs": {"post": operation("startGenerationRun", "Generation queued", "GenerationStartRequest", "202")},
+        "/api/v1/generation-runs/{runId}/pause": {"post": operation("pauseGenerationRun", "Safe pause requested", status="202")},
+        "/api/v1/generation-runs/{runId}/resume": {"post": operation("resumeGenerationRun", "Generation resumed", status="202")},
+        "/api/v1/generation-runs/{runId}/cancel": {"post": operation("cancelGenerationRun", "Cancellation requested", status="202")},
+        "/api/v1/sessions/{sessionId}/agent-runs": {
+            "get": operation("listAgentRuns", "Agentic cleaning runs"),
+            "post": operation("createAgentRun", "Agentic cleaning queued", "AgentRunCreateRequest", "202"),
+        },
+        "/api/v1/agent-runs/{runId}/steps": {"get": operation("listAgentSteps", "Auditable agent phase summaries")},
+        "/api/v1/agent-runs/{runId}/accept": {"post": operation("acceptAgentRun", "Cleaning result accepted")},
+        "/api/v1/uploads/init": {"post": operation("initializeChunkUpload", "Chunk upload initialized", "ChunkUploadInitialize", "201")},
+        "/api/v1/uploads/{uploadId}": {
+            "get": operation("getChunkUpload", "Chunk upload status"),
+            "delete": operation("cancelChunkUpload", "Chunk upload canceled", status="204"),
+        },
+        "/api/v1/uploads/{uploadId}/chunks/{index}": {"put": operation("putUploadChunk", "Chunk accepted")},
+        "/api/v1/uploads/{uploadId}/complete": {"post": operation("completeChunkUpload", "Upload promoted", status="201")},
+        "/api/v1/sessions/{sessionId}/restore": {"post": operation("restoreSession", "Session restored")},
+        "/api/v1/sessions/{sessionId}/reindex": {"post": operation("reindexSession", "Reconciliation report")},
+    })
+    return document
 

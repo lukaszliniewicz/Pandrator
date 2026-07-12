@@ -76,3 +76,33 @@ class SessionService:
             session.expunge(record)
             return record
 
+    def trash(self, session_id: str, revision: int) -> SessionRecord:
+        with self.database.session() as session:
+            record = session.get(SessionRecord, session_id)
+            if record is None:
+                raise KeyError(session_id)
+            if record.revision != revision:
+                raise RevisionConflict(f"Expected revision {revision}, found {record.revision}.")
+            record.trashed_at = utcnow()
+            record.status = "trashed"
+            record.revision += 1
+            record.updated_at = utcnow()
+            session.flush()
+            session.expunge(record)
+            return record
+
+    def restore(self, session_id: str, revision: int) -> SessionRecord:
+        with self.database.session() as session:
+            record = session.get(SessionRecord, session_id)
+            if record is None:
+                raise KeyError(session_id)
+            if record.revision != revision:
+                raise RevisionConflict(f"Expected revision {revision}, found {record.revision}.")
+            record.trashed_at = None
+            record.status = "idle"
+            record.revision += 1
+            record.updated_at = utcnow()
+            session.flush()
+            session.expunge(record)
+            return record
+

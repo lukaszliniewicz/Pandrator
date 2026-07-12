@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from .database import Database
 from .jobs import JobQueue
-from .models import Artifact, Job, SessionRecord
+from .models import Artifact, Job, OutcomePlan, SessionRecord
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +150,52 @@ class WorkflowService:
             }
 
     def run_stage(self, session_id: str, stage_key: str, settings: dict[str, Any] | None = None) -> Job:
+        # Resolve persisted defaults before the run is enqueued.  The resulting
+        # snapshot is immutable job input: later settings edits affect only
+        # future runs, and Run Now values still take highest precedence.
+        from .workspace import WorkspaceSettingsService, adapt_runtime_settings
+
+        section_map: dict[str, tuple[str, ...]] = {
+            "transcribe": ("stt", "subtitles"),
+            "correct": ("correction", "subtitles"),
+            "translate": ("translation", "subtitles"),
+            "clean_source": ("source_cleaning", "text"),
+            "prepare_text": ("text", "tts", "audio"),
+            "generate_audio": ("text", "tts", "audio", "rvc", "output"),
+            "export": ("output", "audio", "subtitles"),
+        }
+        pipeline_sections = {
+            section
+            for key in ("transcribe", "correct", "translate", "clean_source", "prepare_text", "generate_audio")
+            for section in section_map[key]
+        }
+        requested_sections = sorted(pipeline_sections) if stage_key == "generate_audio" else list(section_map.get(stage_key, ()))
+        run_values = dict(settings or {})
+        provided_stage_settings = run_values.pop("stage_settings", {})
+        structured_override = {
+            section: dict(run_values.get(section) or {})
+            for section in requested_sections
+            if isinstance(run_values.get(section), dict)
+        }
+        resolved, settings_hash = WorkspaceSettingsService(self.database).resolve(
+            session_id,
+            requested_sections,
+            structured_override,
+        )
+        flattened: dict[str, Any] = {}
+        for section in requested_sections:
+            flattened.update(adapt_runtime_settings(section, resolved.get(section, {})))
+        # Existing stage dialogs submit flat values.  Preserve that contract
+        # while accepting the newer section-shaped override form as well.
+        flattened.update({key: value for key, value in run_values.items() if key not in requested_sections})
+        resolved_stage_settings: dict[str, dict[str, Any]] = {}
+        for key, sections in section_map.items():
+            stage_value: dict[str, Any] = {}
+            for section in sections:
+                stage_value.update(adapt_runtime_settings(section, resolved.get(section, {})))
+            supplied = provided_stage_settings.get(key, {}) if isinstance(provided_stage_settings, dict) else {}
+            resolved_stage_settings[key] = {**stage_value, **(supplied if isinstance(supplied, dict) else {})}
+
         with self.database.session() as session:
             record = session.get(SessionRecord, session_id)
             if record is None:
@@ -158,12 +204,23 @@ class WorkflowService:
             definition = next((item for item in self.definitions(record, all_artifacts) if item.key == stage_key), None)
             if definition is None or not definition.executable or not definition.job_kind:
                 raise ValueError(f"Stage '{stage_key}' cannot be run directly.")
+            prerequisite_roles = definition.prerequisite_roles
+            outcome = session.scalar(select(OutcomePlan).where(OutcomePlan.session_id == session_id))
+            inputs = (outcome.value_json or {}).get("inputs", {}) if outcome and isinstance(outcome.value_json, dict) else {}
+            if stage_key == "translate" and str(inputs.get("translation") or "correction") != "correction":
+                prerequisite_roles = ("transcription", "upload")
+            elif stage_key == "generate_audio":
+                prerequisite_roles = {
+                    "translation": ("translation",),
+                    "correction": ("correction",),
+                    "source": ("transcription", "upload"),
+                }.get(str(inputs.get("generation") or "translation"), prerequisite_roles)
             artifacts = list(
                 session.scalars(
                     select(Artifact).where(
                         Artifact.session_id == session_id,
                         Artifact.state == "current",
-                        Artifact.role.in_(definition.prerequisite_roles),
+                        Artifact.role.in_(prerequisite_roles),
                     ).order_by(Artifact.created_at.desc())
                 ).all()
             )
@@ -171,20 +228,36 @@ class WorkflowService:
             source = next(
                 (
                     by_role[role]
-                    for role in definition.prerequisite_roles
+                    for role in prerequisite_roles
                     if role in by_role and self._usable_input(definition, by_role[role], record.workflow_kind)
                 ),
                 None,
             )
-            if definition.prerequisite_roles and source is None:
+            if prerequisite_roles and source is None:
                 raise ValueError(f"Stage '{stage_key}' is missing a required input artifact.")
             payload = {
                 "session_id": session_id,
                 "source_artifact_id": source.id if source else None,
-                "settings": settings or {},
+                "settings": flattened,
+                "resolved_settings_snapshot": resolved,
+                "settings_hash": settings_hash,
             }
         if stage_key == "generate_audio":
-            stage_settings = payload["settings"].pop("stage_settings", {})
-            payload.update({"target_stage": stage_key, "stage_settings": stage_settings})
-            return self.jobs.enqueue("workflow.continue", payload, session_id=session_id)
-        return self.jobs.enqueue(definition.job_kind, payload, session_id=session_id)
+            payload.update({"target_stage": stage_key, "stage_settings": resolved_stage_settings})
+            return self.jobs.enqueue("workflow.continue", payload, session_id=session_id, resource_keys=self._resource_keys(session_id, stage_key, flattened))
+        return self.jobs.enqueue(definition.job_kind, payload, session_id=session_id, resource_keys=self._resource_keys(session_id, stage_key, flattened))
+
+    @staticmethod
+    def _resource_keys(session_id: str, stage_key: str, settings: dict[str, Any]) -> list[str]:
+        keys = [f"session:{session_id}"]
+        if stage_key in {"correct", "translate", "clean_source"}:
+            keys.append("service:llm")
+        if stage_key in {"generate_audio", "prepare_text"}:
+            service = str(settings.get("service") or "tts").lower().replace(" ", "_")
+            keys.append(f"service:tts:{service}")
+        if stage_key == "transcribe":
+            keys.append("service:stt")
+        compute = str(settings.get("compute_backend") or settings.get("device") or "auto").lower()
+        if compute in {"cuda", "vulkan", "metal", "gpu"}:
+            keys.append(f"gpu:{compute}")
+        return keys

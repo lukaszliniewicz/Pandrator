@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import sqlite3
 import tempfile
@@ -17,11 +18,16 @@ from sqlalchemy import func, select
 from pandrator.runtime import DataPaths
 
 from .artifacts import ArtifactService
-from .database import Database, upgrade_database
+from .database import SCHEMA_HEAD, Database, upgrade_database
 from .models import (
     AppSetting,
+    Artifact,
+    AudioTake,
     Document,
     DocumentRevision,
+    GenerationPlan,
+    GenerationPlanRevision,
+    GenerationSegment,
     Provider,
     ProviderModel,
     Segment,
@@ -104,10 +110,10 @@ def _legacy_session_rows(paths: DataPaths) -> list[dict[str, Any]]:
 
 
 def create_metadata_backup(paths: DataPaths) -> Path:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     backup = paths.backups / f"pre-web-{stamp}"
     backup.mkdir(parents=True, exist_ok=False)
-    candidates = [paths.legacy_database, paths.root / "global_settings.json", paths.root / "config.json"]
+    candidates = [paths.legacy_database, paths.database, paths.root / "global_settings.json", paths.root / "config.json"]
     for candidate in candidates:
         if candidate.is_file():
             shutil.copy2(candidate, backup / candidate.name)
@@ -207,11 +213,113 @@ def _import_sentences(database: Database, legacy_path: Path, record: SessionReco
     return len(normalized)
 
 
+def _import_generation(database: Database, legacy_path: Path, record: SessionRecord) -> int:
+    """Promote Qt sentence state and immutable WAV variants into web entities."""
+    candidates = list(legacy_path.glob("*_sentences.json"))
+    payload = _load_json(candidates[0]) if candidates else None
+    normalized = [item for item in payload if isinstance(item, dict) and _sentence_text(item)] if isinstance(payload, list) else []
+    if not normalized:
+        return 0
+    digest = hashlib.sha256(json.dumps(normalized, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+    with database.session() as session:
+        if session.scalar(select(GenerationPlan.id).where(GenerationPlan.session_id == record.id)):
+            return 0
+        document = session.scalar(select(Document).where(Document.session_id == record.id, Document.stage == "legacy_text"))
+        source_revision_id = document.active_revision_id if document else None
+        source_segments = list(session.scalars(select(Segment).where(Segment.revision_id == source_revision_id).order_by(Segment.ordinal)).all()) if source_revision_id else []
+        plan = GenerationPlan(session_id=record.id)
+        session.add(plan)
+        session.flush()
+        revision = GenerationPlanRevision(
+            plan_id=plan.id,
+            source_revision_id=source_revision_id,
+            revision_number=1,
+            settings_json={"imported_from": "qt", "legacy_path": str(legacy_path)},
+            content_hash=digest,
+        )
+        session.add(revision)
+        session.flush()
+        plan.active_revision_id = revision.id
+        by_number: dict[str, GenerationSegment] = {}
+        for index, item in enumerate(normalized):
+            number = str(item.get("sentence_number") or index + 1)
+            segment = GenerationSegment(
+                plan_revision_id=revision.id,
+                ordinal=index,
+                source_segment_ids_json=[source_segments[index].id] if index < len(source_segments) else [],
+                text=_sentence_text(item),
+                language=str(item.get("language") or "") or None,
+                silence_after_ms=int(item.get("silence_after_ms") or 0),
+                marked=bool(item.get("marked", False)),
+                removed=bool(item.get("removed", False)),
+                status="completed" if item.get("tts_generated") == "yes" else "ready",
+            )
+            session.add(segment)
+            session.flush()
+            by_number[number] = segment
+
+        artifacts = list(session.scalars(select(Artifact).where(Artifact.session_id == record.id, Artifact.relative_path.like("%.wav"))).all())
+        artifacts.sort(key=lambda item: ("audio_variants" in item.relative_path.lower() or "rvc" in item.relative_path.lower(), item.relative_path))
+        active_by_segment: dict[str, AudioTake] = {}
+        for artifact in artifacts:
+            filename = Path(artifact.relative_path).name
+            match = re.search(r"_sentence_(?P<number>.+)\.wav$", filename, re.IGNORECASE)
+            if not match:
+                continue
+            segment = by_number.get(match.group("number"))
+            if segment is None:
+                continue
+            is_rvc = "audio_variants" in artifact.relative_path.lower() or "rvc" in artifact.relative_path.lower()
+            parent = active_by_segment.get(segment.id) if is_rvc else None
+            take = AudioTake(
+                generation_segment_id=segment.id,
+                artifact_id=artifact.id,
+                parent_take_id=parent.id if parent else None,
+                kind="rvc" if is_rvc else "tts",
+                status="completed",
+                is_active=True,
+            )
+            previous = active_by_segment.get(segment.id)
+            if previous is not None:
+                previous.is_active = False
+            session.add(take)
+            session.flush()
+            active_by_segment[segment.id] = take
+        return len(by_number)
+
+
 def import_legacy_data(paths: DataPaths) -> dict[str, Any]:
     paths.ensure()
     if paths.migration_marker.is_file():
+        current_schema = None
+        if paths.database.is_file():
+            try:
+                connection = sqlite3.connect(paths.database)
+                row = connection.execute("SELECT version_num FROM alembic_version").fetchone()
+                connection.close()
+                current_schema = str(row[0]) if row else None
+            except sqlite3.DatabaseError:
+                current_schema = None
+        if current_schema != SCHEMA_HEAD:
+            create_metadata_backup(paths)
         upgrade_database(paths.database)
-        return _load_json(paths.migration_marker) or {"version": MIGRATION_VERSION, "status": "complete"}
+        database = Database(paths.database)
+        with database.session() as session:
+            records = list(session.scalars(select(SessionRecord)).all())
+            for item in records:
+                session.expunge(item)
+        promoted = 0
+        for record in records:
+            legacy_path = Path(record.legacy_path).resolve() if record.legacy_path else None
+            if legacy_path and legacy_path.is_dir():
+                promoted += _import_generation(database, legacy_path, record)
+        database.dispose()
+        result = _load_json(paths.migration_marker) or {"version": MIGRATION_VERSION, "status": "complete"}
+        if promoted:
+            result["promoted_generation_segments"] = int(result.get("promoted_generation_segments") or 0) + promoted
+            result["web_schema"] = SCHEMA_HEAD
+            _atomic_json(paths.migration_marker, result)
+        return result
 
     backup = create_metadata_backup(paths)
     if paths.database.exists():
@@ -266,6 +374,7 @@ def import_legacy_data(paths: DataPaths) -> dict[str, Any]:
                         imported_artifacts += 1
                     except (OSError, ValueError):
                         continue
+                _import_generation(database, legacy_path, record)
 
         with database.session() as session:
             validated_sessions = session.scalar(select(func.count()).select_from(SessionRecord)) or 0

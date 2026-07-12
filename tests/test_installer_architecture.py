@@ -412,6 +412,24 @@ class InstallerArchitectureTests(unittest.TestCase):
             os.pathsep.join([kokoro_repo, os.path.join(kokoro_repo, "api")]),
         )
 
+    @unittest.skipIf(os.name == "nt", "The short eSpeak symlink is a Linux/macOS runtime workaround.")
+    def test_kokoro_uses_short_site_packages_alias_for_deep_linux_install(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        with tempfile.TemporaryDirectory() as directory:
+            install_root = os.path.join(directory, "nested-" + "x" * 90)
+            manifest = Path(installer.get_pixi_manifest_path(install_root, "kokoro_api_server_installer"))
+            site_packages = manifest.parent / ".pixi" / "envs" / "default" / "lib" / "python3.11" / "site-packages"
+            data = site_packages / "espeakng_loader" / "espeak-ng-data"
+            data.mkdir(parents=True)
+            (data / "phontab").write_bytes(b"fixture")
+            kokoro_repo = os.path.join(install_root, "Kokoro")
+
+            with patch("pandrator_installer.components.os.name", "posix"):
+                env = installer.get_kokoro_runtime_env(install_root, kokoro_repo)
+
+            first_path = Path(env["PYTHONPATH"].split(os.pathsep)[0])
+            self.assertTrue((first_path / "espeakng_loader" / "espeak-ng-data" / "phontab").is_file())
+
     def test_kokoro_cpu_uses_explicit_pytorch_cpu_index(self):
         installer = HeadlessInstaller(working_dir="workspace")
         torch_spec, index_url = installer.get_kokoro_torch_install_options(use_gpu=False)

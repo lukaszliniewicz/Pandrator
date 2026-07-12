@@ -13,7 +13,7 @@ from typing import Any
 from sqlalchemy import and_, or_, select
 
 from .database import Database
-from .models import Job, JobEvent, utcnow
+from .models import Job, JobEvent, ResourceClaim, utcnow
 
 
 JobHandler = Callable[[dict[str, Any], Callable[[float, str | None], None], threading.Event], dict[str, Any] | None]
@@ -36,6 +36,7 @@ class JobQueue:
         session_id: str | None = None,
         workflow_run_id: str | None = None,
         max_attempts: int = 1,
+        resource_keys: list[str] | None = None,
     ) -> Job:
         job = Job(
             kind=kind,
@@ -43,6 +44,7 @@ class JobQueue:
             session_id=session_id,
             workflow_run_id=workflow_run_id,
             max_attempts=max(1, int(max_attempts)),
+            resource_keys_json=sorted({str(key) for key in (resource_keys or []) if str(key).strip()}),
         )
         with self.database.session() as session:
             session.add(job)
@@ -51,6 +53,55 @@ class JobQueue:
             session.flush()
             session.expunge(job)
             return job
+
+    def acquire_resources(self, job_id: str, worker_id: str, keys: list[str], lease_seconds: int = 30) -> bool:
+        if not keys:
+            return True
+        now = utcnow()
+        expires = now + timedelta(seconds=max(5, lease_seconds))
+        with self.database.session() as session:
+            conflicts = list(
+                session.scalars(
+                    select(ResourceClaim).where(
+                        ResourceClaim.resource_key.in_(keys),
+                        ResourceClaim.expires_at > now,
+                        ResourceClaim.job_id != job_id,
+                    )
+                ).all()
+            )
+            if conflicts:
+                return False
+            for key in keys:
+                claim = session.get(ResourceClaim, key)
+                if claim is None:
+                    session.add(ResourceClaim(resource_key=key, job_id=job_id, lease_owner=worker_id, expires_at=expires))
+                else:
+                    claim.job_id = job_id
+                    claim.lease_owner = worker_id
+                    claim.expires_at = expires
+            return True
+
+    def heartbeat_resources(self, job_id: str, worker_id: str, lease_seconds: int = 30) -> None:
+        with self.database.session() as session:
+            for claim in session.scalars(select(ResourceClaim).where(ResourceClaim.job_id == job_id, ResourceClaim.lease_owner == worker_id)).all():
+                claim.expires_at = utcnow() + timedelta(seconds=max(5, lease_seconds))
+
+    def release_resources(self, job_id: str, worker_id: str) -> None:
+        with self.database.session() as session:
+            for claim in session.scalars(select(ResourceClaim).where(ResourceClaim.job_id == job_id, ResourceClaim.lease_owner == worker_id)).all():
+                session.delete(claim)
+
+    def defer_for_resources(self, job_id: str, worker_id: str) -> None:
+        with self.database.session() as session:
+            job = session.get(Job, job_id)
+            if job is None or job.lease_owner != worker_id:
+                return
+            job.status = "queued"
+            job.lease_owner = None
+            job.lease_expires_at = None
+            job.attempts = max(0, job.attempts - 1)
+            job.updated_at = utcnow()
+            self._event(session, job.id, "job.waiting_for_resource", {"resources": job.resource_keys_json})
 
     def list(self, limit: int = 100) -> list[Job]:
         with self.database.session() as session:
@@ -222,6 +273,9 @@ class Worker:
         job = self.queue.claim(self.worker_id)
         if job is None:
             return False
+        if not self.queue.acquire_resources(job.id, self.worker_id, list(job.resource_keys_json or [])):
+            self.queue.defer_for_resources(job.id, self.worker_id)
+            return False
         handler = self.handlers.get(job.kind)
         if handler is None:
             self.queue.fail(job.id, self.worker_id, "unknown_job_kind", f"No handler is registered for '{job.kind}'.")
@@ -233,15 +287,34 @@ class Worker:
             if self.queue.should_cancel(job.id, self.worker_id):
                 cancel_event.set()
             self.queue.heartbeat(job.id, self.worker_id, progress=value, detail=detail)
+            self.queue.heartbeat_resources(job.id, self.worker_id)
 
         try:
             result = handler(job.payload_json, progress, cancel_event)
             if cancel_event.is_set() or self.queue.should_cancel(job.id, self.worker_id):
+                agent_run_id = str(job.payload_json.get("agent_run_id") or "")
+                if agent_run_id:
+                    from .models import AgentRun
+
+                    with self.queue.database.session() as session:
+                        agent_run = session.get(AgentRun, agent_run_id)
+                        if agent_run is not None:
+                            agent_run.status = "canceled"
+                            agent_run.updated_at = utcnow()
                 self.queue.cancel_owned(job.id, self.worker_id)
             else:
                 self.queue.complete(job.id, self.worker_id, result)
         except Exception as error:
             logging.exception("Worker job %s failed", job.id)
+            agent_run_id = str(job.payload_json.get("agent_run_id") or "")
+            if agent_run_id:
+                from .models import AgentRun
+
+                with self.queue.database.session() as session:
+                    agent_run = session.get(AgentRun, agent_run_id)
+                    if agent_run is not None:
+                        agent_run.status = "failed"
+                        agent_run.updated_at = utcnow()
             self.queue.fail(
                 job.id,
                 self.worker_id,
@@ -249,6 +322,8 @@ class Worker:
                 str(error),
                 trace=traceback.format_exc(),
             )
+        finally:
+            self.queue.release_resources(job.id, self.worker_id)
         return True
 
     def run_forever(self, poll_interval: float = 0.5) -> None:

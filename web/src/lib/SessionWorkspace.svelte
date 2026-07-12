@@ -45,6 +45,7 @@
 
   let { session, onback, onupdated }: { session: SessionRecord; onback: () => void; onupdated: (session: SessionRecord) => void } = $props();
   let snapshot = $state<Snapshot | null>(null);
+  let outcome = $state<any>(null);
   let capabilities = $state<Record<string, any>>({});
   let loading = $state(true);
   let error = $state('');
@@ -88,7 +89,7 @@
   let workflowTour = $state(false);
   const workflowTourSteps = [
     {section:'Workflow',title:'Stages are independent',body:'Run any ready card on its own. Its latest artifact, settings, and status stay attached to that stage.'},
-    {section:'Workflow',title:'Inclusion composes the outcome',body:'Included stages are checked for missing or stale outputs when Generate audio continues the workflow. Completed matching artifacts are reused.'},
+    {section:'Workflow',title:'The outcome composes the pipeline',body:'Customize Workflow chooses meaningful transformations and deliverables. Run Now remains available on every ready transformation.'},
     {section:'Review',title:'Preview before synthesis',body:'Subtitle comparison aligns transcription, correction, and translation, including split and merged lineage. Saving creates a reviewed revision.'},
     {section:'Export',title:'Export does not require dubbing',body:'Subtitle-only exports preserve source audio. When dubbing exists, choose source, mixed, or dubbing-only audio and soft or burned subtitles.'}
   ];
@@ -96,7 +97,7 @@
   async function load() {
     loading = true;
     try {
-      snapshot = await api<Snapshot>(`/sessions/${session.id}/workflow`);
+      [snapshot, outcome] = await Promise.all([api<Snapshot>(`/sessions/${session.id}/workflow`), api(`/sessions/${session.id}/outcome-plan`)]);
     } catch (caught) {
       error = caught instanceof Error ? caught.message : String(caught);
     } finally {
@@ -110,23 +111,6 @@
   }
 
   const supportsSttCompute = (name: string) => name === 'auto' || (capabilities?.stt?.compute_backends ?? []).includes(name);
-
-  async function toggleIncluded(stage: Stage) {
-    const current = new Set(session.included_stages_json);
-    if (current.has(stage.key)) current.delete(stage.key); else current.add(stage.key);
-    try {
-      const updated = await api<SessionRecord>(`/sessions/${session.id}`, {
-        method: 'PATCH',
-        headers: { 'If-Match': `"${session.revision}"` },
-        body: JSON.stringify({ included_stages: [...current] })
-      });
-      session = updated;
-      onupdated(updated);
-      await load();
-    } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
-    }
-  }
 
   async function run(stage: Stage) {
     if (stage.key === 'preview') {
@@ -165,9 +149,16 @@
     }
   }
 
-  function openSettings(stage: Stage) {
+  const stageSection = (key: string) => ({transcribe:'stt',correct:'correction',translate:'translation',clean_source:'source_cleaning',prepare_text:'tts',generate_audio:'tts',export:'output'}[key] ?? 'text');
+
+  async function openSettings(stage: Stage) {
     settingsStage = stage;
-    const saved = stageSettings[stage.key] ?? {};
+    let saved = stageSettings[stage.key] ?? {};
+    try {
+      const stored = await api<any>(`/sessions/${session.id}/settings/${stageSection(stage.key)}`);
+      saved = {...stored.effective, ...saved};
+      stageSettings[stage.key] = saved;
+    } catch { /* use stage-local values */ }
     targetLanguage = String(saved.target_language ?? 'en');
     originalLanguage = String(saved.original_language ?? 'auto');
     model = String(saved.model_name ?? saved[`${stage.key}_model`] ?? 'default');
@@ -207,7 +198,12 @@
     catch (caught) { error = caught instanceof Error ? caught.message : String(caught); }
   }
 
-  function saveSettings() {
+  async function persistSection(section:string,value:Record<string,unknown>) {
+    const stored = await api<any>(`/sessions/${session.id}/settings/${section}`);
+    return api(`/sessions/${session.id}/settings/${section}`,{method:'PUT',headers:{'If-Match':`"${stored.revision}"`},body:JSON.stringify({value:{...stored.override,...value}})});
+  }
+
+  async function saveSettings() {
     if (!settingsStage) return;
     const key = settingsStage.key;
     const common = { model_name: model === 'default' ? '' : model, [`${key}_model`]: model };
@@ -241,7 +237,15 @@
       subtitle_phrase_gap_ms: subtitlePhraseGap
     };
     else stageSettings[key] = common;
-    settingsStage = null;
+    try {
+      if (key === 'transcribe') {
+        await persistSection('stt', stageSettings[key]);
+        await persistSection('subtitles',{max_chars_per_line:subtitleChars,max_lines:subtitleLines,min_duration_ms:subtitleMinDuration,max_duration_ms:subtitleMaxDuration,max_cps:subtitleCps,min_gap_ms:subtitleMinGap,phrase_gap_ms:subtitlePhraseGap});
+      } else if (key === 'correct') await persistSection('correction',{enabled:true,model_name:model==='default'?'':model,instructions});
+      else if (key === 'translate') await persistSection('translation',{enabled:true,backend,target_language:targetLanguage,model_name:model==='default'?'':model,instructions});
+      else await persistSection(stageSection(key),stageSettings[key]);
+      settingsStage = null;
+    } catch (caught) { error=caught instanceof Error?caught.message:String(caught); }
   }
 
   const statusIcon = (status: Stage['status']) => {
@@ -259,15 +263,15 @@
 </script>
 
 <div class="mx-auto max-w-6xl">
-  <button onclick={onback} class="muted mb-7 flex items-center gap-2 text-sm font-semibold"><ArrowLeft size={17}/> All sessions</button>
-  <header class="mb-8 flex flex-wrap items-end justify-between gap-6">
-    <div><div class="eyebrow mb-2 capitalize">{session.workflow_kind} workflow</div><h1 class="text-3xl font-semibold tracking-[-.035em] sm:text-4xl">{session.name}</h1><p class="muted mt-3 max-w-2xl">Run each stage independently, or include it when continuing toward the final result.</p></div>
+  <header class="mb-6 flex flex-wrap items-end justify-between gap-6">
+    <div><div class="eyebrow mb-2">Resolved outcome</div><p class="muted max-w-2xl">Run a ready transformation independently. The primary generation action follows the revisioned outcome plan and reuses matching completed artifacts.</p></div>
     <div class="flex flex-wrap gap-2"><button onclick={() => workflowTour=true} class="lift flex items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm font-semibold"><Sparkles size={17}/> Tour</button>{#if snapshot?.sources.find((item) => item.filename.toLowerCase().endsWith('.pdf'))}{@const availablePdf = snapshot.sources.find((item) => item.filename.toLowerCase().endsWith('.pdf'))!}<button onclick={() => pdfSource=availablePdf} class="lift flex items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm font-semibold"><Crop size={18}/> Edit PDF</button>{/if}<label class="lift flex cursor-pointer items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm font-semibold">
       {#if uploading}<LoaderCircle class="animate-spin" size={18}/>{:else}<FileUp size={18}/>{/if}
       {uploading ? 'Importing…' : 'Add source'}
       <input type="file" class="sr-only" onchange={upload} disabled={uploading}/>
     </label></div>
   </header>
+  {#if outcome?.pipeline}<div class="mb-6 flex flex-wrap items-center gap-2 rounded-2xl border border-[var(--line)] bg-[var(--paper-strong)] p-4">{#each outcome.pipeline as stage,index}<span class="rounded-lg bg-[var(--accent-soft)] px-3 py-2 text-xs font-semibold">{stage.title}</span>{#if index<outcome.pipeline.length-1}<ChevronRight class="muted" size={14}/>{/if}{/each}</div>{/if}
 
   {#if error}<div class="mb-5 flex items-start gap-3 rounded-xl border border-red-400/40 bg-red-500/10 px-4 py-3 text-sm"><CircleAlert class="mt-0.5 shrink-0" size={17}/><span>{error}</span></div>{/if}
 
@@ -285,7 +289,6 @@
             </div>
             <div class="flex flex-wrap items-center gap-2 lg:justify-end">
               {#if stage.executable}
-                <label class="muted flex items-center gap-2 rounded-lg px-2 py-2 text-xs font-semibold" class:cursor-pointer={!stage.required} title={stage.required?'Required by the selected outcome':''}><input type="checkbox" checked={stage.included} disabled={stage.required} onchange={() => toggleIncluded(stage)} class="size-4 accent-[var(--accent)] disabled:opacity-60"/> {stage.required?'Required for outcome':'Include when continuing'}</label>
                 <button onclick={() => openSettings(stage)} class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3.5 py-2.5 text-sm font-semibold"><Settings2 size={16}/> Settings</button>
                 {#if stage.status==='running'}<button onclick={() => cancel(stage)} class="rounded-xl border border-red-400/50 px-4 py-2.5 text-sm font-semibold text-red-500">Cancel</button>{:else}<button onclick={() => run(stage)} disabled={stage.status === 'unavailable'} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35"><Play size={16}/> Run now</button>{/if}
               {:else}

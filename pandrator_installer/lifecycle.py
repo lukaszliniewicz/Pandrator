@@ -136,14 +136,21 @@ def command_install(args) -> int:
     selection = _selection(args)
     paths.workspace.mkdir(parents=True, exist_ok=True)
     installer = HeadlessInstaller(working_dir=str(paths.workspace))
+    completed = False
     try:
         installer.run_headless_install(
             set(selection.selected_components()),
             install_pandrator=selection.pandrator,
             crispasr_backend=selection.crispasr_backend,
         )
+        completed = True
     finally:
-        installer.shutdown_apps()
+        # Component bootstrap methods own and stop their temporary validation
+        # processes.  A second broad shutdown after success can act on stale
+        # PIDs after reuse and has caused a successful Linux CLI install to
+        # terminate itself with SIGTERM.  Failure cleanup remains best-effort.
+        if not completed:
+            installer.shutdown_apps()
         installer.shutdown_logging()
     _emit({**plan, "status": "installed"}, args.json)
     return 0
@@ -154,6 +161,7 @@ def _runtime_python(paths: WorkspacePaths) -> Path:
     candidates = (
         paths.pandrator_repo / ".pixi" / "envs" / "default" / executable,
         paths.install_root / ".pixi" / "envs" / "default" / executable,
+        paths.environment("pandrator_installer") / ".pixi" / "envs" / "default" / executable,
         Path(sys.executable),
     )
     return next((candidate for candidate in candidates if candidate.is_file()), Path(sys.executable))
@@ -224,6 +232,14 @@ def _service_selection(component: str) -> LaunchSelection:
     return LaunchSelection(**values)
 
 
+def _owned_service_processes(installer) -> list[Any]:
+    processes = [process for _key, _label, process in installer._collect_running_backends() if process is not None]
+    rvc_process = installer._get_running_rvc_process()
+    if rvc_process is not None and rvc_process not in processes:
+        processes.append(rvc_process)
+    return processes
+
+
 def command_service(args) -> int:
     """Internal owned child used by ProcessSupervisor for one speech service."""
     if args.component not in SERVICE_HEALTH_URLS:
@@ -245,9 +261,7 @@ def command_service(args) -> int:
             pass
     try:
         installer.launch_process(_service_selection(args.component))
-        owned = [process for _key, process, _url in installer._collect_running_backends() if process is not None]
-        if installer._get_running_rvc_process() is not None:
-            owned.append(installer._get_running_rvc_process())
+        owned = _owned_service_processes(installer)
         if not owned:
             raise RuntimeError(f"Service {args.component} is available but is not owned by this supervisor.")
         while not stop_requested:
@@ -265,6 +279,19 @@ def command_service(args) -> int:
                 pass
 
 
+def _open_browser(url: str) -> None:
+    old_env = {}
+    for key in ("LD_LIBRARY_PATH", "QT_PLUGIN_PATH", "QML2_IMPORT_PATH"):
+        if key in os.environ:
+            old_env[key] = os.environ[key]
+            del os.environ[key]
+    try:
+        webbrowser.open(url)
+    finally:
+        for key, value in old_env.items():
+            os.environ[key] = value
+
+
 def command_launch(args) -> int:
     paths = _workspace(args)
     paths.install_root.mkdir(parents=True, exist_ok=True)
@@ -274,7 +301,7 @@ def command_launch(args) -> int:
         data_root=paths.install_root,
         specs=_runtime_specs(paths, args, token),
         status_callback=lambda message: print(message, flush=True),
-        ready_callback=(lambda: None) if args.no_browser else (lambda: webbrowser.open(url)),
+        ready_callback=(lambda: None) if args.no_browser else (lambda: _open_browser(url)),
     )
     supervisor.run_foreground()
     return 0

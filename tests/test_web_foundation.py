@@ -14,7 +14,7 @@ from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.database import Database, upgrade_database
 from pandrator.web.jobs import JobQueue, Worker, noop_handler
 from pandrator.web.legacy_migration import import_legacy_data
-from pandrator.web.models import DocumentRevision, ProviderModel, Segment, SessionRecord
+from pandrator.web.models import DocumentRevision, GenerationSegment, ProviderModel, Segment, SessionRecord
 from pandrator.web.sessions import SessionService
 
 
@@ -139,6 +139,7 @@ class LegacyMigrationTests(unittest.TestCase):
                 self.assertEqual(record.workflow_kind, "voiceover")
                 self.assertNotEqual(record.storage_key, record.name)
                 self.assertEqual(session.scalar(select(func.count()).select_from(Segment)), 2)
+                self.assertEqual(session.scalar(select(func.count()).select_from(GenerationSegment)), 2)
                 model = session.scalar(select(ProviderModel))
                 self.assertEqual(model.default_temperature, 0)
                 self.assertTrue(model.is_default)

@@ -30,12 +30,16 @@ from .capabilities import probe_capabilities
 from .database import Database
 from .jobs import JobQueue
 from .legacy_migration import import_legacy_data
-from .models import AppSetting, AppSettingHistory, Artifact, Provider, ProviderModel, SessionRecord, SourceRecord, TrainingRun, Voice, VoiceSample, new_id, utcnow
+from .maintenance import apply_retention
+from .models import AgentRun, AgentStep, AppSetting, AppSettingHistory, Artifact, ArtifactEdge, Document, DocumentRevision, Job, Provider, ProviderModel, Segment, SessionRecord, SourceRecord, TimedWord, TrainingRun, Voice, VoiceSample, new_id, utcnow
 from .openapi import build_openapi_document
-from .schemas import BootstrapRequest, BundleExportRequest, BundleImportRequest, JobCreate, LoginRequest, ModelCreate, ModelUpdate, PdfEditRequest, ProviderCreate, ProviderTestRequest, RvcConvertRequest, RvcModelUploadRequest, SessionCreate, SessionUpdate, SettingUpdate, SourceReuseRequest, SourceUrlRequest, SubtitleReviewRequest, TokenCreateRequest, TrainingCreateRequest, VoiceCreate, VoiceTranscriptReview
+from .parity_registry import build_registry
+from .schemas import AgentRunCreateRequest, BootstrapRequest, BundleExportRequest, BundleImportRequest, ChunkUploadInitialize, GenerationPlanCreate, GenerationSegmentUpdate, GenerationStartRequest, JobCreate, LoginRequest, ModelCreate, ModelUpdate, OutcomePlanUpdate, PdfEditRequest, ProviderCreate, ProviderTestRequest, RvcConvertRequest, RvcModelUploadRequest, SessionCreate, SessionSettingsUpdate, SessionUpdate, SettingUpdate, SourceAttachRequest, SourceReuseRequest, SourceUrlRequest, SubtitleReviewRequest, TokenCreateRequest, TrainingCreateRequest, TtsEndpointDiscoveryRequest, VoiceCreate, VoiceTranscriptReview
 from .sessions import RevisionConflict, SessionService
 from .subtitle_review import SubtitleReviewService
 from .workflows import WorkflowService
+from .uploads import ChunkUploadService
+from .workspace import BUILTIN_DEFAULTS, SETTING_SECTIONS, GenerationService, OutcomePlanService, RevisionConflict as WorkspaceRevisionConflict, SourceLibraryService, WorkspaceSettingsService
 
 
 def _load_or_create_flask_secret(paths: DataPaths) -> str:
@@ -102,11 +106,22 @@ def create_app(
     paths = DataPaths.from_value(data_root).ensure()
     migration = import_legacy_data(paths)
     database = Database(paths.database)
+    with database.session() as retention_session:
+        retention_record = retention_session.get(AppSetting, "web.preferences")
+        retention_days = int((retention_record.value_json or {}).get("retention_days", 30)) if retention_record and isinstance(retention_record.value_json, dict) else 30
+    apply_retention(database, paths, retention_days)
     auth = AuthService(database)
     jobs = JobQueue(database)
     sessions = SessionService(database)
     artifacts = ArtifactService(database, paths)
     workflows = WorkflowService(database, jobs)
+    workspace_settings = WorkspaceSettingsService(database)
+    outcome_plans = OutcomePlanService(database)
+    source_library = SourceLibraryService(database)
+    source_library.backfill_legacy()
+    generation = GenerationService(database, jobs, workspace_settings)
+    chunk_uploads = ChunkUploadService(database, paths, artifacts, source_library)
+    chunk_uploads.cleanup_expired()
 
     def session_dir(session_id: str) -> Path:
         with database.session() as db_session:
@@ -142,6 +157,11 @@ def create_app(
         "sessions": sessions,
         "artifacts": artifacts,
         "workflows": workflows,
+        "workspace_settings": workspace_settings,
+        "outcome_plans": outcome_plans,
+        "source_library": source_library,
+        "generation": generation,
+        "chunk_uploads": chunk_uploads,
         "bootstrap": bootstrap,
         "migration": migration,
     }
@@ -281,10 +301,51 @@ def create_app(
     def capabilities():
         return jsonify(probe_capabilities(paths, local_mode=request.remote_addr in {"127.0.0.1", "::1"}))
 
+    @app.get("/api/v1/parity")
+    @require_auth
+    def parity_registry():
+        return jsonify(build_registry())
+
+    @app.get("/api/v1/services/tts")
+    @require_auth
+    def tts_services():
+        from pandrator.logic import tts_handler
+        from pandrator.logic.tts_provider_profiles import list_tts_provider_profiles
+
+        with database.session() as db_session:
+            record = db_session.get(AppSetting, "defaults.tts")
+            value = dict(record.value_json or {}) if record and isinstance(record.value_json, dict) else {}
+            revision = record.revision if record else 0
+        response = jsonify({"value": value, "revision": revision, "services": tts_handler.get_service_configs(value), "profiles": list_tts_provider_profiles()})
+        response.headers["ETag"] = f'"{revision}"'
+        return response
+
+    @app.post("/api/v1/services/tts/discover")
+    @require_auth
+    def tts_service_discover():
+        from pandrator.logic.tts_endpoint_discovery import discover_tts_endpoint
+
+        payload = TtsEndpointDiscoveryRequest.model_validate(request.get_json(silent=True) or {})
+        result = discover_tts_endpoint(payload.base_url)
+        return jsonify(result), 200 if result.get("success") else 422
+
     @app.get("/api/v1/sessions")
     @require_auth
     def session_list():
-        return jsonify({"items": [_session_payload(item) for item in sessions.list()]})
+        return jsonify({"items": [_session_payload(item) for item in sessions.list(include_trashed=request.args.get("include_trashed") == "true")]})
+
+    @app.get("/api/v1/defaults/<section>")
+    @require_auth
+    def global_default_get(section: str):
+        if section not in SETTING_SECTIONS:
+            return error_response("not_found", "Settings section not found.", 404)
+        with database.session() as db_session:
+            record = db_session.get(AppSetting, f"defaults.{section}")
+            value = dict(record.value_json or {}) if record and isinstance(record.value_json, dict) else {}
+            revision = record.revision if record else 0
+        response = jsonify({"section": section, "builtin": BUILTIN_DEFAULTS[section], "value": value, "effective": {**BUILTIN_DEFAULTS[section], **value}, "revision": revision})
+        response.headers["ETag"] = f'"{revision}"'
+        return response
 
     @app.get("/api/v1/settings/<setting_key>")
     @require_auth
@@ -376,6 +437,358 @@ def create_app(
         response = jsonify(_session_payload(record))
         response.headers["ETag"] = f'"{record.revision}"'
         return response
+
+    @app.delete("/api/v1/sessions/<session_id>")
+    @require_auth
+    def session_trash(session_id: str):
+        raw_etag = request.headers.get("If-Match", "").strip('W/" ')
+        try:
+            revision = int(raw_etag)
+        except ValueError:
+            return error_response("precondition_required", "If-Match must contain the current session revision.", 428)
+        with database.session() as db_session:
+            active = db_session.scalar(select(Job).where(Job.session_id == session_id, Job.status.in_(("queued", "running", "cancel_requested"))))
+            if active is not None:
+                return error_response("session_busy", "Stop or cancel active work before moving this session to trash.", 409)
+        try:
+            record = sessions.trash(session_id, revision)
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
+        except RevisionConflict as error:
+            return error_response("revision_conflict", str(error), 409)
+        response = jsonify(_session_payload(record))
+        response.headers["ETag"] = f'"{record.revision}"'
+        return response
+
+    @app.post("/api/v1/sessions/<session_id>/restore")
+    @require_auth
+    def session_restore(session_id: str):
+        raw_etag = request.headers.get("If-Match", "").strip('W/" ')
+        try:
+            revision = int(raw_etag)
+        except ValueError:
+            return error_response("precondition_required", "If-Match must contain the current session revision.", 428)
+        try:
+            record = sessions.restore(session_id, revision)
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
+        except RevisionConflict as error:
+            return error_response("revision_conflict", str(error), 409)
+        response = jsonify(_session_payload(record))
+        response.headers["ETag"] = f'"{record.revision}"'
+        return response
+
+    @app.post("/api/v1/sessions/<session_id>/reindex")
+    @require_auth
+    def session_reindex(session_id: str):
+        try:
+            sessions.get(session_id)
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
+        return jsonify({"session_id": session_id, "reports": artifacts.reconcile(session_id)})
+
+    @app.get("/api/v1/sessions/<session_id>/settings/<section>")
+    @require_auth
+    def session_settings_get(session_id: str, section: str):
+        try:
+            result = workspace_settings.get(session_id, section)
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
+        response = jsonify(result)
+        response.headers["ETag"] = f'"{result["revision"]}"'
+        return response
+
+    @app.put("/api/v1/sessions/<session_id>/settings/<section>")
+    @require_auth
+    def session_settings_put(session_id: str, section: str):
+        payload = SessionSettingsUpdate.model_validate(request.get_json(silent=True) or {})
+        raw_etag = request.headers.get("If-Match", "").strip('W/" ')
+        try:
+            expected = int(raw_etag)
+        except ValueError:
+            return error_response("precondition_required", "If-Match must contain the current settings revision.", 428)
+        try:
+            result = workspace_settings.update(session_id, section, expected, payload.value)
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
+        except WorkspaceRevisionConflict as error:
+            return error_response("revision_conflict", str(error), 409)
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
+        response = jsonify(result)
+        response.headers["ETag"] = f'"{result["revision"]}"'
+        return response
+
+    @app.post("/api/v1/sessions/<session_id>/settings/resolve")
+    @require_auth
+    def session_settings_resolve(session_id: str):
+        body = request.get_json(silent=True) or {}
+        sections = body.get("sections") if isinstance(body.get("sections"), list) else None
+        overrides = body.get("overrides") if isinstance(body.get("overrides"), dict) else {}
+        try:
+            value, digest = workspace_settings.resolve(session_id, sections=sections, run_override=overrides)
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
+        return jsonify({"value": value, "settings_hash": digest})
+
+    @app.get("/api/v1/sessions/<session_id>/outcome-plan")
+    @require_auth
+    def outcome_plan_get(session_id: str):
+        try:
+            result = outcome_plans.get(session_id)
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
+        response = jsonify(result)
+        response.headers["ETag"] = f'"{result["revision"]}"'
+        return response
+
+    @app.put("/api/v1/sessions/<session_id>/outcome-plan")
+    @require_auth
+    def outcome_plan_put(session_id: str):
+        payload = OutcomePlanUpdate.model_validate(request.get_json(silent=True) or {})
+        raw_etag = request.headers.get("If-Match", "").strip('W/" ')
+        try:
+            expected = int(raw_etag)
+        except ValueError:
+            return error_response("precondition_required", "If-Match must contain the current outcome-plan revision.", 428)
+        try:
+            result = outcome_plans.update(session_id, expected, payload.value)
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
+        except WorkspaceRevisionConflict as error:
+            return error_response("revision_conflict", str(error), 409)
+        response = jsonify(result)
+        response.headers["ETag"] = f'"{result["revision"]}"'
+        return response
+
+    @app.get("/api/v1/sources")
+    @require_auth
+    def source_library_list():
+        return jsonify({"items": source_library.list(include_trashed=request.args.get("include_trashed") == "true")})
+
+    @app.get("/api/v1/sessions/<session_id>/sources")
+    @require_auth
+    def session_source_list(session_id: str):
+        try:
+            sessions.get(session_id)
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
+        return jsonify({"items": source_library.list(session_id=session_id)})
+
+    @app.post("/api/v1/sessions/<session_id>/sources")
+    @require_auth
+    def session_source_attach(session_id: str):
+        payload = SourceAttachRequest.model_validate(request.get_json(silent=True) or {})
+        try:
+            result = source_library.attach(session_id, payload.source_asset_id, role=payload.role)
+        except KeyError:
+            return error_response("not_found", "Session or source asset not found.", 404)
+        return jsonify(result), 201
+
+    @app.get("/api/v1/sessions/<session_id>/documents")
+    @require_auth
+    def session_documents(session_id: str):
+        with database.session() as db_session:
+            if db_session.get(SessionRecord, session_id) is None:
+                return error_response("not_found", "Session not found.", 404)
+            documents = list(db_session.scalars(select(Document).where(Document.session_id == session_id).order_by(Document.created_at)).all())
+            items = []
+            for document in documents:
+                revisions = list(db_session.scalars(select(DocumentRevision).where(DocumentRevision.document_id == document.id).order_by(DocumentRevision.revision_number.desc())).all())
+                items.append({
+                    "id": document.id,
+                    "stage": document.stage,
+                    "language": document.language,
+                    "active_revision_id": document.active_revision_id,
+                    "revisions": [{"id": revision.id, "revision_number": revision.revision_number, "parent_revision_id": revision.parent_revision_id, "reviewed": revision.reviewed, "content_hash": revision.content_hash, "created_at": revision.created_at.isoformat()} for revision in revisions],
+                })
+            return jsonify({"items": items})
+
+    @app.get("/api/v1/document-revisions/<revision_id>/words")
+    @require_auth
+    def revision_words(revision_id: str):
+        try:
+            cursor = max(0, int(request.args.get("cursor") or 0))
+            limit = max(1, min(1000, int(request.args.get("limit") or 500)))
+        except ValueError:
+            return error_response("validation_error", "Invalid pagination value.", 422)
+        with database.session() as db_session:
+            if db_session.get(DocumentRevision, revision_id) is None:
+                return error_response("not_found", "Document revision not found.", 404)
+            rows = list(db_session.scalars(select(TimedWord).where(TimedWord.revision_id == revision_id, TimedWord.ordinal >= cursor).order_by(TimedWord.ordinal).limit(limit + 1)).all())
+            has_more = len(rows) > limit
+            rows = rows[:limit]
+            return jsonify({
+                "items": [_model_dict(word, ("id", "revision_id", "segment_id", "ordinal", "text", "start_ms", "end_ms", "speaker", "confidence", "metadata_json")) for word in rows],
+                "next_cursor": rows[-1].ordinal + 1 if rows and has_more else None,
+            })
+
+    @app.post("/api/v1/sessions/<session_id>/generation-plan")
+    @require_auth
+    def generation_plan_create(session_id: str):
+        payload = GenerationPlanCreate.model_validate(request.get_json(silent=True) or {})
+        try:
+            result = generation.create_plan(session_id, source_revision_id=payload.source_revision_id, segments=[item.model_dump() for item in payload.segments], settings=payload.settings)
+        except KeyError:
+            return error_response("not_found", "Session or source revision not found.", 404)
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
+        return jsonify(result), 201
+
+    @app.get("/api/v1/sessions/<session_id>/generation-segments")
+    @require_auth
+    def generation_segment_list(session_id: str):
+        marked_arg = request.args.get("marked")
+        marked = None if marked_arg is None else marked_arg.lower() == "true"
+        try:
+            result = generation.list_segments(session_id, cursor=request.args.get("cursor", 0, type=int), limit=request.args.get("limit", 100, type=int), status=request.args.get("status"), marked=marked)
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
+        return jsonify(result)
+
+    @app.patch("/api/v1/generation-segments/<segment_id>")
+    @require_auth
+    def generation_segment_update(segment_id: str):
+        payload = GenerationSegmentUpdate.model_validate(request.get_json(silent=True) or {})
+        raw_etag = request.headers.get("If-Match", "").strip('W/" ')
+        try:
+            expected = int(raw_etag)
+        except ValueError:
+            return error_response("precondition_required", "If-Match must contain the current segment revision.", 428)
+        try:
+            result = generation.update_segment(segment_id, expected, payload.model_dump(exclude_none=True))
+        except KeyError:
+            return error_response("not_found", "Generation segment not found.", 404)
+        except WorkspaceRevisionConflict as error:
+            return error_response("revision_conflict", str(error), 409)
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
+        response = jsonify(result)
+        response.headers["ETag"] = f'"{result["revision"]}"'
+        return response
+
+    @app.post("/api/v1/generation-segments/<segment_id>/takes/<take_id>/select")
+    @require_auth
+    def generation_take_select(segment_id: str, take_id: str):
+        raw_etag = request.headers.get("If-Match", "").strip('W/" ')
+        try:
+            expected = int(raw_etag)
+        except ValueError:
+            return error_response("precondition_required", "If-Match must contain the current segment revision.", 428)
+        try:
+            result = generation.select_take(segment_id, take_id, expected)
+        except KeyError:
+            return error_response("not_found", "Generation segment or audio take not found.", 404)
+        except WorkspaceRevisionConflict as error:
+            return error_response("revision_conflict", str(error), 409)
+        except ValueError as error:
+            return error_response("invalid_take", str(error), 409)
+        response = jsonify(result)
+        response.headers["ETag"] = f'"{result["revision"]}"'
+        return response
+
+    @app.get("/api/v1/sessions/<session_id>/generation-runs/latest")
+    @require_auth
+    def generation_run_latest(session_id: str):
+        try:
+            sessions.get(session_id)
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
+        return jsonify({"item": generation.latest_run(session_id)})
+
+    @app.post("/api/v1/sessions/<session_id>/generation-runs")
+    @require_auth
+    def generation_run_start(session_id: str):
+        payload = GenerationStartRequest.model_validate(request.get_json(silent=True) or {})
+        try:
+            result = generation.start(session_id, run_override=payload.run_override, segment_ids=payload.segment_ids, operation=payload.operation)
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
+        except ValueError as error:
+            return error_response("generation_unavailable", str(error), 409)
+        return jsonify(result), 202
+
+    @app.post("/api/v1/generation-runs/<run_id>/pause")
+    @require_auth
+    def generation_run_pause(run_id: str):
+        try:
+            return jsonify(generation.request_pause(run_id)), 202
+        except KeyError:
+            return error_response("not_found", "Generation run not found.", 404)
+        except ValueError as error:
+            return error_response("invalid_state", str(error), 409)
+
+    @app.post("/api/v1/generation-runs/<run_id>/resume")
+    @require_auth
+    def generation_run_resume(run_id: str):
+        try:
+            return jsonify(generation.resume(run_id)), 202
+        except KeyError:
+            return error_response("not_found", "Generation run not found.", 404)
+        except ValueError as error:
+            return error_response("invalid_state", str(error), 409)
+
+    @app.post("/api/v1/generation-runs/<run_id>/cancel")
+    @require_auth
+    def generation_run_cancel(run_id: str):
+        try:
+            return jsonify(generation.cancel(run_id)), 202
+        except KeyError:
+            return error_response("not_found", "Generation run not found.", 404)
+
+    @app.get("/api/v1/sessions/<session_id>/agent-runs")
+    @require_auth
+    def agent_run_list(session_id: str):
+        with database.session() as db_session:
+            if db_session.get(SessionRecord, session_id) is None:
+                return error_response("not_found", "Session not found.", 404)
+            records = list(db_session.scalars(select(AgentRun).where(AgentRun.session_id == session_id).order_by(AgentRun.created_at.desc())).all())
+            return jsonify({"items": [_model_dict(item, ("id", "session_id", "source_artifact_id", "result_artifact_id", "job_id", "status", "settings_json", "created_at", "updated_at")) for item in records]})
+
+    @app.post("/api/v1/sessions/<session_id>/agent-runs")
+    @require_auth
+    def agent_run_create(session_id: str):
+        payload = AgentRunCreateRequest.model_validate(request.get_json(silent=True) or {})
+        try:
+            sessions.get(session_id)
+            artifacts.resolve(payload.source_artifact_id)
+        except KeyError:
+            return error_response("not_found", "Session or source artifact not found.", 404)
+        run_id = new_id()
+        with database.session() as db_session:
+            db_session.add(AgentRun(id=run_id, session_id=session_id, source_artifact_id=payload.source_artifact_id, status="queued", settings_json={**payload.settings, "agentic": True}))
+        job = jobs.enqueue("source.clean", {"session_id": session_id, "source_artifact_id": payload.source_artifact_id, "agent_run_id": run_id, "settings": {**payload.settings, "agentic": True}}, session_id=session_id, resource_keys=[f"session:{session_id}", "service:llm"])
+        with database.session() as db_session:
+            run = db_session.get(AgentRun, run_id)
+            run.job_id = job.id
+            run.updated_at = utcnow()
+        return jsonify({"id": run_id, "job_id": job.id, "status": "queued"}), 202
+
+    @app.get("/api/v1/agent-runs/<run_id>/steps")
+    @require_auth
+    def agent_step_list(run_id: str):
+        with database.session() as db_session:
+            if db_session.get(AgentRun, run_id) is None:
+                return error_response("not_found", "Agentic cleaning run not found.", 404)
+            records = list(db_session.scalars(select(AgentStep).where(AgentStep.agent_run_id == run_id).order_by(AgentStep.ordinal)).all())
+            return jsonify({"items": [_model_dict(item, ("id", "agent_run_id", "ordinal", "phase", "status", "summary", "input_json", "output_json", "cost_usd", "created_at")) for item in records]})
+
+    @app.post("/api/v1/agent-runs/<run_id>/accept")
+    @require_auth
+    def agent_run_accept(run_id: str):
+        with database.session() as db_session:
+            run = db_session.get(AgentRun, run_id)
+            if run is None:
+                return error_response("not_found", "Agentic cleaning run not found.", 404)
+            if run.status != "completed" or not run.result_artifact_id:
+                return error_response("invalid_state", "Only a completed cleaning result can be accepted.", 409)
+            run.status = "accepted"
+            run.updated_at = utcnow()
+            return jsonify(_model_dict(run, ("id", "status", "result_artifact_id", "updated_at")))
 
     @app.post("/api/v1/sessions/<session_id>/bundle")
     @require_auth
@@ -535,10 +948,72 @@ def create_app(
                             content_hash=digest,
                         )
                     )
-            return jsonify({"artifact_id": artifact.id, "filename": filename, "size_bytes": destination.stat().st_size, "sha256": digest}), 201
+            source_asset = source_library.ensure_for_artifact(artifact.id, display_name=incoming.filename, kind=Path(filename).suffix.lower().lstrip(".") or "file")
+            attachment = source_library.attach(requested_session_id, source_asset.id) if requested_session_id else None
+            return jsonify({"artifact_id": artifact.id, "source_asset_id": source_asset.id, "attachment": attachment, "filename": filename, "size_bytes": destination.stat().st_size, "sha256": digest}), 201
         finally:
             if temporary.exists():
                 temporary.unlink()
+
+    @app.post("/api/v1/uploads/init")
+    @require_auth
+    def chunk_upload_init():
+        payload = ChunkUploadInitialize.model_validate(request.get_json(silent=True) or {})
+        try:
+            result = chunk_uploads.initialize(
+                filename=payload.filename,
+                size_bytes=payload.size_bytes,
+                mime_type=payload.mime_type,
+                session_id=payload.session_id,
+                expected_hash=payload.sha256,
+                chunk_size=payload.chunk_size,
+                max_size=int(app.config.get("MAX_UPLOAD_SIZE", 100 * 1024 * 1024 * 1024)),
+            )
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
+        return jsonify(result), 201
+
+    @app.get("/api/v1/uploads/<upload_id>")
+    @require_auth
+    def chunk_upload_status(upload_id: str):
+        try:
+            return jsonify(chunk_uploads.status(upload_id))
+        except KeyError:
+            return error_response("not_found", "Upload not found.", 404)
+
+    @app.put("/api/v1/uploads/<upload_id>/chunks/<int:index>")
+    @require_auth
+    def chunk_upload_write(upload_id: str, index: int):
+        if request.content_length is not None and request.content_length > 16 * 1024 * 1024:
+            return error_response("chunk_too_large", "Upload chunks may not exceed 16 MiB.", 413)
+        try:
+            result = chunk_uploads.write_chunk(upload_id, index, request.stream, supplied_hash=request.headers.get("X-Chunk-SHA256"))
+        except KeyError:
+            return error_response("not_found", "Upload not found.", 404)
+        except ValueError as error:
+            return error_response("invalid_chunk", str(error), 422)
+        return jsonify(result)
+
+    @app.post("/api/v1/uploads/<upload_id>/complete")
+    @require_auth
+    def chunk_upload_complete(upload_id: str):
+        try:
+            return jsonify(chunk_uploads.complete(upload_id)), 201
+        except KeyError:
+            return error_response("not_found", "Upload not found.", 404)
+        except ValueError as error:
+            return error_response("upload_incomplete", str(error), 409)
+
+    @app.delete("/api/v1/uploads/<upload_id>")
+    @require_auth
+    def chunk_upload_cancel(upload_id: str):
+        try:
+            chunk_uploads.cancel(upload_id)
+        except KeyError:
+            return error_response("not_found", "Upload not found.", 404)
+        return "", 204
 
     @app.post("/api/v1/sessions/<session_id>/sources/url")
     @require_auth
@@ -591,6 +1066,39 @@ def create_app(
         if not path.is_file():
             return error_response("artifact_missing", "The artifact file is missing.", 410)
         return send_file(path, mimetype=artifact.mime_type, conditional=True, etag=artifact.content_hash)
+
+    @app.get("/api/v1/artifacts/<artifact_id>/waveform")
+    @require_auth
+    def artifact_waveform(artifact_id: str):
+        try:
+            source, _path = artifacts.resolve(artifact_id)
+        except KeyError:
+            return error_response("not_found", "Audio artifact not found.", 404)
+        with database.session() as db_session:
+            peak_artifact = db_session.scalar(
+                select(Artifact)
+                .join(ArtifactEdge, ArtifactEdge.child_artifact_id == Artifact.id)
+                .where(
+                    ArtifactEdge.parent_artifact_id == artifact_id,
+                    Artifact.role == "waveform_peaks",
+                    Artifact.state == "current",
+                )
+                .order_by(Artifact.created_at.desc())
+            )
+            if peak_artifact is not None:
+                peak_id = peak_artifact.id
+            else:
+                peak_id = None
+        if peak_id:
+            _artifact, peak_path = artifacts.resolve(peak_id)
+            return send_file(peak_path, mimetype="application/json", conditional=True, etag=_artifact.content_hash)
+        job = jobs.enqueue(
+            "audio.waveform",
+            {"source_artifact_id": artifact_id, "max_points": request.args.get("points", 1600, type=int)},
+            session_id=source.session_id,
+            resource_keys=[f"session:{source.session_id}"] if source.session_id else [],
+        )
+        return jsonify({"status": "queued", "job_id": job.id}), 202
 
     @app.get("/api/v1/artifacts/<artifact_id>/pdf")
     @require_auth
@@ -821,6 +1329,7 @@ def create_app(
         job = jobs.enqueue(
             "voice.transcribe",
             {"voice_id": voice_id, "sample_id": sample_id, "sample_artifact_id": artifact_id, "settings": settings},
+            resource_keys=[f"stt:{str(settings.get('stt_compute_backend') or 'auto')}"] + ([f"gpu:{str(settings.get('stt_compute_backend'))}"] if str(settings.get("stt_compute_backend") or "").lower() in {"cuda", "vulkan", "metal"} else []),
         )
         return jsonify(_job_payload(job)), 202
 
@@ -870,7 +1379,7 @@ def create_app(
                 sessions.get(payload.session_id)
         except KeyError:
             return error_response("not_found", "The requested session or source artifact was not found.", 404)
-        job = jobs.enqueue("rvc.convert", payload.model_dump(), session_id=payload.session_id)
+        job = jobs.enqueue("rvc.convert", payload.model_dump(), session_id=payload.session_id, resource_keys=["service:rvc", "gpu:default"])
         return jsonify(_job_payload(job)), 202
 
     @app.get("/api/v1/training")
@@ -913,6 +1422,7 @@ def create_app(
                 "source_text_artifact_id": payload.source_text_artifact_id,
                 "settings": payload.settings,
             },
+            resource_keys=["training:xtts", "gpu:default"],
         )
         with database.session() as db_session:
             training = db_session.get(TrainingRun, training_id)

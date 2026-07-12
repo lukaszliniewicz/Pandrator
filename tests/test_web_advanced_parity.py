@@ -34,13 +34,14 @@ class ProviderSettingsTests(unittest.TestCase):
                     session.add(provider)
                     session.flush()
                     session.add(ProviderModel(provider_id=provider.id, model_id="gpt-test", is_default=True, default_temperature=0.0, default_reasoning_effort="custom-fast"))
-                settings, model = build_llm_settings(database, paths)
+                settings, model = build_llm_settings(database, paths, request_timeout_seconds=777)
                 self.assertEqual(model, "openai/gpt-test")
                 record = settings.provider_configs[0]["models"][0]
                 self.assertEqual(record["default_temperature"], 0.0)
                 self.assertEqual(record["default_reasoning_effort"], "custom-fast")
                 self.assertEqual(settings.provider_configs[0]["api_key_env"], "PANDRATOR_TEST_KEY")
                 self.assertNotIn("secret-value", str(settings.provider_configs))
+                self.assertEqual(settings.request_timeout_seconds, 777)
             finally:
                 os.environ.pop("PANDRATOR_TEST_KEY", None)
                 database.dispose()
