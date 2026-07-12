@@ -537,6 +537,12 @@ class InstallerArchitectureTests(unittest.TestCase):
                 "cpu",
                 "--port",
                 "8042",
+                "--model-size",
+                "0.6b",
+                "--quantization",
+                "q8_0",
+                "--initial-model",
+                "base",
             ],
         )
 

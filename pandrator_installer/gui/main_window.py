@@ -1,9 +1,12 @@
 """Main Qt window for the Pandrator installer and launcher."""
 
 import atexit
+import json
 import logging
 import os
+import sqlite3
 import sys
+import webbrowser
 
 from PyQt6.QtCore import QThread, Qt, QTimer
 from PyQt6.QtGui import QAction, QFont
@@ -11,6 +14,7 @@ from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
     QFileDialog, QLabel, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar,
     QPushButton, QScrollArea, QSizePolicy, QTabWidget, QVBoxLayout, QWidget, QComboBox, QDialog, QMenu, QSystemTrayIcon,
+    QInputDialog, QLineEdit, QSpinBox,
 )
 
 from ..catalog import LINUX_DEFERRED_INSTALL_COMPONENT_KEYS
@@ -79,17 +83,25 @@ class PandratorInstaller(
         self.rvc_cpu_var = False
         self.crispasr_var = False
         self.crispasr_backend = "auto"
+        self.crispasr_engine = "whisper-large-v3"
+        self.crispasr_model_quantization = "f16"
         self.crispasr_backend_manually_set = False
         self.xtts_finetuning_var = False
         self.chatterbox_var = False
         self.chatterbox_cpu_var = False
         self.kobold_qwen_var = False
         self.kobold_qwen_cpu_var = False
+        self.kobold_qwen_backend = "auto"
+        self.kobold_qwen_model_size = "0.6b"
+        self.kobold_qwen_quantization = "q8_0"
+        self.kobold_qwen_initial_model = "base"
+        self.kobold_qwen_settings_manually_set = False
         self.magpie_var = False
         self.magpie_cpu_var = False
 
         # Launch options
         self.launch_pandrator_var = True
+        self.pandrator_owner_password = None
         self.launch_rvc_var = False
         self.rvc_cpu_launch_var = False
         self.launch_xtts_var = False
@@ -130,9 +142,9 @@ class PandratorInstaller(
         # Set up the main window
         self.setWindowTitle("Pandrator Installer & Launcher")
 
-        # Keep the installer compact while leaving enough room for two option columns.
+        # Full-width backend cards remain readable at ordinary laptop resolutions.
         screen_size = QApplication.primaryScreen().availableGeometry().size()
-        width = min(860, int(screen_size.width() * 0.82))
+        width = min(960, int(screen_size.width() * 0.86))
         height = min(720, int(screen_size.height() * 0.82))
         self.setMinimumSize(min(720, width), min(560, height))
         self.resize(width, height)
@@ -337,6 +349,7 @@ class PandratorInstaller(
         description,
         extra_controls=(),
         voice_capability="",
+        details="",
     ):
         card = QFrame()
         card.setObjectName("optionCard")
@@ -360,14 +373,41 @@ class PandratorInstaller(
         )
         layout.addWidget(description_label)
 
-        if voice_capability:
-            capability_label = QLabel(voice_capability)
-            capability_label.setObjectName("voiceCapabilityBadge")
-            capability_label.setSizePolicy(
-                QSizePolicy.Policy.Maximum,
-                QSizePolicy.Policy.Preferred,
+        capabilities = (
+            ((voice_capability,) if voice_capability else ())
+            if isinstance(voice_capability, str)
+            else tuple(voice_capability or ())
+        )
+        if capabilities:
+            badge_row = QHBoxLayout()
+            for capability in capabilities:
+                capability_label = QLabel(capability)
+                capability_label.setObjectName("voiceCapabilityBadge")
+                capability_label.setSizePolicy(
+                    QSizePolicy.Policy.Maximum,
+                    QSizePolicy.Policy.Preferred,
+                )
+                badge_row.addWidget(capability_label)
+            badge_row.addStretch()
+            layout.addLayout(badge_row)
+
+        if details:
+            details_label = QLabel(details)
+            details_label.setObjectName("mutedLabel")
+            details_label.setWordWrap(True)
+            details_label.setVisible(False)
+            details_button = QPushButton("More details")
+            details_button.setObjectName("secondaryButton")
+            details_button.setCheckable(True)
+            details_button.setMaximumWidth(130)
+            details_button.toggled.connect(details_label.setVisible)
+            details_button.toggled.connect(
+                lambda expanded, button=details_button: button.setText(
+                    "Fewer details" if expanded else "More details"
+                )
             )
-            layout.addWidget(capability_label)
+            layout.addWidget(details_button)
+            layout.addWidget(details_label)
 
         for extra_control in extra_controls:
             layout.addWidget(extra_control)
@@ -380,9 +420,9 @@ class PandratorInstaller(
         grid.setHorizontalSpacing(10)
         grid.setVerticalSpacing(10)
         grid.setColumnStretch(0, 1)
-        grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(1, 0)
         for index, card in enumerate(cards):
-            grid.addWidget(card, index // 2, index % 2)
+            grid.addWidget(card, index, 0, 1, 2)
 
     @staticmethod
     def _create_intro(text):
@@ -447,6 +487,10 @@ class PandratorInstaller(
         self.chatterbox_cpu_checkbox = QCheckBox("Use CPU-only runtime")
         self.kobold_qwen_checkbox = ToggleSwitch("Install Qwen3 TTS")
         self.kobold_qwen_cpu_checkbox = QCheckBox("Use CPU-only runtime")
+        self.kobold_qwen_settings_button = QPushButton("Runtime and model settings…")
+        self.kobold_qwen_settings_button.clicked.connect(
+            lambda: self.show_kobold_qwen_config_dialog(force=True)
+        )
         self.magpie_checkbox = ToggleSwitch("Install Magpie")
         self.magpie_cpu_checkbox = QCheckBox("Use CPU-only runtime")
 
@@ -456,50 +500,59 @@ class PandratorInstaller(
                 "Fast multilingual speech generation with a large built-in voice catalog.",
                 (self.kokoro_cpu_checkbox,),
                 "Pre-built voices",
+                "Best for fast, lightweight generation. Language and voice availability depend on the installed Kokoro catalogue; it works on CPU and can use supported accelerators.",
+            ),
+            self._create_option_card(
+                self.kobold_qwen_checkbox,
+                "Qwen3-TTS through KoboldCpp with selectable CUDA, Vulkan, Metal, or CPU execution.",
+                (self.kobold_qwen_cpu_checkbox, self.kobold_qwen_settings_button),
+                ("Voice cloning", "Pre-built voices"),
+                "Supports Chinese, English, Japanese, Korean, German, French, Russian, Portuguese, Spanish, and Italian. The 0.6B Q8 Base model is the lower-memory default; 1.7B and FP16 improve capacity at substantially higher RAM/VRAM use. Pre-built voices use the 1.7B CustomVoice model.",
             ),
             self._create_option_card(
                 self.xtts_checkbox,
                 "Multilingual speech generation from uploaded reference recordings.",
                 (self.xtts_cpu_checkbox,),
                 "Voice cloning",
+                "A mature multilingual cloning option. GPU generation is considerably faster; CPU mode is available for compatibility.",
             ),
             self._create_option_card(
                 self.voxcpm_checkbox,
                 "A local neural speech service that can follow an uploaded reference voice.",
                 voice_capability="Voice cloning",
+                details="Designed for reference-conditioned speech. Review the service catalogue in Pandrator after launch for its current language support.",
             ),
             self._create_option_card(
                 self.fishs2_checkbox,
                 "A local Fish Audio S2 service that can follow an uploaded reference voice.",
                 voice_capability="Voice cloning",
+                details="Offers selectable llama.cpp-style quantization and accelerator backends. Lower quantization reduces memory use at a possible quality cost.",
             ),
             self._create_option_card(
                 self.voxtral_checkbox,
                 "A GPU-based multilingual service with a catalog of preset voices.",
                 voice_capability="Pre-built voices",
+                details="Intended for capable GPUs and preset-speaker workflows; the live service catalogue determines available languages and voices.",
             ),
             self._create_option_card(
                 self.silero_checkbox,
                 "A lightweight local engine with language-specific preset speakers.",
                 voice_capability="Pre-built voices",
+                details="A small CPU-friendly option for supported languages. Speakers are grouped by language in the Pandrator voice selector.",
             ),
             self._create_option_card(
                 self.chatterbox_checkbox,
                 "Expressive local speech generated from uploaded reference recordings.",
                 (self.chatterbox_cpu_checkbox,),
                 "Voice cloning",
-            ),
-            self._create_option_card(
-                self.kobold_qwen_checkbox,
-                "Qwen3-TTS through KoboldCpp with CUDA, Vulkan, Metal, or CPU backends.",
-                (self.kobold_qwen_cpu_checkbox,),
-                "Voice cloning",
+                "Expressive reference-conditioned English speech. GPU execution is recommended for interactive generation; CPU mode is available but slower.",
             ),
             self._create_option_card(
                 self.magpie_checkbox,
                 "A multilingual local service with several preset speakers per language.",
                 (self.magpie_cpu_checkbox,),
                 "Pre-built voices",
+                "A preset-voice multilingual service. Pandrator refreshes its language and speaker catalogue from the running endpoint.",
             ),
         )
         self._add_option_cards(engines_grid, engine_cards)
@@ -515,8 +568,9 @@ class PandratorInstaller(
         stt_cards = (
             self._create_option_card(
                 self.crispasr_checkbox,
-                "One native runtime for full-precision Whisper large-v3 and Parakeet 0.6B v3, with CPU, CUDA, Vulkan, and Apple Metal support.",
+                "One native runtime for Whisper large-v3 and Parakeet 0.6B v3 with CPU, CUDA, Vulkan, and Apple Metal support.",
                 (self.crispasr_settings_button,),
+                details="Choose FP16 or a supported quantized model, plus an explicit accelerator when automatic detection is not appropriate. VAD, decoding, chunking, hotwords, and language identification remain adjustable per session in Pandrator.",
             ),
         )
         self._add_option_cards(stt_grid, stt_cards)
@@ -591,6 +645,7 @@ class PandratorInstaller(
         )
         self.fishs2_checkbox.stateChanged.connect(self._handle_fishs2_toggle)
         self.crispasr_checkbox.stateChanged.connect(self._handle_crispasr_toggle)
+        self.kobold_qwen_checkbox.stateChanged.connect(self._handle_kobold_qwen_toggle)
 
         for checkbox in self.install_tab.findChildren(QCheckBox):
             checkbox.stateChanged.connect(self.update_install_button_state)
@@ -621,6 +676,91 @@ class PandratorInstaller(
         self.refresh_ui_state()
         self.set_startup_tab()
 
+    def _runtime_state(self):
+        path = os.path.join(self.initial_working_dir, "Pandrator", "runtime-processes.json")
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            pid = int(payload.get("supervisor_pid") or 0)
+            if pid <= 0:
+                return None
+            try:
+                import psutil
+
+                if not psutil.pid_exists(pid):
+                    return None
+            except ImportError:
+                try:
+                    os.kill(pid, 0)
+                except OSError:
+                    return None
+            return payload
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return None
+
+    @staticmethod
+    def _runtime_port(payload):
+        api = (payload.get("processes") or {}).get("api") or {}
+        command = list(api.get("command") or [])
+        try:
+            return int(command[command.index("--port") + 1])
+        except (ValueError, IndexError, TypeError):
+            return 8097
+
+    def open_running_webui(self):
+        runtime = self._runtime_state()
+        if not runtime:
+            QMessageBox.information(self, "Pandrator is not running", "Launch Pandrator first.")
+            self.refresh_ui_state()
+            return
+        url = f"http://127.0.0.1:{self._runtime_port(runtime)}/"
+        if not webbrowser.open_new_tab(url):
+            QMessageBox.warning(self, "Could not open browser", f"Open this address manually:\n\n{url}")
+
+    def _owner_password_initialized(self):
+        database = os.path.join(self.initial_working_dir, "Pandrator", "pandrator.sqlite3")
+        if not os.path.isfile(database):
+            return False
+        try:
+            with sqlite3.connect(database) as connection:
+                row = connection.execute(
+                    "SELECT COUNT(*) FROM owner_account"
+                ).fetchone()
+            return bool(row and row[0])
+        except sqlite3.Error:
+            return False
+
+    def _handle_network_access_toggle(self, state):
+        if state != Qt.CheckState.Checked.value or self._owner_password_initialized():
+            return
+        password, accepted = QInputDialog.getText(
+            self,
+            "Protect network access",
+            "Create an owner password (at least 10 characters):",
+            QLineEdit.EchoMode.Password,
+        )
+        if not accepted or len(password) < 10:
+            self.pandrator_network_checkbox.blockSignals(True)
+            self.pandrator_network_checkbox.setChecked(False)
+            self.pandrator_network_checkbox.blockSignals(False)
+            if accepted:
+                QMessageBox.warning(self, "Password too short", "Use at least 10 characters.")
+            return
+        confirmation, confirmed = QInputDialog.getText(
+            self,
+            "Confirm owner password",
+            "Enter the same password again:",
+            QLineEdit.EchoMode.Password,
+        )
+        if not confirmed or confirmation != password:
+            self.pandrator_network_checkbox.blockSignals(True)
+            self.pandrator_network_checkbox.setChecked(False)
+            self.pandrator_network_checkbox.blockSignals(False)
+            if confirmed:
+                QMessageBox.warning(self, "Passwords do not match", "Network access was not enabled.")
+            return
+        self.pandrator_owner_password = password
+
     def setup_launch_tab(self):
         """Set up the Launch tab"""
         layout, content_layout = self._create_scrollable_tab_content(self.launch_tab)
@@ -635,6 +775,16 @@ class PandratorInstaller(
 
         self.launch_pandrator_checkbox = ToggleSwitch("Launch Pandrator")
         self.launch_pandrator_checkbox.setChecked(True)
+        self.pandrator_network_checkbox = QCheckBox("Allow access from other devices on this network")
+        self.pandrator_network_checkbox.setToolTip(
+            "Binds the web server to all interfaces. An owner password is required. "
+            "For Internet exposure, use HTTPS through a reverse proxy instead."
+        )
+        self.pandrator_network_checkbox.stateChanged.connect(self._handle_network_access_toggle)
+        self.pandrator_port_spin = QSpinBox()
+        self.pandrator_port_spin.setRange(1024, 65535)
+        self.pandrator_port_spin.setValue(8097)
+        self.pandrator_port_spin.setPrefix("Web port: ")
         self.launch_rvc_checkbox = ToggleSwitch("Launch RVC")
         self.rvc_cpu_launch_checkbox = QCheckBox("Use CPU")
         self.launch_xtts_checkbox = ToggleSwitch("Launch XTTS")
@@ -657,7 +807,9 @@ class PandratorInstaller(
         launch_cards = (
             self._create_option_card(
                 self.launch_pandrator_checkbox,
-                "Open the Pandrator desktop application.",
+                "Start the local Pandrator web application and open it in your browser.",
+                (self.pandrator_network_checkbox, self.pandrator_port_spin),
+                details="By default Pandrator listens only on 127.0.0.1 and cannot be reached from another computer. LAN access is opt-in, password-protected, and intended for trusted networks; use an HTTPS reverse proxy for broader remote access.",
             ),
             self._create_option_card(
                 self.launch_rvc_checkbox,
@@ -668,6 +820,11 @@ class PandratorInstaller(
                 self.launch_kokoro_checkbox,
                 "Start the installed Kokoro speech service.",
                 (self.kokoro_cpu_launch_checkbox,),
+            ),
+            self._create_option_card(
+                self.launch_kobold_qwen_checkbox,
+                "Start Qwen3 TTS using the backend, model size, and precision selected during installation.",
+                (self.kobold_qwen_cpu_launch_checkbox,),
             ),
             self._create_option_card(
                 self.launch_xtts_checkbox,
@@ -695,11 +852,6 @@ class PandratorInstaller(
                 self.launch_chatterbox_checkbox,
                 "Start the installed Chatterbox speech service.",
                 (self.chatterbox_cpu_launch_checkbox,),
-            ),
-            self._create_option_card(
-                self.launch_kobold_qwen_checkbox,
-                "Start the installed Qwen3 TTS service through KoboldCpp.",
-                (self.kobold_qwen_cpu_launch_checkbox,),
             ),
             self._create_option_card(
                 self.launch_magpie_checkbox,
@@ -747,6 +899,11 @@ class PandratorInstaller(
         self.launch_button.clicked.connect(self.launch_apps)
         self.launch_button.setMinimumHeight(38)
         launch_buttons_layout.addWidget(self.launch_button)
+        self.open_webui_button = QPushButton("Open Web UI")
+        self.open_webui_button.setObjectName("secondaryButton")
+        self.open_webui_button.clicked.connect(self.open_running_webui)
+        self.open_webui_button.setEnabled(False)
+        launch_buttons_layout.addWidget(self.open_webui_button)
         layout.addLayout(launch_buttons_layout)
 
     def setup_logs_tab(self):
@@ -800,8 +957,18 @@ class PandratorInstaller(
 
         # Pandrator
         pandrator_installed = os.path.exists(pandrator_path)
+        pandrator_running = self._runtime_state() is not None
         set_widget_state(self.pandrator_checkbox, not pandrator_installed, False if pandrator_installed else True)
-        set_widget_state(self.launch_pandrator_checkbox, pandrator_installed, pandrator_installed)
+        set_widget_state(
+            self.launch_pandrator_checkbox,
+            pandrator_installed and not pandrator_running,
+            pandrator_installed and not pandrator_running,
+        )
+        if hasattr(self, 'open_webui_button'):
+            self.open_webui_button.setEnabled(pandrator_running)
+            self.open_webui_button.setToolTip(
+                "Open the running Pandrator web interface" if pandrator_running else "Pandrator is not running"
+            )
 
         # XTTS
         xtts_support = config.get('xtts_support', False)
@@ -887,6 +1054,10 @@ class PandratorInstaller(
         # Qwen3 TTS
         kobold_qwen_support = config.get('kobold_qwen_support', False)
         kobold_qwen_gpu_support = config.get(KOBOLD_QWEN_GPU_SUPPORT_CONFIG_FLAG, False)
+        self.kobold_qwen_backend = config.get('kobold_qwen_backend', 'auto')
+        self.kobold_qwen_model_size = config.get('kobold_qwen_model_size', '0.6b')
+        self.kobold_qwen_quantization = config.get('kobold_qwen_quantization', 'q8_0')
+        self.kobold_qwen_initial_model = config.get('kobold_qwen_initial_model', 'base')
         set_widget_state(self.kobold_qwen_checkbox, not kobold_qwen_support, False)
         set_widget_state(self.kobold_qwen_cpu_checkbox, not kobold_qwen_support, False)
         set_widget_state(self.launch_kobold_qwen_checkbox, kobold_qwen_support, False)
@@ -932,6 +1103,11 @@ class PandratorInstaller(
 
         # CrispASR (legacy STT flags are treated as pending migration).
         crispasr_support = config.get('crispasr_support', False)
+        self.crispasr_backend = config.get('crispasr_backend', self.crispasr_backend)
+        self.crispasr_engine = config.get('crispasr_engine', self.crispasr_engine)
+        self.crispasr_model_quantization = config.get(
+            'crispasr_model_quantization', self.crispasr_model_quantization
+        )
         legacy_stt_support = config.get('whisperx_support', False) or config.get('parakeet_onnx_support', False)
         set_widget_state(self.crispasr_checkbox, not crispasr_support, legacy_stt_support and not crispasr_support)
         self.crispasr_backend = str(config.get('crispasr_backend') or self.crispasr_backend or 'auto')
@@ -963,8 +1139,8 @@ class PandratorInstaller(
             'xtts_finetuning': (self.xtts_finetuning_checkbox,),
             'chatterbox': (self.chatterbox_checkbox, self.chatterbox_cpu_checkbox),
             'chatterbox_cpu': (self.chatterbox_checkbox, self.chatterbox_cpu_checkbox),
-            'kobold_qwen': (self.kobold_qwen_checkbox, self.kobold_qwen_cpu_checkbox),
-            'kobold_qwen_cpu': (self.kobold_qwen_checkbox, self.kobold_qwen_cpu_checkbox),
+            'kobold_qwen': (self.kobold_qwen_checkbox, self.kobold_qwen_cpu_checkbox, self.kobold_qwen_settings_button),
+            'kobold_qwen_cpu': (self.kobold_qwen_checkbox, self.kobold_qwen_cpu_checkbox, self.kobold_qwen_settings_button),
             'magpie': (self.magpie_checkbox, self.magpie_cpu_checkbox),
             'magpie_cpu': (self.magpie_checkbox, self.magpie_cpu_checkbox),
         }
@@ -1107,6 +1283,8 @@ class PandratorInstaller(
             rvc_cpu=self.rvc_checkbox.isChecked() and self.rvc_cpu_checkbox.isChecked(),
             crispasr=self.crispasr_checkbox.isChecked(),
             crispasr_backend=self.crispasr_backend,
+            crispasr_engine=self.crispasr_engine,
+            crispasr_model_quantization=self.crispasr_model_quantization,
             xtts_finetuning=self.xtts_finetuning_checkbox.isChecked(),
             chatterbox=(
                 self.chatterbox_checkbox.isChecked()
@@ -1124,6 +1302,10 @@ class PandratorInstaller(
                 self.kobold_qwen_checkbox.isChecked()
                 and self.kobold_qwen_cpu_checkbox.isChecked()
             ),
+            kobold_qwen_backend=self.kobold_qwen_backend,
+            kobold_qwen_model_size=self.kobold_qwen_model_size,
+            kobold_qwen_quantization=self.kobold_qwen_quantization,
+            kobold_qwen_initial_model=self.kobold_qwen_initial_model,
             magpie=self.magpie_checkbox.isChecked() and not self.magpie_cpu_checkbox.isChecked(),
             magpie_cpu=self.magpie_checkbox.isChecked() and self.magpie_cpu_checkbox.isChecked(),
         )
@@ -1152,11 +1334,19 @@ class PandratorInstaller(
         self.fishs2_backend = getattr(selection, "fishs2_backend", "auto")
         self.fishs2_model_quant = getattr(selection, "fishs2_model_quant", "q6_k")
         self.crispasr_backend = getattr(selection, "crispasr_backend", "auto")
+        self.crispasr_engine = getattr(selection, "crispasr_engine", "whisper-large-v3")
+        self.crispasr_model_quantization = getattr(selection, "crispasr_model_quantization", "f16")
+        self.kobold_qwen_backend = getattr(selection, "kobold_qwen_backend", "auto")
+        self.kobold_qwen_model_size = getattr(selection, "kobold_qwen_model_size", "0.6b")
+        self.kobold_qwen_quantization = getattr(selection, "kobold_qwen_quantization", "q8_0")
+        self.kobold_qwen_initial_model = getattr(selection, "kobold_qwen_initial_model", "base")
 
     def snapshot_launch_selection(self):
         """Read launch choices on the GUI thread before work starts."""
         return LaunchSelection(
             pandrator=self.launch_pandrator_checkbox.isChecked(),
+            pandrator_network_access=self.pandrator_network_checkbox.isChecked(),
+            pandrator_port=self.pandrator_port_spin.value(),
             rvc=self.launch_rvc_checkbox.isChecked(),
             rvc_cpu=self.rvc_cpu_launch_checkbox.isChecked(),
             xtts=self.launch_xtts_checkbox.isChecked(),
@@ -1189,18 +1379,55 @@ class PandratorInstaller(
             self.show_crispasr_config_dialog(force=False)
         self.update_install_button_state()
 
+    def _handle_kobold_qwen_toggle(self, state):
+        is_checked = state == Qt.CheckState.Checked.value
+        if is_checked and self.isVisible():
+            self.show_kobold_qwen_config_dialog(force=False)
+        self.update_install_button_state()
+
     def show_crispasr_config_dialog(self, force=False):
         if not force and self.crispasr_backend_manually_set:
             return
         dialog = CrispASRConfigDialog(self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.crispasr_backend = dialog.get_selected_backend()
+            self.crispasr_engine = dialog.get_selected_engine()
+            self.crispasr_model_quantization = dialog.get_selected_quantization()
             self.crispasr_backend_manually_set = True
-            logging.info("CrispASR configured: backend=%s", self.crispasr_backend)
+            logging.info(
+                "CrispASR configured: backend=%s, engine=%s, quantization=%s",
+                self.crispasr_backend,
+                self.crispasr_engine,
+                self.crispasr_model_quantization,
+            )
         elif not force:
             self.crispasr_checkbox.blockSignals(True)
             self.crispasr_checkbox.setChecked(False)
             self.crispasr_checkbox.blockSignals(False)
+            self.update_install_button_state()
+
+    def show_kobold_qwen_config_dialog(self, force=False):
+        if not force and self.kobold_qwen_settings_manually_set:
+            return
+        dialog = QwenConfigDialog(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.kobold_qwen_backend = dialog.get_selected_backend()
+            self.kobold_qwen_model_size = dialog.get_selected_model_size()
+            self.kobold_qwen_quantization = dialog.get_selected_quantization()
+            self.kobold_qwen_initial_model = dialog.get_selected_initial_model()
+            self.kobold_qwen_settings_manually_set = True
+            self.kobold_qwen_cpu_checkbox.setChecked(self.kobold_qwen_backend == "cpu")
+            logging.info(
+                "Qwen3 TTS configured: backend=%s, model=%s/%s/%s",
+                self.kobold_qwen_backend,
+                self.kobold_qwen_initial_model,
+                self.kobold_qwen_model_size,
+                self.kobold_qwen_quantization,
+            )
+        elif not force:
+            self.kobold_qwen_checkbox.blockSignals(True)
+            self.kobold_qwen_checkbox.setChecked(False)
+            self.kobold_qwen_checkbox.blockSignals(False)
             self.update_install_button_state()
 
     def show_fishs2_config_dialog(self, force=False):
@@ -1225,8 +1452,10 @@ class CrispASRConfigDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Configure CrispASR Runtime")
-        self.setMinimumSize(500, 360)
+        self.setMinimumSize(560, 520)
         self.selected_backend = getattr(parent, "crispasr_backend", "auto")
+        self.selected_engine = getattr(parent, "crispasr_engine", "whisper-large-v3")
+        self.selected_quantization = getattr(parent, "crispasr_model_quantization", "f16")
         statuses = detect_compute_backends()
 
         layout = QVBoxLayout(self)
@@ -1266,9 +1495,24 @@ class CrispASRConfigDialog(QDialog):
         self.backend_combo.setCurrentIndex(selected_index)
         layout.addWidget(self.backend_combo)
 
+        model_group = QGroupBox("Default model downloaded on first use")
+        model_layout = QVBoxLayout(model_group)
+        self.engine_combo = QComboBox()
+        self.engine_combo.addItem("Whisper large-v3 — multilingual, DTW word timestamps", "whisper-large-v3")
+        self.engine_combo.addItem("Parakeet TDT 0.6B v3 — English, word timestamps", "parakeet-tdt-0.6b-v3")
+        engine_index = self.engine_combo.findData(self.selected_engine)
+        self.engine_combo.setCurrentIndex(max(0, engine_index))
+        self.quantization_combo = QComboBox()
+        self.engine_combo.currentIndexChanged.connect(self._refresh_quantizations)
+        model_layout.addWidget(self.engine_combo)
+        model_layout.addWidget(self.quantization_combo)
+        layout.addWidget(model_group)
+        self._refresh_quantizations()
+
         note = QLabel(
-            "Whisper large-v3 and Parakeet TDT 0.6B v3 remain full precision regardless of this selection. "
-            "The models download into Pandrator's cache on first use."
+            "FP16 preserves full model precision. Quantized variants reduce RAM/VRAM use and may trade a little accuracy. "
+            "The selected model downloads into Pandrator's cache on first use; other variants remain available later. "
+            "VAD, beam/decoder, chunks, hotwords, and language identification are configured per session in the web app."
         )
         note.setWordWrap(True)
         layout.addWidget(note)
@@ -1287,6 +1531,130 @@ class CrispASRConfigDialog(QDialog):
 
     def get_selected_backend(self):
         return str(self.backend_combo.currentData() or "auto")
+
+    def _refresh_quantizations(self):
+        selected = str(self.engine_combo.currentData() or "whisper-large-v3")
+        options = (
+            (("FP16 — full precision", "f16"), ("Q5_0 — lower memory", "q5_0"))
+            if selected == "whisper-large-v3"
+            else (
+                ("FP16 — full precision", "f16"),
+                ("Q8_0 — near-full precision", "q8_0"),
+                ("Q5_0 — lower memory", "q5_0"),
+                ("Q4_K — lowest memory", "q4_k"),
+            )
+        )
+        previous = self.selected_quantization or str(self.quantization_combo.currentData() or "f16")
+        self.quantization_combo.clear()
+        for label, value in options:
+            self.quantization_combo.addItem(label, value)
+        index = self.quantization_combo.findData(previous)
+        self.quantization_combo.setCurrentIndex(max(0, index))
+
+    def get_selected_engine(self):
+        return str(self.engine_combo.currentData() or "whisper-large-v3")
+
+    def get_selected_quantization(self):
+        return str(self.quantization_combo.currentData() or "f16")
+
+
+class QwenConfigDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Configure Qwen3 TTS")
+        self.setMinimumSize(560, 500)
+        statuses = detect_compute_backends()
+        layout = QVBoxLayout(self)
+        layout.setSpacing(14)
+
+        title = QLabel("<h2>Qwen3-TTS runtime and startup model</h2>")
+        description = QLabel(
+            "Choose the accelerator to force and the one model variant downloaded during installation. "
+            "Pandrator can download another supported model later when you request its capability."
+        )
+        description.setWordWrap(True)
+        layout.addWidget(title)
+        layout.addWidget(description)
+
+        detection_group = QGroupBox("Detected compute backends")
+        detection_layout = QVBoxLayout(detection_group)
+        for backend in ("cuda", "vulkan", "metal", "cpu"):
+            status = statuses[backend]
+            marker = "Available" if status["available"] else "Not detected"
+            label = QLabel(f"<b>{backend.upper()}</b> — {marker}. {status['reason']}")
+            label.setWordWrap(True)
+            detection_layout.addWidget(label)
+        layout.addWidget(detection_group)
+
+        self.backend_combo = QComboBox()
+        for label, value in (
+            ("Automatic (recommended)", "auto"),
+            ("CUDA (NVIDIA)", "cuda"),
+            ("Vulkan (AMD / Intel / NVIDIA)", "vulkan"),
+            ("Metal (Apple Silicon)", "metal"),
+            ("CPU", "cpu"),
+        ):
+            self.backend_combo.addItem(label, value)
+        self.backend_combo.setCurrentIndex(max(0, self.backend_combo.findData(getattr(parent, "kobold_qwen_backend", "auto"))))
+        layout.addWidget(self.backend_combo)
+
+        model_group = QGroupBox("Initial capability and model")
+        model_layout = QVBoxLayout(model_group)
+        self.initial_model_combo = QComboBox()
+        self.initial_model_combo.addItem("Voice cloning — Base model", "base")
+        self.initial_model_combo.addItem("Pre-built voices — CustomVoice model", "customvoice")
+        self.initial_model_combo.setCurrentIndex(max(0, self.initial_model_combo.findData(getattr(parent, "kobold_qwen_initial_model", "base"))))
+        self.model_size_combo = QComboBox()
+        self.model_size_combo.addItem("0.6B — lower memory, Base only", "0.6b")
+        self.model_size_combo.addItem("1.7B — higher capacity", "1.7b")
+        self.model_size_combo.setCurrentIndex(max(0, self.model_size_combo.findData(getattr(parent, "kobold_qwen_model_size", "0.6b"))))
+        self.quantization_combo = QComboBox()
+        self.quantization_combo.addItem("Q8_0 — lower memory (recommended)", "q8_0")
+        self.quantization_combo.addItem("FP16 — full precision, highest memory", "f16")
+        self.quantization_combo.setCurrentIndex(max(0, self.quantization_combo.findData(getattr(parent, "kobold_qwen_quantization", "q8_0"))))
+        self.initial_model_combo.currentIndexChanged.connect(self._sync_model_size)
+        model_layout.addWidget(self.initial_model_combo)
+        model_layout.addWidget(self.model_size_combo)
+        model_layout.addWidget(self.quantization_combo)
+        layout.addWidget(model_group)
+        self._sync_model_size()
+
+        note = QLabel(
+            "The 0.6B Q8 Base model is the safest default for GPUs around 4 GB. The 1.7B model and FP16 variants need more headroom. "
+            "CustomVoice provides named pre-built voices and is currently available as 1.7B; Base provides reference-audio voice cloning."
+        )
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        layout.addStretch()
+
+        buttons = QHBoxLayout()
+        cancel = QPushButton("Cancel")
+        accept = QPushButton("Use these settings")
+        cancel.clicked.connect(self.reject)
+        accept.clicked.connect(self.accept)
+        accept.setDefault(True)
+        buttons.addStretch()
+        buttons.addWidget(cancel)
+        buttons.addWidget(accept)
+        layout.addLayout(buttons)
+
+    def _sync_model_size(self):
+        custom = self.initial_model_combo.currentData() == "customvoice"
+        if custom:
+            self.model_size_combo.setCurrentIndex(self.model_size_combo.findData("1.7b"))
+        self.model_size_combo.setEnabled(not custom)
+
+    def get_selected_backend(self):
+        return str(self.backend_combo.currentData() or "auto")
+
+    def get_selected_model_size(self):
+        return str(self.model_size_combo.currentData() or "0.6b")
+
+    def get_selected_quantization(self):
+        return str(self.quantization_combo.currentData() or "q8_0")
+
+    def get_selected_initial_model(self):
+        return str(self.initial_model_combo.currentData() or "base")
 
 
 class FishS2ConfigDialog(QDialog):

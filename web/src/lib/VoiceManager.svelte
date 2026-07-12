@@ -18,6 +18,9 @@
   let language = $state('en');
   let engine = $state('whisper');
   let computeBackend = $state('auto');
+  let modelQuantization = $state('f16');
+  let vadEnabled = $state(true);
+  let vadThreshold = $state(0.5);
   let transcripts = $state<Record<string, string>>({});
   let devices = $state<MediaDeviceInfo[]>([]);
   let deviceId = $state('');
@@ -103,6 +106,7 @@
   }
 
   function clearRecording() {
+    if (playingKey === 'recording') stopPlayback();
     if (recordingUrl) URL.revokeObjectURL(recordingUrl);
     recordingUrl = '';
     recordingBlob = null;
@@ -234,7 +238,15 @@
     try {
       const job = await api<JobRecord>(`/voices/${selected.id}/samples/${sample.id}/transcribe`, {
         method: 'POST',
-        body: JSON.stringify({ stt_engine: engine, stt_backend: engine, stt_compute_backend: computeBackend, stt_language: language, crispasr_vad_enabled: true })
+        body: JSON.stringify({
+          stt_engine: engine,
+          stt_backend: engine,
+          stt_compute_backend: computeBackend,
+          stt_model_quantization: modelQuantization,
+          stt_language: language,
+          crispasr_vad_enabled: vadEnabled,
+          crispasr_vad_threshold: vadThreshold
+        })
       });
       const completed = await waitJob(job.id);
       transcripts[sample.id] = String(completed.result_json?.transcript ?? '');
@@ -262,8 +274,7 @@
   function stopPlayback() {
     if (playbackAudio) {
       playbackAudio.pause();
-      playbackAudio.removeAttribute('src');
-      playbackAudio.load();
+      try { playbackAudio.currentTime = 0; } catch { /* not seekable yet */ }
     }
     playingKey = '';
   }
@@ -276,8 +287,10 @@
     }
     stopPlayback();
     try {
-      playbackAudio.src = source;
-      playbackAudio.load();
+      if (playbackAudio.src !== new URL(source, window.location.href).href) {
+        playbackAudio.src = source;
+        playbackAudio.load();
+      }
       await playbackAudio.play();
       playingKey = key;
     } catch (caught) {
@@ -304,7 +317,7 @@
   });
 </script>
 
-<audio bind:this={playbackAudio} class="sr-only" onended={() => playingKey = ''} onerror={() => { if (playingKey) error = 'Playback failed: the audio file could not be decoded or loaded.'; playingKey = ''; }}></audio>
+<audio bind:this={playbackAudio} preload="metadata" class="sr-only" onended={() => playingKey = ''} onerror={() => { if (playingKey) error = 'Playback failed: the audio file could not be decoded or loaded.'; playingKey = ''; }}></audio>
 
 <div class="mx-auto flex min-h-[calc(100vh-5rem)] max-w-7xl flex-col">
   <button onclick={onback} class="muted mb-6 flex items-center gap-2 self-start text-sm font-semibold"><ArrowLeft size={17}/> Workspace</button>
@@ -325,7 +338,7 @@
       {#if selected}
         <div class="mb-6 flex flex-wrap items-center justify-between gap-4">
           <div><h2 class="text-2xl font-semibold">{selected.name}</h2><p class="muted text-sm">Review playback, transcripts, and recordings in one place.</p></div>
-          <div class="flex flex-wrap gap-2"><select bind:value={engine} disabled={!canTranscribe} aria-label="Transcription model" class="rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm"><option value="whisper">Whisper large-v3</option><option value="parakeet">Parakeet 0.6B v3</option></select><select bind:value={computeBackend} disabled={!canTranscribe} aria-label="Transcription compute backend" class="rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm"><option value="auto">Automatic compute</option><option value="cpu">CPU</option><option value="cuda">CUDA</option><option value="vulkan">Vulkan</option><option value="metal">Metal</option></select><button onclick={transcribeMissing} disabled={!canTranscribe} class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-sm font-semibold disabled:opacity-40"><WandSparkles size={16}/> Transcribe missing</button></div>
+          <div class="flex flex-wrap gap-2"><select bind:value={engine} onchange={() => modelQuantization = 'f16'} disabled={!canTranscribe} aria-label="Transcription model" class="rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm"><option value="whisper">Whisper large-v3</option><option value="parakeet">Parakeet 0.6B v3</option></select><select bind:value={modelQuantization} disabled={!canTranscribe} aria-label="Transcription model precision" class="rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm"><option value="f16">FP16</option>{#if engine === 'whisper'}<option value="q5_0">Q5_0</option>{:else}<option value="q8_0">Q8_0</option><option value="q5_0">Q5_0</option><option value="q4_k">Q4_K</option>{/if}</select><select bind:value={computeBackend} disabled={!canTranscribe} aria-label="Transcription compute backend" class="rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm"><option value="auto">Automatic compute</option><option value="cpu">CPU</option><option value="cuda">CUDA</option><option value="vulkan">Vulkan</option><option value="metal">Metal</option></select><label class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-sm"><input bind:checked={vadEnabled} type="checkbox"/> VAD</label><label class="rounded-xl border border-[var(--line)] px-3 py-2 text-xs">VAD threshold <input bind:value={vadThreshold} type="number" min="0" max="1" step="0.05" disabled={!vadEnabled} class="ml-1 w-16 bg-transparent"/></label><button onclick={transcribeMissing} disabled={!canTranscribe} class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-sm font-semibold disabled:opacity-40"><WandSparkles size={16}/> Transcribe missing</button></div>
         </div>
 
         <section class="mb-7 rounded-2xl border border-[var(--line)] p-4">

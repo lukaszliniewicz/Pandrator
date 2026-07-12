@@ -61,6 +61,24 @@ class InstallerLifecycleTests(unittest.TestCase):
             self.assertEqual(specs[0].health_url, "http://127.0.0.1:8050/health")
             self.assertIn("service", specs[0].command)
 
+    def test_remote_runtime_passes_security_flags_and_trusted_hosts(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            args = type(
+                "Args",
+                (),
+                {
+                    "host": "0.0.0.0",
+                    "port": 8123,
+                    "components": [],
+                    "allow_insecure_remote": True,
+                    "trusted_host": ["studio.local"],
+                },
+            )()
+            api = _runtime_specs(WorkspacePaths.from_value(workspace), args, "token")[0]
+            self.assertIn("--allow-insecure-remote", api.command)
+            self.assertEqual(api.command[api.command.index("--trusted-host") + 1], "studio.local")
+            self.assertEqual(api.command[api.command.index("--host") + 1], "0.0.0.0")
+
     def test_service_process_collection_uses_runtime_tuple_contract(self):
         first = object()
         rvc = object()
@@ -83,11 +101,15 @@ class InstallerLifecycleTests(unittest.TestCase):
     def test_successful_install_does_not_repeat_broad_process_shutdown(self):
         with tempfile.TemporaryDirectory() as workspace, mock.patch("pandrator_installer.lifecycle.HeadlessInstaller") as factory:
             code, output, error = self.invoke([
-                "install", "--workspace", workspace, "--components", "crispasr", "--crispasr-backend", "vulkan", "--json"
+                "install", "--workspace", workspace, "--components", "crispasr", "--crispasr-backend", "vulkan",
+                "--crispasr-engine", "parakeet-tdt-0.6b-v3", "--crispasr-model-quantization", "q4_k", "--json"
             ])
         self.assertEqual(0, code, error)
         self.assertEqual("installed", json.loads(output)["status"])
         factory.return_value.run_headless_install.assert_called_once()
+        call = factory.return_value.run_headless_install.call_args.kwargs
+        self.assertEqual(call["crispasr_engine"], "parakeet-tdt-0.6b-v3")
+        self.assertEqual(call["crispasr_model_quantization"], "q4_k")
         factory.return_value.shutdown_apps.assert_not_called()
 
     def test_failed_install_still_cleans_up_owned_processes(self):

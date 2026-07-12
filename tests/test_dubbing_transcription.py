@@ -84,6 +84,53 @@ class CrispASRTranscriptionTests(unittest.TestCase):
         self.assertNotIn("--vad", command)
         self.assertIn("-ojf", command)
 
+    def test_model_specific_quantization_and_advanced_decoder_controls_are_forwarded(self):
+        parakeet = crispasr.build_command(
+            "audio.wav",
+            "output",
+            {
+                "stt_engine": "parakeet",
+                "stt_model_quantization": "q4_k",
+                "stt_threads": 6,
+                "stt_chunk_seconds": 120,
+                "stt_chunk_overlap_seconds": 2.5,
+                "stt_hotwords": "Pandrator,CrispASR",
+                "stt_lid_backend": "ecapa",
+                "stt_beam_size": 4,
+                "parakeet_decoder": "maes",
+                "crispasr_vad_enabled": True,
+                "crispasr_vad_model": "firered",
+            },
+            executable="crispasr-test",
+        )
+        self.assertIn("parakeet-tdt-0.6b-v3-q4_k.gguf", parakeet)
+        self.assertEqual(parakeet[parakeet.index("--threads") + 1], "6")
+        self.assertEqual(parakeet[parakeet.index("--chunk-seconds") + 1], "120")
+        self.assertEqual(parakeet[parakeet.index("--chunk-overlap") + 1], "2.5")
+        self.assertEqual(parakeet[parakeet.index("--hotwords") + 1], "Pandrator,CrispASR")
+        self.assertEqual(parakeet[parakeet.index("--lid-backend") + 1], "ecapa")
+        self.assertEqual(parakeet[parakeet.index("--beam-size") + 1], "4")
+        self.assertEqual(parakeet[parakeet.index("--parakeet-decoder") + 1], "maes")
+        self.assertEqual(parakeet[parakeet.index("--vad-model") + 1], "firered")
+
+        whisper = crispasr.build_command(
+            "audio.wav",
+            "output",
+            {"stt_engine": "whisper", "stt_model_quantization": "q5_0"},
+            executable="crispasr-test",
+        )
+        self.assertIn("ggml-large-v3-q5_0.bin", whisper)
+
+    def test_unsupported_quantization_falls_back_to_engine_f16(self):
+        command = crispasr.build_command(
+            "audio.wav",
+            "output",
+            {"stt_engine": "whisper", "stt_model_quantization": "q4_k"},
+            executable="crispasr-test",
+        )
+        self.assertIn("ggml-large-v3.bin", command)
+        self.assertNotIn("ggml-large-v3-q4_k.bin", command)
+
     def test_vad_zero_values_are_forwarded_instead_of_replaced_by_defaults(self):
         command = crispasr.build_command(
             "audio.wav",

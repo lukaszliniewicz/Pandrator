@@ -59,9 +59,18 @@
   let model = $state('default');
   let backend = $state('llm');
   let sttEngine = $state('whisper');
+  let sttQuantization = $state('f16');
   let sttComputeBackend = $state('auto');
   let sttDevice = $state(0);
+  let sttThreads = $state(0);
+  let sttChunkSeconds = $state(0);
+  let sttChunkOverlap = $state(3);
+  let sttHotwords = $state('');
+  let sttLidBackend = $state('whisper');
+  let sttBeamSize = $state(1);
+  let parakeetDecoder = $state('tdt');
   let vadEnabled = $state(true);
+  let vadModel = $state('silero');
   let vadThreshold = $state(0.5);
   let vadMinSpeech = $state(250);
   let vadMinSilence = $state(100);
@@ -173,9 +182,18 @@
     model = String(saved.model_name ?? saved[`${stage.key}_model`] ?? 'default');
     backend = String(saved.backend ?? saved.translation_backend ?? 'llm');
     sttEngine = String(saved.stt_engine ?? saved.stt_backend ?? 'whisper').includes('parakeet') ? 'parakeet' : 'whisper';
+    sttQuantization = String(saved.stt_model_quantization ?? 'f16');
     sttComputeBackend = String(saved.stt_compute_backend ?? 'auto');
     sttDevice = Number(saved.stt_compute_device ?? 0);
+    sttThreads = Number(saved.stt_threads ?? 0);
+    sttChunkSeconds = Number(saved.stt_chunk_seconds ?? 0);
+    sttChunkOverlap = Number(saved.stt_chunk_overlap_seconds ?? 3);
+    sttHotwords = String(saved.stt_hotwords ?? '');
+    sttLidBackend = String(saved.stt_lid_backend ?? 'whisper');
+    sttBeamSize = Number(saved.stt_beam_size ?? 1);
+    parakeetDecoder = String(saved.parakeet_decoder ?? 'tdt');
     vadEnabled = Boolean(saved.crispasr_vad_enabled ?? true);
+    vadModel = String(saved.crispasr_vad_model ?? 'silero');
     vadThreshold = Number(saved.crispasr_vad_threshold ?? 0.5);
     vadMinSpeech = Number(saved.crispasr_vad_min_speech_ms ?? 250);
     vadMinSilence = Number(saved.crispasr_vad_min_silence_ms ?? 100);
@@ -248,9 +266,15 @@
     const key = settingsStage.key;
     const common = { model_name: model === 'default' ? '' : model, [`${key}_model`]: model };
     if (key === 'transcribe') stageSettings[key] = {
-      stt_engine: sttEngine, stt_backend: sttEngine, stt_compute_backend: sttComputeBackend,
+      stt_engine: sttEngine, stt_backend: sttEngine, stt_model_quantization: sttQuantization,
+      stt_compute_backend: sttComputeBackend,
       stt_compute_device: sttDevice, stt_language: originalLanguage, original_language: originalLanguage,
-      crispasr_vad_enabled: vadEnabled, crispasr_vad_threshold: vadThreshold,
+      stt_threads: sttThreads, stt_chunk_seconds: sttChunkSeconds,
+      stt_chunk_overlap_seconds: sttChunkOverlap, stt_hotwords: sttHotwords,
+      stt_lid_backend: sttLidBackend, stt_beam_size: sttBeamSize,
+      parakeet_decoder: parakeetDecoder,
+      crispasr_vad_enabled: vadEnabled, crispasr_vad_model: vadModel,
+      crispasr_vad_threshold: vadThreshold,
       crispasr_vad_min_speech_ms: vadMinSpeech, crispasr_vad_min_silence_ms: vadMinSilence,
       crispasr_vad_max_speech_seconds: vadMaxSpeech, crispasr_vad_speech_pad_ms: vadSpeechPad,
       subtitle_max_chars_per_line: subtitleChars, subtitle_max_lines: subtitleLines,
@@ -351,11 +375,13 @@
       <div class="mt-6 grid gap-5">
         {#if ['correct','translate','optimize_tts','clean_source'].includes(settingsStage.key)}<label class="text-sm font-semibold">Model<input bind:value={model} placeholder="Use configured default" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/></label>{/if}
         {#if settingsStage.key === 'transcribe'}
-          <label class="text-sm font-semibold">Recognition model<select bind:value={sttEngine} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="whisper">Whisper large-v3 · F16 · DTW timestamps</option><option value="parakeet">Parakeet TDT 0.6B v3 · F16 · native timestamps</option></select></label>
+          <label class="text-sm font-semibold">Recognition model<select bind:value={sttEngine} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="whisper">Whisper large-v3 · DTW timestamps</option><option value="parakeet">Parakeet TDT 0.6B v3 · native timestamps</option></select></label>
+          <label class="text-sm font-semibold">Model precision<select bind:value={sttQuantization} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="f16">Full F16</option>{#if sttEngine === 'whisper'}<option value="q5_0">Q5_0 · 1.08 GB</option>{:else}<option value="q8_0">Q8_0 · 745 MB</option><option value="q5_0">Q5_0 · 541 MB</option><option value="q4_k">Q4_K · 489 MB</option>{/if}</select><span class="muted mt-1 block text-xs">F16 maximizes fidelity; quantized files reduce download and memory use.</span></label>
           <div class="grid gap-3 sm:grid-cols-[1fr_7rem]"><label class="text-sm font-semibold">Compute backend<select bind:value={sttComputeBackend} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="auto">Automatic</option><option value="cpu" disabled={!supportsSttCompute('cpu')}>CPU</option><option value="cuda" disabled={!supportsSttCompute('cuda')}>CUDA</option><option value="vulkan" disabled={!supportsSttCompute('vulkan')}>Vulkan</option><option value="metal" disabled={!supportsSttCompute('metal')}>Metal</option></select><span class="muted mt-1 block text-xs">Only backends compiled into the installed CrispASR runtime can be forced.</span></label><label class="text-sm font-semibold">Device<input type="number" min="0" disabled={['auto','cpu'].includes(sttComputeBackend)} bind:value={sttDevice} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal disabled:opacity-40"/></label></div>
-          <label class="text-sm font-semibold">Source language<input bind:value={originalLanguage} placeholder="auto" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/></label>
+          <div class="grid gap-3 sm:grid-cols-2"><label class="text-sm font-semibold">Source language<input bind:value={originalLanguage} placeholder="auto" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/></label><label class="text-sm font-semibold">Language detector<select bind:value={sttLidBackend} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="whisper">Whisper tiny</option><option value="ecapa">ECAPA (recommended)</option><option value="silero">Silero</option><option value="off">Off</option></select></label></div>
           <label class="flex items-center gap-3 text-sm font-semibold"><input type="checkbox" bind:checked={vadEnabled} class="size-4 accent-[var(--accent)]"/> Voice activity detection</label>
-          {#if vadEnabled}<div class="grid grid-cols-2 gap-3"><label class="text-xs font-semibold">Threshold<input type="number" min="0" max="1" step="0.05" bind:value={vadThreshold} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Minimum speech (ms)<input type="number" min="0" bind:value={vadMinSpeech} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Minimum silence (ms)<input type="number" min="0" bind:value={vadMinSilence} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Maximum speech (s)<input type="number" min="1" bind:value={vadMaxSpeech} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Speech padding (ms)<input type="number" min="0" bind:value={vadSpeechPad} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label></div>{/if}
+          {#if vadEnabled}<div class="grid grid-cols-2 gap-3"><label class="text-xs font-semibold">VAD model<select bind:value={vadModel} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"><option value="silero">Silero · general purpose</option><option value="firered">FireRedVAD · robust</option><option value="marblenet">MarbleNet · compact</option><option value="whisper-vad">Whisper VAD · experimental</option></select></label><label class="text-xs font-semibold">Threshold<input type="number" min="0" max="1" step="0.05" bind:value={vadThreshold} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Minimum speech (ms)<input type="number" min="0" bind:value={vadMinSpeech} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Minimum silence (ms)<input type="number" min="0" bind:value={vadMinSilence} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Maximum speech (s)<input type="number" min="1" bind:value={vadMaxSpeech} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Speech padding (ms)<input type="number" min="0" bind:value={vadSpeechPad} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label></div>{/if}
+          <details class="rounded-xl border border-[var(--line)] p-4"><summary class="cursor-pointer text-sm font-semibold">Decoder and long-form controls</summary><div class="mt-4 grid grid-cols-2 gap-3"><label class="text-xs font-semibold">Threads (0 = automatic)<input type="number" min="0" bind:value={sttThreads} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Beam size<input type="number" min="1" max="16" bind:value={sttBeamSize} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label>{#if sttEngine === 'parakeet'}<label class="text-xs font-semibold">Parakeet decoder<select bind:value={parakeetDecoder} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"><option value="tdt">TDT greedy / beam</option><option value="maes">MAES beam</option><option value="ctc">CTC greedy</option></select></label>{/if}<label class="text-xs font-semibold">Forced chunk size (s, 0 = default)<input type="number" min="0" step="1" bind:value={sttChunkSeconds} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Chunk overlap (s)<input type="number" min="0" step="0.5" bind:value={sttChunkOverlap} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="col-span-2 text-xs font-semibold">Hotwords<textarea rows="2" bind:value={sttHotwords} placeholder="Names and terminology, comma-separated" class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"></textarea></label></div><p class="muted mt-3 text-xs">Parakeet normally preserves full context and handles long recordings internally. Force chunking only for constrained systems or diagnostics.</p></details>
           <div class="rounded-xl border border-[var(--line)] p-4"><div class="text-sm font-semibold">Readable subtitle composition</div><p class="muted mt-1 text-xs">Independent from speech blocks and TTS segmentation. Defaults allow 48 characters per line for meetings while retaining two-line, 20 CPS and 0.833–7 second delivery guidance.</p><div class="mt-3 grid grid-cols-2 gap-3"><label class="text-xs font-semibold">Characters / line<input type="number" min="20" max="100" bind:value={subtitleChars} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Lines<input type="number" min="1" max="3" bind:value={subtitleLines} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Minimum duration (ms)<input type="number" min="250" bind:value={subtitleMinDuration} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Maximum duration (ms)<input type="number" min="1000" bind:value={subtitleMaxDuration} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Characters / second<input type="number" min="5" max="40" step="0.5" bind:value={subtitleCps} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Minimum cue gap (ms)<input type="number" min="0" max="500" bind:value={subtitleMinGap} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Phrase-break silence (ms)<input type="number" min="100" max="3000" bind:value={subtitlePhraseGap} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label></div></div>
         {/if}
         {#if settingsStage.key === 'correct'}<label class="text-sm font-semibold">Correction guidance<textarea bind:value={instructions} rows="4" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"></textarea></label>{/if}

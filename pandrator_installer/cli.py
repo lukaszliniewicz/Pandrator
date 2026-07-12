@@ -54,6 +54,12 @@ def parse_launcher_cli_args(argv=None):
         default='auto',
         help='CrispASR runtime variant; auto chooses the best detected backend.',
     )
+    parser.add_argument('--crispasr-engine', choices=('whisper-large-v3', 'parakeet-tdt-0.6b-v3'), default='whisper-large-v3')
+    parser.add_argument('--crispasr-model-quantization', choices=('f16', 'q8_0', 'q5_0', 'q4_k'), default='f16')
+    parser.add_argument('--qwen-backend', choices=('auto', 'cpu', 'cuda', 'vulkan', 'metal'), default='auto')
+    parser.add_argument('--qwen-model-size', choices=('0.6b', '1.7b'), default='0.6b')
+    parser.add_argument('--qwen-quantization', choices=('q8_0', 'f16'), default='q8_0')
+    parser.add_argument('--qwen-initial-model', choices=('base', 'customvoice'), default='base')
     parser.add_argument(
         '--skip-pandrator',
         action='store_true',
@@ -90,6 +96,12 @@ def run_headless_install_from_cli(args):
             components,
             install_pandrator=not args.skip_pandrator,
             crispasr_backend=args.crispasr_backend,
+            crispasr_engine=args.crispasr_engine,
+            crispasr_model_quantization=args.crispasr_model_quantization,
+            kobold_qwen_backend=args.qwen_backend,
+            kobold_qwen_model_size=args.qwen_model_size,
+            kobold_qwen_quantization=args.qwen_quantization,
+            kobold_qwen_initial_model=args.qwen_initial_model,
         )
     finally:
         installer.shutdown_apps()

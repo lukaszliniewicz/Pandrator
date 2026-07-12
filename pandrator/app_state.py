@@ -358,6 +358,7 @@ class DubbingSettings:
     # ``stt_backend`` is retained as a serialized compatibility alias.
     stt_engine: str = "whisper"
     stt_backend: str = "whisper"
+    stt_model_quantization: str = "f16"
     stt_compute_backend: str = "auto"
     stt_compute_device: int = 0
     stt_language: str = "English"
@@ -366,6 +367,13 @@ class DubbingSettings:
     whisper_align_model: str = ""
     whisper_chunk_size: int = 15
     whisper_save_txt: bool = False
+    stt_threads: int = 0
+    stt_chunk_seconds: float = 0.0
+    stt_chunk_overlap_seconds: float = 3.0
+    stt_hotwords: str = ""
+    stt_lid_backend: str = "whisper"
+    stt_beam_size: int = 1
+    parakeet_decoder: str = "tdt"
     parakeet_model: str = "nemo-parakeet-tdt-0.6b-v3"
     parakeet_quantization: str = ""
     parakeet_vad_enabled: bool = True
@@ -379,6 +387,7 @@ class DubbingSettings:
     parakeet_hf_cache_dir: str = ""
     parakeet_save_txt: bool = False
     crispasr_vad_enabled: bool = True
+    crispasr_vad_model: str = "silero"
     crispasr_vad_threshold: float = 0.5
     crispasr_vad_min_speech_ms: int = 250
     crispasr_vad_min_silence_ms: int = 100

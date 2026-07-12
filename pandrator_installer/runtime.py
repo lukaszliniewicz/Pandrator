@@ -152,6 +152,8 @@ class RuntimeMixin:
 
     def _apply_launch_selection_state(self, selection):
         self.launch_pandrator_var = selection.pandrator
+        self.pandrator_network_access_var = selection.pandrator_network_access
+        self.pandrator_port_var = selection.pandrator_port
         self.launch_rvc_var = selection.rvc
         self.rvc_cpu_launch_var = selection.rvc_cpu
         self.launch_xtts_var = selection.xtts
@@ -245,6 +247,9 @@ class RuntimeMixin:
             self.pandrator_process = self.run_web_supervisor(
                 pandrator_repo_path,
                 self._selected_supervised_component_keys(),
+                network_access=getattr(self, 'pandrator_network_access_var', False),
+                port=getattr(self, 'pandrator_port_var', 8097),
+                owner_password=getattr(self, 'pandrator_owner_password', None),
             )
             self.ensure_process_started(
                 self.pandrator_process,
@@ -591,11 +596,17 @@ class RuntimeMixin:
 
                 kobold_qwen_gpu_support = install_config.get(KOBOLD_QWEN_GPU_SUPPORT_CONFIG_FLAG, False)
                 kobold_qwen_launch_gpu = kobold_qwen_gpu_support and not self.kobold_qwen_cpu_launch_var
+                configured_backend = install_config.get('kobold_qwen_backend', 'auto')
+                if not kobold_qwen_launch_gpu:
+                    configured_backend = 'cpu'
 
                 try:
                     self.kobold_qwen_process = self.run_kobold_qwen_api_server(
                         kobold_qwen_server_path,
-                        use_cpu=not kobold_qwen_launch_gpu,
+                        backend=configured_backend,
+                        model_size=install_config.get('kobold_qwen_model_size', '0.6b'),
+                        quantization=install_config.get('kobold_qwen_quantization', 'q8_0'),
+                        initial_model=install_config.get('kobold_qwen_initial_model', 'base'),
                         pixi_path=shared_pixi_path,
                     )
                 except Exception as e:
@@ -786,7 +797,14 @@ class RuntimeMixin:
         logging.info(f"Pandrator startup log: {pandrator_log_file}")
         return process
 
-    def run_web_supervisor(self, pandrator_repo_path, components=None):
+    def run_web_supervisor(
+        self,
+        pandrator_repo_path,
+        components=None,
+        network_access=False,
+        port=8097,
+        owner_password=None,
+    ):
         """Launch the shared API/worker supervisor from the Qt installer process."""
         workspace = self.initial_working_dir
         if getattr(sys, "frozen", False):
@@ -795,12 +813,19 @@ class RuntimeMixin:
             command = [sys.executable, "-m", "pandrator_installer.lifecycle", "launch", "--workspace", workspace]
         if components:
             command.extend(["--components", ",".join(components)])
+        command.extend(["--port", str(port)])
+        if network_access:
+            command.extend(["--host", "0.0.0.0", "--allow-insecure-remote"])
         log_path = os.path.join(pandrator_repo_path, "pandrator_web_supervisor.log")
         log_handle = open(log_path, "a", encoding="utf-8")
         try:
+            environment = os.environ.copy()
+            if owner_password:
+                environment["PANDRATOR_OWNER_PASSWORD"] = owner_password
             process = subprocess.Popen(
                 command,
                 cwd=pandrator_repo_path,
+                env=environment,
                 stdout=log_handle,
                 stderr=subprocess.STDOUT,
                 **self.get_hidden_subprocess_kwargs(),
@@ -1146,7 +1171,16 @@ class RuntimeMixin:
         self.chatterbox_process = process
         return process
 
-    def run_kobold_qwen_api_server(self, kobold_qwen_server_path, use_cpu=False, pixi_path=None):
+    def run_kobold_qwen_api_server(
+        self,
+        kobold_qwen_server_path,
+        use_cpu=False,
+        pixi_path=None,
+        backend=None,
+        model_size="0.6b",
+        quantization="q8_0",
+        initial_model="base",
+    ):
         """Run the Qwen3 TTS API server via its cross-platform launcher."""
         logging.info(f"Running Qwen3 TTS API server from {kobold_qwen_server_path}...")
 
@@ -1162,7 +1196,14 @@ class RuntimeMixin:
             raise FileNotFoundError(f"Qwen3 TTS run script not found at: {run_script_path}")
 
         kobold_qwen_log_file = os.path.join(kobold_qwen_server_path, 'kobold_qwen_server.log')
-        command = self.build_kobold_qwen_launcher_command(use_cpu=use_cpu, pixi_path=pixi_path)
+        command = self.build_kobold_qwen_launcher_command(
+            use_cpu=use_cpu,
+            pixi_path=pixi_path,
+            backend=backend,
+            model_size=model_size,
+            quantization=quantization,
+            initial_model=initial_model,
+        )
 
         log_handle = open(kobold_qwen_log_file, 'a', encoding='utf-8')
         try:

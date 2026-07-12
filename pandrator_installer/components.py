@@ -606,10 +606,25 @@ class ComponentOperationsMixin:
         command = [pixi_path or 'pixi', 'run', 'python', 'run.py', '--backend', backend]
         return command
 
-    def build_kobold_qwen_launcher_command(self, use_cpu=False, pixi_path=None):
-        backend = 'cpu' if use_cpu else 'auto'
+    def build_kobold_qwen_launcher_command(
+        self,
+        use_cpu=False,
+        pixi_path=None,
+        backend=None,
+        model_size="0.6b",
+        quantization="q8_0",
+        initial_model="base",
+    ):
+        backend = 'cpu' if use_cpu else (backend or 'auto')
+        options = [
+            '--backend', backend,
+            '--port', '8042',
+            '--model-size', model_size,
+            '--quantization', quantization,
+            '--initial-model', initial_model,
+        ]
         if is_windows():
-            command = ['cmd', '/c', 'run.bat', '--backend', backend, '--port', '8042']
+            command = ['cmd', '/c', 'run.bat', *options]
             if pixi_path:
                 command.extend(['--pixi-path', pixi_path])
             return command
@@ -619,10 +634,7 @@ class ComponentOperationsMixin:
             'run',
             'python',
             'run.py',
-            '--backend',
-            backend,
-            '--port',
-            '8042',
+            *options,
         ]
 
     def build_magpie_launcher_command(self, pixi_path=None):
@@ -1012,7 +1024,16 @@ class ComponentOperationsMixin:
             required_paths.append(run_bat_path)
         return all(os.path.exists(path) for path in required_paths)
 
-    def install_kobold_qwen_api_server(self, kobold_qwen_repo_path, use_cpu=False, pixi_path=None):
+    def install_kobold_qwen_api_server(
+        self,
+        kobold_qwen_repo_path,
+        use_cpu=False,
+        pixi_path=None,
+        backend=None,
+        model_size="0.6b",
+        quantization="q8_0",
+        initial_model="base",
+    ):
         logging.info(f"Bootstrapping Qwen3 TTS API server in {kobold_qwen_repo_path}...")
         logging.info(
             "Qwen3 TTS bootstrap starts the server temporarily to validate runtime and will stop it after health checks."
@@ -1029,6 +1050,10 @@ class ComponentOperationsMixin:
         kobold_qwen_install_log_file = os.path.join(kobold_qwen_repo_path, 'kobold_qwen_install.log')
         command = self.build_kobold_qwen_launcher_command(
             use_cpu=use_cpu,
+            backend=backend,
+            model_size=model_size,
+            quantization=quantization,
+            initial_model=initial_model,
             pixi_path=self.get_kobold_qwen_pixi_argument(kobold_qwen_repo_path, pixi_path)
             if is_windows()
             else pixi_path,

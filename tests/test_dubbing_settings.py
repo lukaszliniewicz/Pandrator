@@ -88,6 +88,16 @@ class DubbingSettingsTests(unittest.TestCase):
         self.assertEqual(migrated["speech_block_min_chars"], 10)
         self.assertEqual(migrated["speech_block_max_chars"], 160)
 
+    def test_legacy_parakeet_int8_migrates_to_crispasr_q8(self):
+        migrated = settings.migrate_dubbing_payload(
+            {"stt_engine": "parakeet_onnx", "parakeet_quantization": "int8"},
+            self.providers,
+        )
+
+        self.assertEqual(migrated["stt_engine"], "parakeet")
+        self.assertEqual(migrated["stt_model_quantization"], "q8_0")
+        self.assertNotIn("parakeet_quantization", migrated)
+
     def test_stage_resolver_uses_independent_native_models_and_global_default(self):
         base = {
             "correction_model": "default",

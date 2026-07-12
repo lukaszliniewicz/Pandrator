@@ -41,6 +41,8 @@ class TestInstallerLauncherChatterbox(unittest.TestCase):
         selection = installer.snapshot_install_selection()
         self.assertFalse(selection.kobold_qwen)
         self.assertTrue(selection.kobold_qwen_cpu)
+        self.assertEqual(selection.kobold_qwen_model_size, "0.6b")
+        self.assertEqual(selection.kobold_qwen_quantization, "q8_0")
 
         installer.launch_kobold_qwen_checkbox.setChecked(True)
         installer.kobold_qwen_cpu_launch_checkbox.setChecked(True)
@@ -78,10 +80,14 @@ class TestInstallerLauncherChatterbox(unittest.TestCase):
             QLabel,
             "voiceCapabilityBadge",
         )
-        self.assertEqual(len(capability_labels), 9)
+        self.assertEqual(len(capability_labels), 10)
         self.assertEqual(
             {label.text() for label in capability_labels},
             {"Pre-built voices", "Voice cloning"},
+        )
+        self.assertGreaterEqual(
+            sum(label.text() == "Pre-built voices" for label in capability_labels),
+            2,
         )
         for control in installer.install_tab.findChildren(QCheckBox):
             control.setChecked(False)

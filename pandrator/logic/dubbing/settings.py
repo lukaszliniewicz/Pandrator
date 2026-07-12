@@ -137,7 +137,23 @@ def migrate_dubbing_payload(
     } else "whisper"
     migrated["stt_engine"] = stt_engine
     migrated["stt_backend"] = stt_engine
+    legacy_quantization = migrated.get("stt_model_quantization")
+    if legacy_quantization in (None, ""):
+        legacy_quantization = migrated.get("parakeet_quantization") or "f16"
+    normalized_quantization = str(legacy_quantization).strip().lower().replace("-", "_")
+    migrated["stt_model_quantization"] = {
+        "": "f16", "fp16": "f16", "float16": "f16", "int8": "q8_0",
+        "q8": "q8_0", "q5": "q5_0", "q4": "q4_k", "q4_k_m": "q4_k",
+    }.get(normalized_quantization, normalized_quantization)
     migrated["stt_compute_backend"] = str(migrated.get("stt_compute_backend") or "auto").strip().lower()
+    migrated.setdefault("stt_threads", 0)
+    migrated.setdefault("stt_chunk_seconds", 0.0)
+    migrated.setdefault("stt_chunk_overlap_seconds", 3.0)
+    migrated.setdefault("stt_hotwords", "")
+    migrated.setdefault("stt_lid_backend", "whisper")
+    migrated.setdefault("stt_beam_size", 1)
+    migrated.setdefault("parakeet_decoder", "tdt")
+    migrated.setdefault("crispasr_vad_model", "silero")
     if "crispasr_vad_enabled" not in migrated:
         migrated["crispasr_vad_enabled"] = bool(migrated.get("parakeet_vad_enabled", True))
     legacy_vad_fields = {
@@ -214,9 +230,18 @@ def normalize_dubbing_state(
     for field_name in (
         "stt_engine",
         "stt_backend",
+        "stt_model_quantization",
         "stt_compute_backend",
         "stt_language",
+        "stt_threads",
+        "stt_chunk_seconds",
+        "stt_chunk_overlap_seconds",
+        "stt_hotwords",
+        "stt_lid_backend",
+        "stt_beam_size",
+        "parakeet_decoder",
         "crispasr_vad_enabled",
+        "crispasr_vad_model",
         "crispasr_vad_threshold",
         "crispasr_vad_min_speech_ms",
         "crispasr_vad_min_silence_ms",

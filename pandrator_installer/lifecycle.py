@@ -106,6 +106,12 @@ def _selection(args) -> InstallSelection:
         components,
         install_pandrator=not args.skip_pandrator,
         crispasr_backend=str(getattr(args, "crispasr_backend", "auto") or "auto"),
+        crispasr_engine=str(getattr(args, "crispasr_engine", "whisper-large-v3") or "whisper-large-v3"),
+        crispasr_model_quantization=str(getattr(args, "crispasr_model_quantization", "f16") or "f16"),
+        kobold_qwen_backend=str(getattr(args, "qwen_backend", "auto") or "auto"),
+        kobold_qwen_model_size=str(getattr(args, "qwen_model_size", "0.6b") or "0.6b"),
+        kobold_qwen_quantization=str(getattr(args, "qwen_quantization", "q8_0") or "q8_0"),
+        kobold_qwen_initial_model=str(getattr(args, "qwen_initial_model", "base") or "base"),
     )
 
 
@@ -142,6 +148,12 @@ def command_install(args) -> int:
             set(selection.selected_components()),
             install_pandrator=selection.pandrator,
             crispasr_backend=selection.crispasr_backend,
+            crispasr_engine=selection.crispasr_engine,
+            crispasr_model_quantization=selection.crispasr_model_quantization,
+            kobold_qwen_backend=selection.kobold_qwen_backend,
+            kobold_qwen_model_size=selection.kobold_qwen_model_size,
+            kobold_qwen_quantization=selection.kobold_qwen_quantization,
+            kobold_qwen_initial_model=selection.kobold_qwen_initial_model,
         )
         completed = True
     finally:
@@ -196,12 +208,28 @@ def _runtime_specs(paths: WorkspacePaths, args, bootstrap_token: str) -> list[Ma
         )
         for component in raw_components
     ]
+    api_command = [
+        python, "-m", "pandrator", "--data-dir", data_root, "serve",
+        "--host", host, "--port", str(port), "--no-open-browser",
+    ]
+    if host not in {"127.0.0.1", "localhost", "::1"}:
+        if getattr(args, "allow_insecure_remote", False):
+            api_command.append("--allow-insecure-remote")
+        trusted_hosts = list(getattr(args, "trusted_host", []) or [])
+        if not trusted_hosts:
+            trusted_hosts = ["localhost", "127.0.0.1", socket.gethostname()]
+            try:
+                trusted_hosts.extend(socket.gethostbyname_ex(socket.gethostname())[2])
+            except OSError:
+                pass
+        for trusted_host in dict.fromkeys(trusted_hosts):
+            api_command.extend(["--trusted-host", trusted_host])
     return [
         *service_specs,
         ManagedProcessSpec(
             key="api",
             label="Pandrator API",
-            command=(python, "-m", "pandrator", "--data-dir", data_root, "serve", "--host", host, "--port", str(port), "--no-open-browser"),
+            command=tuple(api_command),
             cwd=cwd,
             env={"PANDRATOR_BOOTSTRAP_TOKEN": bootstrap_token, **speech_environment},
             health_url=f"http://127.0.0.1:{port}/api/v1/health",
@@ -286,7 +314,17 @@ def _open_browser(url: str) -> None:
             old_env[key] = os.environ[key]
             del os.environ[key]
     try:
-        webbrowser.open(url)
+        opened = webbrowser.open_new_tab(url)
+        if not opened:
+            try:
+                if is_windows():
+                    os.startfile(url)  # type: ignore[attr-defined]
+                elif sys.platform == "darwin":
+                    subprocess.Popen(["open", url])
+                else:
+                    subprocess.Popen(["xdg-open", url])
+            except OSError:
+                print(f"Open Pandrator in a browser: {url}", flush=True)
     finally:
         for key, value in old_env.items():
             os.environ[key] = value
@@ -297,6 +335,31 @@ def command_launch(args) -> int:
     paths.install_root.mkdir(parents=True, exist_ok=True)
     token = secrets.token_urlsafe(32)
     url = f"http://127.0.0.1:{args.port}/#bootstrap={token}"
+    remote = args.host not in {"127.0.0.1", "localhost", "::1"}
+    password = str(os.environ.pop("PANDRATOR_OWNER_PASSWORD", "") or "")
+    if remote:
+        database_path = paths.install_root / "pandrator.sqlite3"
+        initialized = False
+        if database_path.is_file():
+            try:
+                with sqlite3.connect(database_path) as connection:
+                    initialized = bool(connection.execute("SELECT COUNT(*) FROM owner_account").fetchone()[0])
+            except sqlite3.Error:
+                initialized = False
+        if not initialized:
+            if len(password) < 10:
+                raise RuntimeError("LAN access requires an owner password of at least 10 characters.")
+            environment = os.environ.copy()
+            environment["PANDRATOR_OWNER_PASSWORD"] = password
+            result = subprocess.run(
+                [str(_runtime_python(paths)), "-m", "pandrator", "--data-dir", str(paths.install_root), "auth", "init"],
+                cwd=str(paths.pandrator_repo),
+                env=environment,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode:
+                raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "Could not initialize the owner password.")
     supervisor = ProcessSupervisor(
         data_root=paths.install_root,
         specs=_runtime_specs(paths, args, token),
@@ -494,6 +557,12 @@ def build_parser() -> argparse.ArgumentParser:
             choices=("auto", "cpu", "cuda", "vulkan", "metal"),
             default="auto",
         )
+        command.add_argument("--crispasr-engine", choices=("whisper-large-v3", "parakeet-tdt-0.6b-v3"), default="whisper-large-v3")
+        command.add_argument("--crispasr-model-quantization", choices=("f16", "q8_0", "q5_0", "q4_k"), default="f16")
+        command.add_argument("--qwen-backend", choices=("auto", "cpu", "cuda", "vulkan", "metal"), default="auto")
+        command.add_argument("--qwen-model-size", choices=("0.6b", "1.7b"), default="0.6b")
+        command.add_argument("--qwen-quantization", choices=("q8_0", "f16"), default="q8_0")
+        command.add_argument("--qwen-initial-model", choices=("base", "customvoice"), default="base")
         command.set_defaults(handler=handler)
     update = commands.add_parser("update")
     update.add_argument("--wheel", required=True)
@@ -513,6 +582,8 @@ def build_parser() -> argparse.ArgumentParser:
     launch.add_argument("--port", type=int, default=8097)
     launch.add_argument("--no-browser", action="store_true")
     launch.add_argument("--components", action="append", default=[])
+    launch.add_argument("--trusted-host", action="append", default=[])
+    launch.add_argument("--allow-insecure-remote", action="store_true")
     launch.set_defaults(handler=command_launch)
     service = commands.add_parser("service", help=argparse.SUPPRESS)
     service.add_argument("--component", required=True)

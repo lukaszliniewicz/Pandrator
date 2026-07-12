@@ -27,12 +27,21 @@ class CrispASRModel:
     engine: str
     label: str
     repository: str
-    filename: str
+    filenames: dict[str, str]
     word_timing: str
+    default_quantization: str = "f16"
+
+    def filename_for(self, quantization: str | None) -> str:
+        normalized = normalize_model_quantization(quantization, self.engine)
+        return self.filenames[normalized]
 
     @property
     def hf_spec(self) -> str:
-        return f"{self.repository}:{self.filename}"
+        return f"{self.repository}:{self.filename_for(self.default_quantization)}"
+
+    @property
+    def filename(self) -> str:
+        return self.filename_for(self.default_quantization)
 
 
 MODELS = {
@@ -40,17 +49,47 @@ MODELS = {
         engine=STT_ENGINE_WHISPER,
         label="Whisper large-v3 (F16)",
         repository="ggerganov/whisper.cpp",
-        filename="ggml-large-v3.bin",
+        filenames={
+            "f16": "ggml-large-v3.bin",
+            "q5_0": "ggml-large-v3-q5_0.bin",
+        },
         word_timing="dtw",
     ),
     STT_ENGINE_PARAKEET: CrispASRModel(
         engine=STT_ENGINE_PARAKEET,
         label="Parakeet TDT 0.6B v3 (F16)",
         repository="cstr/parakeet-tdt-0.6b-v3-GGUF",
-        filename="parakeet-tdt-0.6b-v3.gguf",
+        filenames={
+            "f16": "parakeet-tdt-0.6b-v3.gguf",
+            "q8_0": "parakeet-tdt-0.6b-v3-q8_0.gguf",
+            "q5_0": "parakeet-tdt-0.6b-v3-q5_0.gguf",
+            "q4_k": "parakeet-tdt-0.6b-v3-q4_k.gguf",
+        },
         word_timing="native",
     ),
 }
+
+
+MODEL_QUANTIZATION_ALIASES = {
+    "": "f16",
+    "none": "f16",
+    "fp16": "f16",
+    "float16": "f16",
+    "full": "f16",
+    "int8": "q8_0",
+    "q8": "q8_0",
+    "q5": "q5_0",
+    "q4": "q4_k",
+    "q4_k_m": "q4_k",
+}
+
+
+def normalize_model_quantization(value: str | None, engine: str | None = None) -> str:
+    normalized_engine = normalize_engine(engine)
+    normalized = str(value or "f16").strip().lower().replace("-", "_")
+    normalized = MODEL_QUANTIZATION_ALIASES.get(normalized, normalized)
+    model = MODELS[normalized_engine]
+    return normalized if normalized in model.filenames else model.default_quantization
 
 
 @dataclass(frozen=True)
@@ -118,6 +157,13 @@ def build_command(
 
     engine = normalize_engine(settings.get("stt_engine") or settings.get("stt_backend"))
     model = MODELS[engine]
+    quantization = normalize_model_quantization(
+        settings.get("stt_model_quantization")
+        or settings.get("crispasr_model_quantization")
+        or settings.get("parakeet_quantization"),
+        engine,
+    )
+    model_filename = model.filename_for(quantization)
     compute_backend = normalize_compute_backend(settings.get("stt_compute_backend"))
     language = normalize_language_code(
         str(settings.get("stt_language") or settings.get("whisper_language") or "auto"),
@@ -134,9 +180,9 @@ def build_command(
         "--backend",
         engine,
         "--hf-repo",
-        model.hf_spec,
+        f"{model.repository}:{model_filename}",
         "-m",
-        model.filename,
+        model_filename,
         "-f",
         str(audio_path),
         "-of",
@@ -148,6 +194,9 @@ def build_command(
     ]
     if cache_dir:
         command.extend(("--cache-dir", cache_dir))
+    threads = int(setting("stt_threads", 0))
+    if threads > 0:
+        command.extend(("--threads", str(threads)))
     if compute_backend != "auto":
         command.extend(("--gpu-backend", compute_backend))
     device = settings.get("stt_compute_device")
@@ -155,6 +204,9 @@ def build_command(
         command.extend(("--device", str(max(0, int(device)))))
     if bool(settings.get("crispasr_vad_enabled", True)):
         command.append("--vad")
+        vad_model = str(settings.get("crispasr_vad_model") or "silero").strip().lower()
+        if vad_model not in {"", "auto", "silero"}:
+            command.extend(("--vad-model", vad_model))
         command.extend(
             (
                 "--vad-threshold",
@@ -169,6 +221,25 @@ def build_command(
                 str(max(0, int(setting("crispasr_vad_speech_pad_ms", 30)))),
             )
         )
+    chunk_seconds = float(setting("stt_chunk_seconds", 0))
+    if chunk_seconds > 0:
+        command.extend(("--chunk-seconds", f"{chunk_seconds:g}"))
+    chunk_overlap = float(setting("stt_chunk_overlap_seconds", 3.0))
+    if chunk_seconds > 0 and chunk_overlap >= 0:
+        command.extend(("--chunk-overlap", f"{chunk_overlap:g}"))
+    hotwords = str(settings.get("stt_hotwords") or "").strip()
+    if hotwords:
+        command.extend(("--hotwords", hotwords))
+    lid_backend = str(settings.get("stt_lid_backend") or "whisper").strip().lower()
+    if lid_backend not in {"", "auto", "whisper"}:
+        command.extend(("--lid-backend", lid_backend))
+    beam_size = max(1, int(setting("stt_beam_size", 1)))
+    if beam_size > 1:
+        command.extend(("--beam-size", str(beam_size)))
+    if engine == STT_ENGINE_PARAKEET:
+        decoder = str(settings.get("parakeet_decoder") or "tdt").strip().lower()
+        if decoder in {"ctc", "tdt", "maes"} and decoder != "tdt":
+            command.extend(("--parakeet-decoder", decoder))
     if bool(settings.get("diarization_enabled") or settings.get("diarize")):
         command.append("--diarize")
 

@@ -105,11 +105,28 @@ class WorkflowMixin:
 
 
 
-    def run_headless_install(self, components, install_pandrator=True, crispasr_backend="auto"):
+    def run_headless_install(
+        self,
+        components,
+        install_pandrator=True,
+        crispasr_backend="auto",
+        crispasr_engine="whisper-large-v3",
+        crispasr_model_quantization="f16",
+        kobold_qwen_backend="auto",
+        kobold_qwen_model_size="0.6b",
+        kobold_qwen_quantization="q8_0",
+        kobold_qwen_initial_model="base",
+    ):
         selection = InstallSelection.from_components(
             components,
             install_pandrator=install_pandrator,
             crispasr_backend=crispasr_backend,
+            crispasr_engine=crispasr_engine,
+            crispasr_model_quantization=crispasr_model_quantization,
+            kobold_qwen_backend=kobold_qwen_backend,
+            kobold_qwen_model_size=kobold_qwen_model_size,
+            kobold_qwen_quantization=kobold_qwen_quantization,
+            kobold_qwen_initial_model=kobold_qwen_initial_model,
         )
         selected_components = set(selection.selected_components())
 
@@ -354,7 +371,10 @@ class WorkflowMixin:
                 self.reporter.status("Bootstrapping Qwen3 TTS API server (temporary startup)...")
                 self.install_kobold_qwen_api_server(
                     kobold_qwen_repo_path,
-                    use_cpu=kobold_qwen_cpu_var,
+                    backend="cpu" if kobold_qwen_cpu_var else selection.kobold_qwen_backend,
+                    model_size=selection.kobold_qwen_model_size,
+                    quantization=selection.kobold_qwen_quantization,
+                    initial_model=selection.kobold_qwen_initial_model,
                     pixi_path=shared_pixi_path,
                 )
 
@@ -474,6 +494,15 @@ class WorkflowMixin:
             config[KOBOLD_QWEN_GPU_SUPPORT_CONFIG_FLAG] = (
                 config.get(KOBOLD_QWEN_GPU_SUPPORT_CONFIG_FLAG, False) or kobold_qwen_var
             )
+            if kobold_qwen_var or kobold_qwen_cpu_var:
+                config['kobold_qwen_backend'] = "cpu" if kobold_qwen_cpu_var else selection.kobold_qwen_backend
+                config['kobold_qwen_model_size'] = selection.kobold_qwen_model_size
+                config['kobold_qwen_quantization'] = selection.kobold_qwen_quantization
+                config['kobold_qwen_initial_model'] = selection.kobold_qwen_initial_model
+            if crispasr_var:
+                config['crispasr_backend'] = selection.crispasr_backend
+                config['crispasr_engine'] = selection.crispasr_engine
+                config['crispasr_model_quantization'] = selection.crispasr_model_quantization
             config['magpie_support'] = config.get('magpie_support', False) or magpie_var or magpie_cpu_var
             config[MAGPIE_GPU_SUPPORT_CONFIG_FLAG] = (
                 config.get(MAGPIE_GPU_SUPPORT_CONFIG_FLAG, False) or magpie_var
@@ -821,7 +850,10 @@ class WorkflowMixin:
                     kobold_qwen_gpu_support = config.get(KOBOLD_QWEN_GPU_SUPPORT_CONFIG_FLAG, False)
                     self.install_kobold_qwen_api_server(
                         kobold_qwen_repo_path,
-                        use_cpu=not kobold_qwen_gpu_support,
+                        backend=config.get('kobold_qwen_backend', 'auto') if kobold_qwen_gpu_support else 'cpu',
+                        model_size=config.get('kobold_qwen_model_size', '0.6b'),
+                        quantization=config.get('kobold_qwen_quantization', 'q8_0'),
+                        initial_model=config.get('kobold_qwen_initial_model', 'base'),
                         pixi_path=shared_pixi_path,
                     )
 

@@ -50,11 +50,17 @@ class InstallSelection:
     rvc_cpu: bool = False
     crispasr: bool = False
     crispasr_backend: str = "auto"
+    crispasr_engine: str = "whisper-large-v3"
+    crispasr_model_quantization: str = "f16"
     xtts_finetuning: bool = False
     chatterbox: bool = False
     chatterbox_cpu: bool = False
     kobold_qwen: bool = False
     kobold_qwen_cpu: bool = False
+    kobold_qwen_backend: str = "auto"
+    kobold_qwen_model_size: str = "0.6b"
+    kobold_qwen_quantization: str = "q8_0"
+    kobold_qwen_initial_model: str = "base"
     magpie: bool = False
     magpie_cpu: bool = False
 
@@ -68,6 +74,12 @@ class InstallSelection:
         fishs2_backend: str = "auto",
         fishs2_model_quant: str = "q6_k",
         crispasr_backend: str = "auto",
+        crispasr_engine: str = "whisper-large-v3",
+        crispasr_model_quantization: str = "f16",
+        kobold_qwen_backend: str = "auto",
+        kobold_qwen_model_size: str = "0.6b",
+        kobold_qwen_quantization: str = "q8_0",
+        kobold_qwen_initial_model: str = "base",
     ) -> "InstallSelection":
         selected = {
             str(component).strip().lower().replace("-", "_")
@@ -94,7 +106,17 @@ class InstallSelection:
             fishs2_backend=fishs2_backend,
             fishs2_model_quant=fishs2_model_quant,
             crispasr_backend=str(crispasr_backend or "auto").lower(),
-            **{field.name: field.name in selected for field in fields(cls) if field.name not in ("pandrator", "fishs2_backend", "fishs2_model_quant", "crispasr_backend")},
+            crispasr_engine=str(crispasr_engine or "whisper-large-v3").lower(),
+            crispasr_model_quantization=str(crispasr_model_quantization or "f16").lower(),
+            kobold_qwen_backend=str(kobold_qwen_backend or "auto").lower(),
+            kobold_qwen_model_size=str(kobold_qwen_model_size or "0.6b").lower(),
+            kobold_qwen_quantization=str(kobold_qwen_quantization or "q8_0").lower(),
+            kobold_qwen_initial_model=str(kobold_qwen_initial_model or "base").lower(),
+            **{field.name: field.name in selected for field in fields(cls) if field.name not in (
+                "pandrator", "fishs2_backend", "fishs2_model_quant", "crispasr_backend",
+                "crispasr_engine", "crispasr_model_quantization", "kobold_qwen_backend",
+                "kobold_qwen_model_size", "kobold_qwen_quantization", "kobold_qwen_initial_model",
+            )},
         )
         selection.validate()
         return selection
@@ -102,6 +124,22 @@ class InstallSelection:
     def validate(self) -> None:
         if self.crispasr_backend not in {"auto", "cpu", "cuda", "vulkan", "metal"}:
             raise ValueError("CrispASR backend must be auto, cpu, cuda, vulkan, or metal.")
+        if self.crispasr_engine not in {"whisper-large-v3", "parakeet-tdt-0.6b-v3"}:
+            raise ValueError("CrispASR engine must be whisper-large-v3 or parakeet-tdt-0.6b-v3.")
+        crisp_quantizations = {
+            "whisper-large-v3": {"f16", "q5_0"},
+            "parakeet-tdt-0.6b-v3": {"f16", "q8_0", "q5_0", "q4_k"},
+        }
+        if self.crispasr_model_quantization not in crisp_quantizations[self.crispasr_engine]:
+            raise ValueError("Unsupported CrispASR model quantization for the selected engine.")
+        if self.kobold_qwen_backend not in {"auto", "cpu", "cuda", "vulkan", "metal"}:
+            raise ValueError("Qwen3 TTS backend must be auto, cpu, cuda, vulkan, or metal.")
+        if self.kobold_qwen_model_size not in {"0.6b", "1.7b"}:
+            raise ValueError("Qwen3 TTS model size must be 0.6b or 1.7b.")
+        if self.kobold_qwen_quantization not in {"q8_0", "f16"}:
+            raise ValueError("Qwen3 TTS quantization must be q8_0 or f16.")
+        if self.kobold_qwen_initial_model not in {"base", "customvoice"}:
+            raise ValueError("Qwen3 TTS initial model must be base or customvoice.")
         mutually_exclusive = (
             ("xtts", "xtts_cpu"),
             ("kokoro", "kokoro_cpu"),
@@ -119,7 +157,11 @@ class InstallSelection:
         return tuple(
             field.name
             for field in fields(self)
-            if field.name not in ("pandrator", "fishs2_backend", "fishs2_model_quant", "crispasr_backend") and getattr(self, field.name)
+            if field.name not in (
+                "pandrator", "fishs2_backend", "fishs2_model_quant", "crispasr_backend",
+                "crispasr_engine", "crispasr_model_quantization", "kobold_qwen_backend",
+                "kobold_qwen_model_size", "kobold_qwen_quantization", "kobold_qwen_initial_model",
+            ) and getattr(self, field.name)
         )
 
     def any_component_selected(self) -> bool:
@@ -129,6 +171,8 @@ class InstallSelection:
 @dataclass(frozen=True)
 class LaunchSelection:
     pandrator: bool = True
+    pandrator_network_access: bool = False
+    pandrator_port: int = 8097
     rvc: bool = False
     rvc_cpu: bool = False
     xtts: bool = False
