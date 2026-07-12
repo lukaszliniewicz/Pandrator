@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QInputDialog, QLineEdit, QSpinBox,
 )
 
+from ..backend_catalog import TTS_BACKENDS, formatted_crispasr_languages
 from ..catalog import LINUX_DEFERRED_INSTALL_COMPONENT_KEYS
 from ..components import ComponentOperationsMixin
 from ..constants import (
@@ -36,6 +37,7 @@ from ..storage import StorageMixin
 from ..workflows import WorkflowMixin
 from ..crispasr import detect_compute_backends
 from .actions import GuiActionsMixin
+from .backend_card import BackendOptionCard
 from .support import (
     GitHubLinkButton,
     InfoDialog,
@@ -350,69 +352,29 @@ class PandratorInstaller(
         extra_controls=(),
         voice_capability="",
         details="",
+        languages="",
+        voice_cloning=None,
+        prebuilt_voices=None,
     ):
-        card = QFrame()
-        card.setObjectName("optionCard")
-        card.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Preferred,
-        )
-
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(14, 11, 14, 11)
-        layout.setSpacing(5)
-        layout.addWidget(control)
-
-        description_label = QLabel(description)
-        description_label.setObjectName("mutedLabel")
-        description_label.setWordWrap(True)
-        description_label.setMinimumWidth(0)
-        description_label.setSizePolicy(
-            QSizePolicy.Policy.Ignored,
-            QSizePolicy.Policy.Preferred,
-        )
-        layout.addWidget(description_label)
-
-        capabilities = (
-            ((voice_capability,) if voice_capability else ())
-            if isinstance(voice_capability, str)
-            else tuple(voice_capability or ())
-        )
-        if capabilities:
-            badge_row = QHBoxLayout()
-            for capability in capabilities:
-                capability_label = QLabel(capability)
-                capability_label.setObjectName("voiceCapabilityBadge")
-                capability_label.setSizePolicy(
-                    QSizePolicy.Policy.Maximum,
-                    QSizePolicy.Policy.Preferred,
-                )
-                badge_row.addWidget(capability_label)
-            badge_row.addStretch()
-            layout.addLayout(badge_row)
-
-        if details:
-            details_label = QLabel(details)
-            details_label.setObjectName("mutedLabel")
-            details_label.setWordWrap(True)
-            details_label.setVisible(False)
-            details_button = QPushButton("More details")
-            details_button.setObjectName("secondaryButton")
-            details_button.setCheckable(True)
-            details_button.setMaximumWidth(130)
-            details_button.toggled.connect(details_label.setVisible)
-            details_button.toggled.connect(
-                lambda expanded, button=details_button: button.setText(
-                    "Fewer details" if expanded else "More details"
-                )
+        # Keep compatibility for non-TTS cards while TTS cards use explicit,
+        # paired capability states from the tested backend catalogue.
+        if voice_cloning is None and prebuilt_voices is None and voice_capability:
+            capabilities = (
+                (voice_capability,)
+                if isinstance(voice_capability, str)
+                else tuple(voice_capability)
             )
-            layout.addWidget(details_button)
-            layout.addWidget(details_label)
-
-        for extra_control in extra_controls:
-            layout.addWidget(extra_control)
-
-        return card
+            voice_cloning = "Voice cloning" in capabilities
+            prebuilt_voices = "Pre-built voices" in capabilities
+        return BackendOptionCard(
+            control,
+            description,
+            extra_controls=extra_controls,
+            details=details,
+            languages=languages,
+            voice_cloning=voice_cloning,
+            prebuilt_voices=prebuilt_voices,
+        )
 
     @staticmethod
     def _add_option_cards(grid, cards):
@@ -442,20 +404,23 @@ class PandratorInstaller(
             )
         )
 
-        location_group = QGroupBox("Install location")
-        location_layout = QVBoxLayout(location_group)
-        location_layout.setContentsMargins(8, 10, 8, 8)
+        location_group = QFrame()
+        location_group.setObjectName("installLocationRow")
+        location_layout = QHBoxLayout(location_group)
+        location_layout.setContentsMargins(13, 7, 8, 7)
+        location_heading = QLabel("INSTALL TO")
+        location_heading.setObjectName("installLocationHeading")
+        location_layout.addWidget(location_heading)
         self.install_location_label = QLabel()
-        self.install_location_label.setObjectName("mutedLabel")
-        self.install_location_label.setWordWrap(True)
-        location_layout.addWidget(self.install_location_label)
-        location_buttons_layout = QHBoxLayout()
-        location_buttons_layout.addStretch()
-        self.change_install_location_button = QPushButton("Change...")
-        self.change_install_location_button.setObjectName("secondaryButton")
+        self.install_location_label.setObjectName("installLocationPath")
+        self.install_location_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        location_layout.addWidget(self.install_location_label, 1)
+        self.change_install_location_button = QPushButton("Change")
+        self.change_install_location_button.setObjectName("linkButton")
         self.change_install_location_button.clicked.connect(self.choose_install_workspace)
-        location_buttons_layout.addWidget(self.change_install_location_button)
-        location_layout.addLayout(location_buttons_layout)
+        location_layout.addWidget(self.change_install_location_button)
         content_layout.addWidget(location_group)
         self.update_install_location_label()
 
@@ -494,67 +459,40 @@ class PandratorInstaller(
         self.magpie_checkbox = ToggleSwitch("Install Magpie")
         self.magpie_cpu_checkbox = QCheckBox("Use CPU-only runtime")
 
+        def tts_card(key, control, extra_controls=()):
+            presentation = TTS_BACKENDS[key]
+            card = self._create_option_card(
+                control,
+                presentation.summary,
+                extra_controls,
+                details=presentation.note,
+                languages=presentation.formatted_languages,
+                voice_cloning=presentation.voice_cloning,
+                prebuilt_voices=presentation.prebuilt_voices,
+            )
+            card.setProperty("backendKey", key)
+            return card
+
         engine_cards = (
-            self._create_option_card(
-                self.kokoro_checkbox,
-                "Fast multilingual speech generation with a large built-in voice catalog.",
-                (self.kokoro_cpu_checkbox,),
-                "Pre-built voices",
-                "Best for fast, lightweight generation. Language and voice availability depend on the installed Kokoro catalogue; it works on CPU and can use supported accelerators.",
-            ),
-            self._create_option_card(
+            tts_card("kokoro", self.kokoro_checkbox, (self.kokoro_cpu_checkbox,)),
+            tts_card(
+                "kobold_qwen",
                 self.kobold_qwen_checkbox,
-                "Qwen3-TTS through KoboldCpp with selectable CUDA, Vulkan, Metal, or CPU execution.",
                 (self.kobold_qwen_cpu_checkbox, self.kobold_qwen_settings_button),
-                ("Voice cloning", "Pre-built voices"),
-                "Supports Chinese, English, Japanese, Korean, German, French, Russian, Portuguese, Spanish, and Italian. The 0.6B Q8 Base model is the lower-memory default; 1.7B and FP16 improve capacity at substantially higher RAM/VRAM use. Pre-built voices use the 1.7B CustomVoice model.",
             ),
-            self._create_option_card(
-                self.xtts_checkbox,
-                "Multilingual speech generation from uploaded reference recordings.",
-                (self.xtts_cpu_checkbox,),
-                "Voice cloning",
-                "A mature multilingual cloning option. GPU generation is considerably faster; CPU mode is available for compatibility.",
-            ),
-            self._create_option_card(
-                self.voxcpm_checkbox,
-                "A local neural speech service that can follow an uploaded reference voice.",
-                voice_capability="Voice cloning",
-                details="Designed for reference-conditioned speech. Review the service catalogue in Pandrator after launch for its current language support.",
-            ),
-            self._create_option_card(
-                self.fishs2_checkbox,
-                "A local Fish Audio S2 service that can follow an uploaded reference voice.",
-                voice_capability="Voice cloning",
-                details="Offers selectable llama.cpp-style quantization and accelerator backends. Lower quantization reduces memory use at a possible quality cost.",
-            ),
-            self._create_option_card(
-                self.voxtral_checkbox,
-                "A GPU-based multilingual service with a catalog of preset voices.",
-                voice_capability="Pre-built voices",
-                details="Intended for capable GPUs and preset-speaker workflows; the live service catalogue determines available languages and voices.",
-            ),
-            self._create_option_card(
-                self.silero_checkbox,
-                "A lightweight local engine with language-specific preset speakers.",
-                voice_capability="Pre-built voices",
-                details="A small CPU-friendly option for supported languages. Speakers are grouped by language in the Pandrator voice selector.",
-            ),
-            self._create_option_card(
+            tts_card("xtts", self.xtts_checkbox, (self.xtts_cpu_checkbox,)),
+            tts_card("voxcpm", self.voxcpm_checkbox),
+            tts_card("fishs2", self.fishs2_checkbox),
+            tts_card("voxtral", self.voxtral_checkbox),
+            tts_card("silero", self.silero_checkbox),
+            tts_card(
+                "chatterbox",
                 self.chatterbox_checkbox,
-                "Expressive local speech generated from uploaded reference recordings.",
                 (self.chatterbox_cpu_checkbox,),
-                "Voice cloning",
-                "Expressive reference-conditioned English speech. GPU execution is recommended for interactive generation; CPU mode is available but slower.",
             ),
-            self._create_option_card(
-                self.magpie_checkbox,
-                "A multilingual local service with several preset speakers per language.",
-                (self.magpie_cpu_checkbox,),
-                "Pre-built voices",
-                "A preset-voice multilingual service. Pandrator refreshes its language and speaker catalogue from the running endpoint.",
-            ),
+            tts_card("magpie", self.magpie_checkbox, (self.magpie_cpu_checkbox,)),
         )
+        self.tts_engine_cards = engine_cards
         self._add_option_cards(engines_grid, engine_cards)
         content_layout.addWidget(engines_group)
 
@@ -570,6 +508,7 @@ class PandratorInstaller(
                 self.crispasr_checkbox,
                 "One native runtime for Whisper large-v3 and Parakeet 0.6B v3 with CPU, CUDA, Vulkan, and Apple Metal support.",
                 (self.crispasr_settings_button,),
+                languages=formatted_crispasr_languages(),
                 details="Choose FP16 or a supported quantized model, plus an explicit accelerator when automatic detection is not appropriate. VAD, decoding, chunking, hotwords, and language identification remain adjustable per session in Pandrator.",
             ),
         )

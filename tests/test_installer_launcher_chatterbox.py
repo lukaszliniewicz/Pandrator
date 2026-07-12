@@ -80,14 +80,25 @@ class TestInstallerLauncherChatterbox(unittest.TestCase):
             QLabel,
             "voiceCapabilityBadge",
         )
-        self.assertEqual(len(capability_labels), 10)
+        self.assertEqual(len(capability_labels), 18)
         self.assertEqual(
             {label.text() for label in capability_labels},
             {"Pre-built voices", "Voice cloning"},
         )
-        self.assertGreaterEqual(
+        self.assertEqual(
             sum(label.text() == "Pre-built voices" for label in capability_labels),
-            2,
+            9,
+        )
+        self.assertEqual(
+            sum(label.text() == "Voice cloning" for label in capability_labels),
+            9,
+        )
+        self.assertTrue(
+            all(label.property("supported") is not None for label in capability_labels)
+        )
+        self.assertEqual(
+            {card.height() for card in installer.tts_engine_cards},
+            {installer.tts_engine_cards[0].COLLAPSED_HEIGHT},
         )
         for control in installer.install_tab.findChildren(QCheckBox):
             control.setChecked(False)

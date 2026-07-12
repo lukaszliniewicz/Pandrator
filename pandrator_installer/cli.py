@@ -172,14 +172,22 @@ def run_gui_app(args=None):
             color: #AAA6B2;
             font-size: 11px;
         }}
-        QLabel#voiceCapabilityBadge {{
-            background-color: #444047;
-            border: 1px solid #5D5664;
+        QLabel#voiceCapabilityBadge[supported="true"] {{
+            background-color: #48405E;
+            border: 1px solid #695B88;
             border-radius: 8px;
-            color: #DCCEEF;
+            color: #E2D8F3;
             font-size: 10px;
             font-weight: bold;
-            padding: 2px 7px;
+            padding: 3px 7px;
+        }}
+        QLabel#voiceCapabilityBadge[supported="false"] {{
+            background-color: #2D2D31;
+            border: 1px solid #3F3E44;
+            border-radius: 8px;
+            color: #737078;
+            font-size: 10px;
+            padding: 3px 7px;
         }}
         QLabel#statusLabel {{
             background-color: #28282B;
@@ -191,7 +199,74 @@ def run_gui_app(args=None):
         QFrame#optionCard {{
             background-color: #343438;
             border: 1px solid #48484F;
-            border-radius: 8px;
+            border-radius: 11px;
+        }}
+        QFrame#optionCard:hover {{
+            background-color: #37363B;
+            border-color: #635A77;
+        }}
+        QFrame#optionCard[expanded="true"] {{
+            background-color: #37363B;
+            border-color: #766795;
+        }}
+        QFrame#optionCardSummary {{
+            background-color: transparent;
+            border: none;
+        }}
+        QFrame#optionCardDetails {{
+            background-color: #303035;
+            border: none;
+            border-top: 1px solid #48474E;
+            border-bottom-left-radius: 10px;
+            border-bottom-right-radius: 10px;
+        }}
+        QLabel#optionCardEyebrow {{
+            color: #A594C3;
+            font-size: 9px;
+            font-weight: bold;
+        }}
+        QLabel#optionCardLanguages {{
+            color: #DDD9E2;
+            font-size: 11px;
+        }}
+        QToolButton#optionCardChevron {{
+            background-color: transparent;
+            border: none;
+            border-radius: 7px;
+            color: #B4A8C8;
+            min-width: 24px;
+            min-height: 24px;
+            padding: 2px;
+        }}
+        QToolButton#optionCardChevron:hover {{
+            background-color: #45404E;
+        }}
+        QFrame#installLocationRow {{
+            background-color: #303034;
+            border: 1px solid #45454B;
+            border-radius: 9px;
+        }}
+        QLabel#installLocationHeading {{
+            color: #9F90B9;
+            font-size: 9px;
+            font-weight: bold;
+        }}
+        QLabel#installLocationPath {{
+            color: #D5D1D9;
+            font-size: 11px;
+            padding-left: 6px;
+        }}
+        QPushButton#linkButton {{
+            background-color: transparent;
+            border: none;
+            color: #C9B4ED;
+            font-weight: bold;
+            padding: 4px 7px;
+        }}
+        QPushButton#linkButton:hover {{
+            background-color: #3C3745;
+            border: none;
+            color: #FFFFFF;
         }}
         QPushButton {{
             background-color: #49494F;
