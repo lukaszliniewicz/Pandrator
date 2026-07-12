@@ -78,6 +78,16 @@ class DubbingSettingsTests(unittest.TestCase):
         self.assertEqual(migrated["translation_model"], "default")
         self.assertEqual(migrated["correction_model"], "default")
 
+    def test_legacy_merge_threshold_migrates_to_independent_speech_blocks(self):
+        migrated = settings.migrate_dubbing_payload(
+            {"subtitle_merge_threshold": 475},
+            self.providers,
+        )
+
+        self.assertEqual(migrated["speech_block_merge_threshold"], 475)
+        self.assertEqual(migrated["speech_block_min_chars"], 10)
+        self.assertEqual(migrated["speech_block_max_chars"], 160)
+
     def test_stage_resolver_uses_independent_native_models_and_global_default(self):
         base = {
             "correction_model": "default",

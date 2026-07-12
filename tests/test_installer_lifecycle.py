@@ -31,7 +31,7 @@ class InstallerLifecycleTests(unittest.TestCase):
             self.assertEqual(code, 0, error)
             payload = json.loads(output)
             self.assertTrue(payload["dry_run"])
-            self.assertIn("whisperx", payload["components"])
+            self.assertIn("crispasr", payload["components"])
             self.assertFalse(workspace.exists())
 
     def test_uninstall_defaults_to_preserving_data_and_requires_confirmation(self):

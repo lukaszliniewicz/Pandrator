@@ -355,7 +355,11 @@ class LLMSettings:
 @dataclass
 class DubbingSettings:
     dubbing_enabled: bool = False
-    stt_backend: str = "whisperx"
+    # ``stt_backend`` is retained as a serialized compatibility alias.
+    stt_engine: str = "whisper"
+    stt_backend: str = "whisper"
+    stt_compute_backend: str = "auto"
+    stt_compute_device: int = 0
     stt_language: str = "English"
     whisper_model: str = "large-v3"
     whisper_prompt: str = "Hello, welcome to this presentation. This is a professional recording with clear speech, proper punctuation, and standard grammar."
@@ -374,6 +378,22 @@ class DubbingSettings:
     parakeet_vad_batch_size: int = 8
     parakeet_hf_cache_dir: str = ""
     parakeet_save_txt: bool = False
+    crispasr_vad_enabled: bool = True
+    crispasr_vad_threshold: float = 0.5
+    crispasr_vad_min_speech_ms: int = 250
+    crispasr_vad_min_silence_ms: int = 100
+    crispasr_vad_max_speech_seconds: float = 300.0
+    crispasr_vad_speech_pad_ms: int = 30
+    subtitle_max_chars_per_line: int = 48
+    subtitle_max_lines: int = 2
+    subtitle_min_duration_ms: int = 833
+    subtitle_max_duration_ms: int = 7000
+    subtitle_max_cps: float = 20.0
+    subtitle_min_gap_ms: int = 80
+    subtitle_phrase_gap_ms: int = 600
+    speech_block_min_chars: int = 10
+    speech_block_max_chars: int = 160
+    speech_block_merge_threshold: int = 250
     diarization_enabled: bool = False
     boundary_correction_enabled: bool = False
     subtitle_merge_threshold: int = 250

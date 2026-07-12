@@ -1,5 +1,6 @@
+import json
 import os
-import sys
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,345 +8,197 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from pandrator.logic import dubbing_handler
-from pandrator.logic.dubbing import parakeet_onnx, srt_utils, stt_backends, transcription
+from pandrator.logic.dubbing import crispasr, srt_utils, stt_backends, transcription
 
 
 SAMPLE_SRT = """1
 00:00:00,000 --> 00:00:01,000
-Hello
-
-2
-00:00:01,100 --> 00:00:01,500
-friend
+Hello friend
 """
 
 
-class DubbingTranscriptionTests(unittest.TestCase):
-    def test_automatic_boundary_correction_is_whisperx_only(self):
-        settings = {"boundary_correction_enabled": True}
+def _crisp_json(words=None):
+    words = words or [
+        {"text": "Hello", "offsets": {"from": 0, "to": 400}},
+        {"text": "friend.", "offsets": {"from": 420, "to": 900}},
+    ]
+    return {
+        "crispasr": {"backend": "whisper", "model": "ggml-large-v3.bin", "language": "en"},
+        "transcription": [
+            {
+                "offsets": {"from": 0, "to": 900},
+                "text": "Hello friend.",
+                "words": words,
+            }
+        ],
+    }
 
-        self.assertTrue(
-            transcription.automatic_boundary_correction_enabled(
-                settings,
-                "whisperx",
-            )
-        )
-        self.assertFalse(
-            transcription.automatic_boundary_correction_enabled(
-                settings,
-                "parakeet_onnx",
-            )
-        )
 
-    def test_build_whisperx_args_includes_prompt_and_diarization(self):
-        args = transcription.build_whisperx_args(
+class CrispASRTranscriptionTests(unittest.TestCase):
+    def test_legacy_backend_names_migrate_to_crispasr_engines(self):
+        self.assertEqual(stt_backends.normalize_stt_backend("whisperx"), "whisper")
+        self.assertEqual(stt_backends.normalize_stt_backend("parakeet_onnx"), "parakeet")
+
+    def test_whisper_command_pins_f16_large_v3_and_dtw(self):
+        command = crispasr.build_command(
             "audio.wav",
-            language="English",
-            session_dir="session",
-            whisper_model="large-v3",
-            align_model="custom-align",
-            initial_prompt="Names: Ada, Turing.",
-            diarize=True,
-            hf_token="hf-token",
-            chunk_size=22,
-        )
-
-        self.assertIn("--initial_prompt", args)
-        self.assertEqual(args[args.index("--initial_prompt") + 1], "Names: Ada, Turing.")
-        self.assertIn("--diarize", args)
-        self.assertEqual(args[args.index("--hf_token") + 1], "hf-token")
-        self.assertEqual(args[args.index("--language") + 1], "en")
-        self.assertEqual(args[args.index("--align_model") + 1], "custom-align")
-        self.assertEqual(args[args.index("--chunk_size") + 1], "22")
-
-    def test_build_whisperx_args_requires_hf_token_for_diarization(self):
-        with self.assertRaises(ValueError):
-            transcription.build_whisperx_args(
-                "audio.wav",
-                language="English",
-                session_dir="session",
-                whisper_model="large-v3",
-                diarize=True,
-            )
-
-    def test_stt_backend_detection_accepts_manifest_or_importable_module(self):
-        statuses = stt_backends.detect_stt_backend_statuses(
-            environ={
-                "WHISPERX_PIXI_MANIFEST": "C:/installed/whisperx/pixi.toml",
-                "PARAKEET_PIXI_MANIFEST": "C:/missing/parakeet/pixi.toml",
+            "output",
+            {
+                "stt_engine": "whisper",
+                "stt_language": "Polish",
+                "stt_compute_backend": "vulkan",
+                "stt_compute_device": 1,
+                "crispasr_vad_enabled": True,
+                "crispasr_vad_threshold": 0.42,
+                "crispasr_vad_min_speech_ms": 300,
+                "crispasr_vad_min_silence_ms": 450,
+                "crispasr_vad_max_speech_seconds": 90,
+                "crispasr_vad_speech_pad_ms": 50,
             },
-            path_exists=lambda path: str(path).replace("\\", "/") == "C:/installed/whisperx/pixi.toml",
-            find_module=lambda name: name == "onnx_asr",
-            find_executable=lambda name: None,
+            executable="crispasr-test",
         )
 
-        self.assertTrue(statuses[stt_backends.STT_BACKEND_WHISPERX].installed)
-        self.assertTrue(statuses[stt_backends.STT_BACKEND_PARAKEET_ONNX].installed)
+        self.assertEqual(command[0], "crispasr-test")
+        self.assertIn("ggerganov/whisper.cpp:ggml-large-v3.bin", command)
+        self.assertIn("ggml-large-v3.bin", command)
+        self.assertIn("-dtw", command)
+        self.assertEqual(command[command.index("-dtw") + 1], "large.v3")
+        self.assertEqual(command[command.index("--gpu-backend") + 1], "vulkan")
+        self.assertEqual(command[command.index("--device") + 1], "1")
+        self.assertEqual(command[command.index("-l") + 1], "pl")
+        self.assertEqual(command[command.index("--vad-threshold") + 1], "0.42")
+        self.assertEqual(command[command.index("--vad-min-silence-duration-ms") + 1], "450")
 
-    def test_stt_backend_language_options_are_backend_specific(self):
-        parakeet_options = stt_backends.language_options_for_backend("parakeet_onnx")
-        whisper_options = stt_backends.language_options_for_backend("whisperx")
-
-        self.assertEqual(len(parakeet_options), 25)
-        self.assertIn(("Polish", "pl"), [(option.name, option.code) for option in parakeet_options])
-        self.assertIn(("Ukrainian", "uk"), [(option.name, option.code) for option in parakeet_options])
-        self.assertIn("Yoruba", [option.name for option in whisper_options])
-        self.assertNotIn("Yoruba", [option.name for option in parakeet_options])
-        self.assertEqual(
-            stt_backends.normalize_stt_language_for_backend("parakeet_onnx", "Yoruba").code,
-            "en",
+    def test_parakeet_command_pins_unquantized_v3_and_native_timing(self):
+        command = crispasr.build_command(
+            "audio.wav",
+            "output",
+            {"stt_engine": "parakeet", "stt_compute_backend": "auto", "crispasr_vad_enabled": False},
+            executable="crispasr-test",
         )
 
-    def test_transcribe_video_file_extracts_audio_runs_whisperx_and_postprocesses_srt(self):
+        self.assertIn("cstr/parakeet-tdt-0.6b-v3-GGUF:parakeet-tdt-0.6b-v3.gguf", command)
+        self.assertNotIn("q4", " ".join(command).lower())
+        self.assertNotIn("-dtw", command)
+        self.assertNotIn("--gpu-backend", command)
+        self.assertNotIn("--vad", command)
+        self.assertIn("-ojf", command)
+
+    def test_vad_zero_values_are_forwarded_instead_of_replaced_by_defaults(self):
+        command = crispasr.build_command(
+            "audio.wav",
+            "output",
+            {
+                "stt_engine": "parakeet",
+                "crispasr_vad_enabled": True,
+                "crispasr_vad_threshold": 0,
+                "crispasr_vad_min_speech_ms": 0,
+                "crispasr_vad_min_silence_ms": 0,
+                "crispasr_vad_speech_pad_ms": 0,
+            },
+            executable="crispasr-test",
+        )
+
+        self.assertEqual(command[command.index("--vad-threshold") + 1], "0.0")
+        self.assertEqual(command[command.index("--vad-min-speech-duration-ms") + 1], "0")
+        self.assertEqual(command[command.index("--vad-min-silence-duration-ms") + 1], "0")
+        self.assertEqual(command[command.index("--vad-speech-pad-ms") + 1], "0")
+
+    def test_nonempty_transcript_without_words_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            metadata = Path(temp_dir) / "output.json"
+            metadata.write_text(
+                json.dumps({"transcription": [{"text": "Words are missing.", "offsets": {"from": 0, "to": 500}}]}),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(crispasr.CrispASRError, "did not return word timestamps"):
+                crispasr._validate_word_timestamps(metadata)
+
+    def test_runtime_probe_reports_compiled_compute_backends(self):
+        version_output = """=== build info ===
+  version       : 0.8.9
+  ggml backends : vulkan cpu
+"""
+        result = stt_backends.probe_crispasr_runtime(
+            environ={"CRISPASR_EXECUTABLE": "C:/tools/crispasr.exe"},
+            path_exists=lambda path: str(path).replace("\\", "/") == "C:/tools/crispasr.exe",
+            run_func=lambda *_args, **_kwargs: SimpleNamespace(stdout=version_output, stderr=""),
+        )
+
+        self.assertTrue(result.installed)
+        self.assertEqual(result.version, "0.8.9")
+        self.assertEqual(result.compute_backends, ("vulkan", "cpu"))
+
+    def test_transcribe_source_writes_srt_and_word_metadata(self):
         commands = []
 
         def fake_run(command, **_kwargs):
             commands.append(command)
-            executable = Path(command[0]).name.lower()
-            if executable.startswith("ffmpeg"):
+            if Path(command[0]).name.lower().startswith("ffmpeg"):
                 Path(command[-1]).write_bytes(b"wav")
                 return SimpleNamespace(stderr=b"")
-
-            whisperx_index = command.index("whisperx")
-            audio_path = Path(command[whisperx_index + 1])
-            output_dir = Path(command[command.index("--output_dir") + 1])
-            output_dir.joinpath(f"{audio_path.stem}.srt").write_text(SAMPLE_SRT, encoding="utf-8")
-            return SimpleNamespace(stderr=b"")
+            output_base = Path(command[command.index("-of") + 1])
+            output_base.with_suffix(".srt").write_text(SAMPLE_SRT, encoding="utf-8")
+            output_base.with_suffix(".json").write_text(json.dumps(_crisp_json()), encoding="utf-8")
+            return SimpleNamespace(stdout=b"", stderr=b"")
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            video_path = os.path.join(temp_dir, "clip.mp4")
-            Path(video_path).write_bytes(b"video")
-
-            output_path = transcription.transcribe_video_file(
+            source = Path(temp_dir) / "meeting.mp4"
+            source.write_bytes(b"video")
+            result = transcription.transcribe_source_file_with_metadata(
                 temp_dir,
-                video_path,
+                source,
                 {
-                    "stt_language": "English",
-                    "whisper_model": "large-v3",
-                    "whisper_prompt": "Keep names.",
-                    "subtitle_merge_threshold": 200,
-                },
-                run_func=fake_run,
-            )
-
-            self.assertTrue(output_path.endswith("clip_merged.srt"))
-            self.assertTrue(os.path.exists(output_path))
-            segments = srt_utils.parse_srt(Path(output_path).read_text(encoding="utf-8"))
-            self.assertEqual(len(segments), 1)
-            self.assertEqual(segments[0].text, "Hello friend")
-            whisperx_command = next(command for command in commands if "whisperx" in command)
-            self.assertIn("--initial_prompt", whisperx_command)
-
-    def test_transcribe_source_file_accepts_audio_source_without_overwriting_input_wav(self):
-        commands = []
-
-        def fake_run(command, **_kwargs):
-            commands.append(command)
-            executable = Path(command[0]).name.lower()
-            if executable.startswith("ffmpeg"):
-                Path(command[-1]).write_bytes(b"normalized-wav")
-                return SimpleNamespace(stderr=b"")
-
-            whisperx_index = command.index("whisperx")
-            audio_path = Path(command[whisperx_index + 1])
-            output_dir = Path(command[command.index("--output_dir") + 1])
-            output_dir.joinpath(f"{audio_path.stem}.srt").write_text(SAMPLE_SRT, encoding="utf-8")
-            return SimpleNamespace(stderr=b"")
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            audio_path = os.path.join(temp_dir, "clip.wav")
-            Path(audio_path).write_bytes(b"source-wav")
-
-            output_path = transcription.transcribe_source_file(
-                temp_dir,
-                audio_path,
-                {
-                    "stt_language": "English",
-                    "whisper_model": "large-v3",
+                    "stt_engine": "whisper",
+                    "stt_compute_backend": "cpu",
                     "subtitle_merge_threshold": -1,
                 },
                 run_func=fake_run,
             )
 
-            ffmpeg_command = commands[0]
-            self.assertEqual(Path(ffmpeg_command[-1]).name, "clip_transcription.wav")
-            self.assertNotEqual(os.path.abspath(ffmpeg_command[-1]), os.path.abspath(audio_path))
-            whisperx_command = next(command for command in commands if "whisperx" in command)
-            self.assertEqual(Path(whisperx_command[whisperx_command.index("whisperx") + 1]).name, "clip_transcription.wav")
-            self.assertEqual(Path(output_path).name, "clip.srt")
-            self.assertTrue(os.path.exists(output_path))
+            self.assertTrue(Path(result.srt_path).is_file())
+            self.assertTrue(Path(result.word_timestamps_path).is_file())
+            self.assertEqual(result.engine, "whisper")
+            self.assertEqual(result.compute_backend, "cpu")
+            self.assertIn("-dtw", commands[1])
+            segments = srt_utils.parse_srt(Path(result.srt_path).read_text(encoding="utf-8"))
+            self.assertEqual(segments[0].text, "Hello friend.")
+            self.assertGreaterEqual(segments[0].end_ms - segments[0].start_ms, 833)
 
-    def test_build_parakeet_vad_options_exposes_silero_controls(self):
-        options = parakeet_onnx.build_vad_options(
-            {
-                "parakeet_vad_max_speech_seconds": 15,
-                "parakeet_vad_threshold": 0.25,
-                "parakeet_vad_neg_threshold": 0.1,
-                "parakeet_vad_min_silence_ms": 1000,
-                "parakeet_vad_min_speech_ms": 300,
-                "parakeet_vad_speech_pad_ms": 50,
-                "parakeet_vad_batch_size": 4,
-            }
-        )
-
-        self.assertEqual(options["max_speech_duration_s"], 15.0)
-        self.assertEqual(options["threshold"], 0.25)
-        self.assertEqual(options["neg_threshold"], 0.1)
-        self.assertEqual(options["min_silence_duration_ms"], 1000.0)
-        self.assertEqual(options["min_speech_duration_ms"], 300.0)
-        self.assertEqual(options["speech_pad_ms"], 50.0)
-        self.assertEqual(options["batch_size"], 4)
-
-    def test_transcribe_video_file_runs_parakeet_backend_and_writes_json(self):
-        calls = {}
-
-        class FakeModel:
-            def with_vad(self, vad, **kwargs):
-                calls["vad"] = vad
-                calls["vad_kwargs"] = kwargs
-                return self
-
-            def with_timestamps(self):
-                calls["timestamps"] = True
-                return self
-
-            def recognize(self, audio_path):
-                calls["audio_path"] = audio_path
-                return [
-                    SimpleNamespace(
-                        start=0.0,
-                        end=1.0,
-                        text="Hello.",
-                        tokens=["Hello"],
-                        timestamps=[0.12],
-                        logprobs=[-0.1],
-                    ),
-                    SimpleNamespace(start=1.2, end=1.5, text="", tokens=[], timestamps=[], logprobs=[]),
-                    SimpleNamespace(
-                        start=1.6,
-                        end=2.4,
-                        text="Next line.",
-                        tokens=["Next", "line"],
-                        timestamps=[0.05, 0.4],
-                        logprobs=[-0.2, -0.3],
-                    ),
-                ]
-
-        fake_onnx_asr = SimpleNamespace(
-            load_model=lambda model, quantization=None, providers=None: calls.update(
-                {
-                    "model": model,
-                    "quantization": quantization,
-                    "providers": providers,
-                }
-            )
-            or FakeModel(),
-            load_vad=lambda name, providers=None: {"name": name, "providers": providers},
-        )
-
+    def test_missing_full_json_is_a_hard_failure(self):
         def fake_run(command, **_kwargs):
-            executable = Path(command[0]).name.lower()
-            if executable.startswith("ffmpeg"):
-                Path(command[-1]).write_bytes(b"wav")
-                return SimpleNamespace(stderr=b"")
-            raise AssertionError(f"Unexpected command: {command}")
-
-        def fail_boundary_audio_loader(*_args):
-            raise AssertionError("Parakeet must not run WhisperX boundary correction")
+            output_base = Path(command[command.index("-of") + 1])
+            output_base.with_suffix(".srt").write_text(SAMPLE_SRT, encoding="utf-8")
+            return SimpleNamespace(stdout=b"", stderr=b"")
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            video_path = os.path.join(temp_dir, "clip.mp4")
-            Path(video_path).write_bytes(b"video")
-
-            with patch.dict(sys.modules, {"onnx_asr": fake_onnx_asr}):
-                output_path = transcription.transcribe_video_file(
-                    temp_dir,
-                    video_path,
-                    {
-                        "stt_backend": "parakeet_onnx",
-                        "boundary_correction_enabled": True,
-                        "parakeet_model": "nemo-parakeet-tdt-0.6b-v3",
-                        "parakeet_vad_max_speech_seconds": 15,
-                        "parakeet_vad_threshold": 0.5,
-                        "subtitle_merge_threshold": 0,
-                    },
+            with self.assertRaisesRegex(crispasr.CrispASRError, "both SRT and full JSON"):
+                crispasr.transcribe(
+                    Path(temp_dir) / "audio.wav",
+                    session_dir=temp_dir,
+                    output_name="audio",
+                    settings={"stt_engine": "parakeet"},
+                    executable="crispasr-test",
                     run_func=fake_run,
-                    boundary_audio_loader=fail_boundary_audio_loader,
                 )
 
-            self.assertEqual(Path(output_path).name, "clip.srt")
-            self.assertEqual(calls["model"], "nemo-parakeet-tdt-0.6b-v3")
-            self.assertEqual(calls["quantization"], None)
-            self.assertEqual(calls["providers"], ["CPUExecutionProvider"])
-            self.assertEqual(calls["vad_kwargs"]["max_speech_duration_s"], 15.0)
-            json_path = Path(temp_dir) / "clip_parakeet.json"
-            self.assertTrue(json_path.exists())
-            payload = json_path.read_text(encoding="utf-8")
-            self.assertIn('"absolute_timestamps"', payload)
-            segments = srt_utils.parse_srt(Path(output_path).read_text(encoding="utf-8"))
-            self.assertEqual([segment.text for segment in segments], ["Hello.", "Next line."])
-
-    def test_dubbing_handler_transcription_no_longer_runs_subdub_command(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            output_path = os.path.join(temp_dir, "clip.srt")
-            Path(output_path).write_text(SAMPLE_SRT, encoding="utf-8")
-
-            with patch(
-                "pandrator.logic.dubbing_handler.subprocess.Popen",
-                side_effect=AssertionError("Subdub subprocess should not run"),
-            ), patch(
-                "pandrator.logic.dubbing_handler.transcribe_video_file",
-                return_value=output_path,
-            ):
-                self.assertEqual(
-                    dubbing_handler.transcribe_video_with_result(
-                        temp_dir,
-                        os.path.join(temp_dir, "clip.mp4"),
-                        {"stt_language": "English", "whisper_model": "large-v3"},
-                    ),
-                    output_path,
-                )
-                self.assertTrue(
-                    dubbing_handler.transcribe_video(
-                        temp_dir,
-                        os.path.join(temp_dir, "clip.mp4"),
-                        {"stt_language": "English", "whisper_model": "large-v3"},
-                    )
-                )
-
-    def test_dubbing_handler_transcription_is_independent_from_correction(self):
+    def test_dubbing_handler_transcription_remains_independent_from_correction(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             transcribed_path = os.path.join(temp_dir, "clip.srt")
-            corrected_path = os.path.join(temp_dir, "clip_corrected.srt")
             Path(transcribed_path).write_text(SAMPLE_SRT, encoding="utf-8")
-            Path(corrected_path).write_text(SAMPLE_SRT.replace("Hello", "Hello."), encoding="utf-8")
-
             with patch(
                 "pandrator.logic.dubbing_handler.transcribe_video_file",
                 return_value=transcribed_path,
             ), patch(
                 "pandrator.logic.dubbing_handler.correct_srt_file_with_result",
-                return_value=SimpleNamespace(
-                    output_path=corrected_path,
-                    cost=0.015,
-                    response_count=2,
-                ),
             ) as native_correction:
                 result = dubbing_handler.transcribe_video_with_metadata(
                     temp_dir,
                     os.path.join(temp_dir, "clip.mp4"),
-                    {
-                        "stt_language": "English",
-                        "whisper_model": "large-v3",
-                        "correction_enabled": True,
-                        "correction_model": "anthropic/claude-sonnet-4-6",
-                    },
-                    correction_prompt="Fix punctuation.",
+                    {"stt_engine": "whisper", "correction_enabled": True},
                 )
 
             self.assertEqual(result.output_path, transcribed_path)
-            self.assertEqual(result.correction_cost, 0.0)
-            self.assertEqual(result.correction_response_count, 0)
             native_correction.assert_not_called()
 
 

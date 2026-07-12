@@ -119,6 +119,7 @@ def resolve_path_from_base(path_value: str, base_dir: Path) -> Path:
 
 def resolve_dependencies(selected_modules: Iterable[str]) -> tuple[str, ...]:
     resolved: list[str] = []
+    aliases = {"whisperx": "crispasr", "parakeet_onnx": "crispasr"}
 
     def visit(module_key: str):
         if module_key in resolved:
@@ -132,7 +133,7 @@ def resolve_dependencies(selected_modules: Iterable[str]) -> tuple[str, ...]:
         resolved.append(module_key)
 
     for key in selected_modules:
-        visit(key)
+        visit(aliases.get(str(key).strip().lower().replace("-", "_"), str(key)))
 
     return tuple(resolved)
 
@@ -145,6 +146,7 @@ def parse_selected_modules(only_value: str) -> tuple[str, ...]:
     selected_keys: set[str] = set()
     for token in raw_value.split(","):
         normalized_token = token.strip().lower().replace("-", "_")
+        normalized_token = {"whisperx": "crispasr", "parakeet_onnx": "crispasr"}.get(normalized_token, normalized_token)
         if not normalized_token:
             continue
 
@@ -278,7 +280,9 @@ def run_headless_installer(
 
 def get_tailored_workspace_name(components: Sequence[str]) -> str:
     h = hashlib.sha256()
-    for c in sorted(components):
+    aliases = {"whisperx": "crispasr", "parakeet_onnx": "crispasr"}
+    normalized_components = {aliases.get(str(item).strip().lower().replace("-", "_"), str(item)) for item in components}
+    for c in sorted(normalized_components):
         h.update(c.encode("utf-8"))
     return f"workspace_{h.hexdigest()[:12]}"
 
@@ -667,7 +671,7 @@ def parse_arguments() -> argparse.Namespace:
         help=(
             "Comma-separated list of components/presets to package: all, "
             "kokoro, kokoro_cpu, xtts_stack, voxtral, voxcpm, fishs2, voxtral_with_rest. "
-            "Individual modules: kokoro, kokoro_cpu, voxtral, voxcpm, fishs2, xtts, silero, whisperx, xtts_finetuning, rvc, rvc_cpu."
+            "Individual modules: kokoro, kokoro_cpu, voxtral, voxcpm, fishs2, xtts, silero, crispasr, xtts_finetuning, rvc, rvc_cpu."
         ),
     )
     parser.add_argument(
@@ -845,8 +849,8 @@ def main() -> int:
             paths = tuple(component_paths["rvc"])
         elif component == "silero" and "silero" in component_paths:
             paths = tuple(component_paths["silero"])
-        elif component == "whisperx" and "whisperx" in component_paths:
-            paths = tuple(component_paths["whisperx"])
+        elif component == "crispasr" and "crispasr" in component_paths:
+            paths = tuple(component_paths["crispasr"])
         elif component == "voxcpm" and "voxcpm" in component_paths:
             paths = tuple(component_paths["voxcpm"])
         elif component == "fishs2" and "fishs2" in component_paths:
@@ -866,7 +870,6 @@ def main() -> int:
         elif component == "xtts_finetuning":
             overrides["cuda_support"] = cuda_support
             overrides["xtts_support"] = True
-            overrides["whisperx_support"] = True
 
         block_definitions[component] = BlockDefinition(
             name=component,

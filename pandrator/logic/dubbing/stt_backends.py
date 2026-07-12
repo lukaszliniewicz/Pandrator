@@ -1,72 +1,39 @@
-"""Shared STT backend identifiers, language support, and availability checks."""
+"""CrispASR model choices, languages, and runtime availability."""
 
 from __future__ import annotations
 
-import importlib.util
 import os
-import shutil
+import re
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from ...constants import LANGUAGE_DISPLAY_NAMES, WHISPER_LANGUAGES
+from .crispasr import (
+    MODELS,
+    STT_ENGINE_PARAKEET,
+    STT_ENGINE_WHISPER,
+    candidate_executables,
+    normalize_engine,
+    resolve_executable,
+)
 from .languages import normalize_language_code
 
-STT_BACKEND_WHISPERX = "whisperx"
-STT_BACKEND_PARAKEET_ONNX = "parakeet_onnx"
+# Compatibility names retained for one migration cycle.
+STT_BACKEND_WHISPERX = STT_ENGINE_WHISPER
+STT_BACKEND_PARAKEET_ONNX = STT_ENGINE_PARAKEET
 
-STT_BACKEND_LABELS = {
-    STT_BACKEND_WHISPERX: "WhisperX",
-    STT_BACKEND_PARAKEET_ONNX: "ONNX Parakeet",
-}
-
-PARAKEET_ONNX_ENV_NAME = "parakeet_onnx_installer"
-WHISPERX_ENV_NAME = "whisperx_installer"
+STT_BACKEND_LABELS = {engine: model.label for engine, model in MODELS.items()}
 
 PARAKEET_V3_LANGUAGE_CODES = (
-    "bg",
-    "hr",
-    "cs",
-    "da",
-    "nl",
-    "en",
-    "et",
-    "fi",
-    "fr",
-    "de",
-    "el",
-    "hu",
-    "it",
-    "lv",
-    "lt",
-    "mt",
-    "pl",
-    "pt",
-    "ro",
-    "sk",
-    "sl",
-    "es",
-    "sv",
-    "ru",
-    "uk",
+    "bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu", "it",
+    "lv", "lt", "mt", "pl", "pt", "ro", "sk", "sl", "es", "sv", "ru", "uk",
 )
-
-_ALIASES = {
-    "": STT_BACKEND_WHISPERX,
-    "whisper": STT_BACKEND_WHISPERX,
-    "whisperx": STT_BACKEND_WHISPERX,
-    "parakeet": STT_BACKEND_PARAKEET_ONNX,
-    "onnx-parakeet": STT_BACKEND_PARAKEET_ONNX,
-    "onnx_parakeet": STT_BACKEND_PARAKEET_ONNX,
-    "parakeet-onnx": STT_BACKEND_PARAKEET_ONNX,
-    "parakeet_onnx": STT_BACKEND_PARAKEET_ONNX,
-}
 
 
 def normalize_stt_backend(raw_value: str | None) -> str:
-    normalized = str(raw_value or "").strip().lower().replace(" ", "_")
-    normalized = normalized.replace("-", "_")
-    return _ALIASES.get(normalized, STT_BACKEND_WHISPERX)
+    return normalize_engine(raw_value)
 
 
 @dataclass(frozen=True)
@@ -83,168 +50,85 @@ class STTBackendStatus:
     reason: str
 
 
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[3]
+@dataclass(frozen=True)
+class CrispASRRuntimeStatus:
+    installed: bool
+    executable: str
+    version: str
+    compute_backends: tuple[str, ...]
+    reason: str
 
 
-def _install_root() -> Path:
-    return _repo_root().parent
-
-
-def _candidate_manifest_paths(env_var: str, env_name: str, environ: dict[str, str]) -> tuple[Path, ...]:
-    candidates: list[Path] = []
-    explicit = str(environ.get(env_var) or "").strip()
-    if explicit:
-        candidates.append(Path(explicit))
-    candidates.extend(
-        [
-            _repo_root() / "envs" / env_name / "pixi.toml",
-            _install_root() / "envs" / env_name / "pixi.toml",
-        ]
-    )
-    return tuple(candidates)
-
-
-def _safe_find_spec(module_name: str) -> bool:
-    try:
-        return importlib.util.find_spec(module_name) is not None
-    except (ImportError, ModuleNotFoundError, ValueError):
-        return False
-
-
-def _status_from_checks(
-    backend: str,
-    *,
-    env_var: str,
-    env_name: str,
-    module_name: str,
-    executable_name: str = "",
-    environ: dict[str, str],
-    path_exists: Callable[[Path], bool],
-    find_module: Callable[[str], bool],
-    find_executable: Callable[[str], str | None],
-) -> STTBackendStatus:
-    for manifest_path in _candidate_manifest_paths(env_var, env_name, environ):
-        if path_exists(manifest_path):
-            return STTBackendStatus(
-                backend=backend,
-                label=STT_BACKEND_LABELS[backend],
-                installed=True,
-                reason=f"Pixi manifest found at {manifest_path}",
-            )
-
-    if find_module(module_name):
-        return STTBackendStatus(
-            backend=backend,
-            label=STT_BACKEND_LABELS[backend],
-            installed=True,
-            reason=f"Python module '{module_name}' is importable",
-        )
-
-    if executable_name:
-        executable_path = find_executable(executable_name)
-        if executable_path:
-            return STTBackendStatus(
-                backend=backend,
-                label=STT_BACKEND_LABELS[backend],
-                installed=True,
-                reason=f"Executable '{executable_name}' found at {executable_path}",
-            )
-
-    return STTBackendStatus(
-        backend=backend,
-        label=STT_BACKEND_LABELS[backend],
-        installed=False,
-        reason="Optional STT backend is not installed",
-    )
-
-
-def detect_stt_backend_statuses(
+def probe_crispasr_runtime(
     *,
     environ: dict[str, str] | None = None,
     path_exists: Callable[[Path], bool] | None = None,
-    find_module: Callable[[str], bool] | None = None,
-    find_executable: Callable[[str], str | None] | None = None,
-) -> dict[str, STTBackendStatus]:
-    active_environ = dict(os.environ if environ is None else environ)
+    run_func: Callable[..., Any] = subprocess.run,
+) -> CrispASRRuntimeStatus:
     exists = path_exists or (lambda path: path.is_file())
-    module_finder = find_module or _safe_find_spec
-    executable_finder = find_executable or shutil.which
+    explicit = str((os.environ if environ is None else environ).get("CRISPASR_EXECUTABLE") or "").strip()
+    candidates = ([Path(explicit)] if explicit else []) + list(candidate_executables(environ))
+    executable = next((str(path) for path in candidates if exists(path)), "")
+    if not executable:
+        discovered = resolve_executable(environ=environ)
+        if discovered != "crispasr":
+            executable = discovered
+    if not executable:
+        return CrispASRRuntimeStatus(False, "", "", (), "CrispASR is not installed")
+    try:
+        result = run_func([executable, "--version"], check=True, capture_output=True, text=True, timeout=10)
+        output = "\n".join((str(getattr(result, "stdout", "") or ""), str(getattr(result, "stderr", "") or "")))
+    except (OSError, subprocess.SubprocessError) as error:
+        return CrispASRRuntimeStatus(False, executable, "", (), f"CrispASR probe failed: {error}")
+    version_match = re.search(r"^\s*version\s*:\s*(\S+)", output, re.MULTILINE | re.IGNORECASE)
+    backend_match = re.search(r"^\s*ggml backends\s*:\s*(.+)$", output, re.MULTILINE | re.IGNORECASE)
+    backends = tuple(
+        item.lower() for item in re.split(r"[\s,]+", backend_match.group(1).strip()) if item
+    ) if backend_match else ()
+    return CrispASRRuntimeStatus(
+        True,
+        executable,
+        version_match.group(1) if version_match else "unknown",
+        backends,
+        f"CrispASR {version_match.group(1) if version_match else 'runtime'} ({', '.join(backends) or 'backend unknown'})",
+    )
 
+
+def detect_stt_backend_statuses(**kwargs) -> dict[str, STTBackendStatus]:
+    runtime = probe_crispasr_runtime(**kwargs)
     return {
-        STT_BACKEND_WHISPERX: _status_from_checks(
-            STT_BACKEND_WHISPERX,
-            env_var="WHISPERX_PIXI_MANIFEST",
-            env_name=WHISPERX_ENV_NAME,
-            module_name="whisperx",
-            executable_name="whisperx",
-            environ=active_environ,
-            path_exists=exists,
-            find_module=module_finder,
-            find_executable=executable_finder,
-        ),
-        STT_BACKEND_PARAKEET_ONNX: _status_from_checks(
-            STT_BACKEND_PARAKEET_ONNX,
-            env_var="PARAKEET_PIXI_MANIFEST",
-            env_name=PARAKEET_ONNX_ENV_NAME,
-            module_name="onnx_asr",
-            environ=active_environ,
-            path_exists=exists,
-            find_module=module_finder,
-            find_executable=executable_finder,
-        ),
+        engine: STTBackendStatus(engine, STT_BACKEND_LABELS[engine], runtime.installed, runtime.reason)
+        for engine in (STT_ENGINE_WHISPER, STT_ENGINE_PARAKEET)
     }
 
 
 def installed_stt_backends(**kwargs) -> tuple[str, ...]:
-    statuses = detect_stt_backend_statuses(**kwargs)
-    return tuple(backend for backend, status in statuses.items() if status.installed)
+    return tuple(key for key, status in detect_stt_backend_statuses(**kwargs).items() if status.installed)
 
 
 def is_stt_backend_installed(backend: str, **kwargs) -> bool:
-    normalized = normalize_stt_backend(backend)
-    return detect_stt_backend_statuses(**kwargs).get(normalized, STTBackendStatus(normalized, normalized, False, "")).installed
+    return detect_stt_backend_statuses(**kwargs)[normalize_stt_backend(backend)].installed
 
 
-def select_available_stt_backend(preferred_backend: str, statuses: dict[str, STTBackendStatus] | None = None) -> str:
+def select_available_stt_backend(preferred_backend: str, statuses=None) -> str:
     normalized = normalize_stt_backend(preferred_backend)
-    active_statuses = statuses or detect_stt_backend_statuses()
-    if active_statuses.get(normalized) and active_statuses[normalized].installed:
+    active = statuses or detect_stt_backend_statuses()
+    if active.get(normalized) and active[normalized].installed:
         return normalized
-    for backend in (STT_BACKEND_WHISPERX, STT_BACKEND_PARAKEET_ONNX):
-        if active_statuses.get(backend) and active_statuses[backend].installed:
-            return backend
-    return normalized
+    return next((engine for engine in (STT_ENGINE_WHISPER, STT_ENGINE_PARAKEET) if active.get(engine) and active[engine].installed), normalized)
 
 
 def language_options_for_backend(backend: str) -> tuple[STTLanguageOption, ...]:
-    normalized = normalize_stt_backend(backend)
-    if normalized == STT_BACKEND_PARAKEET_ONNX:
-        return tuple(
-            STTLanguageOption(name=LANGUAGE_DISPLAY_NAMES.get(code, code.upper()), code=code)
-            for code in PARAKEET_V3_LANGUAGE_CODES
-        )
-
-    return tuple(
-        STTLanguageOption(name=language, code=normalize_language_code(language, default=""))
-        for language in WHISPER_LANGUAGES
-    )
+    if normalize_stt_backend(backend) == STT_ENGINE_PARAKEET:
+        return tuple(STTLanguageOption(LANGUAGE_DISPLAY_NAMES.get(code, code.upper()), code) for code in PARAKEET_V3_LANGUAGE_CODES)
+    return tuple(STTLanguageOption(language, normalize_language_code(language, default="")) for language in WHISPER_LANGUAGES)
 
 
 def normalize_stt_language_for_backend(backend: str, language: str) -> STTLanguageOption:
     options = language_options_for_backend(backend)
-    if not options:
-        return STTLanguageOption(name=str(language or "").strip(), code="")
-
-    requested_name = str(language or "").strip()
+    requested_name = str(language or "").strip().lower()
     requested_code = normalize_language_code(requested_name, default="").lower()
-    requested_name_normalized = requested_name.lower()
-    for option in options:
-        if option.code.lower() == requested_code or option.name.lower() == requested_name_normalized:
-            return option
-
-    for option in options:
-        if option.code.lower() == "en":
-            return option
-
-    return options[0]
+    return next(
+        (option for option in options if option.code.lower() == requested_code or option.name.lower() == requested_name),
+        next((option for option in options if option.code == "en"), options[0]),
+    )

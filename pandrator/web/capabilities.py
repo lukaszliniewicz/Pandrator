@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from pandrator.runtime import DataPaths
+from pandrator.logic.dubbing.stt_backends import probe_crispasr_runtime
 
 
 def _exists(paths: DataPaths, *candidates: str) -> bool:
@@ -48,9 +49,16 @@ def probe_gpu() -> dict[str, Any]:
 
 def probe_capabilities(paths: DataPaths, *, local_mode: bool) -> dict[str, Any]:
     ffmpeg = shutil.which("ffmpeg")
+    crispasr = probe_crispasr_runtime()
     stt = {
-        "whisperx": bool(shutil.which("whisperx") or _exists(paths, "envs/whisperx_installer/pixi.toml", "whisperX/pixi.toml")),
-        "parakeet_onnx": _exists(paths, "envs/parakeet_onnx_installer/pixi.toml", "parakeet-tdt-0.6b-v3-onnx"),
+        "crispasr": crispasr.installed,
+        "version": crispasr.version,
+        "executable": crispasr.executable,
+        "compute_backends": list(crispasr.compute_backends),
+        "models": {
+            "whisper": {"available": crispasr.installed, "model": "large-v3", "precision": "f16", "word_timing": "dtw"},
+            "parakeet": {"available": crispasr.installed, "model": "tdt-0.6b-v3", "precision": "f16", "word_timing": "native"},
+        },
     }
     services = {
         "xtts": _exists(paths, "xtts2_api/run.bat", "xtts2_api/pixi.toml"),
@@ -71,6 +79,6 @@ def probe_capabilities(paths: DataPaths, *, local_mode: bool) -> dict[str, Any]:
             "reveal_folder": local_mode,
             "pycroppdf_fallback": local_mode and _exists(paths, "PyCropPDF/run.py"),
             "record_voice": bool(ffmpeg),
-            "transcribe_voice": any(stt.values()),
+            "transcribe_voice": crispasr.installed,
         },
     }

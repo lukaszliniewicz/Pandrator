@@ -246,44 +246,43 @@ def smoke_deepl(enabled: bool, output_dir: Path) -> dict[str, str]:
         return _status("deepl", "failed", str(error))
 
 
-def smoke_whisperx(
-    video_path: str,
+def smoke_crispasr(
+    media_path: str,
     output_dir: Path,
     ffmpeg: str,
-    whisper_model: str,
-    pixi_executable: str = "",
-    pixi_manifest: str = "",
+    *,
+    engine: str = "whisper",
+    compute_backend: str = "auto",
+    executable: str = "",
 ) -> dict[str, str]:
-    if not video_path:
-        return _status("whisperx", "skipped", "Pass --whisperx-video to run this check.")
-    input_path = Path(video_path)
+    if not media_path:
+        return _status("crispasr", "skipped", "Pass --crispasr-media to run this check.")
+    input_path = Path(media_path)
     if not input_path.is_file():
-        return _status("whisperx", "failed", f"Input file does not exist: {input_path}")
+        return _status("crispasr", "failed", f"Input file does not exist: {input_path}")
     if not ffmpeg:
-        return _status("whisperx", "skipped", "FFmpeg executable was not found.")
+        return _status("crispasr", "skipped", "FFmpeg executable was not found.")
     if transcription is None:
-        return _status("whisperx", "skipped", DUBBING_IMPORT_ERROR)
+        return _status("crispasr", "skipped", DUBBING_IMPORT_ERROR)
 
     try:
-        result_path = transcription.transcribe_video_file(
+        result = transcription.transcribe_source_file_with_metadata(
             output_dir,
             input_path,
             {
-                "whisper_language": "English",
-                "whisper_model": whisper_model,
-                "whisper_prompt": transcription.DEFAULT_WHISPER_PROMPT,
-                "whisper_chunk_size": transcription.DEFAULT_WHISPER_CHUNK_SIZE,
-                "subtitle_merge_threshold": 250,
+                "stt_engine": engine,
+                "stt_language": "English",
+                "stt_compute_backend": compute_backend,
+                "stt_vad_enabled": True,
             },
             ffmpeg_executable=ffmpeg,
-            pixi_executable=pixi_executable,
-            pixi_manifest=pixi_manifest,
+            crispasr_executable=executable,
         )
-        if not Path(result_path).is_file():
-            return _status("whisperx", "failed", "WhisperX did not produce an SRT file.")
-        return _status("whisperx", "passed", result_path)
+        if not Path(result.srt_path).is_file() or not Path(result.word_timestamps_path).is_file():
+            return _status("crispasr", "failed", "CrispASR did not produce SRT and word-timestamp JSON artifacts.")
+        return _status("crispasr", "passed", f"{result.srt_path}; words={result.word_timestamps_path}")
     except Exception as error:
-        return _status("whisperx", "failed", str(error))
+        return _status("crispasr", "failed", str(error))
 
 
 def _print_results(results: list[dict[str, str]]) -> int:
@@ -305,10 +304,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--llm-provider", default=os.environ.get("PANDRATOR_SMOKE_LLM_PROVIDER", ""))
     parser.add_argument("--zoom-vtt", default="", help="Zoom/WebVTT file to correct with --llm-model.")
     parser.add_argument("--deepl", action="store_true", help="Run a live DeepL translation check.")
-    parser.add_argument("--whisperx-video", default="", help="Media file to transcribe with WhisperX.")
-    parser.add_argument("--whisperx-model", default=os.environ.get("PANDRATOR_SMOKE_WHISPERX_MODEL", "small"))
-    parser.add_argument("--whisperx-pixi-exe", default=os.environ.get("WHISPERX_PIXI_EXE", ""))
-    parser.add_argument("--whisperx-pixi-manifest", default=os.environ.get("WHISPERX_PIXI_MANIFEST", ""))
+    parser.add_argument("--crispasr-media", default="", help="Media file to transcribe with CrispASR.")
+    parser.add_argument("--crispasr-engine", choices=("whisper", "parakeet"), default="whisper")
+    parser.add_argument("--crispasr-backend", choices=("auto", "cpu", "cuda", "vulkan", "metal"), default="auto")
+    parser.add_argument("--crispasr-executable", default=os.environ.get("CRISPASR_EXECUTABLE", ""))
     parser.add_argument("--skip-ffmpeg", action="store_true", help="Skip the default local FFmpeg sync/mux check.")
     args = parser.parse_args(argv)
 
@@ -329,13 +328,13 @@ def _run_checks(args: argparse.Namespace, output_dir: Path) -> int:
     results.append(smoke_zoom_vtt(args.zoom_vtt, output_dir, args.llm_model, provider_id=args.llm_provider))
     results.append(smoke_deepl(args.deepl, output_dir))
     results.append(
-        smoke_whisperx(
-            args.whisperx_video,
+        smoke_crispasr(
+            args.crispasr_media,
             output_dir,
             args.ffmpeg,
-            args.whisperx_model,
-            pixi_executable=args.whisperx_pixi_exe,
-            pixi_manifest=args.whisperx_pixi_manifest,
+            engine=args.crispasr_engine,
+            compute_backend=args.crispasr_backend,
+            executable=args.crispasr_executable,
         )
     )
     return _print_results(results)

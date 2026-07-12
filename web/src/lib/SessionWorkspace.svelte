@@ -45,6 +45,7 @@
 
   let { session, onback, onupdated }: { session: SessionRecord; onback: () => void; onupdated: (session: SessionRecord) => void } = $props();
   let snapshot = $state<Snapshot | null>(null);
+  let capabilities = $state<Record<string, any>>({});
   let loading = $state(true);
   let error = $state('');
   let uploading = $state(false);
@@ -53,13 +54,33 @@
   let targetLanguage = $state('en');
   let originalLanguage = $state('auto');
   let model = $state('default');
-  let backend = $state('whisperx');
+  let backend = $state('llm');
+  let sttEngine = $state('whisper');
+  let sttComputeBackend = $state('auto');
+  let sttDevice = $state(0);
+  let vadEnabled = $state(true);
+  let vadThreshold = $state(0.5);
+  let vadMinSpeech = $state(250);
+  let vadMinSilence = $state(100);
+  let vadMaxSpeech = $state(300);
+  let vadSpeechPad = $state(30);
+  let subtitleChars = $state(48);
+  let subtitleLines = $state(2);
+  let subtitleMinDuration = $state(833);
+  let subtitleMaxDuration = $state(7000);
+  let subtitleCps = $state(20);
+  let subtitleMinGap = $state(80);
+  let subtitlePhraseGap = $state(600);
   let instructions = $state('');
   let agentic = $state(false);
   let maxIterations = $state(53);
   let ttsService = $state('XTTS');
   let voiceName = $state('');
+  let speechBlockMinChars = $state(10);
+  let speechBlockMaxChars = $state(160);
+  let speechBlockMergeThreshold = $state(250);
   let subtitleMode = $state('soft');
+  let subtitleSelection = $state('dual');
   let audioMode = $state('preserve');
   let pdfSource = $state<{ id: string; filename: string } | null>(null);
   let reviewOpen = $state(false);
@@ -82,6 +103,13 @@
       loading = false;
     }
   }
+
+  async function loadCapabilities() {
+    try { capabilities = await api<Record<string, any>>('/capabilities'); }
+    catch { capabilities = {}; }
+  }
+
+  const supportsSttCompute = (name: string) => name === 'auto' || (capabilities?.stt?.compute_backends ?? []).includes(name);
 
   async function toggleIncluded(stage: Stage) {
     const current = new Set(session.included_stages_json);
@@ -143,13 +171,33 @@
     targetLanguage = String(saved.target_language ?? 'en');
     originalLanguage = String(saved.original_language ?? 'auto');
     model = String(saved.model_name ?? saved[`${stage.key}_model`] ?? 'default');
-    backend = String(saved.backend ?? saved.translation_backend ?? 'whisperx');
+    backend = String(saved.backend ?? saved.translation_backend ?? 'llm');
+    sttEngine = String(saved.stt_engine ?? saved.stt_backend ?? 'whisper').includes('parakeet') ? 'parakeet' : 'whisper';
+    sttComputeBackend = String(saved.stt_compute_backend ?? 'auto');
+    sttDevice = Number(saved.stt_compute_device ?? 0);
+    vadEnabled = Boolean(saved.crispasr_vad_enabled ?? true);
+    vadThreshold = Number(saved.crispasr_vad_threshold ?? 0.5);
+    vadMinSpeech = Number(saved.crispasr_vad_min_speech_ms ?? 250);
+    vadMinSilence = Number(saved.crispasr_vad_min_silence_ms ?? 100);
+    vadMaxSpeech = Number(saved.crispasr_vad_max_speech_seconds ?? 300);
+    vadSpeechPad = Number(saved.crispasr_vad_speech_pad_ms ?? 30);
+    subtitleChars = Number(saved.subtitle_max_chars_per_line ?? 48);
+    subtitleLines = Number(saved.subtitle_max_lines ?? 2);
+    subtitleMinDuration = Number(saved.subtitle_min_duration_ms ?? 833);
+    subtitleMaxDuration = Number(saved.subtitle_max_duration_ms ?? 7000);
+    subtitleCps = Number(saved.subtitle_max_cps ?? 20);
+    subtitleMinGap = Number(saved.subtitle_min_gap_ms ?? 80);
+    subtitlePhraseGap = Number(saved.subtitle_phrase_gap_ms ?? 600);
     instructions = String(saved.instructions ?? '');
     agentic = Boolean(saved.agentic ?? false);
     maxIterations = Number(saved.max_iterations ?? 53);
     ttsService = String(saved.tts_service ?? saved.service ?? 'XTTS');
     voiceName = String(saved.voice ?? saved.voice_name ?? '');
+    speechBlockMinChars = Number(saved.speech_block_min_chars ?? 10);
+    speechBlockMaxChars = Number(saved.speech_block_max_chars ?? 160);
+    speechBlockMergeThreshold = Number(saved.speech_block_merge_threshold ?? 250);
     subtitleMode = String(saved.subtitle_mode ?? 'soft');
+    subtitleSelection = String(saved.subtitle_selection ?? 'dual');
     audioMode = String(saved.audio_mode ?? 'preserve');
   }
 
@@ -163,12 +211,35 @@
     if (!settingsStage) return;
     const key = settingsStage.key;
     const common = { model_name: model === 'default' ? '' : model, [`${key}_model`]: model };
-    if (key === 'transcribe') stageSettings[key] = { backend, original_language: originalLanguage };
+    if (key === 'transcribe') stageSettings[key] = {
+      stt_engine: sttEngine, stt_backend: sttEngine, stt_compute_backend: sttComputeBackend,
+      stt_compute_device: sttDevice, stt_language: originalLanguage, original_language: originalLanguage,
+      crispasr_vad_enabled: vadEnabled, crispasr_vad_threshold: vadThreshold,
+      crispasr_vad_min_speech_ms: vadMinSpeech, crispasr_vad_min_silence_ms: vadMinSilence,
+      crispasr_vad_max_speech_seconds: vadMaxSpeech, crispasr_vad_speech_pad_ms: vadSpeechPad,
+      subtitle_max_chars_per_line: subtitleChars, subtitle_max_lines: subtitleLines,
+      subtitle_min_duration_ms: subtitleMinDuration, subtitle_max_duration_ms: subtitleMaxDuration,
+      subtitle_max_cps: subtitleCps, subtitle_min_gap_ms: subtitleMinGap,
+      subtitle_phrase_gap_ms: subtitlePhraseGap
+    };
     else if (key === 'correct') stageSettings[key] = { ...common, instructions };
     else if (key === 'translate') stageSettings[key] = { ...common, translation_backend: backend, target_language: targetLanguage, instructions };
     else if (key === 'clean_source') stageSettings[key] = { ...common, agentic, max_iterations: maxIterations };
-    else if (key === 'prepare_text' || key === 'generate_audio') stageSettings[key] = { tts_service: ttsService, service: ttsService, voice: voiceName, language: targetLanguage };
-    else if (key === 'export') stageSettings[key] = { subtitle_mode: subtitleMode, audio_mode: audioMode };
+    else if (key === 'prepare_text') stageSettings[key] = { tts_service: ttsService, service: ttsService, voice: voiceName, language: targetLanguage };
+    else if (key === 'generate_audio') stageSettings[key] = {
+      tts_service: ttsService, service: ttsService, voice: voiceName,
+      language: targetLanguage, target_language: targetLanguage,
+      speech_block_min_chars: speechBlockMinChars,
+      speech_block_max_chars: speechBlockMaxChars,
+      speech_block_merge_threshold: speechBlockMergeThreshold
+    };
+    else if (key === 'export') stageSettings[key] = {
+      subtitle_mode: subtitleMode, subtitle_selection: subtitleSelection, audio_mode: audioMode,
+      subtitle_max_chars_per_line: subtitleChars, subtitle_max_lines: subtitleLines,
+      subtitle_min_duration_ms: subtitleMinDuration, subtitle_max_duration_ms: subtitleMaxDuration,
+      subtitle_max_cps: subtitleCps, subtitle_min_gap_ms: subtitleMinGap,
+      subtitle_phrase_gap_ms: subtitlePhraseGap
+    };
     else stageSettings[key] = common;
     settingsStage = null;
   }
@@ -180,7 +251,7 @@
     return Clock3;
   };
 
-  onMount(load);
+  onMount(async () => { await Promise.all([load(), loadCapabilities()]); });
   $effect(() => {
     if (refreshTimer) window.clearTimeout(refreshTimer);
     if (snapshot?.stages.some((stage) => stage.status === 'running')) refreshTimer = window.setTimeout(load, 1000);
@@ -230,16 +301,23 @@
 
 {#if settingsStage}
   <div class="fixed inset-0 z-50 grid place-items-center bg-black/35 p-5 backdrop-blur-sm" role="presentation" onclick={(event) => event.target === event.currentTarget && (settingsStage=null)}>
-    <div class="surface w-full max-w-lg rounded-[1.7rem] p-7" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <div class="surface max-h-[92vh] w-full max-w-xl overflow-y-auto rounded-[1.7rem] p-7" role="dialog" aria-modal="true" aria-labelledby="settings-title">
       <div class="flex justify-between gap-5"><div><div class="eyebrow">Stage settings</div><h2 id="settings-title" class="mt-1 text-2xl font-semibold">{settingsStage.title}</h2></div><button onclick={() => settingsStage=null} class="rounded-lg p-2"><X size={19}/></button></div>
       <div class="mt-6 grid gap-5">
         {#if ['correct','translate','clean_source'].includes(settingsStage.key)}<label class="text-sm font-semibold">Model<input bind:value={model} placeholder="Use configured default" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/></label>{/if}
-        {#if settingsStage.key === 'transcribe'}<label class="text-sm font-semibold">STT backend<select bind:value={backend} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="whisperx">WhisperX</option><option value="parakeet_onnx">ONNX Parakeet</option></select></label><label class="text-sm font-semibold">Source language<input bind:value={originalLanguage} placeholder="auto" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/></label>{/if}
+        {#if settingsStage.key === 'transcribe'}
+          <label class="text-sm font-semibold">Recognition model<select bind:value={sttEngine} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="whisper">Whisper large-v3 · F16 · DTW timestamps</option><option value="parakeet">Parakeet TDT 0.6B v3 · F16 · native timestamps</option></select></label>
+          <div class="grid gap-3 sm:grid-cols-[1fr_7rem]"><label class="text-sm font-semibold">Compute backend<select bind:value={sttComputeBackend} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="auto">Automatic</option><option value="cpu" disabled={!supportsSttCompute('cpu')}>CPU</option><option value="cuda" disabled={!supportsSttCompute('cuda')}>CUDA</option><option value="vulkan" disabled={!supportsSttCompute('vulkan')}>Vulkan</option><option value="metal" disabled={!supportsSttCompute('metal')}>Metal</option></select><span class="muted mt-1 block text-xs">Only backends compiled into the installed CrispASR runtime can be forced.</span></label><label class="text-sm font-semibold">Device<input type="number" min="0" disabled={['auto','cpu'].includes(sttComputeBackend)} bind:value={sttDevice} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal disabled:opacity-40"/></label></div>
+          <label class="text-sm font-semibold">Source language<input bind:value={originalLanguage} placeholder="auto" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/></label>
+          <label class="flex items-center gap-3 text-sm font-semibold"><input type="checkbox" bind:checked={vadEnabled} class="size-4 accent-[var(--accent)]"/> Voice activity detection</label>
+          {#if vadEnabled}<div class="grid grid-cols-2 gap-3"><label class="text-xs font-semibold">Threshold<input type="number" min="0" max="1" step="0.05" bind:value={vadThreshold} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Minimum speech (ms)<input type="number" min="0" bind:value={vadMinSpeech} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Minimum silence (ms)<input type="number" min="0" bind:value={vadMinSilence} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Maximum speech (s)<input type="number" min="1" bind:value={vadMaxSpeech} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Speech padding (ms)<input type="number" min="0" bind:value={vadSpeechPad} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label></div>{/if}
+          <div class="rounded-xl border border-[var(--line)] p-4"><div class="text-sm font-semibold">Readable subtitle composition</div><p class="muted mt-1 text-xs">Independent from speech blocks and TTS segmentation. Defaults allow 48 characters per line for meetings while retaining two-line, 20 CPS and 0.833–7 second delivery guidance.</p><div class="mt-3 grid grid-cols-2 gap-3"><label class="text-xs font-semibold">Characters / line<input type="number" min="20" max="100" bind:value={subtitleChars} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Lines<input type="number" min="1" max="3" bind:value={subtitleLines} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Minimum duration (ms)<input type="number" min="250" bind:value={subtitleMinDuration} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Maximum duration (ms)<input type="number" min="1000" bind:value={subtitleMaxDuration} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Characters / second<input type="number" min="5" max="40" step="0.5" bind:value={subtitleCps} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Minimum cue gap (ms)<input type="number" min="0" max="500" bind:value={subtitleMinGap} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Phrase-break silence (ms)<input type="number" min="100" max="3000" bind:value={subtitlePhraseGap} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label></div></div>
+        {/if}
         {#if settingsStage.key === 'correct'}<label class="text-sm font-semibold">Correction guidance<textarea bind:value={instructions} rows="4" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"></textarea></label>{/if}
         {#if settingsStage.key === 'translate'}<label class="text-sm font-semibold">Translation backend<select bind:value={backend} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="llm">LLM</option><option value="deepl">DeepL</option></select></label><label class="text-sm font-semibold">Target language<input bind:value={targetLanguage} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/></label><label class="text-sm font-semibold">Translation guidance<textarea bind:value={instructions} rows="3" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"></textarea></label>{/if}
         {#if settingsStage.key === 'clean_source'}<label class="flex items-start gap-3 rounded-xl border border-[var(--line)] p-4"><input type="checkbox" bind:checked={agentic} class="mt-1 size-4 accent-[var(--accent)]"/><span><span class="block text-sm font-semibold">Agentic review loop</span><span class="muted mt-1 block text-xs">Runs focused metadata, navigation, boilerplate, repeated-element, and chapter passes. Provider costs may apply.</span></span></label>{#if agentic}<label class="text-sm font-semibold">Maximum LLM turns<input type="number" min="5" max="500" bind:value={maxIterations} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/></label>{/if}{/if}
-        {#if ['prepare_text','generate_audio'].includes(settingsStage.key)}<label class="text-sm font-semibold">TTS service<select bind:value={ttsService} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option>XTTS</option><option>Kokoro</option><option>Chatterbox</option><option>VoxCPM</option><option>Fish Speech 2</option><option>Silero</option></select></label><label class="text-sm font-semibold">Voice / model<input bind:value={voiceName} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/></label><label class="text-sm font-semibold">Language<input bind:value={targetLanguage} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/></label>{/if}
-        {#if settingsStage.key === 'export'}<label class="text-sm font-semibold">Audio<select bind:value={audioMode} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="preserve">Preserve source audio</option><option value="mixed">Mix source and dubbing</option><option value="dubbing_only">Dubbing only</option></select></label><label class="text-sm font-semibold">Subtitles<select bind:value={subtitleMode} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="none">None</option><option value="soft">Injected soft tracks</option><option value="burn">Burned bilingual overlay</option></select></label>{/if}
+        {#if ['prepare_text','generate_audio'].includes(settingsStage.key)}<label class="text-sm font-semibold">TTS service<select bind:value={ttsService} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option>XTTS</option><option>Kokoro</option><option>Chatterbox</option><option>VoxCPM</option><option>Fish Speech 2</option><option>Silero</option></select></label><label class="text-sm font-semibold">Voice / model<input bind:value={voiceName} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/></label><label class="text-sm font-semibold">Language<input bind:value={targetLanguage} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/></label>{#if settingsStage.key === 'generate_audio'}<div class="rounded-xl border border-[var(--line)] p-4"><div class="text-sm font-semibold">Speech blocks for dubbing</div><p class="muted mt-1 text-xs">These TTS chunks are independent from the final subtitle layout.</p><div class="mt-3 grid grid-cols-2 gap-3"><label class="text-xs font-semibold">Minimum characters<input type="number" min="1" bind:value={speechBlockMinChars} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Maximum characters<input type="number" min="1" bind:value={speechBlockMaxChars} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Merge gap (ms)<input type="number" min="0" bind:value={speechBlockMergeThreshold} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label></div></div>{/if}{/if}
+        {#if settingsStage.key === 'export'}<label class="text-sm font-semibold">Audio<select bind:value={audioMode} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="preserve">Preserve source audio</option><option value="mixed">Mix source and dubbing</option><option value="dubbing_only">Dubbing only</option></select></label><label class="text-sm font-semibold">Subtitles<select bind:value={subtitleMode} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="none">None</option><option value="soft">Injected soft tracks / separate files</option><option value="burned">Burned subtitles</option></select></label>{#if subtitleMode !== 'none'}<label class="text-sm font-semibold">Subtitle tracks<select bind:value={subtitleSelection} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="source">Source / corrected</option><option value="translation">Translation</option><option value="dual">Source and translation</option></select></label>{/if}<div class="rounded-xl border border-[var(--line)] p-4"><div class="text-sm font-semibold">Final subtitle layout</div><p class="muted mt-1 text-xs">Applied to derived export subtitles only; dubbing speech blocks are unchanged.</p><div class="mt-3 grid grid-cols-2 gap-3"><label class="text-xs font-semibold">Characters / line<input type="number" min="20" max="100" bind:value={subtitleChars} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Lines<input type="number" min="1" max="3" bind:value={subtitleLines} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Minimum duration (ms)<input type="number" min="250" bind:value={subtitleMinDuration} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Maximum duration (ms)<input type="number" min="1000" bind:value={subtitleMaxDuration} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Characters / second<input type="number" min="5" max="40" step="0.5" bind:value={subtitleCps} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Minimum cue gap (ms)<input type="number" min="0" max="500" bind:value={subtitleMinGap} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Phrase-break silence (ms)<input type="number" min="100" max="3000" bind:value={subtitlePhraseGap} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label></div></div>{/if}
       </div>
       <div class="mt-7 flex justify-end gap-3"><button onclick={() => settingsStage=null} class="rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold">Cancel</button><button onclick={saveSettings} class="rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white">Save settings</button></div>
     </div>
