@@ -17,16 +17,15 @@ class BuildReleasePackagesTests(unittest.TestCase):
         self.assertEqual(resolved, ("kokoro",))
 
     def test_resolve_dependencies_with_deps(self):
-        # xtts_finetuning depends on whisperx and xtts
+        # The trainer owns its private transcription dependency; packaging only depends on XTTS.
         resolved = build_release_packages.resolve_dependencies(["xtts_finetuning"])
         # Should be resolved in topological/dependency-first order
-        self.assertEqual(resolved, ("whisperx", "xtts", "xtts_finetuning"))
+        self.assertEqual(resolved, ("xtts", "xtts_finetuning"))
 
     def test_resolve_dependencies_multiple_mixed(self):
         # Resolve mixed list including dependency overlap
         resolved = build_release_packages.resolve_dependencies(["kokoro", "xtts_finetuning", "whisperx"])
-        # Order should be valid and unique: kokoro and whisperx/xtts dependencies resolved
-        self.assertEqual(set(resolved), {"kokoro", "whisperx", "xtts", "xtts_finetuning"})
+        self.assertEqual(set(resolved), {"kokoro", "crispasr", "xtts", "xtts_finetuning"})
 
     def test_resolve_dependencies_unknown(self):
         with self.assertRaises(RuntimeError) as context:
@@ -41,12 +40,12 @@ class BuildReleasePackagesTests(unittest.TestCase):
     def test_parse_selected_modules_preset(self):
         # 'stack' preset maps to ('xtts_finetuning', 'rvc'), which expands to dependencies
         resolved = build_release_packages.parse_selected_modules("stack")
-        self.assertEqual(set(resolved), {"whisperx", "xtts", "xtts_finetuning", "rvc"})
+        self.assertEqual(set(resolved), {"xtts", "xtts_finetuning", "rvc"})
 
     def test_parse_selected_modules_custom_list(self):
         # Comma-separated list with mixed case and dashes
         resolved = build_release_packages.parse_selected_modules("Kokoro, RVC, whisperx")
-        self.assertEqual(set(resolved), {"kokoro", "rvc", "whisperx"})
+        self.assertEqual(set(resolved), {"kokoro", "rvc", "crispasr"})
 
     def test_parse_selected_modules_kokoro_cpu(self):
         resolved = build_release_packages.parse_selected_modules("kokoro_cpu")

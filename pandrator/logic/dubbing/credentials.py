@@ -10,7 +10,6 @@ from typing import Any
 from .. import llm_handler
 from . import llm_config
 from .settings import TRANSLATION_BACKEND_DEEPL, migrate_dubbing_payload
-from .stt_backends import STT_BACKEND_PARAKEET_ONNX, normalize_stt_backend
 
 DEEPL_PROVIDER_ID = "deepl"
 
@@ -75,16 +74,6 @@ def validate_correction_credentials(settings: dict[str, Any]) -> CredentialValid
 
 
 def validate_transcription_credentials(settings: dict[str, Any]) -> CredentialValidationResult:
-    stt_backend = normalize_stt_backend(settings.get("stt_backend"))
-    if stt_backend != STT_BACKEND_PARAKEET_ONNX and bool(settings.get("diarization_enabled") or settings.get("diarize")):
-        hf_token = str(settings.get("hf_token") or os.environ.get("HF_TOKEN") or "").strip()
-        if not hf_token:
-            return CredentialValidationResult(
-                ok=False,
-                step_key="transcribe",
-                message="Transcription diarization cannot run: WhisperX diarization requires HF_TOKEN in the API Keys tab or environment.",
-            )
-
     if bool(settings.get("correction_enabled")) and not settings_use_deepl(settings):
         result = validate_correction_credentials(settings)
         if not result.ok:

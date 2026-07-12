@@ -43,6 +43,33 @@ class DubbingSpeechBlocksIntegrationTests(unittest.TestCase):
         self.assertEqual(merged[0]["subtitles"], [1, 2])
         self.assertEqual([block["text"] for block in unmerged], ["Hello there", "friend", "Later"])
 
+    def test_speech_block_merge_keeps_subdub_directionality(self):
+        content = """1
+00:00:00,000 --> 00:00:00,500
+Hi
+
+2
+00:00:00,600 --> 00:00:02,000
+This following block is already long enough
+"""
+        blocks = speech_blocks.create_speech_blocks(
+            content,
+            target_language="en",
+            min_chars=10,
+            max_chars=80,
+            merge_threshold=250,
+        )
+
+        self.assertEqual(
+            [block["text"] for block in blocks],
+            ["Hi", "This following block is already long enough"],
+        )
+
+    def test_speech_block_conjunction_map_preserves_non_ascii_languages(self):
+        self.assertIn("ponieważ", speech_blocks.CONJUNCTIONS["pl"])
+        self.assertIn("потому что", speech_blocks.CONJUNCTIONS["ru"])
+        self.assertIn("因为", speech_blocks.CONJUNCTIONS["zh-cn"])
+
     def test_create_speech_blocks_splits_long_text_under_max_chars(self):
         srt_content = """1
 00:00:00,000 --> 00:00:05,000

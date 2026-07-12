@@ -50,14 +50,22 @@ SENTENCE_SPLITTER_LANGUAGES = {
 }
 
 CONJUNCTIONS = {
-    "en": ["and", "but", "or", "because", "although", "so", "while", "if", "then"],
-    "es": ["y", "pero", "o", "porque", "aunque", "mientras", "si", "entonces"],
-    "fr": ["et", "mais", "ou", "parce que", "bien que", "pendant que", "si"],
-    "de": ["und", "aber", "oder", "weil", "obwohl", "wenn", "dann", "dass"],
-    "it": ["e", "ma", "o", "perche", "sebbene", "mentre", "se"],
-    "pt": ["e", "mas", "ou", "porque", "embora", "enquanto", "se"],
-    "pl": ["i", "ale", "lub", "poniewaz", "chociaz", "jesli", "wtedy"],
-    "nl": ["en", "maar", "of", "omdat", "hoewel", "terwijl", "als"],
+    "en": ["and", "but", "or", "because", "although", "so", "while", "if", "then", "that", "as", "for", "since", "until", "whether"],
+    "es": ["y", "pero", "o", "porque", "aunque", "así", "mientras", "si", "entonces", "que", "como", "pues", "desde", "hasta"],
+    "fr": ["et", "mais", "ou", "parce que", "bien que", "donc", "pendant que", "si", "alors", "que", "comme", "car", "depuis", "jusqu'à"],
+    "de": ["und", "aber", "oder", "weil", "obwohl", "also", "während", "wenn", "dann", "dass", "als", "denn", "seit", "bis", "ob"],
+    "it": ["e", "ma", "o", "perché", "sebbene", "quindi", "mentre", "se", "allora", "che", "come", "poiché", "da quando", "fino a"],
+    "pt": ["e", "mas", "ou", "porque", "embora", "então", "enquanto", "se", "logo", "que", "como", "pois", "desde", "até"],
+    "pl": ["i", "ale", "lub", "ponieważ", "chociaż", "więc", "podczas gdy", "jeśli", "wtedy", "że", "jak", "gdyż", "od", "aż", "czy"],
+    "tr": ["ve", "ama", "veya", "çünkü", "rağmen", "bu yüzden", "iken", "eğer", "o zaman", "ki", "gibi", "zira"],
+    "ru": ["и", "но", "или", "потому что", "хотя", "так что", "пока", "если", "тогда", "что", "как", "ибо", "с", "до", "ли"],
+    "nl": ["en", "maar", "of", "omdat", "hoewel", "dus", "terwijl", "als", "dan", "dat", "zoals", "want", "sinds", "tot"],
+    "cs": ["a", "ale", "nebo", "protože", "ačkoli", "takže", "zatímco", "jestli", "pak", "že", "jako", "neboť", "od", "až", "zda"],
+    "hu": ["és", "de", "vagy", "mert", "bár", "tehát", "míg", "ha", "akkor", "hogy", "mint", "hiszen", "óta", "ameddig", "vajon"],
+    "ar": ["و", "لكن", "أو", "لأن", "رغم أن", "لذلك", "بينما", "إذا", "ثم", "أن", "كما", "ف", "منذ", "حتى", "هل"],
+    "zh-cn": ["和", "但是", "或者", "因为", "虽然", "所以", "当", "如果", "那么", "的", "作为", "由于", "从", "直到", "是否"],
+    "ja": ["そして", "しかし", "または", "なぜなら", "にもかかわらず", "だから", "もし", "その時", "と", "ように", "から", "以来", "まで", "かどうか"],
+    "ko": ["그리고", "하지만", "또는", "왜냐하면", "비록", "그래서", "동안", "만약", "그때", "것", "처럼", "때문에", "이후", "까지", "인지"],
 }
 
 _FALLBACK_SENTENCE_RE = re.compile(r"(?<=[.!?\u3002\uff01\uff1f])\s+")
@@ -233,7 +241,10 @@ def _should_merge_parts(
     if gap_ms > merge_threshold:
         return False
 
-    return len(previous.text) < min_chars or len(current.text) < min_chars
+    # Preserve Subdub's behavior: a short *following* fragment may join the
+    # previous block.  Do not pull a full sentence backward merely because the
+    # preceding fragment was short.
+    return len(current.text) < min_chars
 
 
 def _parts_to_blocks(parts: list[_SpeechPart]) -> list[SpeechBlock]:
@@ -257,6 +268,9 @@ def create_speech_blocks(
     merge_threshold: int = 250,
 ) -> list[dict[str, object]]:
     """Create Pandrator/Subdub-compatible speech blocks from SRT content."""
+    min_chars = max(1, int(min_chars))
+    max_chars = max(min_chars, int(max_chars))
+    merge_threshold = max(0, int(merge_threshold))
     language_code = normalize_language_code(target_language)
     subtitles = parse_srt(srt_content)
     all_parts: list[_SpeechPart] = []

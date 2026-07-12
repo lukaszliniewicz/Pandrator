@@ -30,6 +30,7 @@ from ..reporting import NullReporter
 from ..runtime import RuntimeMixin
 from ..storage import StorageMixin
 from ..workflows import WorkflowMixin
+from ..crispasr import detect_compute_backends
 from .actions import GuiActionsMixin
 from .support import (
     GitHubLinkButton,
@@ -76,8 +77,9 @@ class PandratorInstaller(
         self.kokoro_cpu_var = False
         self.rvc_var = False
         self.rvc_cpu_var = False
-        self.whisperx_var = False
-        self.parakeet_onnx_var = False
+        self.crispasr_var = False
+        self.crispasr_backend = "auto"
+        self.crispasr_backend_manually_set = False
         self.xtts_finetuning_var = False
         self.chatterbox_var = False
         self.chatterbox_cpu_var = False
@@ -505,16 +507,16 @@ class PandratorInstaller(
 
         stt_group = QGroupBox("STT backends")
         stt_grid = QGridLayout(stt_group)
-        self.whisperx_checkbox = QCheckBox("WhisperX transcription")
-        self.parakeet_onnx_checkbox = QCheckBox("ONNX Parakeet transcription")
+        self.crispasr_checkbox = QCheckBox("CrispASR transcription")
+        self.crispasr_settings_button = QPushButton("Runtime settings…")
+        self.crispasr_settings_button.clicked.connect(
+            lambda: self.show_crispasr_config_dialog(force=True)
+        )
         stt_cards = (
             self._create_option_card(
-                self.whisperx_checkbox,
-                "Adds transcription and alignment used by dubbing and XTTS training.",
-            ),
-            self._create_option_card(
-                self.parakeet_onnx_checkbox,
-                "Adds CPU-friendly ONNX Parakeet transcription with Silero VAD.",
+                self.crispasr_checkbox,
+                "One native runtime for full-precision Whisper large-v3 and Parakeet 0.6B v3, with CPU, CUDA, Vulkan, and Apple Metal support.",
+                (self.crispasr_settings_button,),
             ),
         )
         self._add_option_cards(stt_grid, stt_cards)
@@ -537,11 +539,10 @@ class PandratorInstaller(
         tools_group = QGroupBox("Training tools")
         tools_grid = QGridLayout(tools_group)
         self.xtts_finetuning_checkbox = QCheckBox("XTTS fine-tuning")
-        self.xtts_finetuning_checkbox.stateChanged.connect(self.update_whisperx_checkbox)
         tool_cards = (
             self._create_option_card(
                 self.xtts_finetuning_checkbox,
-                "Adds tools for training custom XTTS voices. WhisperX will be included.",
+                "Adds tools for training custom XTTS voices.",
             ),
         )
         self._add_option_cards(tools_grid, tool_cards)
@@ -589,6 +590,7 @@ class PandratorInstaller(
             self.rvc_cpu_checkbox,
         )
         self.fishs2_checkbox.stateChanged.connect(self._handle_fishs2_toggle)
+        self.crispasr_checkbox.stateChanged.connect(self._handle_crispasr_toggle)
 
         for checkbox in self.install_tab.findChildren(QCheckBox):
             checkbox.stateChanged.connect(self.update_install_button_state)
@@ -928,22 +930,12 @@ class PandratorInstaller(
         xtts_finetuning_support = config.get('xtts_finetuning_support', False)
         set_widget_state(self.xtts_finetuning_checkbox, not xtts_finetuning_support, False)
 
-        # WhisperX
-        whisperx_support = config.get('whisperx_support', False)
-        if whisperx_support:
-            set_widget_state(self.whisperx_checkbox, False, False)
-        elif xtts_finetuning_support:
-            # XTTS Fine-tuning is installed
-            set_widget_state(self.whisperx_checkbox, False, False)
-        elif self.xtts_finetuning_checkbox.isChecked():
-            # XTTS Fine-tuning is not installed but selected
-            set_widget_state(self.whisperx_checkbox, False, True)
-        else:
-            set_widget_state(self.whisperx_checkbox, True, False)
-
-        # ONNX Parakeet
-        parakeet_onnx_support = config.get('parakeet_onnx_support', False)
-        set_widget_state(self.parakeet_onnx_checkbox, not parakeet_onnx_support, False)
+        # CrispASR (legacy STT flags are treated as pending migration).
+        crispasr_support = config.get('crispasr_support', False)
+        legacy_stt_support = config.get('whisperx_support', False) or config.get('parakeet_onnx_support', False)
+        set_widget_state(self.crispasr_checkbox, not crispasr_support, legacy_stt_support and not crispasr_support)
+        self.crispasr_backend = str(config.get('crispasr_backend') or self.crispasr_backend or 'auto')
+        self.crispasr_settings_button.setEnabled(not crispasr_support or legacy_stt_support)
 
         # Update launch and install buttons state
         self.apply_platform_install_availability()
@@ -967,8 +959,7 @@ class PandratorInstaller(
             'voxtral': (self.voxtral_checkbox,),
             'rvc': (self.rvc_checkbox, self.rvc_cpu_checkbox),
             'rvc_cpu': (self.rvc_checkbox, self.rvc_cpu_checkbox),
-            'whisperx': (self.whisperx_checkbox,),
-            'parakeet_onnx': (self.parakeet_onnx_checkbox,),
+            'crispasr': (self.crispasr_checkbox, self.crispasr_settings_button),
             'xtts_finetuning': (self.xtts_finetuning_checkbox,),
             'chatterbox': (self.chatterbox_checkbox, self.chatterbox_cpu_checkbox),
             'chatterbox_cpu': (self.chatterbox_checkbox, self.chatterbox_cpu_checkbox),
@@ -1026,24 +1017,6 @@ class PandratorInstaller(
         )
         self.install_button.setEnabled(has_selected_component)
 
-    def update_whisperx_checkbox(self):
-        """Update WhisperX checkbox when XTTS Fine-tuning is toggled"""
-        installed_components = self.get_installed_components()
-        whisperx_support = installed_components.get('whisperx', False)
-        xtts_finetuning_support = installed_components.get('xtts_finetuning', False)
-
-        if whisperx_support:
-            self.whisperx_checkbox.setChecked(False)
-            self.whisperx_checkbox.setEnabled(False)
-        elif self.xtts_finetuning_checkbox.isChecked() and not xtts_finetuning_support:
-            self.whisperx_checkbox.setChecked(True)
-            self.whisperx_checkbox.setEnabled(False)
-        elif xtts_finetuning_support:
-            self.whisperx_checkbox.setChecked(False)
-            self.whisperx_checkbox.setEnabled(False)
-        else:
-            self.whisperx_checkbox.setEnabled(True)
-
     def get_installed_components(self):
         pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
         config = self.load_install_config(pandrator_path, detect_rvc=True)
@@ -1056,8 +1029,7 @@ class PandratorInstaller(
             'kokoro': config.get('kokoro_support', False),
             'silero': config.get('silero_support', False),
             'rvc': config.get('rvc_support', False),
-            'whisperx': config.get('whisperx_support', False),
-            'parakeet_onnx': config.get('parakeet_onnx_support', False),
+            'crispasr': config.get('crispasr_support', False),
             'xtts_finetuning': config.get('xtts_finetuning_support', False),
             'chatterbox': config.get('chatterbox_support', False),
             'kobold_qwen': config.get('kobold_qwen_support', False),
@@ -1133,8 +1105,8 @@ class PandratorInstaller(
             kokoro_cpu=self.kokoro_checkbox.isChecked() and self.kokoro_cpu_checkbox.isChecked(),
             rvc=self.rvc_checkbox.isChecked() and not self.rvc_cpu_checkbox.isChecked(),
             rvc_cpu=self.rvc_checkbox.isChecked() and self.rvc_cpu_checkbox.isChecked(),
-            whisperx=self.whisperx_checkbox.isChecked(),
-            parakeet_onnx=self.parakeet_onnx_checkbox.isChecked(),
+            crispasr=self.crispasr_checkbox.isChecked(),
+            crispasr_backend=self.crispasr_backend,
             xtts_finetuning=self.xtts_finetuning_checkbox.isChecked(),
             chatterbox=(
                 self.chatterbox_checkbox.isChecked()
@@ -1163,8 +1135,7 @@ class PandratorInstaller(
             "voxcpm",
             "silero",
             "voxtral",
-            "whisperx",
-            "parakeet_onnx",
+            "crispasr",
             "xtts_finetuning",
         ):
             getattr(self, f"{component}_checkbox").setChecked(getattr(selection, component))
@@ -1180,7 +1151,7 @@ class PandratorInstaller(
         self.fishs2_checkbox.setChecked(fishs2_selected)
         self.fishs2_backend = getattr(selection, "fishs2_backend", "auto")
         self.fishs2_model_quant = getattr(selection, "fishs2_model_quant", "q6_k")
-        self.update_whisperx_checkbox()
+        self.crispasr_backend = getattr(selection, "crispasr_backend", "auto")
 
     def snapshot_launch_selection(self):
         """Read launch choices on the GUI thread before work starts."""
@@ -1212,6 +1183,26 @@ class PandratorInstaller(
             self.show_fishs2_config_dialog(force=False)
         self.update_install_button_state()
 
+    def _handle_crispasr_toggle(self, state):
+        is_checked = state == Qt.CheckState.Checked.value
+        if is_checked:
+            self.show_crispasr_config_dialog(force=False)
+        self.update_install_button_state()
+
+    def show_crispasr_config_dialog(self, force=False):
+        if not force and self.crispasr_backend_manually_set:
+            return
+        dialog = CrispASRConfigDialog(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.crispasr_backend = dialog.get_selected_backend()
+            self.crispasr_backend_manually_set = True
+            logging.info("CrispASR configured: backend=%s", self.crispasr_backend)
+        elif not force:
+            self.crispasr_checkbox.blockSignals(True)
+            self.crispasr_checkbox.setChecked(False)
+            self.crispasr_checkbox.blockSignals(False)
+            self.update_install_button_state()
+
     def show_fishs2_config_dialog(self, force=False):
         if not force and getattr(self, "fishs2_model_quant_manually_set", False):
             return
@@ -1228,6 +1219,74 @@ class PandratorInstaller(
                 self.fishs2_checkbox.setChecked(False)
                 self.fishs2_checkbox.blockSignals(False)
                 self.update_install_button_state()
+
+
+class CrispASRConfigDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Configure CrispASR Runtime")
+        self.setMinimumSize(500, 360)
+        self.selected_backend = getattr(parent, "crispasr_backend", "auto")
+        statuses = detect_compute_backends()
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(14)
+        title = QLabel("<h2>CrispASR compute backend</h2>")
+        description = QLabel(
+            "Automatic chooses the best native release detected on this machine. "
+            "Choose an explicit backend to install and force that runtime—for example Vulkan on an AMD GPU."
+        )
+        description.setWordWrap(True)
+        layout.addWidget(title)
+        layout.addWidget(description)
+
+        detection_group = QGroupBox("Detection")
+        detection_layout = QVBoxLayout(detection_group)
+        for backend in ("cuda", "vulkan", "metal", "cpu"):
+            status = statuses[backend]
+            marker = "Available" if status["available"] else "Not detected"
+            label = QLabel(f"<b>{backend.upper()}</b> — {marker}. {status['reason']}")
+            label.setWordWrap(True)
+            detection_layout.addWidget(label)
+        layout.addWidget(detection_group)
+
+        self.backend_combo = QComboBox()
+        labels = {
+            "auto": "Automatic (recommended)",
+            "cpu": "CPU",
+            "cuda": "CUDA (NVIDIA)",
+            "vulkan": "Vulkan (AMD / Intel / NVIDIA)",
+            "metal": "Metal (Apple Silicon)",
+        }
+        self.backend_values = []
+        for backend, label in labels.items():
+            self.backend_combo.addItem(label, backend)
+            self.backend_values.append(backend)
+        selected_index = self.backend_values.index(self.selected_backend) if self.selected_backend in self.backend_values else 0
+        self.backend_combo.setCurrentIndex(selected_index)
+        layout.addWidget(self.backend_combo)
+
+        note = QLabel(
+            "Whisper large-v3 and Parakeet TDT 0.6B v3 remain full precision regardless of this selection. "
+            "The models download into Pandrator's cache on first use."
+        )
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        layout.addStretch()
+
+        buttons = QHBoxLayout()
+        cancel = QPushButton("Cancel")
+        accept = QPushButton("Use this backend")
+        cancel.clicked.connect(self.reject)
+        accept.clicked.connect(self.accept)
+        accept.setDefault(True)
+        buttons.addStretch()
+        buttons.addWidget(cancel)
+        buttons.addWidget(accept)
+        layout.addLayout(buttons)
+
+    def get_selected_backend(self):
+        return str(self.backend_combo.currentData() or "auto")
 
 
 class FishS2ConfigDialog(QDialog):

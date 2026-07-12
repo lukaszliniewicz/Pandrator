@@ -102,7 +102,11 @@ def command_probe(args) -> int:
 
 def _selection(args) -> InstallSelection:
     components = [item.strip() for raw in (args.components or []) for item in raw.split(",") if item.strip()]
-    return InstallSelection.from_components(components, install_pandrator=not args.skip_pandrator)
+    return InstallSelection.from_components(
+        components,
+        install_pandrator=not args.skip_pandrator,
+        crispasr_backend=str(getattr(args, "crispasr_backend", "auto") or "auto"),
+    )
 
 
 def _plan(args) -> dict[str, Any]:
@@ -133,7 +137,11 @@ def command_install(args) -> int:
     paths.workspace.mkdir(parents=True, exist_ok=True)
     installer = HeadlessInstaller(working_dir=str(paths.workspace))
     try:
-        installer.run_headless_install(set(selection.selected_components()), install_pandrator=selection.pandrator)
+        installer.run_headless_install(
+            set(selection.selected_components()),
+            install_pandrator=selection.pandrator,
+            crispasr_backend=selection.crispasr_backend,
+        )
     finally:
         installer.shutdown_apps()
         installer.shutdown_logging()
@@ -157,6 +165,12 @@ def _runtime_specs(paths: WorkspacePaths, args, bootstrap_token: str) -> list[Ma
     cwd = str(paths.pandrator_repo if paths.pandrator_repo.is_dir() else Path.cwd())
     host = str(args.host)
     port = int(args.port)
+    crispasr_executable = paths.install_root / "CrispASR" / ("crispasr.exe" if is_windows() else "crispasr")
+    speech_environment = {
+        "CRISPASR_CACHE_DIR": str(paths.install_root / "cache" / "crispasr"),
+    }
+    if crispasr_executable.is_file():
+        speech_environment["CRISPASR_EXECUTABLE"] = str(crispasr_executable)
     raw_components = [item.strip() for raw in (getattr(args, "components", []) or []) for item in raw.split(",") if item.strip()]
     unknown = sorted(set(raw_components).difference(SERVICE_HEALTH_URLS))
     if unknown:
@@ -181,7 +195,7 @@ def _runtime_specs(paths: WorkspacePaths, args, bootstrap_token: str) -> list[Ma
             label="Pandrator API",
             command=(python, "-m", "pandrator", "--data-dir", data_root, "serve", "--host", host, "--port", str(port), "--no-open-browser"),
             cwd=cwd,
-            env={"PANDRATOR_BOOTSTRAP_TOKEN": bootstrap_token},
+            env={"PANDRATOR_BOOTSTRAP_TOKEN": bootstrap_token, **speech_environment},
             health_url=f"http://127.0.0.1:{port}/api/v1/health",
             restart_limit=2,
             startup_timeout_seconds=45,
@@ -191,6 +205,7 @@ def _runtime_specs(paths: WorkspacePaths, args, bootstrap_token: str) -> list[Ma
             label="Pandrator worker",
             command=(python, "-m", "pandrator", "--data-dir", data_root, "worker"),
             cwd=cwd,
+            env=speech_environment,
             restart_limit=2,
         ),
     ]
@@ -447,6 +462,11 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--components", action="append", default=[])
         command.add_argument("--skip-pandrator", action="store_true")
         command.add_argument("--dry-run", action="store_true")
+        command.add_argument(
+            "--crispasr-backend",
+            choices=("auto", "cpu", "cuda", "vulkan", "metal"),
+            default="auto",
+        )
         command.set_defaults(handler=handler)
     update = commands.add_parser("update")
     update.add_argument("--wheel", required=True)

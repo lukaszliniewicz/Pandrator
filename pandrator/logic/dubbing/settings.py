@@ -131,6 +131,30 @@ def migrate_dubbing_payload(
     if "stt_language" not in migrated:
         migrated["stt_language"] = str(migrated.get("whisper_language") or "English")
 
+    legacy_stt = str(migrated.get("stt_engine") or migrated.get("stt_backend") or "whisper").strip().lower()
+    stt_engine = "parakeet" if legacy_stt in {
+        "parakeet", "parakeet_onnx", "parakeet-onnx", "onnx_parakeet", "onnx-parakeet"
+    } else "whisper"
+    migrated["stt_engine"] = stt_engine
+    migrated["stt_backend"] = stt_engine
+    migrated["stt_compute_backend"] = str(migrated.get("stt_compute_backend") or "auto").strip().lower()
+    if "crispasr_vad_enabled" not in migrated:
+        migrated["crispasr_vad_enabled"] = bool(migrated.get("parakeet_vad_enabled", True))
+    legacy_vad_fields = {
+        "crispasr_vad_threshold": ("parakeet_vad_threshold", 0.5),
+        "crispasr_vad_min_speech_ms": ("parakeet_vad_min_speech_ms", 250),
+        "crispasr_vad_min_silence_ms": ("parakeet_vad_min_silence_ms", 100),
+        "crispasr_vad_max_speech_seconds": ("parakeet_vad_max_speech_seconds", 300.0),
+        "crispasr_vad_speech_pad_ms": ("parakeet_vad_speech_pad_ms", 30),
+    }
+    for current_field, (legacy_field, default) in legacy_vad_fields.items():
+        if current_field not in migrated:
+            migrated[current_field] = migrated.get(legacy_field, default)
+    if "speech_block_merge_threshold" not in migrated:
+        migrated["speech_block_merge_threshold"] = migrated.get("subtitle_merge_threshold", 250)
+    migrated.setdefault("speech_block_min_chars", 10)
+    migrated.setdefault("speech_block_max_chars", 160)
+
     legacy_provider = str(migrated.get("translation_provider") or "").strip()
     legacy_model = str(migrated.get("translation_model") or "").strip()
     legacy_custom_model = str(migrated.get("custom_translation_model") or "").strip()
@@ -173,6 +197,9 @@ def migrate_dubbing_payload(
         "translation_provider",
         "custom_translation_model",
         "custom_api_base",
+        "parakeet_quantization",
+        "parakeet_vad_neg_threshold",
+        "parakeet_vad_batch_size",
     ):
         migrated.pop(legacy_field, None)
     return migrated
@@ -185,7 +212,19 @@ def normalize_dubbing_state(
     """Normalize an in-memory DubbingSettings-like object in place."""
     payload = migrate_dubbing_payload(vars(dubbing_state), provider_configs)
     for field_name in (
+        "stt_engine",
+        "stt_backend",
+        "stt_compute_backend",
         "stt_language",
+        "crispasr_vad_enabled",
+        "crispasr_vad_threshold",
+        "crispasr_vad_min_speech_ms",
+        "crispasr_vad_min_silence_ms",
+        "crispasr_vad_max_speech_seconds",
+        "crispasr_vad_speech_pad_ms",
+        "speech_block_min_chars",
+        "speech_block_max_chars",
+        "speech_block_merge_threshold",
         "correction_model",
         "translation_backend",
         "translation_model",

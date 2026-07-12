@@ -11,7 +11,7 @@ from sqlalchemy import select
 from pandrator.runtime import DataPaths
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.database import Database, upgrade_database
-from pandrator.web.models import Artifact
+from pandrator.web.models import Artifact, ArtifactEdge
 from pandrator.web.sessions import SessionService
 from pandrator.web.workflow_handlers import WorkflowHandlers
 
@@ -103,7 +103,67 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         self.assertEqual(len(result["artifact_ids"]), 1)
         with self.database.session() as session:
             exported = session.scalar(select(Artifact).where(Artifact.id == result["artifact_ids"][0]))
-            self.assertEqual(exported.role, "export_upload")
+            self.assertEqual(exported.role, "final_subtitle_source")
+            edge = session.scalar(
+                select(ArtifactEdge).where(ArtifactEdge.child_artifact_id == exported.id)
+            )
+            self.assertEqual(edge.parent_artifact_id, uploaded.id)
+            final_path = self.paths.root / exported.relative_path
+            self.assertIn("00:00:00,000 --> 00:00:01,000", final_path.read_text(encoding="utf-8"))
+
+    def test_dubbing_audio_forwards_speech_block_settings_separately(self):
+        voiceover = self.sessions.create("Speech block fixture", workflow_kind="voiceover")
+        session_dir = self.paths.sessions / voiceover.storage_key
+        session_dir.mkdir()
+        source_path = self.paths.uploads / "speech-source.srt"
+        source_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n", encoding="utf-8")
+        source = self.artifacts.register(
+            source_path,
+            kind="srt",
+            role="transcription",
+            session_id=voiceover.id,
+        )
+        captured = {}
+
+        def fake_generate(output_dir, _source, **kwargs):
+            captured.update(kwargs)
+            output = Path(output_dir) / "blocks.json"
+            output.write_text("[]", encoding="utf-8")
+            return str(output)
+
+        with mock.patch(
+            "pandrator.logic.dubbing.speech_blocks.generate_speech_blocks_file",
+            side_effect=fake_generate,
+        ), mock.patch.object(
+            self.handlers,
+            "_generate_audio",
+            return_value={"artifact_id": "audio"},
+        ):
+            self.handlers.generate_dubbing_audio(
+                {
+                    "session_id": voiceover.id,
+                    "source_artifact_id": source.id,
+                    "settings": {
+                        "target_language": "pl",
+                        "speech_block_min_chars": 14,
+                        "speech_block_max_chars": 120,
+                        "speech_block_merge_threshold": 425,
+                        "subtitle_max_chars_per_line": 48,
+                    },
+                },
+                self.progress,
+                threading.Event(),
+            )
+
+        self.assertEqual(
+            captured,
+            {
+                "target_language": "pl",
+                "min_chars": 14,
+                "max_chars": 120,
+                "merge_threshold": 425,
+            },
+        )
 
 
 if __name__ == "__main__":

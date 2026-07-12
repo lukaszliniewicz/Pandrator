@@ -73,50 +73,12 @@ class DubbingBoundaryCorrectionTests(unittest.TestCase):
             payload = json.loads(Path(result.corrections_path).read_text(encoding="utf-8"))
             self.assertEqual(payload["corrections"][0]["type"], "energy_boundary")
 
-    def test_transcribe_video_file_uses_whisperx_json_for_boundary_correction(self):
-        commands = []
-        audio = _synthetic_boundary_audio(16000)
-
-        def fake_run(command, **_kwargs):
-            commands.append(command)
-            executable = Path(command[0]).name.lower()
-            if executable.startswith("ffmpeg"):
-                Path(command[-1]).write_bytes(b"wav")
-                return SimpleNamespace(stderr=b"")
-
-            whisperx_index = command.index("whisperx")
-            audio_path = Path(command[whisperx_index + 1])
-            output_dir = Path(command[command.index("--output_dir") + 1])
-            output_format = command[command.index("--output_format") + 1]
-            self.assertEqual(output_format, "json")
-            output_dir.joinpath(f"{audio_path.stem}.json").write_text(
-                json.dumps({"segments": _boundary_segments()}),
-                encoding="utf-8",
+    def test_legacy_automatic_boundary_correction_is_retired_for_crispasr(self):
+        self.assertFalse(
+            transcription.automatic_boundary_correction_enabled(
+                {"boundary_correction_enabled": True, "stt_engine": "whisper"}
             )
-            return SimpleNamespace(stderr=b"")
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            video_path = os.path.join(temp_dir, "clip.mp4")
-            Path(video_path).write_bytes(b"video")
-
-            output_path = transcription.transcribe_video_file(
-                temp_dir,
-                video_path,
-                {
-                    "stt_language": "English",
-                    "whisper_model": "large-v3",
-                    "boundary_correction_enabled": True,
-                    "subtitle_merge_threshold": 0,
-                },
-                run_func=fake_run,
-                boundary_audio_loader=lambda _path, _sample_rate: audio,
-            )
-
-            self.assertTrue(output_path.endswith("clip_corrected.srt"))
-            corrected_segments = srt_utils.parse_srt(Path(output_path).read_text(encoding="utf-8"))
-            self.assertEqual(corrected_segments[0].end_ms, 875)
-            whisperx_command = next(command for command in commands if "whisperx" in command)
-            self.assertIn("--output_format", whisperx_command)
+        )
 
 
 if __name__ == "__main__":

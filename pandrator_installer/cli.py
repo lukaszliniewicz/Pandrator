@@ -44,9 +44,15 @@ def parse_launcher_cli_args(argv=None):
         help=(
             'Comma-separated component list for headless mode: '
             'xtts,xtts_cpu,voxcpm,fishs2,silero,voxtral,kokoro,kokoro_cpu,'
-            'rvc,rvc_cpu,whisperx,xtts_finetuning,chatterbox,chatterbox_cpu,'
+            'rvc,rvc_cpu,crispasr,xtts_finetuning,chatterbox,chatterbox_cpu,'
             'kobold_qwen,kobold_qwen_cpu,magpie,magpie_cpu'
         ),
+    )
+    parser.add_argument(
+        '--crispasr-backend',
+        choices=('auto', 'cpu', 'cuda', 'vulkan', 'metal'),
+        default='auto',
+        help='CrispASR runtime variant; auto chooses the best detected backend.',
     )
     parser.add_argument(
         '--skip-pandrator',
@@ -83,6 +89,7 @@ def run_headless_install_from_cli(args):
         installer.run_headless_install(
             components,
             install_pandrator=not args.skip_pandrator,
+            crispasr_backend=args.crispasr_backend,
         )
     finally:
         installer.shutdown_apps()
@@ -379,8 +386,7 @@ def run_self_check():
         "voxtral",
         "kokoro",
         "silero",
-        "whisperx",
-        "parakeet_onnx",
+        "crispasr",
         "xtts_finetuning",
         "rvc",
         "chatterbox",

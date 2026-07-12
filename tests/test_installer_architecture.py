@@ -15,6 +15,7 @@ from pandrator_installer.catalog import (
 from pandrator_installer.cli import parse_launcher_cli_args, run_self_check
 from pandrator_installer.models import InstallSelection, LaunchSelection, WorkspacePaths
 from pandrator_installer import platforms
+from pandrator_installer.crispasr import detect_compute_backends, resolve_asset
 from pandrator_installer.reporting import HeadlessReporter
 from pandrator_installer.service import HeadlessInstaller
 from pandrator_installer.constants import (
@@ -26,6 +27,64 @@ from pandrator_installer.constants import (
 
 
 class InstallerArchitectureTests(unittest.TestCase):
+    def test_crispasr_auto_prefers_cuda_then_vulkan(self):
+        cuda_asset, cuda_backend = resolve_asset(
+            "auto",
+            system="Windows",
+            machine="AMD64",
+            detected={
+                "cuda": {"available": True},
+                "metal": {"available": False},
+                "vulkan": {"available": True},
+                "cpu": {"available": True},
+            },
+        )
+        vulkan_asset, vulkan_backend = resolve_asset(
+            "auto",
+            system="Windows",
+            machine="AMD64",
+            detected={
+                "cuda": {"available": False},
+                "metal": {"available": False},
+                "vulkan": {"available": True},
+                "cpu": {"available": True},
+            },
+        )
+
+        self.assertEqual(cuda_backend, "cuda")
+        self.assertIn("cuda", cuda_asset.compiled_backends)
+        self.assertEqual(vulkan_backend, "vulkan")
+        self.assertIn("vulkan", vulkan_asset.compiled_backends)
+
+    def test_crispasr_backend_detection_supports_rx480_via_vulkan_loader(self):
+        statuses = detect_compute_backends(
+            system="Windows",
+            machine="AMD64",
+            environ={"SystemRoot": r"C:\Windows"},
+            find_executable=lambda _name: None,
+            path_exists=lambda path: str(path).lower().endswith("vulkan-1.dll"),
+            find_library=lambda _name: None,
+        )
+
+        self.assertTrue(statuses["vulkan"]["available"])
+        self.assertFalse(statuses["cuda"]["available"])
+
+    def test_crispasr_apple_silicon_auto_selects_metal(self):
+        asset, backend = resolve_asset(
+            "auto",
+            system="Darwin",
+            machine="arm64",
+            detected={
+                "cuda": {"available": False},
+                "metal": {"available": True},
+                "vulkan": {"available": False},
+                "cpu": {"available": True},
+            },
+        )
+
+        self.assertEqual(backend, "metal")
+        self.assertEqual(asset.runtime_variant, "metal")
+
     def test_preview_branch_is_explicit(self):
         self.assertEqual(PANDRATOR_REPO_BRANCH, "codex/webui-migration")
 
@@ -58,13 +117,13 @@ class InstallerArchitectureTests(unittest.TestCase):
         selection = InstallSelection.from_components(["xtts_finetuning"])
         self.assertEqual(
             set(selection.selected_components()),
-            {"xtts", "whisperx", "xtts_finetuning"},
+            {"xtts", "xtts_finetuning"},
         )
 
     def test_install_selection_accepts_parakeet_onnx_component(self):
         selection = InstallSelection.from_components(["parakeet-onnx"])
 
-        self.assertEqual(selection.selected_components(), ("parakeet_onnx",))
+        self.assertEqual(selection.selected_components(), ("crispasr",))
 
     def test_install_selection_rejects_mutually_exclusive_variants(self):
         with self.assertRaisesRegex(ValueError, "Select either 'kokoro' or 'kokoro_cpu'"):
@@ -513,11 +572,11 @@ class InstallerArchitectureTests(unittest.TestCase):
             COMPONENTS["chatterbox"].paths,
         )
         self.assertEqual(
-            PACKAGING_COMPONENT_PATHS["parakeet_onnx"],
-            COMPONENTS["parakeet_onnx"].paths,
+            PACKAGING_COMPONENT_PATHS["crispasr"],
+            COMPONENTS["crispasr"].paths,
         )
         self.assertIn("chatterbox_support", PACKAGING_CONFIG_FLAGS)
-        self.assertIn("parakeet_onnx_support", PACKAGING_CONFIG_FLAGS)
+        self.assertIn("crispasr_support", PACKAGING_CONFIG_FLAGS)
         self.assertEqual(NEMO_PYNINI_CONDA_SPEC, "pynini=2.1.6.post1")
         self.assertEqual(PANDRATOR_NUMPY_SPEC, "numpy==1.26.4")
         self.assertEqual(ONNX_ASR_INSTALL_SPEC, "onnx-asr[cpu,hub]==0.11.0")

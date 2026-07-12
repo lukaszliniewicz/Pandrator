@@ -355,7 +355,7 @@ class WorkflowHandlers:
         return hydrated
 
     def transcribe(self, payload, progress, cancel_event):
-        from pandrator.logic.dubbing.transcription import transcribe_source_file
+        from pandrator.logic.dubbing.transcription import transcribe_source_file_with_metadata
 
         session_id = str(payload.get("session_id") or "")
         source_artifact, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
@@ -363,18 +363,14 @@ class WorkflowHandlers:
         progress(0.05, "Preparing transcription")
         if cancel_event.is_set():
             return {}
-        output_path = Path(
-            transcribe_source_file(
-                session_dir,
-                source_path,
-                dict(payload.get("settings") or {}),
-                ffmpeg_executable=str(payload.get("ffmpeg_executable") or "ffmpeg"),
-                pixi_executable=str(payload.get("pixi_executable") or ""),
-                pixi_manifest=str(payload.get("pixi_manifest") or ""),
-                parakeet_pixi_executable=str(payload.get("parakeet_pixi_executable") or ""),
-                parakeet_pixi_manifest=str(payload.get("parakeet_pixi_manifest") or ""),
-            )
+        transcription_result = transcribe_source_file_with_metadata(
+            session_dir,
+            source_path,
+            dict(payload.get("settings") or {}),
+            ffmpeg_executable=str(payload.get("ffmpeg_executable") or "ffmpeg"),
+            crispasr_executable=str(payload.get("crispasr_executable") or ""),
         )
+        output_path = Path(transcription_result.srt_path)
         progress(0.9, "Registering transcription")
         artifact = self.artifacts.register(
             output_path,
@@ -384,6 +380,18 @@ class WorkflowHandlers:
             parent_ids=[source_artifact.id],
             settings=dict(payload.get("settings") or {}),
         )
+        timing_artifact = self.artifacts.register(
+            Path(transcription_result.word_timestamps_path),
+            kind="json",
+            role="word_timestamps",
+            session_id=session_id,
+            parent_ids=[source_artifact.id, artifact.id],
+            settings={
+                **dict(payload.get("settings") or {}),
+                "stt_engine": transcription_result.engine,
+                "stt_compute_backend": transcription_result.compute_backend,
+            },
+        )
         self._store_srt_document(
             session_id,
             artifact,
@@ -391,7 +399,12 @@ class WorkflowHandlers:
             language=str((payload.get("settings") or {}).get("original_language") or "") or None,
         )
         progress(1.0, "Transcription ready")
-        return {"artifact_id": artifact.id, "path": artifact.relative_path}
+        return {
+            "artifact_id": artifact.id,
+            "path": artifact.relative_path,
+            "word_timestamps_artifact_id": timing_artifact.id,
+            "word_timestamps_path": timing_artifact.relative_path,
+        }
 
     def correct(self, payload, progress, cancel_event):
         from pandrator.logic.dubbing.llm_correction import correct_srt_file_with_result
@@ -471,25 +484,21 @@ class WorkflowHandlers:
         return {"artifact_id": artifact.id, "path": artifact.relative_path, "cost": result.cost}
 
     def transcribe_voice(self, payload, progress, cancel_event):
-        from pandrator.logic.dubbing.transcription import transcribe_source_file
+        from pandrator.logic.dubbing.transcription import transcribe_source_file_with_metadata
         from pandrator.logic.dubbing.srt_utils import parse_srt
 
         sample_artifact, sample_path = self._resolve_input(str(payload.get("sample_artifact_id") or ""))
         operation_dir = self.paths.voices / str(payload.get("voice_id") or "transcription")
         operation_dir.mkdir(parents=True, exist_ok=True)
         progress(0.05, "Preparing reference transcription")
-        output_path = Path(
-            transcribe_source_file(
-                operation_dir,
-                sample_path,
-                dict(payload.get("settings") or {}),
-                ffmpeg_executable=str(payload.get("ffmpeg_executable") or "ffmpeg"),
-                pixi_executable=str(payload.get("pixi_executable") or ""),
-                pixi_manifest=str(payload.get("pixi_manifest") or ""),
-                parakeet_pixi_executable=str(payload.get("parakeet_pixi_executable") or ""),
-                parakeet_pixi_manifest=str(payload.get("parakeet_pixi_manifest") or ""),
-            )
+        transcription_result = transcribe_source_file_with_metadata(
+            operation_dir,
+            sample_path,
+            dict(payload.get("settings") or {}),
+            ffmpeg_executable=str(payload.get("ffmpeg_executable") or "ffmpeg"),
+            crispasr_executable=str(payload.get("crispasr_executable") or ""),
         )
+        output_path = Path(transcription_result.srt_path)
         if cancel_event.is_set():
             return {}
         artifact = self.artifacts.register(
@@ -499,9 +508,22 @@ class WorkflowHandlers:
             parent_ids=[sample_artifact.id],
             settings=dict(payload.get("settings") or {}),
         )
+        timing_artifact = self.artifacts.register(
+            Path(transcription_result.word_timestamps_path),
+            kind="json",
+            role="voice_word_timestamps",
+            parent_ids=[sample_artifact.id, artifact.id],
+            settings=dict(payload.get("settings") or {}),
+        )
         transcript = " ".join(segment.text.replace("\n", " ").strip() for segment in parse_srt(output_path.read_text(encoding="utf-8-sig")))
         progress(1.0, "Reference transcription ready for review")
-        return {"artifact_id": artifact.id, "path": artifact.relative_path, "sample_id": payload.get("sample_id"), "transcript": transcript}
+        return {
+            "artifact_id": artifact.id,
+            "path": artifact.relative_path,
+            "word_timestamps_artifact_id": timing_artifact.id,
+            "sample_id": payload.get("sample_id"),
+            "transcript": transcript,
+        }
 
     def normalize_voice_recording(self, payload, progress, cancel_event):
         voice_id = str(payload.get("voice_id") or "")
@@ -910,7 +932,20 @@ class WorkflowHandlers:
         settings = dict(payload.get("settings") or {})
         if source_path.suffix.lower() != ".srt":
             raise ValueError("Dubbing audio requires a transcription, correction, or translation SRT artifact.")
-        blocks_path = Path(generate_speech_blocks_file(str(self._session_dir(session_id)), str(source_path), target_language=str(settings.get("target_language") or "en")))
+        blocks_path = Path(
+            generate_speech_blocks_file(
+                str(self._session_dir(session_id)),
+                str(source_path),
+                target_language=str(settings.get("target_language") or "en"),
+                min_chars=int(settings.get("speech_block_min_chars") or 10),
+                max_chars=int(settings.get("speech_block_max_chars") or 160),
+                merge_threshold=int(
+                    settings.get("speech_block_merge_threshold")
+                    if settings.get("speech_block_merge_threshold") is not None
+                    else settings.get("subtitle_merge_threshold", 250)
+                ),
+            )
+        )
         blocks_artifact = self.artifacts.register(
             blocks_path,
             kind="json",
@@ -930,6 +965,7 @@ class WorkflowHandlers:
     def export(self, payload, progress, cancel_event):
         """Create immutable, managed exports without requiring generated audio."""
         from pandrator.logic.dubbing.bilingual_ass import write_bilingual_ass
+        from pandrator.logic.dubbing.subtitle_finalization import finalize_srt_file
         from pandrator.logic.dubbing.video_muxing import build_add_subtitles_command, build_multi_soft_subtitle_command, build_replace_video_audio_command
 
         session_id = str(payload.get("session_id") or "")
@@ -960,9 +996,37 @@ class WorkflowHandlers:
             subtitle_mode = str(settings.get("subtitle_mode") or "none").lower()
             subtitle_selection = str(settings.get("subtitle_selection") or ("dual" if translated and source_subtitle else "translation")).lower()
             selected_subtitles = ([source_subtitle] if source_subtitle and subtitle_selection in {"source", "dual"} else []) + ([translated] if translated and subtitle_selection in {"translation", "dual"} else [])
-            selected_subtitles = [item for item in selected_subtitles if item]
+            # For media, "none" means no subtitle track. For SRT/audio-only
+            # sessions there is no mux target, so the selected SRT remains a
+            # valid standalone export (and preserves the existing contract).
+            selected_subtitles = [item for item in selected_subtitles if item] if subtitle_mode != "none" or upload_media is None else []
+            finalized_subtitles: list[Artifact] = []
+            for item in selected_subtitles:
+                _subtitle_record, subtitle_path = self._resolve_input(item.id)
+                track_name = "translation" if item.role == "translation" else "source"
+                finalized_path = output_dir / f"{record.storage_key}_{track_name}_final.srt"
+                finalize_srt_file(subtitle_path, finalized_path, settings)
+                finalized = self.artifacts.register(
+                    finalized_path,
+                    kind="srt",
+                    role=f"final_subtitle_{track_name}",
+                    session_id=session_id,
+                    parent_ids=[item.id],
+                    settings=settings,
+                    metadata={
+                        "language": str((item.metadata_json or {}).get("language") or (settings.get("target_language") if track_name == "translation" else settings.get("original_language")) or "und"),
+                        "source_role": item.role,
+                    },
+                )
+                finalized_subtitles.append(finalized)
+                produced.append(finalized)
+            selected_subtitles = finalized_subtitles
             dubbing_audio = by_role.get("dubbing_audio")
             audio_mode = str(settings.get("audio_mode") or "source").lower()
+            audio_mode = {"preserve": "source", "dubbing_only": "dubbed"}.get(audio_mode, audio_mode)
+
+            def is_translation_track(item: Artifact) -> bool:
+                return str((item.metadata_json or {}).get("source_role") or item.role) == "translation"
 
             if upload_media:
                 _media_record, media_path = self._resolve_input(upload_media.id)
@@ -983,7 +1047,8 @@ class WorkflowHandlers:
                     tracks = []
                     for item in selected_subtitles:
                         _subtitle, subtitle_path = self._resolve_input(item.id)
-                        tracks.append({"path": str(subtitle_path), "language": str((item.metadata_json or {}).get("language") or ("und" if item.role != "translation" else settings.get("target_language") or "und")), "title": "Translation" if item.role == "translation" else "Source", "default": item.role == "translation"})
+                        translation_track = is_translation_track(item)
+                        tracks.append({"path": str(subtitle_path), "language": str((item.metadata_json or {}).get("language") or (settings.get("target_language") if translation_track else "und") or "und"), "title": "Translation" if translation_track else "Source", "default": translation_track})
                     command = build_multi_soft_subtitle_command(str(working_video), tracks, str(destination))
                     subprocess.run(command, check=True, capture_output=True, text=True)
                 elif subtitle_mode == "burned" and selected_subtitles:
@@ -1004,6 +1069,8 @@ class WorkflowHandlers:
                         continue
                     _artifact, item_path = self._resolve_input(item.id)
                     destination = output_dir / item_path.name
+                    if item_path.resolve() == destination.resolve():
+                        continue
                     shutil.copy2(item_path, destination)
                     produced.append(self.artifacts.register(destination, kind="export", role=f"export_{item.role}", session_id=session_id, parent_ids=[item.id], settings=settings))
                 if not produced:

@@ -3511,6 +3511,14 @@ class AppLogic(QObject):
             session_dir,
             srt_file,
             target_language=dub_settings.get("target_language", "en"),
+            min_chars=int(dub_settings.get("speech_block_min_chars", 10)),
+            max_chars=int(dub_settings.get("speech_block_max_chars", 160)),
+            merge_threshold=int(
+                dub_settings.get(
+                    "speech_block_merge_threshold",
+                    dub_settings.get("subtitle_merge_threshold", 250),
+                )
+            ),
         )
         if not speech_blocks_file or not os.path.exists(speech_blocks_file):
             self._mark_dubbing_step("speech_blocks", "failed", "Native speech-block generation failed.")
@@ -3703,6 +3711,9 @@ class AppLogic(QObject):
                 sync_session_dir,
                 srt_for_speech_blocks,
                 target_language=self.state.dubbing.target_language,
+                min_chars=self.state.dubbing.speech_block_min_chars,
+                max_chars=self.state.dubbing.speech_block_max_chars,
+                merge_threshold=self.state.dubbing.speech_block_merge_threshold,
             )
             if not speech_blocks_file or not os.path.exists(speech_blocks_file):
                 self._mark_dubbing_step("speech_blocks", "failed", "Speech-block regeneration failed.")
@@ -5615,7 +5626,8 @@ class AppLogic(QObject):
         if not sample_path or not os.path.isfile(sample_path):
             raise FileNotFoundError("The selected voice sample is missing.")
         settings = self._build_dubbing_execution_settings()
-        settings["stt_backend"] = str(backend or settings.get("stt_backend") or "whisperx")
+        settings["stt_engine"] = str(backend or settings.get("stt_engine") or settings.get("stt_backend") or "whisper")
+        settings["stt_backend"] = settings["stt_engine"]
         settings["stt_language"] = str(language or settings.get("stt_language") or "English")
         settings["correction_enabled"] = False
         with tempfile.TemporaryDirectory(prefix="pandrator_voice_stt_") as work_dir:

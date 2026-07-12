@@ -1,12 +1,19 @@
 """Component-specific installation and bootstrap operations."""
 
 import logging
+import hashlib
+import json
 import os
 import platform
 import shutil
+import stat
 import subprocess
+import tarfile
+import tempfile
 import time
 import traceback
+import zipfile
+from pathlib import Path
 
 import psutil
 import requests
@@ -27,7 +34,6 @@ from .constants import (
     KOKORO_TORCH_BASE_VERSION,
     NEMO_PYNINI_CONDA_SPEC,
     NEMO_TEXT_PROCESSING_SPEC,
-    ONNX_ASR_INSTALL_SPEC,
     PANDRATOR_NUMPY_SPEC,
     PANDRATOR_ONNXRUNTIME_SPEC,
     PANDRATOR_PADDLEOCR_SPEC,
@@ -45,6 +51,7 @@ from .constants import (
     XTTS_FINETUNING_BUNDLED_WHEEL_PREFIX,
 )
 from .platforms import is_windows, pixi_env_python_path
+from .crispasr import CRISPASR_VERSION, detect_compute_backends, resolve_asset
 
 
 class ComponentOperationsMixin:
@@ -1543,19 +1550,126 @@ class ComponentOperationsMixin:
             logging.error(f"Error message: {str(e)}")
             raise
 
-    def install_parakeet_onnx(self, pandrator_path, env_name):
-        logging.info(f"Installing ONNX Parakeet STT support in {env_name}...")
-        try:
-            self.run_pixi_in_env(
-                pandrator_path,
-                env_name,
-                ['python', '-m', 'pip', 'install', '--upgrade', ONNX_ASR_INSTALL_SPEC],
+    def install_crispasr(self, pandrator_path, requested_backend="auto"):
+        """Install a verified native CrispASR release without a compiler toolchain."""
+        detected = detect_compute_backends()
+        asset, effective_backend = resolve_asset(requested_backend, detected=detected)
+        target_dir = Path(pandrator_path) / "CrispASR"
+        target_dir.parent.mkdir(parents=True, exist_ok=True)
+        self.configure_tls_certificates()
+        self.reporter.status(
+            f"Downloading CrispASR {CRISPASR_VERSION} ({asset.runtime_variant})..."
+        )
+
+        with tempfile.TemporaryDirectory(prefix=".crispasr-install-", dir=str(target_dir.parent)) as temp_dir_value:
+            temp_dir = Path(temp_dir_value)
+            archive_path = temp_dir / asset.name
+            digest = hashlib.sha256()
+            with requests.get(asset.url, stream=True, timeout=(30, 600)) as response:
+                response.raise_for_status()
+                with archive_path.open("wb") as output:
+                    for chunk in response.iter_content(chunk_size=1024 * 1024):
+                        if not chunk:
+                            continue
+                        output.write(chunk)
+                        digest.update(chunk)
+            if digest.hexdigest().lower() != asset.sha256.lower():
+                raise RuntimeError(
+                    f"CrispASR archive checksum mismatch for {asset.name}."
+                )
+
+            extracted = temp_dir / "extracted"
+            extracted.mkdir()
+            if asset.name.endswith(".zip"):
+                with zipfile.ZipFile(archive_path) as archive:
+                    members = archive.infolist()
+                    for member in members:
+                        mode = member.external_attr >> 16
+                        if stat.S_ISLNK(mode):
+                            raise RuntimeError("CrispASR archive contains a symbolic link.")
+                        destination = (extracted / member.filename).resolve()
+                        if extracted.resolve() not in destination.parents and destination != extracted.resolve():
+                            raise RuntimeError("CrispASR archive contains an unsafe path.")
+                    archive.extractall(extracted)
+            else:
+                with tarfile.open(archive_path, "r:gz") as archive:
+                    members = archive.getmembers()
+                    for member in members:
+                        if member.issym() or member.islnk():
+                            raise RuntimeError("CrispASR archive contains a link.")
+                        destination = (extracted / member.name).resolve()
+                        if extracted.resolve() not in destination.parents and destination != extracted.resolve():
+                            raise RuntimeError("CrispASR archive contains an unsafe path.")
+                    archive.extractall(extracted)
+
+            executable_name = "crispasr.exe" if os.name == "nt" else "crispasr"
+            executable = next(
+                (path for path in extracted.rglob(executable_name) if path.is_file()),
+                None,
             )
-            logging.info("ONNX Parakeet STT installation completed successfully.")
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Failed to install ONNX Parakeet STT support in {env_name}")
-            logging.error(f"Error message: {str(e)}")
-            raise
+            if executable is None:
+                raise RuntimeError(f"CrispASR archive did not contain {executable_name}.")
+            if os.name != "nt":
+                executable.chmod(executable.stat().st_mode | 0o755)
+
+            staging = temp_dir / "staging"
+            shutil.copytree(executable.parent, staging)
+            staged_executable = staging / executable_name
+            probe = subprocess.run(
+                [str(staged_executable), "--version"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                **self.get_hidden_subprocess_kwargs(),
+            )
+            version_output = "\n".join((probe.stdout or "", probe.stderr or ""))
+            if f"version       : {CRISPASR_VERSION}" not in version_output:
+                raise RuntimeError("The downloaded CrispASR binary reported an unexpected version.")
+            (staging / "install.json").write_text(
+                json.dumps(
+                    {
+                        "version": CRISPASR_VERSION,
+                        "requested_backend": str(requested_backend or "auto").lower(),
+                        "effective_backend": effective_backend,
+                        "runtime_variant": asset.runtime_variant,
+                        "compiled_backends": list(asset.compiled_backends),
+                        "asset": asset.name,
+                        "sha256": asset.sha256,
+                    },
+                    indent=2,
+                ) + "\n",
+                encoding="utf-8",
+            )
+
+            backup = target_dir.with_name(".CrispASR-backup")
+            if backup.exists():
+                shutil.rmtree(backup)
+            if target_dir.exists():
+                target_dir.replace(backup)
+            try:
+                shutil.copytree(staging, target_dir)
+            except Exception:
+                if target_dir.exists():
+                    shutil.rmtree(target_dir)
+                if backup.exists():
+                    backup.replace(target_dir)
+                raise
+            if backup.exists():
+                shutil.rmtree(backup)
+
+        logging.info(
+            "CrispASR %s installed with %s runtime at %s",
+            CRISPASR_VERSION,
+            effective_backend,
+            target_dir,
+        )
+        return {
+            "requested_backend": str(requested_backend or "auto").lower(),
+            "effective_backend": effective_backend,
+            "runtime_variant": asset.runtime_variant,
+            "compiled_backends": list(asset.compiled_backends),
+        }
 
     def set_permissive_permissions(self, path):
         """Set permissive file permissions on installation directories"""

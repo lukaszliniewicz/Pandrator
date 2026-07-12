@@ -49,15 +49,13 @@ class DubbingCredentialTests(unittest.TestCase):
 
         self.assertTrue(result.ok)
 
-    def test_transcription_diarization_requires_hf_token(self):
+    def test_crispasr_diarization_does_not_require_cloud_credentials(self):
         with patch.dict(os.environ, {}, clear=True):
             result = credentials.validate_transcription_credentials(
                 self._settings(diarization_enabled=True)
             )
 
-        self.assertFalse(result.ok)
-        self.assertEqual(result.step_key, "transcribe")
-        self.assertIn("HF_TOKEN", result.message)
+        self.assertTrue(result.ok)
 
     def test_transcription_diarization_accepts_settings_token(self):
         with patch.dict(os.environ, {}, clear=True):
@@ -85,7 +83,7 @@ class DubbingCredentialTests(unittest.TestCase):
         self.assertEqual(result.step_key, "transcribe")
         self.assertIn("Subtitle correction cannot run", result.message)
 
-    def test_generate_audio_without_srt_validates_transcription_requirements(self):
+    def test_generate_audio_without_srt_accepts_local_crispasr_diarization(self):
         with patch.dict(os.environ, {}, clear=True):
             result = credentials.validate_task_credentials(
                 "generate_audio",
@@ -93,8 +91,7 @@ class DubbingCredentialTests(unittest.TestCase):
                 current_srt_exists=False,
             )
 
-        self.assertFalse(result.ok)
-        self.assertEqual(result.step_key, "transcribe")
+        self.assertTrue(result.ok)
 
     def test_generate_audio_with_translation_validates_translation_requirements(self):
         with patch.dict(os.environ, {}, clear=True):

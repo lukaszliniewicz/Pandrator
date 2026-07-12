@@ -292,6 +292,7 @@ class DubbingAdvancedDialog(QDialog):
         dubbing_state.whisper_align_model = self.align_model_edit.text().strip()
         dubbing_state.whisper_chunk_size = self.chunk_size_spin.value()
         dubbing_state.subtitle_merge_threshold = self.merge_threshold_spin.value()
+        dubbing_state.speech_block_merge_threshold = self.merge_threshold_spin.value()
         dubbing_state.diarization_enabled = self.diarization_check.isChecked()
         dubbing_state.boundary_correction_enabled = self.boundary_correction_check.isChecked()
         dubbing_state.whisper_save_txt = self.save_txt_check.isChecked()

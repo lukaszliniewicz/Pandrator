@@ -20,27 +20,6 @@ from .dubbing.video_muxing import (
 
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-INSTALL_ROOT = os.path.abspath(os.path.join(PROJECT_ROOT, ".."))
-WHISPERX_PIXI_EXE_ENV = "WHISPERX_PIXI_EXE"
-WHISPERX_PIXI_MANIFEST_ENV = "WHISPERX_PIXI_MANIFEST"
-PARAKEET_PIXI_EXE_ENV = "PARAKEET_PIXI_EXE"
-PARAKEET_PIXI_MANIFEST_ENV = "PARAKEET_PIXI_MANIFEST"
-WHISPERX_PIXI_MANIFEST_PATH = os.path.join(PROJECT_ROOT, "envs", "whisperx_installer", "pixi.toml")
-PARAKEET_PIXI_MANIFEST_PATH = os.path.join(PROJECT_ROOT, "envs", "parakeet_onnx_installer", "pixi.toml")
-WHISPERX_PIXI_MANIFEST_CANDIDATES = (
-    WHISPERX_PIXI_MANIFEST_PATH,
-    os.path.join(INSTALL_ROOT, "envs", "whisperx_installer", "pixi.toml"),
-)
-PARAKEET_PIXI_MANIFEST_CANDIDATES = (
-    PARAKEET_PIXI_MANIFEST_PATH,
-    os.path.join(INSTALL_ROOT, "envs", "parakeet_onnx_installer", "pixi.toml"),
-)
-WHISPERX_PIXI_EXE_CANDIDATES = (
-    os.path.join(PROJECT_ROOT, "bin", "pixi.exe"),
-    os.path.join(PROJECT_ROOT, "bin", "pixi"),
-    os.path.join(INSTALL_ROOT, "bin", "pixi.exe"),
-    os.path.join(INSTALL_ROOT, "bin", "pixi"),
-)
 BUNDLED_FFMPEG_CANDIDATES = (
     os.path.join(PROJECT_ROOT, "bin", "ffmpeg.exe"),
     os.path.join(PROJECT_ROOT, "bin", "ffmpeg"),
@@ -108,13 +87,7 @@ def transcribe_video_with_metadata(
             video_file=video_file,
             settings=settings,
             ffmpeg_executable=_first_existing_path(BUNDLED_FFMPEG_CANDIDATES) or "ffmpeg",
-            pixi_executable=os.environ.get(WHISPERX_PIXI_EXE_ENV, "") or _first_existing_path(WHISPERX_PIXI_EXE_CANDIDATES),
-            pixi_manifest=os.environ.get(WHISPERX_PIXI_MANIFEST_ENV, "")
-            or _first_existing_path(WHISPERX_PIXI_MANIFEST_CANDIDATES),
-            parakeet_pixi_executable=os.environ.get(PARAKEET_PIXI_EXE_ENV, "")
-            or _first_existing_path(WHISPERX_PIXI_EXE_CANDIDATES),
-            parakeet_pixi_manifest=os.environ.get(PARAKEET_PIXI_MANIFEST_ENV, "")
-            or _first_existing_path(PARAKEET_PIXI_MANIFEST_CANDIDATES),
+            crispasr_executable=os.environ.get("CRISPASR_EXECUTABLE", ""),
         )
         logging.info("Transcription completed: %s", output_path)
 
@@ -231,13 +204,24 @@ def translate_subtitles(session_dir: str, srt_file: str, settings: dict, correct
         return False
 
 
-def generate_speech_blocks_with_result(session_dir: str, srt_file: str, target_language: str = "en") -> str:
+def generate_speech_blocks_with_result(
+    session_dir: str,
+    srt_file: str,
+    target_language: str = "en",
+    *,
+    min_chars: int = 10,
+    max_chars: int = 160,
+    merge_threshold: int = 250,
+) -> str:
     """Generates speech blocks from an SRT file and returns the JSON path."""
     try:
         output_path = generate_speech_blocks_file(
             session_dir=session_dir,
             srt_file=srt_file,
             target_language=target_language,
+            min_chars=min_chars,
+            max_chars=max_chars,
+            merge_threshold=merge_threshold,
         )
         logging.info("Speech block generation completed: %s", output_path)
         return output_path
@@ -251,9 +235,14 @@ def generate_speech_blocks_with_result(session_dir: str, srt_file: str, target_l
         return ""
 
 
-def generate_speech_blocks(session_dir: str, srt_file: str, target_language: str = "en") -> bool:
+def generate_speech_blocks(
+    session_dir: str,
+    srt_file: str,
+    target_language: str = "en",
+    **settings,
+) -> bool:
     """Generates speech blocks from an SRT file using Pandrator-native logic."""
-    return bool(generate_speech_blocks_with_result(session_dir, srt_file, target_language))
+    return bool(generate_speech_blocks_with_result(session_dir, srt_file, target_language, **settings))
 
 
 def _clear_previous_sync_outputs(session_dir: str) -> None:

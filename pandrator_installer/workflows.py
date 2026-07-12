@@ -31,9 +31,6 @@ from .constants import (
     KOKORO_GPU_SUPPORT_CONFIG_FLAG,
     KOKORO_PYTHON_VERSION,
     NEMO_PYNINI_CONDA_SPEC,
-    ONNX_ASR_REQUIRED_PACKAGE_SPECS,
-    PARAKEET_ONNX_ENV_NAME,
-    PARAKEET_ONNX_PYTHON_VERSION,
     PANDRATOR_PYTHON_VERSION,
     PANDRATOR_REPO_BRANCH,
     PANDRATOR_REPO_URL,
@@ -108,10 +105,11 @@ class WorkflowMixin:
 
 
 
-    def run_headless_install(self, components, install_pandrator=True):
+    def run_headless_install(self, components, install_pandrator=True, crispasr_backend="auto"):
         selection = InstallSelection.from_components(
             components,
             install_pandrator=install_pandrator,
+            crispasr_backend=crispasr_backend,
         )
         selected_components = set(selection.selected_components())
 
@@ -153,8 +151,7 @@ class WorkflowMixin:
         kokoro_cpu_var = selection.kokoro_cpu
         rvc_var = selection.rvc
         rvc_cpu_var = selection.rvc_cpu
-        whisperx_var = selection.whisperx
-        parakeet_onnx_var = selection.parakeet_onnx
+        crispasr_var = selection.crispasr
         xtts_finetuning_var = selection.xtts_finetuning
         chatterbox_var = selection.chatterbox
         chatterbox_cpu_var = selection.chatterbox_cpu
@@ -394,23 +391,21 @@ class WorkflowMixin:
                 )
                 self.remove_legacy_rvc_from_pandrator_env(pandrator_path)
 
-            if whisperx_var:
-                self.reporter.progress(0.85)
-                self.reporter.status("Creating WhisperX Pixi environment...")
-                self.create_pixi_env(pandrator_path, 'whisperx_installer', WHISPERX_PYTHON_VERSION)
-                self.reporter.progress(0.90)
-                self.reporter.status("Installing WhisperX...")
-                self.install_whisperx(pandrator_path, 'whisperx_installer')
-
-            if parakeet_onnx_var:
-                self.reporter.progress(0.86)
-                self.reporter.status("Creating ONNX Parakeet Pixi environment...")
-                self.create_pixi_env(pandrator_path, PARAKEET_ONNX_ENV_NAME, PARAKEET_ONNX_PYTHON_VERSION)
-                self.reporter.progress(0.91)
-                self.reporter.status("Installing ONNX Parakeet STT support...")
-                self.install_parakeet_onnx(pandrator_path, PARAKEET_ONNX_ENV_NAME)
+            crispasr_install = None
+            if crispasr_var:
+                self.reporter.progress(0.88)
+                self.reporter.status("Installing CrispASR transcription runtime...")
+                crispasr_install = self.install_crispasr(
+                    pandrator_path,
+                    requested_backend=selection.crispasr_backend,
+                )
 
             if xtts_finetuning_var:
+                # easy_xtts_trainer still invokes WhisperX internally. This is
+                # a private trainer dependency, not a Pandrator STT backend.
+                self.reporter.status("Preparing XTTS trainer transcription dependency...")
+                self.create_pixi_env(pandrator_path, 'whisperx_installer', WHISPERX_PYTHON_VERSION)
+                self.install_whisperx(pandrator_path, 'whisperx_installer')
                 self.reporter.progress(0.85)
                 self.reporter.status("Cloning XTTS Fine-tuning repository...")
                 self.clone_repo(EASY_XTTS_TRAINER_REPO_URL, easy_xtts_trainer_path)
@@ -457,8 +452,15 @@ class WorkflowMixin:
             config[KOKORO_GPU_SUPPORT_CONFIG_FLAG] = (
                 config.get(KOKORO_GPU_SUPPORT_CONFIG_FLAG, False) or kokoro_var
             )
-            config['whisperx_support'] = config.get('whisperx_support', False) or whisperx_var
-            config['parakeet_onnx_support'] = config.get('parakeet_onnx_support', False) or parakeet_onnx_var
+            config['crispasr_support'] = config.get('crispasr_support', False) or crispasr_var
+            if crispasr_install:
+                config['crispasr_backend'] = crispasr_install['requested_backend']
+                config['crispasr_runtime_variant'] = crispasr_install['runtime_variant']
+                config['crispasr_compiled_backends'] = crispasr_install['compiled_backends']
+            # Retire legacy user-facing STT flags after successful migration.
+            if config['crispasr_support']:
+                config['whisperx_support'] = False
+                config['parakeet_onnx_support'] = False
             config['xtts_finetuning_support'] = config.get('xtts_finetuning_support', False) or xtts_finetuning_var
             config['rvc_support'] = config.get('rvc_support', False) or rvc_var or rvc_cpu_var
             config[RVC_GPU_SUPPORT_CONFIG_FLAG] = (
@@ -833,12 +835,26 @@ class WorkflowMixin:
                         pixi_path=shared_pixi_path,
                     )
 
-            whisperx_required = config.get('whisperx_support', False) or config.get('xtts_finetuning_support', False)
-            if whisperx_required:
-                if not config.get('whisperx_support', False):
-                    logging.info("WhisperX update check enabled because XTTS fine-tuning support is installed.")
+            crispasr_required = bool(
+                config.get('crispasr_support', False)
+                or config.get('whisperx_support', False)
+                or config.get('parakeet_onnx_support', False)
+            )
+            if crispasr_required:
+                self.reporter.status("Installing/updating CrispASR transcription runtime...")
+                crispasr_install = self.install_crispasr(
+                    pandrator_base_path,
+                    requested_backend=str(config.get('crispasr_backend') or 'auto'),
+                )
+                config['crispasr_support'] = True
+                config['crispasr_backend'] = crispasr_install['requested_backend']
+                config['crispasr_runtime_variant'] = crispasr_install['runtime_variant']
+                config['crispasr_compiled_backends'] = crispasr_install['compiled_backends']
+                config['whisperx_support'] = False
+                config['parakeet_onnx_support'] = False
 
-                self.reporter.status("Checking WhisperX environment...")
+            if config.get('xtts_finetuning_support', False):
+                self.reporter.status("Checking XTTS trainer's private WhisperX dependency...")
                 self.create_pixi_env(pandrator_base_path, 'whisperx_installer', WHISPERX_PYTHON_VERSION)
                 self.add_pixi_conda_package(pandrator_base_path, 'whisperx_installer', 'cudnn=8.9.7.29')
                 self.add_pixi_conda_package(pandrator_base_path, 'whisperx_installer', 'ffmpeg')
@@ -855,23 +871,6 @@ class WorkflowMixin:
                     self.install_whisperx(pandrator_base_path, 'whisperx_installer')
                 else:
                     logging.info(f"Skipping WhisperX reinstall: {whisperx_reason}")
-
-            if config.get('parakeet_onnx_support', False):
-                self.reporter.status("Checking ONNX Parakeet environment...")
-                self.create_pixi_env(pandrator_base_path, PARAKEET_ONNX_ENV_NAME, PARAKEET_ONNX_PYTHON_VERSION)
-
-                parakeet_needs_install, parakeet_reason = self.component_needs_package_sync(
-                    pandrator_base_path,
-                    PARAKEET_ONNX_ENV_NAME,
-                    ONNX_ASR_REQUIRED_PACKAGE_SPECS,
-                )
-
-                if parakeet_needs_install:
-                    self.reporter.status("Installing/upgrading ONNX Parakeet dependencies...")
-                    logging.info(f"Installing ONNX Parakeet packages because {parakeet_reason}")
-                    self.install_parakeet_onnx(pandrator_base_path, PARAKEET_ONNX_ENV_NAME)
-                else:
-                    logging.info(f"Skipping ONNX Parakeet reinstall: {parakeet_reason}")
 
             # Update easy XTTS trainer (repo and requirements)
             if os.path.exists(easy_xtts_trainer_path):

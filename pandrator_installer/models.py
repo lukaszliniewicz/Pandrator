@@ -48,8 +48,8 @@ class InstallSelection:
     kokoro_cpu: bool = False
     rvc: bool = False
     rvc_cpu: bool = False
-    whisperx: bool = False
-    parakeet_onnx: bool = False
+    crispasr: bool = False
+    crispasr_backend: str = "auto"
     xtts_finetuning: bool = False
     chatterbox: bool = False
     chatterbox_cpu: bool = False
@@ -67,12 +67,16 @@ class InstallSelection:
         include_dependencies: bool = True,
         fishs2_backend: str = "auto",
         fishs2_model_quant: str = "q6_k",
+        crispasr_backend: str = "auto",
     ) -> "InstallSelection":
         selected = {
             str(component).strip().lower().replace("-", "_")
             for component in components
             if str(component).strip()
         }
+        if selected.intersection({"whisperx", "parakeet_onnx"}):
+            selected.difference_update({"whisperx", "parakeet_onnx"})
+            selected.add("crispasr")
         unknown = sorted(selected.difference(INSTALL_COMPONENT_KEYS))
         if unknown:
             raise ValueError(
@@ -89,12 +93,15 @@ class InstallSelection:
             pandrator=bool(install_pandrator),
             fishs2_backend=fishs2_backend,
             fishs2_model_quant=fishs2_model_quant,
-            **{field.name: field.name in selected for field in fields(cls) if field.name not in ("pandrator", "fishs2_backend", "fishs2_model_quant")},
+            crispasr_backend=str(crispasr_backend or "auto").lower(),
+            **{field.name: field.name in selected for field in fields(cls) if field.name not in ("pandrator", "fishs2_backend", "fishs2_model_quant", "crispasr_backend")},
         )
         selection.validate()
         return selection
 
     def validate(self) -> None:
+        if self.crispasr_backend not in {"auto", "cpu", "cuda", "vulkan", "metal"}:
+            raise ValueError("CrispASR backend must be auto, cpu, cuda, vulkan, or metal.")
         mutually_exclusive = (
             ("xtts", "xtts_cpu"),
             ("kokoro", "kokoro_cpu"),
@@ -112,7 +119,7 @@ class InstallSelection:
         return tuple(
             field.name
             for field in fields(self)
-            if field.name not in ("pandrator", "fishs2_backend", "fishs2_model_quant") and getattr(self, field.name)
+            if field.name not in ("pandrator", "fishs2_backend", "fishs2_model_quant", "crispasr_backend") and getattr(self, field.name)
         )
 
     def any_component_selected(self) -> bool:
