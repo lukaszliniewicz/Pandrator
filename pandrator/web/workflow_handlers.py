@@ -18,6 +18,8 @@ from .database import Database
 from .models import (
     AgentRun,
     AgentStep,
+    AppSetting,
+    AppSettingHistory,
     Artifact,
     AudioTake,
     Document,
@@ -27,6 +29,7 @@ from .models import (
     GenerationPlanRevision,
     GenerationSegment,
     OutcomePlan,
+    OutputAssembly,
     Segment,
     SegmentLineage,
     SessionRecord,
@@ -60,6 +63,7 @@ class WorkflowHandlers:
             "dubbing.transcribe": self.transcribe,
             "dubbing.correct": self.correct,
             "dubbing.translate": self.translate,
+            "text.optimize_tts": self.optimize_tts,
             "dubbing.generate_audio": self.generate_dubbing_audio,
             "source.clean": self.clean_source,
             "text.prepare": self.prepare_text,
@@ -77,6 +81,7 @@ class WorkflowHandlers:
             "source.download_url": self.download_source_url,
             "source.reuse": self.reuse_source,
             "generation.run": self.run_generation,
+            "generation.assemble": self.assemble_generation_output,
             "audio.waveform": self.generate_waveform,
         }
 
@@ -218,13 +223,23 @@ class WorkflowHandlers:
             if definition.key == "translate":
                 translation_parent = str(input_choices.get("translation") or "correction")
                 input_roles = ("correction",) if translation_parent == "correction" else ("transcription", "upload")
-            elif definition.key == "generate_audio":
+            elif definition.key == "optimize_tts" and record.workflow_kind != "audiobook":
                 generation_parent = str(input_choices.get("generation") or "translation")
                 input_roles = {
                     "translation": ("translation",),
                     "correction": ("correction",),
                     "source": ("transcription", "upload"),
                 }.get(generation_parent, definition.prerequisite_roles)
+            elif definition.key == "generate_audio":
+                if "optimize_tts" in included:
+                    input_roles = ("tts_optimized",)
+                else:
+                    generation_parent = str(input_choices.get("generation") or "translation")
+                    input_roles = {
+                        "translation": ("translation",),
+                        "correction": ("correction",),
+                        "source": ("transcription", "upload"),
+                    }.get(generation_parent, definition.prerequisite_roles)
             source = self._latest_stage_input(session_id, input_roles)
             if definition.prerequisite_roles and source is None:
                 raise ValueError(f"Stage '{definition.key}' is missing a required input artifact.")
@@ -400,6 +415,7 @@ class WorkflowHandlers:
         aliases = {
             "correction": ("correction_model", "correct_model"),
             "translation": ("translation_model", "translate_model"),
+            "tts_optimization": ("tts_optimization_model", "llm_model"),
         }
         requested = str(settings.get("model_name") or "").strip()
         for key in aliases[stage]:
@@ -552,6 +568,85 @@ class WorkflowHandlers:
         self._record_usage(session_id, "translation", settings, result)
         progress(1.0, "Translation ready")
         return {"artifact_id": artifact.id, "path": artifact.relative_path, "cost": result.cost}
+
+    def optimize_tts(self, payload, progress, cancel_event):
+        """Create a separate, previewable text revision optimized only for speech."""
+        from dataclasses import replace
+        from types import SimpleNamespace
+
+        from pandrator.logic.dubbing.srt_utils import compose_srt, parse_srt
+
+        from .tts_optimization import optimize_texts
+
+        session_id = str(payload.get("session_id") or "")
+        source_artifact, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
+        settings = self._with_database_llm_settings(dict(payload.get("settings") or {}), "tts_optimization")
+        llm_settings = SimpleNamespace(
+            provider_configs=settings["llm_provider_configs"],
+            default_model=settings["llm_default_model"],
+            request_timeout_seconds=settings["request_timeout_seconds"],
+        )
+        model_name = str(settings.get("tts_optimization_model") or settings["llm_default_model"])
+        suffix = source_path.suffix.lower()
+        progress(0.02, "Preparing speech optimization preview")
+        if suffix == ".srt":
+            segments = parse_srt(source_path.read_text(encoding="utf-8-sig"))
+            optimized, usage = optimize_texts(
+                [segment.text for segment in segments], settings, llm_settings, model_name, cancel_event, progress
+            )
+            if cancel_event.is_set():
+                return {}
+            segments = [replace(segment, text=text) for segment, text in zip(segments, optimized)]
+            destination = self._session_dir(session_id) / f"tts-optimized-{new_id()}.srt"
+            destination.write_text(compose_srt(segments), encoding="utf-8")
+            kind = "srt"
+        elif suffix == ".json":
+            rows = json.loads(source_path.read_text(encoding="utf-8"))
+            if not isinstance(rows, list):
+                raise ValueError("Speech optimization JSON input must contain a list of generation units.")
+            source_texts = [
+                str(row.get("processed_sentence") or row.get("original_sentence") or row.get("text") or "")
+                if isinstance(row, dict) else str(row)
+                for row in rows
+            ]
+            optimized, usage = optimize_texts(source_texts, settings, llm_settings, model_name, cancel_event, progress)
+            if cancel_event.is_set():
+                return {}
+            for row, text in zip(rows, optimized):
+                if isinstance(row, dict):
+                    row["tts_optimized_sentence"] = text
+                    row["processed_sentence"] = text
+            destination = self._session_dir(session_id) / f"tts-optimized-{new_id()}.json"
+            destination.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+            kind = "json"
+        else:
+            source_text = source_path.read_text(encoding="utf-8-sig")
+            optimized, usage = optimize_texts([source_text], settings, llm_settings, model_name, cancel_event, progress)
+            if cancel_event.is_set():
+                return {}
+            destination = self._session_dir(session_id) / f"tts-optimized-{new_id()}.txt"
+            destination.write_text(optimized[0], encoding="utf-8")
+            kind = "text"
+        artifact = self.artifacts.register(
+            destination,
+            kind=kind,
+            role="tts_optimized",
+            session_id=session_id,
+            parent_ids=[source_artifact.id],
+            settings=settings,
+            metadata={"source_artifact_id": source_artifact.id, "model": model_name},
+        )
+        if suffix == ".srt":
+            self._store_srt_document(
+                session_id,
+                artifact,
+                "tts_optimization",
+                language=str((source_artifact.metadata_json or {}).get("language") or "") or None,
+                parent_artifact=source_artifact,
+            )
+        self._record_usage(session_id, "tts_optimization", settings, usage)
+        progress(1.0, "Speech optimization preview ready")
+        return {"artifact_id": artifact.id, "path": artifact.relative_path, "cost": usage.cost}
 
     def transcribe_voice(self, payload, progress, cancel_event):
         from pandrator.logic.dubbing.transcription import transcribe_source_file_with_metadata
@@ -753,6 +848,21 @@ class WorkflowHandlers:
                 training.status = "succeeded"
                 training.output_artifact_id = artifact.id
                 training.updated_at = utcnow()
+                defaults = session.get(AppSetting, "defaults.tts")
+                value = dict(defaults.value_json or {}) if defaults and isinstance(defaults.value_json, dict) else {}
+                providers = [dict(item) for item in value.get("provider_configs", []) if isinstance(item, dict)]
+                xtts = next((item for item in providers if str(item.get("id") or "").lower() == "xtts"), None)
+                if xtts is None:
+                    xtts = {"id": "xtts", "name": "XTTS", "models": []}
+                    providers.append(xtts)
+                xtts["models"] = list(dict.fromkeys([*(xtts.get("models") or []), model_name]))
+                if defaults is None:
+                    session.add(AppSetting(key="defaults.tts", value_json={**value, "provider_configs": providers}, revision=1))
+                else:
+                    session.add(AppSettingHistory(key=defaults.key, value_json=defaults.value_json, revision=defaults.revision))
+                    defaults.value_json = {**value, "provider_configs": providers}
+                    defaults.revision += 1
+                    defaults.updated_at = utcnow()
             progress(1.0, "XTTS model ready")
             return {"training_id": training_id, "artifact_id": artifact.id, "model_name": model_name, "message": message}
         except Exception as error:
@@ -779,6 +889,12 @@ class WorkflowHandlers:
                     run.updated_at = utcnow()
         source_artifact, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
         settings = dict(payload.get("settings") or {})
+        pdf_config = source_cleaning.PDFIngestionConfig(
+            ocr_mode=str(settings.get("pdf_ocr_mode") or "auto"),
+            ocr_language=str(settings.get("pdf_ocr_language") or "auto"),
+            ocr_dpi=int(settings.get("pdf_ocr_dpi") or 200),
+        )
+        deterministic_operations: list[dict[str, Any]] = []
         progress(0.05, "Extracting source text")
         extension = source_path.suffix.lower()
         if extension == ".txt":
@@ -792,10 +908,17 @@ class WorkflowHandlers:
         elif extension == ".pdf":
             document = source_cleaning.build_source_document(
                 str(source_path),
+                pdf_config=pdf_config,
                 artifact_dir=str(self._session_dir(session_id) / "source_ingestion"),
                 progress_callback=lambda message: progress(0.35, str(message)),
             )
-            cleaned_text = source_cleaning.apply_cleaning_operations(document, []).cleaned_text
+            deterministic_operations = source_cleaning.propose_deterministic_operations(
+                document,
+                remove_footnotes=bool(settings.get("remove_footnotes", False)),
+                remove_toc=bool(settings.get("pdf_remove_toc", True)),
+                remove_repeated_marginals=bool(settings.get("pdf_remove_repeated_marginals", True)),
+            )
+            cleaned_text = source_cleaning.apply_cleaning_operations(document, deterministic_operations).cleaned_text
         elif extension in {".docx", ".mobi"}:
             extracted = self._session_dir(session_id) / f"{source_path.stem}_extracted.txt"
             if not file_handler.convert_doc_to_text(str(source_path), str(extracted)):
@@ -814,6 +937,7 @@ class WorkflowHandlers:
             if extension in {".epub", ".pdf"}:
                 document = source_cleaning.build_source_document(
                     str(source_path),
+                    pdf_config=pdf_config if extension == ".pdf" else None,
                     extracted_text=cleaned_text if extension == ".epub" else None,
                     artifact_dir=str(self._session_dir(session_id) / "source_ingestion"),
                     progress_callback=lambda message: progress(0.45, str(message)),
@@ -850,7 +974,8 @@ class WorkflowHandlers:
             )
             if cancel_event.is_set():
                 return {}
-            cleaning_result = source_cleaning.apply_cleaning_operations(document, pipeline.all_operations)
+            all_operations = [*deterministic_operations, *pipeline.all_operations]
+            cleaning_result = source_cleaning.apply_cleaning_operations(document, all_operations)
             validation = source_cleaning.validate_cleaning_result(
                 document,
                 cleaning_result,
@@ -866,7 +991,7 @@ class WorkflowHandlers:
             audit_dir = self._session_dir(session_id) / "source_cleaning"
             source_cleaning.write_cleaning_artifacts(
                 document,
-                pipeline.all_operations,
+                all_operations,
                 cleaning_result,
                 str(audit_dir),
             )
@@ -1003,13 +1128,21 @@ class WorkflowHandlers:
             session.flush()
             segment_ids = []
             for ordinal, record in enumerate(clean):
+                explicit_silence = record.get("silence_after_ms")
+                if explicit_silence is None:
+                    is_paragraph = str(record.get("paragraph") or "").lower() == "yes"
+                    explicit_silence = (
+                        settings.get("paragraph_silence_ms", settings.get("silence_for_paragraphs", 700))
+                        if is_paragraph
+                        else settings.get("sentence_silence_ms", settings.get("silence_between_sentences", 250))
+                    )
                 segment = GenerationSegment(
                     plan_revision_id=revision.id,
                     ordinal=ordinal,
                     source_segment_ids_json=list(record.get("source_segment_ids") or []),
                     text=str(record.get("text") or record.get("original_sentence") or "").strip(),
                     language=str(record.get("language") or settings.get("language") or settings.get("target_language") or "") or None,
-                    silence_after_ms=max(0, int(record.get("silence_after_ms") or 0)),
+                    silence_after_ms=max(0, int(explicit_silence or 0)),
                     marked=bool(record.get("marked", False)),
                 )
                 session.add(segment)
@@ -1046,7 +1179,7 @@ class WorkflowHandlers:
         records = [record for record in records if str(record.get("text") or record.get("original_sentence") or "").strip()]
         if not records:
             raise ValueError("No non-empty narration segments were found.")
-        combined = AudioSegment.empty()
+        audio_parts: list[tuple[AudioSegment, int]] = []
         revision_id, generation_segment_ids = self._store_generation_plan(
             session_id,
             records,
@@ -1081,9 +1214,19 @@ class WorkflowHandlers:
                 segment = session.get(GenerationSegment, generation_segment_id)
                 segment.status = "completed"
                 session.add(AudioTake(generation_segment_id=generation_segment_id, artifact_id=take_artifact.id, kind="tts", status="completed", settings_hash=take_artifact.settings_hash, duration_ms=len(audio), is_active=True))
-            combined += audio
-        if not combined:
+            silence_after = record.get("silence_after_ms")
+            if silence_after is None:
+                silence_after = (
+                    settings.get("paragraph_silence_ms", settings.get("silence_for_paragraphs", 700))
+                    if str(record.get("paragraph") or "").lower() == "yes"
+                    else settings.get("sentence_silence_ms", settings.get("silence_between_sentences", 250))
+                )
+            audio_parts.append((audio, max(0, int(silence_after or 0))))
+        if not audio_parts:
             raise RuntimeError("The speech service returned no audio.")
+        from .audio_assembly import compose_audio
+
+        combined = compose_audio(audio_parts, settings)
         destination = self._session_dir(session_id) / ("dubbing_audio.wav" if role == "dubbing_audio" else "audiobook_audio.wav")
         exported = combined.export(destination, format="wav")
         exported.close()
@@ -1166,7 +1309,7 @@ class WorkflowHandlers:
         if not segment_ids:
             raise ValueError("No generation segments match this request.")
 
-        from .workspace import adapt_runtime_settings
+        from .workspace import adapt_runtime_settings, mark_output_assemblies_stale
 
         tts_settings = {
             **adapt_runtime_settings("tts", dict(settings_snapshot.get("tts") or {})),
@@ -1248,6 +1391,7 @@ class WorkflowHandlers:
                     )
                     segment.status = "completed"
                     segment.updated_at = utcnow()
+                    mark_output_assemblies_stale(session, session_id)
                 generated += 1
             except Exception:
                 with self.database.session() as session:
@@ -1267,6 +1411,164 @@ class WorkflowHandlers:
             run.updated_at = utcnow()
         progress(1.0, "Generation run complete")
         return {"generation_run_id": run_id, "status": "completed", "generated": generated, "skipped": skipped}
+
+    def assemble_generation_output(self, payload, progress, cancel_event):
+        """Assemble the current selected takes in plan order into an immutable artifact."""
+        from pydub import AudioSegment
+
+        from .audio_assembly import compose_audio, export_audio
+
+        assembly_id = str(payload.get("output_assembly_id") or "")
+        with self.database.session() as session:
+            assembly = session.get(OutputAssembly, assembly_id)
+            if assembly is None:
+                raise KeyError(assembly_id)
+            assembly.status = "running"
+            assembly.error_message = None
+            assembly.updated_at = utcnow()
+            session_id = assembly.session_id
+            settings_container = dict(assembly.settings_json or {})
+            plan_revision_id = str(settings_container.get("plan_revision_id") or "")
+            resolved = settings_container.get("resolved") if isinstance(settings_container.get("resolved"), dict) else {}
+            audio_settings = dict(resolved.get("audio") or {})
+            output_settings = dict(resolved.get("output") or {})
+
+        try:
+            with self.database.session() as session:
+                segments = list(
+                    session.scalars(
+                        select(GenerationSegment)
+                        .where(
+                            GenerationSegment.plan_revision_id == plan_revision_id,
+                            GenerationSegment.removed.is_(False),
+                        )
+                        .order_by(GenerationSegment.ordinal)
+                    ).all()
+                )
+                selected: list[tuple[GenerationSegment, AudioTake, Artifact]] = []
+                for segment in segments:
+                    take = session.scalar(
+                        select(AudioTake)
+                        .where(
+                            AudioTake.generation_segment_id == segment.id,
+                            AudioTake.is_active.is_(True),
+                        )
+                        .order_by(AudioTake.created_at.desc())
+                    )
+                    if take is None or take.status != "completed" or not take.artifact_id:
+                        raise ValueError(f"Segment {segment.ordinal + 1} has no current completed audio take.")
+                    artifact = session.get(Artifact, take.artifact_id)
+                    if artifact is None or artifact.state != "current":
+                        raise ValueError(f"Segment {segment.ordinal + 1} references an unavailable audio artifact.")
+                    session.expunge(segment)
+                    session.expunge(take)
+                    session.expunge(artifact)
+                    selected.append((segment, take, artifact))
+            if not selected:
+                raise ValueError("No active generation segments are available for assembly.")
+
+            parts: list[tuple[AudioSegment, int]] = []
+            manifest: list[dict[str, Any]] = []
+            parent_ids: list[str] = []
+            for index, (segment, take, artifact) in enumerate(selected):
+                if cancel_event.is_set():
+                    with self.database.session() as session:
+                        assembly = session.get(OutputAssembly, assembly_id)
+                        if assembly is not None:
+                            assembly.status = "canceled"
+                            assembly.error_message = None
+                            assembly.updated_at = utcnow()
+                    return {}
+                progress(index / len(selected), f"Assembling segment {index + 1} of {len(selected)}")
+                path = self.paths.managed_path(artifact.relative_path)
+                if not path.is_file():
+                    raise ValueError(f"Audio take file is missing for segment {segment.ordinal + 1}.")
+                audio = AudioSegment.from_file(path)
+                parts.append((audio, segment.silence_after_ms))
+                parent_ids.append(artifact.id)
+                manifest.append(
+                    {
+                        "segment_id": segment.id,
+                        "segment_revision": segment.revision,
+                        "take_id": take.id,
+                        "take_revision": take.revision,
+                        "artifact_id": artifact.id,
+                        "kind": take.kind,
+                        "duration_ms": len(audio),
+                        "silence_after_ms": segment.silence_after_ms if index < len(selected) - 1 else 0,
+                    }
+                )
+            combined = compose_audio(parts, audio_settings)
+            output_format = str(output_settings.get("format") or "wav").lower()
+            bitrate = str(output_settings.get("bitrate") or "192k")
+            destination = self._session_dir(session_id) / "assemblies" / f"assembly-{assembly_id}.{output_format}"
+            export_audio(combined, destination, output_format, bitrate)
+            session_record = self._session_record(session_id)
+            metadata = {
+                "title": str(output_settings.get("title") or session_record.name),
+                "artist": str(output_settings.get("artist") or ""),
+                "album": str(output_settings.get("album") or ""),
+                "genre": str(output_settings.get("genre") or ""),
+                "language": str(output_settings.get("language") or ""),
+            }
+            cover_artifact_id = str(output_settings.get("cover_artifact_id") or "").strip()
+            cover_path = None
+            if cover_artifact_id:
+                cover_artifact, candidate = self._resolve_input(cover_artifact_id)
+                if cover_artifact.state != "current" or not candidate.is_file() or not str(cover_artifact.mime_type or "").startswith("image/"):
+                    raise ValueError("The selected cover artifact is not an available image.")
+                cover_path = candidate
+                parent_ids.append(cover_artifact.id)
+            from pandrator.logic.audio_processor import _save_metadata_and_cover
+
+            _save_metadata_and_cover(
+                str(destination),
+                output_format,
+                metadata,
+                str(cover_path) if cover_path else None,
+                raise_on_error=True,
+            )
+            artifact = self.artifacts.register(
+                destination,
+                kind="audio",
+                role="assembled_audio",
+                session_id=session_id,
+                parent_ids=parent_ids,
+                settings={"audio": audio_settings, "output": output_settings, "takes": manifest},
+                metadata={
+                    "output_assembly_id": assembly_id,
+                    "duration_ms": len(combined),
+                    "segment_count": len(selected),
+                    "format": output_format,
+                    "bitrate": bitrate,
+                    "metadata": metadata,
+                    "cover_artifact_id": cover_artifact_id or None,
+                    "takes": manifest,
+                },
+            )
+            with self.database.session() as session:
+                assembly = session.get(OutputAssembly, assembly_id)
+                assembly.artifact_id = artifact.id
+                assembly.status = "completed"
+                assembly.error_message = None
+                assembly.settings_json = {**dict(assembly.settings_json or {}), "takes": manifest, "duration_ms": len(combined)}
+                assembly.updated_at = utcnow()
+            progress(1.0, "Output assembly ready")
+            return {
+                "output_assembly_id": assembly_id,
+                "artifact_id": artifact.id,
+                "duration_ms": len(combined),
+                "segment_count": len(selected),
+                "format": output_format,
+            }
+        except Exception as error:
+            with self.database.session() as session:
+                assembly = session.get(OutputAssembly, assembly_id)
+                if assembly is not None:
+                    assembly.status = "failed"
+                    assembly.error_message = str(error)
+                    assembly.updated_at = utcnow()
+            raise
 
     def generate_waveform(self, payload, progress, cancel_event):
         """Create a compact, reusable peak artifact for browser review."""
@@ -1311,6 +1613,8 @@ class WorkflowHandlers:
 
     def export(self, payload, progress, cancel_event):
         """Create immutable, managed exports without requiring generated audio."""
+        from werkzeug.utils import secure_filename
+
         from pandrator.logic.dubbing.bilingual_ass import write_bilingual_ass
         from pandrator.logic.dubbing.subtitle_finalization import finalize_srt_file
         from pandrator.logic.dubbing.video_muxing import build_add_subtitles_command, build_multi_soft_subtitle_command, build_replace_video_audio_command
@@ -1325,15 +1629,16 @@ class WorkflowHandlers:
         by_role = {item.role: item for item in current}
         output_dir = self._session_dir(session_id) / "exports"
         output_dir.mkdir(parents=True, exist_ok=True)
+        export_name = secure_filename(record.name) or record.storage_key
         progress(0.1, "Preparing export")
         produced: list[Artifact] = []
 
         if record.workflow_kind == "audiobook":
-            audio = by_role.get("audiobook_audio")
+            audio = by_role.get("assembled_audio") or by_role.get("audiobook_audio")
             if audio is None:
                 raise ValueError("Audiobook export requires generated audio.")
             _audio_record, audio_path = self._resolve_input(audio.id)
-            destination = output_dir / f"{record.name}.wav"
+            destination = output_dir / f"{export_name}{audio_path.suffix.lower()}"
             shutil.copy2(audio_path, destination)
             produced.append(self.artifacts.register(destination, kind="export", role="export", session_id=session_id, parent_ids=[audio.id], settings=settings))
         else:
@@ -1368,7 +1673,7 @@ class WorkflowHandlers:
                 finalized_subtitles.append(finalized)
                 produced.append(finalized)
             selected_subtitles = finalized_subtitles
-            dubbing_audio = by_role.get("dubbing_audio")
+            dubbing_audio = by_role.get("assembled_audio") or by_role.get("dubbing_audio")
             audio_mode = str(settings.get("audio_mode") or "source").lower()
             audio_mode = {"preserve": "source", "dubbing_only": "dubbed"}.get(audio_mode, audio_mode)
 
@@ -1389,7 +1694,7 @@ class WorkflowHandlers:
                     subprocess.run(command, check=True, capture_output=True, text=True)
                     working_video = audio_video
                     audio_parent_ids.append(dubbing_audio.id)
-                destination = output_dir / f"{record.name}.mp4"
+                destination = output_dir / f"{export_name}.mp4"
                 if subtitle_mode == "soft" and selected_subtitles:
                     tracks = []
                     for item in selected_subtitles:
@@ -1403,6 +1708,14 @@ class WorkflowHandlers:
                     burn_path = subtitle_paths[-1]
                     if len(subtitle_paths) == 2:
                         burn_path = Path(write_bilingual_ass(str(subtitle_paths[0]), str(subtitle_paths[1]), str(output_dir / "bilingual_subtitles.ass")))
+                        self.artifacts.register(
+                            burn_path,
+                            kind="ass",
+                            role="bilingual_subtitle_overlay",
+                            session_id=session_id,
+                            parent_ids=[item.id for item in selected_subtitles],
+                            settings=settings,
+                        )
                     command = build_add_subtitles_command(str(working_video), str(burn_path), str(destination), subtitle_mode="burned", subtitle_language=str(settings.get("target_language") or "und"))
                     subprocess.run(command, check=True, capture_output=True, text=True)
                 else:
@@ -1415,7 +1728,11 @@ class WorkflowHandlers:
                     if item is None:
                         continue
                     _artifact, item_path = self._resolve_input(item.id)
-                    destination = output_dir / item_path.name
+                    destination = (
+                        output_dir / f"{export_name}{item_path.suffix.lower()}"
+                        if item.role in {"assembled_audio", "dubbing_audio"}
+                        else output_dir / item_path.name
+                    )
                     if item_path.resolve() == destination.resolve():
                         continue
                     shutil.copy2(item_path, destination)

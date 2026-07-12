@@ -687,6 +687,30 @@
         "title": "OutcomePlanUpdate",
         "type": "object"
       },
+      "OutputAssemblyCreateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "generation_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Generation Run Id"
+          },
+          "run_override": {
+            "additionalProperties": true,
+            "title": "Run Override",
+            "type": "object"
+          }
+        },
+        "title": "OutputAssemblyCreateRequest",
+        "type": "object"
+      },
       "PdfCropInput": {
         "$defs": {
           "PdfRectInput": {
@@ -2253,6 +2277,36 @@
         }
       }
     },
+    "/api/v1/sessions/{sessionId}/output-assemblies": {
+      "post": {
+        "operationId": "createOutputAssembly",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OutputAssemblyCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Output assembly queued"
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{sessionId}/output-assemblies/latest": {
+      "get": {
+        "operationId": "getLatestOutputAssembly",
+        "responses": {
+          "200": {
+            "description": "Latest output assembly"
+          }
+        }
+      }
+    },
     "/api/v1/sessions/{sessionId}/pdf/apply": {
       "post": {
         "operationId": "applyPdfEdits",
@@ -2527,6 +2581,16 @@
         "responses": {
           "202": {
             "description": "Cancellation requested"
+          }
+        }
+      }
+    },
+    "/api/v1/training/{trainingId}/retry": {
+      "post": {
+        "operationId": "retryTrainingRun",
+        "responses": {
+          "202": {
+            "description": "Retry queued"
           }
         }
       }

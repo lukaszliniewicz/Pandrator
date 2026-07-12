@@ -27,15 +27,17 @@ DUBBING_STAGES = (
     StageDefinition("transcribe", "Transcribe", "Create timed source-language subtitles from media.", prerequisite_roles=("upload",), output_role="transcription", job_kind="dubbing.transcribe"),
     StageDefinition("correct", "Correct", "Review punctuation, wording, merges, and splits without translating.", prerequisite_roles=("transcription", "upload"), output_role="correction", job_kind="dubbing.correct"),
     StageDefinition("translate", "Translate", "Create a separate target-language subtitle artifact.", prerequisite_roles=("correction", "transcription", "upload"), output_role="translation", job_kind="dubbing.translate"),
+    StageDefinition("optimize_tts", "Optimize for speech", "Optionally rewrite pronunciation-sensitive text for TTS without changing subtitle timing.", prerequisite_roles=("translation", "correction", "transcription", "upload"), output_role="tts_optimized", job_kind="text.optimize_tts"),
     StageDefinition("preview", "Preview", "Compare source, correction, and translation with recorded lineage.", executable=False, prerequisite_roles=("translation", "correction", "transcription", "upload")),
-    StageDefinition("generate_audio", "Generate audio", "Synthesize missing or stale included prerequisites, then create speech.", prerequisite_roles=("translation", "correction", "transcription", "upload"), output_role="dubbing_audio", job_kind="dubbing.generate_audio"),
+    StageDefinition("generate_audio", "Generate audio", "Synthesize missing or stale included prerequisites, then create speech.", prerequisite_roles=("tts_optimized", "translation", "correction", "transcription", "upload"), output_role="dubbing_audio", job_kind="dubbing.generate_audio"),
     StageDefinition("export", "Export", "Package audio, subtitle tracks, or a rendered video.", prerequisite_roles=("dubbing_audio", "translation", "correction", "transcription", "upload"), output_role="export", job_kind="export.create"),
 )
 
 AUDIOBOOK_STAGES = (
     StageDefinition("clean_source", "Clean source", "Review deterministic extraction and optional agentic cleanup.", prerequisite_roles=("upload",), output_role="clean_text", job_kind="source.clean"),
     StageDefinition("prepare_text", "Prepare narration", "Segment and optimize text for the selected speech service.", prerequisite_roles=("clean_text", "upload"), output_role="prepared_text", job_kind="text.prepare"),
-    StageDefinition("generate_audio", "Generate audio", "Generate or resume narration from prepared segments.", prerequisite_roles=("prepared_text", "clean_text", "upload"), output_role="audiobook_audio", job_kind="audiobook.generate_audio"),
+    StageDefinition("optimize_tts", "Optimize for speech", "Optionally rewrite pronunciation-sensitive narration and keep a before/after artifact.", prerequisite_roles=("prepared_text", "clean_text", "upload"), output_role="tts_optimized", job_kind="text.optimize_tts"),
+    StageDefinition("generate_audio", "Generate audio", "Generate or resume narration from prepared segments.", prerequisite_roles=("tts_optimized", "prepared_text", "clean_text", "upload"), output_role="audiobook_audio", job_kind="audiobook.generate_audio"),
     StageDefinition("export", "Export", "Assemble the selected audio format, metadata, and cover.", prerequisite_roles=("audiobook_audio",), output_role="export", job_kind="export.create"),
 )
 
@@ -60,7 +62,7 @@ class WorkflowService:
         extension = "." + filename.rsplit(".", 1)[-1] if "." in filename else ""
         if definition.key == "transcribe":
             return extension in {".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v"}
-        if definition.key in {"correct", "translate"}:
+        if definition.key in {"correct", "translate", "optimize_tts"}:
             return extension == ".srt"
         if definition.key == "clean_source":
             return extension in {".txt", ".pdf", ".epub", ".docx", ".mobi"}
@@ -159,6 +161,7 @@ class WorkflowService:
             "transcribe": ("stt", "subtitles"),
             "correct": ("correction", "subtitles"),
             "translate": ("translation", "subtitles"),
+            "optimize_tts": ("text",),
             "clean_source": ("source_cleaning", "text"),
             "prepare_text": ("text", "tts", "audio"),
             "generate_audio": ("text", "tts", "audio", "rvc", "output"),
@@ -166,7 +169,7 @@ class WorkflowService:
         }
         pipeline_sections = {
             section
-            for key in ("transcribe", "correct", "translate", "clean_source", "prepare_text", "generate_audio")
+            for key in ("transcribe", "correct", "translate", "clean_source", "prepare_text", "optimize_tts", "generate_audio")
             for section in section_map[key]
         }
         requested_sections = sorted(pipeline_sections) if stage_key == "generate_audio" else list(section_map.get(stage_key, ()))
@@ -209,12 +212,22 @@ class WorkflowService:
             inputs = (outcome.value_json or {}).get("inputs", {}) if outcome and isinstance(outcome.value_json, dict) else {}
             if stage_key == "translate" and str(inputs.get("translation") or "correction") != "correction":
                 prerequisite_roles = ("transcription", "upload")
-            elif stage_key == "generate_audio":
+            elif stage_key == "optimize_tts" and record.workflow_kind != "audiobook":
                 prerequisite_roles = {
                     "translation": ("translation",),
                     "correction": ("correction",),
                     "source": ("transcription", "upload"),
                 }.get(str(inputs.get("generation") or "translation"), prerequisite_roles)
+            elif stage_key == "generate_audio":
+                transformations = (outcome.value_json or {}).get("transformations", {}) if outcome and isinstance(outcome.value_json, dict) else {}
+                if bool(transformations.get("llm_tts_optimization")):
+                    prerequisite_roles = ("tts_optimized",)
+                else:
+                    prerequisite_roles = {
+                        "translation": ("translation",),
+                        "correction": ("correction",),
+                        "source": ("transcription", "upload"),
+                    }.get(str(inputs.get("generation") or "translation"), prerequisite_roles)
             artifacts = list(
                 session.scalars(
                     select(Artifact).where(
@@ -250,7 +263,7 @@ class WorkflowService:
     @staticmethod
     def _resource_keys(session_id: str, stage_key: str, settings: dict[str, Any]) -> list[str]:
         keys = [f"session:{session_id}"]
-        if stage_key in {"correct", "translate", "clean_source"}:
+        if stage_key in {"correct", "translate", "optimize_tts", "clean_source"}:
             keys.append("service:llm")
         if stage_key in {"generate_audio", "prepare_text"}:
             service = str(settings.get("service") or "tts").lower().replace(" ", "_")

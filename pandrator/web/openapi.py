@@ -70,6 +70,7 @@ def build_openapi_document() -> dict:
             "/api/v1/rvc/convert": {"post": {"operationId": "convertWithRvc", "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RvcConvertRequest"}}}}, "responses": {"202": {"description": "Queued"}}}},
             "/api/v1/training": {"get": {"operationId": "listTrainingRuns", "responses": {"200": {"description": "Training runs"}}}, "post": {"operationId": "createTrainingRun", "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TrainingCreateRequest"}}}}, "responses": {"202": {"description": "Queued"}}}},
             "/api/v1/training/{trainingId}/cancel": {"post": {"operationId": "cancelTrainingRun", "responses": {"202": {"description": "Cancellation requested"}}}},
+            "/api/v1/training/{trainingId}/retry": {"post": {"operationId": "retryTrainingRun", "responses": {"202": {"description": "Retry queued"}}}},
             "/api/v1/jobs/{jobId}": {"get": {"operationId": "getJob", "responses": {"200": {"description": "Job"}}}},
             "/api/v1/jobs/{jobId}/cancel": {"post": {"operationId": "cancelJob", "responses": {"200": {"description": "Cancellation requested"}}}},
         },
@@ -125,6 +126,8 @@ def build_openapi_document() -> dict:
         "/api/v1/generation-runs/{runId}/pause": {"post": operation("pauseGenerationRun", "Safe pause requested", status="202")},
         "/api/v1/generation-runs/{runId}/resume": {"post": operation("resumeGenerationRun", "Generation resumed", status="202")},
         "/api/v1/generation-runs/{runId}/cancel": {"post": operation("cancelGenerationRun", "Cancellation requested", status="202")},
+        "/api/v1/sessions/{sessionId}/output-assemblies/latest": {"get": operation("getLatestOutputAssembly", "Latest output assembly")},
+        "/api/v1/sessions/{sessionId}/output-assemblies": {"post": operation("createOutputAssembly", "Output assembly queued", "OutputAssemblyCreateRequest", "202")},
         "/api/v1/sessions/{sessionId}/agent-runs": {
             "get": operation("listAgentRuns", "Agentic cleaning runs"),
             "post": operation("createAgentRun", "Agentic cleaning queued", "AgentRunCreateRequest", "202"),

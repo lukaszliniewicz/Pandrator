@@ -20,6 +20,7 @@ SINGLETON_SESSION_ROLES = {
     "transcription",
     "correction",
     "translation",
+    "tts_optimized",
     "reviewed_transcription",
     "reviewed_correction",
     "reviewed_translation",
@@ -28,6 +29,8 @@ SINGLETON_SESSION_ROLES = {
     "speech_blocks",
     "dubbing_audio",
     "audiobook_audio",
+    "assembled_audio",
+    "bilingual_subtitle_overlay",
     "export",
 }
 

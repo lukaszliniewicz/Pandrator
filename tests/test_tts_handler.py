@@ -226,6 +226,31 @@ class TTSHandlerTests(unittest.TestCase):
             "http://session.example:9999",
         )
 
+    def test_local_service_preserves_discovered_catalogue_and_request_schema(self):
+        settings = {
+            "provider_configs": [
+                {
+                    "id": "kokoro",
+                    "name": "Kokoro",
+                    "api_base": "http://kokoro.example:8880",
+                    "models": ["kokoro-v1"],
+                    "voices": ["af_heart", "bf_alice"],
+                    "default_model": "kokoro-v1",
+                    "default_voice": "bf_alice",
+                    "adapter": "generic_json",
+                    "speech_path": "/generate",
+                    "request_fields": {"text": "text", "voice": "voice"},
+                    "request_defaults": {"format": "wav"},
+                }
+            ]
+        }
+        service = next(item for item in tts_handler.get_service_configs(settings) if item["id"] == "kokoro")
+        self.assertEqual(["kokoro-v1"], service["models"])
+        self.assertEqual(["af_heart", "bf_alice"], service["voices"])
+        self.assertEqual("bf_alice", service["default_voice"])
+        self.assertEqual("/generate", service["speech_path"])
+        self.assertEqual({"format": "wav"}, service["request_defaults"])
+
     def test_kokoro_voice_language_inference(self):
         self.assertEqual(tts_handler.infer_kokoro_voice_language_code("af_heart"), "en")
         self.assertEqual(tts_handler.infer_kokoro_voice_language_code("bf_alice"), "en-gb")

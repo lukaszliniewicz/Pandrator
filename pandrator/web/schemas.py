@@ -225,6 +225,11 @@ class GenerationStartRequest(StrictModel):
     operation: Literal["generate", "regenerate", "rvc"] = "generate"
 
 
+class OutputAssemblyCreateRequest(StrictModel):
+    generation_run_id: str | None = None
+    run_override: dict[str, Any] = Field(default_factory=dict)
+
+
 class TtsEndpointDiscoveryRequest(StrictModel):
     base_url: str = Field(min_length=8, max_length=2048)
 
@@ -272,6 +277,7 @@ SCHEMA_MODELS = {
         GenerationPlanCreate,
         GenerationSegmentUpdate,
         GenerationStartRequest,
+        OutputAssemblyCreateRequest,
         TtsEndpointDiscoveryRequest,
         AgentRunCreateRequest,
     )

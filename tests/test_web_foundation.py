@@ -4,14 +4,17 @@ import sqlite3
 import tempfile
 import unittest
 import io
+from contextlib import closing
 from pathlib import Path
 
+from alembic import command
+from alembic.config import Config
 from sqlalchemy import func, select
 
 from pandrator.runtime import DataPaths, PathBoundaryError
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
-from pandrator.web.database import Database, upgrade_database
+from pandrator.web.database import SCHEMA_HEAD, Database, sqlite_url, upgrade_database
 from pandrator.web.jobs import JobQueue, Worker, noop_handler
 from pandrator.web.legacy_migration import import_legacy_data
 from pandrator.web.models import DocumentRevision, GenerationSegment, ProviderModel, Segment, SessionRecord
@@ -40,6 +43,26 @@ class DataPathsTests(unittest.TestCase):
             self.assertEqual(paths.allowed_external_path(source, [directory]), source.resolve())
             with self.assertRaises(PathBoundaryError):
                 paths.allowed_external_path(source, [other])
+
+
+class SchemaUpgradeTests(unittest.TestCase):
+    def test_existing_web_preview_database_upgrades_from_previous_head(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "pandrator.sqlite3"
+            upgrade_database(database_path)
+            config = Config()
+            config.set_main_option("script_location", str(Path(__file__).parents[1] / "pandrator" / "web" / "migrations"))
+            config.set_main_option("sqlalchemy.url", sqlite_url(database_path))
+            command.downgrade(config, "0003_parity_workspace")
+            with closing(sqlite3.connect(database_path)) as connection:
+                self.assertEqual("0003_parity_workspace", connection.execute("SELECT version_num FROM alembic_version").fetchone()[0])
+                self.assertNotIn("job_id", [row[1] for row in connection.execute("PRAGMA table_info(output_assemblies)")])
+                self.assertNotIn("source_text_artifact_id", [row[1] for row in connection.execute("PRAGMA table_info(training_runs)")])
+            upgrade_database(database_path)
+            with closing(sqlite3.connect(database_path)) as connection:
+                self.assertEqual(SCHEMA_HEAD, connection.execute("SELECT version_num FROM alembic_version").fetchone()[0])
+                self.assertIn("job_id", [row[1] for row in connection.execute("PRAGMA table_info(output_assemblies)")])
+                self.assertIn("source_text_artifact_id", [row[1] for row in connection.execute("PRAGMA table_info(training_runs)")])
 
 
 class LegacyMigrationTests(unittest.TestCase):

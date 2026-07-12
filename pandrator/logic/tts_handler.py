@@ -562,18 +562,27 @@ def _merge_service_config(
     if api_base:
         record["api_base"] = api_base
 
-    if record.get("kind") != "commercial":
-        return record
-
     provider_key = str(record.get("provider") or service_id)
-    record["api_key_env"] = str(
-        raw_record.get("api_key_env") or record.get("api_key_env") or ""
-    ).strip()
-    record["api_key"] = str(raw_record.get("api_key") or "").strip()
+    if record.get("kind") == "commercial":
+        record["api_key_env"] = str(
+            raw_record.get("api_key_env") or record.get("api_key_env") or ""
+        ).strip()
+        record["api_key"] = str(raw_record.get("api_key") or "").strip()
+
+    for key in ("adapter", "profile_id", "speech_path", "models_path", "voices_path"):
+        if str(raw_record.get(key) or "").strip():
+            record[key] = str(raw_record[key]).strip()
+    for key in ("request_fields", "request_defaults"):
+        if isinstance(raw_record.get(key), dict):
+            record[key] = copy.deepcopy(raw_record[key])
+    if PREBUILT_VOICE_PROVIDER_FIELD in raw_record:
+        record[PREBUILT_VOICE_PROVIDER_FIELD] = bool(raw_record[PREBUILT_VOICE_PROVIDER_FIELD])
 
     models = _parse_model_list(raw_record.get("models", []), provider_key)
     if models:
         record["models"] = models
+    else:
+        record.setdefault("models", [])
     default_model = _normalize_model_for_provider(
         str(raw_record.get("default_model") or "").strip(),
         provider_key,
@@ -586,6 +595,8 @@ def _merge_service_config(
     voices = _parse_voice_list(raw_record.get("voices", []), provider_key)
     if voices:
         record["voices"] = voices
+    else:
+        record.setdefault("voices", [])
     default_voice = _normalize_voice_for_provider(
         str(raw_record.get("default_voice") or "").strip(),
         provider_key,

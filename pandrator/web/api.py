@@ -34,7 +34,7 @@ from .maintenance import apply_retention
 from .models import AgentRun, AgentStep, AppSetting, AppSettingHistory, Artifact, ArtifactEdge, Document, DocumentRevision, Job, Provider, ProviderModel, Segment, SessionRecord, SourceRecord, TimedWord, TrainingRun, Voice, VoiceSample, new_id, utcnow
 from .openapi import build_openapi_document
 from .parity_registry import build_registry
-from .schemas import AgentRunCreateRequest, BootstrapRequest, BundleExportRequest, BundleImportRequest, ChunkUploadInitialize, GenerationPlanCreate, GenerationSegmentUpdate, GenerationStartRequest, JobCreate, LoginRequest, ModelCreate, ModelUpdate, OutcomePlanUpdate, PdfEditRequest, ProviderCreate, ProviderTestRequest, RvcConvertRequest, RvcModelUploadRequest, SessionCreate, SessionSettingsUpdate, SessionUpdate, SettingUpdate, SourceAttachRequest, SourceReuseRequest, SourceUrlRequest, SubtitleReviewRequest, TokenCreateRequest, TrainingCreateRequest, TtsEndpointDiscoveryRequest, VoiceCreate, VoiceTranscriptReview
+from .schemas import AgentRunCreateRequest, BootstrapRequest, BundleExportRequest, BundleImportRequest, ChunkUploadInitialize, GenerationPlanCreate, GenerationSegmentUpdate, GenerationStartRequest, JobCreate, LoginRequest, ModelCreate, ModelUpdate, OutcomePlanUpdate, OutputAssemblyCreateRequest, PdfEditRequest, ProviderCreate, ProviderTestRequest, RvcConvertRequest, RvcModelUploadRequest, SessionCreate, SessionSettingsUpdate, SessionUpdate, SettingUpdate, SourceAttachRequest, SourceReuseRequest, SourceUrlRequest, SubtitleReviewRequest, TokenCreateRequest, TrainingCreateRequest, TtsEndpointDiscoveryRequest, VoiceCreate, VoiceTranscriptReview
 from .sessions import RevisionConflict, SessionService
 from .subtitle_review import SubtitleReviewService
 from .workflows import WorkflowService
@@ -740,6 +740,31 @@ def create_app(
         except KeyError:
             return error_response("not_found", "Generation run not found.", 404)
 
+    @app.get("/api/v1/sessions/<session_id>/output-assemblies/latest")
+    @require_auth
+    def output_assembly_latest(session_id: str):
+        try:
+            sessions.get(session_id)
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
+        return jsonify({"item": generation.latest_assembly(session_id)})
+
+    @app.post("/api/v1/sessions/<session_id>/output-assemblies")
+    @require_auth
+    def output_assembly_create(session_id: str):
+        payload = OutputAssemblyCreateRequest.model_validate(request.get_json(silent=True) or {})
+        try:
+            result = generation.create_assembly(
+                session_id,
+                generation_run_id=payload.generation_run_id,
+                run_override=payload.run_override,
+            )
+        except KeyError:
+            return error_response("not_found", "Session or generation run not found.", 404)
+        except ValueError as error:
+            return error_response("assembly_unavailable", str(error), 409)
+        return jsonify(result), 202
+
     @app.get("/api/v1/sessions/<session_id>/agent-runs")
     @require_auth
     def agent_run_list(session_id: str):
@@ -1387,7 +1412,13 @@ def create_app(
     def training_list():
         with database.session() as db_session:
             records = list(db_session.scalars(select(TrainingRun).order_by(TrainingRun.created_at.desc()).limit(200)).all())
-            return jsonify({"items": [_model_dict(item, ("id", "kind", "voice_id", "job_id", "source_artifact_id", "output_artifact_id", "model_name", "status", "settings_json", "error_message", "created_at", "updated_at")) for item in records]})
+            for record in records:
+                job = db_session.get(Job, record.job_id) if record.job_id else None
+                if record.status in {"queued", "running", "cancel_requested"} and job is not None and job.status in {"failed", "canceled", "interrupted"}:
+                    record.status = job.status
+                    record.error_message = job.error_message
+                    record.updated_at = utcnow()
+            return jsonify({"items": [_model_dict(item, ("id", "kind", "voice_id", "job_id", "source_artifact_id", "source_text_artifact_id", "output_artifact_id", "model_name", "status", "settings_json", "error_message", "created_at", "updated_at")) for item in records]})
 
     @app.post("/api/v1/training")
     @require_auth
@@ -1409,6 +1440,7 @@ def create_app(
                     kind="xtts",
                     voice_id=payload.voice_id,
                     source_artifact_id=payload.source_artifact_id,
+                    source_text_artifact_id=payload.source_text_artifact_id,
                     model_name=payload.model_name,
                     settings_json=payload.settings,
                 )
@@ -1430,6 +1462,51 @@ def create_app(
             training.updated_at = utcnow()
         response = _job_payload(job)
         response["training_id"] = training_id
+        return jsonify(response), 202
+
+    @app.post("/api/v1/training/<training_id>/retry")
+    @require_auth
+    def training_retry(training_id: str):
+        with database.session() as db_session:
+            previous = db_session.get(TrainingRun, training_id)
+            if previous is None:
+                return error_response("not_found", "Training run not found.", 404)
+            if previous.status not in {"failed", "canceled", "interrupted"}:
+                return error_response("training_active", "Only failed, canceled, or interrupted training can be retried.", 409)
+            retry_id = new_id()
+            db_session.add(
+                TrainingRun(
+                    id=retry_id,
+                    kind=previous.kind,
+                    voice_id=previous.voice_id,
+                    source_artifact_id=previous.source_artifact_id,
+                    source_text_artifact_id=previous.source_text_artifact_id,
+                    model_name=previous.model_name,
+                    settings_json=dict(previous.settings_json or {}),
+                )
+            )
+            source_artifact_id = previous.source_artifact_id
+            source_text_artifact_id = previous.source_text_artifact_id
+            model_name = previous.model_name
+            settings = dict(previous.settings_json or {})
+        job = jobs.enqueue(
+            "training.xtts",
+            {
+                "training_id": retry_id,
+                "model_name": model_name,
+                "source_artifact_id": source_artifact_id,
+                "source_text_artifact_id": source_text_artifact_id,
+                "settings": settings,
+            },
+            resource_keys=["training:xtts", "gpu:default"],
+        )
+        with database.session() as db_session:
+            retry = db_session.get(TrainingRun, retry_id)
+            retry.job_id = job.id
+            retry.updated_at = utcnow()
+        response = _job_payload(job)
+        response["training_id"] = retry_id
+        response["retried_from"] = training_id
         return jsonify(response), 202
 
     @app.post("/api/v1/training/<training_id>/cancel")

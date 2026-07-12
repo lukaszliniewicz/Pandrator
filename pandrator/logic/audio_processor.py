@@ -10,10 +10,10 @@ from PIL import Image
 
 # Mutagen imports for metadata
 from mutagen.mp3 import MP3
-from mutagen.id3 import ID3, APIC, TIT2, TALB, TPE1, TCON, PictureType
+from mutagen.id3 import ID3, APIC, TIT2, TALB, TPE1, TCON, TLAN, PictureType
 from mutagen.mp4 import MP4, MP4Cover
 from mutagen.oggopus import OggOpus
-from mutagen.flac import Picture
+from mutagen.flac import FLAC, Picture
 
 def apply_fade(audio_data: AudioSegment, fade_in: int, fade_out: int) -> AudioSegment:
     """Applies fade in and fade out to an AudioSegment."""
@@ -128,10 +128,10 @@ def _optimize_image(image_path: str, target_format: str = 'JPEG', max_size: tupl
         img.save(bio, format=target_format)
         return bio.getvalue()
 
-def _save_metadata_and_cover(output_path: str, output_format: str, metadata: dict, cover_image_path: str | None):
+def _save_metadata_and_cover(output_path: str, output_format: str, metadata: dict, cover_image_path: str | None, *, raise_on_error: bool = False) -> bool:
     """Internal function to handle metadata tagging."""
     if output_format == "wav":
-        return
+        return True
 
     try:
         if output_format == "mp3":
@@ -141,6 +141,7 @@ def _save_metadata_and_cover(output_path: str, output_format: str, metadata: dic
             if metadata.get("album"): audio.tags.add(TALB(encoding=3, text=metadata["album"]))
             if metadata.get("artist"): audio.tags.add(TPE1(encoding=3, text=metadata["artist"]))
             if metadata.get("genre"): audio.tags.add(TCON(encoding=3, text=metadata["genre"]))
+            if metadata.get("language"): audio.tags.add(TLAN(encoding=3, text=metadata["language"]))
             
             if cover_image_path and os.path.exists(cover_image_path):
                 cover_data = _optimize_image(cover_image_path)
@@ -153,6 +154,7 @@ def _save_metadata_and_cover(output_path: str, output_format: str, metadata: dic
             if metadata.get("album"): audio["\xa9alb"] = [metadata["album"]]
             if metadata.get("artist"): audio["\xa9ART"] = [metadata["artist"]]
             if metadata.get("genre"): audio["\xa9gen"] = [metadata["genre"]]
+            if metadata.get("language"): audio["\xa9lng"] = [metadata["language"]]
             
             if cover_image_path and os.path.exists(cover_image_path):
                 with open(cover_image_path, "rb") as f:
@@ -173,15 +175,38 @@ def _save_metadata_and_cover(output_path: str, output_format: str, metadata: dic
                 picture.data = cover_data
                 picture.type = PictureType.COVER_FRONT
                 picture.mime = "image/jpeg"
-                img = Image.open(io.BytesIO(cover_data))
-                picture.width, picture.height = img.size
+                with Image.open(io.BytesIO(cover_data)) as image:
+                    picture.width, picture.height = image.size
                 picture.depth = 24
                 encoded_data = base64.b64encode(picture.write()).decode("ascii")
                 audio["metadata_block_picture"] = [encoded_data]
             audio.save()
+
+        elif output_format == "flac":
+            audio = FLAC(output_path)
+            for key in ("title", "album", "artist", "genre", "language"):
+                if metadata.get(key):
+                    audio[key] = str(metadata[key])
+            if cover_image_path and os.path.exists(cover_image_path):
+                cover_data = _optimize_image(cover_image_path)
+                picture = Picture()
+                picture.data = cover_data
+                picture.type = PictureType.COVER_FRONT
+                picture.mime = "image/jpeg"
+                with Image.open(io.BytesIO(cover_data)) as image:
+                    picture.width, picture.height = image.size
+                picture.depth = 24
+                audio.clear_pictures()
+                audio.add_picture(picture)
+            audio.save()
+
+        return True
             
     except Exception as e:
         logging.error(f"Failed to save metadata/cover for {output_path}: {e}")
+        if raise_on_error:
+            raise RuntimeError(f"Failed to save metadata or cover art: {e}") from e
+        return False
 
 def _add_chapters_to_m4b(file_path: str, chapters: list[tuple]):
     """Internal function to add chapter markers to an M4B file."""

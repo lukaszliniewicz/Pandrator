@@ -26,6 +26,7 @@ from .models import (
     GenerationSegmentRevision,
     OutcomePlan,
     OutcomePlanHistory,
+    OutputAssembly,
     ResourceClaim,
     Segment,
     SessionRecord,
@@ -316,6 +317,28 @@ def stable_hash(value: Any) -> str:
     ).hexdigest()
 
 
+def mark_output_assemblies_stale(session, session_id: str) -> None:
+    """Invalidate completed assemblies and their exports after audio-plan changes."""
+    from .artifacts import ArtifactService
+
+    records = list(
+        session.scalars(
+            select(OutputAssembly).where(
+                OutputAssembly.session_id == session_id,
+                OutputAssembly.status == "completed",
+            )
+        ).all()
+    )
+    for record in records:
+        record.status = "stale"
+        record.updated_at = utcnow()
+        if record.artifact_id:
+            artifact = session.get(Artifact, record.artifact_id)
+            if artifact is not None:
+                artifact.state = "stale"
+                ArtifactService._mark_descendants_stale(session, artifact.id)
+
+
 class RevisionConflict(ValueError):
     pass
 
@@ -476,7 +499,7 @@ class OutcomePlanService:
             pipeline_keys = {item["key"] for item in resolve_pipeline(value)}
             record.included_stages_json = [
                 key
-                for key in ("transcribe", "correct", "translate", "generate_audio", "export")
+                for key in ("transcribe", "correct", "translate", "optimize_tts", "generate_audio", "export")
                 if key in pipeline_keys
             ]
             record.revision += 1
@@ -699,6 +722,11 @@ class GenerationService:
                 segment.status = "stale"
                 for take in session.scalars(select(AudioTake).where(AudioTake.generation_segment_id == segment.id, AudioTake.status == "completed")).all():
                     take.status = "stale"
+            if any(key in changes for key in ("text", "voice_id", "language", "silence_after_ms", "removed")):
+                plan_revision = session.get(GenerationPlanRevision, segment.plan_revision_id)
+                plan = session.get(GenerationPlan, plan_revision.plan_id) if plan_revision else None
+                if plan is not None:
+                    mark_output_assemblies_stale(session, plan.session_id)
             segment.revision += 1
             segment.updated_at = utcnow()
             session.flush()
@@ -720,6 +748,10 @@ class GenerationService:
                 item.revision += 1
             segment.revision += 1
             segment.updated_at = utcnow()
+            plan_revision = session.get(GenerationPlanRevision, segment.plan_revision_id)
+            plan = session.get(GenerationPlan, plan_revision.plan_id) if plan_revision else None
+            if plan is not None:
+                mark_output_assemblies_stale(session, plan.session_id)
             return {"id": segment.id, "active_take_id": take.id, "revision": segment.revision}
 
     def start(self, session_id: str, *, run_override: dict[str, Any] | None = None, segment_ids: list[str] | None = None, operation: str = "generate") -> dict[str, Any]:
@@ -803,6 +835,81 @@ class GenerationService:
             if run is None:
                 return None
             return {"id": run.id, "job_id": run.job_id, "status": run.status, "pause_requested": run.pause_requested, "cancel_requested": run.cancel_requested, "settings_hash": run.settings_hash, "created_at": run.created_at.isoformat(), "updated_at": run.updated_at.isoformat()}
+
+    @staticmethod
+    def _assembly_payload(record: OutputAssembly) -> dict[str, Any]:
+        return {
+            "id": record.id,
+            "session_id": record.session_id,
+            "generation_run_id": record.generation_run_id,
+            "job_id": record.job_id,
+            "artifact_id": record.artifact_id,
+            "status": record.status,
+            "settings_hash": record.settings_hash,
+            "error_message": record.error_message,
+            "settings": deepcopy(record.settings_json or {}),
+            "created_at": record.created_at.isoformat(),
+            "updated_at": record.updated_at.isoformat(),
+        }
+
+    def create_assembly(
+        self,
+        session_id: str,
+        *,
+        generation_run_id: str | None = None,
+        run_override: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        snapshot, settings_hash = self.settings.resolve(
+            session_id,
+            sections=["audio", "output"],
+            run_override=run_override,
+        )
+        output_format = str((snapshot.get("output") or {}).get("format") or "wav").lower()
+        from .audio_assembly import OUTPUT_FORMATS
+
+        if output_format not in OUTPUT_FORMATS:
+            raise ValueError(f"Unsupported audio output format: {output_format}")
+        with self.database.session() as session:
+            if session.get(SessionRecord, session_id) is None:
+                raise KeyError(session_id)
+            run = session.get(GenerationRun, generation_run_id) if generation_run_id else None
+            if generation_run_id and (run is None or run.session_id != session_id):
+                raise KeyError(generation_run_id)
+            plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
+            plan_revision_id = run.plan_revision_id if run else plan.active_revision_id if plan else None
+            if not plan_revision_id:
+                raise ValueError("Create generation segments before assembling audio.")
+            record = OutputAssembly(
+                session_id=session_id,
+                generation_run_id=run.id if run else None,
+                status="queued",
+                settings_json={"resolved": snapshot, "plan_revision_id": plan_revision_id},
+                settings_hash=settings_hash,
+            )
+            session.add(record)
+            session.flush()
+            assembly_id = record.id
+        job = self.jobs.enqueue(
+            "generation.assemble",
+            {"output_assembly_id": assembly_id},
+            session_id=session_id,
+            resource_keys=[f"session:{session_id}"],
+        )
+        with self.database.session() as session:
+            record = session.get(OutputAssembly, assembly_id)
+            record.job_id = job.id
+            record.updated_at = utcnow()
+            payload = self._assembly_payload(record)
+        return payload
+
+    def latest_assembly(self, session_id: str) -> dict[str, Any] | None:
+        with self.database.session() as session:
+            record = session.scalar(
+                select(OutputAssembly)
+                .where(OutputAssembly.session_id == session_id)
+                .order_by(OutputAssembly.created_at.desc())
+            )
+            return self._assembly_payload(record) if record is not None else None
 
 
 class ResourceClaimService:

@@ -28,7 +28,10 @@ def run_migrations_online() -> None:
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
-    with connectable.connect() as connection:
+    # SQLAlchemy 2 starts an outer transaction for the first statement.  Use
+    # ``begin`` here so Alembic's version-table writes are committed together
+    # with SQLite's DDL instead of being rolled back when the connection closes.
+    with connectable.begin() as connection:
         connection.exec_driver_sql("PRAGMA foreign_keys = ON")
         context.configure(connection=connection, target_metadata=target_metadata, render_as_batch=True)
         with context.begin_transaction():

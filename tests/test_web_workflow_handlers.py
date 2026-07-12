@@ -1,4 +1,6 @@
 import json
+import shutil
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -111,6 +113,42 @@ class WebWorkflowHandlerTests(unittest.TestCase):
             final_path = self.paths.root / exported.relative_path
             self.assertIn("00:00:00,000 --> 00:00:01,000", final_path.read_text(encoding="utf-8"))
 
+    def test_audiobook_export_prefers_assembled_audio_and_preserves_container(self):
+        audiobook = self.sessions.create("Finished Book", workflow_kind="audiobook")
+        session_dir = self.paths.sessions / audiobook.storage_key
+        session_dir.mkdir()
+        legacy_path = session_dir / "legacy.wav"
+        AudioSegment.silent(duration=20).export(legacy_path, format="wav").close()
+        self.artifacts.register(
+            legacy_path,
+            kind="audio",
+            role="audiobook_audio",
+            session_id=audiobook.id,
+        )
+        assembled_path = session_dir / "assembly.mp3"
+        AudioSegment.silent(duration=20).export(assembled_path, format="mp3", bitrate="128k").close()
+        assembled = self.artifacts.register(
+            assembled_path,
+            kind="audio",
+            role="assembled_audio",
+            session_id=audiobook.id,
+        )
+
+        result = self.handlers.export(
+            {"session_id": audiobook.id, "settings": {}},
+            self.progress,
+            threading.Event(),
+        )
+
+        self.assertEqual(1, len(result["artifact_ids"]))
+        with self.database.session() as session:
+            exported = session.get(Artifact, result["artifact_ids"][0])
+            self.assertTrue(exported.relative_path.endswith("Finished_Book.mp3"))
+            edge = session.scalar(select(ArtifactEdge).where(ArtifactEdge.child_artifact_id == exported.id))
+            self.assertEqual(assembled.id, edge.parent_artifact_id)
+        decoded = AudioSegment.from_file(self.paths.root / exported.relative_path)
+        self.assertGreater(len(decoded), 0)
+
     def test_dubbing_audio_forwards_speech_block_settings_separately(self):
         voiceover = self.sessions.create("Speech block fixture", workflow_kind="voiceover")
         session_dir = self.paths.sessions / voiceover.storage_key
@@ -164,6 +202,115 @@ class WebWorkflowHandlerTests(unittest.TestCase):
                 "merge_threshold": 425,
             },
         )
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg qualification requires ffmpeg and ffprobe")
+    def test_video_export_matrix_preserves_or_replaces_audio_and_handles_dual_subtitles(self):
+        voiceover = self.sessions.create("Export Matrix", workflow_kind="voiceover")
+        session_dir = self.paths.sessions / voiceover.storage_key
+        session_dir.mkdir()
+        media_path = session_dir / "source.mp4"
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=320x180:d=0.8",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=0.8", "-shortest",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(media_path),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        upload = self.artifacts.register(
+            media_path,
+            kind="source",
+            role="upload",
+            session_id=voiceover.id,
+            metadata={"original_filename": "source.mp4"},
+        )
+        source_srt = session_dir / "source.srt"
+        source_srt.write_text("1\n00:00:00,050 --> 00:00:00,650\nSource line\n", encoding="utf-8")
+        correction = self.artifacts.register(
+            source_srt,
+            kind="srt",
+            role="correction",
+            session_id=voiceover.id,
+            parent_ids=[upload.id],
+            metadata={"language": "en"},
+        )
+        translation_srt = session_dir / "translation.srt"
+        translation_srt.write_text("1\n00:00:00,050 --> 00:00:00,650\nWiersz docelowy\n", encoding="utf-8")
+        translation = self.artifacts.register(
+            translation_srt,
+            kind="srt",
+            role="translation",
+            session_id=voiceover.id,
+            parent_ids=[correction.id],
+            metadata={"language": "pl"},
+        )
+        dubbing_path = session_dir / "dub.wav"
+        AudioSegment.silent(duration=800).overlay(AudioSegment.silent(duration=800)).export(dubbing_path, format="wav").close()
+        dubbing = self.artifacts.register(
+            dubbing_path,
+            kind="audio",
+            role="assembled_audio",
+            session_id=voiceover.id,
+        )
+
+        cases = (
+            ("preserve", "none", "source", 0),
+            ("preserve", "soft", "dual", 2),
+            ("preserve", "burned", "dual", 0),
+            ("dubbing_only", "none", "source", 0),
+            ("mixed", "none", "source", 0),
+        )
+        for audio_mode, subtitle_mode, subtitle_selection, expected_subtitles in cases:
+            with self.subTest(audio_mode=audio_mode, subtitle_mode=subtitle_mode):
+                result = self.handlers.export(
+                    {
+                        "session_id": voiceover.id,
+                        "settings": {
+                            "audio_mode": audio_mode,
+                            "subtitle_mode": subtitle_mode,
+                            "subtitle_selection": subtitle_selection,
+                            "original_language": "en",
+                            "target_language": "pl",
+                        },
+                    },
+                    self.progress,
+                    threading.Event(),
+                )
+                with self.database.session() as session:
+                    exported = session.get(Artifact, result["artifact_ids"][-1])
+                    output = self.paths.root / exported.relative_path
+                probe = json.loads(
+                    subprocess.run(
+                        ["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(output)],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    ).stdout
+                )
+                streams = probe["streams"]
+                self.assertEqual(1, sum(stream["codec_type"] == "video" for stream in streams))
+                self.assertEqual(1, sum(stream["codec_type"] == "audio" for stream in streams))
+                subtitle_streams = [stream for stream in streams if stream["codec_type"] == "subtitle"]
+                self.assertEqual(expected_subtitles, len(subtitle_streams))
+                if subtitle_mode == "soft":
+                    self.assertEqual(["eng", "pol"], [stream.get("tags", {}).get("language") for stream in subtitle_streams])
+                    self.assertEqual(1, subtitle_streams[1].get("disposition", {}).get("default"))
+                if subtitle_mode == "burned":
+                    with self.database.session() as session:
+                        overlay = session.scalar(
+                            select(Artifact).where(
+                                Artifact.session_id == voiceover.id,
+                                Artifact.role == "bilingual_subtitle_overlay",
+                                Artifact.state == "current",
+                            )
+                        )
+                        self.assertIsNotNone(overlay)
+                        content = (self.paths.root / overlay.relative_path).read_text(encoding="utf-8-sig")
+                        self.assertIn("Style: Source", content)
+                        self.assertIn("Style: Translation", content)
+                        self.assertIn("Dialogue: 0", content)
+                        self.assertIn("Dialogue: 1", content)
 
 
 if __name__ == "__main__":

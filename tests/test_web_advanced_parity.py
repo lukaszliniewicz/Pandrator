@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import tempfile
 import threading
@@ -13,7 +14,7 @@ from pandrator.web.api import create_app
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.database import Database, upgrade_database
-from pandrator.web.models import Provider, ProviderModel, TrainingRun, UsageEvent
+from pandrator.web.models import AppSetting, Artifact, Provider, ProviderModel, TrainingRun, UsageEvent
 from pandrator.web.provider_settings import build_llm_settings
 from pandrator.web.sessions import SessionService
 from pandrator.web.workflow_handlers import WorkflowHandlers
@@ -90,6 +91,29 @@ class AdvancedApiTests(unittest.TestCase):
             record = session.get(TrainingRun, payload["training_id"])
             self.assertEqual(record.status, "cancel_requested")
 
+    def test_interrupted_training_can_retry_with_the_same_sources_and_settings(self):
+        source_id = self.upload("training.wav")
+        text_id = self.upload("training.txt", b"Transcript")
+        created = self.client.post(
+            "/api/v1/training",
+            json={"model_name": "narrator", "source_artifact_id": source_id, "source_text_artifact_id": text_id, "settings": {"epochs": 3}},
+            headers={"X-CSRF-Token": self.csrf},
+        ).get_json()
+        database = self.app.extensions["pandrator"]["database"]
+        with database.session() as session:
+            previous = session.get(TrainingRun, created["training_id"])
+            previous.status = "interrupted"
+        retried = self.client.post(
+            f"/api/v1/training/{created['training_id']}/retry",
+            headers={"X-CSRF-Token": self.csrf},
+        )
+        self.assertEqual(202, retried.status_code)
+        with database.session() as session:
+            record = session.get(TrainingRun, retried.get_json()["training_id"])
+            self.assertEqual(source_id, record.source_artifact_id)
+            self.assertEqual(text_id, record.source_text_artifact_id)
+            self.assertEqual({"epochs": 3}, record.settings_json)
+
     def test_rvc_upload_and_conversion_are_managed_jobs(self):
         weights = self.upload("voice.pth")
         index = self.upload("voice.index")
@@ -110,7 +134,93 @@ class AdvancedApiTests(unittest.TestCase):
         self.assertEqual(converted.get_json()["kind"], "rvc.convert")
 
 
+class TrainingHandlerTests(unittest.TestCase):
+    def test_successful_training_registers_model_and_activates_xtts_catalogue(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = DataPaths.from_value(directory).ensure()
+            upgrade_database(paths.database)
+            database = Database(paths.database)
+            try:
+                source_path = paths.uploads / "voice.wav"
+                source_path.write_bytes(b"training source")
+                source = ArtifactService(database, paths).register(source_path, kind="audio", role="upload")
+                with database.session() as session:
+                    training = TrainingRun(source_artifact_id=source.id, model_name="narrator", settings_json={"epochs": 2})
+                    session.add(training)
+                    session.flush()
+                    training_id = training.id
+                with mock.patch("pandrator.logic.xtts_trainer_handler.start_training", return_value=(True, "trained")):
+                    result = WorkflowHandlers(database, paths).train_xtts(
+                        {
+                            "training_id": training_id,
+                            "source_artifact_id": source.id,
+                            "model_name": "narrator",
+                            "settings": {"epochs": 2},
+                        },
+                        lambda *_args: None,
+                        threading.Event(),
+                    )
+                with database.session() as session:
+                    record = session.get(TrainingRun, training_id)
+                    self.assertEqual("succeeded", record.status)
+                    self.assertEqual(result["artifact_id"], record.output_artifact_id)
+                    artifact = session.get(Artifact, record.output_artifact_id)
+                    self.assertEqual("xtts_model", artifact.role)
+                    defaults = session.get(AppSetting, "defaults.tts")
+                    xtts = next(item for item in defaults.value_json["provider_configs"] if item["id"] == "xtts")
+                    self.assertIn("narrator", xtts["models"])
+            finally:
+                database.dispose()
+
+
 class AgenticCleaningTests(unittest.TestCase):
+    def test_pdf_cleaning_applies_saved_ocr_configuration(self):
+        import fitz
+
+        with tempfile.TemporaryDirectory() as directory:
+            paths = DataPaths.from_value(directory).ensure()
+            upgrade_database(paths.database)
+            database = Database(paths.database)
+            try:
+                session_record = SessionService(database).create("PDF OCR settings")
+                (paths.sessions / session_record.storage_key).mkdir()
+                source_path = paths.uploads / "book.pdf"
+                pdf = fitz.open()
+                page = pdf.new_page()
+                page.insert_text((72, 72), "A native text layer for deterministic extraction.")
+                pdf.save(source_path)
+                pdf.close()
+                source = ArtifactService(database, paths).register(
+                    source_path,
+                    kind="source",
+                    role="upload",
+                    session_id=session_record.id,
+                )
+                WorkflowHandlers(database, paths).clean_source(
+                    {
+                        "session_id": session_record.id,
+                        "source_artifact_id": source.id,
+                        "settings": {
+                            "pdf_ocr_mode": "off",
+                            "pdf_ocr_language": "pl",
+                            "pdf_ocr_dpi": 333,
+                            "pdf_remove_toc": False,
+                            "pdf_remove_repeated_marginals": False,
+                        },
+                    },
+                    lambda *_args: None,
+                    threading.Event(),
+                )
+                report = json.loads(
+                    (paths.sessions / session_record.storage_key / "source_ingestion" / "ingestion_report.json").read_text(encoding="utf-8")
+                )
+                self.assertEqual(
+                    {"ocr_mode": "off", "ocr_language": "pl", "ocr_dpi": 333, "use_cache": True},
+                    report["config"],
+                )
+            finally:
+                database.dispose()
+
     def test_agentic_cleaning_writes_report_and_usage(self):
         with tempfile.TemporaryDirectory() as directory:
             paths = DataPaths.from_value(directory).ensure()

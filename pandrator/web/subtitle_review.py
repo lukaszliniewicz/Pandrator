@@ -17,7 +17,7 @@ from .database import Database
 from .models import Artifact, Document, DocumentRevision, Segment, SegmentLineage
 
 
-STAGE_ORDER = ("transcription", "correction", "translation")
+STAGE_ORDER = ("transcription", "correction", "translation", "tts_optimization")
 
 
 def _segments_hash(segments: list[dict[str, Any]]) -> str:

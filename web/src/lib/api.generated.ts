@@ -676,6 +676,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/output-assemblies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createOutputAssembly"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/output-assemblies/latest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getLatestOutputAssembly"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/pdf/apply": {
         parameters: {
             query?: never;
@@ -926,6 +958,22 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["cancelTrainingRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/training/{trainingId}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["retryTrainingRun"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1341,6 +1389,18 @@ export interface components {
         OutcomePlanUpdate: {
             /** Value */
             value: {
+                [key: string]: unknown;
+            };
+        };
+        /** OutputAssemblyCreateRequest */
+        OutputAssemblyCreateRequest: {
+            /**
+             * Generation Run Id
+             * @default null
+             */
+            generation_run_id: string | null;
+            /** Run Override */
+            run_override?: {
                 [key: string]: unknown;
             };
         };
@@ -2719,6 +2779,46 @@ export interface operations {
             };
         };
     };
+    createOutputAssembly: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OutputAssemblyCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Output assembly queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getLatestOutputAssembly: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Latest output assembly */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     applyPdfEdits: {
         parameters: {
             query?: never;
@@ -3117,6 +3217,24 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Cancellation requested */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    retryTrainingRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Retry queued */
             202: {
                 headers: {
                     [name: string]: unknown;

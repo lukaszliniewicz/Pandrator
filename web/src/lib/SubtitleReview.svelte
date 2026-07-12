@@ -6,7 +6,7 @@
 
   type Segment = { id?: string; ordinal: number; start_ms: number; end_ms: number; text: string; speaker?: string | null };
   type Stage = { revision: number; segments: Segment[] };
-  type Row = { start_ms: number; end_ms: number; changed: boolean; transcription?: Segment[]; correction?: Segment[]; translation?: Segment[] };
+  type Row = { start_ms: number; end_ms: number; changed: boolean; transcription?: Segment[]; correction?: Segment[]; translation?: Segment[]; tts_optimization?: Segment[] };
   type Payload = { stages: Record<string, Stage>; rows: Row[] };
 
   let { sessionId, sourceArtifactId, onclose, onsaved }: { sessionId: string; sourceArtifactId?: string; onclose: () => void; onsaved: () => void } = $props();
@@ -14,12 +14,13 @@
   let error = $state('');
   let loading = $state(true);
   let changedOnly = $state(false);
-  let editStage = $state<'transcription' | 'correction' | 'translation'>('translation');
+  type ReviewStage = 'transcription' | 'correction' | 'translation' | 'tts_optimization';
+  let editStage = $state<ReviewStage>('translation');
   let saving = $state(false);
   let audioPreview = $state<HTMLAudioElement>();
   let tourOpen = $state(false);
   const tourSteps = [{section:'Review',title:'Lineage keeps changes together',body:'Rows group transcription, correction, and translation through split/merge lineage, with temporal overlap for legacy artifacts.'},{section:'Review',title:'Edit the selected revision',body:'Change text and boundaries, split a segment, or merge it with the next while comparison columns remain visible.'},{section:'Review',title:'Saving creates history',body:'A save creates a reviewed immutable revision and invalidates only affected descendants.'}];
-  const availableStages = $derived((['transcription', 'correction', 'translation'] as const).filter((stage) => payload?.stages[stage]));
+  const availableStages = $derived((['transcription', 'correction', 'translation', 'tts_optimization'] as const).filter((stage) => payload?.stages[stage]));
   const visibleRows = $derived((payload?.rows ?? []).filter((row) => !changedOnly || row.changed));
 
   async function load() {

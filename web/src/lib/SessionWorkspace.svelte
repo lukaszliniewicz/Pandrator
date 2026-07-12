@@ -47,6 +47,8 @@
   let snapshot = $state<Snapshot | null>(null);
   let outcome = $state<any>(null);
   let capabilities = $state<Record<string, any>>({});
+  let ttsCatalogue = $state<any>({services:[]});
+  let libraryVoices = $state<any[]>([]);
   let loading = $state(true);
   let error = $state('');
   let uploading = $state(false);
@@ -73,9 +75,16 @@
   let subtitleMinGap = $state(80);
   let subtitlePhraseGap = $state(600);
   let instructions = $state('');
+  let optimizationPrompt = $state('');
+  let optimizationConcurrent = $state(1);
+  let optimizationMultiStage = $state(false);
+  let optimizationFirstPrompt = $state('');
+  let optimizationSecondPrompt = $state('');
+  let optimizationThirdPrompt = $state('');
   let agentic = $state(false);
   let maxIterations = $state(53);
   let ttsService = $state('XTTS');
+  let ttsModel = $state('');
   let voiceName = $state('');
   let speechBlockMinChars = $state(10);
   let speechBlockMaxChars = $state(160);
@@ -149,7 +158,7 @@
     }
   }
 
-  const stageSection = (key: string) => ({transcribe:'stt',correct:'correction',translate:'translation',clean_source:'source_cleaning',prepare_text:'tts',generate_audio:'tts',export:'output'}[key] ?? 'text');
+  const stageSection = (key: string) => ({transcribe:'stt',correct:'correction',translate:'translation',optimize_tts:'text',clean_source:'source_cleaning',prepare_text:'tts',generate_audio:'tts',export:'output'}[key] ?? 'text');
 
   async function openSettings(stage: Stage) {
     settingsStage = stage;
@@ -180,9 +189,16 @@
     subtitleMinGap = Number(saved.subtitle_min_gap_ms ?? 80);
     subtitlePhraseGap = Number(saved.subtitle_phrase_gap_ms ?? 600);
     instructions = String(saved.instructions ?? '');
+    optimizationPrompt = String(saved.combined_prompt ?? '');
+    optimizationConcurrent = Number(saved.llm_concurrent_calls ?? 1);
+    optimizationMultiStage = Boolean(saved.llm_multi_stage ?? false);
+    optimizationFirstPrompt = String(saved.first_prompt ?? '');
+    optimizationSecondPrompt = String(saved.second_prompt ?? '');
+    optimizationThirdPrompt = String(saved.third_prompt ?? '');
     agentic = Boolean(saved.agentic ?? false);
     maxIterations = Number(saved.max_iterations ?? 53);
     ttsService = String(saved.tts_service ?? saved.service ?? 'XTTS');
+    ttsModel = String(saved.model ?? saved.xtts_model ?? '');
     voiceName = String(saved.voice ?? saved.voice_name ?? '');
     speechBlockMinChars = Number(saved.speech_block_min_chars ?? 10);
     speechBlockMaxChars = Number(saved.speech_block_max_chars ?? 160);
@@ -203,6 +219,30 @@
     return api(`/sessions/${session.id}/settings/${section}`,{method:'PUT',headers:{'If-Match':`"${stored.revision}"`},body:JSON.stringify({value:{...stored.override,...value}})});
   }
 
+  async function loadSpeechCatalogues() {
+    try {
+      const [services, voices] = await Promise.all([api<any>('/services/tts'), api<any>('/voices')]);
+      ttsCatalogue = services;
+      libraryVoices = voices.items ?? [];
+    } catch {
+      ttsCatalogue = {services:[]};
+      libraryVoices = [];
+    }
+  }
+
+  const selectedTtsService = $derived((ttsCatalogue.services??[]).find((item:any)=>[item.id,item.name].map((value)=>String(value??'').toLowerCase()).includes(ttsService.toLowerCase())));
+  const ttsModels = $derived(selectedTtsService?.models??[]);
+  const ttsVoices = $derived(Array.from(new Set([...(selectedTtsService?.voices??[]),...libraryVoices.map((voice:any)=>voice.name)])));
+
+  function previewArtifact(stage: Stage) {
+    if (!stage.artifact) return;
+    if (['transcription','correction','translation','tts_optimized'].includes(stage.artifact.role)) {
+      reviewOpen = true;
+      return;
+    }
+    window.open(`/api/v1/artifacts/${stage.artifact.id}/content`, '_blank', 'noopener,noreferrer');
+  }
+
   async function saveSettings() {
     if (!settingsStage) return;
     const key = settingsStage.key;
@@ -220,10 +260,11 @@
     };
     else if (key === 'correct') stageSettings[key] = { ...common, instructions };
     else if (key === 'translate') stageSettings[key] = { ...common, translation_backend: backend, target_language: targetLanguage, instructions };
+    else if (key === 'optimize_tts') stageSettings[key] = { ...common, combined_prompt:optimizationPrompt, llm_concurrent_calls:optimizationConcurrent, llm_multi_stage:optimizationMultiStage, first_prompt:optimizationFirstPrompt, second_prompt:optimizationSecondPrompt, third_prompt:optimizationThirdPrompt };
     else if (key === 'clean_source') stageSettings[key] = { ...common, agentic, max_iterations: maxIterations };
-    else if (key === 'prepare_text') stageSettings[key] = { tts_service: ttsService, service: ttsService, voice: voiceName, language: targetLanguage };
+    else if (key === 'prepare_text') stageSettings[key] = { tts_service: ttsService, service: ttsService, model: ttsModel, xtts_model: ttsModel, voice: voiceName, language: targetLanguage };
     else if (key === 'generate_audio') stageSettings[key] = {
-      tts_service: ttsService, service: ttsService, voice: voiceName,
+      tts_service: ttsService, service: ttsService, model: ttsModel, xtts_model: ttsModel, voice: voiceName,
       language: targetLanguage, target_language: targetLanguage,
       speech_block_min_chars: speechBlockMinChars,
       speech_block_max_chars: speechBlockMaxChars,
@@ -243,6 +284,7 @@
         await persistSection('subtitles',{max_chars_per_line:subtitleChars,max_lines:subtitleLines,min_duration_ms:subtitleMinDuration,max_duration_ms:subtitleMaxDuration,max_cps:subtitleCps,min_gap_ms:subtitleMinGap,phrase_gap_ms:subtitlePhraseGap});
       } else if (key === 'correct') await persistSection('correction',{enabled:true,model_name:model==='default'?'':model,instructions});
       else if (key === 'translate') await persistSection('translation',{enabled:true,backend,target_language:targetLanguage,model_name:model==='default'?'':model,instructions});
+      else if (key === 'optimize_tts') await persistSection('text',{llm_tts_optimization:true,llm_processing_enabled:true,llm_concurrent_calls:optimizationConcurrent,llm_multi_stage:optimizationMultiStage,combined_prompt:optimizationPrompt,first_prompt:optimizationFirstPrompt,second_prompt:optimizationSecondPrompt,third_prompt:optimizationThirdPrompt});
       else await persistSection(stageSection(key),stageSettings[key]);
       settingsStage = null;
     } catch (caught) { error=caught instanceof Error?caught.message:String(caught); }
@@ -255,7 +297,7 @@
     return Clock3;
   };
 
-  onMount(async () => { await Promise.all([load(), loadCapabilities()]); });
+  onMount(async () => { await Promise.all([load(), loadCapabilities(), loadSpeechCatalogues()]); });
   $effect(() => {
     if (refreshTimer) window.clearTimeout(refreshTimer);
     if (snapshot?.stages.some((stage) => stage.status === 'running')) refreshTimer = window.setTimeout(load, 1000);
@@ -285,7 +327,7 @@
           <div class="flex flex-col gap-5 lg:flex-row lg:items-center">
             <div class="flex min-w-0 flex-1 items-start gap-4">
               <div class="grid size-11 shrink-0 place-items-center rounded-2xl bg-[var(--accent-soft)] text-sm font-bold text-[var(--accent)]">{stage.number}</div>
-              <div class="min-w-0"><div class="flex flex-wrap items-center gap-2"><h2 class="text-lg font-semibold">{stage.title}</h2><span class:running={stage.status === 'running'} class:done={stage.status === 'completed'} class:warning={stage.status === 'stale' || stage.status === 'failed'} class="status-chip inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[.68rem] font-bold uppercase tracking-wider"><StatusIcon class={stage.status === 'running' ? 'animate-spin' : ''} size={12}/>{stage.status}</span></div><p class="muted mt-1.5 max-w-2xl text-sm leading-relaxed">{stage.explanation}</p>{#if stage.status==='running' && stage.progress!=null}<div class="mt-3 h-1.5 max-w-md overflow-hidden rounded-full bg-[var(--line)]"><div class="h-full bg-[var(--accent)]" style={`width:${Math.max(2,stage.progress*100)}%`}></div></div>{/if}{#if stage.detail}<p class="mt-2 text-xs text-red-500">{stage.detail}</p>{/if}{#if stage.artifact}<button class="mt-2 flex items-center gap-1 text-xs font-semibold text-[var(--accent)]">Latest: {stage.artifact.role}<ChevronRight size={13}/></button>{/if}</div>
+              <div class="min-w-0"><div class="flex flex-wrap items-center gap-2"><h2 class="text-lg font-semibold">{stage.title}</h2><span class:running={stage.status === 'running'} class:done={stage.status === 'completed'} class:warning={stage.status === 'stale' || stage.status === 'failed'} class="status-chip inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[.68rem] font-bold uppercase tracking-wider"><StatusIcon class={stage.status === 'running' ? 'animate-spin' : ''} size={12}/>{stage.status}</span></div><p class="muted mt-1.5 max-w-2xl text-sm leading-relaxed">{stage.explanation}</p>{#if stage.status==='running' && stage.progress!=null}<div class="mt-3 h-1.5 max-w-md overflow-hidden rounded-full bg-[var(--line)]"><div class="h-full bg-[var(--accent)]" style={`width:${Math.max(2,stage.progress*100)}%`}></div></div>{/if}{#if stage.detail}<p class="mt-2 text-xs text-red-500">{stage.detail}</p>{/if}{#if stage.artifact}<button onclick={() => previewArtifact(stage)} class="mt-2 flex items-center gap-1 text-xs font-semibold text-[var(--accent)]">Preview latest: {stage.artifact.role}<ChevronRight size={13}/></button>{/if}</div>
             </div>
             <div class="flex flex-wrap items-center gap-2 lg:justify-end">
               {#if stage.executable}
@@ -307,7 +349,7 @@
     <div class="surface max-h-[92vh] w-full max-w-xl overflow-y-auto rounded-[1.7rem] p-7" role="dialog" aria-modal="true" aria-labelledby="settings-title">
       <div class="flex justify-between gap-5"><div><div class="eyebrow">Stage settings</div><h2 id="settings-title" class="mt-1 text-2xl font-semibold">{settingsStage.title}</h2></div><button onclick={() => settingsStage=null} class="rounded-lg p-2"><X size={19}/></button></div>
       <div class="mt-6 grid gap-5">
-        {#if ['correct','translate','clean_source'].includes(settingsStage.key)}<label class="text-sm font-semibold">Model<input bind:value={model} placeholder="Use configured default" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/></label>{/if}
+        {#if ['correct','translate','optimize_tts','clean_source'].includes(settingsStage.key)}<label class="text-sm font-semibold">Model<input bind:value={model} placeholder="Use configured default" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/></label>{/if}
         {#if settingsStage.key === 'transcribe'}
           <label class="text-sm font-semibold">Recognition model<select bind:value={sttEngine} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="whisper">Whisper large-v3 · F16 · DTW timestamps</option><option value="parakeet">Parakeet TDT 0.6B v3 · F16 · native timestamps</option></select></label>
           <div class="grid gap-3 sm:grid-cols-[1fr_7rem]"><label class="text-sm font-semibold">Compute backend<select bind:value={sttComputeBackend} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="auto">Automatic</option><option value="cpu" disabled={!supportsSttCompute('cpu')}>CPU</option><option value="cuda" disabled={!supportsSttCompute('cuda')}>CUDA</option><option value="vulkan" disabled={!supportsSttCompute('vulkan')}>Vulkan</option><option value="metal" disabled={!supportsSttCompute('metal')}>Metal</option></select><span class="muted mt-1 block text-xs">Only backends compiled into the installed CrispASR runtime can be forced.</span></label><label class="text-sm font-semibold">Device<input type="number" min="0" disabled={['auto','cpu'].includes(sttComputeBackend)} bind:value={sttDevice} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal disabled:opacity-40"/></label></div>
@@ -318,8 +360,9 @@
         {/if}
         {#if settingsStage.key === 'correct'}<label class="text-sm font-semibold">Correction guidance<textarea bind:value={instructions} rows="4" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"></textarea></label>{/if}
         {#if settingsStage.key === 'translate'}<label class="text-sm font-semibold">Translation backend<select bind:value={backend} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="llm">LLM</option><option value="deepl">DeepL</option></select></label><label class="text-sm font-semibold">Target language<input bind:value={targetLanguage} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/></label><label class="text-sm font-semibold">Translation guidance<textarea bind:value={instructions} rows="3" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"></textarea></label>{/if}
+        {#if settingsStage.key === 'optimize_tts'}<div class="rounded-xl border border-[var(--line)] bg-[var(--accent-soft)] p-4"><div class="text-sm font-semibold">Optional paid LLM pass</div><p class="muted mt-1 text-xs leading-relaxed">This is separate from subtitle correction. It expands pronunciation-sensitive numerals, abbreviations, names, and extraction artifacts for speech only. The result is saved as a before/after revision before TTS.</p></div><label class="text-sm font-semibold">Concurrent calls<input type="number" min="1" max="16" bind:value={optimizationConcurrent} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/></label><label class="flex items-start gap-3 rounded-xl border border-[var(--line)] p-4"><input type="checkbox" bind:checked={optimizationMultiStage} class="mt-1 size-4 accent-[var(--accent)]"/><span><span class="block text-sm font-semibold">Three-stage prompts</span><span class="muted mt-1 block text-xs">Each non-empty prompt runs sequentially and incurs a separate provider request.</span></span></label>{#if optimizationMultiStage}<label class="text-sm font-semibold">First prompt<textarea bind:value={optimizationFirstPrompt} rows="3" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"></textarea></label><label class="text-sm font-semibold">Second prompt<textarea bind:value={optimizationSecondPrompt} rows="3" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"></textarea></label><label class="text-sm font-semibold">Third prompt<textarea bind:value={optimizationThirdPrompt} rows="3" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"></textarea></label>{:else}<label class="text-sm font-semibold">Optimization prompt<textarea bind:value={optimizationPrompt} rows="5" placeholder="Leave blank for Pandrator's safe default" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"></textarea></label>{/if}{/if}
         {#if settingsStage.key === 'clean_source'}<label class="flex items-start gap-3 rounded-xl border border-[var(--line)] p-4"><input type="checkbox" bind:checked={agentic} class="mt-1 size-4 accent-[var(--accent)]"/><span><span class="block text-sm font-semibold">Agentic review loop</span><span class="muted mt-1 block text-xs">Runs focused metadata, navigation, boilerplate, repeated-element, and chapter passes. Provider costs may apply.</span></span></label>{#if agentic}<label class="text-sm font-semibold">Maximum LLM turns<input type="number" min="5" max="500" bind:value={maxIterations} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/></label>{/if}{/if}
-        {#if ['prepare_text','generate_audio'].includes(settingsStage.key)}<label class="text-sm font-semibold">TTS service<select bind:value={ttsService} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option>XTTS</option><option>Kokoro</option><option>Chatterbox</option><option>VoxCPM</option><option>Fish Speech 2</option><option>Silero</option></select></label><label class="text-sm font-semibold">Voice / model<input bind:value={voiceName} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/></label><label class="text-sm font-semibold">Language<input bind:value={targetLanguage} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/></label>{#if settingsStage.key === 'generate_audio'}<div class="rounded-xl border border-[var(--line)] p-4"><div class="text-sm font-semibold">Speech blocks for dubbing</div><p class="muted mt-1 text-xs">These TTS chunks are independent from the final subtitle layout.</p><div class="mt-3 grid grid-cols-2 gap-3"><label class="text-xs font-semibold">Minimum characters<input type="number" min="1" bind:value={speechBlockMinChars} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Maximum characters<input type="number" min="1" bind:value={speechBlockMaxChars} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Merge gap (ms)<input type="number" min="0" bind:value={speechBlockMergeThreshold} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label></div></div>{/if}{/if}
+        {#if ['prepare_text','generate_audio'].includes(settingsStage.key)}<label class="text-sm font-semibold">TTS service<select bind:value={ttsService} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal">{#each ttsCatalogue.services??[] as service}<option value={service.id}>{service.name}</option>{/each}</select></label><div class="flex items-center justify-between gap-3"><p class="muted text-xs">Models and voices come from the configured service catalogue.</p><a href="/providers" class="text-xs font-semibold text-[var(--accent)]">Connect or refresh services</a></div><label class="text-sm font-semibold">Model<input list="tts-model-catalogue" bind:value={ttsModel} placeholder={selectedTtsService?.default_model??'Service default'} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/><datalist id="tts-model-catalogue">{#each ttsModels as item}<option value={item}></option>{/each}</datalist></label><label class="text-sm font-semibold">Voice<input list="tts-voice-catalogue" bind:value={voiceName} placeholder={selectedTtsService?.default_voice??'Provider or library voice'} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/><datalist id="tts-voice-catalogue">{#each ttsVoices as item}<option value={item}></option>{/each}</datalist></label><label class="text-sm font-semibold">Language<input bind:value={targetLanguage} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/></label>{#if settingsStage.key === 'generate_audio'}<div class="rounded-xl border border-[var(--line)] p-4"><div class="text-sm font-semibold">Speech blocks for dubbing</div><p class="muted mt-1 text-xs">These TTS chunks are independent from the final subtitle layout.</p><div class="mt-3 grid grid-cols-2 gap-3"><label class="text-xs font-semibold">Minimum characters<input type="number" min="1" bind:value={speechBlockMinChars} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Maximum characters<input type="number" min="1" bind:value={speechBlockMaxChars} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Merge gap (ms)<input type="number" min="0" bind:value={speechBlockMergeThreshold} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label></div></div>{/if}{/if}
         {#if settingsStage.key === 'export'}<label class="text-sm font-semibold">Audio<select bind:value={audioMode} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="preserve">Preserve source audio</option><option value="mixed">Mix source and dubbing</option><option value="dubbing_only">Dubbing only</option></select></label><label class="text-sm font-semibold">Subtitles<select bind:value={subtitleMode} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="none">None</option><option value="soft">Injected soft tracks / separate files</option><option value="burned">Burned subtitles</option></select></label>{#if subtitleMode !== 'none'}<label class="text-sm font-semibold">Subtitle tracks<select bind:value={subtitleSelection} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="source">Source / corrected</option><option value="translation">Translation</option><option value="dual">Source and translation</option></select></label>{/if}<div class="rounded-xl border border-[var(--line)] p-4"><div class="text-sm font-semibold">Final subtitle layout</div><p class="muted mt-1 text-xs">Applied to derived export subtitles only; dubbing speech blocks are unchanged.</p><div class="mt-3 grid grid-cols-2 gap-3"><label class="text-xs font-semibold">Characters / line<input type="number" min="20" max="100" bind:value={subtitleChars} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Lines<input type="number" min="1" max="3" bind:value={subtitleLines} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Minimum duration (ms)<input type="number" min="250" bind:value={subtitleMinDuration} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Maximum duration (ms)<input type="number" min="1000" bind:value={subtitleMaxDuration} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Characters / second<input type="number" min="5" max="40" step="0.5" bind:value={subtitleCps} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Minimum cue gap (ms)<input type="number" min="0" max="500" bind:value={subtitleMinGap} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Phrase-break silence (ms)<input type="number" min="100" max="3000" bind:value={subtitlePhraseGap} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label></div></div>{/if}
       </div>
       <div class="mt-7 flex justify-end gap-3"><button onclick={() => settingsStage=null} class="rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold">Cancel</button><button onclick={saveSettings} class="rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white">Save settings</button></div>

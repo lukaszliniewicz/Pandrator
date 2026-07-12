@@ -13,7 +13,7 @@ from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
 
-SCHEMA_HEAD = "0003_parity_workspace"
+SCHEMA_HEAD = "0004_output_assembly_jobs"
 
 
 def sqlite_url(path: Path) -> str:
