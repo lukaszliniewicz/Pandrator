@@ -418,7 +418,7 @@ def run_self_check():
 
 def main(argv=None):
     raw_args = sys.argv[1:] if argv is None else list(argv)
-    if any(item in {"list", "probe", "plan", "install", "update", "repair", "launch", "stop", "uninstall"} for item in raw_args):
+    if any(item in {"list", "probe", "plan", "install", "update", "repair", "launch", "service", "stop", "uninstall"} for item in raw_args):
         from .lifecycle import main as lifecycle_main
 
         return lifecycle_main(raw_args)
