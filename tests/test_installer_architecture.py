@@ -85,8 +85,8 @@ class InstallerArchitectureTests(unittest.TestCase):
         self.assertEqual(backend, "metal")
         self.assertEqual(asset.runtime_variant, "metal")
 
-    def test_preview_branch_is_explicit(self):
-        self.assertEqual(PANDRATOR_REPO_BRANCH, "codex/webui-migration")
+    def test_release_branch_is_main(self):
+        self.assertEqual(PANDRATOR_REPO_BRANCH, "main")
 
     def test_clone_repo_checks_out_requested_branch(self):
         installer = HeadlessInstaller(working_dir="workspace")
