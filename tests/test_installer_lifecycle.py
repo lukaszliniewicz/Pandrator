@@ -8,7 +8,7 @@ import hashlib
 from unittest import mock
 from pathlib import Path
 
-from pandrator_installer.cli import main as launcher_main, parse_launcher_cli_args
+from pandrator_installer.cli import main as launcher_main, parse_launcher_cli_args, run_headless_install_from_cli
 from pandrator_installer.lifecycle import _owned_service_processes, _runtime_specs, main
 from pandrator_installer.models import WorkspacePaths
 from pandrator_installer.update import verify_release_manifest
@@ -91,6 +91,15 @@ class InstallerLifecycleTests(unittest.TestCase):
         parsed = parse_launcher_cli_args(["--headless-install", "--workspace", "example", "--components", "whisperx"])
         self.assertTrue(parsed.headless_install)
         self.assertEqual(parsed.components, "whisperx")
+
+    def test_successful_legacy_headless_alias_does_not_repeat_process_shutdown(self):
+        with tempfile.TemporaryDirectory() as workspace, mock.patch("pandrator_installer.cli.HeadlessInstaller") as factory:
+            args = parse_launcher_cli_args([
+                "--headless-install", "--workspace", workspace, "--components", "kokoro_cpu"
+            ])
+            run_headless_install_from_cli(args)
+        factory.return_value.run_headless_install.assert_called_once()
+        factory.return_value.shutdown_apps.assert_not_called()
 
     def test_frozen_launcher_dispatches_hidden_service_command(self):
         arguments = ["service", "--workspace", "example", "--component", "kokoro_cpu"]

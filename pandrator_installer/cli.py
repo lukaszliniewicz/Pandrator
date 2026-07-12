@@ -90,6 +90,7 @@ def run_headless_install_from_cli(args):
 
     installer = HeadlessInstaller(working_dir=workspace)
 
+    completed = False
     try:
         components = parse_headless_components(args.components)
         installer.run_headless_install(
@@ -103,8 +104,10 @@ def run_headless_install_from_cli(args):
             kobold_qwen_quantization=args.qwen_quantization,
             kobold_qwen_initial_model=args.qwen_initial_model,
         )
+        completed = True
     finally:
-        installer.shutdown_apps()
+        if not completed:
+            installer.shutdown_apps()
         installer.shutdown_logging()
 
 def run_gui_app(args=None):

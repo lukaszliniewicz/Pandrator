@@ -646,6 +646,7 @@ class PandratorInstaller(
         self.fishs2_checkbox.stateChanged.connect(self._handle_fishs2_toggle)
         self.crispasr_checkbox.stateChanged.connect(self._handle_crispasr_toggle)
         self.kobold_qwen_checkbox.stateChanged.connect(self._handle_kobold_qwen_toggle)
+        self.kokoro_checkbox.stateChanged.connect(self._handle_kokoro_toggle)
 
         for checkbox in self.install_tab.findChildren(QCheckBox):
             checkbox.stateChanged.connect(self.update_install_button_state)
@@ -1384,6 +1385,15 @@ class PandratorInstaller(
         if is_checked and self.isVisible():
             self.show_kobold_qwen_config_dialog(force=False)
         self.update_install_button_state()
+
+    def _handle_kokoro_toggle(self, state):
+        if state != Qt.CheckState.Checked.value:
+            return
+        if not detect_compute_backends()["cuda"]["available"]:
+            self.kokoro_cpu_checkbox.setChecked(True)
+            self.kokoro_cpu_checkbox.setToolTip(
+                "CPU selected automatically because CUDA was not detected."
+            )
 
     def show_crispasr_config_dialog(self, force=False):
         if not force and self.crispasr_backend_manually_set:
