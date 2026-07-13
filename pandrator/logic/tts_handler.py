@@ -63,6 +63,10 @@ KOKORO_API_BASE_URL = "http://127.0.0.1:8880"
 # Magpie default URLs
 MAGPIE_API_BASE_URL = "http://127.0.0.1:8030"
 TTS_GENERATION_TIMEOUT_SECONDS = 300
+# A first Qwen CustomVoice request may need to download several gigabytes and
+# then restart KoboldCpp with the newly selected model.  Keep the request alive
+# for that one-time preparation instead of failing at the normal TTS timeout.
+KOBOLD_QWEN_MODEL_PREPARATION_TIMEOUT_SECONDS = 1800
 
 XTTS_OPENAI_PLACEHOLDER_API_KEY = "sk-placeholder"
 XTTS_DEFAULT_MODEL = "tts_models/multilingual/multi-dataset/xtts_v2"
@@ -102,7 +106,17 @@ CHATTERBOX_TTS_MODELS = [
 KOBOLD_QWEN_DEFAULT_MODEL = "Prebuilt Voices"
 KOBOLD_QWEN_DEFAULT_VOICE = "Aiden"
 KOBOLD_QWEN_TTS_MODELS = ["Prebuilt Voices", "Voice Cloning"]
-KOBOLD_QWEN_TTS_VOICES = ["Aiden"]
+KOBOLD_QWEN_TTS_VOICES = [
+    "Aiden",
+    "Dylan",
+    "Eric",
+    "Ono_Anna",
+    "Ryan",
+    "Serena",
+    "Sohee",
+    "Uncle_Fu",
+    "Vivian",
+]
 FISHS2_DEFAULT_TOP_P = 0.7
 FISHS2_DEFAULT_CHUNK_LENGTH = 200
 FISHS2_DEFAULT_LATENCY = "balanced"
@@ -4077,7 +4091,7 @@ def _request_kobold_qwen_audio(text: str, tts_settings: dict, kobold_qwen_base_u
             speech_url,
             headers=_openai_auth_headers(api_key),
             json=payload,
-            timeout=TTS_GENERATION_TIMEOUT_SECONDS,
+            timeout=KOBOLD_QWEN_MODEL_PREPARATION_TIMEOUT_SECONDS,
         )
 
         if _should_try_next_openai_candidate(response.status_code):

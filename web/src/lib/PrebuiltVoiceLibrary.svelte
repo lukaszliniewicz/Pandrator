@@ -20,8 +20,17 @@
 
   const services = $derived((payload.services ?? []).filter((service: any) => service.supports_prebuilt_voices));
   const service = $derived(services.find((item: any) => item.id === serviceId) ?? services.find((item: any) => item.available !== false) ?? services[0]);
-  const models = $derived(Array.from(new Set([...(service?.models ?? []), service?.default_model].filter(Boolean))));
-  const rawVoices = $derived(Array.from(new Set([...(service?.voice_catalogues?.[model] ?? service?.voices ?? []), service?.default_voices?.[model], service?.default_voice].filter(Boolean))) as string[]);
+  const qwenPrebuiltModel = $derived(service?.id === 'kobold_qwen'
+    ? (service?.models ?? []).find((item: string) => ['prebuilt voices', 'qwen3-tts-customvoice'].includes(item.toLowerCase())) || 'Prebuilt Voices'
+    : '');
+  const models = $derived(service?.id === 'kobold_qwen'
+    ? [qwenPrebuiltModel]
+    : Array.from(new Set([...(service?.models ?? []), service?.default_model].filter(Boolean))));
+  const rawVoices = $derived(Array.from(new Set([
+    ...(service?.voice_catalogues?.[model] ?? (service?.id === 'kobold_qwen' ? [] : service?.voices ?? [])),
+    service?.default_voices?.[model],
+    model === service?.default_model ? service?.default_voice : ''
+  ].filter(Boolean))) as string[]);
   const descriptors = $derived(rawVoices.map((voice) => describeVoice(service?.id ?? '', voice)));
   const languages = $derived(languagesForService(service?.id ?? '', descriptors));
   const visibleVoices = $derived(descriptors.filter((voice) => !language || !voice.languageCode || voice.languageCode === language));
@@ -106,10 +115,12 @@
         if (found[key] != null && found[key] !== '') record[key] = found[key];
       }
       if (discoveredVoices.length) {
-        const catalogueModels = discoveredModels.length ? discoveredModels : [model || record.default_model].filter(Boolean);
         const catalogues = { ...(record.voice_catalogues ?? {}) };
-        for (const catalogueModel of catalogueModels) {
-          catalogues[catalogueModel] = Array.from(new Set([...(catalogues[catalogueModel] ?? []), ...discoveredVoices]));
+        if (service.id !== 'kobold_qwen') {
+          const catalogueModels = discoveredModels.length ? discoveredModels : [model || record.default_model].filter(Boolean);
+          for (const catalogueModel of catalogueModels) {
+            catalogues[catalogueModel] = Array.from(new Set([...(catalogues[catalogueModel] ?? []), ...discoveredVoices]));
+          }
         }
         record.voice_catalogues = catalogues;
       }
@@ -161,7 +172,10 @@
   }
 
   async function waitJob(id: string) {
-    for (let attempt = 0; attempt < 240; attempt += 1) {
+    // A Qwen Base-only installation downloads the 1.7B CustomVoice model on
+    // the first pre-built preview.  Keep polling while that durable job does
+    // its one-time preparation rather than claiming it timed out after 2 min.
+    for (let attempt = 0; attempt < 4000; attempt += 1) {
       const job = await api<JobRecord>(`/jobs/${id}`);
       if (job.status === 'succeeded') return job;
       if (['failed', 'canceled', 'interrupted'].includes(job.status)) throw new Error(job.error_message || `Preview ${job.status}.`);
@@ -175,9 +189,14 @@
     if (!service || service.available === false) { error = service?.availability_reason || 'Start or configure this service first.'; return false; }
     const key = previewKey(service.id, model, language, voice.id);
     previews = { ...previews, [key]: { status: 'generating' } };
-    if (!quiet) { error = ''; notice = ''; }
+    if (!quiet) {
+      error = '';
+      notice = service.id === 'kobold_qwen'
+        ? 'Using the Qwen CustomVoice model. If it was not installed initially, the first preview downloads it automatically and may take several minutes.'
+        : '';
+    }
     try {
-      const queued = await api<JobRecord>(`/services/tts/${service.id}/preview`, { method: 'POST', body: JSON.stringify({ text: previewText.trim(), model, voice: voice.id, language }) });
+      const queued = await api<JobRecord>(`/services/tts/${service.id}/preview`, { method: 'POST', body: JSON.stringify({ text: previewText.trim(), model: service.id === 'kobold_qwen' ? qwenPrebuiltModel : model, voice: voice.id, language }) });
       const complete = await waitJob(queued.id);
       previews = { ...previews, [key]: { status: 'ready', artifactId: String(complete.result_json?.artifact_id ?? '') } };
       return true;

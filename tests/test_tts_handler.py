@@ -424,6 +424,10 @@ class TTSHandlerTests(unittest.TestCase):
                 "response_format": "wav",
             },
         )
+        self.assertEqual(
+            called_kwargs["timeout"],
+            tts_handler.KOBOLD_QWEN_MODEL_PREPARATION_TIMEOUT_SECONDS,
+        )
 
 
 if __name__ == "__main__":

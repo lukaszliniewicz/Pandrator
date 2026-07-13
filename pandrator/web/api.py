@@ -424,6 +424,12 @@ def create_app(
         if service is None:
             return error_response("not_found", "TTS service not found.", 404)
         model = payload.model or str(service.get("default_model") or "")
+        # This endpoint is specifically for pre-built catalogue voices.  Qwen's
+        # Base checkpoint is cloning-only, so never let stale UI state or a
+        # manually supplied request route a named voice to that model.  The
+        # Qwen service lazily downloads CustomVoice when it receives this ID.
+        if str(service.get("id") or service_id).lower().replace("-", "_") == "kobold_qwen":
+            model = tts_handler.KOBOLD_QWEN_DEFAULT_MODEL
         default_voices = service.get("default_voices") if isinstance(service.get("default_voices"), dict) else {}
         voice = payload.voice or str(default_voices.get(model) or service.get("default_voice") or "")
         service_name = "OpenAI Compatible" if service.get("is_custom") else str(service.get("name") or service_id)

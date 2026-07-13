@@ -120,6 +120,24 @@ class WebParityWorkspaceTests(unittest.TestCase):
         self.assertEqual("af_heart", payload["settings"]["voice"])
         self.assertEqual("en", payload["settings"]["language"])
 
+    def test_qwen_prebuilt_preview_always_selects_customvoice_model(self):
+        response = self.client.post(
+            "/api/v1/services/tts/kobold_qwen/preview",
+            json={"text": "A Qwen preview.", "model": "Voice Cloning", "voice": "Ryan", "language": "en"},
+            headers=self.headers,
+        )
+        self.assertEqual(202, response.status_code, response.get_json())
+        settings = response.get_json()["payload_json"]["settings"]
+        self.assertEqual("Prebuilt Voices", settings["model"])
+        self.assertEqual("Prebuilt Voices", settings["xtts_model"])
+        self.assertEqual("Ryan", settings["voice"])
+        catalogue = self.client.get("/api/v1/services/tts").get_json()
+        qwen = next(item for item in catalogue["services"] if item["id"] == "kobold_qwen")
+        self.assertEqual(
+            {"Aiden", "Dylan", "Eric", "Ono_Anna", "Ryan", "Serena", "Sohee", "Uncle_Fu", "Vivian"},
+            set(qwen["voice_catalogues"]["Prebuilt Voices"]),
+        )
+
     def test_tts_catalogue_restores_managed_previews_and_marks_unavailable_services(self):
         extension = self.app.extensions["pandrator"]
         preview_path = extension["paths"].artifacts / "tts-previews" / "persisted.wav"
