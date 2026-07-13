@@ -59,7 +59,7 @@ class InstallSelection:
     kobold_qwen_cpu: bool = False
     kobold_qwen_backend: str = "auto"
     kobold_qwen_model_size: str = "0.6b"
-    kobold_qwen_quantization: str = "q8_0"
+    kobold_qwen_quantization: str = "f16"
     kobold_qwen_initial_model: str = "base"
     magpie: bool = False
     magpie_cpu: bool = False
@@ -78,7 +78,7 @@ class InstallSelection:
         crispasr_model_quantization: str = "f16",
         kobold_qwen_backend: str = "auto",
         kobold_qwen_model_size: str = "0.6b",
-        kobold_qwen_quantization: str = "q8_0",
+        kobold_qwen_quantization: str = "f16",
         kobold_qwen_initial_model: str = "base",
     ) -> "InstallSelection":
         selected = {
@@ -110,7 +110,7 @@ class InstallSelection:
             crispasr_model_quantization=str(crispasr_model_quantization or "f16").lower(),
             kobold_qwen_backend=str(kobold_qwen_backend or "auto").lower(),
             kobold_qwen_model_size=str(kobold_qwen_model_size or "0.6b").lower(),
-            kobold_qwen_quantization=str(kobold_qwen_quantization or "q8_0").lower(),
+            kobold_qwen_quantization=str(kobold_qwen_quantization or "f16").lower(),
             kobold_qwen_initial_model=str(kobold_qwen_initial_model or "base").lower(),
             **{field.name: field.name in selected for field in fields(cls) if field.name not in (
                 "pandrator", "fishs2_backend", "fishs2_model_quant", "crispasr_backend",
@@ -138,8 +138,10 @@ class InstallSelection:
             raise ValueError("Qwen3 TTS model size must be 0.6b or 1.7b.")
         if self.kobold_qwen_quantization not in {"q8_0", "f16"}:
             raise ValueError("Qwen3 TTS quantization must be q8_0 or f16.")
-        if self.kobold_qwen_initial_model not in {"base", "customvoice"}:
-            raise ValueError("Qwen3 TTS initial model must be base or customvoice.")
+        if self.kobold_qwen_initial_model not in {"base", "customvoice", "both"}:
+            raise ValueError("Qwen3 TTS model selection must be base, customvoice, or both.")
+        if self.kobold_qwen_initial_model in {"customvoice", "both"} and self.kobold_qwen_model_size != "1.7b":
+            raise ValueError("Qwen3 TTS CustomVoice is available only for the 1.7B model family.")
         mutually_exclusive = (
             ("xtts", "xtts_cpu"),
             ("kokoro", "kokoro_cpu"),
@@ -166,6 +168,16 @@ class InstallSelection:
 
     def any_component_selected(self) -> bool:
         return self.pandrator or bool(self.selected_components())
+
+
+def qwen_model_variants(selection: str) -> tuple[str, ...]:
+    """Expand the installer-only 'both' choice into service model variants."""
+    normalized = str(selection or "base").strip().lower()
+    if normalized == "both":
+        return ("base", "customvoice")
+    if normalized in {"base", "customvoice"}:
+        return (normalized,)
+    raise ValueError("Qwen3 TTS model selection must be base, customvoice, or both.")
 
 
 @dataclass(frozen=True)

@@ -4,6 +4,7 @@ import os
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication, QCheckBox, QLabel, QScrollArea, QSizePolicy
 from pandrator_installer_launcher import PandratorInstaller
+from pandrator_installer.gui.main_window import QwenConfigDialog
 from pandrator_installer.gui.support import ToggleSwitch
 
 
@@ -42,13 +43,26 @@ class TestInstallerLauncherChatterbox(unittest.TestCase):
         self.assertFalse(selection.kobold_qwen)
         self.assertTrue(selection.kobold_qwen_cpu)
         self.assertEqual(selection.kobold_qwen_model_size, "0.6b")
-        self.assertEqual(selection.kobold_qwen_quantization, "q8_0")
+        self.assertEqual(selection.kobold_qwen_quantization, "f16")
 
         installer.launch_kobold_qwen_checkbox.setChecked(True)
         installer.kobold_qwen_cpu_launch_checkbox.setChecked(True)
         launch_selection = installer.snapshot_launch_selection()
         self.assertTrue(launch_selection.kobold_qwen)
         self.assertTrue(launch_selection.kobold_qwen_cpu)
+
+    def test_qwen_dialog_offers_both_models_and_forces_1_7b(self):
+        installer = PandratorInstaller(headless=True)
+        dialog = QwenConfigDialog(installer)
+
+        both_index = dialog.initial_model_combo.findData("both")
+        self.assertGreaterEqual(both_index, 0)
+        dialog.initial_model_combo.setCurrentIndex(both_index)
+
+        self.assertEqual(dialog.get_selected_initial_model(), "both")
+        self.assertEqual(dialog.get_selected_model_size(), "1.7b")
+        self.assertFalse(dialog.model_size_combo.isEnabled())
+        self.assertEqual(dialog.get_selected_quantization(), "f16")
 
     def test_rvc_cpu_option_maps_to_cpu_install_and_launch_variants(self):
         installer = PandratorInstaller(headless=True)

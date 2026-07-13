@@ -58,8 +58,13 @@ def parse_launcher_cli_args(argv=None):
     parser.add_argument('--crispasr-model-quantization', choices=('f16', 'q8_0', 'q5_0', 'q4_k'), default='f16')
     parser.add_argument('--qwen-backend', choices=('auto', 'cpu', 'cuda', 'vulkan', 'metal'), default='auto')
     parser.add_argument('--qwen-model-size', choices=('0.6b', '1.7b'), default='0.6b')
-    parser.add_argument('--qwen-quantization', choices=('q8_0', 'f16'), default='q8_0')
-    parser.add_argument('--qwen-initial-model', choices=('base', 'customvoice'), default='base')
+    parser.add_argument('--qwen-quantization', choices=('f16', 'q8_0'), default='f16')
+    parser.add_argument(
+        '--qwen-initial-model',
+        choices=('base', 'customvoice', 'both'),
+        default='base',
+        help='Qwen3 TTS model variant(s) to download; CustomVoice and both require 1.7B.',
+    )
     parser.add_argument(
         '--skip-pandrator',
         action='store_true',
@@ -469,6 +474,14 @@ def run_gui_smoke_check(args=None):
 
 
 def run_self_check():
+    import ssl
+
+    import certifi
+
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
+    if not ssl_context.get_ca_certs():
+        raise RuntimeError("Installer self-check failed: TLS trust store is empty.")
+
     required_components = {
         "xtts",
         "voxcpm",
@@ -501,7 +514,8 @@ def run_self_check():
         f"({len(COMPONENTS)} component definitions; "
         f"platform={normalized_system()}-{normalized_machine()}; "
         f"pixi={pixi_binary_name()}; "
-        f"manifest={pixi_manifest_platform()})."
+        f"manifest={pixi_manifest_platform()}; "
+        f"openssl={ssl.OPENSSL_VERSION})."
     )
     return 0
 

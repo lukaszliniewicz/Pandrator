@@ -95,7 +95,7 @@ class PandratorInstaller(
         self.kobold_qwen_cpu_var = False
         self.kobold_qwen_backend = "auto"
         self.kobold_qwen_model_size = "0.6b"
-        self.kobold_qwen_quantization = "q8_0"
+        self.kobold_qwen_quantization = "f16"
         self.kobold_qwen_initial_model = "base"
         self.kobold_qwen_settings_manually_set = False
         self.magpie_var = False
@@ -996,7 +996,7 @@ class PandratorInstaller(
         kobold_qwen_gpu_support = config.get(KOBOLD_QWEN_GPU_SUPPORT_CONFIG_FLAG, False)
         self.kobold_qwen_backend = config.get('kobold_qwen_backend', 'auto')
         self.kobold_qwen_model_size = config.get('kobold_qwen_model_size', '0.6b')
-        self.kobold_qwen_quantization = config.get('kobold_qwen_quantization', 'q8_0')
+        self.kobold_qwen_quantization = config.get('kobold_qwen_quantization', 'f16')
         self.kobold_qwen_initial_model = config.get('kobold_qwen_initial_model', 'base')
         set_widget_state(self.kobold_qwen_checkbox, not kobold_qwen_support, False)
         set_widget_state(self.kobold_qwen_cpu_checkbox, not kobold_qwen_support, False)
@@ -1278,7 +1278,7 @@ class PandratorInstaller(
         self.crispasr_model_quantization = getattr(selection, "crispasr_model_quantization", "f16")
         self.kobold_qwen_backend = getattr(selection, "kobold_qwen_backend", "auto")
         self.kobold_qwen_model_size = getattr(selection, "kobold_qwen_model_size", "0.6b")
-        self.kobold_qwen_quantization = getattr(selection, "kobold_qwen_quantization", "q8_0")
+        self.kobold_qwen_quantization = getattr(selection, "kobold_qwen_quantization", "f16")
         self.kobold_qwen_initial_model = getattr(selection, "kobold_qwen_initial_model", "base")
 
     def snapshot_launch_selection(self):
@@ -1518,7 +1518,7 @@ class QwenConfigDialog(QDialog):
 
         title = QLabel("<h2>Qwen3-TTS runtime and startup model</h2>")
         description = QLabel(
-            "Choose the accelerator to force and the one model variant downloaded during installation. "
+            "Choose the accelerator and whether to download the Base model, CustomVoice model, or both. "
             "Pandrator can download another supported model later when you request its capability."
         )
         description.setWordWrap(True)
@@ -1552,15 +1552,16 @@ class QwenConfigDialog(QDialog):
         self.initial_model_combo = QComboBox()
         self.initial_model_combo.addItem("Voice cloning — Base model", "base")
         self.initial_model_combo.addItem("Pre-built voices — CustomVoice model", "customvoice")
+        self.initial_model_combo.addItem("Voice cloning + pre-built voices — download both", "both")
         self.initial_model_combo.setCurrentIndex(max(0, self.initial_model_combo.findData(getattr(parent, "kobold_qwen_initial_model", "base"))))
         self.model_size_combo = QComboBox()
         self.model_size_combo.addItem("0.6B — lower memory, Base only", "0.6b")
         self.model_size_combo.addItem("1.7B — higher capacity", "1.7b")
         self.model_size_combo.setCurrentIndex(max(0, self.model_size_combo.findData(getattr(parent, "kobold_qwen_model_size", "0.6b"))))
         self.quantization_combo = QComboBox()
-        self.quantization_combo.addItem("Q8_0 — lower memory (recommended)", "q8_0")
-        self.quantization_combo.addItem("FP16 — full precision, highest memory", "f16")
-        self.quantization_combo.setCurrentIndex(max(0, self.quantization_combo.findData(getattr(parent, "kobold_qwen_quantization", "q8_0"))))
+        self.quantization_combo.addItem("FP16 — full precision (default)", "f16")
+        self.quantization_combo.addItem("Q8_0 — lower memory", "q8_0")
+        self.quantization_combo.setCurrentIndex(max(0, self.quantization_combo.findData(getattr(parent, "kobold_qwen_quantization", "f16"))))
         self.initial_model_combo.currentIndexChanged.connect(self._sync_model_size)
         model_layout.addWidget(self.initial_model_combo)
         model_layout.addWidget(self.model_size_combo)
@@ -1569,8 +1570,9 @@ class QwenConfigDialog(QDialog):
         self._sync_model_size()
 
         note = QLabel(
-            "The 0.6B Q8 Base model is the safest default for GPUs around 4 GB. The 1.7B model and FP16 variants need more headroom. "
-            "CustomVoice provides named pre-built voices and is currently available as 1.7B; Base provides reference-audio voice cloning."
+            "FP16 is the default for both sizes; Q8_0 remains available when memory is constrained. "
+            "CustomVoice provides named pre-built voices and is available as 1.7B; Base provides reference-audio voice cloning. "
+            "Selecting both downloads the 1.7B Base and CustomVoice variants."
         )
         note.setWordWrap(True)
         layout.addWidget(note)
@@ -1588,7 +1590,7 @@ class QwenConfigDialog(QDialog):
         layout.addLayout(buttons)
 
     def _sync_model_size(self):
-        custom = self.initial_model_combo.currentData() == "customvoice"
+        custom = self.initial_model_combo.currentData() in {"customvoice", "both"}
         if custom:
             self.model_size_combo.setCurrentIndex(self.model_size_combo.findData("1.7b"))
         self.model_size_combo.setEnabled(not custom)
@@ -1600,7 +1602,7 @@ class QwenConfigDialog(QDialog):
         return str(self.model_size_combo.currentData() or "0.6b")
 
     def get_selected_quantization(self):
-        return str(self.quantization_combo.currentData() or "q8_0")
+        return str(self.quantization_combo.currentData() or "f16")
 
     def get_selected_initial_model(self):
         return str(self.initial_model_combo.currentData() or "base")

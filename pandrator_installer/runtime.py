@@ -605,7 +605,7 @@ class RuntimeMixin:
                         kobold_qwen_server_path,
                         backend=configured_backend,
                         model_size=install_config.get('kobold_qwen_model_size', '0.6b'),
-                        quantization=install_config.get('kobold_qwen_quantization', 'q8_0'),
+                        quantization=install_config.get('kobold_qwen_quantization', 'f16'),
                         initial_model=install_config.get('kobold_qwen_initial_model', 'base'),
                         pixi_path=shared_pixi_path,
                     )
@@ -1178,7 +1178,7 @@ class RuntimeMixin:
         pixi_path=None,
         backend=None,
         model_size="0.6b",
-        quantization="q8_0",
+        quantization="f16",
         initial_model="base",
     ):
         """Run the Qwen3 TTS API server via its cross-platform launcher."""

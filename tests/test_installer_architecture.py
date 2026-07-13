@@ -13,7 +13,7 @@ from pandrator_installer.catalog import (
     PACKAGING_CONFIG_FLAGS,
 )
 from pandrator_installer.cli import parse_launcher_cli_args, run_self_check
-from pandrator_installer.models import InstallSelection, LaunchSelection, WorkspacePaths
+from pandrator_installer.models import InstallSelection, LaunchSelection, WorkspacePaths, qwen_model_variants
 from pandrator_installer import platforms
 from pandrator_installer.crispasr import detect_compute_backends, resolve_asset
 from pandrator_installer.reporting import HeadlessReporter
@@ -132,6 +132,46 @@ class InstallerArchitectureTests(unittest.TestCase):
             InstallSelection.from_components(["rvc", "rvc_cpu"])
         with self.assertRaisesRegex(ValueError, "Select either 'kobold_qwen' or 'kobold_qwen_cpu'"):
             InstallSelection.from_components(["kobold_qwen", "kobold_qwen_cpu"])
+
+    def test_qwen_defaults_to_fp16_and_supports_both_1_7b_variants(self):
+        default_selection = InstallSelection.from_components(["kobold_qwen"])
+        both_selection = InstallSelection.from_components(
+            ["kobold_qwen"],
+            kobold_qwen_model_size="1.7b",
+            kobold_qwen_initial_model="both",
+        )
+
+        self.assertEqual(default_selection.kobold_qwen_quantization, "f16")
+        self.assertEqual(
+            qwen_model_variants(both_selection.kobold_qwen_initial_model),
+            ("base", "customvoice"),
+        )
+        with self.assertRaisesRegex(ValueError, "only for the 1.7B"):
+            InstallSelection.from_components(
+                ["kobold_qwen"],
+                kobold_qwen_model_size="0.6b",
+                kobold_qwen_initial_model="both",
+            )
+
+        cli_defaults = parse_launcher_cli_args([])
+        cli_both = parse_launcher_cli_args(
+            ["--qwen-model-size", "1.7b", "--qwen-initial-model", "both"]
+        )
+        self.assertEqual(cli_defaults.qwen_quantization, "f16")
+        self.assertEqual(cli_both.qwen_initial_model, "both")
+
+    def test_external_subprocess_environment_restores_pre_bundle_library_path(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        bundle_environment = {
+            "LD_LIBRARY_PATH": "/tmp/appimage/_internal:/usr/local/lib",
+            "LD_LIBRARY_PATH_ORIG": "/usr/local/lib",
+        }
+
+        with patch("pandrator_installer.operations.sys.platform", "linux"):
+            restored = installer.get_external_subprocess_env(bundle_environment)
+
+        self.assertEqual(restored["LD_LIBRARY_PATH"], "/usr/local/lib")
+        self.assertNotIn("LD_LIBRARY_PATH_ORIG", restored)
 
     def test_launch_selection_preserves_backend_priority(self):
         selection = LaunchSelection(voxcpm=True, chatterbox=True, rvc=True)
@@ -542,7 +582,7 @@ class InstallerArchitectureTests(unittest.TestCase):
                 "--model-size",
                 "0.6b",
                 "--quantization",
-                "q8_0",
+                "f16",
                 "--initial-model",
                 "base",
             ],
@@ -616,6 +656,7 @@ class InstallerArchitectureTests(unittest.TestCase):
         self.assertIn("component definitions", printed)
         self.assertIn("pixi=", printed)
         self.assertIn("manifest=", printed)
+        self.assertIn("openssl=", printed)
 
     def test_gui_smoke_check_cli_flag(self):
         args = parse_launcher_cli_args(["--gui-smoke-check"])

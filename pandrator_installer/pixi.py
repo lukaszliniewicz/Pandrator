@@ -60,7 +60,7 @@ class PixiEnvironmentMixin:
         os.makedirs(pip_cache, exist_ok=True)
         os.makedirs(local_temp, exist_ok=True)
 
-        env = os.environ.copy()
+        env = self.get_external_subprocess_env()
         env['PIXI_HOME'] = pixi_home
         env['PIXI_CACHE_DIR'] = pixi_cache
         env['RATTLER_CACHE_DIR'] = rattler_cache

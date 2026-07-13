@@ -612,7 +612,7 @@ class ComponentOperationsMixin:
         pixi_path=None,
         backend=None,
         model_size="0.6b",
-        quantization="q8_0",
+        quantization="f16",
         initial_model="base",
     ):
         backend = 'cpu' if use_cpu else (backend or 'auto')
@@ -1031,7 +1031,7 @@ class ComponentOperationsMixin:
         pixi_path=None,
         backend=None,
         model_size="0.6b",
-        quantization="q8_0",
+        quantization="f16",
         initial_model="base",
     ):
         logging.info(f"Bootstrapping Qwen3 TTS API server in {kobold_qwen_repo_path}...")
@@ -1065,6 +1065,7 @@ class ComponentOperationsMixin:
             process = subprocess.Popen(
                 command,
                 cwd=kobold_qwen_repo_path,
+                env=self.get_pixi_subprocess_env(os.path.dirname(kobold_qwen_repo_path)),
                 stdout=log_handle,
                 stderr=subprocess.STDOUT,
                 **self.get_hidden_subprocess_kwargs(),

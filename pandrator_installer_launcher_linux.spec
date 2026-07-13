@@ -1,10 +1,28 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from pathlib import Path
+import sys
+
+
+def runtime_library(name):
+    """Bundle OpenSSL libraries from the Python runtime as a matched pair."""
+    for prefix in (Path(sys.prefix), Path(sys.base_prefix)):
+        candidate = prefix / 'lib' / name
+        if candidate.is_file():
+            return str(candidate)
+    raise RuntimeError(f'Could not locate {name} in the build Python runtime.')
+
+
+openssl_binaries = [
+    (runtime_library('libssl.so.3'), '.'),
+    (runtime_library('libcrypto.so.3'), '.'),
+]
+
 
 a = Analysis(
     ['pandrator_installer_launcher.py'],
     pathex=[],
-    binaries=[],
+    binaries=openssl_binaries,
     datas=[
         ('pandrator.png', '.'),
     ],

@@ -110,7 +110,7 @@ def _selection(args) -> InstallSelection:
         crispasr_model_quantization=str(getattr(args, "crispasr_model_quantization", "f16") or "f16"),
         kobold_qwen_backend=str(getattr(args, "qwen_backend", "auto") or "auto"),
         kobold_qwen_model_size=str(getattr(args, "qwen_model_size", "0.6b") or "0.6b"),
-        kobold_qwen_quantization=str(getattr(args, "qwen_quantization", "q8_0") or "q8_0"),
+        kobold_qwen_quantization=str(getattr(args, "qwen_quantization", "f16") or "f16"),
         kobold_qwen_initial_model=str(getattr(args, "qwen_initial_model", "base") or "base"),
     )
 
@@ -562,8 +562,8 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--crispasr-model-quantization", choices=("f16", "q8_0", "q5_0", "q4_k"), default="f16")
         command.add_argument("--qwen-backend", choices=("auto", "cpu", "cuda", "vulkan", "metal"), default="auto")
         command.add_argument("--qwen-model-size", choices=("0.6b", "1.7b"), default="0.6b")
-        command.add_argument("--qwen-quantization", choices=("q8_0", "f16"), default="q8_0")
-        command.add_argument("--qwen-initial-model", choices=("base", "customvoice"), default="base")
+        command.add_argument("--qwen-quantization", choices=("f16", "q8_0"), default="f16")
+        command.add_argument("--qwen-initial-model", choices=("base", "customvoice", "both"), default="base")
         command.set_defaults(handler=handler)
     update = commands.add_parser("update")
     update.add_argument("--wheel", required=True)

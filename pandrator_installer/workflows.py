@@ -51,7 +51,7 @@ from .constants import (
     XTTS_FINETUNING_PYTHON_VERSION,
     XTTS_FINETUNING_TORCH_PACKAGE_SPECS,
 )
-from .models import InstallSelection
+from .models import InstallSelection, qwen_model_variants
 from .platforms import is_windows
 from .reporting import HeadlessReporter, NullReporter
 
@@ -114,7 +114,7 @@ class WorkflowMixin:
         crispasr_model_quantization="f16",
         kobold_qwen_backend="auto",
         kobold_qwen_model_size="0.6b",
-        kobold_qwen_quantization="q8_0",
+        kobold_qwen_quantization="f16",
         kobold_qwen_initial_model="base",
     ):
         selection = InstallSelection.from_components(
@@ -368,15 +368,18 @@ class WorkflowMixin:
 
             if kobold_qwen_var or kobold_qwen_cpu_var:
                 self.reporter.progress(0.89)
-                self.reporter.status("Bootstrapping Qwen3 TTS API server (temporary startup)...")
-                self.install_kobold_qwen_api_server(
-                    kobold_qwen_repo_path,
-                    backend="cpu" if kobold_qwen_cpu_var else selection.kobold_qwen_backend,
-                    model_size=selection.kobold_qwen_model_size,
-                    quantization=selection.kobold_qwen_quantization,
-                    initial_model=selection.kobold_qwen_initial_model,
-                    pixi_path=shared_pixi_path,
-                )
+                for model_variant in qwen_model_variants(selection.kobold_qwen_initial_model):
+                    self.reporter.status(
+                        f"Bootstrapping Qwen3 TTS {model_variant} model (temporary startup)..."
+                    )
+                    self.install_kobold_qwen_api_server(
+                        kobold_qwen_repo_path,
+                        backend="cpu" if kobold_qwen_cpu_var else selection.kobold_qwen_backend,
+                        model_size=selection.kobold_qwen_model_size,
+                        quantization=selection.kobold_qwen_quantization,
+                        initial_model=model_variant,
+                        pixi_path=shared_pixi_path,
+                    )
 
             if magpie_var or magpie_cpu_var:
                 self.reporter.progress(0.89)
@@ -498,7 +501,13 @@ class WorkflowMixin:
                 config['kobold_qwen_backend'] = "cpu" if kobold_qwen_cpu_var else selection.kobold_qwen_backend
                 config['kobold_qwen_model_size'] = selection.kobold_qwen_model_size
                 config['kobold_qwen_quantization'] = selection.kobold_qwen_quantization
-                config['kobold_qwen_initial_model'] = selection.kobold_qwen_initial_model
+                requested_variants = list(qwen_model_variants(selection.kobold_qwen_initial_model))
+                installed_variants = list(config.get('kobold_qwen_installed_models') or [])
+                for model_variant in requested_variants:
+                    if model_variant not in installed_variants:
+                        installed_variants.append(model_variant)
+                config['kobold_qwen_installed_models'] = installed_variants
+                config['kobold_qwen_initial_model'] = requested_variants[0]
             if crispasr_var:
                 config['crispasr_backend'] = selection.crispasr_backend
                 config['crispasr_engine'] = selection.crispasr_engine
@@ -848,14 +857,19 @@ class WorkflowMixin:
                 if not self.is_kobold_qwen_runtime_ready(kobold_qwen_repo_path):
                     self.reporter.status("Bootstrapping Qwen3 TTS API server...")
                     kobold_qwen_gpu_support = config.get(KOBOLD_QWEN_GPU_SUPPORT_CONFIG_FLAG, False)
-                    self.install_kobold_qwen_api_server(
-                        kobold_qwen_repo_path,
-                        backend=config.get('kobold_qwen_backend', 'auto') if kobold_qwen_gpu_support else 'cpu',
-                        model_size=config.get('kobold_qwen_model_size', '0.6b'),
-                        quantization=config.get('kobold_qwen_quantization', 'q8_0'),
-                        initial_model=config.get('kobold_qwen_initial_model', 'base'),
-                        pixi_path=shared_pixi_path,
-                    )
+                    installed_models = config.get('kobold_qwen_installed_models') or [
+                        config.get('kobold_qwen_initial_model', 'base')
+                    ]
+                    for model_variant in installed_models:
+                        self.reporter.status(f"Bootstrapping Qwen3 TTS {model_variant} model...")
+                        self.install_kobold_qwen_api_server(
+                            kobold_qwen_repo_path,
+                            backend=config.get('kobold_qwen_backend', 'auto') if kobold_qwen_gpu_support else 'cpu',
+                            model_size=config.get('kobold_qwen_model_size', '0.6b'),
+                            quantization=config.get('kobold_qwen_quantization', 'f16'),
+                            initial_model=model_variant,
+                            pixi_path=shared_pixi_path,
+                        )
 
             if config.get('magpie_support', False):
                 if not self.is_magpie_runtime_ready(magpie_repo_path):

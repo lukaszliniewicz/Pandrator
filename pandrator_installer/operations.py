@@ -136,12 +136,54 @@ class OperationsMixin:
                     pass
 
     def get_network_subprocess_env(self):
-        env = os.environ.copy()
+        env = self.get_external_subprocess_env()
         if self.ca_bundle_path and os.path.exists(self.ca_bundle_path):
             env['SSL_CERT_FILE'] = self.ca_bundle_path
             env['REQUESTS_CA_BUNDLE'] = self.ca_bundle_path
             env['CURL_CA_BUNDLE'] = self.ca_bundle_path
             env['GIT_SSL_CAINFO'] = self.ca_bundle_path
+        return env
+
+    def get_external_subprocess_env(self, base_env=None):
+        """Remove PyInstaller's private library path before invoking host tools.
+
+        A Linux bundle must use its private libraries itself, but exporting that
+        path to Git, Pixi, FFmpeg, or a service process can make those programs
+        load ABI-incompatible bundled libraries.
+        """
+        env = dict(os.environ if base_env is None else base_env)
+        if not sys.platform.startswith('linux'):
+            return env
+
+        original_library_path = env.pop('LD_LIBRARY_PATH_ORIG', None)
+        if original_library_path is not None:
+            if original_library_path:
+                env['LD_LIBRARY_PATH'] = original_library_path
+            else:
+                env.pop('LD_LIBRARY_PATH', None)
+            return env
+
+        bundle_root = str(getattr(sys, '_MEIPASS', '') or '')
+        current_library_path = env.get('LD_LIBRARY_PATH', '')
+        if not bundle_root or not current_library_path:
+            return env
+
+        normalized_bundle_root = os.path.normcase(os.path.abspath(bundle_root))
+        retained_paths = []
+        for entry in current_library_path.split(os.pathsep):
+            if not entry:
+                continue
+            normalized_entry = os.path.normcase(os.path.abspath(entry))
+            if normalized_entry == normalized_bundle_root or normalized_entry.startswith(
+                normalized_bundle_root + os.sep
+            ):
+                continue
+            retained_paths.append(entry)
+
+        if retained_paths:
+            env['LD_LIBRARY_PATH'] = os.pathsep.join(retained_paths)
+        else:
+            env.pop('LD_LIBRARY_PATH', None)
         return env
 
     def is_admin(self):
@@ -194,6 +236,7 @@ class OperationsMixin:
     def run_command(self, command, use_shell=False, cwd=None, env=None, log_errors=True):
         try:
             subprocess_kwargs = self.get_hidden_subprocess_kwargs()
+            env = self.get_external_subprocess_env(env)
             if use_shell:
                 process = subprocess.Popen(
                     command if isinstance(command, str) else " ".join(command),
