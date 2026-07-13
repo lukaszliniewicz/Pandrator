@@ -333,13 +333,13 @@
 
 <audio bind:this={playbackAudio} preload="metadata" class="sr-only" onended={() => playingKey = ''} onerror={() => { if (playingKey) error = 'Playback failed: the audio file could not be decoded or loaded.'; playingKey = ''; }}></audio>
 
-<div class="mx-auto flex max-w-7xl flex-col">
-  <button onclick={onback} class="muted mb-6 flex items-center gap-2 self-start text-sm font-semibold"><ArrowLeft size={17}/> Workspace</button>
-  <header class="mb-5 flex flex-wrap items-end justify-between gap-4">
+<div class="voice-manager mx-auto flex h-full min-h-0 w-full max-w-7xl flex-col overflow-hidden">
+  <button onclick={onback} class="muted mb-6 flex shrink-0 items-center gap-2 self-start text-sm font-semibold"><ArrowLeft size={17}/> Workspace</button>
+  <header class="mb-5 flex shrink-0 flex-wrap items-end justify-between gap-4">
     <div><div class="eyebrow">Voices</div><h1 class="mt-2 text-4xl font-semibold">Voice Library</h1><p class="muted mt-2 text-sm">Manage voice-cloning references and compare provider voices in one workspace.</p></div>
     {#if activeView === 'references'}<div class="flex gap-2"><label class:pointer-events-none={!selected} class:opacity-40={!selected} class="cursor-pointer rounded-xl border border-[var(--line)] px-4 py-2 text-sm font-semibold">Upload sample<input type="file" accept="audio/*" onchange={uploadReference} class="sr-only"/></label><button onclick={() => tourOpen = true} class="rounded-xl border border-[var(--line)] px-4 py-2 text-sm font-semibold">Tour</button></div>{/if}
   </header>
-  <div class="mb-6 flex gap-2 border-b border-[var(--line)]"><button onclick={() => activeView = 'references'} class:active={activeView === 'references'} class="library-tab"><Library size={16}/> Reference samples</button><button onclick={() => activeView = 'prebuilt'} class:active={activeView === 'prebuilt'} class="library-tab"><AudioLines size={16}/> Pre-built voices</button></div>
+  <div class="mb-6 flex shrink-0 gap-2 border-b border-[var(--line)]"><button onclick={() => activeView = 'references'} class:active={activeView === 'references'} class="library-tab"><Library size={16}/> Reference samples</button><button onclick={() => activeView = 'prebuilt'} class:active={activeView === 'prebuilt'} class="library-tab"><AudioLines size={16}/> Pre-built voices</button></div>
   {#if activeView === 'references'}
     {#if error}<div role="alert" class="mb-4 flex items-start gap-2 rounded-xl border border-red-400/40 bg-red-500/10 px-4 py-3 text-sm"><CircleAlert class="mt-0.5 shrink-0" size={16}/><span>{error}</span></div>{/if}
     {#if notice}<div role="status" class="mb-4 rounded-xl border border-[var(--line)] bg-[var(--accent-soft)] px-4 py-3 text-sm">{notice}</div>{/if}
@@ -394,7 +394,7 @@
     </main>
   </div>
   {:else}
-    <PrebuiltVoiceLibrary {initialService}/>
+    <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1"><PrebuiltVoiceLibrary {initialService}/></div>
   {/if}
 </div>
 <GuidedTour tourId="voices" steps={tourSteps} bind:open={tourOpen}/>

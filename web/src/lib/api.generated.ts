@@ -1325,6 +1325,11 @@ export interface components {
                      */
                     node_kind: "paragraph" | "heading" | "chapter_marker" | "subtitle_cue";
                     /**
+                     * Paragraph Break After
+                     * @default false
+                     */
+                    paragraph_break_after: boolean;
+                    /**
                      * Silence After Ms
                      * @default 0
                      */
@@ -1354,6 +1359,11 @@ export interface components {
              * @enum {string}
              */
             node_kind: "paragraph" | "heading" | "chapter_marker" | "subtitle_cue";
+            /**
+             * Paragraph Break After
+             * @default false
+             */
+            paragraph_break_after: boolean;
             /**
              * Silence After Ms
              * @default 0
@@ -1391,6 +1401,11 @@ export interface components {
              * @default null
              */
             optimized_text: string | null;
+            /**
+             * Paragraph Break After
+             * @default null
+             */
+            paragraph_break_after: boolean | null;
             /**
              * Removed
              * @default null

@@ -64,7 +64,9 @@ class SchemaUpgradeTests(unittest.TestCase):
                 self.assertIn("job_id", [row[1] for row in connection.execute("PRAGMA table_info(output_assemblies)")])
                 self.assertIn("source_text_artifact_id", [row[1] for row in connection.execute("PRAGMA table_info(training_runs)")])
                 self.assertIn("node_kind", [row[1] for row in connection.execute("PRAGMA table_info(generation_segments)")])
+                self.assertIn("paragraph_break_after", [row[1] for row in connection.execute("PRAGMA table_info(generation_segments)")])
                 self.assertIn("node_kind", [row[1] for row in connection.execute("PRAGMA table_info(generation_segment_revisions)")])
+                self.assertIn("paragraph_break_after", [row[1] for row in connection.execute("PRAGMA table_info(generation_segment_revisions)")])
                 self.assertIn("source_language", [row[1] for row in connection.execute("PRAGMA table_info(sessions)")])
                 self.assertIn("target_language", [row[1] for row in connection.execute("PRAGMA table_info(sessions)")])
 
@@ -92,7 +94,7 @@ class LegacyMigrationTests(unittest.TestCase):
             json.dumps(
                 [
                     {"sentence_number": "1", "original_sentence": "First sentence."},
-                    {"sentence_number": "2", "processed_sentence": "Second sentence."},
+                    {"sentence_number": "2", "processed_sentence": "Second sentence.", "paragraph": "yes"},
                 ]
             ),
             encoding="utf-8",
@@ -166,7 +168,10 @@ class LegacyMigrationTests(unittest.TestCase):
                 self.assertEqual(record.workflow_kind, "voiceover")
                 self.assertNotEqual(record.storage_key, record.name)
                 self.assertEqual(session.scalar(select(func.count()).select_from(Segment)), 2)
-                self.assertEqual(session.scalar(select(func.count()).select_from(GenerationSegment)), 2)
+                generation_segments = list(session.scalars(select(GenerationSegment).order_by(GenerationSegment.ordinal)).all())
+                self.assertEqual(len(generation_segments), 2)
+                self.assertFalse(generation_segments[0].paragraph_break_after)
+                self.assertTrue(generation_segments[1].paragraph_break_after)
                 model = session.scalar(select(ProviderModel))
                 self.assertEqual(model.default_temperature, 0)
                 self.assertTrue(model.is_default)

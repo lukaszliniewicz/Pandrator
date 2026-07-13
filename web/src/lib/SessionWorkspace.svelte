@@ -586,6 +586,6 @@
   .status-chip.running { color: var(--accent); background: var(--accent-soft); }
   .status-chip.warning { color: var(--warning); background: color-mix(in srgb, var(--warning) 12%, transparent); }
   .mode-choice { border-radius: .65rem; padding: .55rem .85rem; font-size: .75rem; font-weight: 700; color: var(--muted); }
-  .mode-choice.mode-active { background: var(--accent); color: white; box-shadow: 0 4px 14px color-mix(in srgb, var(--accent) 24%, transparent); }
+  .mode-choice.mode-active { background: var(--action-bg); color: white; box-shadow: 0 4px 14px color-mix(in srgb, var(--accent) 24%, transparent); }
   .stage-locked { opacity: .58; }
 </style>

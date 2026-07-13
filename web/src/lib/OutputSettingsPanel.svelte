@@ -79,4 +79,4 @@
 </section>
 {#if preview}<ArtifactPreview artifact={preview} onclose={()=>preview=null}/>{/if}
 
-<style>.field{margin-top:.4rem;width:100%;border:1px solid var(--line);border-radius:.7rem;background:var(--paper);padding:.65rem .75rem;font-weight:400}.tool{display:flex;align-items:center;gap:.4rem;border:1px solid var(--line);border-radius:.65rem;padding:.55rem .75rem;font-size:.75rem;font-weight:700}.tool.primary{background:var(--accent);color:white}.tool:disabled{opacity:.4}label{font-size:.75rem;font-weight:650}</style>
+<style>.field{margin-top:.4rem;width:100%;border:1px solid var(--line);border-radius:.7rem;background:var(--paper);padding:.65rem .75rem;font-weight:400}.tool{display:flex;align-items:center;gap:.4rem;border:1px solid var(--line);border-radius:.65rem;padding:.55rem .75rem;font-size:.75rem;font-weight:700}.tool.primary{background:var(--action-bg);color:white}.tool.primary:hover{background:var(--action-hover)}.tool:disabled{opacity:.4}label{font-size:.75rem;font-weight:650}</style>

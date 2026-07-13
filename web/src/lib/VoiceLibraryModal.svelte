@@ -11,7 +11,7 @@
       <div><div class="eyebrow">Voice Library</div><p class="muted mt-1 text-xs">Choose a pre-built voice or manage reusable cloning references without leaving this session.</p></div>
       <button onclick={onclose} class="rounded-xl p-2" aria-label="Close Voice Library"><X size={19}/></button>
     </header>
-    <div class="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
+    <div class="min-h-0 flex-1 overflow-hidden p-4 sm:p-6">
       <VoiceManager onback={onclose} {initialView}/>
     </div>
   </div>

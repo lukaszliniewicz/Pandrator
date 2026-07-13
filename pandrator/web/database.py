@@ -13,7 +13,7 @@ from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
 
-SCHEMA_HEAD = "0007_generation_optimization"
+SCHEMA_HEAD = "0008_generation_paragraph_boundaries"
 
 
 def sqlite_url(path: Path) -> str:

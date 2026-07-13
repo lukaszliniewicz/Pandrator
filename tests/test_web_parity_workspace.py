@@ -3,6 +3,7 @@ import io
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from pandrator.web.api import create_app
 from pandrator.web.artifacts import ArtifactService
@@ -118,6 +119,37 @@ class WebParityWorkspaceTests(unittest.TestCase):
         self.assertEqual("kokoro", payload["settings"]["model"])
         self.assertEqual("af_heart", payload["settings"]["voice"])
         self.assertEqual("en", payload["settings"]["language"])
+
+    def test_tts_catalogue_restores_managed_previews_and_marks_unavailable_services(self):
+        extension = self.app.extensions["pandrator"]
+        preview_path = extension["paths"].artifacts / "tts-previews" / "persisted.wav"
+        preview_path.parent.mkdir(parents=True, exist_ok=True)
+        preview_path.write_bytes(b"RIFFpreview")
+        preview = extension["artifacts"].register(
+            preview_path,
+            kind="audio",
+            role="tts_voice_preview",
+            metadata={
+                "service_id": "kokoro",
+                "model": "kokoro",
+                "voice": "af_heart",
+                "language": "en-us",
+                "preview_text": "Persist me.",
+            },
+        )
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "", "GEMINI_API_KEY": ""}, clear=False):
+            response = self.client.get("/api/v1/services/tts?refresh=true")
+        self.assertEqual(200, response.status_code, response.get_json())
+        payload = response.get_json()
+        restored = next(item for item in payload["previews"] if item["artifact_id"] == preview.id)
+        self.assertEqual("af_heart", restored["voice"])
+        self.assertEqual("Persist me.", restored["preview_text"])
+        kokoro = next(item for item in payload["services"] if item["id"] == "kokoro")
+        self.assertFalse(kokoro["available"])
+        self.assertEqual("Service is not running", kokoro["availability_reason"])
+        openai = next(item for item in payload["services"] if item["id"] == "openai")
+        self.assertFalse(openai["available"])
+        self.assertEqual("API key not configured", openai["availability_reason"])
 
     def test_generate_run_adapts_flat_web_service_ids_after_stage_overrides(self):
         record = self.create_session("audiobook")
@@ -245,13 +277,15 @@ class WebParityWorkspaceTests(unittest.TestCase):
         record = self.create_session("audiobook")
         plan = self.client.post(
             f"/api/v1/sessions/{record['id']}/generation-plan",
-            json={"segments": [{"text": "First segment.", "source_segment_ids": ["source-paragraph-1"]}, {"text": "Second segment."}]},
+            json={"segments": [{"text": "First segment.", "source_segment_ids": ["source-paragraph-1"]}, {"text": "Second segment.", "paragraph_break_after": True}]},
             headers=self.headers,
         )
         self.assertEqual(201, plan.status_code, plan.get_json())
         listed = self.client.get(f"/api/v1/sessions/{record['id']}/generation-segments").get_json()
         first = listed["items"][0]
         self.assertEqual(["source-paragraph-1"], first["source_segment_ids"])
+        self.assertFalse(first["paragraph_break_after"])
+        self.assertTrue(listed["items"][1]["paragraph_break_after"])
         database = self.app.extensions["pandrator"]["database"]
         with database.session() as session:
             session.add(AudioTake(generation_segment_id=first["id"], kind="tts", status="completed", is_active=True))

@@ -4,6 +4,7 @@
     ChevronUp,
     BookOpenText,
     Download,
+    Flag,
     ListMusic,
     Pause,
     Play,
@@ -53,14 +54,20 @@
 
   const marked = $derived(payload.items.filter((item: any) => item.marked).map((item: any) => item.id));
   const readingBlocks = $derived.by(() => {
-    const blocks: { key: string; kind: string; items: any[] }[] = [];
+    const blocks: { key: string; kind: string; items: any[]; closed?: boolean }[] = [];
     for (const item of payload.items) {
-      const sourceKey = item.source_segment_ids?.[0] ?? `segment-${item.id}`;
       const standalone = ['heading', 'chapter_marker'].includes(item.node_kind);
-      const key = standalone ? `standalone-${item.id}` : String(sourceKey);
-      const previous = blocks.at(-1);
-      if (!standalone && previous?.key === key) previous.items.push(item);
-      else blocks.push({ key, kind: item.node_kind ?? 'paragraph', items: [item] });
+      if (standalone) {
+        blocks.push({ key: `standalone-${item.id}`, kind: item.node_kind, items: [item], closed: true });
+        continue;
+      }
+      let paragraph = blocks.at(-1);
+      if (!paragraph || paragraph.kind !== 'paragraph' || paragraph.closed) {
+        paragraph = { key: `paragraph-${item.id}`, kind: 'paragraph', items: [] };
+        blocks.push(paragraph);
+      }
+      paragraph.items.push(item);
+      paragraph.closed = Boolean(item.paragraph_break_after);
     }
     return blocks;
   });
@@ -426,6 +433,7 @@
                       <input value={item.voice_id ?? ''} onblur={(event) => patchSegment(item, { voice_id: (event.currentTarget as HTMLInputElement).value || null })} placeholder="Voice" class="mini" />
                       <input value={item.language ?? ''} onblur={(event) => patchSegment(item, { language: (event.currentTarget as HTMLInputElement).value || null })} placeholder="Language" class="mini" />
                       <label class="mini flex items-center gap-1">Pause <input type="number" min="0" value={item.silence_after_ms} onblur={(event) => patchSegment(item, { silence_after_ms: Number((event.currentTarget as HTMLInputElement).value) })} aria-label="Silence after in milliseconds" class="w-20 bg-transparent" /> ms</label>
+                      <label class="mini flex items-center gap-1"><input type="checkbox" checked={item.paragraph_break_after} onchange={(event) => patchSegment(item, { paragraph_break_after: (event.currentTarget as HTMLInputElement).checked })}/> Paragraph end</label>
                     </div>
                   </td>
                   <td>
@@ -454,7 +462,15 @@
                 {:else}
                   <p class="reading-paragraph">
                     {#each block.items as item}
-                      <button onclick={() => playOnly(item)} disabled={!activeTake(item) || item.removed} class:now-playing={item.id===activePlayingId} class:selected-sentence={item.id===selectedRow} class:removed={item.removed} title={activeTake(item)?`Play segment ${item.ordinal + 1}`:'Audio has not been generated'}>{item.optimized_text || item.text}</button>{' '}
+                      <span class:now-playing={item.id===activePlayingId} class:selected-sentence={item.id===selectedRow} class:removed={item.removed} class="reading-segment">
+                        <button onclick={() => { selectedRow=item.id; if (activeTake(item) && !item.removed) playOnly(item); }} class="reading-sentence" title={activeTake(item)?`Play segment ${item.ordinal + 1}`:'Select segment actions'}>{item.optimized_text || item.text}</button>
+                        <span class="reading-actions" aria-label={`Actions for segment ${item.ordinal + 1}`}>
+                          <button onclick={(event)=>{event.stopPropagation();playOnly(item)}} disabled={!activeTake(item)||item.removed} title="Play segment" aria-label={`Play segment ${item.ordinal + 1}`}><Play size={13}/></button>
+                          <button onclick={(event)=>{event.stopPropagation();start('regenerate',[item.id])}} disabled={loading||item.removed} title="Regenerate segment" aria-label={`Regenerate segment ${item.ordinal + 1}`}><RefreshCw size={13}/></button>
+                          <button onclick={(event)=>{event.stopPropagation();patchSegment(item,{marked:!item.marked})}} class:active={item.marked} title={item.marked?'Unmark segment':'Mark for bulk regeneration'} aria-label={item.marked?`Unmark segment ${item.ordinal + 1}`:`Mark segment ${item.ordinal + 1}`}><Flag size={13}/></button>
+                          <button onclick={(event)=>{event.stopPropagation();patchSegment(item,{removed:!item.removed})}} title={item.removed?'Restore segment':'Remove segment'} aria-label={item.removed?`Restore segment ${item.ordinal + 1}`:`Remove segment ${item.ordinal + 1}`}>{#if item.removed}<RotateCcw size={13}/>{:else}<Trash2 size={13}/>{/if}</button>
+                        </span>
+                      </span>{' '}
                     {/each}
                   </p>
                 {/if}
@@ -482,13 +498,13 @@
 <style>
   .generation-drawer{height:3.9rem;border:1px solid var(--line);background:var(--paper-strong);box-shadow:0 18px 55px color-mix(in srgb,var(--ink) 18%,transparent);transition:height .18s ease}.generation-drawer.half{height:min(52vh,38rem)}.generation-drawer.full{height:calc(100vh - 1.5rem)}
   .comparison-modal{border:1px solid var(--line);background:var(--paper-strong);box-shadow:0 22px 70px rgba(0,0,0,.25)}
-  .action{display:flex;align-items:center;gap:.35rem;border:1px solid var(--line);border-radius:.55rem;padding:.4rem .6rem;font-size:.7rem;font-weight:700}.action.primary{background:var(--accent);color:white}.action:disabled{opacity:.35}
+  .action{display:flex;align-items:center;gap:.35rem;border:1px solid var(--line);border-radius:.55rem;padding:.4rem .6rem;font-size:.7rem;font-weight:700}.action.primary{background:var(--action-bg);color:white}.action.primary:hover{background:var(--action-hover)}.action:disabled{opacity:.35}
   .icon-action{padding:.42rem}
   .filter{border-radius:.5rem;padding:.4rem .65rem;color:var(--muted);font-size:.72rem;font-weight:650}.filter.active{background:var(--accent-soft);color:var(--ink)}
   .view-switch{display:flex;border:1px solid var(--line);border-radius:.6rem;background:var(--paper);padding:.15rem}.view-switch button{display:flex;align-items:center;gap:.3rem;border-radius:.45rem;padding:.3rem .5rem;font-size:.68rem;font-weight:700;color:var(--muted)}.view-switch button.active{background:var(--accent-soft);color:var(--ink)}
   th,td{border-bottom:1px solid var(--line);padding:.55rem;text-align:center;vertical-align:middle}tr.removed{opacity:.42}tr.selected{background:var(--accent-soft)}
   .status{font-size:.68rem;text-transform:uppercase;color:var(--muted)}.mini{border:1px solid var(--line);border-radius:.45rem;background:var(--paper);padding:.3rem .45rem;font-size:.68rem}
   .reading-view{font-family:Georgia,'Times New Roman',serif}.reading-heading{margin:2rem 0 .75rem;font-size:1.32rem;font-weight:700;line-height:1.35}.reading-heading button{text-align:left}.reading-heading.now-playing button{color:var(--accent)}
-  .reading-paragraph{margin:0 0 1.2rem;font-size:1.02rem;line-height:1.9}.reading-paragraph button{display:inline;border-radius:.35rem;padding:.08rem .13rem;text-align:left;transition:background .12s ease,color .12s ease}.reading-paragraph button:hover:not(:disabled),.reading-paragraph button.selected-sentence{background:var(--accent-soft)}.reading-paragraph button.now-playing{background:var(--accent);color:white;box-shadow:0 0 0 .16rem color-mix(in srgb,var(--accent) 18%,transparent)}.reading-paragraph button:disabled{cursor:default}.reading-paragraph button.removed{text-decoration:line-through;opacity:.42}
+  .reading-paragraph{margin:0 0 1.2rem;font-size:1.02rem;line-height:1.9}.reading-segment{position:relative;display:inline}.reading-sentence{display:inline;border-radius:.28rem;padding:.03rem .06rem;text-align:left;transition:background .12s ease,color .12s ease}.reading-segment:hover .reading-sentence,.reading-segment:focus-within .reading-sentence,.reading-segment.selected-sentence .reading-sentence{background:var(--accent-soft)}.reading-segment.now-playing .reading-sentence{background:var(--action-bg);color:white;box-shadow:0 0 0 .16rem color-mix(in srgb,var(--accent) 18%,transparent)}.reading-segment.removed .reading-sentence{text-decoration:line-through;opacity:.42}.reading-actions{position:absolute;bottom:calc(100% + .32rem);left:50%;z-index:25;display:flex;gap:.18rem;border:1px solid var(--line);border-radius:.65rem;background:var(--paper-strong);padding:.22rem;box-shadow:var(--shadow);opacity:0;pointer-events:none;transform:translate(-50%,.25rem);transition:opacity .12s ease,transform .12s ease}.reading-segment:hover .reading-actions,.reading-segment:focus-within .reading-actions{opacity:1;pointer-events:auto;transform:translate(-50%,0)}.reading-actions button{display:grid;height:1.8rem;width:1.8rem;place-items:center;border-radius:.45rem;color:var(--muted)}.reading-actions button:hover:not(:disabled),.reading-actions button:focus-visible,.reading-actions button.active{background:var(--accent-soft);color:var(--accent)}.reading-actions button:disabled{opacity:.35}
   @media(prefers-reduced-motion:reduce){.generation-drawer{transition:none}}
 </style>

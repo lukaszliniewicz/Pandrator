@@ -18,4 +18,4 @@
     </div>
   </div>
 {/if}
-<style>.active{background:var(--accent)}</style>
+<style>.active{background:var(--action-bg)}</style>

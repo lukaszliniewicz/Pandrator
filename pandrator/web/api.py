@@ -333,6 +333,15 @@ def create_app(
             revision = connections.revision if connections else 0
             default_revision = defaults.revision if defaults else 0
         services = [dict(item) for item in tts_handler.get_service_configs({**default_value, **connection_value})]
+        for service in services:
+            key_env = str(service.get("api_key_env") or "").strip()
+            credential_configured = bool(
+                str(service.get("api_key") or "").strip()
+                or (key_env and os.getenv(key_env, "").strip())
+            )
+            service["credential_configured"] = (
+                credential_configured if service.get("kind") == "commercial" else True
+            )
         if request.args.get("refresh", "").lower() in {"1", "true", "yes"}:
             def probe(item: dict[str, Any]) -> bool:
                 parsed = urlparse(str(item.get("api_base") or ""))
@@ -349,7 +358,44 @@ def create_app(
                 states = list(executor.map(probe, services))
             for service, online in zip(services, states):
                 service["online"] = online
-        response = jsonify({"value": connection_value, "revision": revision, "default_value": default_value, "default_service": str(default_value.get("service") or BUILTIN_DEFAULTS["tts"]["service"]), "default_revision": default_revision, "builtin_defaults": BUILTIN_DEFAULTS["tts"], "services": services, "profiles": list_tts_provider_profiles()})
+                if service.get("kind") == "commercial":
+                    service["available"] = bool(service["credential_configured"])
+                    service["availability_reason"] = "" if service["available"] else "API key not configured"
+                else:
+                    service["available"] = online
+                    service["availability_reason"] = "" if online else "Service is not running"
+
+        previews = []
+        with database.session() as db_session:
+            preview_artifacts = list(
+                db_session.scalars(
+                    select(Artifact)
+                    .where(Artifact.role == "tts_voice_preview", Artifact.state == "current")
+                    .order_by(Artifact.updated_at.desc())
+                ).all()
+            )
+            for artifact in preview_artifacts:
+                metadata = dict(artifact.metadata_json or {})
+                if not metadata.get("voice"):
+                    continue
+                try:
+                    if not paths.managed_path(artifact.relative_path).is_file():
+                        continue
+                except ValueError:
+                    continue
+                previews.append(
+                    {
+                        "artifact_id": artifact.id,
+                        "service_id": str(metadata.get("service_id") or ""),
+                        "model": str(metadata.get("model") or ""),
+                        "voice": str(metadata.get("voice") or ""),
+                        "language": str(metadata.get("language") or ""),
+                        "preview_text": str(metadata.get("preview_text") or ""),
+                        "updated_at": artifact.updated_at.isoformat(),
+                    }
+                )
+
+        response = jsonify({"value": connection_value, "revision": revision, "default_value": default_value, "default_service": str(default_value.get("service") or BUILTIN_DEFAULTS["tts"]["service"]), "default_revision": default_revision, "builtin_defaults": BUILTIN_DEFAULTS["tts"], "services": services, "profiles": list_tts_provider_profiles(), "previews": previews})
         response.headers["ETag"] = f'"{revision}"'
         return response
 

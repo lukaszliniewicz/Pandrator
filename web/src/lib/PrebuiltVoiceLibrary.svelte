@@ -19,7 +19,7 @@
   let newVoice = $state('');
 
   const services = $derived((payload.services ?? []).filter((service: any) => service.supports_prebuilt_voices));
-  const service = $derived(services.find((item: any) => item.id === serviceId) ?? services[0]);
+  const service = $derived(services.find((item: any) => item.id === serviceId) ?? services.find((item: any) => item.available !== false) ?? services[0]);
   const models = $derived(Array.from(new Set([...(service?.models ?? []), service?.default_model].filter(Boolean))));
   const rawVoices = $derived(Array.from(new Set([...(service?.voice_catalogues?.[model] ?? service?.voices ?? []), service?.default_voices?.[model], service?.default_voice].filter(Boolean))) as string[]);
   const descriptors = $derived(rawVoices.map((voice) => describeVoice(service?.id ?? '', voice)));
@@ -38,6 +38,22 @@
 
   function configuredRecord(candidate: any) {
     return (payload.value.provider_configs ?? []).find((item: any) => item.id === candidate.id || item.api_base === candidate.api_base);
+  }
+
+  function previewKey(serviceValue: string, modelValue: string, languageValue: string, voiceValue: string) {
+    return [serviceValue, modelValue, languageValue, voiceValue].map((item) => encodeURIComponent(String(item ?? ''))).join('|');
+  }
+
+  function restorePreviews(items: any[]) {
+    const restored: Record<string, { status: string; artifactId?: string; error?: string }> = {};
+    for (const item of items ?? []) {
+      const key = previewKey(item.service_id, item.model, item.language, item.voice);
+      if (!restored[key]) restored[key] = { status: 'ready', artifactId: String(item.artifact_id ?? '') };
+    }
+    for (const [key, state] of Object.entries(previews)) {
+      if (state.status === 'generating') restored[key] = state;
+    }
+    previews = restored;
   }
 
   function editableRecord(candidate: any) {
@@ -63,7 +79,8 @@
   }
 
   async function load() {
-    payload = await api('/services/tts');
+    payload = await api('/services/tts?refresh=true');
+    restorePreviews(payload.previews ?? []);
     if (initialService && services.some((item: any) => item.id === initialService)) serviceId = initialService;
   }
 
@@ -155,16 +172,18 @@
 
   async function preview(voice: VoiceDescriptor, quiet = false) {
     if (!previewText.trim()) { error = 'Enter preview text first.'; return false; }
-    previews = { ...previews, [voice.id]: { status: 'generating' } };
+    if (!service || service.available === false) { error = service?.availability_reason || 'Start or configure this service first.'; return false; }
+    const key = previewKey(service.id, model, language, voice.id);
+    previews = { ...previews, [key]: { status: 'generating' } };
     if (!quiet) { error = ''; notice = ''; }
     try {
       const queued = await api<JobRecord>(`/services/tts/${service.id}/preview`, { method: 'POST', body: JSON.stringify({ text: previewText.trim(), model, voice: voice.id, language }) });
       const complete = await waitJob(queued.id);
-      previews = { ...previews, [voice.id]: { status: 'ready', artifactId: String(complete.result_json?.artifact_id ?? '') } };
+      previews = { ...previews, [key]: { status: 'ready', artifactId: String(complete.result_json?.artifact_id ?? '') } };
       return true;
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
-      previews = { ...previews, [voice.id]: { status: 'failed', error: message } };
+      previews = { ...previews, [key]: { status: 'failed', error: message } };
       if (!quiet) error = message;
       return false;
     }
@@ -188,28 +207,29 @@
 <section>
   <div class="flex flex-wrap items-end justify-between gap-4">
     <div><div class="eyebrow">Pre-built catalogue</div><h2 class="mt-1 text-2xl font-semibold">Browse voices</h2><p class="muted mt-2 max-w-2xl text-sm">Compare provider voices with the same text, grouped by language, without leaving the Voice Library.</p></div>
-    <button onclick={refreshCatalogue} disabled={!service || refreshing} class="btn btn-secondary"><RefreshCw class={refreshing ? 'animate-spin' : ''} size={15}/> {refreshing ? 'Refreshing…' : 'Refresh service catalogue'}</button>
+    <button onclick={refreshCatalogue} disabled={!service || refreshing || service?.available === false} class="btn btn-secondary"><RefreshCw class={refreshing ? 'animate-spin' : ''} size={15}/> {refreshing ? 'Refreshing…' : 'Refresh service catalogue'}</button>
   </div>
   {#if error}<div role="alert" class="mt-4 flex items-start gap-2 rounded-xl border border-red-400/40 bg-red-500/10 px-4 py-3 text-sm"><CircleAlert class="mt-0.5 shrink-0" size={16}/><span>{error}</span></div>{/if}
   {#if notice}<div role="status" class="mt-4 rounded-xl bg-[var(--accent-soft)] px-4 py-3 text-sm">{notice}</div>{/if}
 
   <div class="surface mt-5 rounded-3xl p-4 sm:p-6">
     <div class="catalogue-controls">
-      <label class="control-label">Service<select bind:value={serviceId} class="field"><option value="">Choose a service</option>{#each services as item}<option value={item.id}>{item.name}</option>{/each}</select></label>
+      <label class="control-label">Service<select bind:value={serviceId} class="field"><option value="">Choose a service</option>{#each services as item}<option value={item.id} disabled={item.available === false}>{item.name}{item.available === false ? ` · ${item.availability_reason || 'unavailable'}` : ' · ready'}</option>{/each}</select></label>
       <label class="control-label">Model<select bind:value={model} class="field">{#each models as item}<option value={item}>{item}</option>{/each}</select></label>
       <label class="control-label">Language<select bind:value={language} class="field" disabled={!languages.length}>{#if !languages.length}<option value="">Multilingual</option>{/if}{#each languages as item}<option value={item.value}>{item.label}</option>{/each}</select></label>
     </div>
     <label class="mt-5 block text-sm font-semibold">Preview text<textarea bind:value={previewText} rows="2" maxlength="1000" class="field resize-y"></textarea></label>
-    <div class="mt-4 flex flex-wrap items-center justify-between gap-3"><p class="muted text-xs">{visibleVoices.length} voice{visibleVoices.length === 1 ? '' : 's'} in this view. Preview generation runs sequentially so the speech service is not overloaded.</p><button onclick={generateVisible} disabled={!visibleVoices.length || generatingAll} class="btn btn-primary"><Volume2 size={15}/>{generatingAll ? `Generating ${generatedCount + 1} of ${visibleVoices.length}…` : `Generate all ${languages.length ? 'for this language' : 'visible voices'}`}</button></div>
+    {#if service?.available === false}<p class="mt-3 text-xs text-[var(--warning)]">{service.availability_reason}. Start the local service or add the required credentials in Providers & services.</p>{/if}
+    <div class="mt-4 flex flex-wrap items-center justify-between gap-3"><p class="muted text-xs">{visibleVoices.length} voice{visibleVoices.length === 1 ? '' : 's'} in this view. Preview generation runs sequentially so the speech service is not overloaded.</p><button onclick={generateVisible} disabled={!visibleVoices.length || generatingAll || service?.available === false} class="btn btn-primary"><Volume2 size={15}/>{generatingAll ? `Generating ${generatedCount + 1} of ${visibleVoices.length}…` : `Generate all ${languages.length ? 'for this language' : 'visible voices'}`}</button></div>
   </div>
 
   <div class="mt-5 grid gap-3">
     {#each visibleVoices as voice}
-      {@const state = previews[voice.id]}
+      {@const state = previews[previewKey(service?.id ?? '', model, language, voice.id)]}
       <article class="voice-row rounded-2xl border border-[var(--line)] bg-[var(--paper-strong)] p-4">
         <div class="min-w-0"><div class="flex flex-wrap items-center gap-2"><h3 class="font-semibold">{voice.name}</h3>{#if voice.id === languageDefault}<span class="inline-flex items-center gap-1 rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[.65rem] font-bold uppercase text-[var(--accent)]"><Check size={10}/> Default</span>{/if}</div><p class="muted mt-1 break-all text-xs">{voice.id}</p></div>
         <div class="voice-meta"><span>{voice.language}</span>{#if voice.gender}<span>{voice.gender}</span>{/if}</div>
-        <div class="flex flex-wrap justify-end gap-2"><button onclick={() => preview(voice)} disabled={state?.status === 'generating' || generatingAll} class="btn btn-sm btn-secondary"><Play size={13}/>{state?.status === 'generating' ? 'Generating…' : state?.status === 'ready' ? 'Regenerate' : 'Preview'}</button><button onclick={() => saveDefault(voice)} disabled={voice.id === languageDefault} class="btn btn-sm btn-secondary"><Save size={13}/> Use by default</button></div>
+        <div class="flex flex-wrap justify-end gap-2"><button onclick={() => preview(voice)} disabled={state?.status === 'generating' || generatingAll || service?.available === false} class="btn btn-sm btn-secondary"><Play size={13}/>{state?.status === 'generating' ? 'Generating…' : state?.status === 'ready' ? 'Regenerate' : 'Preview'}</button><button onclick={() => saveDefault(voice)} disabled={voice.id === languageDefault} class="btn btn-sm btn-secondary"><Save size={13}/> Use by default</button></div>
         {#if state?.artifactId}<div class="col-span-full"><AudioPlayer src={`/api/v1/artifacts/${state.artifactId}/content`} label={`${voice.name} preview`}/></div>{/if}
         {#if state?.error}<p class="col-span-full text-xs text-red-600">{state.error}</p>{/if}
       </article>

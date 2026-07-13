@@ -92,7 +92,7 @@
   audio{display:none}
   .audio-player{display:flex;min-width:15rem;align-items:center;gap:.55rem;border:1px solid var(--line);border-radius:.85rem;background:var(--paper-strong);padding:.42rem .55rem;box-shadow:0 1px 0 color-mix(in srgb,var(--ink) 4%,transparent)}
   .audio-player.compact{min-width:11.5rem;gap:.38rem;border-radius:.7rem;padding:.3rem .4rem}
-  .transport{display:grid;flex:0 0 auto;height:1.9rem;width:1.9rem;place-items:center;border-radius:999px;background:var(--accent);color:white;box-shadow:0 3px 9px color-mix(in srgb,var(--accent) 25%,transparent)}
+  .transport{display:grid;flex:0 0 auto;height:1.9rem;width:1.9rem;place-items:center;border-radius:999px;background:var(--action-bg);color:white;box-shadow:0 3px 9px color-mix(in srgb,var(--accent) 25%,transparent)}.transport:hover{background:var(--action-hover)}
   .compact .transport{height:1.55rem;width:1.55rem}
   .quiet{display:grid;flex:0 0 auto;place-items:center;color:var(--muted)}
   .timeline,.volume{height:.9rem;cursor:pointer;accent-color:var(--accent)}

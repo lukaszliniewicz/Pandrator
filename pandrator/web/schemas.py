@@ -218,6 +218,7 @@ class GenerationSegmentCreate(StrictModel):
     text: str = Field(min_length=1)
     source_segment_ids: list[str] = Field(default_factory=list)
     node_kind: Literal["paragraph", "heading", "chapter_marker", "subtitle_cue"] = "paragraph"
+    paragraph_break_after: bool = False
     voice_id: str | None = None
     language: str | None = Field(default=None, max_length=40)
     silence_after_ms: int = Field(default=0, ge=0)
@@ -233,6 +234,7 @@ class GenerationSegmentUpdate(StrictModel):
     text: str | None = Field(default=None, min_length=1)
     optimized_text: str | None = None
     node_kind: Literal["paragraph", "heading", "chapter_marker", "subtitle_cue"] | None = None
+    paragraph_break_after: bool | None = None
     voice_id: str | None = None
     language: str | None = Field(default=None, max_length=40)
     silence_after_ms: int | None = Field(default=None, ge=0)

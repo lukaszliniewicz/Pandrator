@@ -199,6 +199,11 @@
                 "title": "Node Kind",
                 "type": "string"
               },
+              "paragraph_break_after": {
+                "default": false,
+                "title": "Paragraph Break After",
+                "type": "boolean"
+              },
               "silence_after_ms": {
                 "default": 0,
                 "minimum": 0,
@@ -298,6 +303,11 @@
             "title": "Node Kind",
             "type": "string"
           },
+          "paragraph_break_after": {
+            "default": false,
+            "title": "Paragraph Break After",
+            "type": "boolean"
+          },
           "silence_after_ms": {
             "default": 0,
             "minimum": 0,
@@ -392,6 +402,18 @@
             ],
             "default": null,
             "title": "Optimized Text"
+          },
+          "paragraph_break_after": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Paragraph Break After"
           },
           "removed": {
             "anyOf": [

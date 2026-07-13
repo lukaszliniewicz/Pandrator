@@ -110,12 +110,31 @@ class WorkflowHandlers:
         audio = tts_handler.text_to_audio(text, settings, max_attempts=1, **urls)
         if audio is None:
             raise RuntimeError("The speech service did not return preview audio.")
-        target_dir = self.paths.temporary / "tts-previews"
+        preview_identity = {
+            "service_id": service_id,
+            "model": str(settings.get("model") or ""),
+            "voice": str(settings.get("voice") or ""),
+            "language": str(settings.get("language") or ""),
+        }
+        preview_key = hashlib.sha256(
+            json.dumps(preview_identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        target_dir = self.paths.artifacts / "tts-previews"
         target_dir.mkdir(parents=True, exist_ok=True)
-        target = target_dir / f"preview-{new_id()}.wav"
+        target = target_dir / f"{preview_key}.wav"
         exported = audio.export(target, format="wav")
         exported.close()
-        artifact = self.artifacts.register(target, kind="audio", role="tts_voice_preview", settings=settings, metadata={"service": settings.get("service"), "model": settings.get("model"), "voice": settings.get("voice")})
+        artifact = self.artifacts.register(
+            target,
+            kind="audio",
+            role="tts_voice_preview",
+            settings=settings,
+            metadata={
+                **preview_identity,
+                "service": settings.get("service"),
+                "preview_text": text,
+            },
+        )
         progress(1.0, "Preview ready")
         return {"artifact_id": artifact.id, "duration_ms": len(audio)}
 
@@ -1230,6 +1249,7 @@ class WorkflowHandlers:
                     ordinal=ordinal,
                     source_segment_ids_json=list(record.get("source_segment_ids") or []),
                     node_kind=str(record.get("node_kind") or ("chapter_marker" if str(record.get("chapter") or "").lower() == "yes" else "paragraph")),
+                    paragraph_break_after=bool(record.get("paragraph_break_after", str(record.get("paragraph") or "").lower() == "yes")),
                     text=str(record.get("text") or record.get("original_sentence") or "").strip(),
                     language=str(record.get("language") or settings.get("language") or settings.get("target_language") or "") or None,
                     silence_after_ms=max(0, int(explicit_silence or 0)),
@@ -1382,6 +1402,7 @@ class WorkflowHandlers:
                                 "text": segment.text,
                                 "language": segment.language,
                                 "node_kind": segment.node_kind,
+                                "paragraph_break_after": segment.paragraph_break_after,
                                 "silence_after_ms": segment.silence_after_ms,
                                 "source_segment_ids": segment.source_segment_ids_json,
                             }
