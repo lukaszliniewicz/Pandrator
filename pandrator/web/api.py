@@ -323,7 +323,7 @@ def create_app(
                 connection_value = {"provider_configs": list(default_value["provider_configs"])}
             revision = connections.revision if connections else 0
             default_revision = defaults.revision if defaults else 0
-        response = jsonify({"value": connection_value, "revision": revision, "default_value": default_value, "default_revision": default_revision, "services": tts_handler.get_service_configs({**default_value, **connection_value}), "profiles": list_tts_provider_profiles()})
+        response = jsonify({"value": connection_value, "revision": revision, "default_value": default_value, "default_service": str(default_value.get("service") or BUILTIN_DEFAULTS["tts"]["service"]), "default_revision": default_revision, "services": tts_handler.get_service_configs({**default_value, **connection_value}), "profiles": list_tts_provider_profiles()})
         response.headers["ETag"] = f'"{revision}"'
         return response
 

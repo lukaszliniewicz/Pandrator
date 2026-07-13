@@ -10,7 +10,8 @@
   let saving = $state(false);
   let message = $state('');
   const sections = ['text', 'stt', 'subtitles', 'correction', 'translation', 'tts', 'audio', 'rvc', 'source_cleaning', 'output'];
-  const sectionLabel = (section: string) => section === 'tts' ? 'TTS' : section.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+  const acronyms: Record<string, string> = { tts: 'TTS', stt: 'STT', rvc: 'RVC' };
+  const sectionLabel = (section: string) => acronyms[section] ?? section.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
 
   async function load() {
     try {

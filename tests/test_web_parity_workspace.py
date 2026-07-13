@@ -57,6 +57,8 @@ class WebParityWorkspaceTests(unittest.TestCase):
         self.assertEqual(64, len(resolved["settings_hash"]))
 
     def test_global_defaults_endpoint_exposes_builtins_and_revisioned_values(self):
+        services = self.client.get("/api/v1/services/tts").get_json()
+        self.assertEqual("XTTS", services["default_service"])
         defaults = self.client.get("/api/v1/defaults/subtitles")
         self.assertEqual(200, defaults.status_code, defaults.get_json())
         self.assertEqual(2, defaults.get_json()["builtin"]["max_lines"])

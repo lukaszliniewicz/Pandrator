@@ -2,7 +2,7 @@
   import { CheckCircle2, Plus, RefreshCw, Server, X } from '@lucide/svelte';
   import { api } from './api';
 
-  let payload = $state<any>({ services: [], profiles: [], value: {}, revision: 0, default_value: {}, default_revision: 0 });
+  let payload = $state<any>({ services: [], profiles: [], value: {}, revision: 0, default_value: {}, default_service: 'XTTS', default_revision: 0 });
   let discoverOpen = $state(false);
   let baseUrl = $state('http://127.0.0.1:8000');
   let discovering = $state(false);
@@ -48,7 +48,7 @@
     await load();
   }
 
-  const isDefault = (service: any) => [service.id, service.name].map((value) => String(value ?? '').toLowerCase()).includes(String(payload.default_value?.service ?? '').toLowerCase());
+  const isDefault = (service: any) => [service.id, service.name].map((value) => String(value ?? '').toLowerCase()).includes(String(payload.default_service ?? '').toLowerCase());
 
   async function removeService(service: any) {
     await persist({ ...payload.value, provider_configs: (payload.value.provider_configs ?? []).filter((item: any) => item.id !== service.id && item.api_base !== service.api_base) });
