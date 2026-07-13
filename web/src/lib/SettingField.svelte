@@ -49,9 +49,9 @@
   {:else if typeof value === 'number'}
     <input class="field" type="number" value={value} min={numberMeta.min} max={numberMeta.max} step={numberMeta.step ?? 'any'} oninput={(event) => onchange(Number(event.currentTarget.value))}/>
   {:else if value && typeof value === 'object'}
-    <span class="field block space-y-2">
+      <span class="field block space-y-2">
       {#each objectEntries as [key, item]}
-        <span class="grid grid-cols-[minmax(7rem,.7fr)_1fr_auto] items-center gap-2"><span class="truncate text-xs font-semibold">{settingLabel(key)}</span><input value={String(item ?? '')} oninput={(event) => setObject(key, event.currentTarget.value)} class="subfield"/><button type="button" onclick={() => removeObject(key)} class="btn btn-icon btn-quiet" aria-label={`Remove ${settingLabel(key)}`}><Trash2 size={13}/></button></span>
+        <span class="object-row"><span class="min-w-0 text-xs font-semibold">{settingLabel(key)}</span><input value={String(item ?? '')} oninput={(event) => setObject(key, event.currentTarget.value)} class="subfield"/><button type="button" onclick={() => removeObject(key)} class="btn btn-icon btn-quiet" aria-label={`Remove ${settingLabel(key)}`}><Trash2 size={13}/></button></span>
       {/each}
       <span class="flex gap-2"><input bind:value={newKey} placeholder="Add named value" class="subfield min-w-0 flex-1"/><button type="button" onclick={addObject} class="btn btn-sm btn-secondary"><Plus size={13}/> Add</button></span>
     </span>
@@ -65,5 +65,7 @@
 <style>
   .field{margin-top:.4rem;width:100%;border:1px solid var(--line);border-radius:.72rem;background:var(--paper);padding:.65rem .72rem;font-weight:400;color:var(--ink)}
   .subfield{width:100%;border:1px solid var(--line);border-radius:.55rem;background:var(--paper-strong);padding:.45rem .55rem;font-size:.75rem;font-weight:400;color:var(--ink)}
-  .range-field{display:grid;grid-template-columns:minmax(8rem,1fr) auto;align-items:center;gap:.8rem}.range-field input{width:100%;accent-color:var(--accent)}.range-field output{min-width:3.2rem;text-align:right;font-variant-numeric:tabular-nums;font-size:.75rem;font-weight:700}
+  .range-field{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:.65rem}.range-field input{min-width:0;width:100%;accent-color:var(--accent)}.range-field output{min-width:2.8rem;text-align:right;font-variant-numeric:tabular-nums;font-size:.75rem;font-weight:700}
+  .object-row{display:grid;grid-template-columns:minmax(6rem,.7fr) minmax(0,1fr) auto;align-items:center;gap:.5rem}
+  @media(max-width:480px){.object-row{grid-template-columns:minmax(0,1fr) auto}.object-row>span{grid-column:1/-1}.object-row input{grid-column:1}.object-row button{grid-column:2}}
 </style>

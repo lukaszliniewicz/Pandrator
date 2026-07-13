@@ -595,7 +595,7 @@ def _merge_service_config(
     for key in ("request_fields", "request_defaults"):
         if isinstance(raw_record.get(key), dict):
             record[key] = copy.deepcopy(raw_record[key])
-    for key in ("settings", "voice_catalogues", "default_voices"):
+    for key in ("settings", "voice_catalogues", "default_voices", "default_voices_by_language"):
         if isinstance(raw_record.get(key), dict):
             record[key] = copy.deepcopy(raw_record[key])
     if PREBUILT_VOICE_PROVIDER_FIELD in raw_record:
@@ -929,7 +929,7 @@ def get_provider_configs(tts_settings) -> list[dict[str, object]]:
                 raw_supports_prebuilt,
                 bool(record["voices"]),
             )
-            for key in ("settings", "voice_catalogues", "default_voices"):
+            for key in ("settings", "voice_catalogues", "default_voices", "default_voices_by_language"):
                 if isinstance(raw_provider.get(key), dict):
                     record[key] = copy.deepcopy(raw_provider[key])
 

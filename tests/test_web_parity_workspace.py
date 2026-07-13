@@ -88,10 +88,27 @@ class WebParityWorkspaceTests(unittest.TestCase):
         resolved = self.client.post(f"/api/v1/sessions/{record['id']}/settings/resolve", json={"sections": ["tts"], "overrides": {"tts": {"speed": 1.2}}}, headers=self.headers).get_json()["value"]["tts"]
         self.assertEqual(1.2, resolved["speed"])
 
+    def test_tts_language_default_voice_is_resolved_before_generic_default(self):
+        record = self.create_session()
+        database = self.app.extensions["pandrator"]["database"]
+        with database.session() as session:
+            session.add(AppSetting(key="defaults.tts", value_json={"service": "Kokoro", "language": "en-gb"}))
+            session.add(AppSetting(key="services.tts", value_json={"provider_configs": [{
+                "id": "kokoro", "name": "Kokoro", "api_base": "http://127.0.0.1:8880",
+                "default_model": "kokoro", "default_voice": "af_heart",
+                "default_voices": {"kokoro": "af_heart"},
+                "default_voices_by_language": {"kokoro": {"en-gb": "bf_alice"}},
+            }]}))
+        resolved = self.client.post(
+            f"/api/v1/sessions/{record['id']}/settings/resolve",
+            json={"sections": ["tts"]}, headers=self.headers,
+        ).get_json()["value"]["tts"]
+        self.assertEqual("bf_alice", resolved["voice"])
+
     def test_tts_voice_preview_is_a_durable_job_with_selected_catalogue_values(self):
         response = self.client.post(
             "/api/v1/services/tts/kokoro/preview",
-            json={"text": "A short preview.", "model": "kokoro", "voice": "af_heart"},
+            json={"text": "A short preview.", "model": "kokoro", "voice": "af_heart", "language": "en"},
             headers=self.headers,
         )
         self.assertEqual(202, response.status_code, response.get_json())
@@ -100,6 +117,7 @@ class WebParityWorkspaceTests(unittest.TestCase):
         self.assertEqual("Kokoro", payload["settings"]["service"])
         self.assertEqual("kokoro", payload["settings"]["model"])
         self.assertEqual("af_heart", payload["settings"]["voice"])
+        self.assertEqual("en", payload["settings"]["language"])
 
     def test_web_setting_names_are_adapted_to_runtime_handler_contracts(self):
         tts = adapt_runtime_settings("tts", {"model": "model-a", "voice": "speaker-a", "speed": 1.1})

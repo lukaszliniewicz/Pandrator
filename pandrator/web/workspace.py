@@ -426,7 +426,12 @@ class WorkspaceSettingsService:
             if selected:
                 model = str(resolved["tts"].get("model") or selected.get("default_model") or "")
                 default_voices = selected.get("default_voices") if isinstance(selected.get("default_voices"), dict) else {}
-                voice = str(resolved["tts"].get("voice") or default_voices.get(model) or selected.get("default_voice") or "")
+                language_defaults = selected.get("default_voices_by_language") if isinstance(selected.get("default_voices_by_language"), dict) else {}
+                model_language_defaults = language_defaults.get(model) if isinstance(language_defaults.get(model), dict) else {}
+                language = str(resolved["tts"].get("language") or resolved["tts"].get("target_language") or "").strip().lower()
+                if str(selected.get("id") or "").lower() == "kokoro":
+                    language = tts_handler.normalize_kokoro_language_code(language)
+                voice = str(resolved["tts"].get("voice") or model_language_defaults.get(language) or default_voices.get(model) or selected.get("default_voice") or "")
                 if model:
                     resolved["tts"]["model"] = model
                 if voice:

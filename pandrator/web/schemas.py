@@ -254,6 +254,7 @@ class TtsVoicePreviewRequest(StrictModel):
     text: str = Field(min_length=1, max_length=1000)
     model: str = Field(default="", max_length=300)
     voice: str = Field(default="", max_length=300)
+    language: str = Field(default="", max_length=40)
 
 
 class AgentRunCreateRequest(StrictModel):

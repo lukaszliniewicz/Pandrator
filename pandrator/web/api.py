@@ -303,6 +303,11 @@ def create_app(
     def capabilities():
         return jsonify(probe_capabilities(paths, local_mode=request.remote_addr in {"127.0.0.1", "::1"}))
 
+    @app.get("/pandrator-logo.png")
+    def pandrator_logo():
+        """Serve the application mark at the stable URL used by the SPA shell."""
+        return send_from_directory(static_dir, "pandrator-logo.png")
+
     @app.get("/api/v1/parity")
     @require_auth
     def parity_registry():
@@ -365,6 +370,7 @@ def create_app(
             "xtts_model": model,
             "voice": voice,
             "speaker": voice,
+            "language": payload.language or str(default_value.get("language") or "en"),
             "preview_service_id": str(service.get("id") or service_id),
             "preview_api_base": str(service.get("api_base") or ""),
         }

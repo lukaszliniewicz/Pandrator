@@ -84,7 +84,7 @@
       </div>
     </aside>
     <div class="content-column flex min-h-screen min-w-0 flex-col md:col-start-2">
-      <main class="min-w-0 flex-1 px-5 pb-28 pt-20 sm:px-8 md:px-10 md:pt-9 xl:px-14">{@render children()}</main>
+      <main class="min-w-0 flex-1 px-5 pb-12 pt-20 sm:px-8 md:px-10 md:pt-9 xl:px-14">{@render children()}</main>
       <footer class="app-footer mx-5 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] py-5 text-xs sm:mx-8 md:mx-10 xl:mx-14"><span class="muted">Pandrator · created by Łukasz Liniewicz</span><a href="https://github.com/lukaszliniewicz/Pandrator" target="_blank" rel="noreferrer" class="inline-flex items-center gap-1.5 font-semibold text-[var(--accent)]"><Github size={14}/> Source on GitHub</a></footer>
     </div>
   </div>
@@ -98,6 +98,6 @@
   .app-sidebar.mobile-open { transform:translateX(0); }
   .nav-item { color:var(--muted); }
   .nav-item:hover,.nav-item.active { color:var(--ink);background:var(--accent-soft); }
-  @media(min-width:768px){.app-sidebar{transform:none}.app-sidebar.collapsed{width:5rem}.content-column{min-height:100svh}}
+  @media(min-width:768px){.app-sidebar{transform:none}.app-sidebar.collapsed{width:5rem}.content-column{min-height:100svh}.app-footer{margin-left:2.5rem;margin-right:2.5rem}}
   @media(prefers-reduced-motion:reduce){.app-sidebar{transition:none}}
 </style>

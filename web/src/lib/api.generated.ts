@@ -1864,6 +1864,11 @@ export interface components {
         /** TtsVoicePreviewRequest */
         TtsVoicePreviewRequest: {
             /**
+             * Language
+             * @default
+             */
+            language: string;
+            /**
              * Model
              * @default
              */

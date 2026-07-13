@@ -1,14 +1,18 @@
 <script lang="ts">
-  import { ArrowLeft, CircleAlert, Library, Mic, Play, Plus, Save, Settings2, Square, Trash2, Volume2, WandSparkles } from '@lucide/svelte';
+  import { page } from '$app/state';
+  import { ArrowLeft, AudioLines, CircleAlert, Library, Mic, Play, Plus, Save, Settings2, Square, Trash2, Volume2, WandSparkles } from '@lucide/svelte';
   import { api, type JobRecord } from './api';
   import { onDestroy, onMount } from 'svelte';
   import GuidedTour from './GuidedTour.svelte';
   import SettingsModal from './SettingsModal.svelte';
+  import PrebuiltVoiceLibrary from './PrebuiltVoiceLibrary.svelte';
 
   type Voice = { id: string; name: string; language?: string; description?: string };
   type Sample = { id: string; artifact_id: string; transcript?: string; transcript_language?: string; transcript_reviewed: boolean };
 
-  let { onback }: { onback: () => void } = $props();
+  let { onback, initialView }: { onback: () => void; initialView?: 'references' | 'prebuilt' } = $props();
+  let activeView = $state<'references' | 'prebuilt'>('references');
+  const initialService = page.url.searchParams.get('service') ?? '';
   let voices = $state<Voice[]>([]);
   let selected = $state<Voice | null>(null);
   let samples = $state<Sample[]>([]);
@@ -16,7 +20,7 @@
   let error = $state('');
   let notice = $state('');
   let newName = $state('');
-  let newNameInput: HTMLInputElement;
+  let newNameInput = $state<HTMLInputElement>();
   let nameRequired = $state(false);
   let language = $state('en');
   let engine = $state('whisper');
@@ -309,6 +313,7 @@
   }
 
   onMount(async () => {
+    activeView = initialView ?? (page.url.searchParams.get('view') === 'prebuilt' ? 'prebuilt' : 'references');
     try {
       [capabilities] = await Promise.all([api('/capabilities'), loadVoices()]);
       await refreshMicrophones(false);
@@ -328,14 +333,16 @@
 
 <audio bind:this={playbackAudio} preload="metadata" class="sr-only" onended={() => playingKey = ''} onerror={() => { if (playingKey) error = 'Playback failed: the audio file could not be decoded or loaded.'; playingKey = ''; }}></audio>
 
-<div class="mx-auto flex min-h-[calc(100vh-5rem)] max-w-7xl flex-col">
+<div class="mx-auto flex max-w-7xl flex-col">
   <button onclick={onback} class="muted mb-6 flex items-center gap-2 self-start text-sm font-semibold"><ArrowLeft size={17}/> Workspace</button>
-  <header class="mb-6 flex items-end justify-between gap-4">
-    <div><div class="eyebrow">Voice library</div><h1 class="mt-2 text-4xl font-semibold">Reference voices</h1></div>
-    <div class="flex gap-2"><label class:pointer-events-none={!selected} class:opacity-40={!selected} class="cursor-pointer rounded-xl border border-[var(--line)] px-4 py-2 text-sm font-semibold">Upload sample<input type="file" accept="audio/*" onchange={uploadReference} class="sr-only"/></label><button onclick={() => tourOpen = true} class="rounded-xl border border-[var(--line)] px-4 py-2 text-sm font-semibold">Tour</button></div>
+  <header class="mb-5 flex flex-wrap items-end justify-between gap-4">
+    <div><div class="eyebrow">Voices</div><h1 class="mt-2 text-4xl font-semibold">Voice Library</h1><p class="muted mt-2 text-sm">Manage voice-cloning references and compare provider voices in one workspace.</p></div>
+    {#if activeView === 'references'}<div class="flex gap-2"><label class:pointer-events-none={!selected} class:opacity-40={!selected} class="cursor-pointer rounded-xl border border-[var(--line)] px-4 py-2 text-sm font-semibold">Upload sample<input type="file" accept="audio/*" onchange={uploadReference} class="sr-only"/></label><button onclick={() => tourOpen = true} class="rounded-xl border border-[var(--line)] px-4 py-2 text-sm font-semibold">Tour</button></div>{/if}
   </header>
-  {#if error}<div role="alert" class="mb-4 flex items-start gap-2 rounded-xl border border-red-400/40 bg-red-500/10 px-4 py-3 text-sm"><CircleAlert class="mt-0.5 shrink-0" size={16}/><span>{error}</span></div>{/if}
-  {#if notice}<div role="status" class="mb-4 rounded-xl border border-[var(--line)] bg-[var(--accent-soft)] px-4 py-3 text-sm">{notice}</div>{/if}
+  <div class="mb-6 flex gap-2 border-b border-[var(--line)]"><button onclick={() => activeView = 'references'} class:active={activeView === 'references'} class="library-tab"><Library size={16}/> Reference samples</button><button onclick={() => activeView = 'prebuilt'} class:active={activeView === 'prebuilt'} class="library-tab"><AudioLines size={16}/> Pre-built voices</button></div>
+  {#if activeView === 'references'}
+    {#if error}<div role="alert" class="mb-4 flex items-start gap-2 rounded-xl border border-red-400/40 bg-red-500/10 px-4 py-3 text-sm"><CircleAlert class="mt-0.5 shrink-0" size={16}/><span>{error}</span></div>{/if}
+    {#if notice}<div role="status" class="mb-4 rounded-xl border border-[var(--line)] bg-[var(--accent-soft)] px-4 py-3 text-sm">{notice}</div>{/if}
 
   <div class="grid min-h-0 flex-1 gap-5 lg:grid-cols-[20rem_1fr]">
     <aside class="surface flex min-h-0 flex-col rounded-3xl p-4">
@@ -386,10 +393,14 @@
       {/if}
     </main>
   </div>
+  {:else}
+    <PrebuiltVoiceLibrary {initialService}/>
+  {/if}
 </div>
 <GuidedTour tourId="voices" steps={tourSteps} bind:open={tourOpen}/>
 {#if sttSettingsOpen}<SettingsModal section="stt" title="Speech recognition and VAD defaults" description="These defaults are reused for voice-reference transcription and new session transcription runs. Per-operation controls can still override them." onclose={()=>sttSettingsOpen=false}/>{/if}
 <style>
   aside button.active{background:var(--accent-soft);color:var(--accent)}
+  .library-tab{display:inline-flex;align-items:center;gap:.45rem;border-bottom:2px solid transparent;padding:.75rem 1rem;color:var(--muted);font-size:.82rem;font-weight:700}.library-tab.active{border-color:var(--accent);color:var(--ink)}
   .stt-toolbar{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:.5rem}.stt-toolbar select,.stt-control{display:inline-flex;min-height:2.75rem;align-items:center;gap:.5rem;border:1px solid var(--line);border-radius:.75rem;background:var(--paper);padding:.55rem .75rem;color:var(--ink);font-size:.8rem;line-height:1.2}.vad-threshold{display:grid;grid-template-columns:auto 6rem 2.25rem;align-items:center}.vad-threshold input{width:100%;accent-color:var(--accent)}.vad-threshold output{text-align:right;font-size:.72rem;font-variant-numeric:tabular-nums;font-weight:700}
 </style>

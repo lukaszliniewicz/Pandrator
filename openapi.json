@@ -1619,6 +1619,12 @@
       "TtsVoicePreviewRequest": {
         "additionalProperties": false,
         "properties": {
+          "language": {
+            "default": "",
+            "maxLength": 40,
+            "title": "Language",
+            "type": "string"
+          },
           "model": {
             "default": "",
             "maxLength": 300,

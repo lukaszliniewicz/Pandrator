@@ -41,6 +41,10 @@ body::-webkit-scrollbar, *::-webkit-scrollbar { width: .72rem; height: .72rem; }
 body::-webkit-scrollbar-track, *::-webkit-scrollbar-track { background: var(--paper); }
 body::-webkit-scrollbar-thumb, *::-webkit-scrollbar-thumb { min-height: 2.5rem; border: 3px solid var(--paper); border-radius: 999px; background: color-mix(in srgb, var(--accent) 45%, var(--line)); }
 body::-webkit-scrollbar-thumb:hover, *::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--accent) 68%, var(--line)); }
+.modal-panel { max-height: min(94vh, 58rem); overflow: hidden; border-radius: 1.5rem; }
+.modal-scroll { min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.modal-scroll::-webkit-scrollbar-track { margin-block: .8rem; background: transparent; }
+.modal-scroll::-webkit-scrollbar-thumb { border-color: transparent; background-clip: padding-box; }
 @layer base {
   button, input, select, textarea { font: inherit; color: var(--ink); }
   button { color: inherit; }
@@ -84,5 +88,10 @@ body::-webkit-scrollbar-thumb:hover, *::-webkit-scrollbar-thumb:hover { backgrou
 @media (prefers-reduced-motion: no-preference) {
   .lift { transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease; }
   .lift:hover { transform: translateY(-2px); border-color: color-mix(in srgb, var(--accent) 48%, var(--line)); box-shadow: 0 20px 50px rgb(64 46 31 / .13); }
+}
+
+@media (max-width: 520px) {
+  .btn { white-space: normal; }
+  .modal-panel { max-height: calc(100dvh - 1rem); border-radius: 1.1rem; }
 }
 
