@@ -83,6 +83,11 @@ def parse_launcher_cli_args(argv=None):
         action='store_true',
         help='Instantiate the installer GUI offscreen, then exit.',
     )
+    parser.add_argument(
+        '--tls-self-check',
+        action='store_true',
+        help='Verify packaged OpenSSL and CA certificates with an HTTPS request, then exit.',
+    )
     return parser.parse_args(argv)
 
 def run_headless_install_from_cli(args):
@@ -520,6 +525,32 @@ def run_self_check():
     return 0
 
 
+def run_tls_self_check(url="https://github.com/"):
+    """Verify that the packaged runtime can complete a trusted TLS request."""
+
+    import ssl
+    import urllib.request
+
+    import certifi
+
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "PandratorInstaller-TLS-Self-Check"},
+        method="HEAD",
+    )
+    with urllib.request.urlopen(request, context=ssl_context, timeout=20) as response:
+        status = int(getattr(response, "status", response.getcode()))
+    if not 200 <= status < 400:
+        raise RuntimeError(f"Installer TLS self-check failed with HTTP status {status}.")
+
+    print(
+        "Pandrator installer TLS self-check passed "
+        f"(url={url}; status={status}; openssl={ssl.OPENSSL_VERSION})."
+    )
+    return 0
+
+
 def main(argv=None):
     raw_args = sys.argv[1:] if argv is None else list(argv)
     if any(item in {"list", "probe", "plan", "install", "update", "repair", "launch", "service", "stop", "uninstall"} for item in raw_args):
@@ -529,6 +560,8 @@ def main(argv=None):
     cli_args = parse_launcher_cli_args(raw_args)
     if cli_args.self_check:
         return run_self_check()
+    if cli_args.tls_self_check:
+        return run_tls_self_check()
     if cli_args.gui_smoke_check:
         return run_gui_smoke_check(cli_args)
     if cli_args.headless_install:

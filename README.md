@@ -215,7 +215,20 @@ chmod +x PandratorInstaller-x86_64.AppImage
 The Linux AppImage defaults to installing under `~/Pandrator`. Use the install-location selector in the GUI, or pass `--workspace /path/to/parent`, to choose another parent directory. The installer keeps Pixi, environments, model caches, and downloaded repos under the selected workspace as much as possible. It does not install system packages on Linux.
 After successful install and update runs, the installer prunes disposable package caches under `.pixi-cache` while preserving model/runtime caches under `cache` so offline launches and model-backed features do not have to re-download assets.
 
-To build and smoke-test the standalone installer locally:
+For a reproducible release build, use the dedicated Pixi environment:
+
+```bash
+pixi run -e installer-build build-installer
+```
+
+This uses Pandrator's pinned Python, PyInstaller, Qt, OpenSSL, and certificate
+dependencies. The Linux build verifies the packaged trust store, performs a
+real HTTPS request, and runs the GUI smoke check. Offline builders can pass
+`--no-network-smoke-test` directly to `scripts/build_linux_appimage.py` while
+retaining the local checks.
+
+To build and smoke-test the standalone installer with a conventional Python
+environment instead:
 
 ```powershell
 python -m pip install -r requirements-installer.txt
@@ -232,6 +245,9 @@ python scripts/build_installer.py
 ```
 
 `scripts/build_installer.py` builds the Windows `.exe` on Windows and the Linux AppImage on Linux. The AppImage build must run on Linux.
+The Linux build accepts OpenSSL 3 libraries from the runtime's configured
+library directory, including both `lib` and Fedora-style `lib64` layouts, and
+requires `libssl` and `libcrypto` to come from the same directory.
 
 For broad Linux compatibility, build release AppImages on the oldest glibc baseline you intend to support. The Fedora build path is useful for validation, but a newer Fedora-built AppImage may not run on older distributions.
 

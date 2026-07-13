@@ -156,11 +156,18 @@ def run_appimagetool(appimagetool: Path, appdir: Path, output_path: Path, repo_r
     make_executable(output_path)
 
 
-def smoke_test_appimage(appimage_path: Path, repo_root: Path) -> None:
+def smoke_test_appimage(
+    appimage_path: Path,
+    repo_root: Path,
+    *,
+    verify_tls: bool = True,
+) -> None:
     env = os.environ.copy()
     env.setdefault("APPIMAGE_EXTRACT_AND_RUN", "1")
     env.setdefault("QT_QPA_PLATFORM", "offscreen")
     run([str(appimage_path), "--self-check"], cwd=repo_root, env=env)
+    if verify_tls:
+        run([str(appimage_path), "--tls-self-check"], cwd=repo_root, env=env)
     run([str(appimage_path), "--gui-smoke-check"], cwd=repo_root, env=env)
 
 
@@ -185,6 +192,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--no-smoke-test",
         action="store_true",
         help="Do not run the final AppImage --self-check smoke test.",
+    )
+    parser.add_argument(
+        "--no-network-smoke-test",
+        action="store_true",
+        help="Skip the packaged HTTPS probe while retaining local self-checks.",
     )
     return parser.parse_args(argv)
 
@@ -212,7 +224,11 @@ def main(argv: list[str] | None = None) -> int:
     run_appimagetool(appimagetool, appdir, output_path, repo_root, machine)
 
     if not args.no_smoke_test:
-        smoke_test_appimage(output_path, repo_root)
+        smoke_test_appimage(
+            output_path,
+            repo_root,
+            verify_tls=not args.no_network_smoke_test,
+        )
 
     print(f"Built and verified installer AppImage: {output_path}")
     return 0

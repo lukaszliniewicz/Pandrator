@@ -13,6 +13,8 @@ from pandrator_installer.catalog import (
     PACKAGING_CONFIG_FLAGS,
 )
 from pandrator_installer.cli import parse_launcher_cli_args, run_self_check
+from pandrator_installer.cli import run_tls_self_check
+from pandrator_installer.build_support import resolve_openssl_runtime_pair
 from pandrator_installer.models import InstallSelection, LaunchSelection, WorkspacePaths, qwen_model_variants
 from pandrator_installer import platforms
 from pandrator_installer.crispasr import detect_compute_backends, resolve_asset
@@ -172,6 +174,26 @@ class InstallerArchitectureTests(unittest.TestCase):
 
         self.assertEqual(restored["LD_LIBRARY_PATH"], "/usr/local/lib")
         self.assertNotIn("LD_LIBRARY_PATH_ORIG", restored)
+
+    def test_appimage_openssl_pair_supports_lib64_and_rejects_split_pairs(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            lib = root / "lib"
+            lib64 = root / "lib64"
+            lib.mkdir()
+            lib64.mkdir()
+            (lib64 / "libssl.so.3").write_bytes(b"ssl")
+            (lib64 / "libcrypto.so.3").write_bytes(b"crypto")
+
+            ssl_library, crypto_library = resolve_openssl_runtime_pair((lib, lib64))
+
+            self.assertEqual(ssl_library.parent, lib64)
+            self.assertEqual(crypto_library.parent, lib64)
+
+            (lib64 / "libcrypto.so.3").unlink()
+            (lib / "libcrypto.so.3").write_bytes(b"different-runtime")
+            with self.assertRaisesRegex(RuntimeError, "matched libssl.so.3/libcrypto.so.3 pair"):
+                resolve_openssl_runtime_pair((lib, lib64))
 
     def test_launch_selection_preserves_backend_priority(self):
         selection = LaunchSelection(voxcpm=True, chatterbox=True, rvc=True)
@@ -657,6 +679,33 @@ class InstallerArchitectureTests(unittest.TestCase):
         self.assertIn("pixi=", printed)
         self.assertIn("manifest=", printed)
         self.assertIn("openssl=", printed)
+
+    def test_tls_self_check_uses_certifi_and_a_head_request(self):
+        class Response:
+            status = 204
+
+            def getcode(self):
+                return self.status
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        with patch("urllib.request.urlopen", return_value=Response()) as urlopen:
+            with patch("builtins.print") as printed:
+                self.assertEqual(run_tls_self_check("https://example.test/health"), 0)
+
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "https://example.test/health")
+        self.assertEqual(request.get_method(), "HEAD")
+        self.assertEqual(urlopen.call_args.kwargs["timeout"], 20)
+        self.assertIn("TLS self-check passed", printed.call_args.args[0])
+
+    def test_tls_self_check_cli_flag(self):
+        args = parse_launcher_cli_args(["--tls-self-check"])
+        self.assertTrue(args.tls_self_check)
 
     def test_gui_smoke_check_cli_flag(self):
         args = parse_launcher_cli_args(["--gui-smoke-check"])

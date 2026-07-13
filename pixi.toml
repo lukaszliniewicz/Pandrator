@@ -39,6 +39,19 @@ packaging = "*"
 [feature.gui-tests.tasks]
 test-dubbing-ui = { cmd = "python -m unittest tests.test_dubbing_ui", env = { QT_QPA_PLATFORM = "offscreen" } }
 
+[feature.installer-build.pypi-dependencies]
+PyInstaller = "==6.20.0"
+PyQt6 = "==6.7.1"
+requests = "*"
+psutil = "*"
+dulwich = "*"
+certifi = "*"
+packaging = "*"
+cryptography = ">=43,<46"
+
+[feature.installer-build.tasks]
+build-installer = "python scripts/build_installer.py"
+
 [feature.web-build.dependencies]
 nodejs = ">=24,<25"
 
@@ -50,4 +63,5 @@ web-build = { cmd = "npm run build", cwd = "web", depends-on = ["web-install"] }
 [environments]
 smoke = ["smoke"]
 gui-tests = ["gui-tests"]
+installer-build = ["installer-build"]
 web-build = ["web-build"]

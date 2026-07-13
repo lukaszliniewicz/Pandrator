@@ -9,6 +9,7 @@ from pandrator_installer.cli import (
     run_gui_app,
     run_headless_install_from_cli,
     run_self_check,
+    run_tls_self_check,
 )
 
 if TYPE_CHECKING:
@@ -35,6 +36,7 @@ __all__ = [
     "run_headless_install_from_cli",
     "run_gui_app",
     "run_self_check",
+    "run_tls_self_check",
     "main",
 ]
 
