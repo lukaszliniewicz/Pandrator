@@ -22,6 +22,7 @@ from .constants import (
     PACKAGING_SHARED_PATHS,
     RVC_GPU_SUPPORT_CONFIG_FLAG,
 )
+from .platforms import is_windows, pixi_env_python_path
 
 
 class StorageMixin:
@@ -175,14 +176,13 @@ class StorageMixin:
         if config.get('rvc_support', False) and RVC_GPU_SUPPORT_CONFIG_FLAG in config:
             return config
 
-        rvc_run_script = os.path.join(pandrator_path, 'rvc-python', 'run.bat')
-        rvc_gpu_python = os.path.join(
-            pandrator_path,
-            'rvc-python',
-            '.pixi',
-            'envs',
-            'default',
-            'python.exe',
+        rvc_run_scripts = (
+            os.path.join(pandrator_path, 'rvc-python', 'run.bat'),
+            os.path.join(pandrator_path, 'rvc-python', 'run.py'),
+        )
+        rvc_gpu_python = pixi_env_python_path(
+            os.path.join(pandrator_path, 'rvc-python', '.pixi', 'envs', 'default'),
+            system='windows' if is_windows() else 'linux',
         )
         legacy_site_packages = os.path.join(
             pandrator_path,
@@ -207,7 +207,7 @@ class StorageMixin:
 
         if (
             not config.get('rvc_support', False)
-            and not os.path.exists(rvc_run_script)
+            and not any(os.path.exists(path) for path in rvc_run_scripts)
             and not legacy_rvc_detected
         ):
             return config

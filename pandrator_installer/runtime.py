@@ -680,7 +680,7 @@ class RuntimeMixin:
             else:
                 self.reporter.status("Starting RVC service...")
                 rvc_server_path = os.path.join(pandrator_path, RVC_API_REPO_DIRNAME)
-                rvc_models_dir = os.path.join(pandrator_path, 'Pandrator', 'rvc_models')
+                rvc_models_dir = os.path.join(pandrator_path, 'models', 'rvc')
                 os.makedirs(rvc_models_dir, exist_ok=True)
                 rvc_gpu_support = install_config.get(RVC_GPU_SUPPORT_CONFIG_FLAG, False)
                 rvc_use_cpu = self.rvc_cpu_launch_var or not rvc_gpu_support
@@ -919,7 +919,7 @@ class RuntimeMixin:
         if self.is_port_in_use(8050):
             raise RuntimeError("RVC service cannot be started because port 8050 is already in use.")
 
-        run_script_path = os.path.join(rvc_server_path, 'run.bat')
+        run_script_path = os.path.join(rvc_server_path, 'run.bat' if is_windows() else 'run.py')
         if not os.path.exists(run_script_path):
             raise FileNotFoundError(f"RVC run script not found at: {run_script_path}")
 

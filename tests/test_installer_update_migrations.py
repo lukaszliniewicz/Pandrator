@@ -33,6 +33,10 @@ class InstallerUpdateMigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as install_root:
             pandrator_repo = os.path.join(install_root, "Pandrator")
             rvc_repo = os.path.join(install_root, "rvc-python")
+            legacy_models = os.path.join(pandrator_repo, "rvc_models", "Legacy Voice")
+            os.makedirs(legacy_models)
+            with open(os.path.join(legacy_models, "Legacy Voice.pth"), "wb") as handle:
+                handle.write(b"weights")
             installer = HeadlessInstaller(working_dir=os.path.dirname(install_root))
             events = []
 
@@ -55,7 +59,9 @@ class InstallerUpdateMigrationTests(unittest.TestCase):
                 )
 
             self.assertEqual(events, ["prepare", "remove"])
-            self.assertTrue(os.path.isdir(os.path.join(pandrator_repo, "rvc_models")))
+            migrated_model = os.path.join(install_root, "models", "rvc", "Legacy Voice", "Legacy Voice.pth")
+            self.assertTrue(os.path.isfile(migrated_model))
+            self.assertTrue(os.path.isfile(os.path.join(legacy_models, "Legacy Voice.pth")))
 
     @patch("pandrator_installer.service.HeadlessInstaller.install_requirement_specs_with_pip")
     @patch("pandrator_installer.service.HeadlessInstaller.add_pypi_requirements", return_value=[])

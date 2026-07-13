@@ -39,6 +39,8 @@ from .constants import (
     PANDRATOR_PADDLEOCR_SPEC,
     PANDRATOR_PYMUPDF_SPEC,
     PYOPENJTALK_WHEEL_PREFIX,
+    RVC_LINUX_FAIRSEQ_DEPENDENCIES,
+    RVC_LINUX_FAIRSEQ_WHEEL,
     WHISPERX_CTRANSLATE2_VERSION,
     WHISPERX_TORCHAUDIO_VERSION,
     WHISPERX_TORCHVISION_VERSION,
@@ -50,7 +52,7 @@ from .constants import (
     WTPSPLIT_RETIRED_MODELS,
     XTTS_FINETUNING_BUNDLED_WHEEL_PREFIX,
 )
-from .platforms import is_windows, pixi_env_python_path
+from .platforms import is_windows, normalized_machine, pixi_env_python_path
 from .crispasr import CRISPASR_VERSION, detect_compute_backends, resolve_asset
 
 
@@ -1356,15 +1358,20 @@ class ComponentOperationsMixin:
             raise
 
     def is_rvc_runtime_ready(self, rvc_repo_path, use_cpu=False):
-        run_bat_path = os.path.join(rvc_repo_path, 'run.bat')
+        run_script_path = os.path.join(rvc_repo_path, 'run.bat' if is_windows() else 'run.py')
         environment_name = 'cpu' if use_cpu else 'default'
-        env_python_path = os.path.join(rvc_repo_path, '.pixi', 'envs', environment_name, 'python.exe')
-        return all(os.path.exists(path) for path in (run_bat_path, env_python_path))
+        env_root = os.path.join(rvc_repo_path, '.pixi', 'envs', environment_name)
+        env_python_path = pixi_env_python_path(env_root, system='windows' if is_windows() else 'linux')
+        return all(os.path.exists(path) for path in (run_script_path, env_python_path))
 
     def build_rvc_launcher_command(self, use_cpu=False, pixi_path=None, prepare_only=False, models_dir=None):
-        command = ['cmd', '/c', 'run.bat']
+        environment_name = 'cpu' if use_cpu else 'default'
+        if is_windows():
+            command = ['cmd', '/c', 'run.bat']
+        else:
+            command = [pixi_path or 'pixi', 'run', '--environment', environment_name, 'python', 'run.py']
         command.extend(['--backend', 'cpu' if use_cpu else 'cuda'])
-        if pixi_path:
+        if pixi_path and is_windows():
             command.extend(['--pixi-path', pixi_path])
         if prepare_only:
             command.append('--prepare-only')
@@ -1372,20 +1379,76 @@ class ComponentOperationsMixin:
             command.extend(['--models-dir', models_dir])
         return command
 
+    @staticmethod
+    def _enable_rvc_linux_platform(rvc_repo_path):
+        if normalized_machine() != 'x86_64':
+            raise RuntimeError(
+                "RVC on Linux currently requires x86_64 because the pinned Fairseq runtime "
+                "does not provide an aarch64 wheel."
+            )
+        manifest_path = Path(rvc_repo_path) / 'pyproject.toml'
+        manifest = manifest_path.read_text(encoding='utf-8')
+        if '"linux-64"' in manifest:
+            return manifest_path
+        windows_only = 'platforms = ["win-64"]'
+        if windows_only not in manifest:
+            raise RuntimeError("The RVC Pixi manifest has an unrecognized platforms declaration.")
+        manifest_path.write_text(
+            manifest.replace(windows_only, 'platforms = ["win-64", "linux-64"]', 1),
+            encoding='utf-8',
+        )
+        return manifest_path
+
+    def _prepare_rvc_linux_dependencies(self, rvc_repo_path, use_cpu, pixi_path, log_handle):
+        self._enable_rvc_linux_platform(rvc_repo_path)
+        environment_name = 'cpu' if use_cpu else 'default'
+        executable = pixi_path or self.get_pixi_executable(os.path.dirname(rvc_repo_path))
+        environment = self.get_pixi_subprocess_env(os.path.dirname(rvc_repo_path))
+        subprocess.run(
+            [executable, 'install', '--environment', environment_name],
+            cwd=rvc_repo_path,
+            env=environment,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            check=True,
+        )
+        env_python = pixi_env_python_path(
+            os.path.join(rvc_repo_path, '.pixi', 'envs', environment_name),
+            system='linux',
+        )
+        subprocess.run(
+            [env_python, '-m', 'pip', 'install', *RVC_LINUX_FAIRSEQ_DEPENDENCIES],
+            cwd=rvc_repo_path,
+            env=environment,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            check=True,
+        )
+        subprocess.run(
+            [env_python, '-m', 'pip', 'install', '--no-deps', RVC_LINUX_FAIRSEQ_WHEEL],
+            cwd=rvc_repo_path,
+            env=environment,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            check=True,
+        )
+
     def install_rvc_api_server(self, rvc_repo_path, use_cpu=False, pixi_path=None):
         """Prepare the dedicated RVC service environment without starting it."""
-        run_script_path = os.path.join(rvc_repo_path, 'run.bat')
+        run_script_path = os.path.join(rvc_repo_path, 'run.bat' if is_windows() else 'run.py')
         if not os.path.exists(run_script_path):
             raise FileNotFoundError(f"RVC run script not found at: {run_script_path}")
 
         logging.info("Preparing RVC service runtime in %s...", rvc_repo_path)
         rvc_install_log_file = os.path.join(rvc_repo_path, 'rvc_install.log')
-        command = self.build_rvc_launcher_command(
-            use_cpu=use_cpu,
-            pixi_path=pixi_path,
-            prepare_only=True,
-        )
         with open(rvc_install_log_file, 'a', encoding='utf-8') as log_handle:
+            if not is_windows():
+                self._prepare_rvc_linux_dependencies(rvc_repo_path, use_cpu, pixi_path, log_handle)
+            command = self.build_rvc_launcher_command(
+                use_cpu=use_cpu,
+                pixi_path=pixi_path,
+                prepare_only=True,
+            )
             subprocess.run(
                 command,
                 cwd=rvc_repo_path,
@@ -1559,7 +1622,18 @@ class ComponentOperationsMixin:
         pixi_path=None,
     ):
         """Prepare the RVC service before retiring the legacy in-process runtime."""
-        os.makedirs(os.path.join(pandrator_repo_path, 'rvc_models'), exist_ok=True)
+        model_root = os.path.join(pandrator_path, 'models', 'rvc')
+        os.makedirs(model_root, exist_ok=True)
+        legacy_model_root = os.path.join(pandrator_repo_path, 'rvc_models')
+        if os.path.isdir(legacy_model_root):
+            for entry in os.scandir(legacy_model_root):
+                destination = os.path.join(model_root, entry.name)
+                if os.path.exists(destination):
+                    continue
+                if entry.is_dir(follow_symlinks=False):
+                    shutil.copytree(entry.path, destination)
+                elif entry.is_file(follow_symlinks=False):
+                    shutil.copy2(entry.path, destination)
         if not self.is_rvc_runtime_ready(rvc_repo_path, use_cpu=use_cpu):
             self.install_rvc_api_server(rvc_repo_path, use_cpu=use_cpu, pixi_path=pixi_path)
         else:

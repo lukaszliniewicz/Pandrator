@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from pandrator_installer.models import LaunchSelection
@@ -44,6 +45,104 @@ class InstallerRVCServiceTests(unittest.TestCase):
         self.assertIn("--backend", command)
         self.assertIn("cpu", command)
         self.assertIn("--prepare-only", command)
+
+    @patch("pandrator_installer.components.is_windows", return_value=False)
+    def test_linux_rvc_launcher_uses_pixi_and_run_py(self, _is_windows):
+        installer = HeadlessInstaller(working_dir="workspace")
+
+        command = installer.build_rvc_launcher_command(
+            use_cpu=True,
+            pixi_path="/opt/pandrator/bin/pixi",
+            models_dir="/srv/pandrator/rvc_models",
+        )
+
+        self.assertEqual(
+            command[:7],
+            ["/opt/pandrator/bin/pixi", "run", "--environment", "cpu", "python", "run.py", "--backend"],
+        )
+        self.assertEqual(command[7], "cpu")
+        self.assertNotIn("cmd", command)
+        self.assertNotIn("--pixi-path", command)
+        self.assertEqual(command[-2:], ["--models-dir", "/srv/pandrator/rvc_models"])
+
+    @patch("pandrator_installer.components.normalized_machine", return_value="aarch64")
+    def test_linux_rvc_reports_unsupported_architecture(self, _machine):
+        installer = HeadlessInstaller(working_dir="workspace")
+        with self.assertRaisesRegex(RuntimeError, "requires x86_64"):
+            installer._enable_rvc_linux_platform("/missing")
+
+    @patch("pandrator_installer.components.subprocess.run")
+    @patch("pandrator_installer.components.normalized_machine", return_value="x86_64")
+    @patch("pandrator_installer.components.is_windows", return_value=False)
+    def test_linux_rvc_preparation_enables_platform_and_installs_pinned_fairseq(
+        self,
+        _is_windows,
+        _machine,
+        run,
+    ):
+        with tempfile.TemporaryDirectory() as workspace:
+            install_root = Path(workspace) / "Pandrator"
+            repo = install_root / "rvc-python"
+            repo.mkdir(parents=True)
+            (repo / "run.py").write_text("print('rvc')\n", encoding="utf-8")
+            manifest = repo / "pyproject.toml"
+            manifest.write_text(
+                '[tool.pixi.workspace]\nplatforms = ["win-64"]\n',
+                encoding="utf-8",
+            )
+            installer = HeadlessInstaller(working_dir=workspace)
+            with patch.object(installer, "get_pixi_subprocess_env", return_value={}):
+                installer.install_rvc_api_server(
+                    str(repo),
+                    use_cpu=True,
+                    pixi_path="/opt/pandrator/bin/pixi",
+                )
+
+            self.assertIn('"linux-64"', manifest.read_text(encoding="utf-8"))
+            commands = [call.args[0] for call in run.call_args_list]
+            self.assertEqual(
+                commands[0],
+                ["/opt/pandrator/bin/pixi", "install", "--environment", "cpu"],
+            )
+            self.assertIn("hydra-core>=1.3.2", commands[1])
+            self.assertEqual(commands[2][3], "install")
+            self.assertIn("#sha256=81b5af", commands[2][-1])
+            self.assertEqual(commands[3][:4], ["/opt/pandrator/bin/pixi", "run", "--environment", "cpu"])
+
+    @patch("pandrator_installer.runtime.subprocess.Popen")
+    @patch("pandrator_installer.components.is_windows", return_value=False)
+    @patch("pandrator_installer.runtime.is_windows", return_value=False)
+    def test_linux_rvc_server_uses_shared_managed_model_directory(
+        self,
+        _runtime_windows,
+        _component_windows,
+        popen,
+    ):
+        with tempfile.TemporaryDirectory() as workspace:
+            repo = Path(workspace) / "Pandrator" / "rvc-python"
+            repo.mkdir(parents=True)
+            (repo / "run.py").write_text("print('rvc')\n", encoding="utf-8")
+            models = Path(workspace) / "Pandrator" / "models" / "rvc"
+            installer = HeadlessInstaller(working_dir=workspace)
+            process = MagicMock()
+            popen.return_value = process
+            with patch.object(installer, "is_port_in_use", return_value=False), patch.object(
+                installer,
+                "get_pixi_subprocess_env",
+                return_value={},
+            ):
+                result = installer.run_rvc_api_server(
+                    str(repo),
+                    str(models),
+                    use_cpu=True,
+                    pixi_path="/opt/pandrator/bin/pixi",
+                )
+
+            self.assertIs(result, process)
+            command = popen.call_args.args[0]
+            self.assertEqual(command[:4], ["/opt/pandrator/bin/pixi", "run", "--environment", "cpu"])
+            self.assertEqual(command[-2:], ["--models-dir", str(models)])
+            installer._close_process_log_handle(result)
 
     @patch("pandrator_installer.service.HeadlessInstaller.check_rvc_server_online")
     @patch("pandrator_installer.service.HeadlessInstaller.run_rvc_api_server")
