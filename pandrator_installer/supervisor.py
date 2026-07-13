@@ -153,6 +153,8 @@ class ProcessSupervisor:
         self.lock = InstanceLock(self.data_root / "pandrator.instance.lock")
         self.processes: dict[str, ManagedProcess] = {}
         self.stop_event = threading.Event()
+        self.ready = False
+        self.ready_at: float | None = None
         self.logs_dir = self.data_root / "logs" / "supervisor"
         self.runtime_state = self.data_root / "runtime-processes.json"
 
@@ -172,6 +174,8 @@ class ProcessSupervisor:
         payload = {
             "instance_id": self.lock.instance_id,
             "supervisor_pid": os.getpid(),
+            "ready": self.ready,
+            "ready_at": self.ready_at,
             "processes": {
                 key: {
                     "pid": managed.process.pid,
@@ -251,6 +255,10 @@ class ProcessSupervisor:
                     logging.exception("Optional managed process %s failed to start", spec.key)
             self._write_state()
             self.ready_callback()
+            self.ready = True
+            self.ready_at = time.time()
+            self._write_state()
+            self._status("Pandrator web application is ready.")
         except Exception:
             self.stop_all()
             raise
@@ -343,6 +351,8 @@ class ProcessSupervisor:
 
     def stop_all(self) -> None:
         self.stop_event.set()
+        self.ready = False
+        self.ready_at = None
         for _key, managed in reversed(list(self.processes.items())):
             self._stop_one(managed)
         self.processes.clear()

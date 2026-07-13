@@ -3,6 +3,7 @@
   import { api } from './api';
   import { onMount } from 'svelte';
   import GuidedTour from './GuidedTour.svelte';
+  import AudioPlayer from './AudioPlayer.svelte';
 
   type Segment = { id?: string; ordinal: number; start_ms: number; end_ms: number; text: string; speaker?: string | null };
   type Stage = { revision: number; segments: Segment[] };
@@ -84,7 +85,7 @@
         <button onclick={onclose} aria-label="Close subtitle review" class="rounded-xl border border-[var(--line)] p-2"><X size={18}/></button>
       </div>
     </header>
-    {#if sourceArtifactId}<div class="border-b border-[var(--line)] px-5 py-3 sm:px-7"><audio bind:this={audioPreview} class="h-9 w-full" controls src={`/api/v1/artifacts/${sourceArtifactId}/content`}></audio></div>{/if}
+    {#if sourceArtifactId}<div class="border-b border-[var(--line)] px-5 py-3 sm:px-7"><AudioPlayer bind:element={audioPreview} src={`/api/v1/artifacts/${sourceArtifactId}/content`} label="Source audio preview"/></div>{/if}
     {#if error}<div class="mx-5 mt-4 rounded-xl border border-red-400/40 bg-red-500/10 px-4 py-3 text-sm sm:mx-7">{error}</div>{/if}
     <div class="min-h-0 flex-1 overflow-auto">
       {#if loading}<div class="grid h-full place-items-center"><div class="eyebrow animate-pulse">Aligning subtitle lineage…</div></div>

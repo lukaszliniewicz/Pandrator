@@ -268,7 +268,10 @@ class GuiActionsMixin:
 
     def on_launch_finished(self):
         """Handle successful launch"""
-        self.update_status("Applications launched successfully")
+        if getattr(self, "launch_pandrator_var", False):
+            self.update_status("Pandrator is ready in your browser")
+        else:
+            self.update_status("Selected services are ready")
         self.enable_buttons()
         self.update_backend_runtime_controls()
         # Start process monitoring

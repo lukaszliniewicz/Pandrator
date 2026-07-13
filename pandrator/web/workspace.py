@@ -838,6 +838,7 @@ class GenerationService:
                     "ordinal": item.ordinal,
                     "node_kind": item.node_kind,
                     "text": item.text,
+                    "source_segment_ids": list(item.source_segment_ids_json or []),
                     "optimized_text": item.optimized_text,
                     "optimization_status": item.optimization_status,
                     "optimization_reviewed": item.optimization_reviewed,

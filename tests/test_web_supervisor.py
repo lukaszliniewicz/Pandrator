@@ -83,6 +83,40 @@ class SupervisorTests(unittest.TestCase):
                 supervisor.stop_all()
             self.assertFalse((Path(directory) / "pandrator.instance.lock").exists())
 
+    def test_ready_marker_is_written_after_the_ready_callback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            code = "import time; time.sleep(30)"
+            spec = ManagedProcessSpec(
+                key="worker",
+                label="Worker",
+                command=(sys.executable, "-c", code),
+                startup_timeout_seconds=2,
+                restart_limit=0,
+            )
+            callback_states = []
+
+            def observe_callback_state():
+                state = json.loads(
+                    (Path(directory) / "runtime-processes.json").read_text(encoding="utf-8")
+                )
+                callback_states.append(state["ready"])
+
+            supervisor = ProcessSupervisor(
+                data_root=directory,
+                specs=[spec],
+                ready_callback=observe_callback_state,
+            )
+            supervisor.start_all()
+            try:
+                state = json.loads(
+                    (Path(directory) / "runtime-processes.json").read_text(encoding="utf-8")
+                )
+                self.assertEqual(callback_states, [False])
+                self.assertTrue(state["ready"])
+                self.assertIsNotNone(state["ready_at"])
+            finally:
+                supervisor.stop_all()
+
 
 if __name__ == "__main__":
     unittest.main()

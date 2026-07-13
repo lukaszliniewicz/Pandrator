@@ -1901,6 +1901,16 @@
         }
       }
     },
+    "/api/v1/artifacts/{artifactId}/context": {
+      "get": {
+        "operationId": "getArtifactContext",
+        "responses": {
+          "200": {
+            "description": "Artifact lineage context for comparison"
+          }
+        }
+      }
+    },
     "/api/v1/artifacts/{artifactId}/optimization-review": {
       "post": {
         "operationId": "saveOptimizationReview",

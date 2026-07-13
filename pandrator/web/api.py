@@ -1297,6 +1297,20 @@ def create_app(
         )
         return jsonify(_model_dict(reviewed, ("id", "session_id", "kind", "role", "relative_path", "mime_type", "size_bytes", "content_hash", "state", "metadata_json", "created_at"))), 201
 
+    @app.get("/api/v1/artifacts/<artifact_id>/context")
+    @require_auth
+    def artifact_context(artifact_id: str):
+        """Return lightweight lineage metadata used by review and comparison UIs."""
+        fields = ("id", "session_id", "kind", "role", "relative_path", "mime_type", "size_bytes", "content_hash", "state", "metadata_json", "created_at")
+        with database.session() as db_session:
+            artifact = db_session.get(Artifact, artifact_id)
+            if artifact is None:
+                return error_response("not_found", "Artifact not found.", 404)
+            parent_ids = list(db_session.scalars(select(ArtifactEdge.parent_artifact_id).where(ArtifactEdge.child_artifact_id == artifact_id)).all())
+            parents = list(db_session.scalars(select(Artifact).where(Artifact.id.in_(parent_ids))).all()) if parent_ids else []
+            parents.sort(key=lambda item: (item.role != "extracted_text", item.created_at))
+            return jsonify({"artifact": _model_dict(artifact, fields), "parents": [_model_dict(item, fields) for item in parents]})
+
     @app.get("/api/v1/artifacts/<artifact_id>/content")
     @require_auth
     def artifact_content(artifact_id: str):

@@ -1346,16 +1346,6 @@ class ComponentOperationsMixin:
                 logging.error(f"Failed to update repository: {str(dulwich_error)}")
                 raise
 
-    def install_pycroppdf_requirements(self, pandrator_path, env_name, pycroppdf_repo_path):
-        logging.info(f"Installing PyCropPDF requirements in {env_name}...")
-        try:
-            requirements_file = os.path.join(pycroppdf_repo_path, 'requirements.txt')
-            self.install_requirements(pandrator_path, env_name, requirements_file)
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Failed to install PyCropPDF requirements in {env_name}")
-            logging.error(f"Error message: {str(e)}")
-            raise
-
     def is_rvc_runtime_ready(self, rvc_repo_path, use_cpu=False):
         run_script_path = os.path.join(rvc_repo_path, 'run.bat' if is_windows() else 'run.sh')
         environment_name = 'cpu' if use_cpu else 'default'

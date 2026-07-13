@@ -2,6 +2,7 @@
   import { Check, CircleAlert, Library, Play, Plus, RefreshCw, Save, Trash2, Volume2 } from '@lucide/svelte';
   import { api, type JobRecord } from './api';
   import { describeVoice, languagesForService, type VoiceDescriptor } from './voice-catalog';
+  import AudioPlayer from './AudioPlayer.svelte';
 
   let { initialService = '' }: { initialService?: string } = $props();
   let payload = $state<any>({ services: [], value: {}, revision: 0 });
@@ -209,7 +210,7 @@
         <div class="min-w-0"><div class="flex flex-wrap items-center gap-2"><h3 class="font-semibold">{voice.name}</h3>{#if voice.id === languageDefault}<span class="inline-flex items-center gap-1 rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[.65rem] font-bold uppercase text-[var(--accent)]"><Check size={10}/> Default</span>{/if}</div><p class="muted mt-1 break-all text-xs">{voice.id}</p></div>
         <div class="voice-meta"><span>{voice.language}</span>{#if voice.gender}<span>{voice.gender}</span>{/if}</div>
         <div class="flex flex-wrap justify-end gap-2"><button onclick={() => preview(voice)} disabled={state?.status === 'generating' || generatingAll} class="btn btn-sm btn-secondary"><Play size={13}/>{state?.status === 'generating' ? 'Generating…' : state?.status === 'ready' ? 'Regenerate' : 'Preview'}</button><button onclick={() => saveDefault(voice)} disabled={voice.id === languageDefault} class="btn btn-sm btn-secondary"><Save size={13}/> Use by default</button></div>
-        {#if state?.artifactId}<audio controls preload="metadata" src={`/api/v1/artifacts/${state.artifactId}/content`} class="col-span-full h-10 w-full"></audio>{/if}
+        {#if state?.artifactId}<div class="col-span-full"><AudioPlayer src={`/api/v1/artifacts/${state.artifactId}/content`} label={`${voice.name} preview`}/></div>{/if}
         {#if state?.error}<p class="col-span-full text-xs text-red-600">{state.error}</p>{/if}
       </article>
     {:else}

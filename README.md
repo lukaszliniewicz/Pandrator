@@ -130,7 +130,6 @@ For local OpenAI-compatible TTS wrappers used by Pandrator, the preferred ecosys
 - ONNX Parakeet through `onnx-asr[cpu,hub]`, an optional CPU-capable STT backend for dubbing transcription.
 - [Easy XTTS Trainer](https://github.com/lukaszliniewicz/easy_xtts_trainer), a command line app that enables XTTS fine-tuning using one or more audio files, made specially for Pandrator.
 - [RVC Python API Service](https://github.com/lukaszliniewicz/rvc-python) for enhancing voice quality and cloning results via a dedicated local [Retrieval Based Voice Conversion](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI) service.
-- [PyCropPDF](https://github.com/lukaszliniewicz/PyCropPDF) for manual PDF cropping/cleanup before ingestion.
 - A local OpenAI-compatible LLM endpoint (for example LM Studio, Ollama-compatible endpoints, or other compatible providers) for LLM-based text pre-processing.
 
 ## Installation
@@ -623,7 +622,7 @@ PDF imports preserve page geometry, font evidence, reading order, and extraction
 
 The deterministic PDF pass conservatively reconstructs paragraphs and columns, removes high-confidence repeated headers, footers, page numbers, and table-of-contents entries, detects footnotes, and marks high-confidence chapters or sections. Its diff and diagnostics are available before the optional LLM source-cleaning agent runs.
 
-PyCropPDF remains available before PDF import and writes a provenance sidecar containing source/output hashes, crop rectangles, whiteouts, deleted pages, and original-to-derived page mapping. Cropping is especially useful for scans with large borders, gutters, or persistent marginal content.
+The integrated web PDF editor handles translucent page stacks, separate left/right stacks, cropping, whiteouts, and page deletion without a separate PyCropPDF installation. Existing PyCropPDF provenance sidecars remain readable for compatibility with older projects.
 
 ### RVC Quality Enhancement and Voice Cloning
 - Enable RVC to enhance the generated audio quality and apply voice cloning.

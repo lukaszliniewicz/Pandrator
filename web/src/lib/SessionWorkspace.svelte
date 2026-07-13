@@ -143,8 +143,9 @@
     {section:'Export',title:'Export does not require dubbing',body:'Subtitle-only exports preserve source audio. When dubbing exists, choose source, mixed, or dubbing-only audio and soft or burned subtitles.'}
   ];
 
-  async function load() {
-    loading = true;
+  async function load(options: { initial?: boolean } = {}) {
+    const initial = options.initial ?? snapshot === null;
+    if (initial) loading = true;
     try {
       [snapshot, outcome] = await Promise.all([api<Snapshot>(`/sessions/${session.id}/workflow`), api(`/sessions/${session.id}/outcome-plan`)]);
       for (const stage of snapshot?.stages ?? []) {
@@ -153,11 +154,10 @@
           stage.artifact.role = artifactRoleLabel(stage.artifact.role);
         }
       }
-      window.dispatchEvent(new CustomEvent('pandrator:generation-changed'));
     } catch (caught) {
       error = caught instanceof Error ? caught.message : String(caught);
     } finally {
-      loading = false;
+      if (initial) loading = false;
     }
   }
 
@@ -479,12 +479,12 @@
 
   onMount(async () => {
     workspaceMode = localStorage.getItem(`pandrator:workspace-mode:${session.id}`) === 'automatic' ? 'automatic' : 'review';
-    await Promise.all([load(), loadCapabilities(), loadSpeechCatalogues(), loadLlmModels()]);
+    await Promise.all([load({ initial: true }), loadCapabilities(), loadSpeechCatalogues(), loadLlmModels()]);
   });
   $effect(() => { if (typeof localStorage !== 'undefined') localStorage.setItem(`pandrator:workspace-mode:${session.id}`, workspaceMode); });
   $effect(() => {
     if (refreshTimer) window.clearTimeout(refreshTimer);
-    if (snapshot?.stages.some((stage) => stage.status === 'running')) refreshTimer = window.setTimeout(load, 1000);
+    if (snapshot?.stages.some((stage) => stage.status === 'running')) refreshTimer = window.setTimeout(() => load({ initial: false }), 1000);
   });
 </script>
 

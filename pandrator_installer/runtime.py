@@ -1,5 +1,6 @@
 """Backend launch, health checking, and process lifecycle management."""
 
+import json
 import logging
 import os
 import subprocess
@@ -251,13 +252,15 @@ class RuntimeMixin:
                 port=getattr(self, 'pandrator_port_var', 8097),
                 owner_password=getattr(self, 'pandrator_owner_password', None),
             )
-            self.ensure_process_started(
+            self.reporter.progress(0.9)
+            self.reporter.status("Waiting for the Pandrator web application to become ready...")
+            self.wait_for_web_runtime_ready(
                 self.pandrator_process,
-                'Pandrator supervisor',
-                getattr(self.pandrator_process, 'log_file_path', ''),
+                pandrator_path,
+                port=getattr(self, 'pandrator_port_var', 8097),
             )
             self.reporter.progress(1.0)
-            self.reporter.status("Pandrator and selected services are running.")
+            self.reporter.status("Pandrator is ready in your browser.")
             return
 
         selected_backend_keys = self._selected_launch_backend_keys()
@@ -739,13 +742,19 @@ class RuntimeMixin:
                 try:
                     if web_runtime:
                         self.pandrator_process = self.run_web_supervisor(pandrator_repo_path)
+                        self.reporter.status("Waiting for the Pandrator web application to become ready...")
+                        self.wait_for_web_runtime_ready(
+                            self.pandrator_process,
+                            pandrator_path,
+                            port=getattr(self, 'pandrator_port_var', 8097),
+                        )
                     else:
                         self.pandrator_process = self.run_script(pandrator_path, 'pandrator_installer', pandrator_script_path, pandrator_args)
-                    self.ensure_process_started(
-                        self.pandrator_process,
-                        'Pandrator',
-                        getattr(self.pandrator_process, 'log_file_path', ''),
-                    )
+                        self.ensure_process_started(
+                            self.pandrator_process,
+                            'Pandrator',
+                            getattr(self.pandrator_process, 'log_file_path', ''),
+                        )
                 except Exception as e:
                     error_msg = f"Failed to start Pandrator: {str(e)}"
                     self.reporter.status(error_msg)
@@ -754,7 +763,7 @@ class RuntimeMixin:
                     raise
 
         self.reporter.progress(1.0)
-        self.reporter.status("Apps are running!")
+        self.reporter.status("Applications are ready.")
 
 
 
@@ -836,6 +845,68 @@ class RuntimeMixin:
         process.log_handle = log_handle
         process.log_file_path = log_path
         return process
+
+    def wait_for_web_runtime_ready(
+        self,
+        process,
+        pandrator_path,
+        *,
+        port=8097,
+        timeout_seconds=600,
+        poll_interval=0.25,
+    ):
+        """Wait until the supervisor has opened the browser and marked the runtime ready."""
+        if process is None:
+            raise RuntimeError("Pandrator supervisor process was not created.")
+
+        state_path = os.path.join(pandrator_path, "runtime-processes.json")
+        health_url = f"http://127.0.0.1:{int(port)}/api/v1/health"
+        deadline = time.monotonic() + max(1.0, float(timeout_seconds))
+        expected_pid = int(getattr(process, "pid", 0) or 0)
+
+        while time.monotonic() < deadline:
+            return_code = process.poll()
+            if return_code is not None:
+                log_path = getattr(process, "log_file_path", "")
+                details = f"Pandrator supervisor exited before the web application was ready (code {return_code})."
+                log_tail = self._read_log_tail_if_exists(log_path)
+                if log_path:
+                    details += f" See log: {log_path}"
+                if log_tail:
+                    details += f" Last output:\n{log_tail}"
+                raise RuntimeError(details)
+
+            try:
+                with open(state_path, "r", encoding="utf-8") as handle:
+                    state = json.load(handle)
+            except (FileNotFoundError, OSError, ValueError, TypeError, json.JSONDecodeError):
+                state = {}
+
+            state_pid = int(state.get("supervisor_pid") or 0)
+            processes = state.get("processes") or {}
+            supervisor_ready = bool(state.get("ready"))
+            state_matches = not expected_pid or state_pid == expected_pid
+            children_ready = "api" in processes and "worker" in processes
+            if state_matches and supervisor_ready and children_ready:
+                try:
+                    response = requests.get(health_url, timeout=1)
+                    if 200 <= response.status_code < 400:
+                        return state
+                except requests.RequestException:
+                    pass
+
+            time.sleep(max(0.01, float(poll_interval)))
+
+        log_path = getattr(process, "log_file_path", "")
+        details = (
+            f"Pandrator did not become ready within {int(timeout_seconds)} seconds."
+        )
+        if log_path:
+            details += f" See log: {log_path}"
+        log_tail = self._read_log_tail_if_exists(log_path)
+        if log_tail:
+            details += f" Last output:\n{log_tail}"
+        raise RuntimeError(details)
 
     def ensure_process_started(self, process, process_name, startup_log_file, grace_period_seconds=2):
         if process is None:

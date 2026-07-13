@@ -961,16 +961,19 @@ class WorkflowHandlers:
             ocr_dpi=int(settings.get("pdf_ocr_dpi") or 200),
         )
         deterministic_operations: list[dict[str, Any]] = []
+        baseline_text = ""
         progress(0.05, "Extracting source text")
         extension = source_path.suffix.lower()
         if extension == ".txt":
             cleaned_text = source_path.read_text(encoding="utf-8-sig")
+            baseline_text = cleaned_text
         elif extension == ".epub":
             cleaned_text = file_handler.extract_text_from_epub(
                 str(source_path),
                 remove_footnotes=bool(settings.get("remove_footnotes", False)),
                 filter_citations=bool(settings.get("filter_citations", True)),
             )
+            baseline_text = cleaned_text
         elif extension == ".pdf":
             document = source_cleaning.build_source_document(
                 str(source_path),
@@ -984,12 +987,14 @@ class WorkflowHandlers:
                 remove_toc=bool(settings.get("pdf_remove_toc", True)),
                 remove_repeated_marginals=bool(settings.get("pdf_remove_repeated_marginals", True)),
             )
+            baseline_text = document.plain_text()
             cleaned_text = source_cleaning.apply_cleaning_operations(document, deterministic_operations).cleaned_text
         elif extension in {".docx", ".mobi"}:
             extracted = self._session_dir(session_id) / f"{source_path.stem}_extracted.txt"
             if not file_handler.convert_doc_to_text(str(source_path), str(extracted)):
                 raise RuntimeError(f"Could not extract text from {source_path.name}.")
             cleaned_text = extracted.read_text(encoding="utf-8-sig")
+            baseline_text = cleaned_text
         else:
             raise ValueError(f"Unsupported document type: {extension or 'unknown'}")
         if cancel_event.is_set():
@@ -1080,6 +1085,18 @@ class WorkflowHandlers:
                     )
                 )
             extraction = "agentic"
+        comparison_dir = self._session_dir(session_id) / "source_cleaning"
+        comparison_dir.mkdir(parents=True, exist_ok=True)
+        baseline_path = comparison_dir / f"extracted-{new_id()}.txt"
+        baseline_path.write_text(baseline_text, encoding="utf-8", newline="\n")
+        baseline_artifact = self.artifacts.register(
+            baseline_path,
+            kind="text",
+            role="extracted_text",
+            session_id=session_id,
+            parent_ids=[source_artifact.id],
+            metadata={"comparison_source": True, "source_filename": source_path.name},
+        )
         destination = self._session_dir(session_id) / f"{source_path.stem}_cleaned.txt"
         destination.write_text(cleaned_text, encoding="utf-8", newline="\n")
         artifact = self.artifacts.register(
@@ -1087,7 +1104,7 @@ class WorkflowHandlers:
             kind="text",
             role="clean_text",
             session_id=session_id,
-            parent_ids=[source_artifact.id],
+            parent_ids=[source_artifact.id, baseline_artifact.id],
             settings=settings,
             metadata={"extraction": extraction, "report": report},
         )

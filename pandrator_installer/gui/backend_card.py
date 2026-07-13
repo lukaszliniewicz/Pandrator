@@ -31,7 +31,7 @@ class BackendOptionCard(QFrame):
     """A fixed-height summary that expands via its surface or chevron."""
 
     expanded_changed = pyqtSignal(bool)
-    COLLAPSED_HEIGHT = 112
+    COLLAPSED_HEIGHT = 92
 
     def __init__(
         self,
@@ -59,11 +59,11 @@ class BackendOptionCard(QFrame):
         summary.setObjectName("optionCardSummary")
         summary.setFixedHeight(self.COLLAPSED_HEIGHT)
         summary_layout = QHBoxLayout(summary)
-        summary_layout.setContentsMargins(16, 13, 12, 13)
-        summary_layout.setSpacing(14)
+        summary_layout.setContentsMargins(14, 9, 10, 9)
+        summary_layout.setSpacing(10)
 
         copy_layout = QVBoxLayout()
-        copy_layout.setSpacing(5)
+        copy_layout.setSpacing(2)
         copy_layout.addWidget(control)
         description_label = QLabel(description)
         description_label.setObjectName("mutedLabel")
@@ -82,7 +82,7 @@ class BackendOptionCard(QFrame):
         )
         if paired_capabilities:
             capability_layout = QVBoxLayout()
-            capability_layout.setSpacing(5)
+            capability_layout.setSpacing(3)
             capability_layout.addWidget(
                 CapabilityBadge("Voice cloning", bool(voice_cloning))
             )

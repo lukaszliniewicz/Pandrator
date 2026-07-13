@@ -1,4 +1,5 @@
 import unittest
+import inspect
 import os
 import subprocess
 import sys
@@ -20,6 +21,7 @@ from pandrator_installer import platforms
 from pandrator_installer.crispasr import detect_compute_backends, resolve_asset
 from pandrator_installer.reporting import HeadlessReporter
 from pandrator_installer.service import HeadlessInstaller
+from pandrator_installer.workflows import WorkflowMixin
 from pandrator_installer.constants import (
     NEMO_PYNINI_CONDA_SPEC,
     ONNX_ASR_INSTALL_SPEC,
@@ -29,6 +31,14 @@ from pandrator_installer.constants import (
 
 
 class InstallerArchitectureTests(unittest.TestCase):
+    def test_installer_does_not_manage_legacy_pycroppdf(self):
+        install_source = inspect.getsource(WorkflowMixin.install_process)
+        update_source = inspect.getsource(WorkflowMixin.update_process)
+
+        self.assertNotIn("PyCropPDF", install_source)
+        self.assertNotIn("PyCropPDF", update_source)
+        self.assertFalse(hasattr(HeadlessInstaller, "install_pycroppdf_requirements"))
+
     def test_crispasr_auto_prefers_cuda_then_vulkan(self):
         cuda_asset, cuda_backend = resolve_asset(
             "auto",

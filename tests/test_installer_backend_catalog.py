@@ -79,6 +79,21 @@ class TestInstallerBackendCatalog(unittest.TestCase):
             any(button.text() == "More details" for button in card.findChildren(QPushButton))
         )
 
+    def test_collapsed_card_keeps_the_summary_compact(self):
+        card = BackendOptionCard(
+            QCheckBox("Engine"),
+            "A concise description that remains visible while the details are collapsed.",
+            languages="English, Polish.",
+            voice_cloning=True,
+            prebuilt_voices=True,
+        )
+        card.show()
+        self.app.processEvents()
+
+        self.assertEqual(card.COLLAPSED_HEIGHT, 92)
+        self.assertEqual(card.height(), 92)
+        self.assertEqual(card.maximumHeight(), 92)
+
 
 if __name__ == "__main__":
     unittest.main()

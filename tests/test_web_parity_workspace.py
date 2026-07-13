@@ -245,12 +245,13 @@ class WebParityWorkspaceTests(unittest.TestCase):
         record = self.create_session("audiobook")
         plan = self.client.post(
             f"/api/v1/sessions/{record['id']}/generation-plan",
-            json={"segments": [{"text": "First segment."}, {"text": "Second segment."}]},
+            json={"segments": [{"text": "First segment.", "source_segment_ids": ["source-paragraph-1"]}, {"text": "Second segment."}]},
             headers=self.headers,
         )
         self.assertEqual(201, plan.status_code, plan.get_json())
         listed = self.client.get(f"/api/v1/sessions/{record['id']}/generation-segments").get_json()
         first = listed["items"][0]
+        self.assertEqual(["source-paragraph-1"], first["source_segment_ids"])
         database = self.app.extensions["pandrator"]["database"]
         with database.session() as session:
             session.add(AudioTake(generation_segment_id=first["id"], kind="tts", status="completed", is_active=True))
@@ -267,6 +268,24 @@ class WebParityWorkspaceTests(unittest.TestCase):
         self.assertEqual(202, started.status_code, started.get_json())
         paused = self.client.post(f"/api/v1/generation-runs/{started.get_json()['id']}/pause", headers=self.headers)
         self.assertEqual("pausing", paused.get_json()["status"])
+
+    def test_artifact_context_exposes_textual_parent_for_comparison(self):
+        record = self.create_session("audiobook")
+        extension = self.app.extensions["pandrator"]
+        paths = extension["paths"]
+        artifacts = extension["artifacts"]
+        source_path = paths.uploads / "raw-source.txt"
+        source_path.write_text("Raw source text", encoding="utf-8")
+        source = artifacts.register(source_path, kind="text", role="extracted_text", session_id=record["id"])
+        cleaned_path = paths.sessions / "cleaned-preview.txt"
+        cleaned_path.write_text("Cleaned source text", encoding="utf-8")
+        cleaned = artifacts.register(cleaned_path, kind="text", role="clean_text", session_id=record["id"], parent_ids=[source.id])
+
+        response = self.client.get(f"/api/v1/artifacts/{cleaned.id}/context")
+
+        self.assertEqual(200, response.status_code, response.get_json())
+        self.assertEqual(cleaned.id, response.get_json()["artifact"]["id"])
+        self.assertEqual(source.id, response.get_json()["parents"][0]["id"])
 
     def test_latest_generation_run_includes_its_worker_error(self):
         record = self.create_session("audiobook")

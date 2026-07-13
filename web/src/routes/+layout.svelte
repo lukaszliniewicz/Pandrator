@@ -69,7 +69,7 @@
     </form>
   </main>
 {:else}
-  <div class="app-shell min-h-screen md:grid" style={`grid-template-columns:${appState.sidebarCollapsed ? '5rem' : '17rem'} minmax(0,1fr)`}>
+  <div class="app-shell min-h-screen md:grid" style={`grid-template-columns:${appState.sidebarCollapsed ? '5rem' : '17rem'} minmax(0,1fr);--sidebar-offset:${appState.sidebarCollapsed ? '5rem' : '17rem'}`}>
     <button onclick={() => mobileOpen=true} class="fixed left-4 top-4 z-40 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-2.5 shadow md:hidden" aria-label="Open navigation"><Menu size={20}/></button>
     {#if mobileOpen}<button class="fixed inset-0 z-40 bg-black/35 md:hidden" onclick={() => mobileOpen=false} aria-label="Close navigation"></button>{/if}
     <aside class:collapsed={appState.sidebarCollapsed} class:mobile-open={mobileOpen} class="app-sidebar fixed inset-y-0 left-0 z-50 flex w-[17rem] flex-col border-r border-[var(--line)] bg-[var(--paper-strong)] px-3 py-4 md:z-20 md:h-[100svh] md:w-auto">

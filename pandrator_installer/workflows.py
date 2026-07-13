@@ -34,7 +34,6 @@ from .constants import (
     PANDRATOR_PYTHON_VERSION,
     PANDRATOR_REPO_BRANCH,
     PANDRATOR_REPO_URL,
-    PYCROPPDF_REPO_URL,
     RVC_API_REPO_DIRNAME,
     RVC_API_REPO_URL,
     RVC_GPU_SUPPORT_CONFIG_FLAG,
@@ -294,16 +293,11 @@ class WorkflowMixin:
                 self.add_pixi_conda_package(pandrator_path, 'pandrator_installer', NEMO_PYNINI_CONDA_SPEC)
 
                 self.reporter.progress(0.7)
-                self.reporter.status("Installing Pandrator and PyCropPDF dependencies...")
+                self.reporter.status("Installing Pandrator dependencies...")
                 self.install_requirements(pandrator_path, 'pandrator_installer', os.path.join(pandrator_repo_path, 'requirements.txt'))
                 self.ensure_nemo_text_processing_runtime(pandrator_path)
                 self.ensure_wtpsplit_runtime(pandrator_path)
                 self.ensure_pdf_ocr_runtime(pandrator_path)
-
-                pycroppdf_repo_path = os.path.join(pandrator_repo_path, 'PyCropPDF')
-                if not os.path.exists(pycroppdf_repo_path):
-                    self.clone_repo(PYCROPPDF_REPO_URL, pycroppdf_repo_path)
-                self.install_pycroppdf_requirements(pandrator_path, 'pandrator_installer', pycroppdf_repo_path)
 
             # Bootstrapping
             kokoro_bootstrap_future = None
@@ -545,7 +539,6 @@ class WorkflowMixin:
         """Main update process - runs in a worker thread"""
         pandrator_base_path = os.path.join(self.initial_working_dir, 'Pandrator')
         pandrator_repo_path = os.path.join(pandrator_base_path, 'Pandrator')
-        pycroppdf_repo_path = os.path.join(pandrator_repo_path, 'PyCropPDF')
         xtts_repo_path = os.path.join(pandrator_base_path, XTTS_API_REPO_DIRNAME)
         voxcpm_repo_path = os.path.join(pandrator_base_path, VOXCPM_API_REPO_DIRNAME)
         fishs2_repo_path = os.path.join(pandrator_base_path, FISHS2_API_REPO_DIRNAME)
@@ -737,35 +730,6 @@ class WorkflowMixin:
             self.ensure_wtpsplit_runtime(pandrator_base_path)
             self.reporter.status("Checking PDF OCR models...")
             self.ensure_pdf_ocr_runtime(pandrator_base_path)
-
-            if os.path.exists(pycroppdf_repo_path):
-                self.reporter.status("Updating PyCropPDF repository...")
-                logging.info(f"Updating PyCropPDF in: {pycroppdf_repo_path}")
-                self.pull_repo(pycroppdf_repo_path)
-            else:
-                self.reporter.status("Cloning PyCropPDF repository...")
-                self.clone_repo(PYCROPPDF_REPO_URL, pycroppdf_repo_path)
-
-            pycroppdf_requirements_file = os.path.join(pycroppdf_repo_path, 'requirements.txt')
-            if os.path.exists(pycroppdf_requirements_file):
-                self.reporter.status("Checking PyCropPDF dependencies...")
-                needs_pycroppdf_requirements, pycroppdf_requirements_reason = self.should_install_requirements(
-                    pandrator_base_path,
-                    'pandrator_installer',
-                    pycroppdf_requirements_file,
-                )
-                if needs_pycroppdf_requirements:
-                    self.reporter.status("Updating PyCropPDF dependencies...")
-                    logging.info(f"Installing PyCropPDF requirements because {pycroppdf_requirements_reason}")
-                    self.install_pycroppdf_requirements(
-                        pandrator_base_path,
-                        'pandrator_installer',
-                        pycroppdf_repo_path,
-                    )
-                else:
-                    logging.info(f"Skipping PyCropPDF requirements install: {pycroppdf_requirements_reason}")
-            else:
-                logging.warning(f"PyCropPDF requirements file not found at: {pycroppdf_requirements_file}")
 
             # Concurrently bootstrap Kokoro in background if it needs bootstrapping
             kokoro_bootstrap_future = None

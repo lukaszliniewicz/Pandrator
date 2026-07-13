@@ -2,6 +2,7 @@
   import {
     ChevronDown,
     ChevronUp,
+    BookOpenText,
     Download,
     ListMusic,
     Pause,
@@ -19,6 +20,7 @@
   import { api } from './api';
   import WaveformPeaks from './WaveformPeaks.svelte';
   import TtsServicesModal from './TtsServicesModal.svelte';
+  import AudioPlayer from './AudioPlayer.svelte';
 
   let { sessionId }: { sessionId: string } = $props();
   let mode = $state<'collapsed' | 'half' | 'full'>('collapsed');
@@ -30,7 +32,14 @@
   let loading = $state(false);
   let timer: number | undefined;
   let selectedRow = $state('');
-  let playing = $state<HTMLAudioElement | null>(null);
+  let viewMode = $state<'segments' | 'reading'>('segments');
+  let loadedFilter = $state('');
+  let playlistAudio: HTMLAudioElement | null = null;
+  let playlistResolve: (() => void) | null = null;
+  let playlistToken = 0;
+  let playlistActive = $state(false);
+  let playlistPaused = $state(false);
+  let activePlayingId = $state('');
   let rvcModels = $state<string[]>([]);
   let rvcModel = $state('');
   let rvcPitch = $state(0);
@@ -43,8 +52,20 @@
   let regenerateAfterReview = $state(true);
 
   const marked = $derived(payload.items.filter((item: any) => item.marked).map((item: any) => item.id));
+  const readingBlocks = $derived.by(() => {
+    const blocks: { key: string; kind: string; items: any[] }[] = [];
+    for (const item of payload.items) {
+      const sourceKey = item.source_segment_ids?.[0] ?? `segment-${item.id}`;
+      const standalone = ['heading', 'chapter_marker'].includes(item.node_kind);
+      const key = standalone ? `standalone-${item.id}` : String(sourceKey);
+      const previous = blocks.at(-1);
+      if (!standalone && previous?.key === key) previous.items.push(item);
+      else blocks.push({ key, kind: item.node_kind ?? 'paragraph', items: [item] });
+    }
+    return blocks;
+  });
 
-  async function load(reset = true) {
+  async function load(reset = true, preserveLoaded = reset) {
     try {
       const query = new URLSearchParams({ limit: '100' });
       if (filter === 'marked') query.set('marked', 'true');
@@ -55,7 +76,22 @@
         api<any>(`/sessions/${sessionId}/generation-runs/latest`),
         api<any>(`/sessions/${sessionId}/output-assemblies/latest`)
       ]);
-      payload = reset ? next : { ...next, items: [...payload.items, ...next.items] };
+      if (!reset) {
+        const known = new Set(payload.items.map((item: any) => item.id));
+        payload = { ...next, items: [...payload.items, ...next.items.filter((item: any) => !known.has(item.id))] };
+      } else if (preserveLoaded && loadedFilter === filter && payload.items.length > next.items.length) {
+        const incoming = new Map(next.items.map((item: any) => [item.id, item]));
+        const lastOrdinal = next.items.at(-1)?.ordinal ?? -1;
+        payload = {
+          ...next,
+          items: [
+            ...next.items,
+            ...payload.items.filter((item: any) => item.ordinal > lastOrdinal && !incoming.has(item.id))
+          ],
+          next_cursor: payload.next_cursor
+        };
+      } else payload = next;
+      loadedFilter = filter;
       run = latestRun.item;
       assembly = latestAssembly.item;
     } catch (caught) {
@@ -175,25 +211,75 @@
   }
 
   function stopPlayback() {
-    playing?.pause();
-    playing = null;
+    playlistToken += 1;
+    playlistAudio?.pause();
+    playlistAudio = null;
+    playlistResolve?.();
+    playlistResolve = null;
+    playlistActive = false;
+    playlistPaused = false;
+    activePlayingId = '';
   }
 
-  async function playFromSelection() {
-    stopPlayback();
-    const startIndex = Math.max(0, payload.items.findIndex((item: any) => item.id === selectedRow));
-    for (const item of payload.items.slice(startIndex)) {
-      const take = activeTake(item);
-      if (!take || item.removed) continue;
-      await new Promise<void>((resolve) => {
-        playing = new Audio(`/api/v1/artifacts/${take.artifact_id}/content`);
-        playing.onended = () => resolve();
-        playing.onerror = () => resolve();
-        playing.play().catch(() => resolve());
-      });
-      if (!playing) return;
+  function togglePlaylistPause() {
+    if (!playlistActive) return;
+    playlistPaused = !playlistPaused;
+    if (playlistPaused) playlistAudio?.pause();
+    else playlistAudio?.play().catch(() => { error = 'Playback could not be resumed.'; });
+  }
+
+  async function waitForSilence(milliseconds: number, token: number) {
+    let remaining = Math.max(0, milliseconds);
+    let previous = performance.now();
+    while (remaining > 0 && token === playlistToken) {
+      await new Promise((resolve) => window.setTimeout(resolve, Math.min(remaining, 50)));
+      const now = performance.now();
+      if (!playlistPaused) remaining -= now - previous;
+      previous = now;
     }
-    playing = null;
+  }
+
+  async function playTake(item: any, token: number) {
+    const take = activeTake(item);
+    if (!take || item.removed) return;
+    activePlayingId = item.id;
+    selectedRow = item.id;
+    await new Promise<void>((resolve) => {
+      playlistResolve = resolve;
+      playlistAudio = new Audio(`/api/v1/artifacts/${take.artifact_id}/content`);
+      playlistAudio.onended = () => resolve();
+      playlistAudio.onerror = () => resolve();
+      playlistAudio.play().catch(resolve);
+    });
+    playlistResolve = null;
+    playlistAudio = null;
+    if (token === playlistToken) await waitForSilence(Number(item.silence_after_ms || 0), token);
+  }
+
+  async function playFromSelection(startId = selectedRow) {
+    stopPlayback();
+    const token = playlistToken;
+    playlistActive = true;
+    let index = Math.max(0, payload.items.findIndex((item: any) => item.id === startId));
+    while (token === playlistToken) {
+      if (index >= payload.items.length) {
+        if (payload.next_cursor == null) break;
+        const previousLength = payload.items.length;
+        await load(false);
+        if (payload.items.length === previousLength) break;
+      }
+      const item = payload.items[index++];
+      if (item) await playTake(item, token);
+    }
+    if (token === playlistToken) stopPlayback();
+  }
+
+  async function playOnly(item: any) {
+    stopPlayback();
+    const token = playlistToken;
+    playlistActive = true;
+    await playTake(item, token);
+    if (token === playlistToken) stopPlayback();
   }
 
   function keyboard(event: KeyboardEvent) {
@@ -214,23 +300,26 @@
   }
 
   onMount(() => {
-    const refresh = () => load();
-    load();
+    const refresh = () => load(true, true);
     loadRvc();
     window.addEventListener('pandrator:generation-changed', refresh);
-    return () => window.removeEventListener('pandrator:generation-changed', refresh);
+    return () => {
+      window.removeEventListener('pandrator:generation-changed', refresh);
+      if (timer) window.clearTimeout(timer);
+      stopPlayback();
+    };
   });
-  $effect(() => { filter; load(); });
+  $effect(() => { filter; load(true, false); });
   $effect(() => {
     if (timer) clearTimeout(timer);
     if ((run && ['queued', 'running', 'pausing', 'cancel_requested'].includes(run.status)) || (assembly && ['queued', 'running'].includes(assembly.status))) {
-      timer = window.setTimeout(() => load(), 1200);
+      timer = window.setTimeout(() => load(true, true), 1200);
     }
   });
 </script>
 
 {#if payload.total > 0 || run}
-  <aside class:full={mode === 'full'} class:half={mode === 'half'} class="generation-drawer surface fixed inset-x-3 bottom-3 z-50 overflow-hidden rounded-2xl md:left-[calc(var(--sidebar-offset,5rem)+.75rem)]">
+  <aside class:full={mode === 'full'} class:half={mode === 'half'} class="generation-drawer fixed inset-x-3 bottom-3 z-50 overflow-hidden rounded-2xl md:left-[calc(var(--sidebar-offset,5rem)+.75rem)]">
     <header class="flex flex-wrap items-center gap-3 border-b border-[var(--line)] px-4 py-3">
       <button onclick={() => mode = mode === 'collapsed' ? 'half' : 'collapsed'} class="flex items-center gap-2 font-semibold">
         {#if mode === 'collapsed'}<ChevronUp size={17} />{:else}<ChevronDown size={17} />{/if}
@@ -258,9 +347,13 @@
           {#each ['all', 'completed', 'queued', 'marked', 'failed', 'stale'] as value}
             <button onclick={() => filter = value as typeof filter} class:active={filter === value} class="filter capitalize">{value === 'completed' ? 'generated' : value}</button>
           {/each}
+          <div class="view-switch" aria-label="Generation review view">
+            <button onclick={() => viewMode='segments'} class:active={viewMode==='segments'}><ListMusic size={13}/> Segments</button>
+            <button onclick={() => viewMode='reading'} class:active={viewMode==='reading'}><BookOpenText size={13}/> Reading</button>
+          </div>
           <button onkeydown={keyboard} class="action" title="Focus, then use arrows, Space to mark, and Delete to remove">Keyboard navigation</button>
-          <button onclick={playFromSelection} class="action ml-auto"><ListMusic size={14} /> Play from selection</button>
-          {#if playing}<button onclick={stopPlayback} class="action"><Square size={14} /> Stop playback</button>{/if}
+          <button onclick={() => playFromSelection()} class="action"><ListMusic size={14} /> Play as playlist</button>
+          {#if playlistActive}<button onclick={togglePlaylistPause} class="action">{#if playlistPaused}<Play size={14}/>{:else}<Pause size={14}/>{/if} {playlistPaused?'Resume':'Pause'}</button><button onclick={stopPlayback} class="action"><Square size={14} /> Stop</button>{/if}
           <button onclick={() => start('regenerate', marked)} disabled={!marked.length} class="action"><RefreshCw size={14} /> Regenerate marked</button>
           <button onclick={assemble} disabled={loading || assembly?.status === 'queued' || assembly?.status === 'running'} class="action primary">
             <Sparkles size={14} /> {assembly?.status === 'stale' ? 'Reassemble output' : 'Assemble output'}
@@ -272,7 +365,7 @@
         {#if assembly?.status === 'completed' && assembly.artifact_id}
           <div class="flex flex-wrap items-center gap-3 border-b border-[var(--line)] bg-[var(--accent-soft)] px-4 py-2">
             <strong class="text-xs">Assembled output</strong>
-            <audio controls preload="metadata" src={`/api/v1/artifacts/${assembly.artifact_id}/content`} class="h-8 min-w-64 flex-1"></audio>
+            <div class="min-w-64 flex-1"><AudioPlayer src={`/api/v1/artifacts/${assembly.artifact_id}/content`} label="Assembled output"/></div>
             <a class="action" download href={`/api/v1/artifacts/${assembly.artifact_id}/content`}><Download size={14} /> Download</a>
           </div>
         {:else if assembly?.status === 'stale'}
@@ -308,9 +401,10 @@
         {#if error}<p class="p-3 text-sm text-red-500">{error}</p>{/if}
 
         <div class="min-h-0 flex-1 overflow-auto">
+          {#if viewMode === 'segments'}
           <table class="w-full border-collapse text-sm">
             <thead class="sticky top-0 z-10 bg-[var(--paper-strong)]">
-              <tr><th class="w-12">Mark</th><th class="w-14">#</th><th class="text-left">Generation text and delivery</th><th class="w-52">Audio take</th><th class="w-24">Status</th><th class="w-16"></th></tr>
+              <tr><th class="w-12">Mark</th><th class="w-14">#</th><th class="text-left">Generation text and delivery</th><th class="w-52">Audio take</th><th class="w-24">Status</th><th class="w-24"></th></tr>
             </thead>
             <tbody>
               {#each payload.items as item}
@@ -336,7 +430,7 @@
                   </td>
                   <td>
                     {#if activeTake(item)}
-                      <audio controls preload="none" src={`/api/v1/artifacts/${activeTake(item).artifact_id}/content`} class="h-8 w-48"></audio>
+                      <AudioPlayer compact preload="none" src={`/api/v1/artifacts/${activeTake(item).artifact_id}/content`} label={`Segment ${item.ordinal + 1}`}/>
                       <WaveformPeaks artifactId={activeTake(item).artifact_id} />
                       <select value={activeTake(item).id} onchange={(event) => selectTake(item, (event.currentTarget as HTMLSelectElement).value)} class="mini mt-1 w-full">
                         {#each item.takes as take}<option value={take.id}>{take.kind} · {take.status} · {take.id.slice(0, 6)}</option>{/each}
@@ -344,11 +438,30 @@
                     {:else}<span class="muted text-xs">Not generated</span>{/if}
                   </td>
                   <td><span class="status">{item.status}</span></td>
-                  <td><button onclick={(event) => { event.stopPropagation(); patchSegment(item, { removed: !item.removed }); }} class="action" aria-label={item.removed ? 'Restore segment' : 'Remove segment'}>{#if item.removed}<RotateCcw size={14} />{:else}<Trash2 size={14} />{/if}</button></td>
+                  <td><div class="flex justify-center gap-1"><button onclick={(event) => { event.stopPropagation(); start('regenerate', [item.id]); }} disabled={loading || item.removed} class="action icon-action" title="Regenerate this segment" aria-label={`Regenerate segment ${item.ordinal + 1}`}><RefreshCw size={14}/></button><button onclick={(event) => { event.stopPropagation(); patchSegment(item, { removed: !item.removed }); }} class="action icon-action" aria-label={item.removed ? 'Restore segment' : 'Remove segment'}>{#if item.removed}<RotateCcw size={14} />{:else}<Trash2 size={14} />{/if}</button></div></td>
                 </tr>
               {/each}
             </tbody>
           </table>
+          {:else}
+            <div class="reading-view mx-auto max-w-4xl px-5 py-7 sm:px-8">
+              <div class="mb-7 flex flex-wrap items-end justify-between gap-3 border-b border-[var(--line)] pb-4"><div><div class="eyebrow">Continuous review</div><h3 class="mt-1 text-xl font-semibold">Narration text</h3><p class="muted mt-1 text-xs">Select any sentence to hear its active take. Playlist playback follows the saved pauses and highlights the current sentence.</p></div><span class="muted text-xs">Loaded {payload.items.length} of {payload.total}</span></div>
+              {#each readingBlocks as block (block.key)}
+                {#if ['heading','chapter_marker'].includes(block.kind)}
+                  <h4 class:now-playing={block.items.some((item)=>item.id===activePlayingId)} class="reading-heading">
+                    {#each block.items as item}<button onclick={() => playOnly(item)} disabled={!activeTake(item) || item.removed}>{item.text}</button>{/each}
+                  </h4>
+                {:else}
+                  <p class="reading-paragraph">
+                    {#each block.items as item}
+                      <button onclick={() => playOnly(item)} disabled={!activeTake(item) || item.removed} class:now-playing={item.id===activePlayingId} class:selected-sentence={item.id===selectedRow} class:removed={item.removed} title={activeTake(item)?`Play segment ${item.ordinal + 1}`:'Audio has not been generated'}>{item.optimized_text || item.text}</button>{' '}
+                    {/each}
+                  </p>
+                {/if}
+              {/each}
+              {#if !readingBlocks.length}<p class="muted py-16 text-center">No segments match this filter.</p>{/if}
+            </div>
+          {/if}
           {#if payload.next_cursor != null}<button onclick={() => load(false)} class="m-4 w-[calc(100%-2rem)] rounded-xl border border-[var(--line)] py-2 text-sm font-semibold">Load more</button>{/if}
         </div>
       </div>
@@ -358,7 +471,7 @@
 {#if ttsServicesOpen}<TtsServicesModal onclose={() => ttsServicesOpen=false}/>{/if}
 {#if comparisonItem}
   <div class="fixed inset-0 z-[95] grid place-items-center bg-black/55 p-3 backdrop-blur-sm" role="presentation" onclick={(event)=>event.target===event.currentTarget&&(comparisonItem=null)}>
-    <div class="surface flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-3xl" role="dialog" aria-modal="true" aria-labelledby="segment-optimization-title">
+    <div class="comparison-modal flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-3xl" role="dialog" aria-modal="true" aria-labelledby="segment-optimization-title">
       <header class="flex items-start gap-4 border-b border-[var(--line)] px-5 py-4"><div class="min-w-0 flex-1"><div class="eyebrow">Generation segment {comparisonItem.ordinal + 1}</div><h2 id="segment-optimization-title" class="mt-1 text-xl font-semibold">Review speech optimization</h2><p class="muted mt-1 text-xs">The source remains unchanged. Saving the optimized delivery marks existing takes stale.</p></div><button onclick={()=>comparisonItem=null} class="rounded-xl p-2" aria-label="Close"><X size={20}/></button></header>
       <div class="grid min-h-0 flex-1 gap-4 overflow-auto p-5 md:grid-cols-2"><section><h3 class="mb-2 text-xs font-bold uppercase tracking-wider text-[var(--muted)]">Original generation text</h3><div class="h-full min-h-44 rounded-2xl border border-[var(--line)] bg-[var(--paper)] p-4 text-sm leading-7">{comparisonItem.text}</div></section><section><h3 class="mb-2 text-xs font-bold uppercase tracking-wider text-[var(--muted)]">Optimized delivery · editable</h3><textarea bind:value={comparisonText} class="h-full min-h-44 w-full resize-y rounded-2xl border border-[var(--line)] bg-[var(--paper)] p-4 text-sm leading-7"></textarea></section></div>
       <footer class="flex flex-wrap items-center justify-end gap-3 border-t border-[var(--line)] px-5 py-4"><label class="mr-auto flex items-center gap-2 text-xs font-semibold"><input type="checkbox" bind:checked={regenerateAfterReview} class="accent-[var(--accent)]"/> Regenerate this segment after saving</label><button onclick={()=>comparisonItem=null} class="action">Cancel</button><button onclick={saveOptimizationReview} disabled={!comparisonText.trim()} class="action primary"><Save size={14}/> Save review</button></footer>
@@ -367,10 +480,15 @@
 {/if}
 
 <style>
-  .generation-drawer{height:3.9rem;transition:height .18s ease}.generation-drawer.half{height:min(52vh,38rem)}.generation-drawer.full{height:calc(100vh - 1.5rem)}
+  .generation-drawer{height:3.9rem;border:1px solid var(--line);background:var(--paper-strong);box-shadow:0 18px 55px color-mix(in srgb,var(--ink) 18%,transparent);transition:height .18s ease}.generation-drawer.half{height:min(52vh,38rem)}.generation-drawer.full{height:calc(100vh - 1.5rem)}
+  .comparison-modal{border:1px solid var(--line);background:var(--paper-strong);box-shadow:0 22px 70px rgba(0,0,0,.25)}
   .action{display:flex;align-items:center;gap:.35rem;border:1px solid var(--line);border-radius:.55rem;padding:.4rem .6rem;font-size:.7rem;font-weight:700}.action.primary{background:var(--accent);color:white}.action:disabled{opacity:.35}
+  .icon-action{padding:.42rem}
   .filter{border-radius:.5rem;padding:.4rem .65rem;color:var(--muted);font-size:.72rem;font-weight:650}.filter.active{background:var(--accent-soft);color:var(--ink)}
+  .view-switch{display:flex;border:1px solid var(--line);border-radius:.6rem;background:var(--paper);padding:.15rem}.view-switch button{display:flex;align-items:center;gap:.3rem;border-radius:.45rem;padding:.3rem .5rem;font-size:.68rem;font-weight:700;color:var(--muted)}.view-switch button.active{background:var(--accent-soft);color:var(--ink)}
   th,td{border-bottom:1px solid var(--line);padding:.55rem;text-align:center;vertical-align:middle}tr.removed{opacity:.42}tr.selected{background:var(--accent-soft)}
   .status{font-size:.68rem;text-transform:uppercase;color:var(--muted)}.mini{border:1px solid var(--line);border-radius:.45rem;background:var(--paper);padding:.3rem .45rem;font-size:.68rem}
+  .reading-view{font-family:Georgia,'Times New Roman',serif}.reading-heading{margin:2rem 0 .75rem;font-size:1.32rem;font-weight:700;line-height:1.35}.reading-heading button{text-align:left}.reading-heading.now-playing button{color:var(--accent)}
+  .reading-paragraph{margin:0 0 1.2rem;font-size:1.02rem;line-height:1.9}.reading-paragraph button{display:inline;border-radius:.35rem;padding:.08rem .13rem;text-align:left;transition:background .12s ease,color .12s ease}.reading-paragraph button:hover:not(:disabled),.reading-paragraph button.selected-sentence{background:var(--accent-soft)}.reading-paragraph button.now-playing{background:var(--accent);color:white;box-shadow:0 0 0 .16rem color-mix(in srgb,var(--accent) 18%,transparent)}.reading-paragraph button:disabled{cursor:default}.reading-paragraph button.removed{text-decoration:line-through;opacity:.42}
   @media(prefers-reduced-motion:reduce){.generation-drawer{transition:none}}
 </style>
