@@ -75,6 +75,49 @@ class ProviderApiTests(unittest.TestCase):
         manual = next(item for item in records if item["model_id"] == "manual")
         self.assertEqual(manual["default_reasoning_effort"], "custom-fast")
 
+    def test_provider_profiles_update_and_global_default_selection(self):
+        profiles = self.client.get("/api/v1/providers/profiles").get_json()["items"]
+        self.assertIn("lm-studio", {item["id"] for item in profiles})
+        first_provider = self.client.post(
+            "/api/v1/providers",
+            json={"provider_key": "openai", "label": "Local", "base_url": "http://127.0.0.1:1234/v1"},
+            headers=self.headers,
+        ).get_json()
+        first_model = self.client.post(
+            f"/api/v1/providers/{first_provider['id']}/models",
+            json={"model_id": "local-model", "is_default": True},
+            headers=self.headers,
+        ).get_json()
+        second_provider = self.client.post(
+            "/api/v1/providers",
+            json={"provider_key": "anthropic", "label": "Cloud", "secret_ref": "env:ANTHROPIC_API_KEY"},
+            headers=self.headers,
+        ).get_json()
+        second_model = self.client.post(
+            f"/api/v1/providers/{second_provider['id']}/models",
+            json={"model_id": "cloud-model", "is_default": True},
+            headers=self.headers,
+        ).get_json()
+        refreshed_first = self.client.get(f"/api/v1/providers/{first_provider['id']}/models").get_json()["items"]
+        self.assertFalse(next(item for item in refreshed_first if item["id"] == first_model["id"])["is_default"])
+        updated = self.client.patch(
+            f"/api/v1/providers/{first_provider['id']}",
+            json={"label": "LM Studio", "options": {"profile_id": "lm-studio", "request_options": {"organization": "studio"}}},
+            headers={**self.headers, "If-Match": f'"{first_provider["revision"]}"'},
+        )
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.get_json()["label"], "LM Studio")
+        blocked = self.client.delete(f"/api/v1/providers/{second_provider['id']}", json={}, headers=self.headers)
+        self.assertEqual(blocked.status_code, 409)
+        removed = self.client.delete(
+            f"/api/v1/providers/{second_provider['id']}",
+            json={"replacement_model_record_id": first_model["id"]},
+            headers=self.headers,
+        )
+        self.assertEqual(removed.status_code, 204)
+        remaining = self.client.get(f"/api/v1/providers/{first_provider['id']}/models").get_json()["items"]
+        self.assertTrue(remaining[0]["is_default"])
+
 
 if __name__ == "__main__":
     unittest.main()

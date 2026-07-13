@@ -388,6 +388,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/providers/profiles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listProviderProfiles"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/providers/{providerId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["deleteProvider"];
+        options?: never;
+        head?: never;
+        patch: operations["updateProvider"];
+        trace?: never;
+    };
     "/api/v1/providers/{providerId}/models": {
         parameters: {
             query?: never;
@@ -1572,6 +1604,11 @@ export interface components {
              */
             base_url: string | null;
             /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /**
              * Kind
              * @default llm
              */
@@ -1597,6 +1634,41 @@ export interface components {
              * @default null
              */
             model_id: string | null;
+        };
+        /** ProviderUpdate */
+        ProviderUpdate: {
+            /**
+             * Base Url
+             * @default null
+             */
+            base_url: string | null;
+            /**
+             * Enabled
+             * @default null
+             */
+            enabled: boolean | null;
+            /**
+             * Label
+             * @default null
+             */
+            label: string | null;
+            /**
+             * Options
+             * @default null
+             */
+            options: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Provider Key
+             * @default null
+             */
+            provider_key: string | null;
+            /**
+             * Secret Ref
+             * @default null
+             */
+            secret_ref: string | null;
         };
         /** RvcConvertRequest */
         RvcConvertRequest: {
@@ -2302,6 +2374,78 @@ export interface operations {
         responses: {
             /** @description Created */
             201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listProviderProfiles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description LiteLLM provider profiles */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteProvider: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Replacement required */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    updateProvider: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProviderUpdate"];
+            };
+        };
+        responses: {
+            /** @description Updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

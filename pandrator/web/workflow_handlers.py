@@ -848,7 +848,7 @@ class WorkflowHandlers:
                 training.status = "succeeded"
                 training.output_artifact_id = artifact.id
                 training.updated_at = utcnow()
-                defaults = session.get(AppSetting, "defaults.tts")
+                defaults = session.get(AppSetting, "services.tts")
                 value = dict(defaults.value_json or {}) if defaults and isinstance(defaults.value_json, dict) else {}
                 providers = [dict(item) for item in value.get("provider_configs", []) if isinstance(item, dict)]
                 xtts = next((item for item in providers if str(item.get("id") or "").lower() == "xtts"), None)
@@ -857,7 +857,7 @@ class WorkflowHandlers:
                     providers.append(xtts)
                 xtts["models"] = list(dict.fromkeys([*(xtts.get("models") or []), model_name]))
                 if defaults is None:
-                    session.add(AppSetting(key="defaults.tts", value_json={**value, "provider_configs": providers}, revision=1))
+                    session.add(AppSetting(key="services.tts", value_json={**value, "provider_configs": providers}, revision=1))
                 else:
                     session.add(AppSettingHistory(key=defaults.key, value_json=defaults.value_json, revision=defaults.revision))
                     defaults.value_json = {**value, "provider_configs": providers}

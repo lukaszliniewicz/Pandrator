@@ -86,7 +86,7 @@
     <main class="min-w-0 px-5 pb-28 pt-20 sm:px-8 md:px-10 md:pt-9 xl:px-14">{@render children()}</main>
   </div>
   {#if appState.setupReturnVisible}
-    <aside class="surface fixed bottom-5 right-5 z-40 max-w-sm rounded-2xl p-4"><div class="flex items-start gap-3"><Settings2 class="mt-0.5 shrink-0 text-[var(--accent)]" size={18}/><div class="min-w-0"><div class="text-sm font-semibold">Return to setup</div><p class="muted mt-1 text-xs leading-relaxed">{appState.setupGuidance}</p><div class="mt-3 flex gap-2"><a href="/?setup=1" class="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-white">Continue setup</a><button onclick={() => appState.setupReturnVisible=false} class="rounded-lg border border-[var(--line)] px-3 py-1.5 text-xs font-semibold">Dismiss</button></div></div></div></aside>
+    <aside class="surface fixed bottom-5 right-5 z-40 w-[min(30rem,calc(100vw-2rem))] rounded-2xl p-5"><div class="flex items-start gap-3"><Settings2 class="mt-0.5 shrink-0 text-[var(--accent)]" size={18}/><div class="min-w-0 flex-1"><div class="font-semibold">Return to setup</div><p class="muted mt-1 text-sm leading-relaxed">{appState.setupGuidance}</p><div class="mt-4 flex flex-wrap gap-2"><a href="/?setup=1" class="btn btn-primary">Continue setup</a><button onclick={() => appState.setupReturnVisible=false} class="btn btn-secondary">Dismiss</button></div></div></div></aside>
   {/if}
 {/if}
 

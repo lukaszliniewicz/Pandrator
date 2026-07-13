@@ -31,7 +31,7 @@ class ProviderSettingsTests(unittest.TestCase):
             os.environ["PANDRATOR_TEST_KEY"] = "secret-value"
             try:
                 with database.session() as session:
-                    provider = Provider(provider_key="openai", label="OpenAI", secret_ref="env:PANDRATOR_TEST_KEY")
+                    provider = Provider(provider_key="openai", label="OpenAI", secret_ref="env:PANDRATOR_TEST_KEY", options_json={"request_options": {"organization": "pandrator"}})
                     session.add(provider)
                     session.flush()
                     session.add(ProviderModel(provider_id=provider.id, model_id="gpt-test", is_default=True, default_temperature=0.0, default_reasoning_effort="custom-fast"))
@@ -42,6 +42,7 @@ class ProviderSettingsTests(unittest.TestCase):
                 self.assertEqual(record["default_reasoning_effort"], "custom-fast")
                 self.assertEqual(settings.provider_configs[0]["api_key_env"], "PANDRATOR_TEST_KEY")
                 self.assertNotIn("secret-value", str(settings.provider_configs))
+                self.assertEqual(settings.provider_configs[0]["request_options"], {"organization": "pandrator"})
                 self.assertEqual(settings.request_timeout_seconds, 777)
             finally:
                 os.environ.pop("PANDRATOR_TEST_KEY", None)
@@ -166,7 +167,7 @@ class TrainingHandlerTests(unittest.TestCase):
                     self.assertEqual(result["artifact_id"], record.output_artifact_id)
                     artifact = session.get(Artifact, record.output_artifact_id)
                     self.assertEqual("xtts_model", artifact.role)
-                    defaults = session.get(AppSetting, "defaults.tts")
+                    defaults = session.get(AppSetting, "services.tts")
                     xtts = next(item for item in defaults.value_json["provider_configs"] if item["id"] == "xtts")
                     self.assertIn("narrator", xtts["models"])
             finally:

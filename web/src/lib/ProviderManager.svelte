@@ -1,78 +1,281 @@
 <script lang="ts">
-  import { ArrowLeft, Bot, Plus, RefreshCw, Settings2, Trash2, X } from '@lucide/svelte';
+  import { ArrowLeft, Bot, CheckCircle2, ChevronDown, CircleAlert, Pencil, Plus, RefreshCw, Settings2, Trash2, X } from '@lucide/svelte';
   import { api } from './api';
   import { onMount } from 'svelte';
   import GuidedTour from './GuidedTour.svelte';
 
-  type Provider = { id: string; provider_key: string; label: string; base_url?: string; secret_ref?: string; enabled: boolean };
-  type Model = { id: string; provider_id: string; model_id: string; is_default: boolean; default_temperature: number | null; default_reasoning_effort: string | null; input_cost_per_million: number | null; cached_input_cost_per_million: number | null; output_cost_per_million: number | null; revision: number };
+  type Provider = { id: string; provider_key: string; label: string; base_url?: string; secret_ref?: string; enabled: boolean; options_json: Record<string, any>; revision: number };
+  type ProviderProfile = { id: string; label: string; provider_key: string; base_url: string; secret_ref: string; description: string; options?: Record<string, any> };
+  type Model = { id: string; provider_id: string; model_id: string; is_default: boolean; default_temperature: number | null; default_reasoning_effort: string | null; input_cost_per_million: number | null; cached_input_cost_per_million: number | null; output_cost_per_million: number | null; options_json: Record<string, any>; revision: number };
+
   let { onback }: { onback: () => void } = $props();
   let providers = $state<Provider[]>([]);
+  let profiles = $state<ProviderProfile[]>([]);
   let models = $state<Record<string, Model[]>>({});
   let error = $state('');
-  let edit = $state<Model | null>(null);
-  let addProvider = $state(false);
-  let providerLabel = $state(''); let providerKey = $state('openai'); let providerUrl = $state(''); let providerSecretRef = $state('env:OPENAI_API_KEY');
-  let modelId = $state(''); let addModelProvider = $state<string | null>(null);
-  let temperature = $state(''); let reasoning = $state(''); let inputCost = $state(''); let cachedCost = $state(''); let outputCost = $state('');
+  let notice = $state('');
+  let loading = $state(false);
   let tourOpen = $state(false);
-  const tourSteps = [{section:'Models',title:'One record per canonical model',body:'Add discovered or manual model IDs under their provider. Refresh preserves manual records and their settings.'},{section:'Defaults',title:'Request parameters are optional',body:'A blank temperature or reasoning value is omitted. Zero is a specific temperature and is sent.'},{section:'Costs',title:'Provider cost wins',body:'Custom uncached, cached, and output rates are used only when the provider does not return an authoritative cost.'}];
+
+  let providerModal = $state(false);
+  let editingProvider = $state<Provider | null>(null);
+  let providerProfileId = $state('custom-openai');
+  let providerLabel = $state('');
+  let providerKey = $state('openai');
+  let providerUrl = $state('');
+  let providerSecretRef = $state('');
+  let providerEnabled = $state(true);
+  let providerOptions = $state('{}');
+
+  let addModelProvider = $state<string | null>(null);
+  let modelId = $state('');
+  let edit = $state<Model | null>(null);
+  let temperature = $state('');
+  let reasoning = $state('');
+  let inputCost = $state('');
+  let cachedCost = $state('');
+  let outputCost = $state('');
+  let deletingModel = $state<Model | null>(null);
+  let deletingProvider = $state<Provider | null>(null);
+  let replacementModelRecordId = $state('');
+
+  const allModels = $derived(Object.values(models).flat());
+  const selectedProviderProfile = $derived(profiles.find((item) => item.id === providerProfileId));
+  const providerKeys = ['openai', 'anthropic', 'gemini', 'openrouter', 'ollama', 'groq', 'mistral', 'vertex_ai', 'azure', 'bedrock'];
+  const tourSteps = [
+    { section: 'Connections', title: 'Profiles are editable starting points', body: 'Choose a LiteLLM profile, then adjust its display name, provider adapter, URL, credential reference, and advanced request options.' },
+    { section: 'Models', title: 'One record per canonical model', body: 'Discovery adds new IDs without removing manual models or their temperature, reasoning, and cost settings.' },
+    { section: 'Defaults', title: 'One application default', body: 'The active default applies across providers. Blank optional values are omitted; zero temperature is sent explicitly.' }
+  ];
+
+  function report(caught: unknown) {
+    error = caught instanceof Error ? caught.message : String(caught);
+    notice = '';
+  }
 
   async function load() {
+    loading = true;
     try {
-      const result = await api<{items: Provider[]}>('/providers'); providers = result.items;
+      const [providerResult, profileResult] = await Promise.all([
+        api<{items: Provider[]}>('/providers'),
+        api<{items: ProviderProfile[]}>('/providers/profiles')
+      ]);
+      providers = providerResult.items;
+      profiles = profileResult.items;
       const entries = await Promise.all(providers.map(async (provider) => [provider.id, (await api<{items: Model[]}>(`/providers/${provider.id}/models`)).items] as const));
       models = Object.fromEntries(entries);
-    } catch (caught) { error = caught instanceof Error ? caught.message : String(caught); }
+      error = '';
+    } catch (caught) {
+      report(caught);
+    } finally {
+      loading = false;
+    }
   }
+
+  function applyProfile(profileId: string) {
+    providerProfileId = profileId;
+    const profile = profiles.find((item) => item.id === profileId);
+    if (!profile) return;
+    providerLabel = profile.label;
+    providerKey = profile.provider_key;
+    providerUrl = profile.base_url ?? '';
+    providerSecretRef = profile.secret_ref ?? '';
+    providerOptions = JSON.stringify({ ...(profile.options ?? {}), profile_id: profile.id }, null, 2);
+  }
+
+  function openNewProvider() {
+    editingProvider = null;
+    providerEnabled = true;
+    applyProfile(profiles.some((item) => item.id === 'custom-openai') ? 'custom-openai' : profiles[0]?.id ?? '');
+    providerModal = true;
+  }
+
+  function openProvider(provider: Provider) {
+    editingProvider = provider;
+    providerProfileId = String(provider.options_json?.profile_id ?? '');
+    providerLabel = provider.label;
+    providerKey = provider.provider_key;
+    providerUrl = provider.base_url ?? '';
+    providerSecretRef = provider.secret_ref ?? '';
+    providerEnabled = provider.enabled;
+    providerOptions = JSON.stringify(provider.options_json ?? {}, null, 2);
+    providerModal = true;
+  }
+
+  async function saveProvider() {
+    if (!providerLabel.trim()) { error = 'A display name is required.'; return; }
+    if (!providerKey.trim()) { error = 'A LiteLLM provider adapter is required.'; return; }
+    let options: Record<string, any>;
+    try { options = JSON.parse(providerOptions || '{}'); }
+    catch { error = 'Advanced LiteLLM options must be valid JSON.'; return; }
+    const body = JSON.stringify({ provider_key: providerKey.trim(), label: providerLabel.trim(), enabled: providerEnabled, base_url: providerUrl.trim() || null, secret_ref: providerSecretRef.trim() || null, options });
+    try {
+      if (editingProvider) {
+        await api(`/providers/${editingProvider.id}`, { method: 'PATCH', headers: { 'If-Match': `"${editingProvider.revision}"` }, body });
+        notice = `Updated ${providerLabel.trim()}.`;
+      } else {
+        await api('/providers', { method: 'POST', body });
+        notice = `Added ${providerLabel.trim()}. Add or discover at least one model next.`;
+      }
+      providerModal = false;
+      await load();
+    } catch (caught) { report(caught); }
+  }
+
   function openSettings(model: Model) {
-    edit = model; temperature = model.default_temperature?.toString() ?? ''; reasoning = model.default_reasoning_effort ?? '';
-    inputCost = model.input_cost_per_million?.toString() ?? ''; cachedCost = model.cached_input_cost_per_million?.toString() ?? ''; outputCost = model.output_cost_per_million?.toString() ?? '';
+    edit = model;
+    temperature = model.default_temperature?.toString() ?? '';
+    reasoning = model.default_reasoning_effort ?? '';
+    inputCost = model.input_cost_per_million?.toString() ?? '';
+    cachedCost = model.cached_input_cost_per_million?.toString() ?? '';
+    outputCost = model.output_cost_per_million?.toString() ?? '';
   }
+
   const optionalNumber = (value: string) => value.trim() === '' ? null : Number(value);
+
   async function saveModel() {
     if (!edit) return;
     try {
-      await api(`/providers/${edit.provider_id}/models/${edit.id}`, { method: 'PATCH', headers: {'If-Match': `"${edit.revision}"`}, body: JSON.stringify({ default_temperature: optionalNumber(temperature), default_reasoning_effort: reasoning.trim() || null, input_cost_per_million: optionalNumber(inputCost), cached_input_cost_per_million: optionalNumber(cachedCost), output_cost_per_million: optionalNumber(outputCost) }) });
-      edit = null; await load();
-    } catch (caught) { error = caught instanceof Error ? caught.message : String(caught); }
+      await api(`/providers/${edit.provider_id}/models/${edit.id}`, { method: 'PATCH', headers: { 'If-Match': `"${edit.revision}"` }, body: JSON.stringify({ default_temperature: optionalNumber(temperature), default_reasoning_effort: reasoning.trim() || null, input_cost_per_million: optionalNumber(inputCost), cached_input_cost_per_million: optionalNumber(cachedCost), output_cost_per_million: optionalNumber(outputCost) }) });
+      edit = null;
+      notice = 'Model defaults saved.';
+      await load();
+    } catch (caught) { report(caught); }
   }
+
   async function makeDefault(model: Model) {
-    try { await api(`/providers/${model.provider_id}/models/${model.id}`, { method:'PATCH', headers:{'If-Match':`"${model.revision}"`}, body:JSON.stringify({is_default:true}) }); await load(); }
-    catch (caught) { error = caught instanceof Error ? caught.message : String(caught); }
+    try {
+      await api(`/providers/${model.provider_id}/models/${model.id}`, { method: 'PATCH', headers: { 'If-Match': `"${model.revision}"` }, body: JSON.stringify({ is_default: true }) });
+      notice = `${model.model_id} is now the application default.`;
+      await load();
+    } catch (caught) { report(caught); }
   }
-  async function createProvider() {
-    try { await api('/providers', {method:'POST', body:JSON.stringify({provider_key:providerKey, label:providerLabel, base_url:providerUrl || null, secret_ref:providerSecretRef || null})}); addProvider=false; await load(); }
-    catch (caught) { error = caught instanceof Error ? caught.message : String(caught); }
-  }
+
   async function createModel(providerId: string) {
-    if (!modelId.trim()) return;
-    try { await api(`/providers/${providerId}/models`, {method:'POST', body:JSON.stringify({model_id:modelId.trim(), is_default:!(models[providerId]?.length)})}); modelId=''; addModelProvider=null; await load(); }
-    catch (caught) { error = caught instanceof Error ? caught.message : String(caught); }
+    if (!modelId.trim()) { error = 'A canonical model ID is required.'; return; }
+    try {
+      await api(`/providers/${providerId}/models`, { method: 'POST', body: JSON.stringify({ model_id: modelId.trim(), is_default: !allModels.some((item) => item.is_default) }) });
+      modelId = '';
+      addModelProvider = null;
+      notice = 'Model added.';
+      await load();
+    } catch (caught) { report(caught); }
   }
-  async function remove(model: Model) {
-    const replacement = models[model.provider_id]?.find((item) => item.id !== model.id)?.model_id;
-    try { await api(`/providers/${model.provider_id}/models/${model.id}`, {method:'DELETE', body:JSON.stringify({replacement_model_id:replacement ?? null})}); await load(); }
-    catch (caught) { error = caught instanceof Error ? caught.message : String(caught); }
+
+  function requestModelDelete(model: Model) {
+    deletingModel = model;
+    replacementModelRecordId = model.is_default ? allModels.find((item) => item.id !== model.id)?.id ?? '' : '';
   }
+
+  async function removeModel() {
+    if (!deletingModel) return;
+    try {
+      await api(`/providers/${deletingModel.provider_id}/models/${deletingModel.id}`, { method: 'DELETE', body: JSON.stringify({ replacement_model_record_id: replacementModelRecordId || null }) });
+      deletingModel = null;
+      notice = 'Model removed.';
+      await load();
+    } catch (caught) { report(caught); }
+  }
+
+  function requestProviderDelete(provider: Provider) {
+    deletingProvider = provider;
+    const ownsDefault = (models[provider.id] ?? []).some((item) => item.is_default);
+    replacementModelRecordId = ownsDefault ? allModels.find((item) => item.provider_id !== provider.id)?.id ?? '' : '';
+  }
+
+  async function removeProvider() {
+    if (!deletingProvider) return;
+    try {
+      await api(`/providers/${deletingProvider.id}`, { method: 'DELETE', body: JSON.stringify({ replacement_model_record_id: replacementModelRecordId || null }) });
+      deletingProvider = null;
+      notice = 'Provider removed.';
+      await load();
+    } catch (caught) { report(caught); }
+  }
+
   async function refresh(providerId: string) {
-    try { await api(`/providers/${providerId}/models/refresh`, {method:'POST', body:'{}'}); await load(); }
-    catch (caught) { error = caught instanceof Error ? caught.message : String(caught); }
+    try {
+      const result = await api<{added: string[]}>(`/providers/${providerId}/models/refresh`, { method: 'POST', body: '{}' });
+      notice = result.added.length ? `Discovered ${result.added.length} new model${result.added.length === 1 ? '' : 's'}.` : 'Model catalogue is already up to date.';
+      await load();
+    } catch (caught) { report(caught); }
   }
-  async function testProvider(providerId:string){const selected=models[providerId]?.find((item)=>item.is_default)??models[providerId]?.[0];if(!selected){error='Add a model before testing this provider.';return;}try{const result=await api<{model:string}>(`/providers/${providerId}/test`,{method:'POST',body:JSON.stringify({model_id:selected.model_id})});error='';window.alert(`Provider test succeeded with ${result.model}.`);}catch(caught){error=caught instanceof Error?caught.message:String(caught)}}
+
+  async function refreshAll() {
+    for (const provider of providers.filter((item) => item.enabled)) await refresh(provider.id);
+  }
+
+  async function testProvider(providerId: string) {
+    const selected = models[providerId]?.find((item) => item.is_default) ?? models[providerId]?.[0];
+    if (!selected) { error = 'Add a model before testing this provider.'; return; }
+    try {
+      const result = await api<{model: string}>(`/providers/${providerId}/test`, { method: 'POST', body: JSON.stringify({ model_id: selected.model_id }) });
+      error = '';
+      notice = `Connection succeeded with ${result.model}.`;
+    } catch (caught) { report(caught); }
+  }
+
   onMount(load);
 </script>
 
 <div class="mx-auto max-w-6xl">
-  <button onclick={onback} class="muted mb-7 flex items-center gap-2 text-sm font-semibold"><ArrowLeft size={17}/> Workspace</button>
-  <header class="mb-8 flex flex-wrap items-end justify-between gap-5"><div><div class="eyebrow">Providers</div><h1 class="mt-2 text-4xl font-semibold">LLM models</h1><p class="muted mt-3 max-w-2xl">Defaults live on each canonical model. Blank temperature or reasoning values are omitted from requests.</p></div><div class="flex gap-2"><button onclick={() => tourOpen=true} class="rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold">Tour</button><button onclick={() => providers[0] && testProvider(providers[0].id)} disabled={!providers.length} class="rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold disabled:opacity-40">Test default</button><button onclick={() => addProvider=true} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white"><Plus size={17}/> Add provider</button></div></header>
-  {#if error}<div class="mb-5 rounded-xl border border-red-400/40 bg-red-500/10 px-4 py-3 text-sm">{error}</div>{/if}
-  <div class="space-y-6">{#each providers as provider}<section class="surface overflow-hidden rounded-[1.5rem]"><header class="flex flex-wrap items-center justify-between gap-4 border-b border-[var(--line)] p-5"><div class="flex items-center gap-3"><div class="grid size-10 place-items-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]"><Bot size={19}/></div><div><h2 class="font-semibold">{provider.label}</h2><p class="muted text-xs">{provider.provider_key}{provider.base_url ? ` · ${provider.base_url}` : ''}</p></div></div><div class="flex gap-2"><button onclick={() => refresh(provider.id)} class="flex items-center gap-2 rounded-lg border border-[var(--line)] px-3 py-2 text-xs font-semibold"><RefreshCw size={14}/> Refresh</button><button onclick={() => { addModelProvider=provider.id; modelId=''; }} class="flex items-center gap-2 rounded-lg border border-[var(--line)] px-3 py-2 text-xs font-semibold"><Plus size={14}/> Add model</button></div></header>
-    <div>{#each models[provider.id] ?? [] as model}<div class="flex flex-wrap items-center gap-4 border-b border-[var(--line)] px-5 py-4 last:border-0"><div class="min-w-0 flex-1"><div class="flex items-center gap-2"><span class="truncate font-mono text-sm font-semibold">{model.model_id}</span>{#if model.is_default}<span class="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[.65rem] font-bold uppercase text-[var(--accent)]">Default</span>{/if}</div><p class="muted mt-1 text-xs">Temperature {model.default_temperature ?? 'omit'} · Reasoning {model.default_reasoning_effort || 'omit'} · Input ${model.input_cost_per_million ?? '—'} / cached ${model.cached_input_cost_per_million ?? model.input_cost_per_million ?? '—'} / output ${model.output_cost_per_million ?? '—'}</p></div><div class="flex gap-2">{#if !model.is_default}<button onclick={() => makeDefault(model)} class="rounded-lg border border-[var(--line)] px-3 py-2 text-xs font-semibold">Make default</button>{/if}<button onclick={() => openSettings(model)} aria-label={`Settings for ${model.model_id}`} class="rounded-lg border border-[var(--line)] p-2"><Settings2 size={16}/></button><button onclick={() => remove(model)} aria-label={`Delete ${model.model_id}`} class="rounded-lg border border-[var(--line)] p-2 text-red-500"><Trash2 size={16}/></button></div></div>{:else}<div class="muted p-6 text-sm">No models yet. Add one manually or refresh discovery.</div>{/each}</div>
-  </section>{:else}<div class="surface rounded-3xl p-10 text-center"><Bot class="mx-auto text-[var(--accent)]" size={28}/><h2 class="mt-3 font-semibold">Add your first provider</h2></div>{/each}</div>
+  <button onclick={onback} class="btn btn-quiet mb-6"><ArrowLeft size={16}/> Workspace</button>
+  <header class="mb-7 flex flex-wrap items-end justify-between gap-5">
+    <div><div class="eyebrow">Providers</div><h1 class="mt-2 text-4xl font-semibold">LLM connections and models</h1><p class="muted mt-3 max-w-3xl">Configure LiteLLM adapters, endpoints, credential references, catalogues, optional request parameters, and fallback pricing in one place.</p></div>
+    <div class="flex flex-wrap gap-2"><button onclick={() => tourOpen = true} class="btn btn-secondary">Tour</button><button onclick={refreshAll} disabled={!providers.length || loading} class="btn btn-secondary"><RefreshCw size={16}/> Refresh catalogues</button><button onclick={openNewProvider} class="btn btn-primary"><Plus size={17}/> Add provider</button></div>
+  </header>
+
+  {#if error}<div role="alert" class="mb-4 flex items-start gap-2 rounded-xl border border-red-400/40 bg-red-500/10 px-4 py-3 text-sm"><CircleAlert class="mt-0.5 shrink-0" size={16}/><span>{error}</span></div>{/if}
+  {#if notice}<div role="status" class="mb-4 flex items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--accent-soft)] px-4 py-3 text-sm"><CheckCircle2 size={16}/>{notice}</div>{/if}
+
+  <div class="space-y-5">
+    {#each providers as provider}
+      <section class:opacity-60={!provider.enabled} class="surface overflow-hidden rounded-[1.5rem]">
+        <header class="flex flex-wrap items-center justify-between gap-4 border-b border-[var(--line)] p-5">
+          <div class="flex min-w-0 items-center gap-3"><div class="grid size-10 shrink-0 place-items-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]"><Bot size={19}/></div><div class="min-w-0"><div class="flex flex-wrap items-center gap-2"><h2 class="font-semibold">{provider.label}</h2><span class="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[.65rem] font-bold uppercase text-[var(--accent)]">{provider.enabled ? 'Enabled' : 'Disabled'}</span></div><p class="muted mt-1 truncate text-xs">LiteLLM: {provider.provider_key}{provider.base_url ? ` · ${provider.base_url}` : ' · provider-managed endpoint'}</p></div></div>
+          <div class="flex flex-wrap gap-2"><button onclick={() => testProvider(provider.id)} disabled={!provider.enabled || !(models[provider.id]?.length)} class="btn btn-sm btn-secondary">Test</button><button onclick={() => refresh(provider.id)} disabled={!provider.enabled} class="btn btn-sm btn-secondary"><RefreshCw size={14}/> Discover</button><button onclick={() => openProvider(provider)} class="btn btn-sm btn-secondary"><Pencil size={14}/> Edit</button><button onclick={() => { addModelProvider = provider.id; modelId = ''; }} class="btn btn-sm btn-secondary"><Plus size={14}/> Add model</button><button onclick={() => requestProviderDelete(provider)} aria-label={`Delete ${provider.label}`} class="btn btn-sm btn-secondary text-red-500"><Trash2 size={15}/></button></div>
+        </header>
+        <div>
+          {#each models[provider.id] ?? [] as model}
+            <div class="flex flex-wrap items-center gap-4 border-b border-[var(--line)] px-5 py-4 last:border-0">
+              <div class="min-w-0 flex-1"><div class="flex items-center gap-2"><span class="truncate font-mono text-sm font-semibold">{model.model_id}</span>{#if model.is_default}<span class="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[.65rem] font-bold uppercase text-[var(--accent)]">Application default</span>{/if}</div><p class="muted mt-1 text-xs">Temperature {model.default_temperature ?? 'omit'} · Reasoning {model.default_reasoning_effort || 'omit'} · Input ${model.input_cost_per_million ?? '—'} / cached ${model.cached_input_cost_per_million ?? model.input_cost_per_million ?? '—'} / output ${model.output_cost_per_million ?? '—'}</p></div>
+              <div class="flex gap-2">{#if !model.is_default}<button onclick={() => makeDefault(model)} class="btn btn-sm btn-secondary">Make default</button>{/if}<button onclick={() => openSettings(model)} aria-label={`Settings for ${model.model_id}`} class="btn btn-sm btn-icon btn-secondary"><Settings2 size={16}/></button><button onclick={() => requestModelDelete(model)} aria-label={`Delete ${model.model_id}`} class="btn btn-sm btn-icon btn-secondary text-red-500"><Trash2 size={16}/></button></div>
+            </div>
+          {:else}<div class="muted p-6 text-sm">No models yet. Add one manually or discover the endpoint catalogue.</div>{/each}
+        </div>
+      </section>
+    {:else}
+      <div class="surface rounded-3xl p-10 text-center"><Bot class="mx-auto text-[var(--accent)]" size={28}/><h2 class="mt-3 font-semibold">Connect your first LLM provider</h2><p class="muted mx-auto mt-2 max-w-lg text-sm">Start from a cloud, local, or OpenAI-compatible LiteLLM profile. Nothing is contacted until you test or refresh it.</p><button onclick={openNewProvider} class="btn btn-primary mt-5"><Plus size={16}/> Add provider</button></div>
+    {/each}
+  </div>
 </div>
 
-{#if addModelProvider}<div class="fixed inset-0 z-50 grid place-items-center bg-black/35 p-5"><div class="surface w-full max-w-md rounded-3xl p-7"><h2 class="text-xl font-semibold">Add model</h2><input bind:value={modelId} placeholder="Canonical model ID" class="mt-5 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3"/><div class="mt-5 flex justify-end gap-2"><button onclick={() => addModelProvider=null} class="rounded-xl border border-[var(--line)] px-4 py-2">Cancel</button><button onclick={() => createModel(addModelProvider!)} class="rounded-xl bg-[var(--accent)] px-4 py-2 text-white">Add</button></div></div></div>{/if}
-{#if addProvider}<div class="fixed inset-0 z-50 grid place-items-center bg-black/35 p-5"><div class="surface w-full max-w-lg rounded-3xl p-7"><div class="flex justify-between"><h2 class="text-xl font-semibold">Add provider</h2><button onclick={() => addProvider=false}><X size={18}/></button></div><div class="mt-5 grid gap-4"><label class="text-sm font-semibold">Display name<input bind:value={providerLabel} class="mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2"/></label><label class="text-sm font-semibold">Provider key<input bind:value={providerKey} class="mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2"/></label><label class="text-sm font-semibold">Base URL<input bind:value={providerUrl} class="mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2"/></label><label class="text-sm font-semibold">Secret reference<input bind:value={providerSecretRef} placeholder="env:OPENAI_API_KEY" class="mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2"/></label></div><button onclick={createProvider} class="mt-6 w-full rounded-xl bg-[var(--accent)] px-4 py-2.5 font-semibold text-white">Create provider</button></div></div>{/if}
-{#if edit}<div class="fixed inset-0 z-50 grid place-items-center bg-black/35 p-5"><div class="surface w-full max-w-xl rounded-3xl p-7"><div class="flex justify-between"><div><div class="eyebrow">Model settings</div><h2 class="mt-1 font-mono text-xl font-semibold">{edit.model_id}</h2></div><button onclick={() => edit=null}><X size={18}/></button></div><div class="mt-6 grid gap-4 sm:grid-cols-2"><label class="text-sm font-semibold">Temperature<input bind:value={temperature} type="number" step="any" placeholder="Omit" class="mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-sm font-semibold">Reasoning effort<input bind:value={reasoning} list="reasoning-values" placeholder="Omit or custom" class="mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/><datalist id="reasoning-values"><option value="minimal"></option><option value="low"></option><option value="medium"></option><option value="high"></option></datalist></label><label class="text-sm font-semibold">Input USD / million<input bind:value={inputCost} type="number" min="0" step="any" class="mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-sm font-semibold">Cached input USD / million<input bind:value={cachedCost} type="number" min="0" step="any" placeholder="Use input rate" class="mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-sm font-semibold sm:col-span-2">Output USD / million<input bind:value={outputCost} type="number" min="0" step="any" class="mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label></div><button onclick={saveModel} class="mt-6 w-full rounded-xl bg-[var(--accent)] px-4 py-2.5 font-semibold text-white">Save model defaults</button></div></div>{/if}
+{#if providerModal}
+  <div class="fixed inset-0 z-50 grid place-items-center bg-black/40 p-5"><div class="surface max-h-[94vh] w-full max-w-2xl overflow-y-auto rounded-3xl p-7" role="dialog" aria-modal="true" aria-labelledby="provider-title"><header class="flex items-start justify-between gap-4"><div><div class="eyebrow">LLM provider</div><h2 id="provider-title" class="mt-1 text-2xl font-semibold">{editingProvider ? `Edit ${editingProvider.label}` : 'Connect a provider'}</h2></div><button onclick={() => providerModal = false} aria-label="Close provider settings" class="btn btn-icon btn-secondary"><X size={18}/></button></header>
+    <div class="mt-6 grid gap-4 sm:grid-cols-2">
+      <label class="text-sm font-semibold sm:col-span-2">Starting profile<select value={providerProfileId} onchange={(event) => applyProfile(event.currentTarget.value)} class="field"><option value="">Manual configuration</option>{#each profiles as profile}<option value={profile.id}>{profile.label}</option>{/each}</select>{#if selectedProviderProfile}<small class="muted mt-1 block font-normal">{selectedProviderProfile.description}</small>{/if}</label>
+      <label class="text-sm font-semibold">Display name<input bind:value={providerLabel} class="field"/></label>
+      <label class="text-sm font-semibold">LiteLLM provider<input bind:value={providerKey} list="litellm-providers" class="field"/><datalist id="litellm-providers">{#each providerKeys as key}<option value={key}></option>{/each}</datalist></label>
+      <label class="text-sm font-semibold sm:col-span-2">API base URL<input bind:value={providerUrl} placeholder="Provider default, or http://127.0.0.1:1234/v1" class="field"/><small class="muted mt-1 block font-normal">Leave blank when the LiteLLM adapter owns endpoint discovery.</small></label>
+      <label class="text-sm font-semibold sm:col-span-2">Credential reference<input bind:value={providerSecretRef} placeholder="env:OPENAI_API_KEY" class="field"/><small class="muted mt-1 block font-normal">Use env:VARIABLE, keyring:service/user, or file:key. Secrets are never stored in this record.</small></label>
+      <label class="flex items-center gap-3 rounded-xl border border-[var(--line)] p-3 text-sm font-semibold sm:col-span-2"><input type="checkbox" bind:checked={providerEnabled} class="accent-[var(--accent)]"/><span><span class="block">Provider enabled</span><small class="muted font-normal">Disabled providers remain configured but cannot be selected by new runs.</small></span></label>
+      <details class="rounded-xl border border-[var(--line)] p-4 sm:col-span-2"><summary class="cursor-pointer text-sm font-semibold">Advanced LiteLLM options</summary><p class="muted mt-2 text-xs">Store provider metadata plus a <code>request_options</code> object for supported LiteLLM arguments such as organization, API version, project, location, or AWS region. Model, messages, credentials, timeout, temperature, and reasoning remain controlled by Pandrator.</p><textarea bind:value={providerOptions} rows="7" spellcheck="false" class="field font-mono text-xs"></textarea></details>
+    </div>
+    <footer class="mt-6 flex justify-end gap-2"><button onclick={() => providerModal = false} class="btn btn-secondary">Cancel</button><button onclick={saveProvider} class="btn btn-primary">{editingProvider ? 'Save provider' : 'Create provider'}</button></footer>
+  </div></div>
+{/if}
+
+{#if addModelProvider}<div class="fixed inset-0 z-50 grid place-items-center bg-black/35 p-5"><div class="surface w-full max-w-md rounded-3xl p-7"><h2 class="text-xl font-semibold">Add model</h2><label class="mt-5 block text-sm font-semibold">Canonical model ID<input bind:value={modelId} placeholder="Model ID exposed by the endpoint" class="field"/></label><div class="mt-5 flex justify-end gap-2"><button onclick={() => addModelProvider = null} class="btn btn-secondary">Cancel</button><button onclick={() => createModel(addModelProvider!)} class="btn btn-primary">Add model</button></div></div></div>{/if}
+
+{#if edit}<div class="fixed inset-0 z-50 grid place-items-center bg-black/35 p-5"><div class="surface w-full max-w-xl rounded-3xl p-7"><div class="flex justify-between"><div><div class="eyebrow">Model settings</div><h2 class="mt-1 font-mono text-xl font-semibold">{edit.model_id}</h2></div><button onclick={() => edit = null} aria-label="Close model settings" class="btn btn-icon btn-secondary"><X size={18}/></button></div><div class="mt-6 grid gap-4 sm:grid-cols-2"><label class="text-sm font-semibold">Temperature<input bind:value={temperature} type="number" step="any" placeholder="Omit" class="field font-normal"/><small class="muted mt-1 block font-normal">Blank omits it; 0 is sent explicitly.</small></label><label class="text-sm font-semibold">Reasoning effort<input bind:value={reasoning} list="reasoning-values" placeholder="Omit or custom" class="field font-normal"/><datalist id="reasoning-values"><option value="minimal"></option><option value="low"></option><option value="medium"></option><option value="high"></option></datalist></label><label class="text-sm font-semibold">Input USD / million<input bind:value={inputCost} type="number" min="0" step="any" class="field font-normal"/></label><label class="text-sm font-semibold">Cached input USD / million<input bind:value={cachedCost} type="number" min="0" step="any" placeholder="Use input rate" class="field font-normal"/></label><label class="text-sm font-semibold sm:col-span-2">Output USD / million<input bind:value={outputCost} type="number" min="0" step="any" class="field font-normal"/></label></div><button onclick={saveModel} class="btn btn-primary mt-6 w-full">Save model defaults</button></div></div>{/if}
+
+{#if deletingModel}<div class="fixed inset-0 z-50 grid place-items-center bg-black/35 p-5"><div class="surface w-full max-w-md rounded-3xl p-7"><h2 class="text-xl font-semibold">Remove {deletingModel.model_id}?</h2>{#if deletingModel.is_default}<label class="mt-5 block text-sm font-semibold">Replacement application default<select bind:value={replacementModelRecordId} class="field"><option value="">Choose a replacement</option>{#each allModels.filter((item) => item.id !== deletingModel?.id) as model}<option value={model.id}>{providers.find((item) => item.id === model.provider_id)?.label} · {model.model_id}</option>{/each}</select></label>{:else}<p class="muted mt-3 text-sm">Its settings are removed; completed run snapshots remain unchanged.</p>{/if}<div class="mt-6 flex justify-end gap-2"><button onclick={() => deletingModel = null} class="btn btn-secondary">Cancel</button><button onclick={removeModel} disabled={deletingModel.is_default && !replacementModelRecordId} class="btn btn-primary">Remove model</button></div></div></div>{/if}
+
+{#if deletingProvider}<div class="fixed inset-0 z-50 grid place-items-center bg-black/35 p-5"><div class="surface w-full max-w-md rounded-3xl p-7"><h2 class="text-xl font-semibold">Remove {deletingProvider.label}?</h2><p class="muted mt-3 text-sm">The provider and its model records will be removed. Completed run snapshots remain unchanged.</p>{#if (models[deletingProvider.id] ?? []).some((item) => item.is_default)}<label class="mt-5 block text-sm font-semibold">Replacement application default<select bind:value={replacementModelRecordId} class="field"><option value="">Choose a replacement</option>{#each allModels.filter((item) => item.provider_id !== deletingProvider?.id) as model}<option value={model.id}>{providers.find((item) => item.id === model.provider_id)?.label} · {model.model_id}</option>{/each}</select></label>{/if}<div class="mt-6 flex justify-end gap-2"><button onclick={() => deletingProvider = null} class="btn btn-secondary">Cancel</button><button onclick={removeProvider} disabled={(models[deletingProvider.id] ?? []).some((item) => item.is_default) && !replacementModelRecordId} class="btn btn-primary">Remove provider</button></div></div></div>{/if}
+
 <GuidedTour tourId="models" steps={tourSteps} bind:open={tourOpen}/>
+
+<style>
+  .field{margin-top:.4rem;width:100%;border:1px solid var(--line);border-radius:.75rem;background:var(--paper);padding:.68rem .78rem;font-weight:400}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+</style>

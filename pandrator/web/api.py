@@ -34,7 +34,7 @@ from .maintenance import apply_retention
 from .models import AgentRun, AgentStep, AppSetting, AppSettingHistory, Artifact, ArtifactEdge, Document, DocumentRevision, Job, Provider, ProviderModel, Segment, SessionRecord, SourceRecord, TimedWord, TrainingRun, Voice, VoiceSample, new_id, utcnow
 from .openapi import build_openapi_document
 from .parity_registry import build_registry
-from .schemas import AgentRunCreateRequest, BootstrapRequest, BundleExportRequest, BundleImportRequest, ChunkUploadInitialize, GenerationPlanCreate, GenerationSegmentUpdate, GenerationStartRequest, JobCreate, LoginRequest, ModelCreate, ModelUpdate, OutcomePlanUpdate, OutputAssemblyCreateRequest, PdfEditRequest, ProviderCreate, ProviderTestRequest, RvcConvertRequest, RvcModelUploadRequest, SessionCreate, SessionSettingsUpdate, SessionUpdate, SettingUpdate, SourceAttachRequest, SourceReuseRequest, SourceUpdateRequest, SourceUrlRequest, SubtitleReviewRequest, TokenCreateRequest, TrainingCreateRequest, TtsEndpointDiscoveryRequest, VoiceCreate, VoiceTranscriptReview
+from .schemas import AgentRunCreateRequest, BootstrapRequest, BundleExportRequest, BundleImportRequest, ChunkUploadInitialize, GenerationPlanCreate, GenerationSegmentUpdate, GenerationStartRequest, JobCreate, LoginRequest, ModelCreate, ModelUpdate, OutcomePlanUpdate, OutputAssemblyCreateRequest, PdfEditRequest, ProviderCreate, ProviderTestRequest, ProviderUpdate, RvcConvertRequest, RvcModelUploadRequest, SessionCreate, SessionSettingsUpdate, SessionUpdate, SettingUpdate, SourceAttachRequest, SourceReuseRequest, SourceUpdateRequest, SourceUrlRequest, SubtitleReviewRequest, TokenCreateRequest, TrainingCreateRequest, TtsEndpointDiscoveryRequest, VoiceCreate, VoiceTranscriptReview
 from .sessions import RevisionConflict, SessionService
 from .subtitle_review import SubtitleReviewService
 from .workflows import WorkflowService
@@ -315,10 +315,15 @@ def create_app(
         from pandrator.logic.tts_provider_profiles import list_tts_provider_profiles
 
         with database.session() as db_session:
-            record = db_session.get(AppSetting, "defaults.tts")
-            value = dict(record.value_json or {}) if record and isinstance(record.value_json, dict) else {}
-            revision = record.revision if record else 0
-        response = jsonify({"value": value, "revision": revision, "services": tts_handler.get_service_configs(value), "profiles": list_tts_provider_profiles()})
+            connections = db_session.get(AppSetting, "services.tts")
+            defaults = db_session.get(AppSetting, "defaults.tts")
+            connection_value = dict(connections.value_json or {}) if connections and isinstance(connections.value_json, dict) else {}
+            default_value = dict(defaults.value_json or {}) if defaults and isinstance(defaults.value_json, dict) else {}
+            if not connection_value and isinstance(default_value.get("provider_configs"), list):
+                connection_value = {"provider_configs": list(default_value["provider_configs"])}
+            revision = connections.revision if connections else 0
+            default_revision = defaults.revision if defaults else 0
+        response = jsonify({"value": connection_value, "revision": revision, "default_value": default_value, "default_revision": default_revision, "services": tts_handler.get_service_configs({**default_value, **connection_value}), "profiles": list_tts_provider_profiles()})
         response.headers["ETag"] = f'"{revision}"'
         return response
 
@@ -1273,16 +1278,68 @@ def create_app(
             providers = list(db_session.scalars(select(Provider).order_by(Provider.label)).all())
             return jsonify({"items": [_model_dict(item, ("id", "kind", "provider_key", "label", "enabled", "base_url", "secret_ref", "options_json", "revision")) for item in providers]})
 
+    @app.get("/api/v1/providers/profiles")
+    @require_auth
+    def provider_profiles():
+        from .provider_settings import list_llm_provider_profiles
+
+        return jsonify({"items": list_llm_provider_profiles()})
+
     @app.post("/api/v1/providers")
     @require_auth
     def provider_create():
         payload = ProviderCreate.model_validate(request.get_json(silent=True) or {})
         with database.session() as db_session:
-            provider = Provider(kind=payload.kind, provider_key=payload.provider_key, label=payload.label, base_url=payload.base_url, secret_ref=payload.secret_ref, options_json=payload.options)
+            provider = Provider(kind=payload.kind, provider_key=payload.provider_key, label=payload.label, enabled=payload.enabled, base_url=payload.base_url, secret_ref=payload.secret_ref, options_json=payload.options)
             db_session.add(provider)
             db_session.flush()
             result = _model_dict(provider, ("id", "kind", "provider_key", "label", "enabled", "base_url", "secret_ref", "options_json", "revision"))
         return jsonify(result), 201
+
+    @app.patch("/api/v1/providers/<provider_id>")
+    @require_auth
+    def provider_update(provider_id: str):
+        raw_etag = request.headers.get("If-Match", "").strip('W/" ')
+        try:
+            expected_revision = int(raw_etag)
+        except ValueError:
+            return error_response("precondition_required", "If-Match must contain the current provider revision.", 428)
+        payload = ProviderUpdate.model_validate(request.get_json(silent=True) or {})
+        with database.session() as db_session:
+            provider = db_session.get(Provider, provider_id)
+            if provider is None:
+                return error_response("not_found", "Provider not found.", 404)
+            if provider.revision != expected_revision:
+                return error_response("revision_conflict", "The provider changed in another client.", 409)
+            changes = payload.model_dump(exclude_unset=True)
+            if "options" in changes:
+                changes["options_json"] = changes.pop("options")
+            for key, value in changes.items():
+                setattr(provider, key, value)
+            provider.revision += 1
+            provider.updated_at = utcnow()
+            db_session.flush()
+            result = _model_dict(provider, ("id", "kind", "provider_key", "label", "enabled", "base_url", "secret_ref", "options_json", "revision"))
+        response = jsonify(result)
+        response.headers["ETag"] = f'"{result["revision"]}"'
+        return response
+
+    @app.delete("/api/v1/providers/<provider_id>")
+    @require_auth
+    def provider_delete(provider_id: str):
+        replacement_id = str((request.get_json(silent=True) or {}).get("replacement_model_record_id") or "")
+        with database.session() as db_session:
+            provider = db_session.get(Provider, provider_id)
+            if provider is None:
+                return error_response("not_found", "Provider not found.", 404)
+            active = db_session.scalar(select(ProviderModel).where(ProviderModel.provider_id == provider_id, ProviderModel.is_default.is_(True)))
+            if active is not None:
+                replacement = db_session.get(ProviderModel, replacement_id) if replacement_id else None
+                if replacement is None or replacement.provider_id == provider_id:
+                    return error_response("replacement_required", "Select a default model from another provider before removing this provider.", 409)
+                replacement.is_default = True
+            db_session.delete(provider)
+        return "", 204
 
     @app.post("/api/v1/providers/<provider_id>/models")
     @require_auth
@@ -1292,7 +1349,7 @@ def create_app(
             if db_session.get(Provider, provider_id) is None:
                 return error_response("not_found", "Provider not found.", 404)
             if payload.is_default:
-                for existing in db_session.scalars(select(ProviderModel).where(ProviderModel.provider_id == provider_id)):
+                for existing in db_session.scalars(select(ProviderModel)):
                     existing.is_default = False
             model = ProviderModel(provider_id=provider_id, model_id=payload.model_id, is_default=payload.is_default, default_temperature=payload.default_temperature, default_reasoning_effort=payload.default_reasoning_effort, input_cost_per_million=payload.input_cost_per_million, cached_input_cost_per_million=payload.cached_input_cost_per_million, output_cost_per_million=payload.output_cost_per_million, options_json=payload.options)
             db_session.add(model)
@@ -1344,7 +1401,7 @@ def create_app(
                 return error_response("revision_conflict", "The model settings changed in another client.", 409)
             changes = payload.model_dump(exclude_unset=True)
             if changes.pop("is_default", False):
-                for existing in db_session.scalars(select(ProviderModel).where(ProviderModel.provider_id == provider_id)):
+                for existing in db_session.scalars(select(ProviderModel)):
                     existing.is_default = existing.id == model.id
             if "options" in changes:
                 changes["options_json"] = changes.pop("options")
@@ -1360,13 +1417,17 @@ def create_app(
     @app.delete("/api/v1/providers/<provider_id>/models/<model_record_id>")
     @require_auth
     def model_delete(provider_id: str, model_record_id: str):
-        replacement_id = str((request.get_json(silent=True) or {}).get("replacement_model_id") or "")
+        body = request.get_json(silent=True) or {}
+        replacement_record_id = str(body.get("replacement_model_record_id") or "")
+        replacement_model_id = str(body.get("replacement_model_id") or "")
         with database.session() as db_session:
             model = db_session.get(ProviderModel, model_record_id)
             if model is None or model.provider_id != provider_id:
                 return error_response("not_found", "Model not found.", 404)
             if model.is_default:
-                replacement = db_session.scalar(select(ProviderModel).where(ProviderModel.provider_id == provider_id, ProviderModel.model_id == replacement_id)) if replacement_id else None
+                replacement = db_session.get(ProviderModel, replacement_record_id) if replacement_record_id else None
+                if replacement is None and replacement_model_id:
+                    replacement = db_session.scalar(select(ProviderModel).where(ProviderModel.provider_id == provider_id, ProviderModel.model_id == replacement_model_id))
                 if replacement is None or replacement.id == model.id:
                     return error_response("replacement_required", "Select a replacement before deleting the active default model.", 409)
                 replacement.is_default = True

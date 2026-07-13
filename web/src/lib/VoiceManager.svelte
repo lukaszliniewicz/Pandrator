@@ -16,6 +16,8 @@
   let error = $state('');
   let notice = $state('');
   let newName = $state('');
+  let newNameInput: HTMLInputElement;
+  let nameRequired = $state(false);
   let language = $state('en');
   let engine = $state('whisper');
   let computeBackend = $state('auto');
@@ -70,7 +72,12 @@
   }
 
   async function createVoice() {
-    if (!newName.trim()) return;
+    if (!newName.trim()) {
+      nameRequired = true;
+      newNameInput?.focus();
+      return;
+    }
+    nameRequired = false;
     error = '';
     try {
       const voice = await api<Voice>('/voices', { method: 'POST', body: JSON.stringify({ name: newName.trim(), language }) });
@@ -332,7 +339,7 @@
 
   <div class="grid min-h-0 flex-1 gap-5 lg:grid-cols-[20rem_1fr]">
     <aside class="surface flex min-h-0 flex-col rounded-3xl p-4">
-      <div class="flex gap-2"><input bind:value={newName} aria-label="New voice name" placeholder="New voice" class="min-w-0 flex-1 rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm"/><button onclick={createVoice} aria-label="Add voice" class="rounded-xl bg-[var(--accent)] p-2.5 text-white"><Plus size={17}/></button></div>
+      <div class="relative flex gap-2"><input bind:this={newNameInput} bind:value={newName} oninput={() => nameRequired = false} aria-label="New voice name" aria-invalid={nameRequired} aria-describedby={nameRequired ? 'voice-name-required' : undefined} placeholder="New voice" class:border-red-500={nameRequired} class="min-w-0 flex-1 rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm"/><button onclick={createVoice} aria-label="Add voice" title="Add voice" class="btn btn-icon btn-primary"><Plus size={17}/></button>{#if nameRequired}<div id="voice-name-required" role="tooltip" class="absolute left-1 top-[calc(100%+.45rem)] z-10 rounded-lg bg-[var(--ink)] px-3 py-2 text-xs font-semibold text-[var(--paper-strong)] shadow-lg">Enter a voice name first.<span class="absolute -top-1 left-4 size-2 rotate-45 bg-[var(--ink)]"></span></div>{/if}</div>
       <div class="mt-4 min-h-0 flex-1 space-y-1 overflow-auto">{#each voices as voice}<button onclick={() => choose(voice)} class:active={selected?.id === voice.id} class="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left"><Library size={17}/><span class="min-w-0 flex-1 truncate font-semibold">{voice.name}</span><span class="muted text-xs">{voice.language}</span></button>{:else}<p class="muted p-5 text-center text-sm">Create a voice to add samples.</p>{/each}</div>
     </aside>
 

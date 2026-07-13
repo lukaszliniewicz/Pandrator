@@ -60,6 +60,7 @@ class LlmHandlerTests(unittest.TestCase):
                                     "default_reasoning_effort": "medium",
                                 }
                             ],
+                            "request_options": {"organization": "pandrator-test", "temperature": 1.9},
                         }
                     ],
                 },
@@ -71,6 +72,7 @@ class LlmHandlerTests(unittest.TestCase):
         self.assertEqual(captured_payload["temperature"], 0.1)
         self.assertEqual(captured_payload["timeout"], 30)
         self.assertEqual(captured_payload["reasoning_effort"], "medium")
+        self.assertEqual(captured_payload["organization"], "pandrator-test")
 
     def test_custom_model_pricing_accounts_for_cached_prompt_tokens(self):
         response = {

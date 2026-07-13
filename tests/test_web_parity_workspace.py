@@ -35,6 +35,7 @@ class WebParityWorkspaceTests(unittest.TestCase):
         database = self.app.extensions["pandrator"]["database"]
         with database.session() as session:
             session.add(AppSetting(key="defaults.tts", value_json={"service": "Kokoro", "speed": 0.9, "api_key": "not-a-snapshot"}))
+            session.add(AppSetting(key="services.tts", value_json={"provider_configs": [{"id": "local", "api_base": "http://127.0.0.1:9000"}], "kokoro_base_url": "http://127.0.0.1:8880"}))
         response = self.client.put(
             f"/api/v1/sessions/{record['id']}/settings/tts",
             json={"value": {"speed": 1.1, "voice": "Ada"}},
@@ -51,6 +52,8 @@ class WebParityWorkspaceTests(unittest.TestCase):
         self.assertEqual("Ada", resolved["value"]["tts"]["voice"])
         self.assertNotIn("api_key", resolved["value"]["tts"])
         self.assertEqual(2048, resolved["value"]["tts"]["max_tokens"])
+        self.assertEqual("http://127.0.0.1:8880", resolved["value"]["tts"]["kokoro_base_url"])
+        self.assertEqual("local", resolved["value"]["tts"]["provider_configs"][0]["id"])
         self.assertEqual(64, len(resolved["settings_hash"]))
 
     def test_global_defaults_endpoint_exposes_builtins_and_revisioned_values(self):

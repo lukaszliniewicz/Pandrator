@@ -35,9 +35,41 @@
 * { box-sizing: border-box; }
 html { min-width: 320px; background: var(--paper); }
 body { margin: 0; min-height: 100vh; background: radial-gradient(circle at 78% -10%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 32rem), var(--paper); color: var(--ink); }
-button, input { font: inherit; }
-button { color: inherit; }
-button:focus-visible, input:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 38%, transparent); outline-offset: 2px; }
+@layer base {
+  button, input, select, textarea { font: inherit; }
+  button { color: inherit; }
+  button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, a:focus-visible {
+    outline: 3px solid color-mix(in srgb, var(--accent) 38%, transparent);
+    outline-offset: 2px;
+  }
+}
+
+.btn {
+  display: inline-flex;
+  min-height: 2.55rem;
+  align-items: center;
+  justify-content: center;
+  gap: .45rem;
+  border: 1px solid transparent;
+  border-radius: .75rem;
+  padding: .62rem .9rem;
+  color: var(--ink);
+  font-size: .8125rem;
+  font-weight: 700;
+  line-height: 1.2;
+  text-align: center;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.btn:hover { background: var(--accent-soft); }
+.btn:disabled, .btn[aria-disabled='true'] { cursor: not-allowed; opacity: .42; }
+.btn-primary { border-color: var(--accent); background: var(--accent); color: #fff; }
+.btn-primary:hover { background: color-mix(in srgb, var(--accent) 88%, black); }
+.btn-secondary { border-color: var(--line); background: color-mix(in srgb, var(--paper-strong) 86%, transparent); }
+.btn-quiet { min-height: 2.25rem; padding: .45rem .65rem; color: var(--muted); font-size: .75rem; }
+.btn-sm { min-height: 2.25rem; padding: .5rem .7rem; font-size: .75rem; }
+.btn-icon { width: 2.55rem; padding: .55rem; }
+:root[data-theme='dark'] .btn-primary { color: #fff; }
 
 .surface { background: color-mix(in srgb, var(--paper-strong) 94%, transparent); border: 1px solid var(--line); box-shadow: var(--shadow); }
 .eyebrow { color: var(--accent); font-size: .72rem; font-weight: 750; letter-spacing: .13em; text-transform: uppercase; }

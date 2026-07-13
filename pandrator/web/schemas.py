@@ -54,11 +54,21 @@ class TokenCreateRequest(StrictModel):
 
 class ProviderCreate(StrictModel):
     kind: str = "llm"
-    provider_key: str
-    label: str
+    provider_key: str = Field(min_length=1, max_length=80)
+    label: str = Field(min_length=1, max_length=160)
+    enabled: bool = True
     base_url: str | None = None
     secret_ref: str | None = None
     options: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProviderUpdate(StrictModel):
+    provider_key: str | None = Field(default=None, min_length=1, max_length=80)
+    label: str | None = Field(default=None, min_length=1, max_length=160)
+    enabled: bool | None = None
+    base_url: str | None = None
+    secret_ref: str | None = None
+    options: dict[str, Any] | None = None
 
 
 class ProviderTestRequest(StrictModel):
@@ -256,6 +266,7 @@ SCHEMA_MODELS = {
         BootstrapRequest,
         TokenCreateRequest,
         ProviderCreate,
+        ProviderUpdate,
         ProviderTestRequest,
         ModelCreate,
         ModelUpdate,

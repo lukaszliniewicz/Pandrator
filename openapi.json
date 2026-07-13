@@ -1026,12 +1026,19 @@
             "default": null,
             "title": "Base Url"
           },
+          "enabled": {
+            "default": true,
+            "title": "Enabled",
+            "type": "boolean"
+          },
           "kind": {
             "default": "llm",
             "title": "Kind",
             "type": "string"
           },
           "label": {
+            "maxLength": 160,
+            "minLength": 1,
             "title": "Label",
             "type": "string"
           },
@@ -1041,6 +1048,8 @@
             "type": "object"
           },
           "provider_key": {
+            "maxLength": 80,
+            "minLength": 1,
             "title": "Provider Key",
             "type": "string"
           },
@@ -1081,6 +1090,90 @@
           }
         },
         "title": "ProviderTestRequest",
+        "type": "object"
+      },
+      "ProviderUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "base_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Base Url"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Enabled"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Label"
+          },
+          "options": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Options"
+          },
+          "provider_key": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Provider Key"
+          },
+          "secret_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Secret Ref"
+          }
+        },
+        "title": "ProviderUpdate",
         "type": "object"
       },
       "RvcConvertRequest": {
@@ -1911,6 +2004,50 @@
         "responses": {
           "201": {
             "description": "Created"
+          }
+        }
+      }
+    },
+    "/api/v1/providers/profiles": {
+      "get": {
+        "operationId": "listProviderProfiles",
+        "responses": {
+          "200": {
+            "description": "LiteLLM provider profiles"
+          }
+        }
+      }
+    },
+    "/api/v1/providers/{providerId}": {
+      "delete": {
+        "operationId": "deleteProvider",
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "409": {
+            "description": "Replacement required"
+          }
+        }
+      },
+      "patch": {
+        "operationId": "updateProvider",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Updated"
+          },
+          "409": {
+            "description": "Revision conflict"
           }
         }
       }

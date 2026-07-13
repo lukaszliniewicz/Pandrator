@@ -408,6 +408,8 @@ def _coerce_provider_record(item: Any) -> dict[str, Any] | None:
             record["api_key"] = api_key
 
         record["is_custom"] = False
+        request_options = item.get("request_options")
+        record["request_options"] = dict(request_options) if isinstance(request_options, dict) else {}
         return record
 
     api_base = _normalize_base_url(item.get("api_base") or item.get("base_url") or "")
@@ -422,6 +424,7 @@ def _coerce_provider_record(item: Any) -> dict[str, Any] | None:
         "is_custom": True,
         "models": normalize_model_records(item.get("models", []), explicit_provider or "openai"),
         "models_explicit": True,
+        "request_options": dict(item.get("request_options") or {}) if isinstance(item.get("request_options"), dict) else {},
     }
 
 
@@ -1053,6 +1056,13 @@ def _resolve_model_request_details(
                 f"Custom provider '{custom_provider_id}' is missing an API base URL."
             )
 
+        provider_options = provider.get("request_options")
+        if isinstance(provider_options, dict):
+            reserved = {"model", "messages", "timeout", "api_key", "api_base", "temperature", "reasoning_effort"}
+            request_overrides.update(
+                {str(key): value for key, value in provider_options.items() if str(key) not in reserved}
+            )
+
         if api_base:
             request_overrides["api_base"] = api_base
 
@@ -1081,6 +1091,15 @@ def _resolve_model_request_details(
 
     provider_key = _provider_key_for_resolved_model(normalized_model)
     provider_config = _builtin_provider_config_for_key(provider_configs, provider_key)
+    provider_options = provider_config.get("request_options") if provider_config else None
+    if isinstance(provider_options, dict):
+        reserved = {"model", "messages", "timeout", "api_key", "api_base", "temperature", "reasoning_effort"}
+        request_overrides.update(
+            {str(key): value for key, value in provider_options.items() if str(key) not in reserved}
+        )
+    provider_api_base = str(provider_config.get("api_base") or "").strip() if provider_config else ""
+    if provider_api_base:
+        request_overrides["api_base"] = provider_api_base
     resolved_api_key = _resolve_api_key(provider_config) if provider_config else _common_provider_api_key(provider_key)
     if resolved_api_key:
         request_overrides["api_key"] = resolved_api_key
@@ -1380,6 +1399,7 @@ def chat_completion_with_metadata(
         "messages": messages,
         "timeout": request_timeout,
     }
+    request_payload.update(request_overrides)
     if max_tokens is not None:
         try:
             request_payload["max_tokens"] = max(1, int(max_tokens))
@@ -1390,8 +1410,6 @@ def chat_completion_with_metadata(
         temperature = _model_optional_float(model_record.get("default_temperature"))
         if temperature is not None and temperature <= 2.0:
             request_payload["temperature"] = temperature
-    request_payload.update(request_overrides)
-
     reasoning_effort = str(
         model_record.get("default_reasoning_effort", "")
         if isinstance(model_record, dict)
@@ -1480,6 +1498,7 @@ def _make_api_request(
         "messages": [{"role": "user", "content": f"{user_prompt}{sanitized_text}"}],
         "timeout": request_timeout,
     }
+    request_payload.update(request_overrides)
     model_record = details.get("model_record")
     if isinstance(model_record, dict):
         temperature = _model_optional_float(model_record.get("default_temperature"))
@@ -1488,8 +1507,6 @@ def _make_api_request(
         reasoning_effort = str(model_record.get("default_reasoning_effort") or "").strip()
         if reasoning_effort:
             request_payload["reasoning_effort"] = reasoning_effort
-    request_payload.update(request_overrides)
-
     logging.info("LiteLLM request model=%s", resolved_model)
     logging.debug("LiteLLM request payload: %s", request_payload)
 

@@ -238,6 +238,7 @@
             <Sparkles size={14} /> {assembly?.status === 'stale' ? 'Reassemble output' : 'Assemble output'}
           </button>
           <a href={`/sessions/${sessionId}/output`} class="action">Output settings</a>
+          <a href="/providers?tab=tts" class="action">Speech services</a>
         </div>
 
         {#if assembly?.status === 'completed' && assembly.artifact_id}

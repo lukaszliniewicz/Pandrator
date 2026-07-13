@@ -411,6 +411,12 @@ class WorkspaceSettingsService:
             section: _merge(self.get(session_id, section)["effective"], override.get(section, {}))
             for section in requested
         }
+        if "tts" in resolved:
+            with self.database.session() as session:
+                connections = session.get(AppSetting, "services.tts")
+                connection_value = connections.value_json if connections and isinstance(connections.value_json, dict) else {}
+            if connection_value:
+                resolved["tts"] = _merge(resolved["tts"], connection_value)
         safe = _secret_free(resolved)
         return safe, stable_hash(safe)
 
