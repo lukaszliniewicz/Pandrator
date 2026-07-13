@@ -919,7 +919,7 @@ class RuntimeMixin:
         if self.is_port_in_use(8050):
             raise RuntimeError("RVC service cannot be started because port 8050 is already in use.")
 
-        run_script_path = os.path.join(rvc_server_path, 'run.bat' if is_windows() else 'run.py')
+        run_script_path = os.path.join(rvc_server_path, 'run.bat' if is_windows() else 'run.sh')
         if not os.path.exists(run_script_path):
             raise FileNotFoundError(f"RVC run script not found at: {run_script_path}")
 

@@ -102,24 +102,6 @@ MAGPIE_API_REPO_URL = COMPONENTS['magpie'].repo_url
 MAGPIE_API_REPO_DIRNAME = COMPONENTS['magpie'].repo_dirname
 RVC_API_REPO_URL = COMPONENTS['rvc'].repo_url
 RVC_API_REPO_DIRNAME = COMPONENTS['rvc'].repo_dirname
-RVC_LINUX_FAIRSEQ_WHEEL = (
-    'https://huggingface.co/JackismyShephard/ultimate-rvc/resolve/'
-    '8ca15ee3b546bd7dd4725e88bb9a997181e4c298/'
-    'fairseq-0.12.2-cp311-cp311-linux_x86_64.whl'
-    '#sha256=81b5af664d23ea941175de10e1176da5113177a8668979829705eff27d4db54d'
-)
-RVC_LINUX_FAIRSEQ_DEPENDENCIES = (
-    'setuptools<81',
-    'hydra-core>=1.3.2',
-    'cffi',
-    'cython',
-    'regex',
-    'sacrebleu>=1.4.12',
-    'tqdm',
-    'bitarray',
-    'scikit-learn',
-    'packaging',
-)
 PANDRATOR_REPO_URL = 'https://github.com/lukaszliniewicz/Pandrator.git'
 # Release installers always clone the current default application branch.
 PANDRATOR_REPO_BRANCH = os.environ.get('PANDRATOR_REPO_BRANCH', 'main').strip() or 'main'

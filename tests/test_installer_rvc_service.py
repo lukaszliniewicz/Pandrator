@@ -47,7 +47,7 @@ class InstallerRVCServiceTests(unittest.TestCase):
         self.assertIn("--prepare-only", command)
 
     @patch("pandrator_installer.components.is_windows", return_value=False)
-    def test_linux_rvc_launcher_uses_pixi_and_run_py(self, _is_windows):
+    def test_linux_rvc_launcher_uses_upstream_shell_launcher(self, _is_windows):
         installer = HeadlessInstaller(working_dir="workspace")
 
         command = installer.build_rvc_launcher_command(
@@ -57,37 +57,35 @@ class InstallerRVCServiceTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            command[:7],
-            ["/opt/pandrator/bin/pixi", "run", "--environment", "cpu", "python", "run.py", "--backend"],
+            command,
+            [
+                "bash",
+                "run.sh",
+                "--backend",
+                "cpu",
+                "--pixi-path",
+                "/opt/pandrator/bin/pixi",
+                "--models-dir",
+                "/srv/pandrator/rvc_models",
+            ],
         )
-        self.assertEqual(command[7], "cpu")
         self.assertNotIn("cmd", command)
-        self.assertNotIn("--pixi-path", command)
-        self.assertEqual(command[-2:], ["--models-dir", "/srv/pandrator/rvc_models"])
-
-    @patch("pandrator_installer.components.normalized_machine", return_value="aarch64")
-    def test_linux_rvc_reports_unsupported_architecture(self, _machine):
-        installer = HeadlessInstaller(working_dir="workspace")
-        with self.assertRaisesRegex(RuntimeError, "requires x86_64"):
-            installer._enable_rvc_linux_platform("/missing")
 
     @patch("pandrator_installer.components.subprocess.run")
-    @patch("pandrator_installer.components.normalized_machine", return_value="x86_64")
     @patch("pandrator_installer.components.is_windows", return_value=False)
-    def test_linux_rvc_preparation_enables_platform_and_installs_pinned_fairseq(
+    def test_linux_rvc_preparation_delegates_to_upstream_launcher(
         self,
         _is_windows,
-        _machine,
         run,
     ):
         with tempfile.TemporaryDirectory() as workspace:
             install_root = Path(workspace) / "Pandrator"
             repo = install_root / "rvc-python"
             repo.mkdir(parents=True)
-            (repo / "run.py").write_text("print('rvc')\n", encoding="utf-8")
+            (repo / "run.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
             manifest = repo / "pyproject.toml"
             manifest.write_text(
-                '[tool.pixi.workspace]\nplatforms = ["win-64"]\n',
+                '[tool.pixi.workspace]\nplatforms = ["win-64", "linux-64"]\n',
                 encoding="utf-8",
             )
             installer = HeadlessInstaller(working_dir=workspace)
@@ -98,16 +96,24 @@ class InstallerRVCServiceTests(unittest.TestCase):
                     pixi_path="/opt/pandrator/bin/pixi",
                 )
 
-            self.assertIn('"linux-64"', manifest.read_text(encoding="utf-8"))
+            self.assertEqual(
+                manifest.read_text(encoding="utf-8"),
+                '[tool.pixi.workspace]\nplatforms = ["win-64", "linux-64"]\n',
+            )
             commands = [call.args[0] for call in run.call_args_list]
             self.assertEqual(
                 commands[0],
-                ["/opt/pandrator/bin/pixi", "install", "--environment", "cpu"],
+                [
+                    "bash",
+                    "run.sh",
+                    "--backend",
+                    "cpu",
+                    "--pixi-path",
+                    "/opt/pandrator/bin/pixi",
+                    "--prepare-only",
+                ],
             )
-            self.assertIn("hydra-core>=1.3.2", commands[1])
-            self.assertEqual(commands[2][3], "install")
-            self.assertIn("#sha256=81b5af", commands[2][-1])
-            self.assertEqual(commands[3][:4], ["/opt/pandrator/bin/pixi", "run", "--environment", "cpu"])
+            self.assertEqual(len(commands), 1)
 
     @patch("pandrator_installer.runtime.subprocess.Popen")
     @patch("pandrator_installer.components.is_windows", return_value=False)
@@ -121,7 +127,7 @@ class InstallerRVCServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as workspace:
             repo = Path(workspace) / "Pandrator" / "rvc-python"
             repo.mkdir(parents=True)
-            (repo / "run.py").write_text("print('rvc')\n", encoding="utf-8")
+            (repo / "run.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
             models = Path(workspace) / "Pandrator" / "models" / "rvc"
             installer = HeadlessInstaller(working_dir=workspace)
             process = MagicMock()
@@ -140,7 +146,8 @@ class InstallerRVCServiceTests(unittest.TestCase):
 
             self.assertIs(result, process)
             command = popen.call_args.args[0]
-            self.assertEqual(command[:4], ["/opt/pandrator/bin/pixi", "run", "--environment", "cpu"])
+            self.assertEqual(command[:4], ["bash", "run.sh", "--backend", "cpu"])
+            self.assertEqual(command[4:6], ["--pixi-path", "/opt/pandrator/bin/pixi"])
             self.assertEqual(command[-2:], ["--models-dir", str(models)])
             installer._close_process_log_handle(result)
 
