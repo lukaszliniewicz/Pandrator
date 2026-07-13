@@ -6,6 +6,7 @@
 
   let { sessionId }: { sessionId: string } = $props();
   let settings = $state<any>(null);
+  let session = $state<any>(null);
   let draft = $state<Record<string, unknown>>({});
   let images = $state<any[]>([]);
   let preview = $state<any|null>(null);
@@ -19,7 +20,8 @@
   const set = (key:string, next:unknown) => draft={...draft,[key]:next};
 
   async function load() {
-    [settings, {items:images}] = await Promise.all([
+    [session, settings, {items:images}] = await Promise.all([
+      api<any>(`/sessions/${sessionId}`),
       api<any>(`/sessions/${sessionId}/settings/output`),
       api<any>(`/artifacts?session_id=${sessionId}&limit=500`).then((payload)=>({items:(payload.items??[]).filter((item:any)=>item.state==='current'&&(item.kind==='image'||String(item.mime_type??'').startsWith('image/')))}))
     ]);
@@ -63,9 +65,13 @@
         <label>Author / artist<input value={String(value('artist',''))} oninput={(event)=>set('artist',event.currentTarget.value)} class="field"/></label>
         <label>Album / series<input value={String(value('album',''))} oninput={(event)=>set('album',event.currentTarget.value)} class="field"/></label>
         <label>Genre<input value={String(value('genre','Audiobook'))} oninput={(event)=>set('genre',event.currentTarget.value)} class="field"/></label>
-        <label>Audio<select value={String(value('audio_mode','preserve'))} onchange={(event)=>set('audio_mode',event.currentTarget.value)} class="field"><option value="preserve">Preserve source audio</option><option value="mixed">Mix source and generated audio</option><option value="dubbing_only">Generated audio only</option></select></label>
-        <label>Subtitles<select value={String(value('subtitle_mode','none'))} onchange={(event)=>set('subtitle_mode',event.currentTarget.value)} class="field"><option value="none">No subtitles</option><option value="soft">Soft / separate tracks</option><option value="burned">Burned into video</option></select></label>
-        {#if value('subtitle_mode','none')!=='none'}<label>Subtitle tracks<select value={String(value('subtitle_selection','translation'))} onchange={(event)=>set('subtitle_selection',event.currentTarget.value)} class="field"><option value="source">Source / corrected</option><option value="translation">Translation</option><option value="dual">Source and translation</option></select></label>{/if}
+        {#if session?.workflow_kind!=='audiobook'}
+          <label>Audio<select value={String(value('audio_mode','preserve'))} onchange={(event)=>set('audio_mode',event.currentTarget.value)} class="field"><option value="preserve">Preserve source audio</option><option value="mixed">Mix source and generated audio</option><option value="dubbing_only">Generated audio only</option></select></label>
+          <label>Subtitles<select value={String(value('subtitle_mode','none'))} onchange={(event)=>set('subtitle_mode',event.currentTarget.value)} class="field"><option value="none">No subtitles</option><option value="soft">Soft / separate tracks</option><option value="burned">Burned into video</option></select></label>
+          {#if value('subtitle_mode','none')!=='none'}<label>Subtitle tracks<select value={String(value('subtitle_selection','translation'))} onchange={(event)=>set('subtitle_selection',event.currentTarget.value)} class="field"><option value="source">Source / corrected</option><option value="translation">Translation</option><option value="dual">Source and translation</option></select></label>{/if}
+        {:else}
+          <div class="rounded-xl bg-[var(--accent-soft)] p-3 text-xs leading-relaxed"><strong>Narration audio</strong><p class="muted mt-1">Audiobook assembly uses the selected generated take for each segment. Video mixing and subtitle-track controls are hidden for this workspace.</p></div>
+        {/if}
       </div>
       <aside class="rounded-2xl border border-[var(--line)] p-4"><div class="text-sm font-semibold">Cover artwork</div>{#if selectedCover}<button onclick={()=>{preview=selectedCover}} class="mt-3 block aspect-square w-full overflow-hidden rounded-xl bg-[var(--paper)]"><img src={`/api/v1/artifacts/${selectedCover.id}/content`} alt={artifactFilename(selectedCover)} class="size-full object-cover"/></button><div class="muted mt-2 truncate text-xs">{artifactFilename(selectedCover)}</div>{:else}<div class="muted mt-3 grid aspect-square place-items-center rounded-xl border border-dashed border-[var(--line)] text-center text-xs">No cover selected</div>{/if}<select value={coverId} onchange={(event)=>set('cover_artifact_id',event.currentTarget.value)} class="field mt-3"><option value="">No cover</option>{#each images as image}<option value={image.id}>{artifactFilename(image)}</option>{/each}</select><div class="mt-3 flex gap-2"><label class="tool flex flex-1 cursor-pointer justify-center"><ImagePlus size={15}/> Upload<input type="file" accept="image/png,image/jpeg,image/webp" onchange={uploadCover} class="sr-only"/></label><button onclick={()=>set('cover_artifact_id','')} disabled={!coverId} class="tool" aria-label="Remove cover"><Trash2 size={15}/></button></div></aside>
     </div>
