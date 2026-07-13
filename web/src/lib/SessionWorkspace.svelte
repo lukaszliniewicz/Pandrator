@@ -17,6 +17,9 @@
   import PdfEditor from './PdfEditor.svelte';
   import SubtitleReview from './SubtitleReview.svelte';
   import GuidedTour from './GuidedTour.svelte';
+  import ArtifactPreview from './ArtifactPreview.svelte';
+  import SettingsModal from './SettingsModal.svelte';
+  import { artifactRoleLabel, type PreviewableArtifact } from './artifact-display';
   import { onMount } from 'svelte';
 
   type Stage = {
@@ -28,7 +31,7 @@
     executable: boolean;
     included: boolean;
     required?: boolean;
-    artifact?: { id: string; role: string; path: string } | null;
+    artifact?: { id: string; role: string; raw_role?: string; path: string } | null;
     job_id?: string | null;
     progress?: number | null;
     detail?: string | null;
@@ -53,6 +56,8 @@
   let error = $state('');
   let uploading = $state(false);
   let settingsStage = $state<Stage | null>(null);
+  let fullSettingsSection = $state('');
+  let preview = $state<PreviewableArtifact | null>(null);
   let stageSettings = $state<Record<string, Record<string, unknown>>>({});
   let targetLanguage = $state('en');
   let originalLanguage = $state('auto');
@@ -116,6 +121,12 @@
     loading = true;
     try {
       [snapshot, outcome] = await Promise.all([api<Snapshot>(`/sessions/${session.id}/workflow`), api(`/sessions/${session.id}/outcome-plan`)]);
+      for (const stage of snapshot?.stages ?? []) {
+        if (stage.artifact) {
+          stage.artifact.raw_role = stage.artifact.role;
+          stage.artifact.role = artifactRoleLabel(stage.artifact.role);
+        }
+      }
     } catch (caught) {
       error = caught instanceof Error ? caught.message : String(caught);
     } finally {
@@ -254,11 +265,12 @@
 
   function previewArtifact(stage: Stage) {
     if (!stage.artifact) return;
-    if (['transcription','correction','translation','tts_optimized'].includes(stage.artifact.role)) {
+    const role = stage.artifact.raw_role ?? stage.artifact.role;
+    if (['transcription','correction','translation','tts_optimized'].includes(role)) {
       reviewOpen = true;
       return;
     }
-    window.open(`/api/v1/artifacts/${stage.artifact.id}/content`, '_blank', 'noopener,noreferrer');
+    preview = { id: stage.artifact.id, role, relative_path: stage.artifact.path };
   }
 
   async function saveSettings() {
@@ -391,13 +403,15 @@
         {#if ['prepare_text','generate_audio'].includes(settingsStage.key)}<label class="text-sm font-semibold">TTS service<select bind:value={ttsService} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal">{#each ttsCatalogue.services??[] as service}<option value={service.id}>{service.name}</option>{/each}</select></label><div class="flex items-center justify-between gap-3"><p class="muted text-xs">Models and voices come from the configured service catalogue.</p><a href="/providers" class="text-xs font-semibold text-[var(--accent)]">Connect or refresh services</a></div><label class="text-sm font-semibold">Model<input list="tts-model-catalogue" bind:value={ttsModel} placeholder={selectedTtsService?.default_model??'Service default'} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/><datalist id="tts-model-catalogue">{#each ttsModels as item}<option value={item}></option>{/each}</datalist></label><label class="text-sm font-semibold">Voice<input list="tts-voice-catalogue" bind:value={voiceName} placeholder={selectedTtsService?.default_voice??'Provider or library voice'} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/><datalist id="tts-voice-catalogue">{#each ttsVoices as item}<option value={item}></option>{/each}</datalist></label><label class="text-sm font-semibold">Language<input bind:value={targetLanguage} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/></label>{#if settingsStage.key === 'generate_audio'}<div class="rounded-xl border border-[var(--line)] p-4"><div class="text-sm font-semibold">Speech blocks for dubbing</div><p class="muted mt-1 text-xs">These TTS chunks are independent from the final subtitle layout.</p><div class="mt-3 grid grid-cols-2 gap-3"><label class="text-xs font-semibold">Minimum characters<input type="number" min="1" bind:value={speechBlockMinChars} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Maximum characters<input type="number" min="1" bind:value={speechBlockMaxChars} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Merge gap (ms)<input type="number" min="0" bind:value={speechBlockMergeThreshold} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label></div></div>{/if}{/if}
         {#if settingsStage.key === 'export'}<label class="text-sm font-semibold">Audio<select bind:value={audioMode} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="preserve">Preserve source audio</option><option value="mixed">Mix source and dubbing</option><option value="dubbing_only">Dubbing only</option></select></label><label class="text-sm font-semibold">Subtitles<select bind:value={subtitleMode} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="none">None</option><option value="soft">Injected soft tracks / separate files</option><option value="burned">Burned subtitles</option></select></label>{#if subtitleMode !== 'none'}<label class="text-sm font-semibold">Subtitle tracks<select bind:value={subtitleSelection} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="source">Source / corrected</option><option value="translation">Translation</option><option value="dual">Source and translation</option></select></label>{/if}<div class="rounded-xl border border-[var(--line)] p-4"><div class="text-sm font-semibold">Final subtitle layout</div><p class="muted mt-1 text-xs">Applied to derived export subtitles only; dubbing speech blocks are unchanged.</p><div class="mt-3 grid grid-cols-2 gap-3"><label class="text-xs font-semibold">Characters / line<input type="number" min="20" max="100" bind:value={subtitleChars} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Lines<input type="number" min="1" max="3" bind:value={subtitleLines} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Minimum duration (ms)<input type="number" min="250" bind:value={subtitleMinDuration} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Maximum duration (ms)<input type="number" min="1000" bind:value={subtitleMaxDuration} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Characters / second<input type="number" min="5" max="40" step="0.5" bind:value={subtitleCps} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Minimum cue gap (ms)<input type="number" min="0" max="500" bind:value={subtitleMinGap} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Phrase-break silence (ms)<input type="number" min="100" max="3000" bind:value={subtitlePhraseGap} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label></div></div>{/if}
       </div>
-      <div class="mt-7 flex justify-end gap-3"><button onclick={() => settingsStage=null} class="rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold">Cancel</button><button onclick={saveSettings} class="rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white">Save settings</button></div>
+      <div class="mt-7 flex flex-wrap justify-end gap-3"><button onclick={() => { fullSettingsSection=stageSection(settingsStage!.key); settingsStage=null; }} class="mr-auto rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold">All {stageSection(settingsStage.key).replaceAll('_',' ')} settings</button><button onclick={() => settingsStage=null} class="rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold">Cancel</button><button onclick={saveSettings} class="rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white">Save settings</button></div>
     </div>
   </div>
 {/if}
 
 {#if pdfSource}<PdfEditor sessionId={session.id} source={pdfSource} onclose={() => pdfSource=null}/>{/if}
 {#if reviewOpen}<SubtitleReview sessionId={session.id} sourceArtifactId={snapshot?.sources[0]?.id} onclose={() => reviewOpen=false} onsaved={load}/>{/if}
+{#if preview}<ArtifactPreview artifact={preview} onclose={()=>preview=null}/>{/if}
+{#if fullSettingsSection}<SettingsModal sessionId={session.id} section={fullSettingsSection} title={`${fullSettingsSection.replaceAll('_',' ')} settings`} description="These settings are saved as session overrides and inherited by future runs." onclose={()=>fullSettingsSection=''}/>{/if}
 <GuidedTour tourId="workflow" steps={workflowTourSteps} bind:open={workflowTour}/>
 
 <style>

@@ -76,7 +76,10 @@ class InstallerLifecycleTests(unittest.TestCase):
             )()
             api = _runtime_specs(WorkspacePaths.from_value(workspace), args, "token")[0]
             self.assertIn("--allow-insecure-remote", api.command)
-            self.assertEqual(api.command[api.command.index("--trusted-host") + 1], "studio.local")
+            trusted_hosts = [api.command[index + 1] for index, value in enumerate(api.command) if value == "--trusted-host"]
+            self.assertIn("studio.local", trusted_hosts)
+            self.assertIn("127.0.0.1", trusted_hosts)
+            self.assertIn("localhost", trusted_hosts)
             self.assertEqual(api.command[api.command.index("--host") + 1], "0.0.0.0")
 
     def test_service_process_collection_uses_runtime_tuple_contract(self):

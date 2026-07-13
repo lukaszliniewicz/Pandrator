@@ -217,9 +217,11 @@ def create_app(
         response.headers["X-Request-ID"] = getattr(g, "request_id", "")
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
-        response.headers["X-Frame-Options"] = "DENY"
+        # PDF artifacts are rendered in a same-origin preview frame.  Keep
+        # cross-origin framing blocked while allowing that managed viewer.
+        response.headers["X-Frame-Options"] = "SAMEORIGIN"
         response.headers["Permissions-Policy"] = "camera=(), geolocation=(), microphone=(self)"
-        response.headers["Content-Security-Policy"] = f"default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; style-src 'self' 'unsafe-inline'; script-src {frontend_script_policy}"
+        response.headers["Content-Security-Policy"] = f"default-src 'self'; frame-ancestors 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; style-src 'self' 'unsafe-inline'; script-src {frontend_script_policy}"
         return response
 
     @app.errorhandler(ValidationError)

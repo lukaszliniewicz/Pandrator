@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { ArrowLeft, CircleAlert, Library, Mic, Play, Plus, Save, Square, Trash2, Volume2, WandSparkles } from '@lucide/svelte';
+  import { ArrowLeft, CircleAlert, Library, Mic, Play, Plus, Save, Settings2, Square, Trash2, Volume2, WandSparkles } from '@lucide/svelte';
   import { api, type JobRecord } from './api';
   import { onDestroy, onMount } from 'svelte';
   import GuidedTour from './GuidedTour.svelte';
+  import SettingsModal from './SettingsModal.svelte';
 
   type Voice = { id: string; name: string; language?: string; description?: string };
   type Sample = { id: string; artifact_id: string; transcript?: string; transcript_language?: string; transcript_reviewed: boolean };
@@ -39,6 +40,7 @@
   let playbackAudio: HTMLAudioElement;
   let playingKey = $state('');
   let tourOpen = $state(false);
+  let sttSettingsOpen = $state(false);
 
   const tourSteps = [
     { section: 'Voices', title: 'References stay reviewable', body: 'Each voice can contain multiple playable samples and an editable, explicitly reviewed transcript.' },
@@ -341,6 +343,7 @@
           <div class="flex flex-wrap gap-2"><select bind:value={engine} onchange={() => modelQuantization = 'f16'} disabled={!canTranscribe} aria-label="Transcription model" class="rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm"><option value="whisper">Whisper large-v3</option><option value="parakeet">Parakeet 0.6B v3</option></select><select bind:value={modelQuantization} disabled={!canTranscribe} aria-label="Transcription model precision" class="rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm"><option value="f16">FP16</option>{#if engine === 'whisper'}<option value="q5_0">Q5_0</option>{:else}<option value="q8_0">Q8_0</option><option value="q5_0">Q5_0</option><option value="q4_k">Q4_K</option>{/if}</select><select bind:value={computeBackend} disabled={!canTranscribe} aria-label="Transcription compute backend" class="rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm"><option value="auto">Automatic compute</option><option value="cpu">CPU</option><option value="cuda">CUDA</option><option value="vulkan">Vulkan</option><option value="metal">Metal</option></select><label class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-sm"><input bind:checked={vadEnabled} type="checkbox"/> VAD</label><label class="rounded-xl border border-[var(--line)] px-3 py-2 text-xs">VAD threshold <input bind:value={vadThreshold} type="number" min="0" max="1" step="0.05" disabled={!vadEnabled} class="ml-1 w-16 bg-transparent"/></label><button onclick={transcribeMissing} disabled={!canTranscribe} class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-sm font-semibold disabled:opacity-40"><WandSparkles size={16}/> Transcribe missing</button></div>
         </div>
 
+        <div class="mb-4 flex justify-end"><button onclick={()=>sttSettingsOpen=true} class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-xs font-semibold"><Settings2 size={15}/> All speech recognition and VAD defaults</button></div>
         <section class="mb-7 rounded-2xl border border-[var(--line)] p-4">
           <div class="mb-3"><h3 class="font-semibold">Record a reference</h3><p class="muted mt-1 text-xs">Permission is requested only when you enable the microphone. The recording remains local until you save it.</p></div>
           <div class="flex flex-wrap items-center gap-3">
@@ -378,4 +381,5 @@
   </div>
 </div>
 <GuidedTour tourId="voices" steps={tourSteps} bind:open={tourOpen}/>
+{#if sttSettingsOpen}<SettingsModal section="stt" title="Speech recognition and VAD defaults" description="These defaults are reused for voice-reference transcription and new session transcription runs. Per-operation controls can still override them." onclose={()=>sttSettingsOpen=false}/>{/if}
 <style>aside button.active{background:var(--accent-soft);color:var(--accent)}</style>

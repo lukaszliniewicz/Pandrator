@@ -4,8 +4,8 @@
   import { api, uploadManagedFile, type SessionRecord } from './api';
   import { appState } from './app-state.svelte';
 
-  let { initialKind = 'subtitles', onclose }: { initialKind?: 'audiobook'|'subtitles'|'voiceover'; onclose: () => void } = $props();
-  let step = $state(1);
+  let { initialKind = 'subtitles', startAtSource = false, onclose }: { initialKind?: 'audiobook'|'subtitles'|'voiceover'; startAtSource?: boolean; onclose: () => void } = $props();
+  let step = $state(untrack(() => startAtSource ? 2 : 1));
   let kind = $state<'audiobook'|'subtitles'|'voiceover'>(untrack(() => initialKind));
   let custom = $state(false);
   let sourceMode = $state<'upload'|'paste'|'url'|'reuse'|'later'>('upload');
@@ -79,7 +79,7 @@
 <div class="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4 backdrop-blur-sm" role="presentation">
   <!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
   <section class="surface max-h-[94vh] w-full max-w-4xl overflow-y-auto rounded-[2rem] p-6 sm:p-9" role="dialog" aria-modal="true" aria-labelledby="wizard-title">
-    <header class="flex items-start justify-between gap-4"><div><div class="eyebrow">New session · step {step} of 4</div><h1 id="wizard-title" class="mt-1 text-2xl font-semibold">{step===1?'What would you like to make?':step===2?'Choose the source':step===3?'Choose the result':'Review your workspace'}</h1></div><button onclick={onclose} class="rounded-xl p-2" aria-label="Close"><X size={20}/></button></header>
+    <header class="flex items-start justify-between gap-4"><div><div class="eyebrow">New {kind} session · step {step} of 4</div><h1 id="wizard-title" class="mt-1 text-2xl font-semibold">{step===1?'What would you like to make?':step===2?'Choose the source':step===3?'Choose the result':'Review your workspace'}</h1></div><button onclick={onclose} class="rounded-xl p-2" aria-label="Close"><X size={20}/></button></header>
     {#if error}<div class="mt-5 rounded-xl border border-red-400/40 bg-red-500/10 p-3 text-sm">{error}</div>{/if}
     {#if step===1}
       <div class="mt-7 grid gap-4 md:grid-cols-3"><button onclick={()=>chooseKind('subtitles')} class="choice"><Captions size={25}/><strong>Create subtitles</strong><span>Transcribe, refine, translate, and export.</span></button><button onclick={()=>chooseKind('voiceover')} class="choice"><AudioLines size={25}/><strong>Create a voiceover</strong><span>Start with media or an existing subtitle file.</span></button><button onclick={()=>chooseKind('audiobook')} class="choice"><BookOpenText size={25}/><strong>Generate an audiobook</strong><span>Prepare a document or pasted text for narration.</span></button></div>
@@ -93,7 +93,7 @@
       <div class="mt-7 grid gap-6 md:grid-cols-[1fr_1.2fr]"><div><label class="text-sm font-semibold">Session name<input bind:value={name} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3"/></label><p class="muted mt-3 text-sm">This only controls the display name; storage uses a stable UUID.</p></div><div class="rounded-2xl border border-[var(--line)] bg-[var(--paper)] p-5"><div class="eyebrow">Prepared pipeline</div><div class="mt-4 flex flex-wrap items-center gap-2">{#each pipeline as stage,index}<span class="rounded-lg bg-[var(--accent-soft)] px-3 py-2 text-sm font-semibold">{stage}</span>{#if index<pipeline.length-1}<ArrowRight class="muted" size={15}/>{/if}{/each}</div><p class="muted mt-4 text-xs">You can customize this plan later without deleting completed artifacts.</p></div></div>
       {#if creating}<div class="mt-5 h-2 overflow-hidden rounded-full bg-[var(--line)]"><div class="h-full bg-[var(--accent)]" style={`width:${Math.max(3,progress*100)}%`}></div></div>{/if}
     {/if}
-    {#if step>1}<footer class="mt-8 flex items-center justify-between"><button onclick={()=>step-=1} disabled={creating} class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold"><ArrowLeft size={16}/> Back</button>{#if step===2}<button onclick={nextFromSource} class="primary">Continue <ArrowRight size={16}/></button>{:else if step===3}<button onclick={()=>{inferName();step=4}} class="primary">Review <ArrowRight size={16}/></button>{:else}<button onclick={create} disabled={creating||!name.trim()} class="primary disabled:opacity-40">{creating?'Creating…':'Create workspace'} <ArrowRight size={16}/></button>{/if}</footer>{/if}
+    {#if step>1}<footer class="mt-8 flex items-center justify-between"><button onclick={()=>step-=1} disabled={creating} class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold"><ArrowLeft size={16}/> {step===2&&startAtSource?'Change task':'Back'}</button>{#if step===2}<button onclick={nextFromSource} class="primary">Continue <ArrowRight size={16}/></button>{:else if step===3}<button onclick={()=>{inferName();step=4}} class="primary">Review <ArrowRight size={16}/></button>{:else}<button onclick={create} disabled={creating||!name.trim()} class="primary disabled:opacity-40">{creating?'Creating…':'Create workspace'} <ArrowRight size={16}/></button>{/if}</footer>{/if}
   </section>
 </div>
 

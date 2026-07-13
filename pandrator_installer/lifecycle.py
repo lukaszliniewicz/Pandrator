@@ -215,9 +215,10 @@ def _runtime_specs(paths: WorkspacePaths, args, bootstrap_token: str) -> list[Ma
     if host not in {"127.0.0.1", "localhost", "::1"}:
         if getattr(args, "allow_insecure_remote", False):
             api_command.append("--allow-insecure-remote")
-        trusted_hosts = list(getattr(args, "trusted_host", []) or [])
-        if not trusted_hosts:
-            trusted_hosts = ["localhost", "127.0.0.1", socket.gethostname()]
+        requested_trusted_hosts = list(getattr(args, "trusted_host", []) or [])
+        trusted_hosts = ["localhost", "127.0.0.1", "::1", *requested_trusted_hosts]
+        if not requested_trusted_hosts:
+            trusted_hosts.append(socket.gethostname())
             try:
                 trusted_hosts.extend(socket.gethostbyname_ex(socket.gethostname())[2])
             except OSError:

@@ -4,7 +4,7 @@
   import { onMount } from 'svelte';
   import type { Snippet } from 'svelte';
   import {
-    Activity, AudioLines, BookOpenText, ChevronLeft, ChevronRight, FolderClock,
+    Activity, AudioLines, AudioWaveform, BookOpenText, ChevronLeft, ChevronRight, FolderClock,
     Home, Library, LogOut, Menu, Mic2, Moon, ServerCog, Settings2, Sun, X
   } from '@lucide/svelte';
   import { appState } from '$lib/app-state.svelte';
@@ -21,7 +21,8 @@
     { href: '/sources', label: 'Source library', icon: Library },
     { href: '/voices', label: 'Voices', icon: Mic2 },
     { href: '/providers', label: 'Providers & services', icon: ServerCog },
-    { href: '/training', label: 'Training', icon: AudioLines },
+    { href: '/rvc', label: 'RVC conversion', icon: AudioWaveform },
+    { href: '/training', label: 'XTTS training', icon: AudioLines },
     { href: '/activity', label: 'Activity & logs', icon: Activity },
     { href: '/settings', label: 'Application settings', icon: Settings2 }
   ];

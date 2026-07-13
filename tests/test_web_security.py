@@ -8,6 +8,16 @@ from pandrator.web.api import create_app
 
 
 class WebSecurityBoundaryTests(unittest.TestCase):
+    def test_security_headers_allow_only_same_origin_artifact_frames(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app = create_app(data_root=directory, testing=True)
+            try:
+                response = app.test_client().get("/api/v1/health")
+                self.assertEqual(response.headers["X-Frame-Options"], "SAMEORIGIN")
+                self.assertIn("frame-ancestors 'self'", response.headers["Content-Security-Policy"])
+            finally:
+                app.extensions["pandrator"]["database"].dispose()
+
     def test_untrusted_host_is_rejected_before_route_handling(self):
         with tempfile.TemporaryDirectory() as directory:
             app = create_app(data_root=directory, testing=True, trusted_hosts=["trusted.example"])
