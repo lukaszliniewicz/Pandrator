@@ -34,7 +34,7 @@ from .maintenance import apply_retention
 from .models import AgentRun, AgentStep, AppSetting, AppSettingHistory, Artifact, ArtifactEdge, Document, DocumentRevision, Job, Provider, ProviderModel, Segment, SessionRecord, SourceRecord, TimedWord, TrainingRun, Voice, VoiceSample, new_id, utcnow
 from .openapi import build_openapi_document
 from .parity_registry import build_registry
-from .schemas import AgentRunCreateRequest, BootstrapRequest, BundleExportRequest, BundleImportRequest, ChunkUploadInitialize, GenerationPlanCreate, GenerationSegmentUpdate, GenerationStartRequest, JobCreate, LoginRequest, ModelCreate, ModelUpdate, OutcomePlanUpdate, OutputAssemblyCreateRequest, PdfEditRequest, ProviderCreate, ProviderTestRequest, RvcConvertRequest, RvcModelUploadRequest, SessionCreate, SessionSettingsUpdate, SessionUpdate, SettingUpdate, SourceAttachRequest, SourceReuseRequest, SourceUrlRequest, SubtitleReviewRequest, TokenCreateRequest, TrainingCreateRequest, TtsEndpointDiscoveryRequest, VoiceCreate, VoiceTranscriptReview
+from .schemas import AgentRunCreateRequest, BootstrapRequest, BundleExportRequest, BundleImportRequest, ChunkUploadInitialize, GenerationPlanCreate, GenerationSegmentUpdate, GenerationStartRequest, JobCreate, LoginRequest, ModelCreate, ModelUpdate, OutcomePlanUpdate, OutputAssemblyCreateRequest, PdfEditRequest, ProviderCreate, ProviderTestRequest, RvcConvertRequest, RvcModelUploadRequest, SessionCreate, SessionSettingsUpdate, SessionUpdate, SettingUpdate, SourceAttachRequest, SourceReuseRequest, SourceUpdateRequest, SourceUrlRequest, SubtitleReviewRequest, TokenCreateRequest, TrainingCreateRequest, TtsEndpointDiscoveryRequest, VoiceCreate, VoiceTranscriptReview
 from .sessions import RevisionConflict, SessionService
 from .subtitle_review import SubtitleReviewService
 from .workflows import WorkflowService
@@ -572,6 +572,63 @@ def create_app(
     def source_library_list():
         return jsonify({"items": source_library.list(include_trashed=request.args.get("include_trashed") == "true")})
 
+    @app.patch("/api/v1/sources/<source_asset_id>")
+    @require_auth
+    def source_library_update(source_asset_id: str):
+        payload = SourceUpdateRequest.model_validate(request.get_json(silent=True) or {})
+        raw_etag = request.headers.get("If-Match", "").strip('W/" ')
+        try:
+            expected = int(raw_etag)
+        except ValueError:
+            return error_response("precondition_required", "If-Match must contain the current source revision.", 428)
+        try:
+            result = source_library.rename(source_asset_id, expected, payload.display_name)
+        except KeyError:
+            return error_response("not_found", "Source asset not found.", 404)
+        except WorkspaceRevisionConflict as error:
+            return error_response("revision_conflict", str(error), 409)
+        response = jsonify(result)
+        response.headers["ETag"] = f'"{result["revision"]}"'
+        return response
+
+    @app.delete("/api/v1/sources/<source_asset_id>")
+    @require_auth
+    def source_library_trash(source_asset_id: str):
+        raw_etag = request.headers.get("If-Match", "").strip('W/" ')
+        try:
+            expected = int(raw_etag)
+        except ValueError:
+            return error_response("precondition_required", "If-Match must contain the current source revision.", 428)
+        try:
+            result = source_library.set_state(source_asset_id, expected, "trashed")
+        except KeyError:
+            return error_response("not_found", "Source asset not found.", 404)
+        except WorkspaceRevisionConflict as error:
+            return error_response("revision_conflict", str(error), 409)
+        except ValueError as error:
+            return error_response("source_in_use", str(error), 409)
+        response = jsonify(result)
+        response.headers["ETag"] = f'"{result["revision"]}"'
+        return response
+
+    @app.post("/api/v1/sources/<source_asset_id>/restore")
+    @require_auth
+    def source_library_restore(source_asset_id: str):
+        raw_etag = request.headers.get("If-Match", "").strip('W/" ')
+        try:
+            expected = int(raw_etag)
+        except ValueError:
+            return error_response("precondition_required", "If-Match must contain the current source revision.", 428)
+        try:
+            result = source_library.set_state(source_asset_id, expected, "current")
+        except KeyError:
+            return error_response("not_found", "Source asset not found.", 404)
+        except WorkspaceRevisionConflict as error:
+            return error_response("revision_conflict", str(error), 409)
+        response = jsonify(result)
+        response.headers["ETag"] = f'"{result["revision"]}"'
+        return response
+
     @app.get("/api/v1/sessions/<session_id>/sources")
     @require_auth
     def session_source_list(session_id: str):
@@ -590,6 +647,22 @@ def create_app(
         except KeyError:
             return error_response("not_found", "Session or source asset not found.", 404)
         return jsonify(result), 201
+
+    @app.delete("/api/v1/sessions/<session_id>/sources/<attachment_id>")
+    @require_auth
+    def session_source_detach(session_id: str, attachment_id: str):
+        raw_etag = request.headers.get("If-Match", "").strip('W/" ')
+        try:
+            expected = int(raw_etag)
+        except ValueError:
+            return error_response("precondition_required", "If-Match must contain the attachment revision.", 428)
+        try:
+            source_library.detach(session_id, attachment_id, expected)
+        except KeyError:
+            return error_response("not_found", "Session source attachment not found.", 404)
+        except WorkspaceRevisionConflict as error:
+            return error_response("revision_conflict", str(error), 409)
+        return "", 204
 
     @app.get("/api/v1/sessions/<session_id>/documents")
     @require_auth
@@ -952,6 +1025,11 @@ def create_app(
         temporary = paths.temporary / f"upload-{uuid.uuid4()}.part"
         destination = paths.uploads / f"{uuid.uuid4()}-{filename}"
         requested_session_id = str(request.form.get("session_id") or "") or None
+        purpose = str(request.form.get("purpose") or "source").strip().lower()
+        if purpose not in {"source", "cover"}:
+            return error_response("validation_error", "Unsupported upload purpose.", 422)
+        if purpose == "cover" and not requested_session_id:
+            return error_response("validation_error", "Cover artwork must belong to a session.", 422)
         if requested_session_id:
             try:
                 sessions.get(requested_session_id)
@@ -959,13 +1037,35 @@ def create_app(
                 return error_response("not_found", "Session not found.", 404)
         try:
             incoming.save(temporary)
+            if purpose == "cover":
+                if temporary.stat().st_size > 25 * 1024 * 1024:
+                    return error_response("cover_too_large", "Cover artwork must be 25 MiB or smaller.", 413)
+                try:
+                    from PIL import Image
+
+                    with Image.open(temporary) as image:
+                        if image.format not in {"JPEG", "PNG", "WEBP"}:
+                            raise ValueError("Use JPEG, PNG, or WebP artwork.")
+                        width, height = image.size
+                        if width < 1 or height < 1 or width * height > 100_000_000:
+                            raise ValueError("Artwork dimensions are invalid or exceed 100 megapixels.")
+                        image.verify()
+                except Exception as error:
+                    return error_response("invalid_cover", f"Cover artwork is not a readable image: {error}", 422)
             digest = sha256_file(temporary)
             os.replace(temporary, destination)
-            artifact = artifacts.register(destination, kind="source", role="upload", session_id=requested_session_id, calculate_hash=False, metadata={"original_filename": incoming.filename})
+            artifact = artifacts.register(
+                destination,
+                kind="image" if purpose == "cover" else "source",
+                role="cover" if purpose == "cover" else "upload",
+                session_id=requested_session_id,
+                calculate_hash=False,
+                metadata={"original_filename": incoming.filename, "purpose": purpose},
+            )
             with database.session() as db_session:
                 managed = db_session.get(Artifact, artifact.id)
                 managed.content_hash = digest
-                if requested_session_id:
+                if requested_session_id and purpose == "source":
                     db_session.add(
                         SourceRecord(
                             session_id=requested_session_id,
@@ -975,9 +1075,12 @@ def create_app(
                             content_hash=digest,
                         )
                     )
-            source_asset = source_library.ensure_for_artifact(artifact.id, display_name=incoming.filename, kind=Path(filename).suffix.lower().lstrip(".") or "file")
-            attachment = source_library.attach(requested_session_id, source_asset.id) if requested_session_id else None
-            return jsonify({"artifact_id": artifact.id, "source_asset_id": source_asset.id, "attachment": attachment, "filename": filename, "size_bytes": destination.stat().st_size, "sha256": digest}), 201
+            source_asset = None
+            attachment = None
+            if purpose == "source":
+                source_asset = source_library.ensure_for_artifact(artifact.id, display_name=incoming.filename, kind=Path(filename).suffix.lower().lstrip(".") or "file")
+                attachment = source_library.attach(requested_session_id, source_asset.id) if requested_session_id else None
+            return jsonify({"artifact_id": artifact.id, "source_asset_id": source_asset.id if source_asset else None, "attachment": attachment, "filename": filename, "size_bytes": destination.stat().st_size, "sha256": digest}), 201
         finally:
             if temporary.exists():
                 temporary.unlink()

@@ -247,6 +247,7 @@ def _import_generation(database: Database, legacy_path: Path, record: SessionRec
                 plan_revision_id=revision.id,
                 ordinal=index,
                 source_segment_ids_json=[source_segments[index].id] if index < len(source_segments) else [],
+                node_kind="chapter_marker" if str(item.get("chapter") or "").lower() == "yes" else "paragraph",
                 text=_sentence_text(item),
                 language=str(item.get("language") or "") or None,
                 silence_after_ms=int(item.get("silence_after_ms") or 0),

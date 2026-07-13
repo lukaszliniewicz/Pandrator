@@ -187,6 +187,10 @@ class SourceAttachRequest(StrictModel):
     role: str = Field(default="primary", min_length=1, max_length=80)
 
 
+class SourceUpdateRequest(StrictModel):
+    display_name: str = Field(min_length=1, max_length=255)
+
+
 class ChunkUploadInitialize(StrictModel):
     filename: str = Field(min_length=1, max_length=255)
     size_bytes: int = Field(gt=0)
@@ -199,6 +203,7 @@ class ChunkUploadInitialize(StrictModel):
 class GenerationSegmentCreate(StrictModel):
     text: str = Field(min_length=1)
     source_segment_ids: list[str] = Field(default_factory=list)
+    node_kind: Literal["paragraph", "heading", "chapter_marker", "subtitle_cue"] = "paragraph"
     voice_id: str | None = None
     language: str | None = Field(default=None, max_length=40)
     silence_after_ms: int = Field(default=0, ge=0)
@@ -212,6 +217,7 @@ class GenerationPlanCreate(StrictModel):
 
 class GenerationSegmentUpdate(StrictModel):
     text: str | None = Field(default=None, min_length=1)
+    node_kind: Literal["paragraph", "heading", "chapter_marker", "subtitle_cue"] | None = None
     voice_id: str | None = None
     language: str | None = Field(default=None, max_length=40)
     silence_after_ms: int | None = Field(default=None, ge=0)
@@ -272,6 +278,7 @@ SCHEMA_MODELS = {
         SessionSettingsUpdate,
         OutcomePlanUpdate,
         SourceAttachRequest,
+        SourceUpdateRequest,
         ChunkUploadInitialize,
         GenerationSegmentCreate,
         GenerationPlanCreate,

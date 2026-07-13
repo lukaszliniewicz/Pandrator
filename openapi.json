@@ -188,6 +188,17 @@
                 "default": null,
                 "title": "Language"
               },
+              "node_kind": {
+                "default": "paragraph",
+                "enum": [
+                  "paragraph",
+                  "heading",
+                  "chapter_marker",
+                  "subtitle_cue"
+                ],
+                "title": "Node Kind",
+                "type": "string"
+              },
               "silence_after_ms": {
                 "default": 0,
                 "minimum": 0,
@@ -276,6 +287,17 @@
             "default": null,
             "title": "Language"
           },
+          "node_kind": {
+            "default": "paragraph",
+            "enum": [
+              "paragraph",
+              "heading",
+              "chapter_marker",
+              "subtitle_cue"
+            ],
+            "title": "Node Kind",
+            "type": "string"
+          },
           "silence_after_ms": {
             "default": 0,
             "minimum": 0,
@@ -340,6 +362,24 @@
             ],
             "default": null,
             "title": "Marked"
+          },
+          "node_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "paragraph",
+                  "heading",
+                  "chapter_marker",
+                  "subtitle_cue"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Node Kind"
           },
           "removed": {
             "anyOf": [
@@ -1266,6 +1306,22 @@
           "artifact_id"
         ],
         "title": "SourceReuseRequest",
+        "type": "object"
+      },
+      "SourceUpdateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "display_name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Display Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "display_name"
+        ],
+        "title": "SourceUpdateRequest",
         "type": "object"
       },
       "SourceUrlRequest": {
@@ -2453,6 +2509,16 @@
         }
       }
     },
+    "/api/v1/sessions/{sessionId}/sources/{attachmentId}": {
+      "delete": {
+        "operationId": "detachSessionSource",
+        "responses": {
+          "204": {
+            "description": "Source detached"
+          }
+        }
+      }
+    },
     "/api/v1/sessions/{sessionId}/stages/{stageKey}/run": {
       "post": {
         "operationId": "runWorkflowStage",
@@ -2543,6 +2609,44 @@
         "responses": {
           "200": {
             "description": "Reusable source library"
+          }
+        }
+      }
+    },
+    "/api/v1/sources/{sourceAssetId}": {
+      "delete": {
+        "operationId": "trashSourceAsset",
+        "responses": {
+          "200": {
+            "description": "Source asset moved to trash"
+          }
+        }
+      },
+      "patch": {
+        "operationId": "updateSourceAsset",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SourceUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Source asset updated"
+          }
+        }
+      }
+    },
+    "/api/v1/sources/{sourceAssetId}/restore": {
+      "post": {
+        "operationId": "restoreSourceAsset",
+        "responses": {
+          "200": {
+            "description": "Source asset restored"
           }
         }
       }

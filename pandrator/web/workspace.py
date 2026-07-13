@@ -523,7 +523,7 @@ class SourceLibraryService:
         self.database = database
 
     @staticmethod
-    def _asset_payload(asset: SourceAsset) -> dict[str, Any]:
+    def _asset_payload(asset: SourceAsset, *, reference_count: int = 0, current_reference_count: int = 0) -> dict[str, Any]:
         return {
             "id": asset.id,
             "artifact_id": asset.artifact_id,
@@ -536,6 +536,8 @@ class SourceLibraryService:
             "state": asset.state,
             "metadata": asset.metadata_json,
             "revision": asset.revision,
+            "reference_count": reference_count,
+            "current_reference_count": current_reference_count,
             "created_at": asset.created_at.isoformat(),
             "updated_at": asset.updated_at.isoformat(),
         }
@@ -581,6 +583,49 @@ class SourceLibraryService:
             session.flush()
             return {"id": attachment.id, "session_id": session_id, "source_asset_id": source_asset_id, "role": role, "is_current": True, "revision": attachment.revision}
 
+    def detach(self, session_id: str, attachment_id: str, expected_revision: int) -> None:
+        with self.database.session() as session:
+            attachment = session.get(SessionSource, attachment_id)
+            if attachment is None or attachment.session_id != session_id:
+                raise KeyError(attachment_id)
+            if attachment.revision != expected_revision:
+                raise RevisionConflict("The source attachment changed in another client.")
+            session.delete(attachment)
+
+    def rename(self, source_asset_id: str, expected_revision: int, display_name: str) -> dict[str, Any]:
+        with self.database.session() as session:
+            asset = session.get(SourceAsset, source_asset_id)
+            if asset is None:
+                raise KeyError(source_asset_id)
+            if asset.revision != expected_revision:
+                raise RevisionConflict("The source asset changed in another client.")
+            asset.display_name = display_name.strip()
+            asset.revision += 1
+            asset.updated_at = utcnow()
+            session.flush()
+            references = int(session.scalar(select(func.count()).select_from(SessionSource).where(SessionSource.source_asset_id == asset.id)) or 0)
+            current = int(session.scalar(select(func.count()).select_from(SessionSource).where(SessionSource.source_asset_id == asset.id, SessionSource.is_current.is_(True))) or 0)
+            return self._asset_payload(asset, reference_count=references, current_reference_count=current)
+
+    def set_state(self, source_asset_id: str, expected_revision: int, state: str) -> dict[str, Any]:
+        if state not in {"current", "trashed"}:
+            raise ValueError("Unsupported source lifecycle state.")
+        with self.database.session() as session:
+            asset = session.get(SourceAsset, source_asset_id)
+            if asset is None:
+                raise KeyError(source_asset_id)
+            if asset.revision != expected_revision:
+                raise RevisionConflict("The source asset changed in another client.")
+            references = int(session.scalar(select(func.count()).select_from(SessionSource).where(SessionSource.source_asset_id == asset.id)) or 0)
+            current = int(session.scalar(select(func.count()).select_from(SessionSource).where(SessionSource.source_asset_id == asset.id, SessionSource.is_current.is_(True))) or 0)
+            if state == "trashed" and references:
+                raise ValueError(f"Detach this source from {references} session attachment(s) before moving it to trash.")
+            asset.state = state
+            asset.revision += 1
+            asset.updated_at = utcnow()
+            session.flush()
+            return self._asset_payload(asset, reference_count=references, current_reference_count=current)
+
     def list(self, *, session_id: str | None = None, include_trashed: bool = False) -> list[dict[str, Any]]:
         with self.database.session() as session:
             if session_id:
@@ -590,11 +635,37 @@ class SourceLibraryService:
                     .where(SessionSource.session_id == session_id)
                     .order_by(SessionSource.updated_at.desc())
                 ).all()
-                return [self._asset_payload(asset) | {"attachment": {"id": link.id, "role": link.role, "is_current": link.is_current, "revision": link.revision}} for link, asset in rows]
+                asset_ids = {asset.id for _link, asset in rows}
+                counts = dict(
+                    session.execute(
+                        select(SessionSource.source_asset_id, func.count())
+                        .where(SessionSource.source_asset_id.in_(asset_ids))
+                        .group_by(SessionSource.source_asset_id)
+                    ).all()
+                ) if asset_ids else {}
+                current_counts = dict(
+                    session.execute(
+                        select(SessionSource.source_asset_id, func.count())
+                        .where(SessionSource.source_asset_id.in_(asset_ids), SessionSource.is_current.is_(True))
+                        .group_by(SessionSource.source_asset_id)
+                    ).all()
+                ) if asset_ids else {}
+                return [
+                    self._asset_payload(
+                        asset,
+                        reference_count=int(counts.get(asset.id, 0)),
+                        current_reference_count=int(current_counts.get(asset.id, 0)),
+                    )
+                    | {"attachment": {"id": link.id, "role": link.role, "is_current": link.is_current, "revision": link.revision}}
+                    for link, asset in rows
+                ]
             statement = select(SourceAsset).order_by(SourceAsset.updated_at.desc())
             if not include_trashed:
                 statement = statement.where(SourceAsset.state != "trashed")
-            return [self._asset_payload(asset) for asset in session.scalars(statement).all()]
+            assets = list(session.scalars(statement).all())
+            counts = dict(session.execute(select(SessionSource.source_asset_id, func.count()).group_by(SessionSource.source_asset_id)).all())
+            current_counts = dict(session.execute(select(SessionSource.source_asset_id, func.count()).where(SessionSource.is_current.is_(True)).group_by(SessionSource.source_asset_id)).all())
+            return [self._asset_payload(asset, reference_count=int(counts.get(asset.id, 0)), current_reference_count=int(current_counts.get(asset.id, 0))) for asset in assets]
 
     def backfill_legacy(self) -> int:
         created = 0
@@ -655,6 +726,7 @@ class GenerationService:
                         plan_revision_id=revision.id,
                         ordinal=index,
                         source_segment_ids_json=list(item.get("source_segment_ids") or []),
+                        node_kind=str(item.get("node_kind") or ("chapter_marker" if str(item.get("chapter") or "").lower() == "yes" else "paragraph")),
                         text=str(item.get("text") or "").strip(),
                         voice_id=item.get("voice_id"),
                         language=item.get("language"),
@@ -689,6 +761,7 @@ class GenerationService:
                 {
                     "id": item.id,
                     "ordinal": item.ordinal,
+                    "node_kind": item.node_kind,
                     "text": item.text,
                     "voice_id": item.voice_id,
                     "language": item.language,
@@ -708,14 +781,14 @@ class GenerationService:
             return {"items": items, "next_cursor": rows[-1].ordinal + 1 if rows and has_more else None, "total": total, "plan_revision_id": plan.active_revision_id}
 
     def update_segment(self, segment_id: str, expected_revision: int, changes: dict[str, Any]) -> dict[str, Any]:
-        allowed = {"text", "voice_id", "language", "silence_after_ms", "marked", "removed"}
+        allowed = {"text", "node_kind", "voice_id", "language", "silence_after_ms", "marked", "removed"}
         with self.database.session() as session:
             segment = session.get(GenerationSegment, segment_id)
             if segment is None:
                 raise KeyError(segment_id)
             if segment.revision != expected_revision:
                 raise RevisionConflict("The generation segment changed in another client.")
-            session.add(GenerationSegmentRevision(generation_segment_id=segment.id, revision=segment.revision, text=segment.text, marked=segment.marked, removed=segment.removed, voice_id=segment.voice_id, language=segment.language, silence_after_ms=segment.silence_after_ms))
+            session.add(GenerationSegmentRevision(generation_segment_id=segment.id, revision=segment.revision, node_kind=segment.node_kind, text=segment.text, marked=segment.marked, removed=segment.removed, voice_id=segment.voice_id, language=segment.language, silence_after_ms=segment.silence_after_ms))
             text_changed = "text" in changes and str(changes["text"]).strip() != segment.text
             for key, value in changes.items():
                 if key not in allowed:
@@ -726,12 +799,14 @@ class GenerationService:
                         raise ValueError("Generation text cannot be blank; remove the segment instead.")
                 if key == "silence_after_ms":
                     value = max(0, int(value))
+                if key == "node_kind" and value not in {"paragraph", "heading", "chapter_marker", "subtitle_cue"}:
+                    raise ValueError("Unsupported generation segment type.")
                 setattr(segment, key, value)
             if text_changed or any(key in changes for key in ("voice_id", "language")):
                 segment.status = "stale"
                 for take in session.scalars(select(AudioTake).where(AudioTake.generation_segment_id == segment.id, AudioTake.status == "completed")).all():
                     take.status = "stale"
-            if any(key in changes for key in ("text", "voice_id", "language", "silence_after_ms", "removed")):
+            if any(key in changes for key in ("text", "node_kind", "voice_id", "language", "silence_after_ms", "removed")):
                 plan_revision = session.get(GenerationPlanRevision, segment.plan_revision_id)
                 plan = session.get(GenerationPlan, plan_revision.plan_id) if plan_revision else None
                 if plan is not None:
@@ -739,7 +814,7 @@ class GenerationService:
             segment.revision += 1
             segment.updated_at = utcnow()
             session.flush()
-            return {"id": segment.id, "text": segment.text, "marked": segment.marked, "removed": segment.removed, "status": segment.status, "revision": segment.revision}
+            return {"id": segment.id, "node_kind": segment.node_kind, "text": segment.text, "marked": segment.marked, "removed": segment.removed, "status": segment.status, "revision": segment.revision}
 
     def select_take(self, segment_id: str, take_id: str, expected_revision: int) -> dict[str, Any]:
         with self.database.session() as session:
@@ -751,7 +826,7 @@ class GenerationService:
                 raise RevisionConflict("The generation segment changed in another client.")
             if take.status not in {"completed", "stale"} or not take.artifact_id:
                 raise ValueError("Only an available audio take can be selected.")
-            session.add(GenerationSegmentRevision(generation_segment_id=segment.id, revision=segment.revision, text=segment.text, marked=segment.marked, removed=segment.removed, voice_id=segment.voice_id, language=segment.language, silence_after_ms=segment.silence_after_ms))
+            session.add(GenerationSegmentRevision(generation_segment_id=segment.id, revision=segment.revision, node_kind=segment.node_kind, text=segment.text, marked=segment.marked, removed=segment.removed, voice_id=segment.voice_id, language=segment.language, silence_after_ms=segment.silence_after_ms))
             for item in session.scalars(select(AudioTake).where(AudioTake.generation_segment_id == segment_id)).all():
                 item.is_active = item.id == take_id
                 item.revision += 1

@@ -63,6 +63,8 @@ class SchemaUpgradeTests(unittest.TestCase):
                 self.assertEqual(SCHEMA_HEAD, connection.execute("SELECT version_num FROM alembic_version").fetchone()[0])
                 self.assertIn("job_id", [row[1] for row in connection.execute("PRAGMA table_info(output_assemblies)")])
                 self.assertIn("source_text_artifact_id", [row[1] for row in connection.execute("PRAGMA table_info(training_runs)")])
+                self.assertIn("node_kind", [row[1] for row in connection.execute("PRAGMA table_info(generation_segments)")])
+                self.assertIn("node_kind", [row[1] for row in connection.execute("PRAGMA table_info(generation_segment_revisions)")])
 
 
 class LegacyMigrationTests(unittest.TestCase):

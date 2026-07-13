@@ -4,7 +4,7 @@
   import { api } from '$lib/api';
   import ArtifactPreview from '$lib/ArtifactPreview.svelte';
   import { artifactRoleLabel } from '$lib/artifact-display';
-  import SettingsPanel from '$lib/SettingsPanel.svelte';
+  import OutputSettingsPanel from '$lib/OutputSettingsPanel.svelte';
   const sessionId=String(page.params.id);
   let artifacts=$state<any[]>([]); let busy=$state(false); let message=$state(''); let error=$state(''); let preview=$state<any|null>(null);
   async function load(){artifacts=(await api<{items:any[]}>(`/artifacts?session_id=${sessionId}&limit=300`)).items.filter((item:any)=>['export','audiobook_audio','dubbing_audio','output_assembly','rvc_audio'].includes(item.role))}
@@ -15,7 +15,7 @@
 <div class="space-y-5">
   <div class="flex flex-wrap items-end justify-between gap-4"><div><h2 class="text-2xl font-semibold">Output</h2><p class="muted mt-2">Bilingual output is optional. Available choices depend on which source, correction, translation, and audio artifacts exist.</p></div><button onclick={assemble} disabled={busy} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50">{#if busy}<LoaderCircle class="animate-spin" size={16}/>{:else}<PackageCheck size={16}/>{/if} Assemble export</button></div>
   {#if message}<p class="rounded-xl bg-[var(--accent-soft)] p-3 text-sm">{message}</p>{/if}{#if error}<p class="rounded-xl bg-red-500/10 p-3 text-sm text-red-500">{error}</p>{/if}
-  <SettingsPanel {sessionId} section="output" title="Export and metadata"/>
+  <OutputSettingsPanel {sessionId}/>
   <section class="surface rounded-2xl p-5"><div class="eyebrow">Completed outputs</div><div class="mt-4 grid gap-3 md:grid-cols-2">
     {#each artifacts as artifact}<button onclick={()=>{preview=artifact}} class="flex items-center gap-3 rounded-xl border border-[var(--line)] p-4 text-left">{#if artifact.kind==='video'}<FileVideo size={18}/>{:else}<FileAudio size={18}/>{/if}<div class="min-w-0 flex-1"><div class="truncate font-semibold">{artifactRoleLabel(artifact.role)}</div><div class="muted truncate text-xs">{artifact.relative_path}</div></div><Download size={16}/></button>{:else}<p class="muted text-sm">No completed outputs yet.</p>{/each}
   </div></section>

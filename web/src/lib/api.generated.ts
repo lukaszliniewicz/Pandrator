@@ -836,6 +836,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/sources/{attachmentId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["detachSessionSource"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/stages/{stageKey}/run": {
         parameters: {
             query?: never;
@@ -926,6 +942,38 @@ export interface paths {
         get: operations["listSourceAssets"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sources/{sourceAssetId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["trashSourceAsset"];
+        options?: never;
+        head?: never;
+        patch: operations["updateSourceAsset"];
+        trace?: never;
+    };
+    "/api/v1/sources/{sourceAssetId}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["restoreSourceAsset"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1191,6 +1239,12 @@ export interface components {
                      */
                     language: string | null;
                     /**
+                     * Node Kind
+                     * @default paragraph
+                     * @enum {string}
+                     */
+                    node_kind: "paragraph" | "heading" | "chapter_marker" | "subtitle_cue";
+                    /**
                      * Silence After Ms
                      * @default 0
                      */
@@ -1214,6 +1268,12 @@ export interface components {
              * @default null
              */
             language: string | null;
+            /**
+             * Node Kind
+             * @default paragraph
+             * @enum {string}
+             */
+            node_kind: "paragraph" | "heading" | "chapter_marker" | "subtitle_cue";
             /**
              * Silence After Ms
              * @default 0
@@ -1241,6 +1301,11 @@ export interface components {
              * @default null
              */
             marked: boolean | null;
+            /**
+             * Node Kind
+             * @default null
+             */
+            node_kind: ("paragraph" | "heading" | "chapter_marker" | "subtitle_cue") | null;
             /**
              * Removed
              * @default null
@@ -1626,6 +1691,11 @@ export interface components {
         SourceReuseRequest: {
             /** Artifact Id */
             artifact_id: string;
+        };
+        /** SourceUpdateRequest */
+        SourceUpdateRequest: {
+            /** Display Name */
+            display_name: string;
         };
         /** SourceUrlRequest */
         SourceUrlRequest: {
@@ -3019,6 +3089,24 @@ export interface operations {
             };
         };
     };
+    detachSessionSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Source detached */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     runWorkflowStage: {
         parameters: {
             query?: never;
@@ -3159,6 +3247,64 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Reusable source library */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    trashSourceAsset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Source asset moved to trash */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    updateSourceAsset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SourceUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Source asset updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    restoreSourceAsset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Source asset restored */
             200: {
                 headers: {
                     [name: string]: unknown;

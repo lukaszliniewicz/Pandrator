@@ -110,10 +110,16 @@ def build_openapi_document() -> dict:
             "put": operation("putOutcomePlan", "Outcome plan saved", "OutcomePlanUpdate"),
         },
         "/api/v1/sources": {"get": operation("listSourceAssets", "Reusable source library")},
+        "/api/v1/sources/{sourceAssetId}": {
+            "patch": operation("updateSourceAsset", "Source asset updated", "SourceUpdateRequest"),
+            "delete": operation("trashSourceAsset", "Source asset moved to trash"),
+        },
+        "/api/v1/sources/{sourceAssetId}/restore": {"post": operation("restoreSourceAsset", "Source asset restored")},
         "/api/v1/sessions/{sessionId}/sources": {
             "get": operation("listSessionSources", "Session source attachments"),
             "post": operation("attachSessionSource", "Source attached", "SourceAttachRequest", "201"),
         },
+        "/api/v1/sessions/{sessionId}/sources/{attachmentId}": {"delete": operation("detachSessionSource", "Source detached", status="204")},
         "/api/v1/sessions/{sessionId}/documents": {"get": operation("listSessionDocuments", "Document and subtitle revisions")},
         "/api/v1/document-revisions/{revisionId}/words": {"get": operation("listTimedWords", "Immutable timed words")},
         "/api/v1/artifacts/{artifactId}/waveform": {"get": operation("getArtifactWaveform", "Waveform peaks or queued generation", status="200")},

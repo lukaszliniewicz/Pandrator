@@ -102,7 +102,7 @@ def save_output(
         
         # Add chapters for M4B format
         if output_format == "m4b" and chapters:
-            _add_chapters_to_m4b(output_path, chapters)
+            _add_chapters_to_m4b(output_path, chapters, total_duration_sec=current_time_ms / 1000)
             # Re-apply metadata after chapter modification
             _save_metadata_and_cover(output_path, output_format, metadata, cover_image_path)
         
@@ -208,21 +208,27 @@ def _save_metadata_and_cover(output_path: str, output_format: str, metadata: dic
             raise RuntimeError(f"Failed to save metadata or cover art: {e}") from e
         return False
 
-def _add_chapters_to_m4b(file_path: str, chapters: list[tuple]):
+def _add_chapters_to_m4b(
+    file_path: str,
+    chapters: list[tuple],
+    *,
+    total_duration_sec: float | None = None,
+    raise_on_error: bool = False,
+) -> bool:
     """Internal function to add chapter markers to an M4B file."""
     chapter_file = ""
+    temp_output_path = f"{file_path}.temp.m4b"
     try:
         with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt", encoding='utf-8') as temp_file:
             temp_file.write(";FFMETADATA1\n")
             for i, (start_time_sec, title) in enumerate(chapters):
                 start_time_ms = int(start_time_sec * 1000)
-                # FFmpeg chapter end time is exclusive, but many players treat it as inclusive.
-                # A very large number ensures it goes to the end of the file.
-                end_time_ms = int(chapters[i+1][0] * 1000) if i + 1 < len(chapters) else 9223372036854775807
-                temp_file.write(f"\n[CHAPTER]\nTIMEBASE=1/1000\nSTART={start_time_ms}\nEND={end_time_ms}\ntitle={title}\n")
+                fallback_end = max(start_time_ms + 1, int(float(total_duration_sec) * 1000)) if total_duration_sec is not None else 9223372036854775807
+                end_time_ms = int(chapters[i+1][0] * 1000) if i + 1 < len(chapters) else fallback_end
+                safe_title = str(title or f"Chapter {i + 1}").replace("\\", "\\\\").replace("=", "\\=").replace(";", "\\;").replace("#", "\\#").replace("\r", " ").replace("\n", " ")
+                temp_file.write(f"\n[CHAPTER]\nTIMEBASE=1/1000\nSTART={start_time_ms}\nEND={end_time_ms}\ntitle={safe_title}\n")
             chapter_file = temp_file.name
 
-        temp_output_path = f"{file_path}.temp.m4b"
         ffmpeg_command = [
             "ffmpeg", "-i", file_path, "-i", chapter_file,
             "-map", "0", "-map_chapters", "1",
@@ -232,11 +238,19 @@ def _add_chapters_to_m4b(file_path: str, chapters: list[tuple]):
         subprocess.run(ffmpeg_command, check=True, capture_output=True, text=True)
         os.replace(temp_output_path, file_path)
         logging.info(f"Successfully added {len(chapters)} chapters to {file_path}")
+        return True
 
     except subprocess.CalledProcessError as e:
         logging.error(f"FFmpeg error adding chapters: {e.stderr}")
+        if raise_on_error:
+            raise RuntimeError(f"Failed to add M4B chapters: {e.stderr}") from e
     except Exception as e:
         logging.error(f"Error adding chapters to M4B: {e}")
+        if raise_on_error:
+            raise RuntimeError(f"Failed to add M4B chapters: {e}") from e
     finally:
+        if os.path.exists(temp_output_path):
+            os.remove(temp_output_path)
         if chapter_file and os.path.exists(chapter_file):
             os.remove(chapter_file)
+    return False

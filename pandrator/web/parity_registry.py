@@ -8,12 +8,12 @@ from .workspace import BUILTIN_DEFAULTS
 FEATURES = (
     ("navigation", "application_routes", "replaced", "complete", "Qt tabs are replaced by real URL-addressable application and session routes."),
     ("sessions", "session_manager", "equivalent", "complete", "List, inspect artifacts, search, trash, restore, and reconcile sessions."),
-    ("sources", "reusable_source_library", "replaced", "partial", "Reuse and attachment are implemented; revision browsing, reference-aware deletion UI, and repair actions still need qualification."),
+    ("sources", "reusable_source_library", "replaced", "partial", "Reuse, attachment history, current-version selection, detach, reference-aware trash, restore, and rename are implemented; doctor/repair actions still need qualification."),
     ("workflow", "included_stages_checkbox", "replaced", "complete", "A revisioned outcome plan and contextual controls replace the generic inclusion checkbox."),
     ("workflow", "guided_creation", "replaced", "complete", "Source-aware outcome questions retain a prominent full-workspace path."),
     ("subtitles", "comparison_editor", "equivalent", "partial", "Lineage comparison and editing exist; merge/split/timing workflows still need browser and migration-fixture qualification."),
     ("subtitles", "word_timestamps", "replaced", "complete", "CrispASR timed words are first-class immutable records."),
-    ("generation", "generated_sentences", "replaced", "partial", "Core paging, edits, takes, playback, regeneration and safe pause exist; ETA, bulk-selection ergonomics, and long-run recovery still need parity evidence."),
+    ("generation", "generated_sentences", "replaced", "partial", "Core paging, typed chapter segments, edits, takes, playback, regeneration and safe pause exist; ETA, bulk-selection ergonomics, and long-run recovery still need parity evidence."),
     ("providers", "llm_model_records", "equivalent", "complete", "Per-model request defaults and cached/uncached/output pricing."),
     ("providers", "tts_service_profiles", "equivalent", "partial", "Profiles, discovery, health, catalogues and defaults exist; every adapter-specific control has not yet been runtime-qualified."),
     ("voices", "voice_library", "equivalent", "partial", "Playback, recording, CrispASR transcription and review are implemented; device/browser coverage and cancellation need qualification."),
@@ -21,7 +21,7 @@ FEATURES = (
     ("rvc", "speech_to_speech", "replaced", "partial", "RVC has a dedicated model/conversion surface and per-run generation controls; service-backed selected/marked/all qualification remains."),
     ("source_cleaning", "agentic_loop", "replaced", "partial", "Dedicated structured run data exists; full action/diff acceptance UX and representative documents need qualification."),
     ("pdf", "stack_editor", "replaced", "partial", "Stack, crop, whiteout, deletion and undo are implemented; large, rotated, mixed-size and malformed PDF gates remain."),
-    ("exports", "audio_and_subtitles", "equivalent", "partial", "Assembly paths exist, but the full audio/subtitle matrix plus cover-art and M4B metadata UX are not yet qualified."),
+    ("exports", "audio_and_subtitles", "equivalent", "partial", "Output profiles, cover upload/preview, metadata, multiple audio formats and chaptered M4B assembly exist; the full video audio/subtitle matrix is not yet qualified."),
     ("artifacts", "managed_preview", "replaced", "complete", "Produced text, subtitle, audio, video, image and PDF artifacts open in a reusable in-app preview instead of raw browser navigation."),
     ("runtime", "server_device_playback", "replaced", "complete", "Browser range playback replaces server sound-device playback."),
     ("runtime", "remote_multi_user", "removed", "complete", "The supported deployment remains authenticated single-owner."),
@@ -32,8 +32,6 @@ FEATURES = (
 # but the complete Qt behavior has not yet been proven at the runtime boundary.
 SETTING_GAPS = {
     "stt.diarization_enabled": "The setting is persisted, but CrispASR diarization capability detection and speaker-output qualification are incomplete.",
-    "output.cover_artifact_id": "The runtime accepts a managed cover artifact, but the output UI still needs a dedicated upload/library picker and preview.",
-    "output.format": "Format selection is persisted; M4B chapter, cover and metadata combinations still need end-to-end evidence.",
     "rvc.enabled": "Per-run and post-generation RVC are exposed; automatic apply-during-generation behavior still needs qualification.",
     "translation.backend": "The common control is rendered, but each advertised backend must be hidden unless its adapter and credentials are available.",
 }
@@ -60,4 +58,4 @@ def build_registry() -> dict:
     ]
     complete = sum(item["implementation"] == "complete" for item in [*features, *settings])
     total = len(features) + len(settings)
-    return {"version": 2, "features": features, "settings": settings, "summary": {"complete": complete, "partial": total - complete, "total": total}}
+    return {"version": 3, "features": features, "settings": settings, "summary": {"complete": complete, "partial": total - complete, "total": total}}

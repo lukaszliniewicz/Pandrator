@@ -1140,6 +1140,7 @@ class WorkflowHandlers:
                     plan_revision_id=revision.id,
                     ordinal=ordinal,
                     source_segment_ids_json=list(record.get("source_segment_ids") or []),
+                    node_kind=str(record.get("node_kind") or ("chapter_marker" if str(record.get("chapter") or "").lower() == "yes" else "paragraph")),
                     text=str(record.get("text") or record.get("original_sentence") or "").strip(),
                     language=str(record.get("language") or settings.get("language") or settings.get("target_language") or "") or None,
                     silence_after_ms=max(0, int(explicit_silence or 0)),
@@ -1469,6 +1470,8 @@ class WorkflowHandlers:
 
             parts: list[tuple[AudioSegment, int]] = []
             manifest: list[dict[str, Any]] = []
+            chapter_markers: list[tuple[float, str]] = []
+            timeline_ms = 0
             parent_ids: list[str] = []
             for index, (segment, take, artifact) in enumerate(selected):
                 if cancel_event.is_set():
@@ -1484,12 +1487,15 @@ class WorkflowHandlers:
                 if not path.is_file():
                     raise ValueError(f"Audio take file is missing for segment {segment.ordinal + 1}.")
                 audio = AudioSegment.from_file(path)
+                if segment.node_kind == "chapter_marker":
+                    chapter_markers.append((timeline_ms / 1000, segment.text))
                 parts.append((audio, segment.silence_after_ms))
                 parent_ids.append(artifact.id)
                 manifest.append(
                     {
                         "segment_id": segment.id,
                         "segment_revision": segment.revision,
+                        "node_kind": segment.node_kind,
                         "take_id": take.id,
                         "take_revision": take.revision,
                         "artifact_id": artifact.id,
@@ -1498,6 +1504,9 @@ class WorkflowHandlers:
                         "silence_after_ms": segment.silence_after_ms if index < len(selected) - 1 else 0,
                     }
                 )
+                timeline_ms += len(audio)
+                if index < len(selected) - 1:
+                    timeline_ms += max(0, int(segment.silence_after_ms or 0))
             combined = compose_audio(parts, audio_settings)
             output_format = str(output_settings.get("format") or "wav").lower()
             bitrate = str(output_settings.get("bitrate") or "192k")
@@ -1519,7 +1528,7 @@ class WorkflowHandlers:
                     raise ValueError("The selected cover artifact is not an available image.")
                 cover_path = candidate
                 parent_ids.append(cover_artifact.id)
-            from pandrator.logic.audio_processor import _save_metadata_and_cover
+            from pandrator.logic.audio_processor import _add_chapters_to_m4b, _save_metadata_and_cover
 
             _save_metadata_and_cover(
                 str(destination),
@@ -1528,6 +1537,20 @@ class WorkflowHandlers:
                 str(cover_path) if cover_path else None,
                 raise_on_error=True,
             )
+            if output_format == "m4b" and chapter_markers:
+                _add_chapters_to_m4b(
+                    str(destination),
+                    chapter_markers,
+                    total_duration_sec=len(combined) / 1000,
+                    raise_on_error=True,
+                )
+                _save_metadata_and_cover(
+                    str(destination),
+                    output_format,
+                    metadata,
+                    str(cover_path) if cover_path else None,
+                    raise_on_error=True,
+                )
             artifact = self.artifacts.register(
                 destination,
                 kind="audio",
@@ -1543,6 +1566,7 @@ class WorkflowHandlers:
                     "bitrate": bitrate,
                     "metadata": metadata,
                     "cover_artifact_id": cover_artifact_id or None,
+                    "chapters": [{"start_ms": int(start * 1000), "title": title} for start, title in chapter_markers],
                     "takes": manifest,
                 },
             )

@@ -1,6 +1,8 @@
 import tempfile
 import threading
 import unittest
+import json
+import subprocess
 from pathlib import Path
 
 from mutagen.flac import FLAC
@@ -106,7 +108,7 @@ class DurableOutputAssemblyTests(unittest.TestCase):
             self.record.id,
             source_revision_id=None,
             segments=[
-                {"text": "First", "silence_after_ms": 180},
+                {"text": "First", "node_kind": "chapter_marker", "silence_after_ms": 180},
                 {"text": "Second", "silence_after_ms": 900},
             ],
         )
@@ -139,6 +141,33 @@ class DurableOutputAssemblyTests(unittest.TestCase):
                 )
         return segment_ids
 
+    def test_m4b_assembly_preserves_generation_chapters(self):
+        self._plan_with_takes()
+        current = self.settings.get(self.record.id, "output")
+        self.settings.update(
+            self.record.id,
+            "output",
+            current["revision"],
+            {"format": "m4b", "bitrate": "128k", "title": "Chaptered book"},
+        )
+        queued = self.generation.create_assembly(self.record.id)
+        result = WorkflowHandlers(self.database, self.paths).assemble_generation_output(
+            {"output_assembly_id": queued["id"]},
+            lambda *_args: None,
+            threading.Event(),
+        )
+        artifact, output_path = ArtifactService(self.database, self.paths).resolve(result["artifact_id"])
+        self.assertEqual([{"start_ms": 0, "title": "First"}], artifact.metadata_json["chapters"])
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_chapters", "-of", "json", str(output_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        chapters = json.loads(probe.stdout)["chapters"]
+        self.assertEqual("First", chapters[0]["tags"]["title"])
+        self.assertAlmostEqual(0.42, float(chapters[0]["end_time"]), places=2)
+
     def test_selected_takes_are_assembled_and_upstream_edits_mark_output_stale(self):
         segment_ids = self._plan_with_takes()
         queued = self.generation.create_assembly(self.record.id)
@@ -161,6 +190,27 @@ class DurableOutputAssemblyTests(unittest.TestCase):
         self.assertEqual("stale", self.generation.latest_assembly(self.record.id)["status"])
         with self.database.session() as session:
             self.assertEqual("stale", session.get(Artifact, artifact.id).state)
+
+    def test_chapter_edit_stales_only_the_assembly_and_preserves_the_audio_take(self):
+        segment_ids = self._plan_with_takes()
+        queued = self.generation.create_assembly(self.record.id)
+        WorkflowHandlers(self.database, self.paths).assemble_generation_output(
+            {"output_assembly_id": queued["id"]},
+            lambda *_args: None,
+            threading.Event(),
+        )
+        with self.database.session() as session:
+            segment = session.get(GenerationSegment, segment_ids[1])
+            revision = segment.revision
+            take = session.scalar(select(AudioTake).where(AudioTake.generation_segment_id == segment.id))
+            take_id = take.id
+
+        updated = self.generation.update_segment(segment_ids[1], revision, {"node_kind": "chapter_marker"})
+
+        self.assertEqual("completed", updated["status"])
+        self.assertEqual("stale", self.generation.latest_assembly(self.record.id)["status"])
+        with self.database.session() as session:
+            self.assertEqual("completed", session.get(AudioTake, take_id).status)
 
     def test_stale_selected_take_is_rejected_and_failure_is_persisted(self):
         segment_ids = self._plan_with_takes()
