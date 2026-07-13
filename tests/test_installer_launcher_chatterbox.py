@@ -64,6 +64,17 @@ class TestInstallerLauncherChatterbox(unittest.TestCase):
         self.assertFalse(dialog.model_size_combo.isEnabled())
         self.assertEqual(dialog.get_selected_quantization(), "f16")
 
+    def test_qwen_snapshot_keeps_both_models_on_1_7b_if_state_is_stale(self):
+        installer = PandratorInstaller(headless=True)
+        installer.kobold_qwen_checkbox.setChecked(True)
+        installer.kobold_qwen_initial_model = "both"
+        installer.kobold_qwen_model_size = "0.6b"
+
+        selection = installer.snapshot_install_selection()
+
+        self.assertEqual(selection.kobold_qwen_initial_model, "both")
+        self.assertEqual(selection.kobold_qwen_model_size, "1.7b")
+
     def test_rvc_cpu_option_maps_to_cpu_install_and_launch_variants(self):
         installer = PandratorInstaller(headless=True)
 

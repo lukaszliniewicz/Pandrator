@@ -180,6 +180,15 @@ def qwen_model_variants(selection: str) -> tuple[str, ...]:
     raise ValueError("Qwen3 TTS model selection must be base, customvoice, or both.")
 
 
+def qwen_effective_model_size(selection: str, model_size: str) -> str:
+    """Return the only valid size for the selected Qwen capability set."""
+    variants = qwen_model_variants(selection)
+    if "customvoice" in variants:
+        return "1.7b"
+    normalized = str(model_size or "0.6b").strip().lower()
+    return normalized if normalized in {"0.6b", "1.7b"} else "0.6b"
+
+
 @dataclass(frozen=True)
 class LaunchSelection:
     pandrator: bool = True

@@ -50,7 +50,7 @@ from .constants import (
     XTTS_FINETUNING_PYTHON_VERSION,
     XTTS_FINETUNING_TORCH_PACKAGE_SPECS,
 )
-from .models import InstallSelection, qwen_model_variants
+from .models import InstallSelection, qwen_effective_model_size, qwen_model_variants
 from .platforms import is_windows
 from .reporting import HeadlessReporter, NullReporter
 
@@ -362,14 +362,28 @@ class WorkflowMixin:
 
             if kobold_qwen_var or kobold_qwen_cpu_var:
                 self.reporter.progress(0.89)
-                for model_variant in qwen_model_variants(selection.kobold_qwen_initial_model):
+                qwen_model_size = qwen_effective_model_size(
+                    selection.kobold_qwen_initial_model,
+                    selection.kobold_qwen_model_size,
+                )
+                requested_qwen_variants = qwen_model_variants(
+                    selection.kobold_qwen_initial_model
+                )
+                logging.info(
+                    "Qwen3 TTS install selection: models=%s, size=%s, quantization=%s, backend=%s",
+                    ",".join(requested_qwen_variants),
+                    qwen_model_size,
+                    selection.kobold_qwen_quantization,
+                    "cpu" if kobold_qwen_cpu_var else selection.kobold_qwen_backend,
+                )
+                for model_variant in requested_qwen_variants:
                     self.reporter.status(
                         f"Bootstrapping Qwen3 TTS {model_variant} model (temporary startup)..."
                     )
                     self.install_kobold_qwen_api_server(
                         kobold_qwen_repo_path,
                         backend="cpu" if kobold_qwen_cpu_var else selection.kobold_qwen_backend,
-                        model_size=selection.kobold_qwen_model_size,
+                        model_size=qwen_model_size,
                         quantization=selection.kobold_qwen_quantization,
                         initial_model=model_variant,
                         pixi_path=shared_pixi_path,
@@ -493,7 +507,10 @@ class WorkflowMixin:
             )
             if kobold_qwen_var or kobold_qwen_cpu_var:
                 config['kobold_qwen_backend'] = "cpu" if kobold_qwen_cpu_var else selection.kobold_qwen_backend
-                config['kobold_qwen_model_size'] = selection.kobold_qwen_model_size
+                config['kobold_qwen_model_size'] = qwen_effective_model_size(
+                    selection.kobold_qwen_initial_model,
+                    selection.kobold_qwen_model_size,
+                )
                 config['kobold_qwen_quantization'] = selection.kobold_qwen_quantization
                 requested_variants = list(qwen_model_variants(selection.kobold_qwen_initial_model))
                 installed_variants = list(config.get('kobold_qwen_installed_models') or [])
@@ -501,6 +518,7 @@ class WorkflowMixin:
                     if model_variant not in installed_variants:
                         installed_variants.append(model_variant)
                 config['kobold_qwen_installed_models'] = installed_variants
+                config['kobold_qwen_model_selection'] = selection.kobold_qwen_initial_model
                 config['kobold_qwen_initial_model'] = requested_variants[0]
             if crispasr_var:
                 config['crispasr_backend'] = selection.crispasr_backend

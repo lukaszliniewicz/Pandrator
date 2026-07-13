@@ -27,7 +27,7 @@ from ..constants import (
     MAGPIE_GPU_SUPPORT_CONFIG_FLAG,
     RVC_GPU_SUPPORT_CONFIG_FLAG,
 )
-from ..models import InstallSelection, LaunchSelection
+from ..models import InstallSelection, LaunchSelection, qwen_effective_model_size
 from ..operations import OperationsMixin
 from ..pixi import PixiEnvironmentMixin
 from ..platforms import is_windows
@@ -995,9 +995,25 @@ class PandratorInstaller(
         kobold_qwen_support = config.get('kobold_qwen_support', False)
         kobold_qwen_gpu_support = config.get(KOBOLD_QWEN_GPU_SUPPORT_CONFIG_FLAG, False)
         self.kobold_qwen_backend = config.get('kobold_qwen_backend', 'auto')
-        self.kobold_qwen_model_size = config.get('kobold_qwen_model_size', '0.6b')
+        installed_qwen_models = set(config.get('kobold_qwen_installed_models') or [])
+        stored_qwen_selection = config.get('kobold_qwen_model_selection')
+        if not isinstance(stored_qwen_selection, str) or stored_qwen_selection not in {
+            'base', 'customvoice', 'both'
+        }:
+            legacy_qwen_selection = config.get('kobold_qwen_initial_model', 'base')
+            if not isinstance(legacy_qwen_selection, str):
+                legacy_qwen_selection = 'base'
+            stored_qwen_selection = (
+                'both'
+                if {'base', 'customvoice'}.issubset(installed_qwen_models)
+                else legacy_qwen_selection
+            )
+        self.kobold_qwen_initial_model = stored_qwen_selection
+        self.kobold_qwen_model_size = qwen_effective_model_size(
+            stored_qwen_selection,
+            config.get('kobold_qwen_model_size', '0.6b'),
+        )
         self.kobold_qwen_quantization = config.get('kobold_qwen_quantization', 'f16')
-        self.kobold_qwen_initial_model = config.get('kobold_qwen_initial_model', 'base')
         set_widget_state(self.kobold_qwen_checkbox, not kobold_qwen_support, False)
         set_widget_state(self.kobold_qwen_cpu_checkbox, not kobold_qwen_support, False)
         set_widget_state(self.launch_kobold_qwen_checkbox, kobold_qwen_support, False)
@@ -1206,6 +1222,10 @@ class PandratorInstaller(
 
     def snapshot_install_selection(self):
         """Read installation choices on the GUI thread before work starts."""
+        qwen_model_size = qwen_effective_model_size(
+            self.kobold_qwen_initial_model,
+            self.kobold_qwen_model_size,
+        )
         return InstallSelection(
             pandrator=self.pandrator_checkbox.isChecked(),
             xtts=self.xtts_checkbox.isChecked() and not self.xtts_cpu_checkbox.isChecked(),
@@ -1243,7 +1263,7 @@ class PandratorInstaller(
                 and self.kobold_qwen_cpu_checkbox.isChecked()
             ),
             kobold_qwen_backend=self.kobold_qwen_backend,
-            kobold_qwen_model_size=self.kobold_qwen_model_size,
+            kobold_qwen_model_size=qwen_model_size,
             kobold_qwen_quantization=self.kobold_qwen_quantization,
             kobold_qwen_initial_model=self.kobold_qwen_initial_model,
             magpie=self.magpie_checkbox.isChecked() and not self.magpie_cpu_checkbox.isChecked(),

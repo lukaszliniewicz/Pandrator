@@ -16,7 +16,13 @@ from pandrator_installer.catalog import (
 from pandrator_installer.cli import parse_launcher_cli_args, run_self_check
 from pandrator_installer.cli import run_tls_self_check
 from pandrator_installer.build_support import resolve_openssl_runtime_pair
-from pandrator_installer.models import InstallSelection, LaunchSelection, WorkspacePaths, qwen_model_variants
+from pandrator_installer.models import (
+    InstallSelection,
+    LaunchSelection,
+    WorkspacePaths,
+    qwen_effective_model_size,
+    qwen_model_variants,
+)
 from pandrator_installer import platforms
 from pandrator_installer.crispasr import detect_compute_backends, resolve_asset
 from pandrator_installer.reporting import HeadlessReporter
@@ -158,6 +164,9 @@ class InstallerArchitectureTests(unittest.TestCase):
             qwen_model_variants(both_selection.kobold_qwen_initial_model),
             ("base", "customvoice"),
         )
+        self.assertEqual(qwen_effective_model_size("both", "0.6b"), "1.7b")
+        self.assertEqual(qwen_effective_model_size("customvoice", "0.6b"), "1.7b")
+        self.assertEqual(qwen_effective_model_size("base", "0.6b"), "0.6b")
         with self.assertRaisesRegex(ValueError, "only for the 1.7B"):
             InstallSelection.from_components(
                 ["kobold_qwen"],
