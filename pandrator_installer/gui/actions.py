@@ -100,11 +100,26 @@ class GuiActionsMixin:
             QMessageBox.critical(self, "Update Error", error_msg)
             return
 
-        try:
-            self.ensure_update_runtime_stopped(pandrator_base_path)
-        except RuntimeError as exc:
-            QMessageBox.warning(self, "Close Running Applications", str(exc))
-            return
+        running_processes = self.get_running_installation_processes(pandrator_base_path)
+        stop_running_processes = False
+        if running_processes:
+            dialog = QMessageBox(self)
+            dialog.setIcon(QMessageBox.Icon.Warning)
+            dialog.setWindowTitle("Pandrator Is Running")
+            dialog.setText("Pandrator and its services must stop before the update can begin.")
+            dialog.setInformativeText(
+                "The installer window will remain open. Any active job will be interrupted, "
+                "but completed artifacts will be preserved.\n\nRunning: "
+                + self.describe_running_installation_processes(running_processes)
+            )
+            stop_button = dialog.addButton("Stop and Update", QMessageBox.ButtonRole.AcceptRole)
+            cancel_button = dialog.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+            dialog.setDefaultButton(stop_button)
+            dialog.setEscapeButton(cancel_button)
+            dialog.exec()
+            if dialog.clickedButton() is not stop_button:
+                return
+            stop_running_processes = True
 
         self.disable_buttons()
         self.initialize_logging()
@@ -113,7 +128,7 @@ class GuiActionsMixin:
         logging.info("Starting update process")
 
         # Create worker thread to run the update
-        self.worker = Worker(self.update_process)
+        self.worker = Worker(self.update_process, stop_running_processes)
         self.reporter = SignalReporter(self.worker.update_progress, self.worker.update_status)
         self.worker.update_progress.connect(self.update_progress)
         self.worker.update_status.connect(self.update_status)

@@ -55,14 +55,64 @@ from .crispasr import CRISPASR_VERSION, detect_compute_backends, resolve_asset
 
 
 class ComponentOperationsMixin:
+    @staticmethod
+    def _protected_installer_process_ids():
+        """Return PIDs that must stay alive while the installer performs work.
+
+        PyInstaller one-file builds can keep a small bootstrap parent alive, so
+        protecting only ``os.getpid()`` is not sufficient when the launcher is
+        stored inside the installation directory.
+        """
+        protected = {os.getpid()}
+        try:
+            protected.update(parent.pid for parent in psutil.Process(os.getpid()).parents())
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+            pass
+        return protected
+
+    @staticmethod
+    def _runtime_process_labels(pandrator_path):
+        """Read supervised process identities, including a frozen supervisor.
+
+        A frozen launcher starts the supervisor as another copy of the launcher
+        executable.  That executable can live outside the installation tree,
+        so executable-path inspection alone cannot reliably find it.
+        """
+        state_path = os.path.join(pandrator_path, "runtime-processes.json")
+        try:
+            with open(state_path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return {}
+
+        labels = {}
+        try:
+            supervisor_pid = int(payload.get("supervisor_pid") or 0)
+        except (TypeError, ValueError):
+            supervisor_pid = 0
+        if supervisor_pid > 0:
+            labels[supervisor_pid] = "Pandrator web supervisor"
+
+        for key, process in dict(payload.get("processes") or {}).items():
+            try:
+                pid = int(process.get("pid") or 0)
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if pid > 0:
+                labels[pid] = str(process.get("label") or key or "Pandrator service")
+        return labels
+
     def get_running_installation_processes(self, pandrator_path):
         """Return processes executing binaries from the installation tree."""
         installation_root = os.path.normcase(os.path.realpath(pandrator_path))
+        protected_pids = self._protected_installer_process_ids()
+        managed_labels = self._runtime_process_labels(pandrator_path)
         running_processes = []
+        seen_pids = set()
 
         for process in psutil.process_iter(['pid', 'name', 'exe']):
             try:
-                if process.pid == os.getpid():
+                if process.pid in protected_pids:
                     continue
                 executable = str(process.info.get('exe') or '').strip()
                 if not executable:
@@ -73,14 +123,156 @@ class ComponentOperationsMixin:
                 running_processes.append(
                     {
                         'pid': process.pid,
-                        'name': str(process.info.get('name') or os.path.basename(executable)),
+                        'name': managed_labels.get(
+                            process.pid,
+                            str(process.info.get('name') or os.path.basename(executable)),
+                        ),
                         'exe': executable,
                     }
                 )
+                seen_pids.add(process.pid)
+            except (OSError, ValueError, psutil.AccessDenied, psutil.NoSuchProcess):
+                continue
+
+        # The supervisor can be a frozen launcher executable outside the
+        # installation directory.  Its state file is authoritative for these
+        # additional managed PIDs.
+        for pid, label in managed_labels.items():
+            if pid in protected_pids or pid in seen_pids or not psutil.pid_exists(pid):
+                continue
+            try:
+                process = psutil.Process(pid)
+                running_processes.append(
+                    {
+                        'pid': pid,
+                        'name': label,
+                        'exe': str(process.exe() or ''),
+                    }
+                )
+                seen_pids.add(pid)
             except (OSError, ValueError, psutil.AccessDenied, psutil.NoSuchProcess):
                 continue
 
         return running_processes
+
+    @staticmethod
+    def describe_running_installation_processes(running_processes, limit=5):
+        process_preview = ', '.join(
+            f"{process['name']} (PID {process['pid']})"
+            for process in running_processes[:limit]
+        )
+        if len(running_processes) > limit:
+            process_preview += ', ...'
+        return process_preview
+
+    def _remove_stale_runtime_metadata(self, pandrator_path):
+        runtime_state = os.path.join(pandrator_path, "runtime-processes.json")
+        try:
+            with open(runtime_state, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            runtime_pids = {int(payload.get("supervisor_pid") or 0)}
+            runtime_pids.update(
+                int(process.get("pid") or 0)
+                for process in dict(payload.get("processes") or {}).values()
+                if isinstance(process, dict)
+            )
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            runtime_pids = set()
+        if not any(pid > 0 and psutil.pid_exists(pid) for pid in runtime_pids):
+            try:
+                os.remove(runtime_state)
+            except FileNotFoundError:
+                pass
+            except OSError as error:
+                logging.warning("Could not remove stale runtime metadata %s: %s", runtime_state, error)
+
+        lock_path = os.path.join(pandrator_path, "pandrator.instance.lock")
+        try:
+            with open(lock_path, "r", encoding="utf-8") as handle:
+                lock_pid = int(json.load(handle).get("pid") or 0)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            lock_pid = 0
+        if lock_pid <= 0 or not psutil.pid_exists(lock_pid):
+            try:
+                os.remove(lock_path)
+            except FileNotFoundError:
+                pass
+            except OSError as error:
+                logging.warning("Could not remove stale runtime metadata %s: %s", lock_path, error)
+
+    def stop_running_installation_processes(self, pandrator_path, running_processes=None, timeout=20):
+        """Terminate supervised and standalone installation processes safely.
+
+        The current installer (and a possible PyInstaller bootstrap parent) is
+        always excluded. Descendants of selected runtime processes are included
+        even if their executable lives outside the installation directory.
+        """
+        candidates = list(running_processes or self.get_running_installation_processes(pandrator_path))
+        protected_pids = self._protected_installer_process_ids()
+        requested_pids = set()
+        for process in candidates:
+            try:
+                pid = int(process.get('pid') or 0)
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if pid > 0 and pid not in protected_pids:
+                requested_pids.add(pid)
+        if not requested_pids:
+            self._remove_stale_runtime_metadata(pandrator_path)
+            return []
+
+        processes_by_pid = {}
+        for pid in requested_pids:
+            try:
+                process = psutil.Process(pid)
+                processes_by_pid[pid] = process
+            except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+                continue
+            try:
+                for child in process.children(recursive=True):
+                    if child.pid not in protected_pids:
+                        processes_by_pid[child.pid] = child
+            except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+                pass
+
+        processes = list(processes_by_pid.values())
+        for process in processes:
+            try:
+                process.terminate()
+            except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+                continue
+
+        _, alive = psutil.wait_procs(processes, timeout=max(0.1, min(float(timeout), 10.0)))
+        for process in alive:
+            try:
+                process.kill()
+            except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+                continue
+        if alive:
+            _, alive = psutil.wait_procs(alive, timeout=max(0.1, min(float(timeout), 5.0)))
+
+        deadline = time.monotonic() + max(0.1, float(timeout))
+        remaining = self.get_running_installation_processes(pandrator_path)
+        while remaining and time.monotonic() < deadline:
+            time.sleep(0.1)
+            remaining = self.get_running_installation_processes(pandrator_path)
+
+        self._remove_stale_runtime_metadata(pandrator_path)
+        if remaining or alive:
+            unresolved = list(remaining)
+            if not unresolved:
+                for process in alive:
+                    try:
+                        if process.is_running():
+                            unresolved.append({'pid': process.pid, 'name': process.name()})
+                    except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+                        continue
+            if unresolved:
+                raise RuntimeError(
+                    "Some Pandrator processes could not be stopped: "
+                    + self.describe_running_installation_processes(unresolved)
+                )
+        return candidates
 
     def ensure_update_runtime_stopped(self, pandrator_path):
         """Prevent Windows DLL locks from causing a partial in-place update."""
@@ -88,16 +280,11 @@ class ComponentOperationsMixin:
         if not running_processes:
             return
 
-        process_preview = ', '.join(
-            f"{process['name']} (PID {process['pid']})"
-            for process in running_processes[:5]
-        )
-        if len(running_processes) > 5:
-            process_preview += ', ...'
-
         raise RuntimeError(
             "Close Pandrator and all installed speech/RVC services before updating. "
-            f"Running installation processes: {process_preview}"
+            "The installer itself may remain open. "
+            "Running installation processes: "
+            f"{self.describe_running_installation_processes(running_processes)}"
         )
 
     def get_kokoro_torch_install_options(self, use_gpu=False):

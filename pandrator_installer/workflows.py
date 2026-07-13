@@ -535,7 +535,7 @@ class WorkflowMixin:
             raise
 
 
-    def update_process(self):
+    def update_process(self, stop_running_processes=False):
         """Main update process - runs in a worker thread"""
         pandrator_base_path = os.path.join(self.initial_working_dir, 'Pandrator')
         pandrator_repo_path = os.path.join(pandrator_base_path, 'Pandrator')
@@ -549,6 +549,10 @@ class WorkflowMixin:
         kobold_qwen_repo_path = os.path.join(pandrator_base_path, KOBOLD_QWEN_API_REPO_DIRNAME)
         magpie_repo_path = os.path.join(pandrator_base_path, MAGPIE_API_REPO_DIRNAME)
         rvc_repo_path = os.path.join(pandrator_base_path, RVC_API_REPO_DIRNAME)
+        if stop_running_processes:
+            self.reporter.status("Stopping Pandrator and running services before the update...")
+            stopped = self.stop_running_installation_processes(pandrator_base_path)
+            logging.info("Stopped %d installation process(es) before update.", len(stopped))
         self.ensure_update_runtime_stopped(pandrator_base_path)
         config = self.load_install_config(pandrator_base_path, detect_rvc=True)
         if KOKORO_GPU_SUPPORT_CONFIG_FLAG not in config:

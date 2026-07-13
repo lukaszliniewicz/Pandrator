@@ -1,5 +1,7 @@
+import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -178,6 +180,119 @@ class InstallerUpdateMigrationTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "Close Pandrator"):
             installer.ensure_update_runtime_stopped(os.path.abspath("C:/Pandrator"))
+
+    @patch("pandrator_installer.components.psutil.process_iter")
+    def test_current_installer_process_never_blocks_its_own_update(self, process_iter):
+        installer = HeadlessInstaller(working_dir="workspace")
+        process_iter.return_value = [
+            SimpleNamespace(
+                pid=os.getpid(),
+                info={
+                    "name": "PandratorInstaller.exe",
+                    "exe": os.path.abspath("C:/Pandrator/PandratorInstaller.exe"),
+                },
+            )
+        ]
+
+        self.assertEqual(
+            [],
+            installer.get_running_installation_processes(os.path.abspath("C:/Pandrator")),
+        )
+
+    def test_frozen_installer_bootstrap_parent_does_not_block_update(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        bootstrap_pid = 43199
+        bootstrap = SimpleNamespace(
+            pid=bootstrap_pid,
+            info={
+                "name": "PandratorInstaller.exe",
+                "exe": os.path.abspath("C:/Pandrator/PandratorInstaller.exe"),
+            },
+        )
+        current = SimpleNamespace(parents=lambda: [SimpleNamespace(pid=bootstrap_pid)])
+
+        with patch(
+            "pandrator_installer.components.psutil.Process",
+            return_value=current,
+        ), patch(
+            "pandrator_installer.components.psutil.process_iter",
+            return_value=[bootstrap],
+        ):
+            running = installer.get_running_installation_processes(os.path.abspath("C:/Pandrator"))
+
+        self.assertEqual([], running)
+
+    def test_frozen_supervisor_is_detected_from_runtime_state_outside_install_tree(self):
+        with tempfile.TemporaryDirectory() as install_root:
+            supervisor_pid = 43210
+            with open(os.path.join(install_root, "runtime-processes.json"), "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "supervisor_pid": supervisor_pid,
+                        "processes": {},
+                    },
+                    handle,
+                )
+            installer = HeadlessInstaller(working_dir=os.path.dirname(install_root))
+            current = SimpleNamespace(parents=lambda: [])
+            supervisor = SimpleNamespace(exe=lambda: os.path.abspath("C:/Downloads/PandratorInstaller.exe"))
+
+            with patch("pandrator_installer.components.psutil.process_iter", return_value=[]), patch(
+                "pandrator_installer.components.psutil.pid_exists",
+                side_effect=lambda pid: pid == supervisor_pid,
+            ), patch(
+                "pandrator_installer.components.psutil.Process",
+                side_effect=lambda pid: current if pid == os.getpid() else supervisor,
+            ):
+                running = installer.get_running_installation_processes(install_root)
+
+            self.assertEqual(1, len(running))
+            self.assertEqual(supervisor_pid, running[0]["pid"])
+            self.assertEqual("Pandrator web supervisor", running[0]["name"])
+
+    def test_update_can_terminate_a_running_process_and_continue(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        process = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            stopped = installer.stop_running_installation_processes(
+                os.path.abspath("C:/Pandrator"),
+                [{"pid": process.pid, "name": "Pandrator worker", "exe": sys.executable}],
+                timeout=5,
+            )
+            process.wait(timeout=5)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+
+        self.assertEqual(process.pid, stopped[0]["pid"])
+
+    def test_update_stop_choice_is_applied_before_the_runtime_guard(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        calls = []
+
+        with patch.object(
+            installer,
+            "stop_running_installation_processes",
+            side_effect=lambda *_args: calls.append("stop") or [],
+        ), patch.object(
+            installer,
+            "ensure_update_runtime_stopped",
+            side_effect=lambda *_args: calls.append("guard"),
+        ), patch.object(
+            installer,
+            "load_install_config",
+            side_effect=RuntimeError("test sentinel"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "test sentinel"):
+                installer.update_process(stop_running_processes=True)
+
+        self.assertEqual(["stop", "guard"], calls)
 
 
 if __name__ == "__main__":
