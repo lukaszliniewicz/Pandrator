@@ -39,6 +39,8 @@ class SessionService:
         name: str,
         *,
         workflow_kind: str = "audiobook",
+        source_language: str = "auto",
+        target_language: str | None = None,
         workflow_preset: str = "custom",
         included_stages: list[str] | None = None,
     ) -> SessionRecord:
@@ -48,6 +50,8 @@ class SessionService:
         record = SessionRecord(
             name=normalized_name,
             workflow_kind=workflow_kind,
+            source_language=str(source_language or "auto").strip().lower(),
+            target_language=str(target_language).strip().lower() if target_language else None,
             workflow_preset=workflow_preset,
             included_stages_json=list(included_stages or []),
         )
@@ -58,7 +62,7 @@ class SessionService:
         return record
 
     def update(self, session_id: str, revision: int, changes: dict) -> SessionRecord:
-        allowed = {"name", "workflow_kind", "workflow_preset", "included_stages_json", "status"}
+        allowed = {"name", "workflow_kind", "source_language", "target_language", "workflow_preset", "included_stages_json", "status"}
         with self.database.session() as session:
             record = session.get(SessionRecord, session_id)
             if record is None:

@@ -381,6 +381,18 @@
             "default": null,
             "title": "Node Kind"
           },
+          "optimized_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Optimized Text"
+          },
           "removed": {
             "anyOf": [
               {
@@ -710,6 +722,68 @@
           }
         },
         "title": "ModelUpdate",
+        "type": "object"
+      },
+      "OptimizationReviewItem": {
+        "additionalProperties": false,
+        "properties": {
+          "index": {
+            "minimum": 0,
+            "title": "Index",
+            "type": "integer"
+          },
+          "text": {
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "index",
+          "text"
+        ],
+        "title": "OptimizationReviewItem",
+        "type": "object"
+      },
+      "OptimizationReviewRequest": {
+        "$defs": {
+          "OptimizationReviewItem": {
+            "additionalProperties": false,
+            "properties": {
+              "index": {
+                "minimum": 0,
+                "title": "Index",
+                "type": "integer"
+              },
+              "text": {
+                "minLength": 1,
+                "title": "Text",
+                "type": "string"
+              }
+            },
+            "required": [
+              "index",
+              "text"
+            ],
+            "title": "OptimizationReviewItem",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/OptimizationReviewItem"
+            },
+            "minItems": 1,
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "OptimizationReviewRequest",
         "type": "object"
       },
       "OutcomePlanUpdate": {
@@ -1242,6 +1316,27 @@
             "title": "Name",
             "type": "string"
           },
+          "source_language": {
+            "default": "auto",
+            "maxLength": 40,
+            "minLength": 2,
+            "title": "Source Language",
+            "type": "string"
+          },
+          "target_language": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "minLength": 2,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target Language"
+          },
           "workflow_kind": {
             "default": "audiobook",
             "enum": [
@@ -1308,6 +1403,20 @@
             "default": null,
             "title": "Name"
           },
+          "source_language": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "minLength": 2,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Language"
+          },
           "status": {
             "anyOf": [
               {
@@ -1319,6 +1428,20 @@
             ],
             "default": null,
             "title": "Status"
+          },
+          "target_language": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "minLength": 2,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target Language"
           },
           "workflow_kind": {
             "anyOf": [
@@ -1774,6 +1897,26 @@
         "responses": {
           "200": {
             "description": "Range-capable artifact content"
+          }
+        }
+      }
+    },
+    "/api/v1/artifacts/{artifactId}/optimization-review": {
+      "post": {
+        "operationId": "saveOptimizationReview",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OptimizationReviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Reviewed speech optimization artifact"
           }
         }
       }

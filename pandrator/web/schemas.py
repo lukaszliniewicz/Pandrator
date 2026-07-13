@@ -21,6 +21,8 @@ class ErrorBody(StrictModel):
 class SessionCreate(StrictModel):
     name: str = Field(min_length=1, max_length=255)
     workflow_kind: Literal["audiobook", "subtitles", "voiceover"] = "audiobook"
+    source_language: str = Field(default="auto", min_length=2, max_length=40)
+    target_language: str | None = Field(default=None, min_length=2, max_length=40)
     workflow_preset: str = "custom"
     included_stages: list[str] = Field(default_factory=list)
 
@@ -28,6 +30,8 @@ class SessionCreate(StrictModel):
 class SessionUpdate(StrictModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     workflow_kind: Literal["audiobook", "subtitles", "voiceover"] | None = None
+    source_language: str | None = Field(default=None, min_length=2, max_length=40)
+    target_language: str | None = Field(default=None, min_length=2, max_length=40)
     workflow_preset: str | None = None
     included_stages: list[str] | None = None
     status: str | None = None
@@ -227,6 +231,7 @@ class GenerationPlanCreate(StrictModel):
 
 class GenerationSegmentUpdate(StrictModel):
     text: str | None = Field(default=None, min_length=1)
+    optimized_text: str | None = None
     node_kind: Literal["paragraph", "heading", "chapter_marker", "subtitle_cue"] | None = None
     voice_id: str | None = None
     language: str | None = Field(default=None, max_length=40)
@@ -239,6 +244,15 @@ class GenerationStartRequest(StrictModel):
     run_override: dict[str, Any] = Field(default_factory=dict)
     segment_ids: list[str] = Field(default_factory=list)
     operation: Literal["generate", "regenerate", "rvc"] = "generate"
+
+
+class OptimizationReviewItem(StrictModel):
+    index: int = Field(ge=0)
+    text: str = Field(min_length=1)
+
+
+class OptimizationReviewRequest(StrictModel):
+    items: list[OptimizationReviewItem] = Field(min_length=1)
 
 
 class OutputAssemblyCreateRequest(StrictModel):
@@ -303,6 +317,8 @@ SCHEMA_MODELS = {
         GenerationPlanCreate,
         GenerationSegmentUpdate,
         GenerationStartRequest,
+        OptimizationReviewItem,
+        OptimizationReviewRequest,
         OutputAssemblyCreateRequest,
         TtsEndpointDiscoveryRequest,
         AgentRunCreateRequest,

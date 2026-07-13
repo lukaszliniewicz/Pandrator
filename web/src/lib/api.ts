@@ -3,6 +3,8 @@ export type SessionRecord = {
   name: string;
   storage_key: string;
   workflow_kind: 'audiobook' | 'subtitles' | 'voiceover';
+  source_language: string;
+  target_language: string | null;
   workflow_preset: string;
   included_stages_json: string[];
   status: string;

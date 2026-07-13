@@ -8,6 +8,7 @@
     Crop,
     FileUp,
     LoaderCircle,
+    Library,
     Play,
     Settings2,
     Sparkles,
@@ -20,8 +21,11 @@
   import ArtifactPreview from './ArtifactPreview.svelte';
   import SettingsModal from './SettingsModal.svelte';
   import TtsServicesModal from './TtsServicesModal.svelte';
+  import VoiceLibraryModal from './VoiceLibraryModal.svelte';
+  import TextOptimizationReview from './TextOptimizationReview.svelte';
   import { artifactRoleLabel, type PreviewableArtifact } from './artifact-display';
   import { LANGUAGE_OPTIONS } from './settings-fields';
+  import { describeVoice, languagesForService } from './voice-catalog';
   import { onMount } from 'svelte';
 
   type Stage = {
@@ -31,9 +35,12 @@
     explanation: string;
     status: 'unavailable' | 'ready' | 'running' | 'completed' | 'stale' | 'failed';
     executable: boolean;
+    toggle?: boolean;
+    toggle_only?: boolean;
+    enabled?: boolean | null;
     included: boolean;
     required?: boolean;
-    artifact?: { id: string; role: string; raw_role?: string; path: string } | null;
+    artifact?: PreviewableArtifact & { id: string; role: string; raw_role?: string; path: string } | null;
     job_id?: string | null;
     progress?: number | null;
     detail?: string | null;
@@ -54,12 +61,16 @@
   let capabilities = $state<Record<string, any>>({});
   let ttsCatalogue = $state<any>({services:[]});
   let libraryVoices = $state<any[]>([]);
+  let llmModels = $state<{value:string;label:string;isDefault:boolean}[]>([]);
   let loading = $state(true);
   let error = $state('');
   let uploading = $state(false);
   let settingsStage = $state<Stage | null>(null);
   let fullSettingsSection = $state('');
   let ttsServicesOpen = $state(false);
+  let voiceLibraryOpen = $state(false);
+  let optimizationReviewArtifactId = $state('');
+  let workspaceMode = $state<'review' | 'automatic'>('review');
   let preview = $state<PreviewableArtifact | null>(null);
   const sectionDisplay = (section: string) => ({ stt: 'STT', tts: 'TTS', rvc: 'RVC' } as Record<string, string>)[section] ?? section.replaceAll('_', ' ');
   let stageSettings = $state<Record<string, Record<string, unknown>>>({});
@@ -95,12 +106,23 @@
   let instructions = $state('');
   let optimizationPrompt = $state('');
   let optimizationConcurrent = $state(1);
+  let optimizationBatchSize = $state(3);
+  let documentOptimizationBatchSize = $state(8);
   let optimizationMultiStage = $state(false);
   let optimizationFirstPrompt = $state('');
   let optimizationSecondPrompt = $state('');
   let optimizationThirdPrompt = $state('');
+  let optimizationEnabled = $state(false);
+  let documentOptimizationEnabled = $state(false);
   let agentic = $state(false);
   let maxIterations = $state(53);
+  let splitSentences = $state(true);
+  let appendSentences = $state(true);
+  let maxSentenceLength = $state(200);
+  let nemoNormalization = $state(true);
+  let normalizeAllCaps = $state(true);
+  let removeDiacritics = $state(false);
+  let removeQuotationMarks = $state(false);
   let ttsService = $state('XTTS');
   let ttsModel = $state('');
   let voiceName = $state('');
@@ -183,9 +205,13 @@
     }
   }
 
-  const stageSection = (key: string) => ({transcribe:'stt',correct:'correction',translate:'translation',optimize_tts:'text',clean_source:'source_cleaning',prepare_text:'tts',generate_audio:'tts',export:'output'}[key] ?? 'text');
+  const stageSection = (key: string) => ({transcribe:'stt',correct:'correction',translate:'translation',optimize_document:'text',optimize_tts:'text',clean_source:'source_cleaning',prepare_text:'text',generate_audio:'tts',export:'output'}[key] ?? 'text');
 
   async function openSettings(stage: Stage) {
+    if (stage.key === 'export' && session.workflow_kind === 'audiobook') {
+      fullSettingsSection = 'output';
+      return;
+    }
     settingsStage = stage;
     let saved = stageSettings[stage.key] ?? {};
     try {
@@ -193,9 +219,9 @@
       saved = {...stored.effective, ...saved};
       stageSettings[stage.key] = saved;
     } catch { /* use stage-local values */ }
-    targetLanguage = String(saved.target_language ?? 'en');
-    originalLanguage = String(saved.original_language ?? 'auto');
-    model = String(saved.model_name ?? saved[`${stage.key}_model`] ?? 'default');
+    targetLanguage = String(saved.target_language ?? session.target_language ?? (session.source_language === 'auto' ? 'en' : session.source_language) ?? 'en');
+    originalLanguage = String(saved.original_language ?? session.source_language ?? 'auto');
+    model = String(saved.model_name ?? saved.tts_optimization_model ?? saved[`${stage.key}_model`] ?? 'default');
     backend = String(saved.backend ?? saved.translation_backend ?? 'llm');
     sttEngine = String(saved.stt_engine ?? saved.stt_backend ?? 'whisper').includes('parakeet') ? 'parakeet' : 'whisper';
     sttQuantization = String(saved.stt_model_quantization ?? 'f16');
@@ -225,21 +251,40 @@
     instructions = String(saved.instructions ?? '');
     optimizationPrompt = String(saved.combined_prompt ?? '');
     optimizationConcurrent = Number(saved.llm_concurrent_calls ?? 1);
+    optimizationBatchSize = Number(saved.llm_tts_batch_size ?? 3);
+    documentOptimizationBatchSize = Number(saved.llm_tts_document_batch_size ?? 8);
     optimizationMultiStage = Boolean(saved.llm_multi_stage ?? false);
     optimizationFirstPrompt = String(saved.first_prompt ?? '');
     optimizationSecondPrompt = String(saved.second_prompt ?? '');
     optimizationThirdPrompt = String(saved.third_prompt ?? '');
+    optimizationEnabled = Boolean(saved.llm_tts_optimization ?? (stage.key === 'optimize_tts' ? stage.enabled : false) ?? false);
+    documentOptimizationEnabled = Boolean(saved.llm_tts_document_optimization ?? (stage.key === 'optimize_document' ? stage.enabled : false) ?? false);
     agentic = Boolean(saved.agentic ?? false);
     maxIterations = Number(saved.max_iterations ?? 53);
-    ttsService = String(saved.tts_service ?? saved.service ?? 'XTTS');
-    ttsModel = String(saved.model ?? saved.xtts_model ?? '');
-    voiceName = String(saved.voice ?? saved.voice_name ?? '');
+    splitSentences = Boolean(saved.enable_sentence_splitting ?? true);
+    appendSentences = Boolean(saved.enable_sentence_appending ?? true);
+    maxSentenceLength = Number(saved.max_sentence_length ?? 200);
+    nemoNormalization = Boolean(saved.enable_nemo_normalization ?? true);
+    normalizeAllCaps = Boolean(saved.normalize_all_caps ?? true);
+    removeDiacritics = Boolean(saved.remove_diacritics ?? false);
+    removeQuotationMarks = Boolean(saved.remove_quotation_marks ?? false);
+    const configuredServiceId=String(saved.tts_service ?? saved.service ?? ttsCatalogue.default_service ?? 'XTTS');
+    const configuredService=(ttsCatalogue.services??[]).find((item:any)=>[item.id,item.name].some((value)=>String(value??'').toLowerCase()===configuredServiceId.toLowerCase()));
+    const activeService=(configuredService?.online?configuredService:(ttsCatalogue.services??[]).find((item:any)=>item.online))??configuredService;
+    ttsService = String(activeService?.id ?? configuredServiceId);
+    ttsModel = activeService?.id===configuredService?.id ? String(saved.model ?? saved.xtts_model ?? activeService?.default_model ?? '') : String(activeService?.default_model ?? activeService?.models?.[0] ?? '');
+    voiceName = activeService?.id===configuredService?.id ? String(saved.voice ?? saved.voice_name ?? '') : String(activeService?.default_voice ?? '');
     speechBlockMinChars = Number(saved.speech_block_min_chars ?? 10);
     speechBlockMaxChars = Number(saved.speech_block_max_chars ?? 160);
     speechBlockMergeThreshold = Number(saved.speech_block_merge_threshold ?? 250);
     subtitleMode = String(saved.subtitle_mode ?? 'soft');
     subtitleSelection = String(saved.subtitle_selection ?? 'dual');
     audioMode = String(saved.audio_mode ?? 'preserve');
+    if (stage.key === 'generate_audio' && selectedTtsService) {
+      ttsService = String(selectedTtsService.id ?? selectedTtsService.name);
+      ttsModel = ttsModel || String(selectedTtsService.default_model ?? ttsModels[0] ?? '');
+      voiceName = voiceName || String(selectedTtsDefaultVoice ?? '');
+    }
   }
 
   async function cancel(stage: Stage) {
@@ -255,28 +300,106 @@
 
   async function loadSpeechCatalogues() {
     try {
-      const [services, voices] = await Promise.all([api<any>('/services/tts'), api<any>('/voices')]);
+      const [services, voices] = await Promise.all([api<any>('/services/tts?refresh=true'), api<any>('/voices')]);
       ttsCatalogue = services;
       libraryVoices = voices.items ?? [];
+      const catalogue = services.services ?? [];
+      const configured = catalogue.find((item:any) => [item.id,item.name].some((value) => String(value ?? '').toLowerCase() === String(services.default_service ?? '').toLowerCase()));
+      const active = (configured?.online ? configured : catalogue.find((item:any) => item.online)) ?? configured ?? catalogue[0];
+      if (active) {
+        ttsService = String(active.id ?? active.name);
+        ttsModel = ttsModel || String(active.default_model ?? active.models?.[0] ?? '');
+        voiceName = voiceName || String(active.default_voices_by_language?.[ttsModel]?.[targetLanguage] ?? active.default_voices?.[ttsModel] ?? active.default_voice ?? '');
+        await discoverTtsService(active);
+      }
     } catch {
       ttsCatalogue = {services:[]};
       libraryVoices = [];
     }
   }
 
+  async function loadLlmModels() {
+    try {
+      const providerPayload=await api<any>('/providers');
+      const enabled=(providerPayload.items??[]).filter((provider:any)=>provider.enabled);
+      const groups=await Promise.all(enabled.map(async(provider:any)=>({provider,models:(await api<any>(`/providers/${provider.id}/models`)).items??[]})));
+      llmModels=groups.flatMap(({provider,models}:any)=>models.map((item:any)=>{
+        const custom=Boolean(provider.options_json?.is_custom)||!['openai','gemini','anthropic'].includes(provider.provider_key);
+        const providerId=custom?(provider.options_json?.provider_id||provider.id):(provider.options_json?.provider_id||provider.provider_key);
+        return {value:custom?`custom:${providerId}/${item.model_id}`:`${provider.provider_key}/${item.model_id}`,label:`${provider.label} · ${item.model_id}`,isDefault:Boolean(item.is_default)};
+      }));
+    } catch { llmModels=[]; }
+  }
+
+  async function discoverTtsService(service:any = selectedTtsService) {
+    if (!service?.api_base) return;
+    try {
+      const discovered = await api<any>('/services/tts/discover',{method:'POST',body:JSON.stringify({base_url:service.api_base})});
+      if (!discovered?.success) return;
+      const services = (ttsCatalogue.services??[]).map((item:any)=>item.id===service.id?{
+        ...item,
+        models:Array.from(new Set([...(discovered.models??[]),...(item.models??[])])),
+        voices:Array.from(new Set([...(discovered.voices??[]),...(item.voices??[])])),
+        online:true
+      }:item);
+      ttsCatalogue={...ttsCatalogue,services};
+    } catch { /* A reachable service may not expose catalogue routes. */ }
+  }
+
+  async function chooseTtsService(value:string) {
+    ttsService=value;
+    const service=(ttsCatalogue.services??[]).find((item:any)=>String(item.id)===value);
+    ttsModel=String(service?.default_model??service?.models?.[0]??'');
+    await discoverTtsService(service);
+    voiceName=String(service?.default_voices_by_language?.[ttsModel]?.[targetLanguage]??service?.default_voices?.[ttsModel]??service?.default_voice??'');
+  }
+
   const selectedTtsService = $derived((ttsCatalogue.services??[]).find((item:any)=>[item.id,item.name].map((value)=>String(value??'').toLowerCase()).includes(ttsService.toLowerCase())));
   const ttsModels = $derived(selectedTtsService?.models??[]);
   const selectedTtsDefaultVoice = $derived(selectedTtsService?.default_voices_by_language?.[ttsModel]?.[targetLanguage] ?? selectedTtsService?.default_voices?.[ttsModel] ?? selectedTtsService?.default_voice ?? '');
-  const ttsVoices = $derived(Array.from(new Set([...(selectedTtsService?.voice_catalogues?.[ttsModel] ?? selectedTtsService?.voices ?? []),...libraryVoices.map((voice:any)=>voice.name)])));
+  const ttsVoiceDescriptors = $derived(Array.from(new Set(selectedTtsService?.voice_catalogues?.[ttsModel] ?? selectedTtsService?.voices ?? [])).map((voice)=>describeVoice(String(selectedTtsService?.id??ttsService),String(voice))));
+  const ttsLanguages = $derived(languagesForService(String(selectedTtsService?.id??ttsService),ttsVoiceDescriptors));
+  const filteredPrebuiltVoices = $derived(ttsVoiceDescriptors.filter((voice)=>!voice.languageCode||voice.languageCode===targetLanguage));
+  const filteredLibraryVoices = $derived(libraryVoices.filter((voice:any)=>!voice.language||voice.language===targetLanguage||session.source_language==='auto'));
+  const supportsPrebuiltVoices = $derived(Boolean(selectedTtsService?.supports_prebuilt_voices && ttsVoiceDescriptors.length));
+  const supportsCloningVoices = $derived(['xtts','voxcpm','fishs2','chatterbox','kobold_qwen'].includes(String(selectedTtsService?.id??'').toLowerCase()) || !selectedTtsService?.supports_prebuilt_voices);
+
+  async function toggleOptimization(enabled:boolean) {
+    error='';
+    try {
+      await persistSection('text',{llm_tts_optimization:enabled,llm_processing_enabled:enabled});
+      const current=await api<any>(`/sessions/${session.id}/outcome-plan`);
+      const value={...current.value,transformations:{...(current.value?.transformations??{}),llm_tts_optimization:enabled}};
+      await api(`/sessions/${session.id}/outcome-plan`,{method:'PUT',headers:{'If-Match':`"${current.revision}"`},body:JSON.stringify({value})});
+      optimizationEnabled=enabled;
+      await load();
+    } catch(caught){error=caught instanceof Error?caught.message:String(caught)}
+  }
+
+  async function toggleDocumentOptimization(enabled:boolean) {
+    error='';
+    try {
+      await persistSection('text',{llm_tts_document_optimization:enabled});
+      const current=await api<any>(`/sessions/${session.id}/outcome-plan`);
+      const value={...current.value,transformations:{...(current.value?.transformations??{}),llm_tts_document_optimization:enabled}};
+      await api(`/sessions/${session.id}/outcome-plan`,{method:'PUT',headers:{'If-Match':`"${current.revision}"`},body:JSON.stringify({value})});
+      documentOptimizationEnabled=enabled;
+      await load();
+    } catch(caught){error=caught instanceof Error?caught.message:String(caught)}
+  }
 
   function previewArtifact(stage: Stage) {
     if (!stage.artifact) return;
     const role = stage.artifact.raw_role ?? stage.artifact.role;
+    if (role === 'tts_optimized' && stage.artifact.kind === 'json') {
+      optimizationReviewArtifactId = stage.artifact.id;
+      return;
+    }
     if (['transcription','correction','translation','tts_optimized'].includes(role)) {
       reviewOpen = true;
       return;
     }
-    preview = { id: stage.artifact.id, role, relative_path: stage.artifact.path };
+    preview = { ...stage.artifact, role, relative_path: stage.artifact.relative_path ?? stage.artifact.path };
   }
 
   async function saveSettings() {
@@ -302,9 +425,10 @@
     };
     else if (key === 'correct') stageSettings[key] = { ...common, instructions };
     else if (key === 'translate') stageSettings[key] = { ...common, translation_backend: backend, target_language: targetLanguage, instructions };
-    else if (key === 'optimize_tts') stageSettings[key] = { ...common, combined_prompt:optimizationPrompt, llm_concurrent_calls:optimizationConcurrent, llm_multi_stage:optimizationMultiStage, first_prompt:optimizationFirstPrompt, second_prompt:optimizationSecondPrompt, third_prompt:optimizationThirdPrompt };
+    else if (key === 'optimize_tts') stageSettings[key] = { ...common, llm_tts_optimization:optimizationEnabled, llm_tts_batch_size:optimizationBatchSize, combined_prompt:optimizationPrompt, llm_concurrent_calls:optimizationConcurrent, llm_multi_stage:optimizationMultiStage, first_prompt:optimizationFirstPrompt, second_prompt:optimizationSecondPrompt, third_prompt:optimizationThirdPrompt };
+    else if (key === 'optimize_document') stageSettings[key] = { ...common, llm_tts_document_optimization:documentOptimizationEnabled, llm_tts_document_batch_size:documentOptimizationBatchSize, llm_tts_batch_size:documentOptimizationBatchSize, combined_prompt:optimizationPrompt, llm_concurrent_calls:optimizationConcurrent, llm_multi_stage:optimizationMultiStage, first_prompt:optimizationFirstPrompt, second_prompt:optimizationSecondPrompt, third_prompt:optimizationThirdPrompt };
     else if (key === 'clean_source') stageSettings[key] = { ...common, agentic, max_iterations: maxIterations };
-    else if (key === 'prepare_text') stageSettings[key] = { tts_service: ttsService, service: ttsService, model: ttsModel, xtts_model: ttsModel, voice: voiceName, language: targetLanguage };
+    else if (key === 'prepare_text') stageSettings[key] = { enable_sentence_splitting:splitSentences, enable_sentence_appending:appendSentences, max_sentence_length:maxSentenceLength, enable_nemo_normalization:nemoNormalization, normalize_all_caps:normalizeAllCaps, remove_diacritics:removeDiacritics, remove_quotation_marks:removeQuotationMarks };
     else if (key === 'generate_audio') stageSettings[key] = {
       tts_service: ttsService, service: ttsService, model: ttsModel, xtts_model: ttsModel, voice: voiceName,
       language: targetLanguage, target_language: targetLanguage,
@@ -326,7 +450,16 @@
         await persistSection('subtitles',{max_chars_per_line:subtitleChars,max_lines:subtitleLines,min_duration_ms:subtitleMinDuration,max_duration_ms:subtitleMaxDuration,max_cps:subtitleCps,min_gap_ms:subtitleMinGap,phrase_gap_ms:subtitlePhraseGap});
       } else if (key === 'correct') await persistSection('correction',{enabled:true,model_name:model==='default'?'':model,instructions});
       else if (key === 'translate') await persistSection('translation',{enabled:true,backend,target_language:targetLanguage,model_name:model==='default'?'':model,instructions});
-      else if (key === 'optimize_tts') await persistSection('text',{llm_tts_optimization:true,llm_processing_enabled:true,llm_concurrent_calls:optimizationConcurrent,llm_multi_stage:optimizationMultiStage,combined_prompt:optimizationPrompt,first_prompt:optimizationFirstPrompt,second_prompt:optimizationSecondPrompt,third_prompt:optimizationThirdPrompt});
+      else if (key === 'optimize_tts') {
+        await persistSection('text',{llm_tts_optimization:optimizationEnabled,llm_processing_enabled:optimizationEnabled,tts_optimization_model:model==='default'?'':model,llm_tts_batch_size:optimizationBatchSize,llm_concurrent_calls:optimizationConcurrent,llm_multi_stage:optimizationMultiStage,combined_prompt:optimizationPrompt,first_prompt:optimizationFirstPrompt,second_prompt:optimizationSecondPrompt,third_prompt:optimizationThirdPrompt});
+        const current=await api<any>(`/sessions/${session.id}/outcome-plan`);
+        await api(`/sessions/${session.id}/outcome-plan`,{method:'PUT',headers:{'If-Match':`"${current.revision}"`},body:JSON.stringify({value:{...current.value,transformations:{...(current.value?.transformations??{}),llm_tts_optimization:optimizationEnabled}}})});
+      }
+      else if (key === 'optimize_document') {
+        await persistSection('text',{llm_tts_document_optimization:documentOptimizationEnabled,tts_optimization_model:model==='default'?'':model,llm_tts_document_batch_size:documentOptimizationBatchSize,llm_concurrent_calls:optimizationConcurrent,llm_multi_stage:optimizationMultiStage,combined_prompt:optimizationPrompt,first_prompt:optimizationFirstPrompt,second_prompt:optimizationSecondPrompt,third_prompt:optimizationThirdPrompt});
+        const current=await api<any>(`/sessions/${session.id}/outcome-plan`);
+        await api(`/sessions/${session.id}/outcome-plan`,{method:'PUT',headers:{'If-Match':`"${current.revision}"`},body:JSON.stringify({value:{...current.value,transformations:{...(current.value?.transformations??{}),llm_tts_document_optimization:documentOptimizationEnabled}}})});
+      }
       else await persistSection(stageSection(key),stageSettings[key]);
       settingsStage = null;
     } catch (caught) { error=caught instanceof Error?caught.message:String(caught); }
@@ -339,7 +472,16 @@
     return Clock3;
   };
 
-  onMount(async () => { await Promise.all([load(), loadCapabilities(), loadSpeechCatalogues()]); });
+  async function generateAutomatically() {
+    const stage = snapshot?.stages.find((item) => item.key === 'generate_audio');
+    if (stage) await run(stage);
+  }
+
+  onMount(async () => {
+    workspaceMode = localStorage.getItem(`pandrator:workspace-mode:${session.id}`) === 'automatic' ? 'automatic' : 'review';
+    await Promise.all([load(), loadCapabilities(), loadSpeechCatalogues(), loadLlmModels()]);
+  });
+  $effect(() => { if (typeof localStorage !== 'undefined') localStorage.setItem(`pandrator:workspace-mode:${session.id}`, workspaceMode); });
   $effect(() => {
     if (refreshTimer) window.clearTimeout(refreshTimer);
     if (snapshot?.stages.some((stage) => stage.status === 'running')) refreshTimer = window.setTimeout(load, 1000);
@@ -348,13 +490,18 @@
 
 <div class="mx-auto max-w-6xl">
   <header class="mb-6 flex flex-wrap items-end justify-between gap-6">
-    <div><div class="eyebrow mb-2">Resolved outcome</div><p class="muted max-w-2xl">Run a ready transformation independently. The primary generation action follows the revisioned outcome plan and reuses matching completed artifacts.</p></div>
+    <div><div class="eyebrow mb-2">Resolved outcome</div><p class="muted max-w-2xl">Choose how much control you want while keeping the same settings, artifacts, and review history.</p><div class="mt-4 inline-flex rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-1" aria-label="Workspace mode"><button onclick={()=>workspaceMode='review'} class:mode-active={workspaceMode==='review'} class="mode-choice">Review each stage</button><button onclick={()=>workspaceMode='automatic'} class:mode-active={workspaceMode==='automatic'} class="mode-choice">Generate automatically</button></div></div>
     <div class="flex flex-wrap gap-2"><button onclick={() => workflowTour=true} class="lift flex items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm font-semibold"><Sparkles size={17}/> Tour</button>{#if snapshot?.sources.find((item) => item.filename.toLowerCase().endsWith('.pdf'))}{@const availablePdf = snapshot.sources.find((item) => item.filename.toLowerCase().endsWith('.pdf'))!}<button onclick={() => pdfSource=availablePdf} class="lift flex items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm font-semibold"><Crop size={18}/> Edit PDF</button>{/if}<label class="lift flex cursor-pointer items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm font-semibold">
       {#if uploading}<LoaderCircle class="animate-spin" size={18}/>{:else}<FileUp size={18}/>{/if}
       {uploading ? 'Importing…' : 'Add source'}
       <input type="file" class="sr-only" onchange={upload} disabled={uploading}/>
     </label></div>
   </header>
+  {#if workspaceMode === 'automatic'}
+    <section class="surface mb-6 flex flex-col gap-4 rounded-3xl border border-[var(--accent)]/25 p-5 sm:flex-row sm:items-center sm:p-6"><div class="grid size-11 shrink-0 place-items-center rounded-2xl bg-[var(--accent-soft)] text-[var(--accent)]"><Sparkles size={21}/></div><div class="min-w-0 flex-1"><h2 class="font-semibold">Generate reviewable audio segments</h2><p class="muted mt-1 text-sm leading-relaxed">Pandrator runs the enabled missing or stale prerequisites in order, then generates segment takes. It stops there: reviewing takes, RVC conversion, assembly, export, and video synchronization remain manual.</p></div><button onclick={generateAutomatically} disabled={!snapshot?.sources.length || snapshot?.stages.find((item)=>item.key==='generate_audio')?.status==='running'} class="flex shrink-0 items-center gap-2 rounded-xl bg-[var(--accent)] px-5 py-3 text-sm font-semibold text-white disabled:opacity-40"><Play size={17}/> Generate audio segments</button></section>
+  {:else}
+    <div class="mb-6 rounded-2xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm"><strong>Review mode:</strong> <span class="muted">run each ready transformation, inspect its artifact, and proceed when satisfied. Downstream cards unlock only when their selected prerequisite exists.</span></div>
+  {/if}
   {#if outcome?.pipeline}<div class="mb-6 flex flex-wrap items-center gap-2 rounded-2xl border border-[var(--line)] bg-[var(--paper-strong)] p-4">{#each outcome.pipeline as stage,index}<span class="rounded-lg bg-[var(--accent-soft)] px-3 py-2 text-xs font-semibold">{stage.title}</span>{#if index<outcome.pipeline.length-1}<ChevronRight class="muted" size={14}/>{/if}{/each}</div>{/if}
 
   {#if error}<div class="mb-5 flex items-start gap-3 rounded-xl border border-red-400/40 bg-red-500/10 px-4 py-3 text-sm"><CircleAlert class="mt-0.5 shrink-0" size={17}/><span>{error}</span></div>{/if}
@@ -365,16 +512,20 @@
     <div class="space-y-4">
       {#each snapshot.stages as stage}
         {@const StatusIcon = statusIcon(stage.status)}
-        <article class="surface rounded-[1.4rem] p-5 sm:p-6">
+        <article class:stage-locked={stage.status==='unavailable'} class="surface rounded-[1.4rem] p-5 sm:p-6">
           <div class="flex flex-col gap-5 lg:flex-row lg:items-center">
             <div class="flex min-w-0 flex-1 items-start gap-4">
               <div class="grid size-11 shrink-0 place-items-center rounded-2xl bg-[var(--accent-soft)] text-sm font-bold text-[var(--accent)]">{stage.number}</div>
-              <div class="min-w-0"><div class="flex flex-wrap items-center gap-2"><h2 class="text-lg font-semibold">{stage.title}</h2><span class:running={stage.status === 'running'} class:done={stage.status === 'completed'} class:warning={stage.status === 'stale' || stage.status === 'failed'} class="status-chip inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[.68rem] font-bold uppercase tracking-wider"><StatusIcon class={stage.status === 'running' ? 'animate-spin' : ''} size={12}/>{stage.status}</span></div><p class="muted mt-1.5 max-w-2xl text-sm leading-relaxed">{stage.explanation}</p>{#if stage.status==='running' && stage.progress!=null}<div class="mt-3 h-1.5 max-w-md overflow-hidden rounded-full bg-[var(--line)]"><div class="h-full bg-[var(--accent)]" style={`width:${Math.max(2,stage.progress*100)}%`}></div></div>{/if}{#if stage.detail}<p class="mt-2 text-xs text-red-500">{stage.detail}</p>{/if}{#if stage.artifact}<button onclick={() => previewArtifact(stage)} class="mt-2 flex items-center gap-1 text-xs font-semibold text-[var(--accent)]">Preview latest: {stage.artifact.role}<ChevronRight size={13}/></button>{/if}</div>
+              <div class="min-w-0"><div class="flex flex-wrap items-center gap-2"><h2 class="text-lg font-semibold">{stage.title}</h2><span class:running={stage.status === 'running'} class:done={stage.status === 'completed'} class:warning={stage.status === 'stale' || stage.status === 'failed'} class="status-chip inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[.68rem] font-bold uppercase tracking-wider"><StatusIcon class={stage.status === 'running' ? 'animate-spin' : ''} size={12}/>{stage.toggle?(stage.enabled?'enabled':'disabled'):stage.status}</span></div><p class="muted mt-1.5 max-w-2xl text-sm leading-relaxed">{stage.explanation}</p>{#if stage.status==='running' && stage.progress!=null}<div class="mt-3 h-1.5 max-w-md overflow-hidden rounded-full bg-[var(--line)]"><div class="h-full bg-[var(--accent)]" style={`width:${Math.max(2,stage.progress*100)}%`}></div></div>{/if}{#if stage.detail}<p class="mt-2 text-xs text-red-500">{stage.detail}</p>{/if}{#if stage.artifact}<button onclick={() => previewArtifact(stage)} class="mt-2 flex items-center gap-1 text-xs font-semibold text-[var(--accent)]">Preview latest: {stage.artifact.role}<ChevronRight size={13}/></button>{/if}</div>
             </div>
             <div class="flex flex-wrap items-center gap-2 lg:justify-end">
-              {#if stage.executable}
+              {#if stage.toggle}
+                <button onclick={() => openSettings(stage)} class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3.5 py-2.5 text-sm font-semibold"><Settings2 size={16}/> Prompts &amp; model</button>
+                <label class="flex cursor-pointer items-center gap-3 rounded-xl border border-[var(--line)] px-3.5 py-2.5 text-sm font-semibold"><input type="checkbox" checked={Boolean(stage.enabled)} onchange={(event)=>stage.key==='optimize_document'?toggleDocumentOptimization(event.currentTarget.checked):toggleOptimization(event.currentTarget.checked)} class="size-4 accent-[var(--accent)]"/> {stage.enabled?'Enabled':'Disabled'}</label>
+                {#if !stage.toggle_only && workspaceMode==='review' && stage.enabled}{#if stage.status==='running'}<button onclick={() => cancel(stage)} class="rounded-xl border border-red-400/50 px-4 py-2.5 text-sm font-semibold text-red-500">Cancel</button>{:else}<button onclick={() => run(stage)} disabled={stage.status === 'unavailable'} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35"><Play size={16}/> Run now</button>{/if}{/if}
+              {:else if stage.executable}
                 <button onclick={() => openSettings(stage)} class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3.5 py-2.5 text-sm font-semibold"><Settings2 size={16}/> Settings</button>
-                {#if stage.status==='running'}<button onclick={() => cancel(stage)} class="rounded-xl border border-red-400/50 px-4 py-2.5 text-sm font-semibold text-red-500">Cancel</button>{:else}<button onclick={() => run(stage)} disabled={stage.status === 'unavailable'} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35"><Play size={16}/> Run now</button>{/if}
+                {#if workspaceMode==='review' || stage.key==='export'}{#if stage.status==='running'}<button onclick={() => cancel(stage)} class="rounded-xl border border-red-400/50 px-4 py-2.5 text-sm font-semibold text-red-500">Cancel</button>{:else}<button onclick={() => run(stage)} disabled={stage.status === 'unavailable'} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35"><Play size={16}/> Run now</button>{/if}{/if}
               {:else}
                 <button onclick={() => run(stage)} disabled={stage.status === 'unavailable'} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35"><Sparkles size={16}/> Open comparison</button>
               {/if}
@@ -391,7 +542,7 @@
     <div class="surface max-h-[92vh] w-full max-w-xl overflow-y-auto rounded-[1.7rem] p-7" role="dialog" aria-modal="true" aria-labelledby="settings-title">
       <div class="flex justify-between gap-5"><div><div class="eyebrow">Stage settings</div><h2 id="settings-title" class="mt-1 text-2xl font-semibold">{settingsStage.title}</h2></div><button onclick={() => settingsStage=null} class="rounded-lg p-2"><X size={19}/></button></div>
       <div class="mt-6 grid gap-5">
-        {#if ['correct','translate','optimize_tts','clean_source'].includes(settingsStage.key)}<label class="text-sm font-semibold">Model<input bind:value={model} placeholder="Use configured default" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/></label>{/if}
+        {#if ['correct','translate','optimize_tts','optimize_document','clean_source'].includes(settingsStage.key)}<label class="text-sm font-semibold">LLM model<select bind:value={model} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="default">Application default</option>{#each llmModels as item}<option value={item.value}>{item.label}{item.isDefault?' · default':''}</option>{/each}</select></label>{/if}
         {#if settingsStage.key === 'transcribe'}
           <label class="text-sm font-semibold">Recognition model<select bind:value={sttEngine} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="whisper">Whisper large-v3 · DTW timestamps</option><option value="parakeet">Parakeet TDT 0.6B v3 · native timestamps</option></select></label>
           <label class="text-sm font-semibold">Model precision<select bind:value={sttQuantization} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="f16">Full F16</option>{#if sttEngine === 'whisper'}<option value="q5_0">Q5_0 · 1.08 GB</option>{:else}<option value="q8_0">Q8_0 · 745 MB</option><option value="q5_0">Q5_0 · 541 MB</option><option value="q4_k">Q4_K · 489 MB</option>{/if}</select><span class="muted mt-1 block text-xs">F16 maximizes fidelity; quantized files reduce download and memory use.</span></label>
@@ -404,9 +555,15 @@
         {/if}
         {#if settingsStage.key === 'correct'}<label class="text-sm font-semibold">Correction guidance<textarea bind:value={instructions} rows="4" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"></textarea></label>{/if}
         {#if settingsStage.key === 'translate'}<label class="text-sm font-semibold">Translation backend<select bind:value={backend} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="llm">LLM</option><option value="deepl">DeepL</option></select></label><label class="text-sm font-semibold">Target language<select bind:value={targetLanguage} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal">{#each LANGUAGE_OPTIONS.filter((item) => item.value !== 'auto') as item}<option value={item.value}>{item.label}</option>{/each}</select></label><label class="text-sm font-semibold">Translation guidance<textarea bind:value={instructions} rows="3" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"></textarea></label>{/if}
-        {#if settingsStage.key === 'optimize_tts'}<div class="rounded-xl border border-[var(--line)] bg-[var(--accent-soft)] p-4"><div class="text-sm font-semibold">Optional paid LLM pass</div><p class="muted mt-1 text-xs leading-relaxed">This is separate from subtitle correction. It expands pronunciation-sensitive numerals, abbreviations, names, and extraction artifacts for speech only. The result is saved as a before/after revision before TTS.</p></div><label class="text-sm font-semibold">Concurrent calls<input type="number" min="1" max="16" bind:value={optimizationConcurrent} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/></label><label class="flex items-start gap-3 rounded-xl border border-[var(--line)] p-4"><input type="checkbox" bind:checked={optimizationMultiStage} class="mt-1 size-4 accent-[var(--accent)]"/><span><span class="block text-sm font-semibold">Three-stage prompts</span><span class="muted mt-1 block text-xs">Each non-empty prompt runs sequentially and incurs a separate provider request.</span></span></label>{#if optimizationMultiStage}<label class="text-sm font-semibold">First prompt<textarea bind:value={optimizationFirstPrompt} rows="3" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"></textarea></label><label class="text-sm font-semibold">Second prompt<textarea bind:value={optimizationSecondPrompt} rows="3" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"></textarea></label><label class="text-sm font-semibold">Third prompt<textarea bind:value={optimizationThirdPrompt} rows="3" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"></textarea></label>{:else}<label class="text-sm font-semibold">Optimization prompt<textarea bind:value={optimizationPrompt} rows="5" placeholder="Leave blank for Pandrator's safe default" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"></textarea></label>{/if}{/if}
+        {#if ['optimize_tts','optimize_document'].includes(settingsStage.key)}
+          <div class="rounded-xl border border-[var(--line)] bg-[var(--accent-soft)] p-4"><div class="text-sm font-semibold">{settingsStage.key==='optimize_document'?'Review before generation':'Optimize while generating'}</div><p class="muted mt-1 text-xs leading-relaxed">{settingsStage.key==='optimize_document'?'Creates a separate before-and-after artifact which you can edit and approve before TTS begins. This can free limited GPU memory before speech generation.':'Runs in indexed JSON batches as generation begins. Results accumulate in the generation drawer, where every original and optimized segment remains comparable and editable.'} Local or remote LLMs are supported; configured provider costs are shown in activity.</p></div>
+          <div class="grid gap-3 sm:grid-cols-2"><label class="text-sm font-semibold">Segments per JSON batch{#if settingsStage.key==='optimize_document'}<input type="number" min="1" max="64" bind:value={documentOptimizationBatchSize} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/>{:else}<input type="number" min="1" max="64" bind:value={optimizationBatchSize} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/>{/if}</label><label class="text-sm font-semibold">Concurrent batches<input type="number" min="1" max="16" bind:value={optimizationConcurrent} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/></label></div>
+          <label class="flex items-start gap-3 rounded-xl border border-[var(--line)] p-4"><input type="checkbox" bind:checked={optimizationMultiStage} class="mt-1 size-4 accent-[var(--accent)]"/><span><span class="block text-sm font-semibold">Use divided prompts</span><span class="muted mt-1 block text-xs">Each non-empty prompt runs sequentially over the same indexed JSON batch.</span></span></label>
+          {#if optimizationMultiStage}<label class="text-sm font-semibold">First prompt<textarea bind:value={optimizationFirstPrompt} rows="3" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"></textarea></label><label class="text-sm font-semibold">Second prompt<textarea bind:value={optimizationSecondPrompt} rows="3" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"></textarea></label><label class="text-sm font-semibold">Third prompt<textarea bind:value={optimizationThirdPrompt} rows="3" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"></textarea></label>{:else}<label class="text-sm font-semibold">Single optimization prompt<textarea bind:value={optimizationPrompt} rows="5" placeholder="Leave blank for Pandrator's safe default" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"></textarea></label>{/if}
+        {/if}
         {#if settingsStage.key === 'clean_source'}<label class="flex items-start gap-3 rounded-xl border border-[var(--line)] p-4"><input type="checkbox" bind:checked={agentic} class="mt-1 size-4 accent-[var(--accent)]"/><span><span class="block text-sm font-semibold">Agentic review loop</span><span class="muted mt-1 block text-xs">Runs focused metadata, navigation, boilerplate, repeated-element, and chapter passes. Provider costs may apply.</span></span></label>{#if agentic}<label class="text-sm font-semibold">Maximum LLM turns<input type="number" min="5" max="500" bind:value={maxIterations} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/></label>{/if}{/if}
-        {#if ['prepare_text','generate_audio'].includes(settingsStage.key)}<label class="text-sm font-semibold">TTS service<select bind:value={ttsService} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal">{#each ttsCatalogue.services??[] as service}<option value={service.id}>{service.name}</option>{/each}</select></label><div class="flex flex-wrap items-center justify-between gap-3"><p class="muted text-xs">Models come from the configured service; previews and language defaults live in the Voice Library.</p><div class="flex gap-3"><a href={`/voices?view=prebuilt&service=${encodeURIComponent(selectedTtsService?.id ?? ttsService)}`} class="text-xs font-semibold text-[var(--accent)]">Preview voices</a><button type="button" onclick={() => ttsServicesOpen = true} class="text-xs font-semibold text-[var(--accent)]">Manage service</button></div></div><label class="text-sm font-semibold">Model<input list="tts-model-catalogue" bind:value={ttsModel} placeholder={selectedTtsService?.default_model??'Service default'} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/><datalist id="tts-model-catalogue">{#each ttsModels as item}<option value={item}></option>{/each}</datalist></label><label class="text-sm font-semibold">Voice<input list="tts-voice-catalogue" bind:value={voiceName} placeholder={selectedTtsDefaultVoice||'Provider or library voice'} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/><datalist id="tts-voice-catalogue">{#each ttsVoices as item}<option value={item}></option>{/each}</datalist></label><label class="text-sm font-semibold">Language<select bind:value={targetLanguage} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal">{#each LANGUAGE_OPTIONS.filter((item) => item.value !== 'auto') as item}<option value={item.value}>{item.label}</option>{/each}</select></label>{#if settingsStage.key === 'generate_audio'}<div class="rounded-xl border border-[var(--line)] p-4"><div class="text-sm font-semibold">Speech blocks for dubbing</div><p class="muted mt-1 text-xs">These TTS chunks are independent from the final subtitle layout.</p><div class="mt-3 grid grid-cols-2 gap-3"><label class="text-xs font-semibold">Minimum characters<input type="number" min="1" bind:value={speechBlockMinChars} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Maximum characters<input type="number" min="1" bind:value={speechBlockMaxChars} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Merge gap (ms)<input type="number" min="0" bind:value={speechBlockMergeThreshold} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label></div></div>{/if}{/if}
+        {#if settingsStage.key === 'prepare_text'}<div class="rounded-xl border border-[var(--line)] bg-[var(--accent-soft)] p-4"><div class="text-sm font-semibold">Provider-independent segmentation</div><p class="muted mt-1 text-xs leading-relaxed">These controls create editable narration units and pauses. Voice, model, and synthesis controls are selected later in Generate audio.</p></div><div class="grid gap-3 sm:grid-cols-2"><label class="flex items-center gap-3 rounded-xl border border-[var(--line)] p-3 text-sm font-semibold"><input type="checkbox" bind:checked={splitSentences} class="size-4 accent-[var(--accent)]"/> Split long sentences</label><label class="flex items-center gap-3 rounded-xl border border-[var(--line)] p-3 text-sm font-semibold"><input type="checkbox" bind:checked={appendSentences} class="size-4 accent-[var(--accent)]"/> Join short sentences</label><label class="text-sm font-semibold">Maximum segment length<input type="number" min="20" max="2000" bind:value={maxSentenceLength} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/></label><label class="flex items-center gap-3 rounded-xl border border-[var(--line)] p-3 text-sm font-semibold"><input type="checkbox" bind:checked={nemoNormalization} class="size-4 accent-[var(--accent)]"/> Deterministic normalization</label></div><details class="rounded-xl border border-[var(--line)] p-4"><summary class="cursor-pointer text-sm font-semibold">Advanced text cleanup</summary><div class="mt-4 grid gap-3 sm:grid-cols-2"><label class="flex items-center gap-3 text-sm"><input type="checkbox" bind:checked={normalizeAllCaps} class="size-4 accent-[var(--accent)]"/> Normalize all-caps text</label><label class="flex items-center gap-3 text-sm"><input type="checkbox" bind:checked={removeDiacritics} class="size-4 accent-[var(--accent)]"/> Remove diacritics</label><label class="flex items-center gap-3 text-sm"><input type="checkbox" bind:checked={removeQuotationMarks} class="size-4 accent-[var(--accent)]"/> Remove quotation marks</label></div></details>{/if}
+        {#if settingsStage.key === 'generate_audio'}<label class="text-sm font-semibold">Active TTS service<select value={ttsService} onchange={(event)=>chooseTtsService(event.currentTarget.value)} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal">{#each ttsCatalogue.services??[] as service}<option value={service.id}>{service.name}{service.online===true?' · running':service.online===false?' · offline':''}</option>{/each}</select></label><div class="flex flex-wrap items-center justify-between gap-3"><p class="muted text-xs">The running configured service is selected automatically. Its live catalogue is refreshed when available.</p><button type="button" onclick={() => ttsServicesOpen = true} class="text-xs font-semibold text-[var(--accent)]">Manage services</button></div><label class="text-sm font-semibold">Model<select bind:value={ttsModel} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal">{#each ttsModels as item}<option value={item}>{item}</option>{/each}</select></label><label class="text-sm font-semibold">Speech language<select bind:value={targetLanguage} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal">{#each (ttsLanguages.length?ttsLanguages:LANGUAGE_OPTIONS.filter((item)=>item.value!=='auto')) as item}<option value={item.value}>{item.label}</option>{/each}</select></label>{#if supportsPrebuiltVoices || supportsCloningVoices}<label class="text-sm font-semibold">Voice<select bind:value={voiceName} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="">Service default</option>{#if supportsPrebuiltVoices}<optgroup label={`${LANGUAGE_OPTIONS.find((item)=>item.value===targetLanguage)?.label??targetLanguage} · pre-built voices`}>{#each filteredPrebuiltVoices as voice}<option value={voice.id}>{voice.name}{voice.gender?` · ${voice.gender}`:''}</option>{/each}</optgroup>{/if}{#if supportsCloningVoices}<optgroup label="Voice Library references">{#each filteredLibraryVoices as voice}<option value={voice.name}>{voice.name}</option>{/each}</optgroup>{/if}</select></label><div class="flex flex-wrap items-center justify-between gap-3"><p class="muted text-xs">Voice IDs are stored unchanged, while the list uses readable names and language grouping.</p><button type="button" onclick={()=>voiceLibraryOpen=true} class="flex items-center gap-1.5 text-xs font-semibold text-[var(--accent)]"><Library size={14}/> Open Voice Library</button></div>{/if}{#if session.workflow_kind !== 'audiobook'}<div class="rounded-xl border border-[var(--line)] p-4"><div class="text-sm font-semibold">Speech blocks for dubbing</div><p class="muted mt-1 text-xs">These TTS chunks are independent from the final subtitle layout.</p><div class="mt-3 grid grid-cols-2 gap-3"><label class="text-xs font-semibold">Minimum characters<input type="number" min="1" bind:value={speechBlockMinChars} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Maximum characters<input type="number" min="1" bind:value={speechBlockMaxChars} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Merge gap (ms)<input type="number" min="0" bind:value={speechBlockMergeThreshold} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label></div></div>{/if}{/if}
         {#if settingsStage.key === 'export'}<label class="text-sm font-semibold">Audio<select bind:value={audioMode} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="preserve">Preserve source audio</option><option value="mixed">Mix source and dubbing</option><option value="dubbing_only">Dubbing only</option></select></label><label class="text-sm font-semibold">Subtitles<select bind:value={subtitleMode} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="none">None</option><option value="soft">Injected soft tracks / separate files</option><option value="burned">Burned subtitles</option></select></label>{#if subtitleMode !== 'none'}<label class="text-sm font-semibold">Subtitle tracks<select bind:value={subtitleSelection} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="source">Source / corrected</option><option value="translation">Translation</option><option value="dual">Source and translation</option></select></label>{/if}<div class="rounded-xl border border-[var(--line)] p-4"><div class="text-sm font-semibold">Final subtitle layout</div><p class="muted mt-1 text-xs">Applied to derived export subtitles only; dubbing speech blocks are unchanged.</p><div class="mt-3 grid grid-cols-2 gap-3"><label class="text-xs font-semibold">Characters / line<input type="number" min="20" max="100" bind:value={subtitleChars} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Lines<input type="number" min="1" max="3" bind:value={subtitleLines} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Minimum duration (ms)<input type="number" min="250" bind:value={subtitleMinDuration} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Maximum duration (ms)<input type="number" min="1000" bind:value={subtitleMaxDuration} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Characters / second<input type="number" min="5" max="40" step="0.5" bind:value={subtitleCps} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Minimum cue gap (ms)<input type="number" min="0" max="500" bind:value={subtitleMinGap} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Phrase-break silence (ms)<input type="number" min="100" max="3000" bind:value={subtitlePhraseGap} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label></div></div>{/if}
       </div>
       <div class="mt-7 flex flex-wrap justify-end gap-3"><button onclick={() => { fullSettingsSection=stageSection(settingsStage!.key); settingsStage=null; }} class="mr-auto rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold">All {sectionDisplay(stageSection(settingsStage.key))} settings</button><button onclick={() => settingsStage=null} class="rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold">Cancel</button><button onclick={saveSettings} class="rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white">Save settings</button></div>
@@ -417,8 +574,10 @@
 {#if pdfSource}<PdfEditor sessionId={session.id} source={pdfSource} onclose={() => pdfSource=null}/>{/if}
 {#if reviewOpen}<SubtitleReview sessionId={session.id} sourceArtifactId={snapshot?.sources[0]?.id} onclose={() => reviewOpen=false} onsaved={load}/>{/if}
 {#if preview}<ArtifactPreview artifact={preview} onclose={()=>preview=null}/>{/if}
+{#if optimizationReviewArtifactId}<TextOptimizationReview artifactId={optimizationReviewArtifactId} onclose={()=>optimizationReviewArtifactId=''} onsaved={load}/>{/if}
 {#if fullSettingsSection}<SettingsModal sessionId={session.id} section={fullSettingsSection} title={`${sectionDisplay(fullSettingsSection)} settings`} description="These settings are saved as session overrides and inherited by future runs." onclose={()=>fullSettingsSection=''}/>{/if}
 {#if ttsServicesOpen}<TtsServicesModal onclose={() => ttsServicesOpen=false}/>{/if}
+{#if voiceLibraryOpen}<VoiceLibraryModal initialView={supportsPrebuiltVoices?'prebuilt':'references'} onclose={async()=>{voiceLibraryOpen=false;await loadSpeechCatalogues()}}/>{/if}
 <GuidedTour tourId="workflow" steps={workflowTourSteps} bind:open={workflowTour}/>
 
 <style>
@@ -426,4 +585,7 @@
   .status-chip.done { color: var(--success); background: color-mix(in srgb, var(--success) 12%, transparent); }
   .status-chip.running { color: var(--accent); background: var(--accent-soft); }
   .status-chip.warning { color: var(--warning); background: color-mix(in srgb, var(--warning) 12%, transparent); }
+  .mode-choice { border-radius: .65rem; padding: .55rem .85rem; font-size: .75rem; font-weight: 700; color: var(--muted); }
+  .mode-choice.mode-active { background: var(--accent); color: white; box-shadow: 0 4px 14px color-mix(in srgb, var(--accent) 24%, transparent); }
+  .stage-locked { opacity: .58; }
 </style>

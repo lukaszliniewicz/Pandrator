@@ -212,11 +212,13 @@ class WorkflowHandlers:
         target_key = str(payload.get("target_stage") or "generate_audio")
         record = self._session_record(session_id)
         definitions = AUDIOBOOK_STAGES if record.workflow_kind == "audiobook" else DUBBING_STAGES
+        is_srt_source = False
         if record.workflow_kind != "audiobook":
             with self.database.session() as session:
                 upload = session.scalar(select(Artifact).where(Artifact.session_id == session_id, Artifact.role == "upload", Artifact.state == "current").order_by(Artifact.created_at.desc()))
             filename = str((upload.metadata_json or {}).get("original_filename") or upload.relative_path).lower() if upload else ""
-            if filename.endswith(".srt"):
+            is_srt_source = filename.endswith(".srt")
+            if is_srt_source:
                 definitions = tuple(item for item in definitions if item.key != "transcribe")
         target_index = next((index for index, item in enumerate(definitions) if item.key == target_key), None)
         if target_index is None:
@@ -226,11 +228,27 @@ class WorkflowHandlers:
             outcome = session.scalar(select(OutcomePlan).where(OutcomePlan.session_id == session_id))
             outcome_value = dict(outcome.value_json or {}) if outcome else {}
         input_choices = outcome_value.get("inputs") if isinstance(outcome_value.get("inputs"), dict) else {}
+        transformations = outcome_value.get("transformations") if isinstance(outcome_value.get("transformations"), dict) else {}
         stage_settings = payload.get("stage_settings") if isinstance(payload.get("stage_settings"), dict) else {}
         direct_settings = payload.get("settings") if isinstance(payload.get("settings"), dict) else {}
+        required = {target_key}
+        if record.workflow_kind == "audiobook" and target_key in {"generate_audio", "export"}:
+            required.update({"clean_source", "prepare_text"})
+        elif target_key in {"generate_audio", "export"}:
+            if not is_srt_source:
+                required.add("transcribe")
+            translation_parent = str(input_choices.get("translation") or "correction")
+            generation_parent = str(input_choices.get("generation") or "translation")
+            translation_required = bool(transformations.get("translation")) or generation_parent == "translation"
+            if bool(transformations.get("correction")) or generation_parent == "correction" or (translation_required and translation_parent == "correction"):
+                required.add("correct")
+            if translation_required:
+                required.add("translate")
+        if bool(transformations.get("llm_tts_document_optimization")) and target_key in {"generate_audio", "export"}:
+            required.add("optimize_document")
         runnable = [
             item for index, item in enumerate(definitions)
-            if index <= target_index and item.executable and item.job_kind and (item.key in included or item.key == target_key)
+            if index <= target_index and item.executable and item.job_kind and (item.key in included or item.key in required)
         ]
         produced: list[dict[str, Any]] = []
         handlers = self.handlers()
@@ -240,6 +258,8 @@ class WorkflowHandlers:
             settings = stage_settings.get(definition.key) if isinstance(stage_settings.get(definition.key), dict) else {}
             if definition.key == target_key:
                 settings = {**settings, **direct_settings}
+            if definition.key == "generate_audio":
+                settings["llm_tts_optimization"] = bool(transformations.get("llm_tts_optimization"))
             expected_settings_hash = hashlib.sha256(
                 json.dumps(settings, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
             ).hexdigest()
@@ -251,22 +271,24 @@ class WorkflowHandlers:
                         Artifact.state == "current",
                     ).order_by(Artifact.created_at.desc())
                 ) if definition.output_role else None
-            if existing is not None and definition.key != target_key and existing.settings_hash == expected_settings_hash:
+            if (
+                existing is not None
+                and definition.key != target_key
+                and (
+                    existing.settings_hash == expected_settings_hash
+                    or str((existing.metadata_json or {}).get("requested_settings_hash") or "") == expected_settings_hash
+                )
+            ):
                 continue
             input_roles = definition.prerequisite_roles
             if definition.key == "translate":
                 translation_parent = str(input_choices.get("translation") or "correction")
                 input_roles = ("correction",) if translation_parent == "correction" else ("transcription", "upload")
-            elif definition.key == "optimize_tts" and record.workflow_kind != "audiobook":
-                generation_parent = str(input_choices.get("generation") or "translation")
-                input_roles = {
-                    "translation": ("translation",),
-                    "correction": ("correction",),
-                    "source": ("transcription", "upload"),
-                }.get(generation_parent, definition.prerequisite_roles)
-            elif definition.key == "generate_audio":
-                if "optimize_tts" in included:
+            elif definition.key in {"optimize_document", "generate_audio"}:
+                if definition.key == "generate_audio" and bool(transformations.get("llm_tts_document_optimization")):
                     input_roles = ("tts_optimized",)
+                elif record.workflow_kind == "audiobook":
+                    input_roles = ("prepared_text",)
                 else:
                     generation_parent = str(input_choices.get("generation") or "translation")
                     input_roles = {
@@ -614,7 +636,15 @@ class WorkflowHandlers:
 
         session_id = str(payload.get("session_id") or "")
         source_artifact, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
-        settings = self._with_database_llm_settings(dict(payload.get("settings") or {}), "tts_optimization")
+        requested_settings = dict(payload.get("settings") or {})
+        requested_settings_hash = hashlib.sha256(
+            json.dumps(requested_settings, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+        ).hexdigest()
+        settings = self._with_database_llm_settings(requested_settings, "tts_optimization")
+        settings["llm_tts_batch_size"] = max(
+            1,
+            int(settings.get("llm_tts_document_batch_size") or settings.get("llm_tts_batch_size") or 8),
+        )
         llm_settings = SimpleNamespace(
             provider_configs=settings["llm_provider_configs"],
             default_model=settings["llm_default_model"],
@@ -648,8 +678,10 @@ class WorkflowHandlers:
                 return {}
             for row, text in zip(rows, optimized):
                 if isinstance(row, dict):
+                    row["source_text"] = str(row.get("source_text") or row.get("text") or row.get("processed_sentence") or row.get("original_sentence") or "")
                     row["tts_optimized_sentence"] = text
                     row["processed_sentence"] = text
+                    row["text"] = text
             destination = self._session_dir(session_id) / f"tts-optimized-{new_id()}.json"
             destination.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
             kind = "json"
@@ -668,7 +700,7 @@ class WorkflowHandlers:
             session_id=session_id,
             parent_ids=[source_artifact.id],
             settings=settings,
-            metadata={"source_artifact_id": source_artifact.id, "model": model_name},
+            metadata={"source_artifact_id": source_artifact.id, "model": model_name, "mode": "whole_document", "batch_size": settings["llm_tts_batch_size"], "requested_settings_hash": requested_settings_hash},
         )
         if suffix == ".srt":
             self._store_srt_document(
@@ -1102,13 +1134,19 @@ class WorkflowHandlers:
         if source_path.suffix.lower() not in {".txt", ".md"}:
             raise ValueError("Prepare narration requires a cleaned text artifact.")
         text = source_path.read_text(encoding="utf-8-sig")
+        record = self._session_record(session_id)
+        source_language = str(record.source_language or "auto")
+        if source_language == "auto":
+            source_language = "en"
         progress(0.1, "Segmenting narration")
         prepared = preprocess_text(
             text,
             {
                 "source_file": str(source_path),
-                "language": str(settings.get("language") or "en"),
-                "tts_service": str(settings.get("service") or settings.get("tts_service") or "XTTS"),
+                "language": source_language,
+                # Segmentation is intentionally provider-independent.  This
+                # selects the shared multilingual sentence tokenizer only.
+                "tts_service": "XTTS",
                 "max_sentence_length": int(settings.get("max_sentence_length") or 160),
                 "enable_sentence_splitting": bool(settings.get("enable_sentence_splitting", True)),
                 "enable_sentence_appending": bool(settings.get("enable_sentence_appending", True)),
@@ -1204,22 +1242,149 @@ class WorkflowHandlers:
             )
         }
 
+    @staticmethod
+    def _optimization_text_hash(text: str) -> str:
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    def _optimize_generation_texts(
+        self,
+        session_id: str,
+        segment_ids: list[str],
+        texts: list[str],
+        settings: dict[str, Any],
+        cancel_event,
+        progress,
+    ) -> tuple[list[str], str]:
+        """Resolve reviewed or newly batched inline optimization for generation."""
+        if not bool(settings.get("llm_tts_optimization")):
+            return list(texts), ""
+
+        from types import SimpleNamespace
+
+        from .tts_optimization import optimize_texts
+
+        resolved = self._with_database_llm_settings(dict(settings), "tts_optimization")
+        llm_settings = SimpleNamespace(
+            provider_configs=resolved["llm_provider_configs"],
+            default_model=resolved["llm_default_model"],
+            request_timeout_seconds=resolved["request_timeout_seconds"],
+        )
+        model_name = str(resolved.get("tts_optimization_model") or resolved["llm_default_model"])
+        output = list(texts)
+        pending_texts: list[str] = []
+        pending_positions: list[int] = []
+        with self.database.session() as session:
+            for position, (segment_id, text) in enumerate(zip(segment_ids, texts)):
+                segment = session.get(GenerationSegment, segment_id)
+                source_hash = self._optimization_text_hash(text)
+                if (
+                    segment is not None
+                    and segment.optimized_text
+                    and segment.optimization_source_hash == source_hash
+                    and segment.optimization_status in {"optimized", "reviewed"}
+                ):
+                    output[position] = segment.optimized_text
+                    continue
+                if segment is not None:
+                    segment.optimization_status = "running"
+                    segment.optimization_reviewed = False
+                    segment.optimization_model = model_name
+                    segment.updated_at = utcnow()
+                pending_positions.append(position)
+                pending_texts.append(text)
+
+        if not pending_texts:
+            return output, model_name
+
+        def persist_batch(items: list[tuple[int, str]]) -> None:
+            with self.database.session() as session:
+                for local_index, revised in items:
+                    position = pending_positions[local_index]
+                    output[position] = revised
+                    segment = session.get(GenerationSegment, segment_ids[position])
+                    if segment is None:
+                        continue
+                    segment.optimized_text = revised
+                    segment.optimization_status = "optimized"
+                    segment.optimization_source_hash = self._optimization_text_hash(texts[position])
+                    segment.optimization_reviewed = False
+                    segment.optimization_model = model_name
+                    segment.updated_at = utcnow()
+
+        try:
+            optimized, usage = optimize_texts(
+                pending_texts,
+                resolved,
+                llm_settings,
+                model_name,
+                cancel_event,
+                progress,
+                on_batch=persist_batch,
+            )
+        except Exception:
+            with self.database.session() as session:
+                for position in pending_positions:
+                    segment = session.get(GenerationSegment, segment_ids[position])
+                    if segment is not None and segment.optimization_status == "running":
+                        segment.optimization_status = "failed"
+                        segment.updated_at = utcnow()
+            raise
+        for local_index, revised in enumerate(optimized):
+            output[pending_positions[local_index]] = revised
+        self._record_usage(session_id, "tts_optimization", resolved, usage)
+        return output, model_name
+
     def _generate_audio(self, session_id: str, source_artifact: Artifact, source_path: Path, settings: dict[str, Any], progress, cancel_event, *, role: str) -> dict[str, Any]:
         from pydub import AudioSegment
         from pandrator.logic import tts_handler
 
-        records = json.loads(source_path.read_text(encoding="utf-8-sig"))
+        if source_path.suffix.lower() != ".json":
+            raise ValueError("Audio generation requires segmented narration. Run Segment narration first.")
+        try:
+            records = json.loads(source_path.read_text(encoding="utf-8-sig"))
+        except json.JSONDecodeError as error:
+            raise ValueError("The segmented narration artifact is invalid JSON. Run Segment narration again.") from error
         if not isinstance(records, list) or not records:
             raise ValueError("No narration segments were found.")
         records = [record for record in records if str(record.get("text") or record.get("original_sentence") or "").strip()]
         if not records:
             raise ValueError("No non-empty narration segments were found.")
         audio_parts: list[tuple[AudioSegment, int]] = []
-        revision_id, generation_segment_ids = self._store_generation_plan(
+        revision_id = ""
+        generation_segment_ids: list[str] = []
+        if source_artifact.role == "prepared_text":
+            with self.database.session() as session:
+                plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
+                if plan and plan.active_revision_id:
+                    segments = list(session.scalars(select(GenerationSegment).where(GenerationSegment.plan_revision_id == plan.active_revision_id, GenerationSegment.removed.is_(False)).order_by(GenerationSegment.ordinal)).all())
+                    if segments:
+                        revision_id = plan.active_revision_id
+                        generation_segment_ids = [segment.id for segment in segments]
+                        records = [
+                            {
+                                "text": segment.text,
+                                "language": segment.language,
+                                "node_kind": segment.node_kind,
+                                "silence_after_ms": segment.silence_after_ms,
+                                "source_segment_ids": segment.source_segment_ids_json,
+                            }
+                            for segment in segments
+                        ]
+        if not revision_id:
+            revision_id, generation_segment_ids = self._store_generation_plan(
+                session_id,
+                records,
+                settings=settings,
+                source_revision_id=str((source_artifact.metadata_json or {}).get("revision_id") or "") or None,
+            )
+        source_texts = [str(record.get("text") or record.get("original_sentence") or "").strip() for record in records]
+        optimized_texts, optimization_model = self._optimize_generation_texts(
             session_id,
-            records,
-            settings=settings,
-            source_revision_id=str((source_artifact.metadata_json or {}).get("revision_id") or "") or None,
+            generation_segment_ids,
+            source_texts,
+            settings,
+            cancel_event,
+            lambda value, detail=None: progress(float(value) * 0.25, detail),
         )
         for index, (record, generation_segment_id) in enumerate(zip(records, generation_segment_ids), start=1):
             if cancel_event.is_set():
@@ -1227,8 +1392,9 @@ class WorkflowHandlers:
             text = str(record.get("text") or record.get("original_sentence") or "").strip()
             if not text:
                 continue
-            progress((index - 1) / len(records), f"Generating segment {index} of {len(records)}")
-            audio = tts_handler.text_to_audio(text, settings, max_attempts=int(settings.get("max_attempts") or 3), **self._tts_urls(settings))
+            progress(0.25 + ((index - 1) / len(records)) * 0.75, f"Generating segment {index} of {len(records)}")
+            synthesized_text = optimized_texts[index - 1]
+            audio = tts_handler.text_to_audio(synthesized_text, settings, max_attempts=int(settings.get("max_attempts") or 3), **self._tts_urls(settings))
             if audio is None:
                 raise RuntimeError(f"Speech generation failed at segment {index}.")
             take_dir = self._session_dir(session_id) / "generation" / revision_id / generation_segment_id
@@ -1243,7 +1409,14 @@ class WorkflowHandlers:
                 session_id=session_id,
                 parent_ids=[source_artifact.id],
                 settings=settings,
-                metadata={"generation_segment_id": generation_segment_id, "kind": "tts"},
+                metadata={
+                    "generation_segment_id": generation_segment_id,
+                    "kind": "tts",
+                    "source_text": text,
+                    "synthesized_text": synthesized_text,
+                    "llm_optimized": synthesized_text != text,
+                    "llm_model": optimization_model or None,
+                },
             )
             with self.database.session() as session:
                 segment = session.get(GenerationSegment, generation_segment_id)
@@ -1313,6 +1486,8 @@ class WorkflowHandlers:
         session_id = str(payload.get("session_id") or "")
         source_artifact, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
         settings = dict(payload.get("settings") or {})
+        if source_artifact.role not in {"prepared_text", "tts_optimized"}:
+            raise ValueError("Audiobook generation requires a current Segment narration artifact or its reviewed speech-optimized revision.")
         return self._generate_audio(session_id, source_artifact, source_path, settings, progress, cancel_event, role="audiobook_audio")
 
     def run_generation(self, payload, progress, cancel_event):
@@ -1340,7 +1515,9 @@ class WorkflowHandlers:
         if selected_ids:
             statement = statement.where(GenerationSegment.id.in_(selected_ids))
         with self.database.session() as session:
-            segment_ids = [item.id for item in session.scalars(statement).all()]
+            selected_segments = list(session.scalars(statement).all())
+            segment_ids = [item.id for item in selected_segments]
+            source_texts = [item.text for item in selected_segments]
         if not segment_ids:
             raise ValueError("No generation segments match this request.")
 
@@ -1350,6 +1527,19 @@ class WorkflowHandlers:
             **adapt_runtime_settings("tts", dict(settings_snapshot.get("tts") or {})),
             **adapt_runtime_settings("audio", dict(settings_snapshot.get("audio") or {})),
         }
+        text_settings = adapt_runtime_settings("text", dict(settings_snapshot.get("text") or {}))
+        optimization_model = ""
+        optimized_by_id: dict[str, str] = {}
+        if operation != "rvc":
+            optimized, optimization_model = self._optimize_generation_texts(
+                session_id,
+                segment_ids,
+                source_texts,
+                {**text_settings, **tts_settings},
+                cancel_event,
+                lambda value, detail=None: progress(float(value) * 0.2, detail),
+            )
+            optimized_by_id = dict(zip(segment_ids, optimized))
         rvc_settings = adapt_runtime_settings("rvc", dict(settings_snapshot.get("rvc") or {}))
         generated = 0
         skipped = 0
@@ -1371,8 +1561,9 @@ class WorkflowHandlers:
                 segment.status = "running"
                 segment.updated_at = utcnow()
                 text = segment.text
-            progress(index / len(segment_ids), f"Generating segment {index + 1} of {len(segment_ids)}")
+            progress(0.2 + (index / len(segment_ids)) * 0.8, f"Generating segment {index + 1} of {len(segment_ids)}")
             try:
+                synthesized_text = text
                 if operation == "rvc":
                     with self.database.session() as session:
                         source_take = session.scalar(select(AudioTake).where(AudioTake.generation_segment_id == segment_id, AudioTake.is_active.is_(True), AudioTake.status == "completed").order_by(AudioTake.created_at.desc()))
@@ -1387,7 +1578,8 @@ class WorkflowHandlers:
                     parent_take_id = source_take_id
                     take_settings = rvc_settings
                 else:
-                    audio = tts_handler.text_to_audio(text, tts_settings, max_attempts=int(tts_settings.get("max_attempts") or 3), **self._tts_urls(tts_settings))
+                    synthesized_text = optimized_by_id.get(segment_id, text)
+                    audio = tts_handler.text_to_audio(synthesized_text, tts_settings, max_attempts=int(tts_settings.get("max_attempts") or 3), **self._tts_urls(tts_settings))
                     if audio is None:
                         raise RuntimeError("The speech service returned no audio.")
                     take_kind = "tts"
@@ -1405,7 +1597,14 @@ class WorkflowHandlers:
                     session_id=session_id,
                     parent_ids=[source_artifact.id] if operation == "rvc" else [],
                     settings=take_settings,
-                    metadata={"generation_segment_id": segment_id, "kind": take_kind},
+                    metadata={
+                        "generation_segment_id": segment_id,
+                        "kind": take_kind,
+                        "source_text": text,
+                        "synthesized_text": synthesized_text,
+                        "llm_optimized": operation != "rvc" and synthesized_text != text,
+                        "llm_model": optimization_model or None,
+                    },
                 )
                 with self.database.session() as session:
                     segment = session.get(GenerationSegment, segment_id)

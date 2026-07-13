@@ -349,6 +349,8 @@ def import_legacy_data(paths: DataPaths) -> dict[str, Any]:
                 legacy_name=name,
                 legacy_path=str(legacy_path),
                 workflow_kind=str(workflow.get("workflow_kind") or ("voiceover" if row.get("dubbing_mode") else "audiobook")),
+                source_language=str(workflow.get("source_language") or state.get("original_language") or "auto"),
+                target_language=str(workflow.get("target_language") or state.get("target_language") or "") or None,
                 workflow_preset=str(workflow.get("workflow_preset") or "custom"),
                 included_stages_json=list(workflow.get("included_stages") or []),
                 status=str(row.get("status") or "idle"),

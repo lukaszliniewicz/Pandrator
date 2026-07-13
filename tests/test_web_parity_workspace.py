@@ -119,6 +119,31 @@ class WebParityWorkspaceTests(unittest.TestCase):
         self.assertEqual("af_heart", payload["settings"]["voice"])
         self.assertEqual("en", payload["settings"]["language"])
 
+    def test_generate_run_adapts_flat_web_service_ids_after_stage_overrides(self):
+        record = self.create_session("audiobook")
+        uploaded = self.client.post(
+            "/api/v1/uploads",
+            data={"session_id": record["id"], "file": (io.BytesIO(b"A short chapter."), "book.txt")},
+            headers=self.headers,
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(201, uploaded.status_code, uploaded.get_json())
+        queued = self.client.post(
+            f"/api/v1/sessions/{record['id']}/stages/generate_audio/run",
+            json={
+                "service": "kokoro",
+                "tts_service": "kokoro",
+                "stage_settings": {"generate_audio": {"service": "kokoro", "tts_service": "kokoro"}},
+            },
+            headers=self.headers,
+        )
+        self.assertEqual(202, queued.status_code, queued.get_json())
+        payload = queued.get_json()["payload_json"]
+        self.assertEqual("Kokoro", payload["settings"]["service"])
+        self.assertEqual("Kokoro", payload["settings"]["tts_service"])
+        self.assertEqual("Kokoro", payload["stage_settings"]["generate_audio"]["service"])
+        self.assertEqual("Kokoro", payload["stage_settings"]["generate_audio"]["tts_service"])
+
     def test_web_setting_names_are_adapted_to_runtime_handler_contracts(self):
         tts = adapt_runtime_settings("tts", {"service": "kokoro", "model": "model-a", "voice": "speaker-a", "speed": 1.1})
         self.assertEqual("Kokoro", tts["service"])

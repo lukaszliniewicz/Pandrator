@@ -9,7 +9,8 @@ export type VoiceDescriptor = {
 export const LANGUAGE_LABELS: Record<string, string> = {
   ar: 'Arabic', de: 'German', en: 'American English', 'en-gb': 'British English', es: 'Spanish',
   fr: 'French', hi: 'Hindi', it: 'Italian', ja: 'Japanese', ko: 'Korean', nl: 'Dutch',
-  pl: 'Polish', pt: 'Portuguese', ru: 'Russian', vi: 'Vietnamese', 'zh-cn': 'Chinese (Simplified)', zh: 'Chinese'
+  pl: 'Polish', pt: 'Portuguese', ru: 'Russian', tr: 'Turkish', cs: 'Czech', hu: 'Hungarian',
+  vi: 'Vietnamese', 'zh-cn': 'Chinese (Simplified)', zh: 'Chinese'
 };
 
 const KOKORO_PREFIX_LANGUAGES: Record<string, string> = {
@@ -18,6 +19,7 @@ const KOKORO_PREFIX_LANGUAGES: Record<string, string> = {
 
 const KOKORO_LANGUAGES = ['en', 'en-gb', 'de', 'es', 'fr', 'hi', 'it', 'ja', 'pt', 'zh-cn'];
 const QWEN_LANGUAGES = ['zh-cn', 'en', 'ja', 'ko', 'de', 'fr', 'ru', 'pt', 'es', 'it'];
+const XTTS_LANGUAGES = ['en', 'es', 'fr', 'de', 'it', 'pt', 'pl', 'tr', 'ru', 'nl', 'cs', 'ar', 'zh-cn', 'ja', 'hu', 'ko', 'hi'];
 const VOXTRAL_LANGUAGES = ['ar', 'en', 'de', 'es', 'fr', 'hi', 'it', 'nl', 'pt'];
 const MAGPIE_LOCALES: Record<string, string> = {
   'EN-US': 'en', 'ES-US': 'es', 'FR-FR': 'fr', 'DE-DE': 'de', 'VI-VN': 'vi',
@@ -67,9 +69,9 @@ export function languagesForService(serviceId: string, descriptors: VoiceDescrip
   const service = serviceId.toLowerCase().replaceAll('-', '_');
   const codes = service === 'kokoro' ? KOKORO_LANGUAGES
     : service === 'kobold_qwen' || service.includes('qwen') ? QWEN_LANGUAGES
+      : ['xtts', 'fishs2'].includes(service) ? XTTS_LANGUAGES
       : service === 'voxtral' ? VOXTRAL_LANGUAGES
         : service === 'magpie' ? Object.values(MAGPIE_LOCALES)
           : Array.from(new Set(descriptors.map((voice) => voice.languageCode).filter(Boolean)));
   return Array.from(new Set(codes)).map((code) => ({ value: code, label: LANGUAGE_LABELS[code] ?? code }));
 }
-

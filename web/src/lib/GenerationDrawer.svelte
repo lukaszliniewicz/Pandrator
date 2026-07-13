@@ -8,10 +8,12 @@
     Play,
     RefreshCw,
     RotateCcw,
+    Save,
     Sparkles,
     Square,
     Trash2,
-    WandSparkles
+    WandSparkles,
+    X
   } from '@lucide/svelte';
   import { onMount } from 'svelte';
   import { api } from './api';
@@ -36,6 +38,9 @@
   let rvcIndexRate = $state(0.3);
   let showRvc = $state(false);
   let ttsServicesOpen = $state(false);
+  let comparisonItem = $state<any>(null);
+  let comparisonText = $state('');
+  let regenerateAfterReview = $state(true);
 
   const marked = $derived(payload.items.filter((item: any) => item.marked).map((item: any) => item.id));
 
@@ -68,9 +73,24 @@
       Object.assign(item, updated);
       payload = { ...payload, items: [...payload.items] };
       if ('node_kind' in changes || 'silence_after_ms' in changes || 'removed' in changes) await refreshAssembly();
+      return updated;
     } catch (caught) {
       error = caught instanceof Error ? caught.message : String(caught);
     }
+  }
+
+  function openOptimizationReview(item: any) {
+    comparisonItem = item;
+    comparisonText = String(item.optimized_text ?? activeTake(item)?.synthesized_text ?? item.text ?? '');
+  }
+
+  async function saveOptimizationReview() {
+    if (!comparisonItem || !comparisonText.trim()) return;
+    const item = comparisonItem;
+    const updated = await patchSegment(item, { optimized_text: comparisonText.trim() });
+    if (!updated) return;
+    comparisonItem = null;
+    if (regenerateAfterReview) await start('regenerate', [item.id]);
   }
 
   async function refreshAssembly() {
@@ -299,6 +319,9 @@
                   <td class="muted font-mono text-xs">{item.ordinal + 1}</td>
                   <td>
                     <textarea value={item.text} onblur={(event) => { const text = (event.currentTarget as HTMLTextAreaElement).value; if (text !== item.text) patchSegment(item, { text }); }} rows="2" class="w-full resize-y rounded-lg border border-transparent bg-transparent p-2 focus:border-[var(--line)]"></textarea>
+                    {#if item.optimized_text || activeTake(item)?.llm_optimized}
+                      <button onclick={(event) => { event.stopPropagation(); openOptimizationReview(item); }} class="mb-2 flex max-w-full items-center gap-1.5 rounded-lg bg-[var(--accent-soft)] px-2.5 py-1.5 text-left text-[.68rem] font-semibold text-[var(--accent)]"><WandSparkles size={12}/><span class="truncate">Compare speech optimization</span><span class="rounded-full bg-[var(--paper)] px-1.5 py-0.5 text-[.58rem] uppercase">{item.optimization_status ?? 'generated'}</span></button>
+                    {/if}
                     <div class="flex flex-wrap gap-2">
                       <select value={item.node_kind ?? 'paragraph'} onchange={(event) => patchSegment(item, { node_kind: (event.currentTarget as HTMLSelectElement).value })} aria-label="Segment role" class="mini">
                         <option value="paragraph">Paragraph</option>
@@ -333,6 +356,15 @@
   </aside>
 {/if}
 {#if ttsServicesOpen}<TtsServicesModal onclose={() => ttsServicesOpen=false}/>{/if}
+{#if comparisonItem}
+  <div class="fixed inset-0 z-[95] grid place-items-center bg-black/55 p-3 backdrop-blur-sm" role="presentation" onclick={(event)=>event.target===event.currentTarget&&(comparisonItem=null)}>
+    <div class="surface flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-3xl" role="dialog" aria-modal="true" aria-labelledby="segment-optimization-title">
+      <header class="flex items-start gap-4 border-b border-[var(--line)] px-5 py-4"><div class="min-w-0 flex-1"><div class="eyebrow">Generation segment {comparisonItem.ordinal + 1}</div><h2 id="segment-optimization-title" class="mt-1 text-xl font-semibold">Review speech optimization</h2><p class="muted mt-1 text-xs">The source remains unchanged. Saving the optimized delivery marks existing takes stale.</p></div><button onclick={()=>comparisonItem=null} class="rounded-xl p-2" aria-label="Close"><X size={20}/></button></header>
+      <div class="grid min-h-0 flex-1 gap-4 overflow-auto p-5 md:grid-cols-2"><section><h3 class="mb-2 text-xs font-bold uppercase tracking-wider text-[var(--muted)]">Original generation text</h3><div class="h-full min-h-44 rounded-2xl border border-[var(--line)] bg-[var(--paper)] p-4 text-sm leading-7">{comparisonItem.text}</div></section><section><h3 class="mb-2 text-xs font-bold uppercase tracking-wider text-[var(--muted)]">Optimized delivery · editable</h3><textarea bind:value={comparisonText} class="h-full min-h-44 w-full resize-y rounded-2xl border border-[var(--line)] bg-[var(--paper)] p-4 text-sm leading-7"></textarea></section></div>
+      <footer class="flex flex-wrap items-center justify-end gap-3 border-t border-[var(--line)] px-5 py-4"><label class="mr-auto flex items-center gap-2 text-xs font-semibold"><input type="checkbox" bind:checked={regenerateAfterReview} class="accent-[var(--accent)]"/> Regenerate this segment after saving</label><button onclick={()=>comparisonItem=null} class="action">Cancel</button><button onclick={saveOptimizationReview} disabled={!comparisonText.trim()} class="action primary"><Save size={14}/> Save review</button></footer>
+    </div>
+  </div>
+{/if}
 
 <style>
   .generation-drawer{height:3.9rem;transition:height .18s ease}.generation-drawer.half{height:min(52vh,38rem)}.generation-drawer.full{height:calc(100vh - 1.5rem)}

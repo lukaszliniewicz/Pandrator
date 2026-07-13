@@ -109,7 +109,7 @@ def command_remote(args) -> int:
         elif args.session_command == "show":
             result = _remote_api(args, "GET", f"/sessions/{args.session_id}")
         elif args.session_command == "create":
-            result = _remote_api(args, "POST", "/sessions", payload={"name": args.name, "workflow_kind": args.kind, "workflow_preset": args.preset, "included_stages": args.include or []})
+            result = _remote_api(args, "POST", "/sessions", payload={"name": args.name, "workflow_kind": args.kind, "source_language": args.source_language, "target_language": args.target_language, "workflow_preset": args.preset, "included_stages": args.include or []})
         else:
             raise RuntimeError("Remote session bundle transfer is not supported by this command; use managed artifact upload/download endpoints.")
     elif command == "job":
@@ -165,6 +165,8 @@ def _session_dict(record) -> dict:
         "id": record.id,
         "name": record.name,
         "workflow_kind": record.workflow_kind,
+        "source_language": record.source_language,
+        "target_language": record.target_language,
         "workflow_preset": record.workflow_preset,
         "status": record.status,
         "revision": record.revision,
@@ -326,6 +328,8 @@ def command_session_create(args) -> int:
     record = SessionService(database).create(
         args.name,
         workflow_kind=args.kind,
+        source_language=args.source_language,
+        target_language=args.target_language,
         workflow_preset=args.preset,
         included_stages=args.include or [],
     )
@@ -665,6 +669,8 @@ def build_parser() -> argparse.ArgumentParser:
     session_create = session_commands.add_parser("create")
     session_create.add_argument("name")
     session_create.add_argument("--kind", choices=["audiobook", "subtitles", "voiceover"], default="audiobook")
+    session_create.add_argument("--source-language", default="auto")
+    session_create.add_argument("--target-language")
     session_create.add_argument("--preset", default="custom")
     session_create.add_argument("--include", action="append")
     session_create.set_defaults(handler=command_session_create)

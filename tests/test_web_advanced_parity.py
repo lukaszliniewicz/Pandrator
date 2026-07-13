@@ -20,6 +20,7 @@ from pandrator.web.sessions import SessionService
 from pandrator.web.workflow_handlers import WorkflowHandlers
 from pandrator.web.workflows import WorkflowService
 from pandrator.web.jobs import JobQueue
+from pandrator.web.workspace import OutcomePlanService
 
 
 class ProviderSettingsTests(unittest.TestCase):
@@ -91,6 +92,26 @@ class AdvancedApiTests(unittest.TestCase):
         with database.session() as session:
             record = session.get(TrainingRun, payload["training_id"])
             self.assertEqual(record.status, "cancel_requested")
+
+    def test_optimization_review_creates_a_new_immutable_artifact(self):
+        database = self.app.extensions["pandrator"]["database"]
+        paths = self.app.extensions["pandrator"]["paths"]
+        record = SessionService(database).create("Review")
+        session_dir = paths.sessions / record.storage_key
+        session_dir.mkdir(parents=True, exist_ok=True)
+        source_path = session_dir / "optimized.json"
+        source_path.write_text(json.dumps([{"source_text": "Room 101", "text": "Room one zero one"}]), encoding="utf-8")
+        source = ArtifactService(database, paths).register(source_path, kind="json", role="tts_optimized", session_id=record.id)
+        response = self.client.post(
+            f"/api/v1/artifacts/{source.id}/optimization-review",
+            json={"items": [{"index": 0, "text": "Room one oh one"}]},
+            headers={"X-CSRF-Token": self.csrf},
+        )
+        self.assertEqual(201, response.status_code)
+        reviewed, reviewed_path = ArtifactService(database, paths).resolve(response.get_json()["id"])
+        self.assertNotEqual(source.id, reviewed.id)
+        self.assertTrue(reviewed.metadata_json["reviewed"])
+        self.assertEqual("Room one oh one", json.loads(reviewed_path.read_text(encoding="utf-8"))[0]["text"])
 
     def test_interrupted_training_can_retry_with_the_same_sources_and_settings(self):
         source_id = self.upload("training.wav")
@@ -266,6 +287,38 @@ class SourceAwareWorkflowTests(unittest.TestCase):
                 stages = WorkflowService(database, JobQueue(database)).snapshot(record.id)["stages"]
                 self.assertEqual(stages[0]["key"], "correct")
                 self.assertEqual([item["number"] for item in stages], list(range(1, len(stages)+1)))
+                optimization = next(item for item in stages if item["key"] == "optimize_tts")
+                self.assertFalse(optimization["executable"])
+                self.assertTrue(optimization["toggle"])
+                document_optimization = next(item for item in stages if item["key"] == "optimize_document")
+                self.assertTrue(document_optimization["executable"])
+                self.assertTrue(document_optimization["toggle"])
+                self.assertFalse(document_optimization["toggle_only"])
+            finally:
+                database.dispose()
+
+    def test_enabled_document_optimization_locks_generation_until_its_artifact_exists(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = DataPaths.from_value(directory).ensure(); upgrade_database(paths.database); database = Database(paths.database)
+            try:
+                record = SessionService(database).create("Review first", workflow_kind="voiceover")
+                source_path = paths.uploads / "captions.srt"; source_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n", encoding="utf-8")
+                upload = ArtifactService(database, paths).register(source_path, kind="srt", role="upload", session_id=record.id, metadata={"original_filename":"captions.srt"})
+                outcomes = OutcomePlanService(database)
+                current = outcomes.get(record.id)
+                value = current["value"]
+                value["transformations"]["llm_tts_document_optimization"] = True
+                value["inputs"]["generation"] = "source"
+                outcomes.update(record.id, current["revision"], value)
+                service = WorkflowService(database, JobQueue(database))
+                stages = service.snapshot(record.id)["stages"]
+                self.assertEqual("ready", next(item for item in stages if item["key"] == "optimize_document")["status"])
+                self.assertEqual("unavailable", next(item for item in stages if item["key"] == "generate_audio")["status"])
+                optimized_path = paths.sessions / record.storage_key / "optimized.srt"
+                optimized_path.parent.mkdir(parents=True, exist_ok=True)
+                optimized_path.write_text(source_path.read_text(encoding="utf-8"), encoding="utf-8")
+                ArtifactService(database, paths).register(optimized_path, kind="srt", role="tts_optimized", session_id=record.id, parent_ids=[upload.id])
+                self.assertEqual("ready", next(item for item in service.snapshot(record.id)["stages"] if item["key"] == "generate_audio")["status"])
             finally:
                 database.dispose()
 

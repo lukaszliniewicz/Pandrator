@@ -17,7 +17,7 @@
   let generatedCount = $state(0);
   let newVoice = $state('');
 
-  const services = $derived((payload.services ?? []).filter((service: any) => service.supports_prebuilt_voices || service.voices?.length));
+  const services = $derived((payload.services ?? []).filter((service: any) => service.supports_prebuilt_voices));
   const service = $derived(services.find((item: any) => item.id === serviceId) ?? services[0]);
   const models = $derived(Array.from(new Set([...(service?.models ?? []), service?.default_model].filter(Boolean))));
   const rawVoices = $derived(Array.from(new Set([...(service?.voice_catalogues?.[model] ?? service?.voices ?? []), service?.default_voices?.[model], service?.default_voice].filter(Boolean))) as string[]);

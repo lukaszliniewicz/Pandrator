@@ -68,6 +68,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/artifacts/{artifactId}/optimization-review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["saveOptimizationReview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/artifacts/{artifactId}/pdf": {
         parameters: {
             query?: never;
@@ -1355,6 +1371,11 @@ export interface components {
              */
             node_kind: ("paragraph" | "heading" | "chapter_marker" | "subtitle_cue") | null;
             /**
+             * Optimized Text
+             * @default null
+             */
+            optimized_text: string | null;
+            /**
              * Removed
              * @default null
              */
@@ -1497,6 +1518,27 @@ export interface components {
              * @default null
              */
             output_cost_per_million: number | null;
+        };
+        /** OptimizationReviewItem */
+        OptimizationReviewItem: {
+            /** Index */
+            index: number;
+            /** Text */
+            text: string;
+        };
+        /** OptimizationReviewRequest */
+        OptimizationReviewRequest: {
+            /** Items */
+            items: components["schemas"]["OptimizationReviewItem"][];
+            $defs: {
+                /** OptimizationReviewItem */
+                OptimizationReviewItem: {
+                    /** Index */
+                    index: number;
+                    /** Text */
+                    text: string;
+                };
+            };
         };
         /** OutcomePlanUpdate */
         OutcomePlanUpdate: {
@@ -1714,6 +1756,16 @@ export interface components {
             /** Name */
             name: string;
             /**
+             * Source Language
+             * @default auto
+             */
+            source_language: string;
+            /**
+             * Target Language
+             * @default null
+             */
+            target_language: string | null;
+            /**
              * Workflow Kind
              * @default audiobook
              * @enum {string}
@@ -1745,10 +1797,20 @@ export interface components {
              */
             name: string | null;
             /**
+             * Source Language
+             * @default null
+             */
+            source_language: string | null;
+            /**
              * Status
              * @default null
              */
             status: string | null;
+            /**
+             * Target Language
+             * @default null
+             */
+            target_language: string | null;
             /**
              * Workflow Kind
              * @default null
@@ -1980,6 +2042,28 @@ export interface operations {
         responses: {
             /** @description Range-capable artifact content */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    saveOptimizationReview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OptimizationReviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Reviewed speech optimization artifact */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };

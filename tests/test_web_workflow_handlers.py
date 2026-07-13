@@ -13,9 +13,11 @@ from sqlalchemy import select
 from pandrator.runtime import DataPaths
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.database import Database, upgrade_database
-from pandrator.web.models import Artifact, ArtifactEdge
+from pandrator.web.models import Artifact, ArtifactEdge, GenerationSegment
 from pandrator.web.sessions import SessionService
 from pandrator.web.workflow_handlers import WorkflowHandlers
+from pandrator.web.tts_optimization import OptimizationUsage
+from pandrator.web.workspace import OutcomePlanService
 
 
 class WebWorkflowHandlerTests(unittest.TestCase):
@@ -79,6 +81,115 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         artifact, output = self.artifacts.resolve(result["artifact_id"])
         self.assertEqual(artifact.role, "audiobook_audio")
         self.assertTrue(output.is_file())
+
+    def test_audiobook_generation_rejects_unsegmented_text_with_actionable_error(self):
+        raw_path = self.session_dir / "raw.txt"
+        raw_path.write_text("Raw narration", encoding="utf-8")
+        raw = self.artifacts.register(raw_path, kind="text", role="upload", session_id=self.session.id)
+        with self.assertRaisesRegex(ValueError, "Segment narration"):
+            self.handlers.generate_audiobook_audio(
+                {"session_id": self.session.id, "source_artifact_id": raw.id, "settings": {}},
+                self.progress,
+                threading.Event(),
+            )
+
+    def test_audiobook_continuation_segments_raw_text_before_generation(self):
+        raw_path = self.paths.uploads / "raw-book.txt"
+        raw_path.write_text("Chapter One\n\nA short first paragraph.", encoding="utf-8")
+        self.artifacts.register(
+            raw_path,
+            kind="source",
+            role="upload",
+            session_id=self.session.id,
+            metadata={"original_filename": "raw-book.txt"},
+        )
+        captured = {}
+
+        def fake_generate(payload, _progress, _cancel):
+            source, _path = self.handlers._resolve_input(payload["source_artifact_id"])
+            captured["role"] = source.role
+            return {"artifact_id": "generated"}
+
+        with mock.patch.object(self.handlers, "generate_audiobook_audio", side_effect=fake_generate):
+            result = self.handlers.continue_workflow(
+                {
+                    "session_id": self.session.id,
+                    "target_stage": "generate_audio",
+                    "stage_settings": {
+                        "clean_source": {"agentic": False},
+                        "prepare_text": {"enable_sentence_splitting": True},
+                        "generate_audio": {"service": "XTTS"},
+                    },
+                },
+                self.progress,
+                threading.Event(),
+            )
+        self.assertEqual(captured["role"], "prepared_text")
+        self.assertEqual([item["stage"] for item in result["artifacts"]], ["clean_source", "prepare_text", "generate_audio"])
+
+    def test_automatic_generation_runs_document_optimization_but_stops_before_export(self):
+        raw_path = self.paths.uploads / "automatic-book.txt"
+        raw_path.write_text("Chapter One\n\nA short paragraph.", encoding="utf-8")
+        self.artifacts.register(raw_path, kind="source", role="upload", session_id=self.session.id, metadata={"original_filename": raw_path.name})
+        outcomes = OutcomePlanService(self.database)
+        current = outcomes.get(self.session.id)
+        value = current["value"]
+        value["transformations"]["llm_tts_document_optimization"] = True
+        outcomes.update(self.session.id, current["revision"], value)
+        captured = {}
+
+        def fake_optimize(payload, _progress, _cancel):
+            source, source_path = self.handlers._resolve_input(payload["source_artifact_id"])
+            destination = self.session_dir / "reviewed-optimization.json"
+            destination.write_text(source_path.read_text(encoding="utf-8"), encoding="utf-8")
+            artifact = self.artifacts.register(destination, kind="json", role="tts_optimized", session_id=self.session.id, parent_ids=[source.id], settings=payload["settings"])
+            return {"artifact_id": artifact.id}
+
+        def fake_generate(payload, _progress, _cancel):
+            source, _path = self.handlers._resolve_input(payload["source_artifact_id"])
+            captured["role"] = source.role
+            return {"artifact_id": "generated-segments"}
+
+        with mock.patch.object(self.handlers, "optimize_tts", side_effect=fake_optimize), mock.patch.object(self.handlers, "generate_audiobook_audio", side_effect=fake_generate), mock.patch.object(self.handlers, "export", side_effect=AssertionError("Export must remain manual")):
+            result = self.handlers.continue_workflow(
+                {"session_id": self.session.id, "target_stage": "generate_audio", "stage_settings": {"clean_source": {"agentic": False}, "prepare_text": {}, "optimize_document": {}, "generate_audio": {"service": "XTTS"}}},
+                self.progress,
+                threading.Event(),
+            )
+        self.assertEqual("tts_optimized", captured["role"])
+        self.assertEqual(["clean_source", "prepare_text", "optimize_document", "generate_audio"], [item["stage"] for item in result["artifacts"]])
+
+    def test_llm_speech_optimization_runs_per_segment_without_mutating_plan_text(self):
+        prepared_path = self.session_dir / "optimized-input.json"
+        prepared_path.write_text(json.dumps([{"original_sentence": "Chapter 3."}]), encoding="utf-8")
+        prepared = self.artifacts.register(prepared_path, kind="json", role="prepared_text", session_id=self.session.id)
+        hydrated = {
+            "llm_tts_optimization": True,
+            "llm_provider_configs": [],
+            "llm_default_model": "local/test",
+            "request_timeout_seconds": 30,
+            "tts_optimization_model": "local/test",
+        }
+        def optimize(*_args, on_batch=None, **_kwargs):
+            if on_batch:
+                on_batch([(0, "Chapter three.")])
+            return ["Chapter three."], OptimizationUsage()
+
+        with mock.patch.object(self.handlers, "_with_database_llm_settings", return_value=hydrated), mock.patch(
+            "pandrator.web.tts_optimization.optimize_texts",
+            side_effect=optimize,
+        ), mock.patch("pandrator.logic.tts_handler.text_to_audio", return_value=AudioSegment.silent(duration=25)) as generate:
+            self.handlers.generate_audiobook_audio(
+                {"session_id": self.session.id, "source_artifact_id": prepared.id, "settings": {"llm_tts_optimization": True, "service": "XTTS"}},
+                self.progress,
+                threading.Event(),
+            )
+        self.assertEqual(generate.call_args.args[0], "Chapter three.")
+        with self.database.session() as session:
+            segment = session.scalar(select(GenerationSegment))
+            self.assertEqual(segment.text, "Chapter 3.")
+            self.assertEqual(segment.optimized_text, "Chapter three.")
+            self.assertEqual(segment.optimization_status, "optimized")
 
     def test_subtitle_only_export_does_not_require_tts(self):
         subtitle_session = self.sessions.create("Subtitle fixture", workflow_kind="subtitles")

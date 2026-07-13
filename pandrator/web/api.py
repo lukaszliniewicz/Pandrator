@@ -34,7 +34,7 @@ from .maintenance import apply_retention
 from .models import AgentRun, AgentStep, AppSetting, AppSettingHistory, Artifact, ArtifactEdge, Document, DocumentRevision, Job, Provider, ProviderModel, Segment, SessionRecord, SourceRecord, TimedWord, TrainingRun, Voice, VoiceSample, new_id, utcnow
 from .openapi import build_openapi_document
 from .parity_registry import build_registry
-from .schemas import AgentRunCreateRequest, BootstrapRequest, BundleExportRequest, BundleImportRequest, ChunkUploadInitialize, GenerationPlanCreate, GenerationSegmentUpdate, GenerationStartRequest, JobCreate, LoginRequest, ModelCreate, ModelUpdate, OutcomePlanUpdate, OutputAssemblyCreateRequest, PdfEditRequest, ProviderCreate, ProviderTestRequest, ProviderUpdate, RvcConvertRequest, RvcModelUploadRequest, SessionCreate, SessionSettingsUpdate, SessionUpdate, SettingUpdate, SourceAttachRequest, SourceReuseRequest, SourceUpdateRequest, SourceUrlRequest, SubtitleReviewRequest, TokenCreateRequest, TrainingCreateRequest, TtsEndpointDiscoveryRequest, TtsVoicePreviewRequest, VoiceCreate, VoiceTranscriptReview
+from .schemas import AgentRunCreateRequest, BootstrapRequest, BundleExportRequest, BundleImportRequest, ChunkUploadInitialize, GenerationPlanCreate, GenerationSegmentUpdate, GenerationStartRequest, JobCreate, LoginRequest, ModelCreate, ModelUpdate, OptimizationReviewRequest, OutcomePlanUpdate, OutputAssemblyCreateRequest, PdfEditRequest, ProviderCreate, ProviderTestRequest, ProviderUpdate, RvcConvertRequest, RvcModelUploadRequest, SessionCreate, SessionSettingsUpdate, SessionUpdate, SettingUpdate, SourceAttachRequest, SourceReuseRequest, SourceUpdateRequest, SourceUrlRequest, SubtitleReviewRequest, TokenCreateRequest, TrainingCreateRequest, TtsEndpointDiscoveryRequest, TtsVoicePreviewRequest, VoiceCreate, VoiceTranscriptReview
 from .sessions import RevisionConflict, SessionService
 from .subtitle_review import SubtitleReviewService
 from .workflows import WorkflowService
@@ -83,7 +83,7 @@ def _frontend_script_policy(static_dir: Path) -> str:
 def _session_payload(record) -> dict[str, Any]:
     return _model_dict(
         record,
-        ("id", "name", "storage_key", "workflow_kind", "workflow_preset", "included_stages_json", "status", "revision", "created_at", "updated_at"),
+        ("id", "name", "storage_key", "workflow_kind", "source_language", "target_language", "workflow_preset", "included_stages_json", "status", "revision", "created_at", "updated_at"),
     )
 
 
@@ -316,6 +316,10 @@ def create_app(
     @app.get("/api/v1/services/tts")
     @require_auth
     def tts_services():
+        import socket
+        from concurrent.futures import ThreadPoolExecutor
+        from urllib.parse import urlparse
+
         from pandrator.logic import tts_handler
         from pandrator.logic.tts_provider_profiles import list_tts_provider_profiles
 
@@ -328,7 +332,24 @@ def create_app(
                 connection_value = {"provider_configs": list(default_value["provider_configs"])}
             revision = connections.revision if connections else 0
             default_revision = defaults.revision if defaults else 0
-        response = jsonify({"value": connection_value, "revision": revision, "default_value": default_value, "default_service": str(default_value.get("service") or BUILTIN_DEFAULTS["tts"]["service"]), "default_revision": default_revision, "builtin_defaults": BUILTIN_DEFAULTS["tts"], "services": tts_handler.get_service_configs({**default_value, **connection_value}), "profiles": list_tts_provider_profiles()})
+        services = [dict(item) for item in tts_handler.get_service_configs({**default_value, **connection_value})]
+        if request.args.get("refresh", "").lower() in {"1", "true", "yes"}:
+            def probe(item: dict[str, Any]) -> bool:
+                parsed = urlparse(str(item.get("api_base") or ""))
+                if not parsed.hostname:
+                    return False
+                port = parsed.port or (443 if parsed.scheme == "https" else 80)
+                try:
+                    with socket.create_connection((parsed.hostname, port), timeout=0.35):
+                        return True
+                except OSError:
+                    return False
+
+            with ThreadPoolExecutor(max_workers=min(12, max(1, len(services)))) as executor:
+                states = list(executor.map(probe, services))
+            for service, online in zip(services, states):
+                service["online"] = online
+        response = jsonify({"value": connection_value, "revision": revision, "default_value": default_value, "default_service": str(default_value.get("service") or BUILTIN_DEFAULTS["tts"]["service"]), "default_revision": default_revision, "builtin_defaults": BUILTIN_DEFAULTS["tts"], "services": services, "profiles": list_tts_provider_profiles()})
         response.headers["ETag"] = f'"{revision}"'
         return response
 
@@ -446,6 +467,8 @@ def create_app(
         record = sessions.create(
             payload.name,
             workflow_kind=payload.workflow_kind,
+            source_language=payload.source_language,
+            target_language=payload.target_language,
             workflow_preset=payload.workflow_preset,
             included_stages=payload.included_stages,
         )
@@ -475,7 +498,8 @@ def create_app(
         except ValueError:
             return error_response("precondition_required", "If-Match must contain the current revision.", 428)
         payload = SessionUpdate.model_validate(request.get_json(silent=True) or {})
-        changes = payload.model_dump(exclude_none=True)
+        raw_changes = payload.model_dump(exclude_unset=True)
+        changes = {key: value for key, value in raw_changes.items() if value is not None or key == "target_language"}
         if "included_stages" in changes:
             changes["included_stages_json"] = changes.pop("included_stages")
         try:
@@ -1232,7 +1256,46 @@ def create_app(
             except ValueError:
                 limit = 500
             records = list(db_session.scalars(statement.limit(limit)).all())
-            return jsonify({"items": [_model_dict(item, ("id", "session_id", "kind", "role", "relative_path", "mime_type", "size_bytes", "content_hash", "state", "created_at")) for item in records]})
+            return jsonify({"items": [_model_dict(item, ("id", "session_id", "kind", "role", "relative_path", "mime_type", "size_bytes", "content_hash", "state", "metadata_json", "created_at")) for item in records]})
+
+    @app.post("/api/v1/artifacts/<artifact_id>/optimization-review")
+    @require_auth
+    def artifact_optimization_review(artifact_id: str):
+        payload = OptimizationReviewRequest.model_validate(request.get_json(silent=True) or {})
+        try:
+            source, source_path = artifacts.resolve(artifact_id)
+        except KeyError:
+            return error_response("not_found", "Speech-optimized artifact not found.", 404)
+        if source.role != "tts_optimized" or source_path.suffix.lower() != ".json":
+            return error_response("validation_error", "Only JSON speech-optimization artifacts use this review endpoint.", 422)
+        try:
+            rows = json.loads(source_path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError) as error:
+            return error_response("artifact_invalid", f"The optimization artifact cannot be reviewed: {error}", 422)
+        if not isinstance(rows, list):
+            return error_response("artifact_invalid", "The optimization artifact must contain a list.", 422)
+        edits = {item.index: item.text.strip() for item in payload.items}
+        if set(edits) != set(range(len(rows))):
+            return error_response("validation_error", "Reviewed text must preserve every item index exactly once.", 422)
+        for index, row in enumerate(rows):
+            if not isinstance(row, dict):
+                return error_response("artifact_invalid", "Every optimization item must be an object.", 422)
+            row["source_text"] = str(row.get("source_text") or row.get("original_sentence") or row.get("text") or "")
+            row["text"] = edits[index]
+            row["processed_sentence"] = edits[index]
+            row["tts_optimized_sentence"] = edits[index]
+            row["optimization_reviewed"] = True
+        destination = source_path.parent / f"tts-optimized-reviewed-{new_id()}.json"
+        destination.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+        reviewed = artifacts.register(
+            destination,
+            kind="json",
+            role="tts_optimized",
+            session_id=source.session_id,
+            parent_ids=[source.id],
+            metadata={**(source.metadata_json or {}), "reviewed": True, "reviewed_from": source.id},
+        )
+        return jsonify(_model_dict(reviewed, ("id", "session_id", "kind", "role", "relative_path", "mime_type", "size_bytes", "content_hash", "state", "metadata_json", "created_at"))), 201
 
     @app.get("/api/v1/artifacts/<artifact_id>/content")
     @require_auth

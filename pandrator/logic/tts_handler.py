@@ -3937,6 +3937,18 @@ def _request_openai_compatible_audio(text: str, tts_settings: dict) -> requests.
 
 def _decode_audio_response(response: requests.Response) -> AudioSegment:
     content_type = (response.headers.get("Content-Type") or "").lower()
+    if not response.content:
+        raise RuntimeError("The speech service returned an empty response instead of audio.")
+    if "json" in content_type or content_type.startswith("text/"):
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = response.text.strip()
+        if isinstance(payload, dict):
+            detail = payload.get("detail") or payload.get("error") or payload.get("message") or payload
+        else:
+            detail = payload
+        raise RuntimeError(f"The speech service returned an error instead of audio: {detail}")
     format_hint = "wav"
     if "mpeg" in content_type or "mp3" in content_type:
         format_hint = "mp3"

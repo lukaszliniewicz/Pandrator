@@ -1,3 +1,4 @@
+import json
 import tempfile
 import threading
 import unittest
@@ -31,8 +32,9 @@ class TtsOptimizationUnitTests(unittest.TestCase):
         def complete(*, messages, **_kwargs):
             source = messages[-1]["content"]
             calls.append(source)
+            input_payload = json.loads(source.split("Input JSON:\n", 1)[1])
             return ChatCompletionResult(
-                content=f'"{source.rsplit(":", 1)[-1].strip()} spoken"',
+                content=json.dumps({"items": [{"index": item["index"], "text": f'{item["text"]} spoken'} for item in input_payload["items"]]}),
                 usage={"prompt_tokens": 3, "completion_tokens": 2},
                 cost=0.01,
                 cost_source="provider",
@@ -48,10 +50,36 @@ class TtsOptimizationUnitTests(unittest.TestCase):
                 lambda *_args: None,
             )
         self.assertEqual(["one spoken", "two spoken"], output)
-        self.assertEqual(2, len(calls))
-        self.assertEqual(2, usage.response_count)
-        self.assertAlmostEqual(0.02, usage.cost)
-        self.assertEqual(6, usage.usage["prompt_tokens"])
+        self.assertEqual(1, len(calls))
+        self.assertEqual(1, usage.response_count)
+        self.assertAlmostEqual(0.01, usage.cost)
+        self.assertEqual(3, usage.usage["prompt_tokens"])
+
+    def test_json_batching_preserves_indexes_and_publishes_completed_batches(self):
+        calls = []
+        published = []
+
+        def complete(*, messages, **_kwargs):
+            request_payload = json.loads(messages[-1]["content"].split("Input JSON:\n", 1)[1])
+            calls.append(request_payload)
+            return ChatCompletionResult(
+                content=json.dumps({"items": [{"index": item["index"], "text": item["text"].upper()} for item in request_payload["items"]]}),
+                usage={},
+            )
+
+        with mock.patch("pandrator.web.tts_optimization.chat_completion_with_metadata", side_effect=complete):
+            output, _usage = optimize_texts(
+                ["one", "two", "three", "four", "five"],
+                {"llm_tts_batch_size": 2, "llm_concurrent_calls": 2},
+                SimpleNamespace(),
+                "provider/model",
+                threading.Event(),
+                lambda *_args: None,
+                on_batch=lambda items: published.append(items),
+            )
+        self.assertEqual(["ONE", "TWO", "THREE", "FOUR", "FIVE"], output)
+        self.assertEqual(3, len(calls))
+        self.assertEqual({0, 1, 2, 3, 4}, {index for batch in published for index, _text in batch})
 
 
 class TtsOptimizationHandlerTests(unittest.TestCase):
@@ -79,10 +107,7 @@ class TtsOptimizationHandlerTests(unittest.TestCase):
         handlers = WorkflowHandlers(self.database, self.paths)
         handlers._store_srt_document(self.session.id, source, "transcription", language="en")
         responses = iter(
-            [
-                ChatCompletionResult(content="Room one oh one", usage={"prompt_tokens": 4, "completion_tokens": 3}, cost=0.01, cost_source="provider"),
-                ChatCompletionResult(content="Doctor Jones", usage={"prompt_tokens": 4, "completion_tokens": 2}, cost=0.01, cost_source="provider"),
-            ]
+            [ChatCompletionResult(content=json.dumps({"items": [{"index": 0, "text": "Room one oh one"}, {"index": 1, "text": "Doctor Jones"}]}), usage={"prompt_tokens": 8, "completion_tokens": 5}, cost=0.02, cost_source="provider")]
         )
         hydrated = {
             "combined_prompt": "Speak: ",

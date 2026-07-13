@@ -68,7 +68,11 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "enable_nemo_normalization": True,
         "normalize_all_caps": True,
         "llm_tts_optimization": False,
+        "llm_tts_document_optimization": False,
         "llm_processing_enabled": False,
+        "llm_tts_batch_size": 3,
+        "llm_tts_document_batch_size": 8,
+        "tts_optimization_model": "",
         "llm_concurrent_calls": 1,
         "llm_multi_stage": False,
         "combined_prompt": "",
@@ -394,18 +398,30 @@ class WorkspaceSettingsService:
     def get(self, session_id: str, section: str) -> dict[str, Any]:
         section = self._validate_section(section)
         with self.database.session() as session:
-            if session.get(SessionRecord, session_id) is None:
+            session_record = session.get(SessionRecord, session_id)
+            if session_record is None:
                 raise KeyError(session_id)
             global_record = session.get(AppSetting, f"defaults.{section}")
             override = session.get(SessionSetting, (session_id, section))
             global_value = global_record.value_json if global_record and isinstance(global_record.value_json, dict) else {}
             override_value = override.value_json if override else {}
+            source_language = str(session_record.source_language or "auto")
+            target_language = str(session_record.target_language or "")
+            speech_language = target_language or (source_language if source_language != "auto" else "")
+            session_context: dict[str, Any] = {}
+            if section == "stt":
+                session_context = {"stt_language": source_language}
+            elif section == "translation":
+                session_context = {"source_language": source_language, **({"target_language": target_language} if target_language else {})}
+            elif section in {"tts", "output"} and speech_language:
+                session_context = {"language": speech_language}
             return {
                 "section": section,
                 "builtin": deepcopy(BUILTIN_DEFAULTS[section]),
                 "global": deepcopy(global_value),
                 "override": deepcopy(override_value),
-                "effective": _merge(BUILTIN_DEFAULTS[section], global_value, override_value),
+                "session_context": session_context,
+                "effective": _merge(BUILTIN_DEFAULTS[section], global_value, session_context, override_value),
                 "revision": override.revision if override else 0,
                 "global_revision": global_record.revision if global_record else 0,
             }
@@ -447,10 +463,10 @@ class WorkspaceSettingsService:
             from pandrator.logic import tts_handler
 
             snapshot = snapshots["tts"]
-            selection_seed = _merge(snapshot["builtin"], snapshot["global"], connection_value, snapshot["override"], override.get("tts", {}))
+            selection_seed = _merge(snapshot["builtin"], snapshot["global"], connection_value, snapshot.get("session_context", {}), snapshot["override"], override.get("tts", {}))
             selected = tts_handler.get_service_config(selection_seed, str(selection_seed.get("service") or "XTTS"))
             provider_defaults = selected.get("settings") if selected and isinstance(selected.get("settings"), dict) else {}
-            resolved["tts"] = _merge(snapshot["builtin"], snapshot["global"], connection_value, provider_defaults, snapshot["override"], override.get("tts", {}))
+            resolved["tts"] = _merge(snapshot["builtin"], snapshot["global"], connection_value, provider_defaults, snapshot.get("session_context", {}), snapshot["override"], override.get("tts", {}))
             if selected:
                 model = str(resolved["tts"].get("model") or selected.get("default_model") or "")
                 default_voices = selected.get("default_voices") if isinstance(selected.get("default_voices"), dict) else {}
@@ -486,6 +502,7 @@ def derive_legacy_outcome(record: SessionRecord) -> dict[str, Any]:
             "translate": "translate" in included,
             "deterministic_normalization": True,
             "llm_tts_optimization": False,
+            "llm_tts_document_optimization": False,
             "generate_audio": "generate_audio" in included or kind == "audiobook",
             "rvc": False,
         },
@@ -501,18 +518,19 @@ def resolve_pipeline(plan: dict[str, Any], *, source_requires_transcription: boo
     stages: list[tuple[str, str]] = []
     if kind == "audiobook":
         stages.append(("clean_source", "Clean source"))
+        stages.append(("prepare_text", "Segment narration"))
     elif source_requires_transcription or transformations.get("transcribe"):
         stages.append(("transcribe", "Transcribe"))
     if transformations.get("correct"):
         stages.append(("correct", "Correct subtitles"))
     if transformations.get("translate"):
         stages.append(("translate", "Translate"))
-    if transformations.get("deterministic_normalization", True) and (transformations.get("generate_audio") or kind == "audiobook"):
-        stages.append(("normalize_text", "Normalize for speech"))
+    if transformations.get("llm_tts_document_optimization"):
+        stages.append(("optimize_document", "Review speech optimization"))
     if transformations.get("llm_tts_optimization"):
-        stages.append(("optimize_tts", "LLM speech optimization"))
+        stages.append(("optimize_tts", "Optimize while generating"))
     if transformations.get("generate_audio") or deliverables.get("audiobook") or deliverables.get("voiceover"):
-        stages.extend((("build_generation_plan", "Prepare generation segments"), ("generate_audio", "Generate audio")))
+        stages.append(("generate_audio", "Generate audio"))
     if transformations.get("rvc"):
         stages.append(("apply_rvc", "Apply RVC"))
     if any(bool(value) for value in deliverables.values()):
@@ -806,16 +824,24 @@ class GenerationService:
             has_more = len(rows) > limit
             rows = rows[:limit]
             takes_by_segment: dict[str, list[AudioTake]] = {}
+            artifacts_by_id: dict[str, Artifact] = {}
             if rows:
                 takes = list(session.scalars(select(AudioTake).where(AudioTake.generation_segment_id.in_([item.id for item in rows])).order_by(AudioTake.created_at.desc())).all())
                 for take in takes:
                     takes_by_segment.setdefault(take.generation_segment_id, []).append(take)
+                artifact_ids = [take.artifact_id for take in takes if take.artifact_id]
+                if artifact_ids:
+                    artifacts_by_id = {artifact.id: artifact for artifact in session.scalars(select(Artifact).where(Artifact.id.in_(artifact_ids))).all()}
             items = [
                 {
                     "id": item.id,
                     "ordinal": item.ordinal,
                     "node_kind": item.node_kind,
                     "text": item.text,
+                    "optimized_text": item.optimized_text,
+                    "optimization_status": item.optimization_status,
+                    "optimization_reviewed": item.optimization_reviewed,
+                    "optimization_model": item.optimization_model,
                     "voice_id": item.voice_id,
                     "language": item.language,
                     "silence_after_ms": item.silence_after_ms,
@@ -824,7 +850,20 @@ class GenerationService:
                     "status": item.status,
                     "revision": item.revision,
                     "takes": [
-                        {"id": take.id, "artifact_id": take.artifact_id, "parent_take_id": take.parent_take_id, "kind": take.kind, "status": take.status, "duration_ms": take.duration_ms, "is_active": take.is_active, "revision": take.revision}
+                        {
+                            "id": take.id,
+                            "artifact_id": take.artifact_id,
+                            "parent_take_id": take.parent_take_id,
+                            "kind": take.kind,
+                            "status": take.status,
+                            "duration_ms": take.duration_ms,
+                            "is_active": take.is_active,
+                            "revision": take.revision,
+                            "source_text": (artifacts_by_id.get(take.artifact_id).metadata_json or {}).get("source_text") if take.artifact_id and artifacts_by_id.get(take.artifact_id) else None,
+                            "synthesized_text": (artifacts_by_id.get(take.artifact_id).metadata_json or {}).get("synthesized_text") if take.artifact_id and artifacts_by_id.get(take.artifact_id) else None,
+                            "llm_optimized": bool((artifacts_by_id.get(take.artifact_id).metadata_json or {}).get("llm_optimized")) if take.artifact_id and artifacts_by_id.get(take.artifact_id) else False,
+                            "llm_model": (artifacts_by_id.get(take.artifact_id).metadata_json or {}).get("llm_model") if take.artifact_id and artifacts_by_id.get(take.artifact_id) else None,
+                        }
                         for take in takes_by_segment.get(item.id, [])
                     ],
                 }
@@ -834,15 +873,16 @@ class GenerationService:
             return {"items": items, "next_cursor": rows[-1].ordinal + 1 if rows and has_more else None, "total": total, "plan_revision_id": plan.active_revision_id}
 
     def update_segment(self, segment_id: str, expected_revision: int, changes: dict[str, Any]) -> dict[str, Any]:
-        allowed = {"text", "node_kind", "voice_id", "language", "silence_after_ms", "marked", "removed"}
+        allowed = {"text", "optimized_text", "node_kind", "voice_id", "language", "silence_after_ms", "marked", "removed"}
         with self.database.session() as session:
             segment = session.get(GenerationSegment, segment_id)
             if segment is None:
                 raise KeyError(segment_id)
             if segment.revision != expected_revision:
                 raise RevisionConflict("The generation segment changed in another client.")
-            session.add(GenerationSegmentRevision(generation_segment_id=segment.id, revision=segment.revision, node_kind=segment.node_kind, text=segment.text, marked=segment.marked, removed=segment.removed, voice_id=segment.voice_id, language=segment.language, silence_after_ms=segment.silence_after_ms))
+            session.add(GenerationSegmentRevision(generation_segment_id=segment.id, revision=segment.revision, node_kind=segment.node_kind, text=segment.text, optimized_text=segment.optimized_text, optimization_status=segment.optimization_status, optimization_reviewed=segment.optimization_reviewed, marked=segment.marked, removed=segment.removed, voice_id=segment.voice_id, language=segment.language, silence_after_ms=segment.silence_after_ms))
             text_changed = "text" in changes and str(changes["text"]).strip() != segment.text
+            optimized_changed = "optimized_text" in changes and (str(changes["optimized_text"] or "").strip() or None) != segment.optimized_text
             for key, value in changes.items():
                 if key not in allowed:
                     continue
@@ -850,12 +890,28 @@ class GenerationService:
                     value = str(value).strip()
                     if not value:
                         raise ValueError("Generation text cannot be blank; remove the segment instead.")
+                if key == "optimized_text":
+                    value = str(value or "").strip() or None
                 if key == "silence_after_ms":
                     value = max(0, int(value))
                 if key == "node_kind" and value not in {"paragraph", "heading", "chapter_marker", "subtitle_cue"}:
                     raise ValueError("Unsupported generation segment type.")
                 setattr(segment, key, value)
+            if text_changed:
+                segment.optimized_text = None
+                segment.optimization_status = "stale"
+                segment.optimization_source_hash = None
+                segment.optimization_reviewed = False
+                segment.optimization_model = None
+            elif optimized_changed:
+                segment.optimization_status = "reviewed" if segment.optimized_text else "pending"
+                segment.optimization_source_hash = stable_hash(segment.text)
+                segment.optimization_reviewed = bool(segment.optimized_text)
             if text_changed or any(key in changes for key in ("voice_id", "language")):
+                segment.status = "stale"
+                for take in session.scalars(select(AudioTake).where(AudioTake.generation_segment_id == segment.id, AudioTake.status == "completed")).all():
+                    take.status = "stale"
+            if optimized_changed:
                 segment.status = "stale"
                 for take in session.scalars(select(AudioTake).where(AudioTake.generation_segment_id == segment.id, AudioTake.status == "completed")).all():
                     take.status = "stale"
@@ -867,7 +923,7 @@ class GenerationService:
             segment.revision += 1
             segment.updated_at = utcnow()
             session.flush()
-            return {"id": segment.id, "node_kind": segment.node_kind, "text": segment.text, "marked": segment.marked, "removed": segment.removed, "status": segment.status, "revision": segment.revision}
+            return {"id": segment.id, "node_kind": segment.node_kind, "text": segment.text, "optimized_text": segment.optimized_text, "optimization_status": segment.optimization_status, "optimization_reviewed": segment.optimization_reviewed, "optimization_model": segment.optimization_model, "marked": segment.marked, "removed": segment.removed, "status": segment.status, "revision": segment.revision}
 
     def select_take(self, segment_id: str, take_id: str, expected_revision: int) -> dict[str, Any]:
         with self.database.session() as session:
@@ -879,7 +935,7 @@ class GenerationService:
                 raise RevisionConflict("The generation segment changed in another client.")
             if take.status not in {"completed", "stale"} or not take.artifact_id:
                 raise ValueError("Only an available audio take can be selected.")
-            session.add(GenerationSegmentRevision(generation_segment_id=segment.id, revision=segment.revision, node_kind=segment.node_kind, text=segment.text, marked=segment.marked, removed=segment.removed, voice_id=segment.voice_id, language=segment.language, silence_after_ms=segment.silence_after_ms))
+            session.add(GenerationSegmentRevision(generation_segment_id=segment.id, revision=segment.revision, node_kind=segment.node_kind, text=segment.text, optimized_text=segment.optimized_text, optimization_status=segment.optimization_status, optimization_reviewed=segment.optimization_reviewed, marked=segment.marked, removed=segment.removed, voice_id=segment.voice_id, language=segment.language, silence_after_ms=segment.silence_after_ms))
             for item in session.scalars(select(AudioTake).where(AudioTake.generation_segment_id == segment_id)).all():
                 item.is_active = item.id == take_id
                 item.revision += 1

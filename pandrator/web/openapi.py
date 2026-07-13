@@ -126,6 +126,7 @@ def build_openapi_document() -> dict:
         "/api/v1/sessions/{sessionId}/documents": {"get": operation("listSessionDocuments", "Document and subtitle revisions")},
         "/api/v1/document-revisions/{revisionId}/words": {"get": operation("listTimedWords", "Immutable timed words")},
         "/api/v1/artifacts/{artifactId}/waveform": {"get": operation("getArtifactWaveform", "Waveform peaks or queued generation", status="200")},
+        "/api/v1/artifacts/{artifactId}/optimization-review": {"post": operation("saveOptimizationReview", "Reviewed speech optimization artifact", "OptimizationReviewRequest", "201")},
         "/api/v1/sessions/{sessionId}/generation-plan": {"post": operation("createGenerationPlan", "Generation plan created", "GenerationPlanCreate", "201")},
         "/api/v1/sessions/{sessionId}/generation-segments": {"get": operation("listGenerationSegments", "Cursor-paginated generation segments")},
         "/api/v1/generation-segments/{segmentId}": {"patch": operation("updateGenerationSegment", "Generation segment updated", "GenerationSegmentUpdate")},

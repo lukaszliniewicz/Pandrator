@@ -65,6 +65,8 @@ class SchemaUpgradeTests(unittest.TestCase):
                 self.assertIn("source_text_artifact_id", [row[1] for row in connection.execute("PRAGMA table_info(training_runs)")])
                 self.assertIn("node_kind", [row[1] for row in connection.execute("PRAGMA table_info(generation_segments)")])
                 self.assertIn("node_kind", [row[1] for row in connection.execute("PRAGMA table_info(generation_segment_revisions)")])
+                self.assertIn("source_language", [row[1] for row in connection.execute("PRAGMA table_info(sessions)")])
+                self.assertIn("target_language", [row[1] for row in connection.execute("PRAGMA table_info(sessions)")])
 
 
 class LegacyMigrationTests(unittest.TestCase):
@@ -311,6 +313,25 @@ class WebApiTests(unittest.TestCase):
         )
         self.assertEqual(queued.status_code, 202)
         self.assertEqual(queued.get_json()["kind"], "dubbing.correct")
+
+    def test_session_languages_are_first_class_and_revision_safe(self):
+        csrf = self.authenticate()
+        response = self.client.post(
+            "/api/v1/sessions",
+            json={"name": "Polish narration", "workflow_kind": "audiobook", "source_language": "pl"},
+            headers={"X-CSRF-Token": csrf},
+        )
+        self.assertEqual(response.status_code, 201)
+        record = response.get_json()
+        self.assertEqual(record["source_language"], "pl")
+        self.assertIsNone(record["target_language"])
+        changed = self.client.patch(
+            f"/api/v1/sessions/{record['id']}",
+            json={"target_language": "en"},
+            headers={"X-CSRF-Token": csrf, "If-Match": response.headers["ETag"]},
+        )
+        self.assertEqual(changed.status_code, 200)
+        self.assertEqual(changed.get_json()["target_language"], "en")
 
 
 if __name__ == "__main__":

@@ -1,10 +1,18 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from pandrator.logic import tts_handler
 
 
 class TTSHandlerTests(unittest.TestCase):
+    def test_json_speech_response_reports_provider_error_instead_of_audio_decode_noise(self):
+        response = Mock()
+        response.headers = {"Content-Type": "application/json"}
+        response.content = b'{"detail":"voice is unavailable"}'
+        response.json.return_value = {"detail": "voice is unavailable"}
+        with self.assertRaisesRegex(RuntimeError, "voice is unavailable"):
+            tts_handler._decode_audio_response(response)
+
     def test_first_class_services_are_separate_from_custom_providers(self):
         settings = {
             "provider_configs": [

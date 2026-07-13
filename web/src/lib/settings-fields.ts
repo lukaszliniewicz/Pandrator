@@ -75,6 +75,21 @@ export function numberPresentation(key: string): NumberPresentation {
 const ACRONYMS: Record<string, string> = { stt: 'STT', tts: 'TTS', rvc: 'RVC', vad: 'VAD', llm: 'LLM', pdf: 'PDF', ocr: 'OCR', cps: 'CPS', dpi: 'DPI', url: 'URL', id: 'ID', fp16: 'FP16', gpt: 'GPT', wav: 'WAV', api: 'API', gpu: 'GPU', dtw: 'DTW', rnnt: 'RNNT', tdt: 'TDT', srt: 'SRT', ass: 'ASS', m4b: 'M4B' };
 
 export function settingLabel(key: string): string {
+  const labels: Record<string, string> = {
+    llm_tts_optimization: 'Optimize each segment with an LLM',
+    llm_tts_document_optimization: 'Optimize and review the document before generation',
+    llm_tts_batch_size: 'Segments per inline JSON batch',
+    llm_tts_document_batch_size: 'Segments per document JSON batch',
+    tts_optimization_model: 'Speech optimization model',
+    llm_processing_enabled: 'Enable LLM text processing',
+    llm_multi_stage: 'Use divided prompts',
+    llm_concurrent_calls: 'Concurrent LLM calls',
+    combined_prompt: 'Single optimization prompt',
+    first_prompt: 'First optimization prompt',
+    second_prompt: 'Second optimization prompt',
+    third_prompt: 'Third optimization prompt'
+  };
+  if (labels[key]) return labels[key];
   return key.split('_').map((word) => ACRONYMS[word.toLowerCase()] ?? word.charAt(0).toUpperCase() + word.slice(1)).join(' ')
     .replace(/ Ms\b/g, ' (ms)').replace(/ Seconds\b/g, ' (seconds)');
 }

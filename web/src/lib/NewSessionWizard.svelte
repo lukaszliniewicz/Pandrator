@@ -3,6 +3,7 @@
   import { untrack } from 'svelte';
   import { api, uploadManagedFile, type SessionRecord } from './api';
   import { appState } from './app-state.svelte';
+  import { LANGUAGE_OPTIONS } from './settings-fields';
 
   let { initialKind = 'subtitles', startAtSource = false, onclose }: { initialKind?: 'audiobook'|'subtitles'|'voiceover'; startAtSource?: boolean; onclose: () => void } = $props();
   let step = $state(untrack(() => startAtSource ? 2 : 1));
@@ -18,6 +19,7 @@
   let correct = $state(false);
   let translate = $state(false);
   let keepSourceSubtitles = $state(true);
+  let sourceLanguage = $state('auto');
   let targetLanguage = $state('en');
   let subtitleMode = $state<'none'|'soft'|'burned'>('soft');
   let normalizeText = $state(true);
@@ -33,9 +35,10 @@
     ...(kind==='audiobook'?['Clean source']:needsTranscription?['Transcribe']:['Use subtitles']),
     ...(kind!=='audiobook'&&correct?['Correct']:[]),
     ...(kind!=='audiobook'&&translate?['Translate']:[]),
-    ...((kind==='voiceover'||(kind==='audiobook'&&normalizeText))?['Normalize for speech']:[]),
+    ...(kind==='audiobook'?['Segment narration']:[]),
+    ...((kind==='voiceover'||(kind==='audiobook'&&normalizeText))?['Deterministic speech normalization']:[]),
     ...(kind==='audiobook'&&optimizeTts?['LLM speech optimization']:[]),
-    ...((kind==='voiceover'||kind==='audiobook')?['Prepare segments','Generate audio']:[]),
+    ...((kind==='voiceover'||kind==='audiobook')?['Generate audio']:[]),
     'Export'
   ]);
 
@@ -45,7 +48,7 @@
   }
   loadSources();
 
-  function chooseKind(value: typeof kind, full=false) { kind=value; custom=full; step=2; }
+  function chooseKind(value: typeof kind, full=false) { kind=value; if(value==='audiobook'&&sourceLanguage==='auto')sourceLanguage='en'; custom=full; step=2; }
   function inferName() {
     if (name.trim()) return;
     const raw = sourceFile?.name || reusableSources.find((item)=>item.id===sourceAssetId)?.display_name || (sourceMode==='url'?sourceUrl.split('/').filter(Boolean).at(-1):'') || (kind==='audiobook'?'New audiobook':kind==='voiceover'?'New voiceover':'New subtitles');
@@ -59,23 +62,31 @@
     try {
       const existing=new Set(appState.sessions.map((item)=>item.name.toLocaleLowerCase()));let unique=name.trim();let suffix=2;while(existing.has(unique.toLocaleLowerCase()))unique=`${name.trim()} ${suffix++}`;
       const included = custom ? [] : [
+        ...(kind==='audiobook'?['clean_source','prepare_text']:[]),
         ...(needsTranscription?['transcribe']:[]), ...(correct?['correct']:[]), ...(translate?['translate']:[]),
-        ...(optimizeTts&&kind==='audiobook'?['optimize_tts']:[]),
         ...((kind==='voiceover'||kind==='audiobook')?['generate_audio']:[]), 'export'
       ];
-      const session=await api<SessionRecord>('/sessions',{method:'POST',body:JSON.stringify({name:unique,workflow_kind:kind,workflow_preset:'custom',included_stages:included})});
+      const session=await api<SessionRecord>('/sessions',{method:'POST',body:JSON.stringify({name:unique,workflow_kind:kind,source_language:sourceLanguage,target_language:translate?targetLanguage:null,workflow_preset:'custom',included_stages:included})});
       const current=await api<{value:any;revision:number}>(`/sessions/${session.id}/outcome-plan`);
       const value={
         ...current.value, workflow_kind:kind, focus:custom?'custom':'guided',
         deliverables:{audiobook:kind==='audiobook',subtitles:kind==='subtitles'||subtitleMode!=='none',voiceover:kind==='voiceover'},
-        transformations:{transcribe:needsTranscription,correct:kind==='audiobook'?false:correct,translate:kind==='audiobook'?false:translate,deterministic_normalization:kind==='audiobook'?normalizeText:true,llm_tts_optimization:kind==='audiobook'&&optimizeTts,generate_audio:kind==='voiceover'||kind==='audiobook',rvc:false},
+        transformations:{transcribe:needsTranscription,correct:kind==='audiobook'?false:correct,translate:kind==='audiobook'?false:translate,deterministic_normalization:kind==='audiobook'?normalizeText:true,llm_tts_document_optimization:false,llm_tts_optimization:kind==='audiobook'&&optimizeTts,generate_audio:kind==='voiceover'||kind==='audiobook',rvc:false},
         inputs:{translation:correct?'correction':'source',generation:translate?'translation':correct?'correction':'source'},
         export:{audio:kind==='voiceover'||kind==='audiobook'?'generated':'preserve',subtitle_mode:kind==='audiobook'?'none':subtitleMode,subtitles:translate?(keepSourceSubtitles?'dual':'translation'):'source',target_language:targetLanguage}
       };
       await api(`/sessions/${session.id}/outcome-plan`,{method:'PUT',headers:{'If-Match':`"${current.revision}"`},body:JSON.stringify({value})});
+      const updateSettings=async(section:string,next:Record<string,unknown>)=>{const stored=await api<any>(`/sessions/${session.id}/settings/${section}`);await api(`/sessions/${session.id}/settings/${section}`,{method:'PUT',headers:{'If-Match':`"${stored.revision}"`},body:JSON.stringify({value:{...stored.override,...next}})});};
+      const speechLanguage=translate?targetLanguage:(sourceLanguage==='auto'?'en':sourceLanguage);
+      await Promise.all([
+        updateSettings('stt',{stt_language:sourceLanguage}),
+        updateSettings('translation',{source_language:sourceLanguage,target_language:targetLanguage}),
+        updateSettings('tts',{language:speechLanguage}),
+        updateSettings('output',{language:speechLanguage})
+      ]);
       if(kind==='audiobook'){
         const output=await api<{override:any;revision:number}>(`/sessions/${session.id}/settings/output`);
-        await api(`/sessions/${session.id}/settings/output`,{method:'PUT',headers:{'If-Match':`"${output.revision}"`},body:JSON.stringify({value:{...output.override,format:audiobookFormat,audio_mode:'dubbing_only',subtitle_mode:'none'}})});
+        await api(`/sessions/${session.id}/settings/output`,{method:'PUT',headers:{'If-Match':`"${output.revision}"`},body:JSON.stringify({value:{...output.override,format:audiobookFormat,language:speechLanguage}})});
       }
       let file=sourceMode==='paste'&&pastedText.trim()?new File([pastedText.trim()],`${unique}.txt`,{type:'text/plain'}):sourceMode==='upload'?sourceFile:null;
       if(file)await uploadManagedFile(file,session.id,(value)=>progress=value);
@@ -101,12 +112,13 @@
       {#if kind==='audiobook'}
         <div class="mt-7 grid gap-4 md:grid-cols-2">
           <label class="option"><input type="checkbox" bind:checked={normalizeText}/><span><strong>Normalize text for speech</strong><small>Deterministically expands and cleans text patterns that speech engines commonly misread. No provider cost.</small></span></label>
-          <label class="option"><input type="checkbox" bind:checked={optimizeTts}/><span><strong>Use an LLM speech-optimization pass</strong><small>Optional provider-billed review for pronunciation, numerals, and TTS artifacts. You can preview changes before generation.</small></span></label>
+          <label class="option"><input type="checkbox" bind:checked={optimizeTts}/><span><strong>Optimize each segment with an LLM</strong><small>Optional pronunciation and numeral cleanup immediately before synthesis. Local models can run without API charges; remote providers may incur cost.</small></span></label>
+          <label class="text-sm font-semibold">Narration language<select bind:value={sourceLanguage} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3">{#each LANGUAGE_OPTIONS.filter((item)=>item.value!=='auto') as item}<option value={item.value}>{item.label}</option>{/each}</select></label>
           <label class="text-sm font-semibold">Audiobook format<select bind:value={audiobookFormat} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3"><option value="m4b">M4B · chapters, metadata, and cover</option><option value="mp3">MP3</option><option value="opus">Opus</option><option value="flac">FLAC</option><option value="wav">PCM WAV</option></select></label>
           <div class="rounded-2xl bg-[var(--accent-soft)] p-4 text-sm"><strong>Document cleaning stays reviewable</strong><p class="muted mt-1 text-xs leading-relaxed">Pandrator extracts and cleans the source first. Headings become editable chapter starts in the generation drawer; the original file is preserved.</p></div>
         </div>
       {:else}
-        <div class="mt-7 grid gap-4 md:grid-cols-2"><label class="option"><input type="checkbox" bind:checked={correct}/><span><strong>Correct same-language subtitles</strong><small>Creates a separate reviewed source-language asset.</small></span></label><label class="option"><input type="checkbox" bind:checked={translate}/><span><strong>Translate</strong><small>A professional translation can clean minor source errors without creating a correction asset.</small></span></label>{#if translate}<label class="text-sm font-semibold">Target language<input bind:value={targetLanguage} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3"/></label><label class="option"><input type="checkbox" bind:checked={keepSourceSubtitles}/><span><strong>Keep same-language subtitles</strong><small>Allows source/translation dual-track exports.</small></span></label>{/if}<label class="text-sm font-semibold">Subtitle output<select bind:value={subtitleMode} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3"><option value="none">No subtitle track</option><option value="soft">Soft / separate subtitles</option><option value="burned">Burn into video</option></select></label></div>
+        <div class="mt-7 grid gap-4 md:grid-cols-2"><label class="text-sm font-semibold">Source language<select bind:value={sourceLanguage} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3">{#each LANGUAGE_OPTIONS as item}<option value={item.value}>{item.label}</option>{/each}</select></label><label class="option"><input type="checkbox" bind:checked={correct}/><span><strong>Correct same-language subtitles</strong><small>Creates a separate reviewed source-language asset.</small></span></label><label class="option"><input type="checkbox" bind:checked={translate}/><span><strong>Translate</strong><small>A professional translation can clean minor source errors without creating a correction asset.</small></span></label>{#if translate}<label class="text-sm font-semibold">Target language<select bind:value={targetLanguage} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3">{#each LANGUAGE_OPTIONS.filter((item)=>item.value!=='auto') as item}<option value={item.value}>{item.label}</option>{/each}</select></label><label class="option"><input type="checkbox" bind:checked={keepSourceSubtitles}/><span><strong>Keep same-language subtitles</strong><small>Allows source/translation dual-track exports.</small></span></label>{/if}<label class="text-sm font-semibold">Subtitle output<select bind:value={subtitleMode} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3"><option value="none">No subtitle track</option><option value="soft">Soft / separate subtitles</option><option value="burned">Burn into video</option></select></label></div>
       {/if}
     {:else}
       <div class="mt-7 grid gap-6 md:grid-cols-[1fr_1.2fr]"><div><label class="text-sm font-semibold">Session name<input bind:value={name} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3"/></label><p class="muted mt-3 text-sm">This only controls the display name; storage uses a stable UUID.</p></div><div class="rounded-2xl border border-[var(--line)] bg-[var(--paper)] p-5"><div class="eyebrow">Prepared pipeline</div><div class="mt-4 flex flex-wrap items-center gap-2">{#each pipeline as stage,index}<span class="rounded-lg bg-[var(--accent-soft)] px-3 py-2 text-sm font-semibold">{stage}</span>{#if index<pipeline.length-1}<ArrowRight class="muted" size={15}/>{/if}{/each}</div><p class="muted mt-4 text-xs">You can customize this plan later without deleting completed artifacts.</p></div></div>
