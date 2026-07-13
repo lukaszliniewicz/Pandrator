@@ -13,6 +13,7 @@
   let error = $state('');
   let notice = $state('');
   let generatingAll = $state(false);
+  let refreshing = $state(false);
   let generatedCount = $state(0);
   let newVoice = $state('');
 
@@ -69,6 +70,38 @@
     const value = { ...payload.value, provider_configs: [...(payload.value.provider_configs ?? []).filter((item: any) => item.id !== record.id && item.api_base !== record.api_base), record] };
     await api('/settings/services.tts', { method: 'PUT', headers: { 'If-Match': `"${payload.revision}"` }, body: JSON.stringify({ value }) });
     await load();
+  }
+
+  async function refreshCatalogue() {
+    if (!service || refreshing) return;
+    refreshing = true; error = ''; notice = '';
+    try {
+      const found = await api<any>('/services/tts/discover', { method: 'POST', body: JSON.stringify({ base_url: service.api_base }) });
+      const record = editableRecord(service);
+      const discoveredModels = (found.models ?? []).filter(Boolean);
+      const discoveredVoices = (found.voices ?? []).filter(Boolean);
+      record.models = Array.from(new Set([...(record.models ?? []), ...discoveredModels]));
+      record.voices = Array.from(new Set([...(record.voices ?? []), ...discoveredVoices]));
+      record.default_model ||= found.default_model || record.models[0] || '';
+      record.default_voice ||= found.default_voice || '';
+      for (const key of ['adapter', 'speech_path', 'models_path', 'voices_path', 'request_fields', 'request_defaults']) {
+        if (found[key] != null && found[key] !== '') record[key] = found[key];
+      }
+      if (discoveredVoices.length) {
+        const catalogueModels = discoveredModels.length ? discoveredModels : [model || record.default_model].filter(Boolean);
+        const catalogues = { ...(record.voice_catalogues ?? {}) };
+        for (const catalogueModel of catalogueModels) {
+          catalogues[catalogueModel] = Array.from(new Set([...(catalogues[catalogueModel] ?? []), ...discoveredVoices]));
+        }
+        record.voice_catalogues = catalogues;
+      }
+      await saveRecord(record);
+      notice = `Catalogue refreshed: ${discoveredModels.length} model${discoveredModels.length === 1 ? '' : 's'} and ${discoveredVoices.length} voice${discoveredVoices.length === 1 ? '' : 's'} discovered. Manual entries and defaults were preserved.`;
+    } catch (caught) {
+      error = caught instanceof Error ? caught.message : String(caught);
+    } finally {
+      refreshing = false;
+    }
   }
 
   async function saveDefault(voice: VoiceDescriptor) {
@@ -154,7 +187,7 @@
 <section>
   <div class="flex flex-wrap items-end justify-between gap-4">
     <div><div class="eyebrow">Pre-built catalogue</div><h2 class="mt-1 text-2xl font-semibold">Browse voices</h2><p class="muted mt-2 max-w-2xl text-sm">Compare provider voices with the same text, grouped by language, without leaving the Voice Library.</p></div>
-    <button onclick={load} class="btn btn-secondary"><RefreshCw size={15}/> Refresh catalogues</button>
+    <button onclick={refreshCatalogue} disabled={!service || refreshing} class="btn btn-secondary"><RefreshCw class={refreshing ? 'animate-spin' : ''} size={15}/> {refreshing ? 'Refreshing…' : 'Refresh service catalogue'}</button>
   </div>
   {#if error}<div role="alert" class="mt-4 flex items-start gap-2 rounded-xl border border-red-400/40 bg-red-500/10 px-4 py-3 text-sm"><CircleAlert class="mt-0.5 shrink-0" size={16}/><span>{error}</span></div>{/if}
   {#if notice}<div role="status" class="mt-4 rounded-xl bg-[var(--accent-soft)] px-4 py-3 text-sm">{notice}</div>{/if}

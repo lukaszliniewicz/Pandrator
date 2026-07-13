@@ -131,6 +131,7 @@
           stage.artifact.role = artifactRoleLabel(stage.artifact.role);
         }
       }
+      window.dispatchEvent(new CustomEvent('pandrator:generation-changed'));
     } catch (caught) {
       error = caught instanceof Error ? caught.message : String(caught);
     } finally {

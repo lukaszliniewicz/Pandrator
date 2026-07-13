@@ -7,7 +7,7 @@ from pathlib import Path
 from pandrator.web.api import create_app
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.auth import BootstrapTokenStore
-from pandrator.web.models import AppSetting, Artifact, AudioTake, GenerationRun
+from pandrator.web.models import AppSetting, Artifact, AudioTake, GenerationRun, Job
 from pandrator.web.workspace import BUILTIN_DEFAULTS, adapt_runtime_settings
 
 
@@ -120,7 +120,10 @@ class WebParityWorkspaceTests(unittest.TestCase):
         self.assertEqual("en", payload["settings"]["language"])
 
     def test_web_setting_names_are_adapted_to_runtime_handler_contracts(self):
-        tts = adapt_runtime_settings("tts", {"model": "model-a", "voice": "speaker-a", "speed": 1.1})
+        tts = adapt_runtime_settings("tts", {"service": "kokoro", "model": "model-a", "voice": "speaker-a", "speed": 1.1})
+        self.assertEqual("Kokoro", tts["service"])
+        self.assertEqual("Kokoro", tts["tts_service"])
+        self.assertEqual("http://127.0.0.1:8880", tts["kokoro_base_url"])
         self.assertEqual("model-a", tts["xtts_model"])
         self.assertEqual("speaker-a", tts["speaker"])
         self.assertEqual(1.1, tts["speed"])
@@ -239,6 +242,25 @@ class WebParityWorkspaceTests(unittest.TestCase):
         self.assertEqual(202, started.status_code, started.get_json())
         paused = self.client.post(f"/api/v1/generation-runs/{started.get_json()['id']}/pause", headers=self.headers)
         self.assertEqual("pausing", paused.get_json()["status"])
+
+    def test_latest_generation_run_includes_its_worker_error(self):
+        record = self.create_session("audiobook")
+        self.client.post(
+            f"/api/v1/sessions/{record['id']}/generation-plan",
+            json={"segments": [{"text": "A failed synthesis."}]},
+            headers=self.headers,
+        )
+        started = self.client.post(f"/api/v1/sessions/{record['id']}/generation-runs", json={}, headers=self.headers).get_json()
+        database = self.app.extensions["pandrator"]["database"]
+        with database.session() as session:
+            run = session.get(GenerationRun, started["id"])
+            job = session.get(Job, started["job_id"])
+            run.status = "failed"
+            job.status = "failed"
+            job.error_message = "The speech endpoint rejected the request."
+        latest = self.client.get(f"/api/v1/sessions/{record['id']}/generation-runs/latest").get_json()["item"]
+        self.assertEqual("failed", latest["status"])
+        self.assertEqual("The speech endpoint rejected the request.", latest["error_message"])
 
     def test_multiple_generation_take_artifacts_remain_current(self):
         record = self.create_session("audiobook")

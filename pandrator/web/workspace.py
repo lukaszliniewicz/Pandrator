@@ -24,6 +24,7 @@ from .models import (
     GenerationRun,
     GenerationSegment,
     GenerationSegmentRevision,
+    Job,
     OutcomePlan,
     OutcomePlanHistory,
     OutputAssembly,
@@ -289,6 +290,33 @@ def adapt_runtime_settings(section: str, values: dict[str, Any]) -> dict[str, An
     for web_key, runtime_key in RUNTIME_SETTING_ALIASES.get(section, {}).items():
         if runtime_key not in result and web_key in result:
             result[runtime_key] = deepcopy(result[web_key])
+    if section == "tts":
+        # Web settings persist stable service IDs (for example ``kokoro``), while
+        # the legacy synthesis boundary still dispatches on canonical labels.
+        # Adapt both current and already-frozen run snapshots at that boundary.
+        from pandrator.logic import tts_handler
+
+        selected_value = str(result.get("service") or result.get("tts_service") or "").strip()
+        selected = tts_handler.get_service_config(result, selected_value) if selected_value else None
+        canonical = tts_handler.get_first_class_service_name(selected_value)
+        if canonical:
+            result["service"] = canonical
+            result["tts_service"] = canonical
+            if selected:
+                base_url = str(selected.get("api_base") or "").strip().rstrip("/")
+                base_url_keys = {
+                    "XTTS": "xtts_base_url",
+                    "VoxCPM": "voxcpm_base_url",
+                    "FishS2": "fishs2_base_url",
+                    "Voxtral": "voxtral_base_url",
+                    "Kokoro": "kokoro_base_url",
+                    "Silero": "silero_base_url",
+                    "Chatterbox": "chatterbox_base_url",
+                    "Qwen3 TTS": "kobold_qwen_base_url",
+                    "Magpie": "magpie_base_url",
+                }
+                if base_url and canonical in base_url_keys:
+                    result.setdefault(base_url_keys[canonical], base_url)
     return result
 
 SECRET_KEYS = {"secret", "password", "api_key", "token", "access_token", "refresh_token", "credential", "credentials"}
@@ -943,7 +971,8 @@ class GenerationService:
             run = session.scalar(select(GenerationRun).where(GenerationRun.session_id == session_id).order_by(GenerationRun.created_at.desc()))
             if run is None:
                 return None
-            return {"id": run.id, "job_id": run.job_id, "status": run.status, "pause_requested": run.pause_requested, "cancel_requested": run.cancel_requested, "settings_hash": run.settings_hash, "created_at": run.created_at.isoformat(), "updated_at": run.updated_at.isoformat()}
+            job = session.get(Job, run.job_id) if run.job_id else None
+            return {"id": run.id, "job_id": run.job_id, "status": run.status, "pause_requested": run.pause_requested, "cancel_requested": run.cancel_requested, "settings_hash": run.settings_hash, "error_message": job.error_message if job else None, "created_at": run.created_at.isoformat(), "updated_at": run.updated_at.isoformat()}
 
     @staticmethod
     def _assembly_payload(record: OutputAssembly) -> dict[str, Any]:

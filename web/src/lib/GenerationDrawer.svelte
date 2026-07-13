@@ -193,7 +193,13 @@
     }
   }
 
-  onMount(() => { load(); loadRvc(); });
+  onMount(() => {
+    const refresh = () => load();
+    load();
+    loadRvc();
+    window.addEventListener('pandrator:generation-changed', refresh);
+    return () => window.removeEventListener('pandrator:generation-changed', refresh);
+  });
   $effect(() => { filter; load(); });
   $effect(() => {
     if (timer) clearTimeout(timer);
@@ -253,6 +259,10 @@
           <div class="border-b border-amber-400/30 bg-amber-500/10 px-4 py-2 text-xs text-amber-700">The output is out of date because segment order, chapter boundaries, silence, or selected takes changed. Reassemble to apply the changes.</div>
         {:else if assembly?.status === 'failed'}
           <div class="border-b border-red-400/30 bg-red-500/10 px-4 py-2 text-xs text-red-600">Assembly failed: {assembly.error_message}</div>
+        {/if}
+
+        {#if run?.status === 'failed'}
+          <div class="border-b border-red-400/30 bg-red-500/10 px-4 py-2 text-xs text-red-600">Generation failed: {run.error_message || 'Open Activity & logs for details, then retry.'}</div>
         {/if}
 
         <div class="border-b border-[var(--line)] px-3 py-2">
