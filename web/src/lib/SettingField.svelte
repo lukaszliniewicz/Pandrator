@@ -4,9 +4,11 @@
 
   let { section, keyName, value, onchange, compact = false }: { section: string; keyName: string; value: any; onchange: (value: any) => void; compact?: boolean } = $props();
   let newKey = $state('');
+  let rangeValue = $state(0);
   const choices = $derived(optionsFor(section, keyName));
   const numberMeta = $derived(numberPresentation(keyName));
   const objectEntries = $derived(Object.entries(value && typeof value === 'object' && !Array.isArray(value) ? value : {}));
+  $effect(() => { rangeValue = Number(value ?? 0); });
 
   function cast(raw: string) {
     if (typeof value === 'number') return Number(raw);
@@ -43,7 +45,7 @@
       {#each choices as item}<option value={item.value}>{item.label}</option>{/each}
     </select>
   {:else if typeof value === 'number' && numberMeta.range}
-    <span class="field range-field"><input type="range" value={value} min={numberMeta.min} max={numberMeta.max} step={numberMeta.step} oninput={(event) => onchange(Number(event.currentTarget.value))}/><output>{value}{numberMeta.suffix ?? ''}</output></span>
+    <span class="field range-field"><input type="range" bind:value={rangeValue} min={numberMeta.min} max={numberMeta.max} step={numberMeta.step} oninput={() => onchange(Number(rangeValue))}/><output>{value}{numberMeta.suffix ?? ''}</output></span>
   {:else if typeof value === 'number'}
     <input class="field" type="number" value={value} min={numberMeta.min} max={numberMeta.max} step={numberMeta.step ?? 'any'} oninput={(event) => onchange(Number(event.currentTarget.value))}/>
   {:else if value && typeof value === 'object'}

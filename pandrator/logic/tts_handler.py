@@ -14,6 +14,8 @@ from ..constants import (
     KOKORO_NAMED_VOICE_META,
     KOKORO_OPENAI_ALIAS_VOICES,
     KOKORO_PREFIX_LANGUAGE_CODES,
+    MAGPIE_TTS_MODELS,
+    SILERO_LANGUAGES,
     magpie_voice_catalog,
 )
 
@@ -493,15 +495,33 @@ def _default_service_configs() -> list[dict[str, object]]:
         ("chatterbox", CHATTERBOX_API_BASE_URL),
         ("kobold_qwen", KOBOLD_QWEN_API_BASE_URL),
     ]
-    configs: list[dict[str, object]] = [
-        {
+    local_catalogues: dict[str, tuple[list[str], str, list[str], str, bool]] = {
+        "xtts": ([XTTS_DEFAULT_MODEL], XTTS_DEFAULT_MODEL, [], "", False),
+        "voxcpm": (list(VOXCPM_TTS_MODELS), VOXCPM_DEFAULT_MODEL, [VOXCPM_DEFAULT_VOICE], VOXCPM_DEFAULT_VOICE, False),
+        "fishs2": ([FISHS2_DEFAULT_MODEL, *FISHS2_MODEL_ALIASES], FISHS2_DEFAULT_MODEL, [FISHS2_DEFAULT_VOICE], FISHS2_DEFAULT_VOICE, False),
+        "voxtral": (list(VOXTRAL_TTS_MODELS), VOXTRAL_DEFAULT_MODEL, [VOXTRAL_DEFAULT_VOICE], VOXTRAL_DEFAULT_VOICE, True),
+        "kokoro": (list(KOKORO_TTS_MODELS), KOKORO_DEFAULT_MODEL, list(KOKORO_TTS_VOICES), KOKORO_DEFAULT_VOICE, True),
+        "magpie": (list(MAGPIE_TTS_MODELS), MAGPIE_TTS_MODELS[0], magpie_voice_catalog(), magpie_voice_catalog()[0], True),
+        "silero": ([str(item["code"]) for item in SILERO_LANGUAGES], str(SILERO_LANGUAGES[0]["code"]), [], "", True),
+        "chatterbox": (list(CHATTERBOX_TTS_MODELS), CHATTERBOX_DEFAULT_MODEL, [], "", False),
+        "kobold_qwen": (list(KOBOLD_QWEN_TTS_MODELS), KOBOLD_QWEN_DEFAULT_MODEL, list(KOBOLD_QWEN_TTS_VOICES), KOBOLD_QWEN_DEFAULT_VOICE, True),
+    }
+    configs: list[dict[str, object]] = []
+    for service_id, api_base in local_services:
+        models, default_model, voices, default_voice, prebuilt = local_catalogues[service_id]
+        configs.append({
             "id": service_id,
             "name": FIRST_CLASS_SERVICE_NAMES[service_id],
             "kind": "local",
             "api_base": api_base,
-        }
-        for service_id, api_base in local_services
-    ]
+            "models": models,
+            "default_model": default_model,
+            "voices": voices,
+            "default_voice": default_voice,
+            "voice_catalogues": {default_model: voices} if default_model else {},
+            "default_voices": {default_model: default_voice} if default_model and default_voice else {},
+            PREBUILT_VOICE_PROVIDER_FIELD: prebuilt,
+        })
     configs.extend(
         [
             {

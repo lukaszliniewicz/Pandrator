@@ -72,7 +72,7 @@ export function numberPresentation(key: string): NumberPresentation {
   return meta[key] ?? { min: 0, step: 'any', range: RANGE_KEYS.has(key) };
 }
 
-const ACRONYMS: Record<string, string> = { stt: 'STT', tts: 'TTS', rvc: 'RVC', vad: 'VAD', llm: 'LLM', pdf: 'PDF', ocr: 'OCR', cps: 'CPS', dpi: 'DPI', url: 'URL', id: 'ID', fp16: 'FP16' };
+const ACRONYMS: Record<string, string> = { stt: 'STT', tts: 'TTS', rvc: 'RVC', vad: 'VAD', llm: 'LLM', pdf: 'PDF', ocr: 'OCR', cps: 'CPS', dpi: 'DPI', url: 'URL', id: 'ID', fp16: 'FP16', gpt: 'GPT', wav: 'WAV', api: 'API', gpu: 'GPU', dtw: 'DTW', rnnt: 'RNNT', tdt: 'TDT', srt: 'SRT', ass: 'ASS', m4b: 'M4B' };
 
 export function settingLabel(key: string): string {
   return key.split('_').map((word) => ACRONYMS[word.toLowerCase()] ?? word.charAt(0).toUpperCase() + word.slice(1)).join(' ')
