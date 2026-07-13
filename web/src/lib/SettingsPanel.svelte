@@ -1,6 +1,7 @@
 <script lang="ts">
   import { ChevronDown, ExternalLink, RotateCcw, Save } from '@lucide/svelte';
   import { api } from './api';
+  import SettingField from './SettingField.svelte';
 
   let { sessionId, section, title, description = '' }: { sessionId: string; section: string; title: string; description?: string } = $props();
   let payload = $state<any>(null);
@@ -14,7 +15,6 @@
   const sectionName = (value: string) => ({ tts: 'TTS', stt: 'STT', rvc: 'RVC' } as Record<string, string>)[value] ?? value.replaceAll('_', ' ');
   const applicable = $derived(entries.filter(([key]) => { if (section !== 'tts') return true; if (providerSetting(key)) return false; const service = String(value('service', payload?.effective?.service ?? '')).toLowerCase(); if (key.startsWith('voxcpm_')) return service.includes('voxcpm'); if (key.startsWith('fishs2_')) return service.includes('fish'); if (key.startsWith('voxtral_')) return service.includes('voxtral'); if (key.startsWith('chatterbox_')) return service.includes('chatterbox'); if (key.startsWith('xtts_') || ['temperature', 'length_penalty', 'repetition_penalty', 'top_k', 'top_p', 'do_sample', 'num_beams', 'enable_text_splitting', 'stream_chunk_size', 'gpt_cond_len', 'gpt_cond_chunk_len', 'max_ref_len', 'sound_norm_refs', 'overlap_wav_len'].includes(key)) return service.includes('xtts'); if (key.startsWith('openai_audio_')) return service.includes('openai') || service.includes('gemini') || service.includes('custom'); return true; }));
   const visible = $derived(applicable.filter(([key]) => advanced || (common[section] ?? []).includes(key)));
-  const label = (key: string) => key.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
   const value = (key: string, fallback: any) => Object.prototype.hasOwnProperty.call(override, key) ? override[key] : fallback;
   const set = (key: string, next: any) => override = { ...override, [key]: next };
 
@@ -32,18 +32,10 @@
   {#if payload}
     <div class="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
       {#each visible as [key, fallback]}
-        <label class="text-xs font-semibold">{label(key)}
-          {#if typeof fallback === 'boolean'}
-            <span class="mt-2 flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2.5"><input type="checkbox" checked={value(key, fallback)} onchange={(event) => set(key, (event.currentTarget as HTMLInputElement).checked)} class="accent-[var(--accent)]"/><span class="font-normal">{value(key, fallback) ? 'Enabled' : 'Disabled'}</span></span>
-          {:else if typeof fallback === 'number'}
-            <input type="number" step="any" value={value(key, fallback)} oninput={(event) => set(key, Number((event.currentTarget as HTMLInputElement).value))} class="field"/>
-          {:else if typeof fallback === 'object'}
-            <textarea rows="3" value={JSON.stringify(value(key, fallback), null, 2)} onblur={(event) => { try { set(key, JSON.parse((event.currentTarget as HTMLTextAreaElement).value)); } catch { message = `${label(key)} contains invalid JSON.`; } }} class="field font-mono text-xs"></textarea>
-          {:else}
-            <input value={value(key, fallback) ?? ''} oninput={(event) => set(key, (event.currentTarget as HTMLInputElement).value)} class="field"/>
-          {/if}
+        <div>
+          <SettingField {section} keyName={key} value={value(key, fallback)} onchange={(next) => set(key, next)} compact/>
           {#if Object.prototype.hasOwnProperty.call(override, key)}<span class="mt-1 block text-[.65rem] text-[var(--accent)]">Session override</span>{:else}<span class="muted mt-1 block text-[.65rem]">Inherited</span>{/if}
-        </label>
+        </div>
       {/each}
     </div>
     {#if applicable.length > (common[section]?.length ?? 0)}<button onclick={() => advanced = !advanced} class="muted mt-5 flex items-center gap-1 text-xs font-semibold"><ChevronDown class={advanced ? 'rotate-180' : ''} size={14}/>{advanced ? 'Hide' : 'Show'} advanced settings</button>{/if}
@@ -51,4 +43,4 @@
   {#if message}<p class="mt-4 text-xs" class:text-red-500={message.includes('invalid') || message.includes('changed')}>{message}</p>{/if}
 </section>
 
-<style>.tool{display:flex;align-items:center;gap:.35rem;border:1px solid var(--line);border-radius:.65rem;padding:.5rem .65rem;font-size:.7rem;font-weight:700}.field{margin-top:.45rem;width:100%;border:1px solid var(--line);border-radius:.7rem;background:var(--paper);padding:.65rem;font-weight:400}</style>
+<style>.tool{display:flex;align-items:center;gap:.35rem;border:1px solid var(--line);border-radius:.65rem;padding:.5rem .65rem;font-size:.7rem;font-weight:700}</style>

@@ -16,6 +16,7 @@
   import { onMount } from 'svelte';
   import { api } from './api';
   import WaveformPeaks from './WaveformPeaks.svelte';
+  import TtsServicesModal from './TtsServicesModal.svelte';
 
   let { sessionId }: { sessionId: string } = $props();
   let mode = $state<'collapsed' | 'half' | 'full'>('collapsed');
@@ -34,6 +35,7 @@
   let rvcF0 = $state('rmvpe');
   let rvcIndexRate = $state(0.3);
   let showRvc = $state(false);
+  let ttsServicesOpen = $state(false);
 
   const marked = $derived(payload.items.filter((item: any) => item.marked).map((item: any) => item.id));
 
@@ -238,7 +240,7 @@
             <Sparkles size={14} /> {assembly?.status === 'stale' ? 'Reassemble output' : 'Assemble output'}
           </button>
           <a href={`/sessions/${sessionId}/output`} class="action">Output settings</a>
-          <a href="/providers?tab=tts" class="action">Speech services</a>
+          <button onclick={() => ttsServicesOpen = true} class="action">Speech services</button>
         </div>
 
         {#if assembly?.status === 'completed' && assembly.artifact_id}
@@ -320,6 +322,7 @@
     {/if}
   </aside>
 {/if}
+{#if ttsServicesOpen}<TtsServicesModal onclose={() => ttsServicesOpen=false}/>{/if}
 
 <style>
   .generation-drawer{height:3.9rem;transition:height .18s ease}.generation-drawer.half{height:min(52vh,38rem)}.generation-drawer.full{height:calc(100vh - 1.5rem)}

@@ -407,16 +407,30 @@ class WorkspaceSettingsService:
     def resolve(self, session_id: str, sections: list[str] | None = None, run_override: dict[str, Any] | None = None) -> tuple[dict[str, Any], str]:
         requested = sections or list(SETTING_SECTIONS)
         override = run_override or {}
+        snapshots = {section: self.get(session_id, section) for section in requested}
         resolved = {
-            section: _merge(self.get(session_id, section)["effective"], override.get(section, {}))
+            section: _merge(snapshots[section]["effective"], override.get(section, {}))
             for section in requested
         }
         if "tts" in resolved:
             with self.database.session() as session:
                 connections = session.get(AppSetting, "services.tts")
                 connection_value = connections.value_json if connections and isinstance(connections.value_json, dict) else {}
-            if connection_value:
-                resolved["tts"] = _merge(resolved["tts"], connection_value)
+            from pandrator.logic import tts_handler
+
+            snapshot = snapshots["tts"]
+            selection_seed = _merge(snapshot["builtin"], snapshot["global"], connection_value, snapshot["override"], override.get("tts", {}))
+            selected = tts_handler.get_service_config(selection_seed, str(selection_seed.get("service") or "XTTS"))
+            provider_defaults = selected.get("settings") if selected and isinstance(selected.get("settings"), dict) else {}
+            resolved["tts"] = _merge(snapshot["builtin"], snapshot["global"], connection_value, provider_defaults, snapshot["override"], override.get("tts", {}))
+            if selected:
+                model = str(resolved["tts"].get("model") or selected.get("default_model") or "")
+                default_voices = selected.get("default_voices") if isinstance(selected.get("default_voices"), dict) else {}
+                voice = str(resolved["tts"].get("voice") or default_voices.get(model) or selected.get("default_voice") or "")
+                if model:
+                    resolved["tts"]["model"] = model
+                if voice:
+                    resolved["tts"]["voice"] = voice
         safe = _secret_free(resolved)
         return safe, stable_hash(safe)
 

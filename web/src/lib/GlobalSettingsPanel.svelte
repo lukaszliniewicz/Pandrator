@@ -1,6 +1,8 @@
 <script lang="ts">
   import { ExternalLink, Save } from '@lucide/svelte';
   import { api } from './api';
+  import SettingField from './SettingField.svelte';
+  import { GLOBAL_TTS_KEYS } from './settings-fields';
 
   let { section }: { section: string } = $props();
   let payload = $state<any>(null);
@@ -13,17 +15,9 @@
     if (section === 'output' && key === 'cover_artifact_id') return false;
     if (section !== 'tts') return true;
     if (providerSetting(key)) return false;
-    const service = String(value.service ?? payload?.effective?.service ?? '').toLowerCase();
-    if (key.startsWith('voxcpm_')) return service.includes('voxcpm');
-    if (key.startsWith('fishs2_')) return service.includes('fish');
-    if (key.startsWith('voxtral_')) return service.includes('voxtral');
-    if (key.startsWith('chatterbox_')) return service.includes('chatterbox');
-    if (key.startsWith('xtts_')) return service.includes('xtts');
-    if (key.startsWith('openai_audio_')) return service.includes('openai') || service.includes('gemini') || service.includes('custom');
-    return true;
+    return GLOBAL_TTS_KEYS.has(key);
   }).sort(([a], [b]) => a.localeCompare(b)));
 
-  const label = (key: string) => key.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
   const current = (key: string, fallback: any) => Object.prototype.hasOwnProperty.call(value, key) ? value[key] : fallback;
   const set = (key: string, next: any) => value = { ...value, [key]: next };
 
@@ -56,21 +50,9 @@
   {#if payload}
     <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
       {#each entries as [key, fallback]}
-        <label class="text-xs font-semibold">{label(key)}
-          {#if typeof fallback === 'boolean'}
-            <span class="field flex items-center gap-2"><input type="checkbox" checked={current(key, fallback)} onchange={(event) => set(key, (event.currentTarget as HTMLInputElement).checked)}/>{current(key, fallback) ? 'Enabled' : 'Disabled'}</span>
-          {:else if typeof fallback === 'number'}
-            <input class="field" type="number" step="any" value={current(key, fallback)} oninput={(event) => set(key, Number((event.currentTarget as HTMLInputElement).value))}/>
-          {:else if typeof fallback === 'object'}
-            <textarea class="field font-mono text-xs" rows="2" value={JSON.stringify(current(key, fallback), null, 2)} onblur={(event) => { try { set(key, JSON.parse((event.currentTarget as HTMLTextAreaElement).value)); } catch { message = 'Invalid JSON.'; } }}></textarea>
-          {:else}
-            <input class="field" value={current(key, fallback) ?? ''} oninput={(event) => set(key, (event.currentTarget as HTMLInputElement).value)}/>
-          {/if}
-        </label>
+        <SettingField {section} keyName={key} value={current(key, fallback)} onchange={(next) => set(key, next)} compact/>
       {/each}
     </div>
     <div class="mt-4 flex items-center gap-3"><button onclick={save} disabled={saving} class="btn btn-sm btn-primary"><Save size={13}/>{saving ? 'Saving…' : 'Save global defaults'}</button>{#if message}<span class="muted text-xs">{message}</span>{/if}</div>
   {/if}
 </div>
-
-<style>.field{margin-top:.35rem;width:100%;border:1px solid var(--line);border-radius:.65rem;background:var(--paper);padding:.55rem;font-weight:400}</style>

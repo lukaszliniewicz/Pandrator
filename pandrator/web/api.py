@@ -34,7 +34,7 @@ from .maintenance import apply_retention
 from .models import AgentRun, AgentStep, AppSetting, AppSettingHistory, Artifact, ArtifactEdge, Document, DocumentRevision, Job, Provider, ProviderModel, Segment, SessionRecord, SourceRecord, TimedWord, TrainingRun, Voice, VoiceSample, new_id, utcnow
 from .openapi import build_openapi_document
 from .parity_registry import build_registry
-from .schemas import AgentRunCreateRequest, BootstrapRequest, BundleExportRequest, BundleImportRequest, ChunkUploadInitialize, GenerationPlanCreate, GenerationSegmentUpdate, GenerationStartRequest, JobCreate, LoginRequest, ModelCreate, ModelUpdate, OutcomePlanUpdate, OutputAssemblyCreateRequest, PdfEditRequest, ProviderCreate, ProviderTestRequest, ProviderUpdate, RvcConvertRequest, RvcModelUploadRequest, SessionCreate, SessionSettingsUpdate, SessionUpdate, SettingUpdate, SourceAttachRequest, SourceReuseRequest, SourceUpdateRequest, SourceUrlRequest, SubtitleReviewRequest, TokenCreateRequest, TrainingCreateRequest, TtsEndpointDiscoveryRequest, VoiceCreate, VoiceTranscriptReview
+from .schemas import AgentRunCreateRequest, BootstrapRequest, BundleExportRequest, BundleImportRequest, ChunkUploadInitialize, GenerationPlanCreate, GenerationSegmentUpdate, GenerationStartRequest, JobCreate, LoginRequest, ModelCreate, ModelUpdate, OutcomePlanUpdate, OutputAssemblyCreateRequest, PdfEditRequest, ProviderCreate, ProviderTestRequest, ProviderUpdate, RvcConvertRequest, RvcModelUploadRequest, SessionCreate, SessionSettingsUpdate, SessionUpdate, SettingUpdate, SourceAttachRequest, SourceReuseRequest, SourceUpdateRequest, SourceUrlRequest, SubtitleReviewRequest, TokenCreateRequest, TrainingCreateRequest, TtsEndpointDiscoveryRequest, TtsVoicePreviewRequest, VoiceCreate, VoiceTranscriptReview
 from .sessions import RevisionConflict, SessionService
 from .subtitle_review import SubtitleReviewService
 from .workflows import WorkflowService
@@ -323,7 +323,7 @@ def create_app(
                 connection_value = {"provider_configs": list(default_value["provider_configs"])}
             revision = connections.revision if connections else 0
             default_revision = defaults.revision if defaults else 0
-        response = jsonify({"value": connection_value, "revision": revision, "default_value": default_value, "default_service": str(default_value.get("service") or BUILTIN_DEFAULTS["tts"]["service"]), "default_revision": default_revision, "services": tts_handler.get_service_configs({**default_value, **connection_value}), "profiles": list_tts_provider_profiles()})
+        response = jsonify({"value": connection_value, "revision": revision, "default_value": default_value, "default_service": str(default_value.get("service") or BUILTIN_DEFAULTS["tts"]["service"]), "default_revision": default_revision, "builtin_defaults": BUILTIN_DEFAULTS["tts"], "services": tts_handler.get_service_configs({**default_value, **connection_value}), "profiles": list_tts_provider_profiles()})
         response.headers["ETag"] = f'"{revision}"'
         return response
 
@@ -335,6 +335,43 @@ def create_app(
         payload = TtsEndpointDiscoveryRequest.model_validate(request.get_json(silent=True) or {})
         result = discover_tts_endpoint(payload.base_url)
         return jsonify(result), 200 if result.get("success") else 422
+
+    @app.post("/api/v1/services/tts/<service_id>/preview")
+    @require_auth
+    def tts_voice_preview(service_id: str):
+        from pandrator.logic import tts_handler
+
+        payload = TtsVoicePreviewRequest.model_validate(request.get_json(silent=True) or {})
+        with database.session() as db_session:
+            connections = db_session.get(AppSetting, "services.tts")
+            defaults = db_session.get(AppSetting, "defaults.tts")
+            connection_value = dict(connections.value_json or {}) if connections and isinstance(connections.value_json, dict) else {}
+            default_value = dict(defaults.value_json or {}) if defaults and isinstance(defaults.value_json, dict) else {}
+        catalogue_settings = {**default_value, **connection_value}
+        service = tts_handler.get_service_config(catalogue_settings, service_id)
+        if service is None:
+            return error_response("not_found", "TTS service not found.", 404)
+        model = payload.model or str(service.get("default_model") or "")
+        default_voices = service.get("default_voices") if isinstance(service.get("default_voices"), dict) else {}
+        voice = payload.voice or str(default_voices.get(model) or service.get("default_voice") or "")
+        service_name = "OpenAI Compatible" if service.get("is_custom") else str(service.get("name") or service_id)
+        settings = {
+            **BUILTIN_DEFAULTS["tts"],
+            **default_value,
+            **(service.get("settings") if isinstance(service.get("settings"), dict) else {}),
+            **connection_value,
+            "service": service_name,
+            "model": model,
+            "xtts_model": model,
+            "voice": voice,
+            "speaker": voice,
+            "preview_service_id": str(service.get("id") or service_id),
+            "preview_api_base": str(service.get("api_base") or ""),
+        }
+        if service.get("is_custom"):
+            settings["openai_audio_endpoint"] = str(service.get("id") or service_id)
+        job = jobs.enqueue("tts.preview", {"text": payload.text, "settings": settings}, resource_keys=[f"service:tts:{service_id}"])
+        return jsonify(_job_payload(job)), 202
 
     @app.get("/api/v1/sessions")
     @require_auth

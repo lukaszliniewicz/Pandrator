@@ -1616,6 +1616,34 @@
         "title": "TtsEndpointDiscoveryRequest",
         "type": "object"
       },
+      "TtsVoicePreviewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "model": {
+            "default": "",
+            "maxLength": 300,
+            "title": "Model",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          },
+          "voice": {
+            "default": "",
+            "maxLength": 300,
+            "title": "Voice",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "TtsVoicePreviewRequest",
+        "type": "object"
+      },
       "VoiceCreate": {
         "additionalProperties": false,
         "properties": {
@@ -2211,6 +2239,26 @@
         "responses": {
           "200": {
             "description": "Discovered endpoint"
+          }
+        }
+      }
+    },
+    "/api/v1/services/tts/{serviceId}/preview": {
+      "post": {
+        "operationId": "previewTtsVoice",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TtsVoicePreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Voice preview queued"
           }
         }
       }

@@ -532,6 +532,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/services/tts/{serviceId}/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["previewTtsVoice"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/session-bundles/import": {
         parameters: {
             query?: never;
@@ -1845,6 +1861,21 @@ export interface components {
             /** Base Url */
             base_url: string;
         };
+        /** TtsVoicePreviewRequest */
+        TtsVoicePreviewRequest: {
+            /**
+             * Model
+             * @default
+             */
+            model: string;
+            /** Text */
+            text: string;
+            /**
+             * Voice
+             * @default
+             */
+            voice: string;
+        };
         /** VoiceCreate */
         VoiceCreate: {
             /**
@@ -2671,6 +2702,28 @@ export interface operations {
         responses: {
             /** @description Discovered endpoint */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    previewTtsVoice: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TtsVoicePreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Voice preview queued */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };

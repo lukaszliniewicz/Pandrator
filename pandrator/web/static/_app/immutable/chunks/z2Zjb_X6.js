@@ -1,0 +1,1 @@
+import{P as e,F as a,i as t,Q as l,u}from"./jYowihrx.js";function c(n){t===null&&e(),l&&t.l!==null?i(t).m.push(n):a(()=>{const o=u(n);if(typeof o=="function")return o})}function f(n){t===null&&e(),c(()=>()=>u(n))}function i(n){var o=n.l;return o.u??={a:[],b:[],m:[]}}export{f as a,c as o};

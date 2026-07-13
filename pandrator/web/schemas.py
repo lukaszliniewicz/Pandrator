@@ -250,6 +250,12 @@ class TtsEndpointDiscoveryRequest(StrictModel):
     base_url: str = Field(min_length=8, max_length=2048)
 
 
+class TtsVoicePreviewRequest(StrictModel):
+    text: str = Field(min_length=1, max_length=1000)
+    model: str = Field(default="", max_length=300)
+    voice: str = Field(default="", max_length=300)
+
+
 class AgentRunCreateRequest(StrictModel):
     source_artifact_id: str
     settings: dict[str, Any] = Field(default_factory=dict)
@@ -278,6 +284,7 @@ SCHEMA_MODELS = {
         SubtitleReviewRequest,
         VoiceCreate,
         VoiceTranscriptReview,
+        TtsVoicePreviewRequest,
         RvcModelUploadRequest,
         RvcConvertRequest,
         TrainingCreateRequest,

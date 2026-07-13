@@ -59,6 +59,7 @@ class WebParityWorkspaceTests(unittest.TestCase):
     def test_global_defaults_endpoint_exposes_builtins_and_revisioned_values(self):
         services = self.client.get("/api/v1/services/tts").get_json()
         self.assertEqual("XTTS", services["default_service"])
+        self.assertEqual(3, services["builtin_defaults"]["max_attempts"])
         defaults = self.client.get("/api/v1/defaults/subtitles")
         self.assertEqual(200, defaults.status_code, defaults.get_json())
         self.assertEqual(2, defaults.get_json()["builtin"]["max_lines"])
@@ -71,6 +72,34 @@ class WebParityWorkspaceTests(unittest.TestCase):
         effective = self.client.get("/api/v1/defaults/subtitles").get_json()
         self.assertEqual(52, effective["effective"]["max_chars_per_line"])
         self.assertEqual(2, effective["effective"]["max_lines"])
+
+    def test_tts_provider_defaults_fit_between_global_and_session_overrides(self):
+        record = self.create_session()
+        database = self.app.extensions["pandrator"]["database"]
+        with database.session() as session:
+            session.add(AppSetting(key="defaults.tts", value_json={"service": "Kokoro", "speed": 0.9}))
+            session.add(AppSetting(key="services.tts", value_json={"provider_configs": [{"id": "kokoro", "name": "Kokoro", "api_base": "http://127.0.0.1:8880", "default_model": "kokoro", "default_voice": "af_bella", "default_voices": {"kokoro": "af_bella"}, "settings": {"speed": 0.8, "max_attempts": 4}}]}))
+        inherited = self.client.post(f"/api/v1/sessions/{record['id']}/settings/resolve", json={"sections": ["tts"]}, headers=self.headers).get_json()["value"]["tts"]
+        self.assertEqual(0.8, inherited["speed"])
+        self.assertEqual(4, inherited["max_attempts"])
+        self.assertEqual("af_bella", inherited["voice"])
+        saved = self.client.put(f"/api/v1/sessions/{record['id']}/settings/tts", json={"value": {"speed": 1.1}}, headers={**self.headers, "If-Match": '"0"'})
+        self.assertEqual(200, saved.status_code, saved.get_json())
+        resolved = self.client.post(f"/api/v1/sessions/{record['id']}/settings/resolve", json={"sections": ["tts"], "overrides": {"tts": {"speed": 1.2}}}, headers=self.headers).get_json()["value"]["tts"]
+        self.assertEqual(1.2, resolved["speed"])
+
+    def test_tts_voice_preview_is_a_durable_job_with_selected_catalogue_values(self):
+        response = self.client.post(
+            "/api/v1/services/tts/kokoro/preview",
+            json={"text": "A short preview.", "model": "kokoro", "voice": "af_heart"},
+            headers=self.headers,
+        )
+        self.assertEqual(202, response.status_code, response.get_json())
+        payload = response.get_json()["payload_json"]
+        self.assertEqual("A short preview.", payload["text"])
+        self.assertEqual("Kokoro", payload["settings"]["service"])
+        self.assertEqual("kokoro", payload["settings"]["model"])
+        self.assertEqual("af_heart", payload["settings"]["voice"])
 
     def test_web_setting_names_are_adapted_to_runtime_handler_contracts(self):
         tts = adapt_runtime_settings("tts", {"model": "model-a", "voice": "speaker-a", "speed": 1.1})

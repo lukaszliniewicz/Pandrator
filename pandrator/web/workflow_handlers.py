@@ -83,7 +83,41 @@ class WorkflowHandlers:
             "generation.run": self.run_generation,
             "generation.assemble": self.assemble_generation_output,
             "audio.waveform": self.generate_waveform,
+            "tts.preview": self.preview_tts_voice,
         }
+
+    def preview_tts_voice(self, payload, progress, cancel_event):
+        """Generate a short managed preview without mutating a session plan."""
+        from pandrator.logic import tts_handler
+
+        text = str(payload.get("text") or "").strip()
+        settings = dict(payload.get("settings") or {})
+        if not text:
+            raise ValueError("Preview text is required.")
+        if cancel_event.is_set():
+            return {}
+        progress(0.1, "Requesting voice preview")
+        urls = self._tts_urls(settings)
+        service_id = str(settings.get("preview_service_id") or "").lower()
+        api_base = str(settings.get("preview_api_base") or "").strip()
+        url_key = {
+            "xtts": "xtts_base_url", "voxcpm": "voxcpm_base_url", "fishs2": "fishs2_base_url",
+            "voxtral": "voxtral_base_url", "kokoro": "kokoro_base_url", "silero": "silero_base_url",
+            "chatterbox": "chatterbox_base_url", "kobold_qwen": "kobold_qwen_base_url", "magpie": "magpie_base_url",
+        }.get(service_id)
+        if url_key and api_base:
+            urls[url_key] = api_base
+        audio = tts_handler.text_to_audio(text, settings, max_attempts=1, **urls)
+        if audio is None:
+            raise RuntimeError("The speech service did not return preview audio.")
+        target_dir = self.paths.temporary / "tts-previews"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / f"preview-{new_id()}.wav"
+        exported = audio.export(target, format="wav")
+        exported.close()
+        artifact = self.artifacts.register(target, kind="audio", role="tts_voice_preview", settings=settings, metadata={"service": settings.get("service"), "model": settings.get("model"), "voice": settings.get("voice")})
+        progress(1.0, "Preview ready")
+        return {"artifact_id": artifact.id, "duration_ms": len(audio)}
 
     @staticmethod
     def _validate_download_url(raw_url: str) -> str:

@@ -102,6 +102,7 @@ def build_openapi_document() -> dict:
         "/api/v1/defaults/{section}": {"get": operation("getGlobalDefaults", "Built-in and configured global defaults")},
         "/api/v1/services/tts": {"get": operation("listTtsServices", "TTS readiness and catalogues")},
         "/api/v1/services/tts/discover": {"post": operation("discoverTtsService", "Discovered endpoint", "TtsEndpointDiscoveryRequest")},
+        "/api/v1/services/tts/{serviceId}/preview": {"post": operation("previewTtsVoice", "Voice preview queued", "TtsVoicePreviewRequest", "202")},
         "/api/v1/sessions/{sessionId}/settings/{section}": {
             "get": operation("getSessionSettings", "Effective settings and inheritance"),
             "put": operation("putSessionSettings", "Session override saved", "SessionSettingsUpdate"),
