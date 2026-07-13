@@ -312,7 +312,7 @@ BACKEND_COMPONENT_KEYS = (
     "magpie",
 )
 
-LINUX_READY_BACKEND_KEYS = ("kokoro", "chatterbox", "kobold_qwen", "fishs2")
+LINUX_READY_BACKEND_KEYS = ("kokoro", "chatterbox", "kobold_qwen", "fishs2", "rvc")
 
 LINUX_DEFERRED_INSTALL_COMPONENT_KEYS = tuple(
     key

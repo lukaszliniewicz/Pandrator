@@ -480,6 +480,8 @@ class InstallerArchitectureTests(unittest.TestCase):
         self.assertNotIn("chatterbox_cpu", LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
         self.assertNotIn("kobold_qwen", LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
         self.assertNotIn("kobold_qwen_cpu", LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
+        self.assertNotIn("rvc", LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
+        self.assertNotIn("rvc_cpu", LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
         self.assertIn("magpie", LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
 
     def test_chatterbox_launcher_uses_platform_launcher(self):
