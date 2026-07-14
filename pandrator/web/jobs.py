@@ -290,7 +290,13 @@ class Worker:
             self.queue.heartbeat_resources(job.id, self.worker_id)
 
         try:
-            result = handler(job.payload_json, progress, cancel_event)
+            # Handlers occasionally create child domain records (for example a
+            # GenerationRun) while still executing inside this durable job.
+            # Pass the owning job ID as internal context so those records can
+            # expose accurate status, cancellation, and error information.
+            handler_payload = dict(job.payload_json or {})
+            handler_payload["_job_id"] = job.id
+            result = handler(handler_payload, progress, cancel_event)
             if cancel_event.is_set() or self.queue.should_cancel(job.id, self.worker_id):
                 agent_run_id = str(job.payload_json.get("agent_run_id") or "")
                 if agent_run_id:

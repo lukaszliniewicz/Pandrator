@@ -1033,7 +1033,7 @@ class GenerationService:
             if run is None:
                 return None
             job = session.get(Job, run.job_id) if run.job_id else None
-            return {"id": run.id, "job_id": run.job_id, "status": run.status, "pause_requested": run.pause_requested, "cancel_requested": run.cancel_requested, "settings_hash": run.settings_hash, "error_message": job.error_message if job else None, "created_at": run.created_at.isoformat(), "updated_at": run.updated_at.isoformat()}
+            return {"id": run.id, "job_id": run.job_id, "status": run.status, "progress": float(job.progress) if job else (1.0 if run.status == "completed" else 0.0), "pause_requested": run.pause_requested, "cancel_requested": run.cancel_requested, "settings_hash": run.settings_hash, "error_message": job.error_message if job else None, "created_at": run.created_at.isoformat(), "updated_at": run.updated_at.isoformat()}
 
     @staticmethod
     def _assembly_payload(record: OutputAssembly) -> dict[str, Any]:

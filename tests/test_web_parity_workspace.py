@@ -403,9 +403,11 @@ class WebParityWorkspaceTests(unittest.TestCase):
             job = session.get(Job, started["job_id"])
             run.status = "failed"
             job.status = "failed"
+            job.progress = 0.42
             job.error_message = "The speech endpoint rejected the request."
         latest = self.client.get(f"/api/v1/sessions/{record['id']}/generation-runs/latest").get_json()["item"]
         self.assertEqual("failed", latest["status"])
+        self.assertEqual(0.42, latest["progress"])
         self.assertEqual("The speech endpoint rejected the request.", latest["error_message"])
 
     def test_multiple_generation_take_artifacts_remain_current(self):

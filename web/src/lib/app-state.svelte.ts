@@ -96,7 +96,18 @@ class AppState {
   private connectEvents() {
     this.events?.close();
     this.events = new EventSource('/api/v1/events');
-    for (const type of EVENT_TYPES) this.events.addEventListener(type, () => this.scheduleRefresh());
+    for (const type of EVENT_TYPES) {
+      this.events.addEventListener(type, (event) => {
+        let detail: Record<string, unknown> = { type };
+        try {
+          detail = { type, ...JSON.parse((event as MessageEvent).data || '{}') };
+        } catch { /* retain the event type if an older server sent no JSON */ }
+        // Session-local components use this signal to refresh only their own
+        // state. The SPA stays mounted while new plans and takes appear.
+        window.dispatchEvent(new CustomEvent('pandrator:generation-changed', { detail }));
+        this.scheduleRefresh();
+      });
+    }
   }
 }
 

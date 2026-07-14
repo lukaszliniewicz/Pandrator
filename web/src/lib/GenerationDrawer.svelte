@@ -51,6 +51,7 @@
   let comparisonItem = $state<any>(null);
   let comparisonText = $state('');
   let regenerateAfterReview = $state(true);
+  let initialized = false;
 
   const marked = $derived(payload.items.filter((item: any) => item.marked).map((item: any) => item.id));
   const readingBlocks = $derived.by(() => {
@@ -83,6 +84,8 @@
         api<any>(`/sessions/${sessionId}/generation-runs/latest`),
         api<any>(`/sessions/${sessionId}/output-assemblies/latest`)
       ]);
+      const previousTotal = payload.total;
+      const previousRunId = run?.id ?? '';
       if (!reset) {
         const known = new Set(payload.items.map((item: any) => item.id));
         payload = { ...next, items: [...payload.items, ...next.items.filter((item: any) => !known.has(item.id))] };
@@ -101,6 +104,14 @@
       loadedFilter = filter;
       run = latestRun.item;
       assembly = latestAssembly.item;
+      if (
+        initialized
+        && (
+          (previousTotal === 0 && payload.total > 0)
+          || (run?.id && run.id !== previousRunId && ['queued', 'running', 'pausing'].includes(run.status))
+        )
+      ) mode = 'half';
+      initialized = true;
     } catch (caught) {
       error = caught instanceof Error ? caught.message : String(caught);
     }
@@ -333,6 +344,12 @@
         Generation
       </button>
       <span class="muted text-xs">{payload.total} segments · {run?.status ?? 'ready'}{#if assembly} · output {assembly.status}{/if}</span>
+      {#if run && ['queued', 'running', 'pausing', 'cancel_requested'].includes(run.status)}
+        <div class="run-progress" aria-label={`Generation progress ${Math.round((run.progress ?? 0) * 100)} percent`}>
+          <span style={`width:${Math.max(1, (run.progress ?? 0) * 100)}%`}></span>
+        </div>
+        <span class="muted text-[.65rem]">{Math.round((run.progress ?? 0) * 100)}%</span>
+      {/if}
       <div class="ml-auto flex flex-wrap gap-2">
         {#if !run || ['completed', 'failed', 'canceled'].includes(run.status)}
           <button onclick={() => start()} class="action primary"><Play size={14} /> Start</button>
@@ -497,6 +514,7 @@
 
 <style>
   .generation-drawer{height:3.9rem;border:1px solid var(--line);background:var(--paper-strong);box-shadow:0 18px 55px color-mix(in srgb,var(--ink) 18%,transparent);transition:height .18s ease}.generation-drawer.half{height:min(52vh,38rem)}.generation-drawer.full{height:calc(100vh - 1.5rem)}
+  .run-progress{height:.34rem;width:min(9rem,18vw);overflow:hidden;border-radius:999px;background:var(--line)}.run-progress span{display:block;height:100%;border-radius:inherit;background:var(--accent);transition:width .2s ease}
   .comparison-modal{border:1px solid var(--line);background:var(--paper-strong);box-shadow:0 22px 70px rgba(0,0,0,.25)}
   .action{display:flex;align-items:center;gap:.35rem;border:1px solid var(--line);border-radius:.55rem;padding:.4rem .6rem;font-size:.7rem;font-weight:700}.action.primary{background:var(--action-bg);color:white}.action.primary:hover{background:var(--action-hover)}.action:disabled{opacity:.35}
   .icon-action{padding:.42rem}

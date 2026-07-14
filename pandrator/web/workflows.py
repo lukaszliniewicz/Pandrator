@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from .database import Database
 from .jobs import JobQueue
-from .models import Artifact, Job, OutcomePlan, SessionRecord
+from .models import Artifact, GenerationPlan, GenerationRun, Job, OutcomePlan, SessionRecord
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,8 +30,8 @@ DUBBING_STAGES = (
     StageDefinition("optimize_document", "Optimize subtitles before generation", "Optionally create a separate, reviewable speech-optimized revision before audio generation. This is useful when the LLM and TTS must not share limited GPU memory.", prerequisite_roles=("translation", "correction", "transcription", "upload"), output_role="tts_optimized", job_kind="text.optimize_tts"),
     StageDefinition("optimize_tts", "Optimize each segment for speech", "Optional LLM rewriting runs immediately before each segment is synthesized. It does not change the subtitle artifact or timing.", executable=False, prerequisite_roles=("translation", "correction", "transcription", "upload")),
     StageDefinition("preview", "Preview", "Compare source, correction, and translation with recorded lineage.", executable=False, prerequisite_roles=("translation", "correction", "transcription", "upload")),
-    StageDefinition("generate_audio", "Generate audio", "Synthesize missing or stale prerequisites, optionally optimizing each segment immediately before speech generation.", prerequisite_roles=("translation", "correction", "transcription", "upload"), output_role="dubbing_audio", job_kind="dubbing.generate_audio"),
-    StageDefinition("export", "Export", "Package audio, subtitle tracks, or a rendered video.", prerequisite_roles=("dubbing_audio", "translation", "correction", "transcription", "upload"), output_role="export", job_kind="export.create"),
+    StageDefinition("generate_audio", "Generate audio", "Create reviewable per-segment takes, optionally optimizing each segment immediately before speech generation. Assembly remains manual.", prerequisite_roles=("translation", "correction", "transcription", "upload"), job_kind="dubbing.generate_audio"),
+    StageDefinition("export", "Export", "Package selected takes, assembled audio, subtitle tracks, or a rendered video.", prerequisite_roles=("assembled_audio", "dubbing_audio", "translation", "correction", "transcription", "upload"), output_role="export", job_kind="export.create"),
 )
 
 AUDIOBOOK_STAGES = (
@@ -39,8 +39,8 @@ AUDIOBOOK_STAGES = (
     StageDefinition("prepare_text", "Segment narration", "Create editable generation segments from the cleaned document. This controls text boundaries and pauses, not the TTS model.", prerequisite_roles=("clean_text",), output_role="prepared_text", job_kind="text.prepare"),
     StageDefinition("optimize_document", "Optimize narration before generation", "Optionally create a separate before-and-after narration revision for review before any audio is generated.", prerequisite_roles=("prepared_text",), output_role="tts_optimized", job_kind="text.optimize_tts"),
     StageDefinition("optimize_tts", "Optimize each segment for speech", "Optional LLM rewriting runs immediately before each narration segment is synthesized. The source segment remains unchanged for review.", executable=False, prerequisite_roles=("prepared_text",)),
-    StageDefinition("generate_audio", "Generate audio", "Run missing document preparation, then generate or resume narration from editable segments.", prerequisite_roles=("prepared_text", "clean_text", "upload"), output_role="audiobook_audio", job_kind="audiobook.generate_audio"),
-    StageDefinition("export", "Export", "Assemble the selected audio format, metadata, and cover.", prerequisite_roles=("audiobook_audio",), output_role="export", job_kind="export.create"),
+    StageDefinition("generate_audio", "Generate audio", "Run missing document preparation, then create reviewable narration takes from editable segments. Assembly remains manual.", prerequisite_roles=("prepared_text", "clean_text", "upload"), job_kind="audiobook.generate_audio"),
+    StageDefinition("export", "Export", "Package the assembled audio with the selected format, metadata, and cover.", prerequisite_roles=("assembled_audio", "audiobook_audio"), output_role="export", job_kind="export.create"),
 )
 
 
@@ -94,6 +94,12 @@ class WorkflowService:
             )
             roles = {artifact.role: artifact for artifact in artifacts if artifact.state == "current"}
             outcome = session.scalar(select(OutcomePlan).where(OutcomePlan.session_id == session_id))
+            generation_plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
+            generation_run = session.scalar(
+                select(GenerationRun)
+                .where(GenerationRun.session_id == session_id)
+                .order_by(GenerationRun.created_at.desc())
+            )
             transformations = (outcome.value_json or {}).get("transformations", {}) if outcome and isinstance(outcome.value_json, dict) else {}
             optimization_enabled = bool(transformations.get("llm_tts_optimization"))
             document_optimization_enabled = bool(transformations.get("llm_tts_document_optimization"))
@@ -143,6 +149,23 @@ class WorkflowService:
                     status = "unavailable"
                 else:
                     status = "ready"
+                if definition.key == "generate_audio" and not (
+                    active and active.status in {"queued", "running", "cancel_requested"}
+                ):
+                    if generation_run is None:
+                        status = "ready" if prerequisite is not None else "unavailable"
+                    elif generation_plan is not None and generation_run.plan_revision_id != generation_plan.active_revision_id:
+                        status = "stale"
+                    elif generation_run.status in {"queued", "running", "pausing"}:
+                        status = "running"
+                    elif generation_run.status == "completed":
+                        status = "completed"
+                    elif generation_run.status == "failed":
+                        status = "failed"
+                    elif generation_run.status == "paused":
+                        status = "ready"
+                    else:
+                        status = "ready"
                 if definition.key == "optimize_tts" and prerequisite is not None:
                     status = "completed" if optimization_enabled else "ready"
                 stage_enabled = optimization_enabled if definition.key == "optimize_tts" else document_optimization_enabled if definition.key == "optimize_document" else None

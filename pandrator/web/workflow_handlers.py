@@ -6,6 +6,7 @@ import hashlib
 import json
 import shutil
 import subprocess
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -282,6 +283,20 @@ class WorkflowHandlers:
         ]
         produced: list[dict[str, Any]] = []
         handlers = self.handlers()
+        stage_weights = {
+            "clean_source": 0.12,
+            "transcribe": 0.18,
+            "correct": 0.10,
+            "translate": 0.10,
+            "optimize_document": 0.10,
+            "prepare_text": 0.05,
+            # Speech synthesis is normally the dominant part of this action.
+            "generate_audio": 0.65,
+            "export": 0.10,
+        }
+        weights = [stage_weights.get(item.key, 0.08) for item in runnable]
+        weight_total = sum(weights) or 1.0
+        completed_weight = 0.0
         for index, definition in enumerate(runnable):
             if cancel_event.is_set():
                 return {"artifacts": produced}
@@ -330,15 +345,33 @@ class WorkflowHandlers:
             if definition.prerequisite_roles and source is None:
                 raise ValueError(f"Stage '{definition.key}' is missing a required input artifact.")
             handler = handlers[definition.job_kind]
-            start = index / max(1, len(runnable))
-            width = 1 / max(1, len(runnable))
-            result = handler(
-                {"session_id": session_id, "source_artifact_id": source.id if source else None, "settings": settings},
-                lambda value, detail=None: progress(min(0.99, start + float(value) * width), detail),
-                cancel_event,
+            width = weights[index] / weight_total
+            start = completed_weight / weight_total
+            stage_progress = lambda value, detail=None, start=start, width=width: progress(
+                min(0.99, start + max(0.0, min(1.0, float(value))) * width),
+                detail,
             )
+            handler_payload = {
+                "session_id": session_id,
+                "source_artifact_id": source.id if source else None,
+                "settings": settings,
+            }
+            if definition.key == "generate_audio":
+                result = self._run_reviewable_generation(
+                    handler_payload,
+                    stage_progress,
+                    cancel_event,
+                    resolved_snapshot=payload.get("resolved_settings_snapshot"),
+                    settings_hash=str(payload.get("settings_hash") or "") or None,
+                    job_id=str(payload.get("_job_id") or "") or None,
+                )
+            else:
+                result = handler(handler_payload, stage_progress, cancel_event)
             if result:
                 produced.append({"stage": definition.key, **result})
+            completed_weight += weights[index]
+            if definition.key == "generate_audio" and str((result or {}).get("status") or "") in {"paused", "canceled"}:
+                return {"artifacts": produced, "target_stage": target_key}
         progress(1.0, "Workflow continuation finished")
         return {"artifacts": produced, "target_stage": target_key}
 
@@ -1427,13 +1460,14 @@ class WorkflowHandlers:
                 source_revision_id=str((source_artifact.metadata_json or {}).get("revision_id") or "") or None,
             )
         source_texts = [str(record.get("text") or record.get("original_sentence") or "").strip() for record in records]
+        optimization_share = 0.25 if bool(settings.get("llm_tts_optimization")) else 0.0
         optimized_texts, optimization_model = self._optimize_generation_texts(
             session_id,
             generation_segment_ids,
             source_texts,
             settings,
             cancel_event,
-            lambda value, detail=None: progress(float(value) * 0.25, detail),
+            lambda value, detail=None: progress(float(value) * optimization_share, detail),
         )
         for index, (record, generation_segment_id) in enumerate(zip(records, generation_segment_ids), start=1):
             if cancel_event.is_set():
@@ -1441,7 +1475,8 @@ class WorkflowHandlers:
             text = str(record.get("text") or record.get("original_sentence") or "").strip()
             if not text:
                 continue
-            progress(0.25 + ((index - 1) / len(records)) * 0.75, f"Generating segment {index} of {len(records)}")
+            synthesis_share = 1.0 - optimization_share
+            progress(optimization_share + ((index - 1) / len(records)) * synthesis_share, f"Generating segment {index} of {len(records)}")
             synthesized_text = optimized_texts[index - 1]
             audio = tts_handler.text_to_audio(synthesized_text, settings, max_attempts=int(settings.get("max_attempts") or 3), **self._tts_urls(settings))
             if audio is None:
@@ -1479,6 +1514,7 @@ class WorkflowHandlers:
                     else settings.get("sentence_silence_ms", settings.get("silence_between_sentences", 250))
                 )
             audio_parts.append((audio, max(0, int(silence_after or 0))))
+            progress(optimization_share + (index / len(records)) * synthesis_share, f"Generated segment {index} of {len(records)}")
         if not audio_parts:
             raise RuntimeError("The speech service returned no audio.")
         from .audio_assembly import compose_audio
@@ -1539,6 +1575,129 @@ class WorkflowHandlers:
             raise ValueError("Audiobook generation requires a current Segment narration artifact or its reviewed speech-optimized revision.")
         return self._generate_audio(session_id, source_artifact, source_path, settings, progress, cancel_event, role="audiobook_audio")
 
+    def _run_reviewable_generation(
+        self,
+        payload: dict[str, Any],
+        progress,
+        cancel_event,
+        *,
+        resolved_snapshot: Any = None,
+        settings_hash: str | None = None,
+        job_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Create/resolve the segment plan and generate takes without assembly.
+
+        The workflow card and the generation drawer must describe the same
+        operation.  The former compatibility path generated a combined WAV in
+        the workflow job, leaving no GenerationRun for the drawer to observe.
+        This boundary deliberately stops after immutable per-segment takes;
+        output assembly remains an explicit review action.
+        """
+        from pandrator.logic.dubbing.speech_blocks import generate_speech_blocks_file
+
+        session_id = str(payload.get("session_id") or "")
+        source_artifact, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
+        settings = dict(payload.get("settings") or {})
+        progress(0.0, "Preparing generation segments")
+
+        plan_revision_id: str | None = None
+        if source_path.suffix.lower() == ".srt":
+            blocks_path = Path(
+                generate_speech_blocks_file(
+                    str(self._session_dir(session_id)),
+                    str(source_path),
+                    target_language=str(settings.get("target_language") or settings.get("language") or "en"),
+                    min_chars=int(settings.get("speech_block_min_chars") or 10),
+                    max_chars=int(settings.get("speech_block_max_chars") or 160),
+                    merge_threshold=int(
+                        settings.get("speech_block_merge_threshold")
+                        if settings.get("speech_block_merge_threshold") is not None
+                        else settings.get("subtitle_merge_threshold", 250)
+                    ),
+                )
+            )
+            records = json.loads(blocks_path.read_text(encoding="utf-8-sig"))
+            if not isinstance(records, list) or not records:
+                raise ValueError("No dubbing speech blocks were produced.")
+            self.artifacts.register(
+                blocks_path,
+                kind="json",
+                role="speech_blocks",
+                session_id=session_id,
+                parent_ids=[source_artifact.id],
+                settings=settings,
+            )
+            plan_revision_id, _ = self._store_generation_plan(
+                session_id,
+                records,
+                settings=settings,
+                source_revision_id=str((source_artifact.metadata_json or {}).get("revision_id") or "") or None,
+            )
+        elif source_path.suffix.lower() == ".json":
+            # Segment narration already creates a plan. Preserve any edits the
+            # user made in the drawer. A separately reviewed optimization
+            # artifact, however, is a new source and therefore a new plan.
+            with self.database.session() as session:
+                plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
+                if source_artifact.role == "prepared_text" and plan is not None:
+                    plan_revision_id = plan.active_revision_id
+            if not plan_revision_id:
+                records = json.loads(source_path.read_text(encoding="utf-8-sig"))
+                if not isinstance(records, list) or not records:
+                    raise ValueError("No narration segments were found.")
+                plan_revision_id, _ = self._store_generation_plan(
+                    session_id,
+                    records,
+                    settings=settings,
+                    source_revision_id=str((source_artifact.metadata_json or {}).get("revision_id") or "") or None,
+                )
+        else:
+            raise ValueError("Audio generation requires subtitle cues or segmented narration.")
+
+        if not plan_revision_id:
+            raise ValueError("Create generation segments before starting audio generation.")
+
+        snapshot = deepcopy(resolved_snapshot) if isinstance(resolved_snapshot, dict) else {}
+        # The resolved sections are the immutable source of truth. Merge the
+        # flattened stage values as compatibility aliases so direct Run Now
+        # choices (service, model, voice, and language) cannot be lost.
+        snapshot["tts"] = {**dict(snapshot.get("tts") or {}), **settings}
+        snapshot["audio"] = {**dict(snapshot.get("audio") or {}), **settings}
+        snapshot["text"] = {
+            **dict(snapshot.get("text") or {}),
+            "llm_tts_optimization": bool(settings.get("llm_tts_optimization")),
+        }
+        frozen_hash = hashlib.sha256(
+            json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+        ).hexdigest()
+        with self.database.session() as session:
+            run = GenerationRun(
+                session_id=session_id,
+                plan_revision_id=plan_revision_id,
+                job_id=job_id,
+                status="queued",
+                settings_snapshot_json=snapshot,
+                settings_hash=frozen_hash or settings_hash,
+            )
+            session.add(run)
+            session.flush()
+            run_id = run.id
+
+        progress(0.03, "Generation segments ready")
+        try:
+            return self.run_generation(
+                {"generation_run_id": run_id, "segment_ids": [], "operation": "generate"},
+                lambda value, detail=None: progress(0.03 + max(0.0, min(1.0, float(value))) * 0.97, detail),
+                cancel_event,
+            )
+        except Exception:
+            with self.database.session() as session:
+                failed = session.get(GenerationRun, run_id)
+                if failed is not None:
+                    failed.status = "failed"
+                    failed.updated_at = utcnow()
+            raise
+
     def run_generation(self, payload, progress, cancel_event):
         """Generate immutable per-segment takes with safe pause and resume boundaries."""
         from pydub import AudioSegment
@@ -1568,6 +1727,11 @@ class WorkflowHandlers:
             segment_ids = [item.id for item in selected_segments]
             source_texts = [item.text for item in selected_segments]
         if not segment_ids:
+            with self.database.session() as session:
+                run = session.get(GenerationRun, run_id)
+                if run is not None:
+                    run.status = "failed"
+                    run.updated_at = utcnow()
             raise ValueError("No generation segments match this request.")
 
         from .workspace import adapt_runtime_settings, mark_output_assemblies_stale
@@ -1579,16 +1743,25 @@ class WorkflowHandlers:
         text_settings = adapt_runtime_settings("text", dict(settings_snapshot.get("text") or {}))
         optimization_model = ""
         optimized_by_id: dict[str, str] = {}
+        optimization_share = 0.2 if operation != "rvc" and bool(text_settings.get("llm_tts_optimization")) else 0.0
         if operation != "rvc":
-            optimized, optimization_model = self._optimize_generation_texts(
-                session_id,
-                segment_ids,
-                source_texts,
-                {**text_settings, **tts_settings},
-                cancel_event,
-                lambda value, detail=None: progress(float(value) * 0.2, detail),
-            )
-            optimized_by_id = dict(zip(segment_ids, optimized))
+            try:
+                optimized, optimization_model = self._optimize_generation_texts(
+                    session_id,
+                    segment_ids,
+                    source_texts,
+                    {**text_settings, **tts_settings},
+                    cancel_event,
+                    lambda value, detail=None: progress(float(value) * optimization_share, detail),
+                )
+                optimized_by_id = dict(zip(segment_ids, optimized))
+            except Exception:
+                with self.database.session() as session:
+                    run = session.get(GenerationRun, run_id)
+                    if run is not None:
+                        run.status = "failed"
+                        run.updated_at = utcnow()
+                raise
         rvc_settings = adapt_runtime_settings("rvc", dict(settings_snapshot.get("rvc") or {}))
         generated = 0
         skipped = 0
@@ -1606,11 +1779,18 @@ class WorkflowHandlers:
                     return {"generation_run_id": run_id, "status": "paused", "generated": generated}
                 if operation == "resume" and segment.status == "completed":
                     skipped += 1
+                    progress(
+                        optimization_share + ((index + 1) / len(segment_ids)) * (1.0 - optimization_share),
+                        f"Kept completed segment {index + 1} of {len(segment_ids)}",
+                    )
                     continue
                 segment.status = "running"
                 segment.updated_at = utcnow()
                 text = segment.text
-            progress(0.2 + (index / len(segment_ids)) * 0.8, f"Generating segment {index + 1} of {len(segment_ids)}")
+            progress(
+                optimization_share + (index / len(segment_ids)) * (1.0 - optimization_share),
+                f"Generating segment {index + 1} of {len(segment_ids)}",
+            )
             try:
                 synthesized_text = text
                 if operation == "rvc":
@@ -1676,6 +1856,10 @@ class WorkflowHandlers:
                     segment.updated_at = utcnow()
                     mark_output_assemblies_stale(session, session_id)
                 generated += 1
+                progress(
+                    optimization_share + ((index + 1) / len(segment_ids)) * (1.0 - optimization_share),
+                    f"Generated segment {index + 1} of {len(segment_ids)}",
+                )
             except Exception:
                 with self.database.session() as session:
                     segment = session.get(GenerationSegment, segment_id)
