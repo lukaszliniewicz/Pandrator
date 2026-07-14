@@ -12,7 +12,6 @@ test('wizard creates a guided subtitle workspace and preserves setup return', as
   await signIn(page);
   await expect(page.getByRole('heading', { name: 'What shall we make?' })).toBeVisible();
   await page.getByRole('button', { name: /Create subtitles/ }).first().click();
-  await page.getByRole('dialog').getByRole('button', { name: /Create subtitles/ }).click();
   await page.getByRole('button', { name: 'Add later' }).click();
   await page.getByRole('button', { name: 'Continue' }).click();
   await page.getByRole('button', { name: 'Review', exact: true }).click();
@@ -26,7 +25,7 @@ test('wizard creates a guided subtitle workspace and preserves setup return', as
 test('provider defaults and restartable tours are keyboard reachable', async ({ page }) => {
   await signIn(page);
   await page.getByRole('link', { name: 'Providers & services' }).click();
-  await expect(page.getByRole('heading', { name: 'LLM models' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'LLM connections and models' })).toBeVisible();
   await page.getByRole('button', { name: 'Tour' }).click();
   await expect(page.getByRole('heading', { name: 'One record per canonical model' })).toBeVisible();
   await page.keyboard.press('Tab');
