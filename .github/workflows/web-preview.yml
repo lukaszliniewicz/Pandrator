@@ -47,6 +47,9 @@ jobs:
             libxcb-xinerama0 \
             libxcb-xkb1 \
             libxkbcommon-x11-0
+      - name: Install Windows FFmpeg
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg --yes --no-progress
       - name: Install Python preview dependencies
         run: python -m pip install -e ".[dev]" -e "./pandrator_installer[gui]" build
       - name: Install frontend dependencies

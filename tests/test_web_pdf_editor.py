@@ -60,7 +60,7 @@ class PdfEditorTests(unittest.TestCase):
             destination, manifest, provenance = apply_pdf_edit_plan(
                 source, output, plan, parent_artifact_id="parent-id"
             )
-            self.assertEqual(destination, output)
+            self.assertEqual(destination, output.resolve())
             self.assertTrue(source.is_file())
             self.assertTrue(output.is_file())
             self.assertTrue(manifest.is_file())
