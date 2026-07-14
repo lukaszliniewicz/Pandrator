@@ -1,9 +1,12 @@
 import tempfile
 import unittest
+import json
 from unittest import mock
 
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
+from pandrator.web.credentials import provider_credential_key
+from pandrator.web.models import StoredCredential
 
 
 class ProviderApiTests(unittest.TestCase):
@@ -117,6 +120,69 @@ class ProviderApiTests(unittest.TestCase):
         self.assertEqual(removed.status_code, 204)
         remaining = self.client.get(f"/api/v1/providers/{first_provider['id']}/models").get_json()["items"]
         self.assertTrue(remaining[0]["is_default"])
+
+    def test_database_api_key_is_write_only_replaceable_and_removable(self):
+        secret = "provider-secret-value"
+        created_response = self.client.post(
+            "/api/v1/providers",
+            json={"provider_key": "openai", "label": "OpenAI", "api_key": secret},
+            headers=self.headers,
+        )
+        self.assertEqual(201, created_response.status_code, created_response.get_json())
+        created = created_response.get_json()
+        self.assertTrue(created["credential_configured"])
+        self.assertEqual("database", created["credential_source"])
+        self.assertNotIn(secret, json.dumps(created))
+        listed = self.client.get("/api/v1/providers").get_json()
+        self.assertNotIn(secret, json.dumps(listed))
+
+        database = self.app.extensions["pandrator"]["database"]
+        with database.session() as session:
+            stored = session.get(StoredCredential, provider_credential_key(created["id"]))
+            self.assertEqual(secret, stored.secret_value)
+
+        rejected = self.client.patch(
+            f"/api/v1/providers/{created['id']}",
+            json={"options": {"request_options": {"azure_ad_token": "inline-secret"}}},
+            headers={**self.headers, "If-Match": f'"{created["revision"]}"'},
+        )
+        self.assertEqual(422, rejected.status_code)
+        rejected_header = self.client.patch(
+            f"/api/v1/providers/{created['id']}",
+            json={"options": {"request_options": {"headers": {"Authorization": "Bearer inline-secret"}}}},
+            headers={**self.headers, "If-Match": f'"{created["revision"]}"'},
+        )
+        self.assertEqual(422, rejected_header.status_code)
+        removed = self.client.patch(
+            f"/api/v1/providers/{created['id']}",
+            json={"clear_api_key": True},
+            headers={**self.headers, "If-Match": f'"{created["revision"]}"'},
+        )
+        self.assertEqual(200, removed.status_code, removed.get_json())
+        self.assertFalse(removed.get_json()["credential_configured"])
+        with database.session() as session:
+            self.assertIsNone(session.get(StoredCredential, provider_credential_key(created["id"])))
+
+    def test_auxiliary_api_keys_share_write_only_storage(self):
+        secret = "deepl-secret-value"
+        saved = self.client.put(
+            "/api/v1/credentials/deepl",
+            json={"api_key": secret},
+            headers=self.headers,
+        )
+        self.assertEqual(200, saved.status_code, saved.get_json())
+        self.assertEqual("database", saved.get_json()["credential_source"])
+        self.assertNotIn(secret, json.dumps(saved.get_json()))
+        self.assertNotIn(secret, json.dumps(self.client.get("/api/v1/credentials").get_json()))
+
+        invalid_secret = "must-not-be-echoed-" + ("x" * 65536)
+        rejected = self.client.put(
+            "/api/v1/credentials/deepl",
+            json={"api_key": invalid_secret},
+            headers=self.headers,
+        )
+        self.assertEqual(422, rejected.status_code)
+        self.assertNotIn("must-not-be-echoed", rejected.get_data(as_text=True))
 
 
 if __name__ == "__main__":

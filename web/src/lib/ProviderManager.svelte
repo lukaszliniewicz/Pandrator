@@ -4,7 +4,7 @@
   import { onMount } from 'svelte';
   import GuidedTour from './GuidedTour.svelte';
 
-  type Provider = { id: string; provider_key: string; label: string; base_url?: string; secret_ref?: string; enabled: boolean; options_json: Record<string, any>; revision: number };
+  type Provider = { id: string; provider_key: string; label: string; base_url?: string; secret_ref?: string; enabled: boolean; options_json: Record<string, any>; revision: number; credential_configured: boolean; credential_source: string };
   type ProviderProfile = { id: string; label: string; provider_key: string; base_url: string; secret_ref: string; description: string; options?: Record<string, any> };
   type Model = { id: string; provider_id: string; model_id: string; is_default: boolean; default_temperature: number | null; default_reasoning_effort: string | null; input_cost_per_million: number | null; cached_input_cost_per_million: number | null; output_cost_per_million: number | null; options_json: Record<string, any>; revision: number };
   type RequestOptionRow = { id: string; key: string; value: string; type: 'text' | 'number' | 'boolean' };
@@ -25,6 +25,8 @@
   let providerKey = $state('openai');
   let providerUrl = $state('');
   let providerSecretRef = $state('');
+  let providerApiKey = $state('');
+  let removeProviderApiKey = $state(false);
   let providerEnabled = $state(true);
   let providerMetadata = $state<Record<string, any>>({});
   let requestOptionRows = $state<RequestOptionRow[]>([]);
@@ -44,9 +46,9 @@
   const allModels = $derived(Object.values(models).flat());
   const selectedProviderProfile = $derived(profiles.find((item) => item.id === providerProfileId));
   const providerKeys = ['openai', 'anthropic', 'gemini', 'openrouter', 'ollama', 'groq', 'mistral', 'vertex_ai', 'azure', 'bedrock'];
-  const requestOptionKeys = ['organization', 'project', 'api_version', 'location', 'region_name', 'aws_region_name', 'azure_ad_token', 'deployment_id'];
+  const requestOptionKeys = ['organization', 'project', 'api_version', 'location', 'region_name', 'aws_region_name', 'deployment_id'];
   const tourSteps = [
-    { section: 'Connections', title: 'Profiles are editable starting points', body: 'Choose a LiteLLM profile, then adjust its display name, provider adapter, URL, credential reference, and advanced request options.' },
+    { section: 'Connections', title: 'Profiles are editable starting points', body: 'Choose a LiteLLM profile, then adjust its display name, provider adapter, URL, API key, and advanced request options.' },
     { section: 'Models', title: 'One record per canonical model', body: 'Discovery adds new IDs without removing manual models or their temperature, reasoning, and cost settings.' },
     { section: 'Defaults', title: 'One application default', body: 'The active default applies across providers. Blank optional values are omitted; zero temperature is sent explicitly.' }
   ];
@@ -101,6 +103,8 @@
 
   function openNewProvider() {
     editingProvider = null;
+    providerApiKey = '';
+    removeProviderApiKey = false;
     providerEnabled = true;
     applyProfile(profiles.some((item) => item.id === 'custom-openai') ? 'custom-openai' : profiles[0]?.id ?? '');
     providerModal = true;
@@ -113,6 +117,8 @@
     providerKey = provider.provider_key;
     providerUrl = provider.base_url ?? '';
     providerSecretRef = provider.secret_ref ?? '';
+    providerApiKey = '';
+    removeProviderApiKey = false;
     providerEnabled = provider.enabled;
     setStructuredOptions(provider.options_json ?? {});
     providerModal = true;
@@ -122,7 +128,7 @@
     if (!providerLabel.trim()) { error = 'A display name is required.'; return; }
     if (!providerKey.trim()) { error = 'A LiteLLM provider adapter is required.'; return; }
     const options: Record<string, any> = { ...providerMetadata, ...(providerProfileId ? { profile_id: providerProfileId } : {}), ...(requestOptionRows.some((row) => row.key.trim()) ? { request_options: requestOptionsValue() } : {}) };
-    const body = JSON.stringify({ provider_key: providerKey.trim(), label: providerLabel.trim(), enabled: providerEnabled, base_url: providerUrl.trim() || null, secret_ref: providerSecretRef.trim() || null, options });
+    const body = JSON.stringify({ provider_key: providerKey.trim(), label: providerLabel.trim(), enabled: providerEnabled, base_url: providerUrl.trim() || null, secret_ref: providerSecretRef.trim() || null, ...(providerApiKey.trim() ? { api_key: providerApiKey.trim() } : {}), ...(removeProviderApiKey ? { clear_api_key: true } : {}), options });
     try {
       if (editingProvider) {
         await api(`/providers/${editingProvider.id}`, { method: 'PATCH', headers: { 'If-Match': `"${editingProvider.revision}"` }, body });
@@ -235,7 +241,7 @@
 <div class="mx-auto max-w-6xl">
   <button onclick={onback} class="btn btn-quiet mb-6"><ArrowLeft size={16}/> Workspace</button>
   <header class="mb-7 flex flex-wrap items-end justify-between gap-5">
-    <div><div class="eyebrow">Providers</div><h1 class="mt-2 text-4xl font-semibold">LLM connections and models</h1><p class="muted mt-3 max-w-3xl">Configure LiteLLM adapters, endpoints, credential references, catalogues, optional request parameters, and fallback pricing in one place.</p></div>
+    <div><div class="eyebrow">Providers</div><h1 class="mt-2 text-4xl font-semibold">LLM connections and models</h1><p class="muted mt-3 max-w-3xl">Configure LiteLLM adapters, endpoints, API keys, catalogues, optional request parameters, and fallback pricing in one place.</p></div>
     <div class="flex flex-wrap gap-2"><button onclick={() => tourOpen = true} class="btn btn-secondary">Tour</button><button onclick={refreshAll} disabled={!providers.length || loading} class="btn btn-secondary"><RefreshCw size={16}/> Refresh catalogues</button><button onclick={openNewProvider} class="btn btn-primary"><Plus size={17}/> Add provider</button></div>
   </header>
 
@@ -246,7 +252,7 @@
     {#each providers as provider}
       <section class:opacity-60={!provider.enabled} class="surface overflow-hidden rounded-[1.5rem]">
         <header class="flex flex-wrap items-center justify-between gap-4 border-b border-[var(--line)] p-5">
-          <div class="flex min-w-0 items-center gap-3"><div class="grid size-10 shrink-0 place-items-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]"><Bot size={19}/></div><div class="min-w-0"><div class="flex flex-wrap items-center gap-2"><h2 class="font-semibold">{provider.label}</h2><span class="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[.65rem] font-bold uppercase text-[var(--accent)]">{provider.enabled ? 'Enabled' : 'Disabled'}</span></div><p class="muted mt-1 truncate text-xs">LiteLLM: {provider.provider_key}{provider.base_url ? ` · ${provider.base_url}` : ' · provider-managed endpoint'}</p></div></div>
+          <div class="flex min-w-0 items-center gap-3"><div class="grid size-10 shrink-0 place-items-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]"><Bot size={19}/></div><div class="min-w-0"><div class="flex flex-wrap items-center gap-2"><h2 class="font-semibold">{provider.label}</h2><span class="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[.65rem] font-bold uppercase text-[var(--accent)]">{provider.enabled ? 'Enabled' : 'Disabled'}</span><span class="rounded-full border border-[var(--line)] px-2 py-0.5 text-[.65rem] font-bold uppercase">{provider.credential_configured ? `Key: ${provider.credential_source}` : 'No key'}</span></div><p class="muted mt-1 truncate text-xs">LiteLLM: {provider.provider_key}{provider.base_url ? ` · ${provider.base_url}` : ' · provider-managed endpoint'}</p></div></div>
           <div class="flex flex-wrap gap-2"><button onclick={() => testProvider(provider.id)} disabled={!provider.enabled || !(models[provider.id]?.length)} class="btn btn-sm btn-secondary">Test</button><button onclick={() => refresh(provider.id)} disabled={!provider.enabled} class="btn btn-sm btn-secondary"><RefreshCw size={14}/> Discover</button><button onclick={() => openProvider(provider)} class="btn btn-sm btn-secondary"><Pencil size={14}/> Edit</button><button onclick={() => { addModelProvider = provider.id; modelId = ''; }} class="btn btn-sm btn-secondary"><Plus size={14}/> Add model</button><button onclick={() => requestProviderDelete(provider)} aria-label={`Delete ${provider.label}`} class="btn btn-sm btn-secondary text-red-500"><Trash2 size={15}/></button></div>
         </header>
         <div>
@@ -271,9 +277,10 @@
       <label class="text-sm font-semibold">Display name<input bind:value={providerLabel} class="field"/></label>
       <label class="text-sm font-semibold">LiteLLM provider<input bind:value={providerKey} list="litellm-providers" class="field"/><datalist id="litellm-providers">{#each providerKeys as key}<option value={key}></option>{/each}</datalist></label>
       <label class="text-sm font-semibold sm:col-span-2">API base URL<input bind:value={providerUrl} placeholder="Provider default, or http://127.0.0.1:1234/v1" class="field"/><small class="muted mt-1 block font-normal">Leave blank when the LiteLLM adapter owns endpoint discovery.</small></label>
-      <label class="text-sm font-semibold sm:col-span-2">Credential reference<input bind:value={providerSecretRef} placeholder="env:OPENAI_API_KEY" class="field"/><small class="muted mt-1 block font-normal">Use env:VARIABLE, keyring:service/user, or file:key. Secrets are never stored in this record.</small></label>
+      <label class="text-sm font-semibold sm:col-span-2">API key<input bind:value={providerApiKey} oninput={() => removeProviderApiKey = false} type="password" autocomplete="new-password" placeholder={editingProvider?.credential_configured ? 'Leave blank to keep the saved key' : 'Paste API key'} class="field"/><small class="muted mt-1 block font-normal">Saved in Pandrator's local database and never shown again.{editingProvider?.credential_configured ? ` Current source: ${editingProvider.credential_source}.` : ''}</small></label>
+      {#if editingProvider?.credential_source === 'database'}<label class="flex items-center gap-2 text-sm sm:col-span-2"><input type="checkbox" bind:checked={removeProviderApiKey} onchange={() => { if (removeProviderApiKey) providerApiKey = ''; }} class="accent-[var(--accent)]"/> Remove the database key</label>{/if}
       <label class="flex items-center gap-3 rounded-xl border border-[var(--line)] p-3 text-sm font-semibold sm:col-span-2"><input type="checkbox" bind:checked={providerEnabled} class="accent-[var(--accent)]"/><span><span class="block">Provider enabled</span><small class="muted font-normal">Disabled providers remain configured but cannot be selected by new runs.</small></span></label>
-      <details class="rounded-xl border border-[var(--line)] p-4 sm:col-span-2"><summary class="cursor-pointer text-sm font-semibold">Advanced LiteLLM request options</summary><p class="muted mt-2 text-xs">Add only endpoint-specific options such as organization, API version, project, location, or AWS region. Pandrator controls the model, messages, credential, timeout, temperature, and reasoning fields.</p><div class="mt-4 space-y-2">{#each requestOptionRows as row (row.id)}<div class="grid gap-2 sm:grid-cols-[minmax(9rem,.8fr)_7rem_1fr_auto]"><input bind:value={row.key} list="request-option-keys" aria-label="Request option name" placeholder="Option name" class="subfield"/><select bind:value={row.type} aria-label="Request option type" class="subfield"><option value="text">Text</option><option value="number">Number</option><option value="boolean">Boolean</option></select>{#if row.type === 'boolean'}<select bind:value={row.value} aria-label={`${row.key || 'Request option'} value`} class="subfield"><option value="true">True</option><option value="false">False</option></select>{:else}<input bind:value={row.value} type={row.type === 'number' ? 'number' : 'text'} aria-label={`${row.key || 'Request option'} value`} placeholder="Value" class="subfield"/>{/if}<button type="button" onclick={() => removeRequestOption(row.id)} aria-label="Remove request option" class="btn btn-icon btn-quiet"><Trash2 size={14}/></button></div>{/each}</div><datalist id="request-option-keys">{#each requestOptionKeys as key}<option value={key}></option>{/each}</datalist><button type="button" onclick={addRequestOption} class="btn btn-sm btn-secondary mt-3"><Plus size={13}/> Add request option</button></details>
+      <details class="rounded-xl border border-[var(--line)] p-4 sm:col-span-2"><summary class="cursor-pointer text-sm font-semibold">Advanced LiteLLM request options</summary><label class="mt-4 block text-sm font-semibold">External credential reference<input bind:value={providerSecretRef} placeholder="env:OPENAI_API_KEY" class="field"/><small class="muted mt-1 block font-normal">Optional compatibility fallback: env:VARIABLE, keyring:service/user, or file:key. Entering an API key above switches this provider to database storage.</small></label><p class="muted mt-4 text-xs">Add only endpoint-specific options such as organization, API version, project, location, or AWS region. Pandrator controls the model, messages, credential, timeout, temperature, and reasoning fields.</p><div class="mt-4 space-y-2">{#each requestOptionRows as row (row.id)}<div class="grid gap-2 sm:grid-cols-[minmax(9rem,.8fr)_7rem_1fr_auto]"><input bind:value={row.key} list="request-option-keys" aria-label="Request option name" placeholder="Option name" class="subfield"/><select bind:value={row.type} aria-label="Request option type" class="subfield"><option value="text">Text</option><option value="number">Number</option><option value="boolean">Boolean</option></select>{#if row.type === 'boolean'}<select bind:value={row.value} aria-label={`${row.key || 'Request option'} value`} class="subfield"><option value="true">True</option><option value="false">False</option></select>{:else}<input bind:value={row.value} type={row.type === 'number' ? 'number' : 'text'} aria-label={`${row.key || 'Request option'} value`} placeholder="Value" class="subfield"/>{/if}<button type="button" onclick={() => removeRequestOption(row.id)} aria-label="Remove request option" class="btn btn-icon btn-quiet"><Trash2 size={14}/></button></div>{/each}</div><datalist id="request-option-keys">{#each requestOptionKeys as key}<option value={key}></option>{/each}</datalist><button type="button" onclick={addRequestOption} class="btn btn-sm btn-secondary mt-3"><Plus size={13}/> Add request option</button></details>
     </div>
     <footer class="mt-6 flex justify-end gap-2"><button onclick={() => providerModal = false} class="btn btn-secondary">Cancel</button><button onclick={saveProvider} class="btn btn-primary">{editingProvider ? 'Save provider' : 'Create provider'}</button></footer>
   </div></div>

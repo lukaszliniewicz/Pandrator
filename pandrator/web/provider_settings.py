@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import os
-import stat
 from types import SimpleNamespace
 from typing import Any
 
@@ -12,6 +9,7 @@ from sqlalchemy import select
 
 from pandrator.runtime import DataPaths
 
+from .credentials import DEFAULT_PROVIDER_ENVS, is_sensitive_field, resolve_secret_reference
 from .database import Database
 from .models import Provider, ProviderModel
 
@@ -126,42 +124,11 @@ def list_llm_provider_profiles() -> list[dict[str, Any]]:
 def _request_options(options: dict[str, Any] | None) -> dict[str, Any]:
     raw = dict((options or {}).get("request_options") or {})
     reserved = {"model", "messages", "timeout", "api_key", "api_base", "temperature", "reasoning_effort"}
-    return {str(key): value for key, value in raw.items() if str(key) not in reserved}
-
-
-def _secret_value(reference: str | None, paths: DataPaths) -> tuple[str, str]:
-    """Return ``(api_key, api_key_env)`` without persisting resolved secrets."""
-
-    value = str(reference or "").strip()
-    if not value:
-        return "", ""
-    if value.startswith("env:"):
-        return "", value[4:].strip()
-    if value.startswith("keyring:"):
-        target = value[8:].strip()
-        service, separator, username = target.partition("/")
-        if not separator or not service or not username:
-            raise ValueError("Keyring secret references must use keyring:<service>/<username>.")
-        try:
-            import keyring  # type: ignore[import-not-found]
-        except ImportError as error:
-            raise RuntimeError("The keyring package is required for this provider secret reference.") from error
-        return str(keyring.get_password(service, username) or ""), ""
-    if value.startswith("file:"):
-        key = value[5:].strip()
-        if not key:
-            raise ValueError("File secret references must use file:<key>.")
-        if not paths.secrets_file.is_file():
-            return "", ""
-        if os.name != "nt":
-            mode = stat.S_IMODE(paths.secrets_file.stat().st_mode)
-            if mode & (stat.S_IRWXG | stat.S_IRWXO):
-                raise PermissionError("The headless secrets file must only be accessible by its owner.")
-        payload = json.loads(paths.secrets_file.read_text(encoding="utf-8"))
-        if not isinstance(payload, dict):
-            raise ValueError("The headless secrets file must contain a JSON object.")
-        return str(payload.get(key) or ""), ""
-    raise ValueError("Secret references must use env:, keyring:, or file:.")
+    return {
+        str(key): value
+        for key, value in raw.items()
+        if str(key) not in reserved and not is_sensitive_field(key)
+    }
 
 
 def build_llm_settings(
@@ -192,7 +159,15 @@ def build_llm_settings(
         rows = models_by_provider.get(provider.id, [])
         if not rows:
             continue
-        api_key, api_key_env = _secret_value(provider.secret_ref, paths)
+        fallback_env = str((provider.options_json or {}).get("api_key_env") or "").strip()
+        if not fallback_env:
+            fallback_env = DEFAULT_PROVIDER_ENVS.get(str(provider.provider_key or "").strip().lower(), "")
+        credential = resolve_secret_reference(
+            database,
+            paths,
+            provider.secret_ref,
+            fallback_environment_variable=fallback_env,
+        )
         is_custom = bool(
             (provider.options_json or {}).get("is_custom")
             or provider.provider_key not in {"openai", "gemini", "anthropic"}
@@ -217,8 +192,8 @@ def build_llm_settings(
                 "name": provider.label,
                 "provider": provider.provider_key,
                 "api_base": provider.base_url or "",
-                "api_key_env": api_key_env,
-                "api_key": api_key,
+                "api_key_env": credential.environment_variable,
+                "api_key": credential.value,
                 "is_custom": is_custom,
                 "models": records,
                 "models_explicit": True,

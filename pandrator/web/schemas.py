@@ -63,6 +63,7 @@ class ProviderCreate(StrictModel):
     enabled: bool = True
     base_url: str | None = None
     secret_ref: str | None = None
+    api_key: str | None = Field(default=None, max_length=65536)
     options: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -72,7 +73,14 @@ class ProviderUpdate(StrictModel):
     enabled: bool | None = None
     base_url: str | None = None
     secret_ref: str | None = None
+    api_key: str | None = Field(default=None, max_length=65536)
+    clear_api_key: bool = False
     options: dict[str, Any] | None = None
+
+
+class CredentialUpdate(StrictModel):
+    api_key: str | None = Field(default=None, max_length=65536)
+    clear: bool = False
 
 
 class ProviderTestRequest(StrictModel):
@@ -264,6 +272,8 @@ class OutputAssemblyCreateRequest(StrictModel):
 
 class TtsEndpointDiscoveryRequest(StrictModel):
     base_url: str = Field(min_length=8, max_length=2048)
+    service_id: str | None = Field(default=None, min_length=1, max_length=160)
+    api_key: str | None = Field(default=None, max_length=65536)
 
 
 class TtsVoicePreviewRequest(StrictModel):
@@ -291,6 +301,7 @@ SCHEMA_MODELS = {
         ProviderCreate,
         ProviderUpdate,
         ProviderTestRequest,
+        CredentialUpdate,
         ModelCreate,
         ModelUpdate,
         PdfRectInput,

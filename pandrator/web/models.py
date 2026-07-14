@@ -52,6 +52,18 @@ class AppSettingHistory(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
+class StoredCredential(Base):
+    """A write-only provider credential stored in the application database."""
+
+    __tablename__ = "stored_credentials"
+
+    key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    label: Mapped[str] = mapped_column(String(160), nullable=False)
+    secret_value: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
 class Provider(Base):
     __tablename__ = "providers"
 

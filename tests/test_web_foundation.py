@@ -67,8 +67,34 @@ class SchemaUpgradeTests(unittest.TestCase):
                 self.assertIn("paragraph_break_after", [row[1] for row in connection.execute("PRAGMA table_info(generation_segments)")])
                 self.assertIn("node_kind", [row[1] for row in connection.execute("PRAGMA table_info(generation_segment_revisions)")])
                 self.assertIn("paragraph_break_after", [row[1] for row in connection.execute("PRAGMA table_info(generation_segment_revisions)")])
+                self.assertIn("stored_credentials", [row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")])
                 self.assertIn("source_language", [row[1] for row in connection.execute("PRAGMA table_info(sessions)")])
                 self.assertIn("target_language", [row[1] for row in connection.execute("PRAGMA table_info(sessions)")])
+
+    def test_inline_tts_key_is_migrated_to_write_only_credential_table(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "pandrator.sqlite3"
+            upgrade_database(database_path)
+            config = Config()
+            config.set_main_option("script_location", str(Path(__file__).parents[1] / "pandrator" / "web" / "migrations"))
+            config.set_main_option("sqlalchemy.url", sqlite_url(database_path))
+            command.downgrade(config, "0008_generation_paragraph_boundaries")
+            secret = "legacy-speech-secret"
+            with closing(sqlite3.connect(database_path)) as connection:
+                connection.execute(
+                    "INSERT OR REPLACE INTO app_settings (key, value_json, revision, updated_at) VALUES (?, ?, 1, CURRENT_TIMESTAMP)",
+                    ("services.tts", json.dumps({"provider_configs": [{"id": "openai", "api_key": secret}], "deepl_api_key": "legacy-deepl-secret"})),
+                )
+                connection.commit()
+            upgrade_database(database_path)
+            with closing(sqlite3.connect(database_path)) as connection:
+                stored = connection.execute("SELECT secret_value FROM stored_credentials WHERE key = 'tts:openai'").fetchone()
+                stored_deepl = connection.execute("SELECT secret_value FROM stored_credentials WHERE key = 'aux:deepl'").fetchone()
+                setting = connection.execute("SELECT value_json FROM app_settings WHERE key = 'services.tts'").fetchone()
+            self.assertEqual(secret, stored[0])
+            self.assertEqual("legacy-deepl-secret", stored_deepl[0])
+            self.assertNotIn(secret, setting[0])
+            self.assertEqual("db:tts:openai", json.loads(setting[0])["provider_configs"][0]["secret_ref"])
 
 
 class LegacyMigrationTests(unittest.TestCase):

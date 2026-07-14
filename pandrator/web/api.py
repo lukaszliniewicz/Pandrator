@@ -27,6 +27,25 @@ from pandrator.runtime import DataPaths
 from .artifacts import ArtifactService, sha256_file
 from .auth import AuthService, BootstrapTokenStore
 from .capabilities import crispasr_install_preferences, probe_capabilities
+from .credentials import (
+    AUXILIARY_CREDENTIALS,
+    DEFAULT_PROVIDER_ENVS,
+    TTS_SERVICE_ENVS,
+    auxiliary_credential_key,
+    auxiliary_profiles,
+    contains_inline_secret,
+    credential_status,
+    database_reference,
+    delete_credential,
+    prepare_tts_settings_for_storage,
+    provider_credential_key,
+    redact_inline_secrets,
+    reference_key,
+    resolve_secret_reference,
+    tts_credential_key,
+    upsert_credential,
+    validate_provider_options,
+)
 from .database import Database
 from .jobs import JobQueue
 from .legacy_migration import import_legacy_data
@@ -34,7 +53,7 @@ from .maintenance import apply_retention
 from .models import AgentRun, AgentStep, AppSetting, AppSettingHistory, Artifact, ArtifactEdge, Document, DocumentRevision, Job, Provider, ProviderModel, Segment, SessionRecord, SourceRecord, TimedWord, TrainingRun, Voice, VoiceSample, new_id, utcnow
 from .openapi import build_openapi_document
 from .parity_registry import build_registry
-from .schemas import AgentRunCreateRequest, BootstrapRequest, BundleExportRequest, BundleImportRequest, ChunkUploadInitialize, GenerationPlanCreate, GenerationSegmentUpdate, GenerationStartRequest, JobCreate, LoginRequest, ModelCreate, ModelUpdate, OptimizationReviewRequest, OutcomePlanUpdate, OutputAssemblyCreateRequest, PdfEditRequest, ProviderCreate, ProviderTestRequest, ProviderUpdate, RvcConvertRequest, RvcModelUploadRequest, SessionCreate, SessionSettingsUpdate, SessionUpdate, SettingUpdate, SourceAttachRequest, SourceReuseRequest, SourceUpdateRequest, SourceUrlRequest, SubtitleReviewRequest, TokenCreateRequest, TrainingCreateRequest, TtsEndpointDiscoveryRequest, TtsVoicePreviewRequest, VoiceCreate, VoiceTranscriptReview
+from .schemas import AgentRunCreateRequest, BootstrapRequest, BundleExportRequest, BundleImportRequest, ChunkUploadInitialize, CredentialUpdate, GenerationPlanCreate, GenerationSegmentUpdate, GenerationStartRequest, JobCreate, LoginRequest, ModelCreate, ModelUpdate, OptimizationReviewRequest, OutcomePlanUpdate, OutputAssemblyCreateRequest, PdfEditRequest, ProviderCreate, ProviderTestRequest, ProviderUpdate, RvcConvertRequest, RvcModelUploadRequest, SessionCreate, SessionSettingsUpdate, SessionUpdate, SettingUpdate, SourceAttachRequest, SourceReuseRequest, SourceUpdateRequest, SourceUrlRequest, SubtitleReviewRequest, TokenCreateRequest, TrainingCreateRequest, TtsEndpointDiscoveryRequest, TtsVoicePreviewRequest, VoiceCreate, VoiceTranscriptReview
 from .sessions import RevisionConflict, SessionService
 from .subtitle_review import SubtitleReviewService
 from .workflows import WorkflowService
@@ -68,6 +87,24 @@ def _model_dict(record, fields: tuple[str, ...]) -> dict[str, Any]:
     return payload
 
 
+def _provider_payload(provider: Provider, database: Database, paths: DataPaths) -> dict[str, Any]:
+    payload = _model_dict(
+        provider,
+        ("id", "kind", "provider_key", "label", "enabled", "base_url", "secret_ref", "options_json", "revision"),
+    )
+    fallback_env = str((provider.options_json or {}).get("api_key_env") or DEFAULT_PROVIDER_ENVS.get(provider.provider_key.lower(), ""))
+    payload.update(
+        credential_status(
+            database,
+            paths,
+            provider.secret_ref,
+            fallback_environment_variable=fallback_env,
+        )
+    )
+    payload["options_json"] = redact_inline_secrets(payload.get("options_json") or {})
+    return payload
+
+
 def _frontend_script_policy(static_dir: Path) -> str:
     index = static_dir / "index.html"
     try:
@@ -89,10 +126,10 @@ def _session_payload(record) -> dict[str, Any]:
 
 
 def _job_payload(record) -> dict[str, Any]:
-    return _model_dict(
+    return redact_inline_secrets(_model_dict(
         record,
         ("id", "kind", "session_id", "workflow_run_id", "status", "payload_json", "result_json", "progress", "error_code", "error_message", "attempts", "max_attempts", "created_at", "started_at", "finished_at", "updated_at"),
-    )
+    ))
 
 
 def create_app(
@@ -183,6 +220,15 @@ def create_app(
     def error_response(code: str, message: str, status: int, details: Any = None):
         return jsonify({"error": {"code": code, "message": message, "details": details, "request_id": getattr(g, "request_id", "")}}), status
 
+    def inline_credential_error(value: Any):
+        if contains_inline_secret(value):
+            return error_response(
+                "validation_error",
+                "API keys and other credentials must be saved in provider settings.",
+                422,
+            )
+        return None
+
     def bearer_authenticated() -> bool:
         header = request.headers.get("Authorization", "")
         if not header.lower().startswith("bearer "):
@@ -240,7 +286,12 @@ def create_app(
 
     @app.errorhandler(ValidationError)
     def _validation_error(error):
-        return error_response("validation_error", "The request payload is invalid.", 422, error.errors())
+        return error_response(
+            "validation_error",
+            "The request payload is invalid.",
+            422,
+            error.errors(include_input=False),
+        )
 
     @app.errorhandler(HTTPException)
     def _http_error(error):
@@ -348,13 +399,15 @@ def create_app(
             default_revision = defaults.revision if defaults else 0
         services = [dict(item) for item in tts_handler.get_service_configs({**default_value, **connection_value})]
         for service in services:
-            key_env = str(service.get("api_key_env") or "").strip()
-            credential_configured = bool(
-                str(service.get("api_key") or "").strip()
-                or (key_env and os.getenv(key_env, "").strip())
-            )
-            service["credential_configured"] = (
-                credential_configured if service.get("kind") == "commercial" else True
+            service_id = str(service.get("id") or service.get("name") or "").strip().lower().replace("-", "_")
+            key_env = str(service.get("api_key_env") or TTS_SERVICE_ENVS.get(service_id, "")).strip()
+            service.update(
+                credential_status(
+                    database,
+                    paths,
+                    service.get("secret_ref") or database_reference(tts_credential_key(service_id)),
+                    fallback_environment_variable=key_env,
+                )
             )
         if request.args.get("refresh", "").lower() in {"1", "true", "yes"}:
             def probe(item: dict[str, Any]) -> bool:
@@ -382,7 +435,13 @@ def create_app(
             for service in services:
                 if service.get("id") == "kobold_qwen" and service.get("online"):
                     base_url = str(service.get("api_base") or tts_handler.KOBOLD_QWEN_API_BASE_URL)
-                    entries = tts_handler.get_kobold_qwen_voice_catalog(base_url)
+                    credential = resolve_secret_reference(
+                        database,
+                        paths,
+                        service.get("secret_ref") or database_reference(tts_credential_key("kobold_qwen")),
+                        fallback_environment_variable=str(service.get("api_key_env") or TTS_SERVICE_ENVS["kobold_qwen"]),
+                    )
+                    entries = tts_handler.get_kobold_qwen_voice_catalog(base_url, api_key=credential.resolved_value())
                     preset_voices = [
                         str(item["id"])
                         for item in entries
@@ -484,17 +543,35 @@ def create_app(
                     }
                 )
 
-        response = jsonify({"value": connection_value, "revision": revision, "default_value": default_value, "default_service": str(default_value.get("service") or BUILTIN_DEFAULTS["tts"]["service"]), "default_revision": default_revision, "builtin_defaults": BUILTIN_DEFAULTS["tts"], "services": services, "profiles": list_tts_provider_profiles(), "previews": previews})
+        response = jsonify({"value": redact_inline_secrets(connection_value), "revision": revision, "default_value": redact_inline_secrets(default_value), "default_service": str(default_value.get("service") or BUILTIN_DEFAULTS["tts"]["service"]), "default_revision": default_revision, "builtin_defaults": redact_inline_secrets(BUILTIN_DEFAULTS["tts"]), "services": redact_inline_secrets(services), "profiles": list_tts_provider_profiles(), "previews": previews})
         response.headers["ETag"] = f'"{revision}"'
         return response
 
     @app.post("/api/v1/services/tts/discover")
     @require_auth
     def tts_service_discover():
+        from pandrator.logic import tts_handler
         from pandrator.logic.tts_endpoint_discovery import discover_tts_endpoint
 
         payload = TtsEndpointDiscoveryRequest.model_validate(request.get_json(silent=True) or {})
-        result = discover_tts_endpoint(payload.base_url)
+        api_key = str(payload.api_key or "").strip()
+        if not api_key and payload.service_id:
+            with database.session() as db_session:
+                connections = db_session.get(AppSetting, "services.tts")
+                defaults = db_session.get(AppSetting, "defaults.tts")
+                connection_value = dict(connections.value_json or {}) if connections and isinstance(connections.value_json, dict) else {}
+                default_value = dict(defaults.value_json or {}) if defaults and isinstance(defaults.value_json, dict) else {}
+            service = tts_handler.get_service_config({**default_value, **connection_value}, payload.service_id)
+            if service is not None:
+                service_id = str(service.get("id") or payload.service_id).strip().lower().replace("-", "_")
+                resolved = resolve_secret_reference(
+                    database,
+                    paths,
+                    service.get("secret_ref") or database_reference(tts_credential_key(service_id)),
+                    fallback_environment_variable=str(service.get("api_key_env") or TTS_SERVICE_ENVS.get(service_id, "")),
+                )
+                api_key = resolved.resolved_value()
+        result = discover_tts_endpoint(payload.base_url, api_key=api_key)
         return jsonify(result), 200 if result.get("success") else 422
 
     @app.post("/api/v1/services/tts/<service_id>/preview")
@@ -555,7 +632,7 @@ def create_app(
             record = db_session.get(AppSetting, f"defaults.{section}")
             value = dict(record.value_json or {}) if record and isinstance(record.value_json, dict) else {}
             revision = record.revision if record else 0
-        response = jsonify({"section": section, "builtin": BUILTIN_DEFAULTS[section], "value": value, "effective": {**BUILTIN_DEFAULTS[section], **value}, "revision": revision})
+        response = jsonify(redact_inline_secrets({"section": section, "builtin": BUILTIN_DEFAULTS[section], "value": value, "effective": {**BUILTIN_DEFAULTS[section], **value}, "revision": revision}))
         response.headers["ETag"] = f'"{revision}"'
         return response
 
@@ -566,7 +643,7 @@ def create_app(
             record = db_session.get(AppSetting, setting_key)
             if record is None:
                 return error_response("not_found", "Setting not found.", 404)
-            response = jsonify({"key": record.key, "value": record.value_json, "revision": record.revision, "updated_at": record.updated_at.isoformat()})
+            response = jsonify({"key": record.key, "value": redact_inline_secrets(record.value_json), "revision": record.revision, "updated_at": record.updated_at.isoformat()})
             response.headers["ETag"] = f'"{record.revision}"'
             return response
 
@@ -579,10 +656,24 @@ def create_app(
         raw_etag = request.headers.get("If-Match", "").strip('W/" ')
         with database.session() as db_session:
             record = db_session.get(AppSetting, setting_key)
+            try:
+                prepared_value = (
+                    prepare_tts_settings_for_storage(
+                        db_session,
+                        payload.value,
+                        record.value_json if record is not None else {},
+                    )
+                    if setting_key == "services.tts"
+                    else payload.value
+                )
+                if setting_key != "services.tts" and contains_inline_secret(prepared_value):
+                    raise ValueError("API keys and other credentials must be saved in provider settings.")
+            except ValueError as error:
+                return error_response("validation_error", str(error), 422)
             if record is None:
                 if raw_etag not in {"", "0", "*"}:
                     return error_response("revision_conflict", "The setting does not exist at that revision.", 409)
-                record = AppSetting(key=setting_key, value_json=payload.value, revision=1)
+                record = AppSetting(key=setting_key, value_json=prepared_value, revision=1)
                 db_session.add(record)
             else:
                 try:
@@ -592,11 +683,11 @@ def create_app(
                 if expected != record.revision:
                     return error_response("revision_conflict", "The setting changed in another client.", 409)
                 db_session.add(AppSettingHistory(key=record.key, value_json=record.value_json, revision=record.revision))
-                record.value_json = payload.value
+                record.value_json = prepared_value
                 record.revision += 1
                 record.updated_at = utcnow()
             db_session.flush()
-            result = {"key": record.key, "value": record.value_json, "revision": record.revision, "updated_at": record.updated_at.isoformat()}
+            result = {"key": record.key, "value": redact_inline_secrets(record.value_json), "revision": record.revision, "updated_at": record.updated_at.isoformat()}
         response = jsonify(result)
         response.headers["ETag"] = f'"{result["revision"]}"'
         return response
@@ -711,7 +802,7 @@ def create_app(
             return error_response("not_found", "Session not found.", 404)
         except ValueError as error:
             return error_response("validation_error", str(error), 422)
-        response = jsonify(result)
+        response = jsonify(redact_inline_secrets(result))
         response.headers["ETag"] = f'"{result["revision"]}"'
         return response
 
@@ -719,6 +810,8 @@ def create_app(
     @require_auth
     def session_settings_put(session_id: str, section: str):
         payload = SessionSettingsUpdate.model_validate(request.get_json(silent=True) or {})
+        if rejected := inline_credential_error(payload.value):
+            return rejected
         raw_etag = request.headers.get("If-Match", "").strip('W/" ')
         try:
             expected = int(raw_etag)
@@ -742,6 +835,8 @@ def create_app(
         body = request.get_json(silent=True) or {}
         sections = body.get("sections") if isinstance(body.get("sections"), list) else None
         overrides = body.get("overrides") if isinstance(body.get("overrides"), dict) else {}
+        if rejected := inline_credential_error(overrides):
+            return rejected
         try:
             value, digest = workspace_settings.resolve(session_id, sections=sections, run_override=overrides)
         except KeyError:
@@ -919,6 +1014,8 @@ def create_app(
     @require_auth
     def generation_plan_create(session_id: str):
         payload = GenerationPlanCreate.model_validate(request.get_json(silent=True) or {})
+        if rejected := inline_credential_error(payload.settings):
+            return rejected
         try:
             result = generation.create_plan(session_id, source_revision_id=payload.source_revision_id, segments=[item.model_dump() for item in payload.segments], settings=payload.settings)
         except KeyError:
@@ -992,6 +1089,8 @@ def create_app(
     @require_auth
     def generation_run_start(session_id: str):
         payload = GenerationStartRequest.model_validate(request.get_json(silent=True) or {})
+        if rejected := inline_credential_error(payload.run_override):
+            return rejected
         try:
             result = generation.start(session_id, run_override=payload.run_override, segment_ids=payload.segment_ids, operation=payload.operation)
         except KeyError:
@@ -1041,6 +1140,8 @@ def create_app(
     @require_auth
     def output_assembly_create(session_id: str):
         payload = OutputAssemblyCreateRequest.model_validate(request.get_json(silent=True) or {})
+        if rejected := inline_credential_error(payload.run_override):
+            return rejected
         try:
             result = generation.create_assembly(
                 session_id,
@@ -1066,6 +1167,8 @@ def create_app(
     @require_auth
     def agent_run_create(session_id: str):
         payload = AgentRunCreateRequest.model_validate(request.get_json(silent=True) or {})
+        if rejected := inline_credential_error(payload.settings):
+            return rejected
         try:
             sessions.get(session_id)
             artifacts.resolve(payload.source_artifact_id)
@@ -1134,6 +1237,8 @@ def create_app(
     @require_auth
     def job_create():
         payload = JobCreate.model_validate(request.get_json(silent=True) or {})
+        if rejected := inline_credential_error(payload.payload):
+            return rejected
         job = jobs.enqueue(payload.kind, payload.payload, session_id=payload.session_id, max_attempts=payload.max_attempts)
         return jsonify(_job_payload(job)), 202
 
@@ -1159,6 +1264,8 @@ def create_app(
         settings = request.get_json(silent=True) or {}
         if not isinstance(settings, dict):
             return error_response("validation_error", "Stage settings must be an object.", 422)
+        if rejected := inline_credential_error(settings):
+            return rejected
         try:
             job = workflows.run_stage(session_id, stage_key, settings)
         except KeyError:
@@ -1537,7 +1644,7 @@ def create_app(
     def provider_list():
         with database.session() as db_session:
             providers = list(db_session.scalars(select(Provider).order_by(Provider.label)).all())
-            return jsonify({"items": [_model_dict(item, ("id", "kind", "provider_key", "label", "enabled", "base_url", "secret_ref", "options_json", "revision")) for item in providers]})
+            return jsonify({"items": [_provider_payload(item, database, paths) for item in providers]})
 
     @app.get("/api/v1/providers/profiles")
     @require_auth
@@ -1550,11 +1657,20 @@ def create_app(
     @require_auth
     def provider_create():
         payload = ProviderCreate.model_validate(request.get_json(silent=True) or {})
+        try:
+            validate_provider_options(payload.options)
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
         with database.session() as db_session:
             provider = Provider(kind=payload.kind, provider_key=payload.provider_key, label=payload.label, enabled=payload.enabled, base_url=payload.base_url, secret_ref=payload.secret_ref, options_json=payload.options)
             db_session.add(provider)
             db_session.flush()
-            result = _model_dict(provider, ("id", "kind", "provider_key", "label", "enabled", "base_url", "secret_ref", "options_json", "revision"))
+            if str(payload.api_key or "").strip():
+                key = provider_credential_key(provider.id)
+                upsert_credential(db_session, key, f"{provider.label} API key", payload.api_key)
+                provider.secret_ref = database_reference(key)
+                db_session.flush()
+        result = _provider_payload(provider, database, paths)
         return jsonify(result), 201
 
     @app.patch("/api/v1/providers/<provider_id>")
@@ -1572,15 +1688,40 @@ def create_app(
                 return error_response("not_found", "Provider not found.", 404)
             if provider.revision != expected_revision:
                 return error_response("revision_conflict", "The provider changed in another client.", 409)
+            previous_secret_ref = str(provider.secret_ref or "")
             changes = payload.model_dump(exclude_unset=True)
+            submitted_key = str(changes.pop("api_key", "") or "").strip()
+            clear_key = bool(changes.pop("clear_api_key", False))
+            if submitted_key and clear_key:
+                return error_response("validation_error", "Choose either a replacement API key or remove the current key.", 422)
             if "options" in changes:
+                try:
+                    validate_provider_options(changes["options"])
+                except ValueError as error:
+                    return error_response("validation_error", str(error), 422)
                 changes["options_json"] = changes.pop("options")
             for key, value in changes.items():
                 setattr(provider, key, value)
+            if submitted_key:
+                key = provider_credential_key(provider.id)
+                previous_key = reference_key(previous_secret_ref)
+                if previous_key and previous_key != key:
+                    delete_credential(db_session, previous_key)
+                upsert_credential(db_session, key, f"{provider.label} API key", submitted_key)
+                provider.secret_ref = database_reference(key)
+            elif clear_key:
+                key = reference_key(provider.secret_ref) or provider_credential_key(provider.id)
+                delete_credential(db_session, key)
+                if str(provider.secret_ref or "").startswith("db:"):
+                    provider.secret_ref = None
+            elif previous_secret_ref != str(provider.secret_ref or ""):
+                previous_key = reference_key(previous_secret_ref)
+                if previous_key:
+                    delete_credential(db_session, previous_key)
             provider.revision += 1
             provider.updated_at = utcnow()
             db_session.flush()
-            result = _model_dict(provider, ("id", "kind", "provider_key", "label", "enabled", "base_url", "secret_ref", "options_json", "revision"))
+        result = _provider_payload(provider, database, paths)
         response = jsonify(result)
         response.headers["ETag"] = f'"{result["revision"]}"'
         return response
@@ -1599,6 +1740,7 @@ def create_app(
                 if replacement is None or replacement.provider_id == provider_id:
                     return error_response("replacement_required", "Select a default model from another provider before removing this provider.", 409)
                 replacement.is_default = True
+            delete_credential(db_session, reference_key(provider.secret_ref) or provider_credential_key(provider.id))
             db_session.delete(provider)
         return "", 204
 
@@ -1606,6 +1748,10 @@ def create_app(
     @require_auth
     def model_create(provider_id: str):
         payload = ModelCreate.model_validate(request.get_json(silent=True) or {})
+        try:
+            validate_provider_options(payload.options)
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
         with database.session() as db_session:
             if db_session.get(Provider, provider_id) is None:
                 return error_response("not_found", "Provider not found.", 404)
@@ -1661,6 +1807,11 @@ def create_app(
             if model.revision != expected_revision:
                 return error_response("revision_conflict", "The model settings changed in another client.", 409)
             changes = payload.model_dump(exclude_unset=True)
+            if "options" in changes:
+                try:
+                    validate_provider_options(changes["options"])
+                except ValueError as error:
+                    return error_response("validation_error", str(error), 422)
             if changes.pop("is_default", False):
                 for existing in db_session.scalars(select(ProviderModel)):
                     existing.is_default = existing.id == model.id
@@ -1705,10 +1856,18 @@ def create_app(
             if provider is None:
                 return error_response("not_found", "Provider not found.", 404)
             existing = list(db_session.scalars(select(ProviderModel).where(ProviderModel.provider_id == provider_id)).all())
+            fallback_env = str((provider.options_json or {}).get("api_key_env") or DEFAULT_PROVIDER_ENVS.get(provider.provider_key.lower(), ""))
+            credential = resolve_secret_reference(
+                database,
+                paths,
+                provider.secret_ref,
+                fallback_environment_variable=fallback_env,
+            )
             detected = _detect_models_for_builtin_provider({
                 "provider": provider.provider_key,
                 "api_base": provider.base_url,
-                "api_key_env": str((provider.options_json or {}).get("api_key_env") or ""),
+                "api_key_env": credential.environment_variable,
+                "api_key": credential.value,
                 "models": [item.model_id for item in existing],
             })
             known = {item.model_id for item in existing}
@@ -1720,6 +1879,32 @@ def create_app(
                 db_session.add(model)
                 added.append(model_id)
             return jsonify({"detected": detected, "added": added, "preserved": sorted(known)})
+
+    @app.get("/api/v1/credentials")
+    @require_auth
+    def credential_list():
+        return jsonify({"items": auxiliary_profiles(database, paths)})
+
+    @app.put("/api/v1/credentials/<credential_id>")
+    @require_auth
+    def credential_update(credential_id: str):
+        profile = next((item for item in AUXILIARY_CREDENTIALS if item["id"] == credential_id), None)
+        if profile is None:
+            return error_response("not_found", "Credential setting not found.", 404)
+        payload = CredentialUpdate.model_validate(request.get_json(silent=True) or {})
+        submitted_key = str(payload.api_key or "").strip()
+        if submitted_key and payload.clear:
+            return error_response("validation_error", "Choose either a replacement API key or remove the current key.", 422)
+        if not submitted_key and not payload.clear:
+            return error_response("validation_error", "Enter an API key or choose to remove the saved key.", 422)
+        key = auxiliary_credential_key(credential_id)
+        with database.session() as db_session:
+            if submitted_key:
+                upsert_credential(db_session, key, f"{profile['label']} API key", submitted_key)
+            else:
+                delete_credential(db_session, key)
+        updated = next(item for item in auxiliary_profiles(database, paths) if item["id"] == credential_id)
+        return jsonify(updated)
 
     @app.get("/api/v1/voices")
     @require_auth
@@ -1863,6 +2048,8 @@ def create_app(
     @require_auth
     def rvc_convert():
         payload = RvcConvertRequest.model_validate(request.get_json(silent=True) or {})
+        if rejected := inline_credential_error(payload.settings):
+            return rejected
         try:
             artifacts.resolve(payload.source_artifact_id)
             if payload.session_id:
@@ -1889,6 +2076,8 @@ def create_app(
     @require_auth
     def training_create():
         payload = TrainingCreateRequest.model_validate(request.get_json(silent=True) or {})
+        if rejected := inline_credential_error(payload.settings):
+            return rejected
         try:
             artifacts.resolve(payload.source_artifact_id)
             if payload.source_text_artifact_id:

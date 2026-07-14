@@ -5,6 +5,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from pydub import AudioSegment
@@ -13,6 +14,7 @@ from sqlalchemy import select
 from pandrator.runtime import DataPaths
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.database import Database, upgrade_database
+from pandrator.web.credentials import auxiliary_credential_key, upsert_credential
 from pandrator.web.models import Artifact, ArtifactEdge, AudioTake, GenerationRun, GenerationSegment
 from pandrator.web.sessions import SessionService
 from pandrator.web.workflow_handlers import WorkflowHandlers
@@ -81,6 +83,29 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         artifact, output = self.artifacts.resolve(result["artifact_id"])
         self.assertEqual(artifact.role, "audiobook_audio")
         self.assertTrue(output.is_file())
+
+    def test_deepl_translation_resolves_database_credential_at_runtime(self):
+        source_path = self.paths.uploads / "source.srt"
+        source_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n", encoding="utf-8")
+        source = self.artifacts.register(source_path, kind="srt", role="transcription", session_id=self.session.id)
+        with self.database.session() as session:
+            upsert_credential(session, auxiliary_credential_key("deepl"), "DeepL API key", "database-deepl-key")
+        translated_path = self.session_dir / "translated.srt"
+        translated_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nCześć\n", encoding="utf-8")
+        with mock.patch(
+            "pandrator.logic.dubbing.llm_translation.translate_srt_file_deepl_with_result",
+            return_value=SimpleNamespace(output_path=str(translated_path), cost=0.0, response_count=1, usage={}),
+        ) as translate:
+            self.handlers.translate(
+                {
+                    "session_id": self.session.id,
+                    "source_artifact_id": source.id,
+                    "settings": {"translation_backend": "deepl", "target_language": "pl"},
+                },
+                self.progress,
+                threading.Event(),
+            )
+        self.assertEqual("database-deepl-key", translate.call_args.kwargs["auth_key"])
 
     def test_url_download_uses_ytdlp_and_records_provenance(self):
         captured = {}

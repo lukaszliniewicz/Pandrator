@@ -1157,7 +1157,7 @@ def validate_model_credentials(
     needs_api_key = _provider_requires_api_key(provider_config, provider_key)
     if needs_api_key and not resolved_api_key:
         label = provider_name or provider_id or provider_key or resolved_model
-        env_hint = f" Set {api_key_env} in the API Keys tab or environment." if api_key_env else ""
+        env_hint = f" Save an API key in Connections or set {api_key_env}." if api_key_env else ""
         return LLMCredentialStatus(
             ok=False,
             model=resolved_model,

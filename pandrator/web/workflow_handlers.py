@@ -15,6 +15,14 @@ from sqlalchemy import func, select
 from pandrator.runtime import DataPaths
 
 from .artifacts import ArtifactService
+from .credentials import (
+    TTS_SERVICE_ENVS,
+    auxiliary_credential_key,
+    database_reference,
+    hydrate_tts_settings,
+    resolve_secret_reference,
+    tts_credential_key,
+)
 from .database import Database
 from .models import (
     AgentRun,
@@ -93,7 +101,7 @@ class WorkflowHandlers:
         from pandrator.logic import tts_handler
 
         text = str(payload.get("text") or "").strip()
-        settings = dict(payload.get("settings") or {})
+        settings = hydrate_tts_settings(self.database, self.paths, dict(payload.get("settings") or {}))
         if not text:
             raise ValueError("Preview text is required.")
         if cancel_event.is_set():
@@ -659,7 +667,18 @@ class WorkflowHandlers:
         settings = dict(payload.get("settings") or {})
         progress(0.05, "Translating subtitles")
         if str(settings.get("translation_backend") or "llm").lower() == "deepl":
-            result = translate_srt_file_deepl_with_result(session_dir, source_path, settings)
+            credential = resolve_secret_reference(
+                self.database,
+                self.paths,
+                database_reference(auxiliary_credential_key("deepl")),
+                fallback_environment_variable="DEEPL_API_KEY",
+            )
+            result = translate_srt_file_deepl_with_result(
+                session_dir,
+                source_path,
+                settings,
+                auth_key=credential.resolved_value(),
+            )
         else:
             settings = self._with_database_llm_settings(settings, "translation")
             result = translate_srt_file_with_result(
@@ -877,12 +896,26 @@ class WorkflowHandlers:
         if cancel_event.is_set():
             return {}
         progress(0.1, f"Uploading {voice_name} to {service_name}")
+        with self.database.session() as session:
+            connections = session.get(AppSetting, "services.tts")
+            defaults = session.get(AppSetting, "defaults.tts")
+            connection_value = dict(connections.value_json or {}) if connections and isinstance(connections.value_json, dict) else {}
+            default_value = dict(defaults.value_json or {}) if defaults and isinstance(defaults.value_json, dict) else {}
+        service_config = tts_handler.get_service_config({**default_value, **connection_value}, service_id) or {}
+        normalized_service_id = str(service_config.get("id") or service_id).strip().lower().replace("-", "_")
+        credential = resolve_secret_reference(
+            self.database,
+            self.paths,
+            service_config.get("secret_ref") or database_reference(tts_credential_key(normalized_service_id)),
+            fallback_environment_variable=str(service_config.get("api_key_env") or TTS_SERVICE_ENVS.get(normalized_service_id, "")),
+        )
         provider_voice_id = tts_handler.upload_speaker_voice(
             str(sample_path),
             base_url=base_url,
             service=service_name,
             prompt_text=sample.transcript if sample.transcript_reviewed else None,
             voice_id=requested_provider_voice_id,
+            api_key=credential.resolved_value(),
         )
         if cancel_event.is_set():
             return {}
@@ -1485,6 +1518,8 @@ class WorkflowHandlers:
         from pydub import AudioSegment
         from pandrator.logic import tts_handler
 
+        settings = hydrate_tts_settings(self.database, self.paths, settings)
+
         if source_path.suffix.lower() != ".json":
             raise ValueError("Audio generation requires segmented narration. Run Segment narration first.")
         try:
@@ -1806,6 +1841,7 @@ class WorkflowHandlers:
             **adapt_runtime_settings("tts", dict(settings_snapshot.get("tts") or {})),
             **adapt_runtime_settings("audio", dict(settings_snapshot.get("audio") or {})),
         }
+        tts_settings = hydrate_tts_settings(self.database, self.paths, tts_settings)
         text_settings = adapt_runtime_settings("text", dict(settings_snapshot.get("text") or {}))
         optimization_model = ""
         optimized_by_id: dict[str, str] = {}

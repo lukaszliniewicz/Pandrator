@@ -196,6 +196,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/credentials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listCredentials"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/credentials/{credentialId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["putCredential"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/defaults/{section}": {
         parameters: {
             query?: never;
@@ -1299,6 +1331,19 @@ export interface components {
             /** Size Bytes */
             size_bytes: number;
         };
+        /** CredentialUpdate */
+        CredentialUpdate: {
+            /**
+             * Api Key
+             * @default null
+             */
+            api_key: string | null;
+            /**
+             * Clear
+             * @default false
+             */
+            clear: boolean;
+        };
         /** ErrorBody */
         ErrorBody: {
             /** Code */
@@ -1704,6 +1749,11 @@ export interface components {
         /** ProviderCreate */
         ProviderCreate: {
             /**
+             * Api Key
+             * @default null
+             */
+            api_key: string | null;
+            /**
              * Base Url
              * @default null
              */
@@ -1743,10 +1793,20 @@ export interface components {
         /** ProviderUpdate */
         ProviderUpdate: {
             /**
+             * Api Key
+             * @default null
+             */
+            api_key: string | null;
+            /**
              * Base Url
              * @default null
              */
             base_url: string | null;
+            /**
+             * Clear Api Key
+             * @default false
+             */
+            clear_api_key: boolean;
             /**
              * Enabled
              * @default null
@@ -1967,8 +2027,18 @@ export interface components {
         };
         /** TtsEndpointDiscoveryRequest */
         TtsEndpointDiscoveryRequest: {
+            /**
+             * Api Key
+             * @default null
+             */
+            api_key: string | null;
             /** Base Url */
             base_url: string;
+            /**
+             * Service Id
+             * @default null
+             */
+            service_id: string | null;
         };
         /** TtsVoicePreviewRequest */
         TtsVoicePreviewRequest: {
@@ -2258,6 +2328,46 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Runtime capabilities */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listCredentials: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Write-only auxiliary credential status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CredentialUpdate"];
+            };
+        };
+        responses: {
+            /** @description Auxiliary credential saved */
             200: {
                 headers: {
                     [name: string]: unknown;

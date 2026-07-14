@@ -57,7 +57,7 @@ def validate_translation_credentials(settings: dict[str, Any]) -> CredentialVali
         return CredentialValidationResult(
             ok=False,
             step_key="translate",
-            message="Subtitle translation cannot run: DeepL requires DEEPL_API_KEY in the API Keys tab or environment.",
+            message="Subtitle translation cannot run: save a DeepL key in Connections > Other API keys or set DEEPL_API_KEY.",
         )
 
     result = validate_llm_credentials(settings, "Subtitle translation", stage="translation")

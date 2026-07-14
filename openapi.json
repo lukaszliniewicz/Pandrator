@@ -142,6 +142,31 @@
         "title": "ChunkUploadInitialize",
         "type": "object"
       },
+      "CredentialUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "api_key": {
+            "anyOf": [
+              {
+                "maxLength": 65536,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Api Key"
+          },
+          "clear": {
+            "default": false,
+            "title": "Clear",
+            "type": "boolean"
+          }
+        },
+        "title": "CredentialUpdate",
+        "type": "object"
+      },
       "ErrorBody": {
         "additionalProperties": false,
         "properties": {
@@ -1110,6 +1135,19 @@
       "ProviderCreate": {
         "additionalProperties": false,
         "properties": {
+          "api_key": {
+            "anyOf": [
+              {
+                "maxLength": 65536,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Api Key"
+          },
           "base_url": {
             "anyOf": [
               {
@@ -1191,6 +1229,19 @@
       "ProviderUpdate": {
         "additionalProperties": false,
         "properties": {
+          "api_key": {
+            "anyOf": [
+              {
+                "maxLength": 65536,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Api Key"
+          },
           "base_url": {
             "anyOf": [
               {
@@ -1202,6 +1253,11 @@
             ],
             "default": null,
             "title": "Base Url"
+          },
+          "clear_api_key": {
+            "default": false,
+            "title": "Clear Api Key",
+            "type": "boolean"
           },
           "enabled": {
             "anyOf": [
@@ -1748,11 +1804,38 @@
       "TtsEndpointDiscoveryRequest": {
         "additionalProperties": false,
         "properties": {
+          "api_key": {
+            "anyOf": [
+              {
+                "maxLength": 65536,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Api Key"
+          },
           "base_url": {
             "maxLength": 2048,
             "minLength": 8,
             "title": "Base Url",
             "type": "string"
+          },
+          "service_id": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Service Id"
           }
         },
         "required": [
@@ -2027,6 +2110,36 @@
         "responses": {
           "200": {
             "description": "Runtime capabilities"
+          }
+        }
+      }
+    },
+    "/api/v1/credentials": {
+      "get": {
+        "operationId": "listCredentials",
+        "responses": {
+          "200": {
+            "description": "Write-only auxiliary credential status"
+          }
+        }
+      }
+    },
+    "/api/v1/credentials/{credentialId}": {
+      "put": {
+        "operationId": "putCredential",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CredentialUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Auxiliary credential saved"
           }
         }
       }

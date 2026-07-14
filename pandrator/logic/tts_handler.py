@@ -633,11 +633,14 @@ def _merge_service_config(
         record["api_base"] = api_base
 
     provider_key = str(record.get("provider") or service_id)
-    if record.get("kind") == "commercial":
-        record["api_key_env"] = str(
-            raw_record.get("api_key_env") or record.get("api_key_env") or ""
-        ).strip()
-        record["api_key"] = str(raw_record.get("api_key") or "").strip()
+    record["api_key_env"] = str(
+        raw_record.get("api_key_env")
+        if "api_key_env" in raw_record
+        else record.get("api_key_env") or ""
+    ).strip()
+    record["api_key"] = str(raw_record.get("api_key") or "").strip()
+    if str(raw_record.get("secret_ref") or "").strip():
+        record["secret_ref"] = str(raw_record["secret_ref"]).strip()
 
     for key in ("adapter", "profile_id", "speech_path", "models_path", "voices_path"):
         if str(raw_record.get(key) or "").strip():
@@ -789,9 +792,10 @@ def save_service_config(
 
         updated = copy.deepcopy(service)
         updated["api_base"] = normalized_api_base
+        if str(api_key or "").strip():
+            updated["api_key"] = str(api_key or "").strip()
         if updated.get("kind") == "commercial":
             provider_key = str(updated.get("provider") or service_id)
-            updated["api_key"] = str(api_key or "").strip()
             parsed_models = _parse_model_list(models or [], provider_key)
             if parsed_models:
                 updated["models"] = parsed_models
@@ -860,6 +864,7 @@ def _legacy_endpoints_to_provider_configs(raw_json: str) -> list[dict[str, objec
                 "api_base": api_base,
                 "api_key_env": str(item.get("api_key_env", "")).strip(),
                 "api_key": str(item.get("api_key", "")).strip(),
+                "secret_ref": str(item.get("secret_ref", "")).strip(),
                 "is_custom": provider_id not in FIRST_CLASS_SERVICE_IDS,
                 "models": models,
                 "default_model": default_model,
@@ -908,6 +913,7 @@ def get_provider_configs(tts_settings) -> list[dict[str, object]]:
                 "api_base": api_base,
                 "api_key_env": str(raw_provider.get("api_key_env") or "").strip(),
                 "api_key": str(raw_provider.get("api_key") or "").strip(),
+                "secret_ref": str(raw_provider.get("secret_ref") or "").strip(),
                 "is_custom": True,
             }
             adapter_config = _normalize_adapter_config(raw_provider)
@@ -1629,6 +1635,7 @@ def _service_audio_endpoint(tts_settings, provider: str) -> dict[str, str]:
         "base_url": str(service.get("api_base") or ""),
         "api_key": str(service.get("api_key") or ""),
         "api_key_env": str(service.get("api_key_env") or ""),
+        "secret_ref": str(service.get("secret_ref") or ""),
         "provider": normalized_provider,
         "default_model": str(service.get("default_model") or _provider_default_model(normalized_provider)),
         "default_voice": str(service.get("default_voice") or _provider_default_voice(normalized_provider)),
@@ -1955,6 +1962,7 @@ def _parse_openai_audio_endpoints(tts_settings: dict) -> dict[str, dict[str, obj
             "base_url": base_url,
             "api_key": str(provider_record.get("api_key", "")).strip(),
             "api_key_env": str(provider_record.get("api_key_env", "")).strip(),
+            "secret_ref": str(provider_record.get("secret_ref", "")).strip(),
             "provider": provider,
             "default_model": default_model,
             "default_voice": default_voice,
@@ -2045,39 +2053,35 @@ def _configured_endpoint_auth_headers(endpoint: dict[str, object]) -> dict[str, 
     return _openai_auth_headers(explicit_key) if explicit_key else {}
 
 
-def _resolve_voxcpm_api_key() -> str:
-    api_key = os.getenv("VOXCPM_API_KEY", "").strip()
-    if api_key:
-        return api_key
-    return XTTS_OPENAI_PLACEHOLDER_API_KEY
+def _resolve_service_api_key(tts_settings: dict | None, service_id: str, default_env: str) -> str:
+    service = get_service_config(tts_settings or {}, service_id) or {}
+    key_env = str(service.get("api_key_env") or default_env).strip()
+    if key_env:
+        api_key = os.getenv(key_env, "").strip()
+        if api_key:
+            return api_key
+    explicit_key = str(service.get("api_key") or "").strip()
+    return explicit_key or XTTS_OPENAI_PLACEHOLDER_API_KEY
 
 
-def _resolve_fishs2_api_key() -> str:
-    api_key = os.getenv("FISHS2_API_KEY", "").strip()
-    if api_key:
-        return api_key
-    return XTTS_OPENAI_PLACEHOLDER_API_KEY
+def _resolve_voxcpm_api_key(tts_settings: dict | None = None) -> str:
+    return _resolve_service_api_key(tts_settings, "voxcpm", "VOXCPM_API_KEY")
 
 
-def _resolve_voxtral_api_key() -> str:
-    api_key = os.getenv("VOXTRAL_API_KEY", "").strip()
-    if api_key:
-        return api_key
-    return XTTS_OPENAI_PLACEHOLDER_API_KEY
+def _resolve_fishs2_api_key(tts_settings: dict | None = None) -> str:
+    return _resolve_service_api_key(tts_settings, "fishs2", "FISHS2_API_KEY")
 
 
-def _resolve_kokoro_api_key() -> str:
-    api_key = os.getenv("KOKORO_API_KEY", "").strip()
-    if api_key:
-        return api_key
-    return XTTS_OPENAI_PLACEHOLDER_API_KEY
+def _resolve_voxtral_api_key(tts_settings: dict | None = None) -> str:
+    return _resolve_service_api_key(tts_settings, "voxtral", "VOXTRAL_API_KEY")
 
 
-def _resolve_kobold_qwen_api_key() -> str:
-    api_key = os.getenv("KOBOLD_QWEN_API_KEY", "").strip()
-    if api_key:
-        return api_key
-    return XTTS_OPENAI_PLACEHOLDER_API_KEY
+def _resolve_kokoro_api_key(tts_settings: dict | None = None) -> str:
+    return _resolve_service_api_key(tts_settings, "kokoro", "KOKORO_API_KEY")
+
+
+def _resolve_kobold_qwen_api_key(tts_settings: dict | None = None) -> str:
+    return _resolve_service_api_key(tts_settings, "kobold_qwen", "KOBOLD_QWEN_API_KEY")
 
 
 def check_openai_audio_connection(tts_settings: dict) -> tuple[bool, str]:
@@ -2699,10 +2703,10 @@ def get_kobold_qwen_models(base_url: str = KOBOLD_QWEN_API_BASE_URL) -> list[str
     return _merge_catalog_with_discovered(KOBOLD_QWEN_TTS_MODELS, discovered_models)
 
 
-def get_kobold_qwen_voice_catalog(base_url: str = KOBOLD_QWEN_API_BASE_URL) -> list[dict[str, str]]:
+def get_kobold_qwen_voice_catalog(base_url: str = KOBOLD_QWEN_API_BASE_URL, api_key: str = "") -> list[dict[str, str]]:
     """Fetch Qwen voices while retaining the API's cloned/preset model metadata."""
     normalized_base_url = _normalize_base_url(base_url, KOBOLD_QWEN_API_BASE_URL)
-    api_key = _resolve_kobold_qwen_api_key()
+    api_key = str(api_key or "").strip() or _resolve_kobold_qwen_api_key()
 
     discovered: list[dict[str, str]] = []
     voice_urls = _dedupe_ordered(
@@ -3412,6 +3416,7 @@ def upload_voxcpm_speaker_voice(
     prompt_text: str | None = None,
     mode: str = "reference",
     voice_id: str | None = None,
+    api_key: str = "",
 ) -> str:
     """Uploads voice to VoxCPM and returns uploaded voice identifier."""
     return _upload_speaker_voice_openai_compatible(
@@ -3419,7 +3424,7 @@ def upload_voxcpm_speaker_voice(
         base_url=base_url,
         fallback_base_url=VOXCPM_API_BASE_URL,
         service_name="VoxCPM",
-        api_key=_resolve_voxcpm_api_key(),
+        api_key=str(api_key or "").strip() or _resolve_voxcpm_api_key(),
         upload_purpose=VOXCPM_UPLOAD_FILE_PURPOSE,
         prompt_text=prompt_text,
         mode=mode,
@@ -3433,6 +3438,7 @@ def upload_fishs2_speaker_voice(
     *,
     prompt_text: str | None = None,
     voice_id: str | None = None,
+    api_key: str = "",
 ) -> str:
     """Uploads voice to FishS2 and returns uploaded voice identifier."""
     return _upload_speaker_voice_openai_compatible(
@@ -3440,7 +3446,7 @@ def upload_fishs2_speaker_voice(
         base_url=base_url,
         fallback_base_url=FISHS2_API_BASE_URL,
         service_name="FishS2",
-        api_key=_resolve_fishs2_api_key(),
+        api_key=str(api_key or "").strip() or _resolve_fishs2_api_key(),
         upload_purpose=FISHS2_UPLOAD_FILE_PURPOSE,
         prompt_text=prompt_text,
         voice_id=voice_id,
@@ -3472,6 +3478,7 @@ def upload_kobold_qwen_speaker_voice(
     base_url: str = KOBOLD_QWEN_API_BASE_URL,
     *,
     voice_id: str | None = None,
+    api_key: str = "",
 ) -> str:
     """Uploads voice to Qwen3 TTS and returns uploaded voice identifier."""
     return _upload_speaker_voice_openai_compatible(
@@ -3479,7 +3486,7 @@ def upload_kobold_qwen_speaker_voice(
         base_url=base_url,
         fallback_base_url=KOBOLD_QWEN_API_BASE_URL,
         service_name="Qwen3 TTS",
-        api_key=_resolve_kobold_qwen_api_key(),
+        api_key=str(api_key or "").strip() or _resolve_kobold_qwen_api_key(),
         upload_purpose="user_data",
         voice_id=voice_id,
     )
@@ -3493,6 +3500,7 @@ def upload_speaker_voice(
     prompt_text: str | None = None,
     mode: str | None = None,
     voice_id: str | None = None,
+    api_key: str = "",
 ) -> str:
     """Uploads a speaker voice file and returns uploaded voice identifier."""
     normalized_service = str(service or "XTTS").strip().lower()
@@ -3503,6 +3511,7 @@ def upload_speaker_voice(
             prompt_text=prompt_text,
             mode=mode or "reference",
             voice_id=voice_id,
+            api_key=api_key,
         )
 
     if normalized_service in {"fishs2", "fish-s2", "fishs2-cpp", "fishs2cpp"}:
@@ -3511,6 +3520,7 @@ def upload_speaker_voice(
             base_url=base_url,
             prompt_text=prompt_text,
             voice_id=voice_id,
+            api_key=api_key,
         )
 
     if normalized_service in {"chatterbox", "chatterbox-turbo"}:
@@ -3526,6 +3536,7 @@ def upload_speaker_voice(
             wav_file_path,
             base_url=base_url,
             voice_id=voice_id,
+            api_key=api_key,
         )
 
     return upload_xtts_speaker_voice(
@@ -3732,7 +3743,7 @@ def _is_voxcpm_prompt_pairing_error(response: requests.Response) -> bool:
 
 def _request_voxcpm_audio(text: str, tts_settings: dict, voxcpm_base_url: str) -> requests.Response:
     normalized_base_url = _normalize_base_url(voxcpm_base_url, VOXCPM_API_BASE_URL)
-    api_key = _resolve_voxcpm_api_key()
+    api_key = _resolve_voxcpm_api_key(tts_settings)
     payload = _build_voxcpm_payload(text, tts_settings)
     last_response = None
 
@@ -3799,7 +3810,7 @@ def _build_fishs2_payload(text: str, tts_settings: dict) -> dict:
 
 def _request_fishs2_audio(text: str, tts_settings: dict, fishs2_base_url: str) -> requests.Response:
     normalized_base_url = _normalize_base_url(fishs2_base_url, FISHS2_API_BASE_URL)
-    api_key = _resolve_fishs2_api_key()
+    api_key = _resolve_fishs2_api_key(tts_settings)
     payload = _build_fishs2_payload(text, tts_settings)
     last_response = None
 
@@ -3860,7 +3871,7 @@ def _build_kokoro_payload(text: str, tts_settings: dict) -> dict:
 
 def _request_voxtral_audio(text: str, tts_settings: dict, voxtral_base_url: str) -> requests.Response:
     normalized_base_url = _normalize_base_url(voxtral_base_url, VOXTRAL_API_BASE_URL)
-    api_key = _resolve_voxtral_api_key()
+    api_key = _resolve_voxtral_api_key(tts_settings)
     payload = _build_voxtral_payload(text, tts_settings)
 
     last_response = None
@@ -3884,7 +3895,7 @@ def _request_voxtral_audio(text: str, tts_settings: dict, voxtral_base_url: str)
 
 def _request_kokoro_audio(text: str, tts_settings: dict, kokoro_base_url: str) -> requests.Response:
     normalized_base_url = _normalize_base_url(kokoro_base_url, KOKORO_API_BASE_URL)
-    api_key = _resolve_kokoro_api_key()
+    api_key = _resolve_kokoro_api_key(tts_settings)
     payload = _build_kokoro_payload(text, tts_settings)
 
     last_response = None
@@ -4227,7 +4238,7 @@ def _request_chatterbox_audio(text: str, tts_settings: dict, chatterbox_base_url
 
 def _request_kobold_qwen_audio(text: str, tts_settings: dict, kobold_qwen_base_url: str) -> requests.Response:
     normalized_base_url = _normalize_base_url(kobold_qwen_base_url, KOBOLD_QWEN_API_BASE_URL)
-    api_key = _resolve_kobold_qwen_api_key()
+    api_key = _resolve_kobold_qwen_api_key(tts_settings)
     model = str(
         tts_settings.get("xtts_model")
         or tts_settings.get("model")
