@@ -2,7 +2,17 @@
   import { X } from '@lucide/svelte';
   import VoiceManager from './VoiceManager.svelte';
 
-  let { onclose, initialView = 'references' }: { onclose: () => void; initialView?: 'references' | 'prebuilt' } = $props();
+  let {
+    onclose,
+    initialView = 'references',
+    initialService = '',
+    onvoicepublished
+  }: {
+    onclose: () => void;
+    initialView?: 'references' | 'prebuilt';
+    initialService?: string;
+    onvoicepublished?: (providerVoiceId: string) => void;
+  } = $props();
 </script>
 
 <div class="fixed inset-0 z-[60] bg-black/40 p-3 backdrop-blur-sm sm:p-5" role="presentation">
@@ -12,7 +22,7 @@
       <button onclick={onclose} class="rounded-xl p-2" aria-label="Close Voice Library"><X size={19}/></button>
     </header>
     <div class="min-h-0 flex-1 overflow-hidden p-4 sm:p-6">
-      <VoiceManager onback={onclose} {initialView}/>
+      <VoiceManager onback={onclose} {initialView} {initialService} {onvoicepublished}/>
     </div>
   </div>
 </div>

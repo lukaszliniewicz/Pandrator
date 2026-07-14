@@ -429,6 +429,32 @@ class TTSHandlerTests(unittest.TestCase):
             tts_handler.KOBOLD_QWEN_MODEL_PREPARATION_TIMEOUT_SECONDS,
         )
 
+    def test_kobold_qwen_rejects_a_voice_from_the_wrong_model_catalogue(self):
+        with self.assertRaisesRegex(ValueError, "pre-built"):
+            tts_handler._request_kobold_qwen_audio(
+                "Hello world",
+                {"model": "Voice Cloning", "voice": "Ryan"},
+                "http://localhost:8042",
+            )
+
+        with self.assertRaisesRegex(ValueError, "cloning reference"):
+            tts_handler._request_kobold_qwen_audio(
+                "Hello world",
+                {"model": "Prebuilt Voices", "voice": "my-uploaded-voice"},
+                "http://localhost:8042",
+            )
+
+    def test_kobold_qwen_catalogue_seeds_kobo_as_a_cloning_voice(self):
+        with patch(
+            "requests.get",
+            side_effect=tts_handler.requests.exceptions.ConnectionError("offline"),
+        ):
+            catalogue = tts_handler.get_kobold_qwen_voice_catalog("http://localhost:8042")
+
+        kobo = next(item for item in catalogue if item["id"] == "kobo")
+        self.assertEqual(kobo["type"], "cloned")
+        self.assertEqual(kobo["model"], "Voice Cloning")
+
     def test_silero_catalog_filters_installed_models_and_voices(self):
         models_response = Mock()
         models_response.json.return_value = {

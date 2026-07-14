@@ -106,7 +106,13 @@ class CrispASRError(RuntimeError):
 
 def normalize_engine(value: str | None) -> str:
     normalized = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
-    if normalized in {"parakeet", "parakeet_onnx", "onnx_parakeet"}:
+    if normalized in {
+        "parakeet",
+        "parakeet_onnx",
+        "onnx_parakeet",
+        "parakeet_tdt_0.6b_v3",
+        "nemo_parakeet_tdt_0.6b_v3",
+    }:
         return STT_ENGINE_PARAKEET
     return STT_ENGINE_WHISPER
 

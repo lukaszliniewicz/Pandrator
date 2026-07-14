@@ -77,6 +77,21 @@ class DynamicSentenceLengthTests(unittest.TestCase):
         tab._on_tts_service_changed("OpenAI")
         self.assertEqual(logic.state.text_processing.max_sentence_length, 200)
 
+    def test_qwen_speaker_options_follow_the_selected_voice_model(self):
+        logic = AppLogic()
+        tab = SessionTab(logic=logic)
+        self.addCleanup(tab.close)
+        voices = ["Aiden", "Ryan", "kobo", "uploaded_narrator"]
+
+        logic.state.tts.service = "Qwen3 TTS"
+        logic.state.tts.xtts_model = "Prebuilt Voices"
+        prebuilt = [value for _label, value, _enabled in tab._build_speaker_combo_options("Qwen3 TTS", voices)]
+        self.assertEqual(prebuilt, ["Aiden", "Ryan"])
+
+        logic.state.tts.xtts_model = "Voice Cloning"
+        cloned = [value for _label, value, _enabled in tab._build_speaker_combo_options("Qwen3 TTS", voices)]
+        self.assertEqual(cloned, ["kobo", "uploaded_narrator"])
+
     def test_pdf_source_import_runs_in_background_and_opens_review_after_completion(self):
         logic = AppLogic()
         tab = SessionTab(logic=logic)

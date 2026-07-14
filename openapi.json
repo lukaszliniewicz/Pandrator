@@ -3161,6 +3161,16 @@
         }
       }
     },
+    "/api/v1/voices/{voiceId}/providers/{serviceId}": {
+      "post": {
+        "operationId": "publishVoiceToProvider",
+        "responses": {
+          "202": {
+            "description": "Provider upload queued"
+          }
+        }
+      }
+    },
     "/api/v1/voices/{voiceId}/samples": {
       "get": {
         "operationId": "listVoiceSamples",

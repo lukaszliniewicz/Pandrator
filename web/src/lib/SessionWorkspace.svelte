@@ -69,6 +69,8 @@
   let fullSettingsSection = $state('');
   let ttsServicesOpen = $state(false);
   let voiceLibraryOpen = $state(false);
+  let voiceLibraryView = $state<'references' | 'prebuilt'>('references');
+  let voiceLibraryService = $state('');
   let optimizationReviewArtifactId = $state('');
   let workspaceMode = $state<'review' | 'automatic'>('review');
   let preview = $state<PreviewableArtifact | null>(null);
@@ -167,6 +169,11 @@
   }
 
   const supportsSttCompute = (name: string) => name === 'auto' || (capabilities?.stt?.compute_backends ?? []).includes(name);
+  const sttOptionLabel = (engineId:string,label:string,timing:string) => {
+    const info=capabilities?.stt?.models?.[engineId]??{};
+    const readiness=info.default?'default':info.installed?'ready':'downloads on first use';
+    return `${label} · ${timing} · ${readiness}`;
+  };
 
   async function run(stage: Stage) {
     if (stage.key === 'preview') {
@@ -214,8 +221,10 @@
     }
     settingsStage = stage;
     let saved = stageSettings[stage.key] ?? {};
+    let storedSettings:any = null;
     try {
       const stored = await api<any>(`/sessions/${session.id}/settings/${stageSection(stage.key)}`);
+      storedSettings = stored;
       saved = {...stored.effective, ...saved};
       stageSettings[stage.key] = saved;
     } catch { /* use stage-local values */ }
@@ -223,8 +232,10 @@
     originalLanguage = String(saved.original_language ?? session.source_language ?? 'auto');
     model = String(saved.model_name ?? saved.tts_optimization_model ?? saved[`${stage.key}_model`] ?? 'default');
     backend = String(saved.backend ?? saved.translation_backend ?? 'llm');
-    sttEngine = String(saved.stt_engine ?? saved.stt_backend ?? 'whisper').includes('parakeet') ? 'parakeet' : 'whisper';
-    sttQuantization = String(saved.stt_model_quantization ?? 'f16');
+    const hasSavedSttModel = Boolean(storedSettings?.override?.stt_engine || storedSettings?.global?.stt_engine || stageSettings[stage.key]?.stt_engine);
+    const preferredSttEngine = String(capabilities?.stt?.default_engine ?? 'whisper');
+    sttEngine = String(hasSavedSttModel ? (saved.stt_engine ?? saved.stt_backend) : preferredSttEngine).includes('parakeet') ? 'parakeet' : 'whisper';
+    sttQuantization = String(hasSavedSttModel ? (saved.stt_model_quantization ?? 'f16') : (capabilities?.stt?.default_model_quantization ?? 'f16'));
     sttComputeBackend = String(saved.stt_compute_backend ?? 'auto');
     sttDevice = Number(saved.stt_compute_device ?? 0);
     sttThreads = Number(saved.stt_threads ?? 0);
@@ -280,10 +291,22 @@
     subtitleMode = String(saved.subtitle_mode ?? 'soft');
     subtitleSelection = String(saved.subtitle_selection ?? 'dual');
     audioMode = String(saved.audio_mode ?? 'preserve');
+    if (stage.key === 'generate_audio' && activeService) await discoverTtsService(activeService);
     if (stage.key === 'generate_audio' && selectedTtsService) {
       ttsService = String(selectedTtsService.id ?? selectedTtsService.name);
       ttsModel = ttsModel || String(selectedTtsService.default_model ?? ttsModels[0] ?? '');
       voiceName = voiceName || String(selectedTtsDefaultVoice ?? '');
+      if (String(selectedTtsService.id).toLowerCase()==='kobold_qwen') {
+        const catalogue=Array.from(selectedTtsService.voice_catalogues?.[ttsModel]??[]).map((voice:any)=>String(voice));
+        const published=libraryVoices.flatMap((voice:any)=>{
+          const registration=voice?.metadata_json?.providers?.kobold_qwen;
+          return registration?.status==='ready'&&registration?.voice_id?[String(registration.voice_id)]:[];
+        });
+        const allowed=ttsModel.toLowerCase()==='voice cloning'?[...catalogue,...published]:catalogue;
+        if (!allowed.some((voice:string)=>voice.toLowerCase()===voiceName.toLowerCase())) {
+          voiceName=String(selectedTtsService.default_voices?.[ttsModel]??allowed[0]??'');
+        }
+      }
     }
   }
 
@@ -298,18 +321,22 @@
     return api(`/sessions/${session.id}/settings/${section}`,{method:'PUT',headers:{'If-Match':`"${stored.revision}"`},body:JSON.stringify({value:{...stored.override,...value}})});
   }
 
-  async function loadSpeechCatalogues() {
+  async function loadSpeechCatalogues(preserveSelection = false) {
+    const previousService = ttsService;
+    const previousModel = ttsModel;
+    const previousVoice = voiceName;
     try {
       const [services, voices] = await Promise.all([api<any>('/services/tts?refresh=true'), api<any>('/voices')]);
       ttsCatalogue = services;
       libraryVoices = voices.items ?? [];
       const catalogue = services.services ?? [];
       const configured = catalogue.find((item:any) => [item.id,item.name].some((value) => String(value ?? '').toLowerCase() === String(services.default_service ?? '').toLowerCase()));
-      const active = (configured?.online ? configured : catalogue.find((item:any) => item.online)) ?? configured ?? catalogue[0];
+      const preserved = catalogue.find((item:any) => [item.id,item.name].some((value) => String(value ?? '').toLowerCase() === previousService.toLowerCase()));
+      const active = (preserveSelection ? preserved : null) ?? (configured?.online ? configured : catalogue.find((item:any) => item.online)) ?? configured ?? catalogue[0];
       if (active) {
         ttsService = String(active.id ?? active.name);
-        ttsModel = ttsModel || String(active.default_model ?? active.models?.[0] ?? '');
-        voiceName = voiceName || String(active.default_voices_by_language?.[ttsModel]?.[targetLanguage] ?? active.default_voices?.[ttsModel] ?? active.default_voice ?? '');
+        ttsModel = preserveSelection && preserved ? previousModel : ttsModel || String(active.default_model ?? active.models?.[0] ?? '');
+        voiceName = preserveSelection && preserved ? previousVoice : voiceName || String(active.default_voices_by_language?.[ttsModel]?.[targetLanguage] ?? active.default_voices?.[ttsModel] ?? active.default_voice ?? '');
         await discoverTtsService(active);
       }
     } catch {
@@ -340,6 +367,7 @@
         ...item,
         models:Array.from(new Set([...(discovered.models??[]),...(item.models??[])])),
         voices:Array.from(new Set([...(discovered.voices??[]),...(item.voices??[])])),
+        live_voices:Array.from(new Set(discovered.voices??[])),
         online:true
       }:item);
       ttsCatalogue={...ttsCatalogue,services};
@@ -354,19 +382,54 @@
     voiceName=String(service?.default_voices_by_language?.[ttsModel]?.[targetLanguage]??service?.default_voices?.[ttsModel]??service?.default_voice??'');
   }
 
+  function chooseTtsModel(value:string) {
+    ttsModel=value;
+    const service=selectedTtsService;
+    const modelVoices=service?.voice_catalogues?.[value]??[];
+    voiceName=String(service?.default_voices_by_language?.[value]?.[targetLanguage]??service?.default_voices?.[value]??modelVoices[0]??'');
+  }
+
+  function openVoiceLibrary(view:'references'|'prebuilt', serviceId='') {
+    voiceLibraryView=view;
+    voiceLibraryService=serviceId;
+    voiceLibraryOpen=true;
+  }
+
+  async function usePublishedVoice(providerVoiceId:string) {
+    voiceName=providerVoiceId;
+    voiceLibraryOpen=false;
+    await loadSpeechCatalogues(true);
+    voiceName=providerVoiceId;
+  }
+
   const selectedTtsService = $derived((ttsCatalogue.services??[]).find((item:any)=>[item.id,item.name].map((value)=>String(value??'').toLowerCase()).includes(ttsService.toLowerCase())));
   const ttsModels = $derived(selectedTtsService?.models??[]);
   const selectedTtsDefaultVoice = $derived(selectedTtsService?.default_voices_by_language?.[ttsModel]?.[targetLanguage] ?? selectedTtsService?.default_voices?.[ttsModel] ?? selectedTtsService?.default_voice ?? '');
-  const ttsVoiceDescriptors = $derived(Array.from(new Set(selectedTtsService?.voice_catalogues?.[ttsModel] ?? selectedTtsService?.voices ?? [])).map((voice)=>describeVoice(
+  const selectedTtsServiceId = $derived(String(selectedTtsService?.id??ttsService).toLowerCase());
+  const qwenVoiceCloning = $derived(selectedTtsServiceId==='kobold_qwen' && ttsModel.toLowerCase()==='voice cloning');
+  const supportsCloningVoices = $derived(Boolean(selectedTtsService?.supports_voice_cloning));
+  const supportsPrebuiltVoices = $derived(Boolean(selectedTtsService?.supports_prebuilt_voices && !qwenVoiceCloning));
+  const selectedModelVoiceIds = $derived(selectedTtsService?.voice_catalogues?.[ttsModel] ?? (supportsPrebuiltVoices ? selectedTtsService?.voices ?? [] : []));
+  const ttsVoiceDescriptors = $derived(Array.from(new Set(selectedModelVoiceIds)).map((voice)=>describeVoice(
     String(selectedTtsService?.id??ttsService),
     String(voice),
     selectedTtsService?.voice_metadata?.[`${ttsModel}:${String(voice)}`]
   )));
   const ttsLanguages = $derived(languagesForService(String(selectedTtsService?.id??ttsService),ttsVoiceDescriptors));
   const filteredPrebuiltVoices = $derived(ttsVoiceDescriptors.filter((voice)=>!voice.languageCode||voice.languageCode===targetLanguage));
-  const filteredLibraryVoices = $derived(libraryVoices.filter((voice:any)=>!voice.language||voice.language===targetLanguage||session.source_language==='auto'));
-  const supportsPrebuiltVoices = $derived(Boolean(selectedTtsService?.supports_prebuilt_voices && ttsVoiceDescriptors.length));
-  const supportsCloningVoices = $derived(['xtts','voxcpm','fishs2','chatterbox','kobold_qwen'].includes(String(selectedTtsService?.id??'').toLowerCase()) || !selectedTtsService?.supports_prebuilt_voices);
+  const publishedProviderVoices = $derived(libraryVoices.flatMap((voice:any)=>{
+    const registration=voice?.metadata_json?.providers?.[selectedTtsServiceId];
+    return registration?.status==='ready'&&registration?.voice_id?[String(registration.voice_id)]:[];
+  }));
+  const prebuiltVoiceIds = $derived(new Set(Array.from(selectedTtsService?.voice_catalogues?.['Prebuilt Voices']??[]).map((voice:any)=>String(voice).toLowerCase())));
+  const clonedVoiceIds = $derived(Array.from(new Set([
+    ...(qwenVoiceCloning?selectedModelVoiceIds:[]),
+    ...(selectedTtsService?.live_voices??[]),
+    ...publishedProviderVoices,
+    ...(!selectedTtsService?.supports_prebuilt_voices?(selectedTtsService?.voices??[]):[])
+  ].map((voice:any)=>String(voice)).filter((voice:string)=>voice&&!prebuiltVoiceIds.has(voice.toLowerCase())))));
+  const clonedVoiceDescriptors = $derived(clonedVoiceIds.map((voice)=>describeVoice(selectedTtsServiceId,voice)));
+  const showClonedVoices = $derived(Boolean(supportsCloningVoices && (!selectedTtsService?.supports_prebuilt_voices || qwenVoiceCloning)));
 
   async function toggleOptimization(enabled:boolean) {
     error='';
@@ -409,6 +472,10 @@
   async function saveSettings() {
     if (!settingsStage) return;
     const key = settingsStage.key;
+    if (key === 'generate_audio' && showClonedVoices && (!voiceName || !clonedVoiceIds.some((voice)=>voice.toLowerCase()===voiceName.toLowerCase()))) {
+      error='Choose a provider-ready cloned voice, or create and upload one through the Voice Library.';
+      return;
+    }
     const common = { model_name: model === 'default' ? '' : model, [`${key}_model`]: model };
     if (key === 'transcribe') stageSettings[key] = {
       stt_engine: sttEngine, stt_backend: sttEngine, stt_model_quantization: sttQuantization,
@@ -548,7 +615,7 @@
       <div class="mt-6 grid gap-5">
         {#if ['correct','translate','optimize_tts','optimize_document','clean_source'].includes(settingsStage.key)}<label class="text-sm font-semibold">LLM model<select bind:value={model} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="default">Application default</option>{#each llmModels as item}<option value={item.value}>{item.label}{item.isDefault?' · default':''}</option>{/each}</select></label>{/if}
         {#if settingsStage.key === 'transcribe'}
-          <label class="text-sm font-semibold">Recognition model<select bind:value={sttEngine} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="whisper">Whisper large-v3 · DTW timestamps</option><option value="parakeet">Parakeet TDT 0.6B v3 · native timestamps</option></select></label>
+          <label class="text-sm font-semibold">Recognition model<select bind:value={sttEngine} onchange={()=>sttQuantization=String(capabilities?.stt?.models?.[sttEngine]?.precision??'f16')} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="whisper">{sttOptionLabel('whisper','Whisper large-v3','DTW timestamps')}</option><option value="parakeet">{sttOptionLabel('parakeet','Parakeet TDT 0.6B v3','native timestamps')}</option></select><span class="muted mt-1 block text-xs">CrispASR downloads a model the first time you use it; the installer-selected model is the default.</span></label>
           <label class="text-sm font-semibold">Model precision<select bind:value={sttQuantization} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="f16">Full F16</option>{#if sttEngine === 'whisper'}<option value="q5_0">Q5_0 · 1.08 GB</option>{:else}<option value="q8_0">Q8_0 · 745 MB</option><option value="q5_0">Q5_0 · 541 MB</option><option value="q4_k">Q4_K · 489 MB</option>{/if}</select><span class="muted mt-1 block text-xs">F16 maximizes fidelity; quantized files reduce download and memory use.</span></label>
           <div class="grid gap-3 sm:grid-cols-[1fr_7rem]"><label class="text-sm font-semibold">Compute backend<select bind:value={sttComputeBackend} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="auto">Automatic</option><option value="cpu" disabled={!supportsSttCompute('cpu')}>CPU</option><option value="cuda" disabled={!supportsSttCompute('cuda')}>CUDA</option><option value="vulkan" disabled={!supportsSttCompute('vulkan')}>Vulkan</option><option value="metal" disabled={!supportsSttCompute('metal')}>Metal</option></select><span class="muted mt-1 block text-xs">Only backends compiled into the installed CrispASR runtime can be forced.</span></label><label class="text-sm font-semibold">Device<input type="number" min="0" disabled={['auto','cpu'].includes(sttComputeBackend)} bind:value={sttDevice} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal disabled:opacity-40"/></label></div>
           <div class="grid gap-3 sm:grid-cols-2"><label class="text-sm font-semibold">Source language<select bind:value={originalLanguage} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal">{#each LANGUAGE_OPTIONS as item}<option value={item.value}>{item.label}</option>{/each}</select></label><label class="text-sm font-semibold">Language detector<select bind:value={sttLidBackend} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="whisper">Whisper tiny</option><option value="ecapa">ECAPA (recommended)</option><option value="silero">Silero</option><option value="off">Off</option></select></label></div>
@@ -567,7 +634,17 @@
         {/if}
         {#if settingsStage.key === 'clean_source'}<label class="flex items-start gap-3 rounded-xl border border-[var(--line)] p-4"><input type="checkbox" bind:checked={agentic} class="mt-1 size-4 accent-[var(--accent)]"/><span><span class="block text-sm font-semibold">Agentic review loop</span><span class="muted mt-1 block text-xs">Runs focused metadata, navigation, boilerplate, repeated-element, and chapter passes. Provider costs may apply.</span></span></label>{#if agentic}<label class="text-sm font-semibold">Maximum LLM turns<input type="number" min="5" max="500" bind:value={maxIterations} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/></label>{/if}{/if}
         {#if settingsStage.key === 'prepare_text'}<div class="rounded-xl border border-[var(--line)] bg-[var(--accent-soft)] p-4"><div class="text-sm font-semibold">Provider-independent segmentation</div><p class="muted mt-1 text-xs leading-relaxed">These controls create editable narration units and pauses. Voice, model, and synthesis controls are selected later in Generate audio.</p></div><div class="grid gap-3 sm:grid-cols-2"><label class="flex items-center gap-3 rounded-xl border border-[var(--line)] p-3 text-sm font-semibold"><input type="checkbox" bind:checked={splitSentences} class="size-4 accent-[var(--accent)]"/> Split long sentences</label><label class="flex items-center gap-3 rounded-xl border border-[var(--line)] p-3 text-sm font-semibold"><input type="checkbox" bind:checked={appendSentences} class="size-4 accent-[var(--accent)]"/> Join short sentences</label><label class="text-sm font-semibold">Maximum segment length<input type="number" min="20" max="2000" bind:value={maxSentenceLength} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/></label><label class="flex items-center gap-3 rounded-xl border border-[var(--line)] p-3 text-sm font-semibold"><input type="checkbox" bind:checked={nemoNormalization} class="size-4 accent-[var(--accent)]"/> Deterministic normalization</label></div><details class="rounded-xl border border-[var(--line)] p-4"><summary class="cursor-pointer text-sm font-semibold">Advanced text cleanup</summary><div class="mt-4 grid gap-3 sm:grid-cols-2"><label class="flex items-center gap-3 text-sm"><input type="checkbox" bind:checked={normalizeAllCaps} class="size-4 accent-[var(--accent)]"/> Normalize all-caps text</label><label class="flex items-center gap-3 text-sm"><input type="checkbox" bind:checked={removeDiacritics} class="size-4 accent-[var(--accent)]"/> Remove diacritics</label><label class="flex items-center gap-3 text-sm"><input type="checkbox" bind:checked={removeQuotationMarks} class="size-4 accent-[var(--accent)]"/> Remove quotation marks</label></div></details>{/if}
-        {#if settingsStage.key === 'generate_audio'}<label class="text-sm font-semibold">Active TTS service<select value={ttsService} onchange={(event)=>chooseTtsService(event.currentTarget.value)} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal">{#each ttsCatalogue.services??[] as service}<option value={service.id}>{service.name}{service.online===true?' · running':service.online===false?' · offline':''}</option>{/each}</select></label><div class="flex flex-wrap items-center justify-between gap-3"><p class="muted text-xs">The running configured service is selected automatically. Its live catalogue is refreshed when available.</p><button type="button" onclick={() => ttsServicesOpen = true} class="text-xs font-semibold text-[var(--accent)]">Manage services</button></div><label class="text-sm font-semibold">Model<select bind:value={ttsModel} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal">{#each ttsModels as item}<option value={item}>{item}</option>{/each}</select></label><label class="text-sm font-semibold">Speech language<select bind:value={targetLanguage} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal">{#each (ttsLanguages.length?ttsLanguages:LANGUAGE_OPTIONS.filter((item)=>item.value!=='auto')) as item}<option value={item.value}>{item.label}</option>{/each}</select></label>{#if supportsPrebuiltVoices || supportsCloningVoices}<label class="text-sm font-semibold">Voice<select bind:value={voiceName} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="">Service default</option>{#if supportsPrebuiltVoices}<optgroup label={`${LANGUAGE_OPTIONS.find((item)=>item.value===targetLanguage)?.label??targetLanguage} · pre-built voices`}>{#each filteredPrebuiltVoices as voice}<option value={voice.id}>{voice.name}{voice.gender?` · ${voice.gender}`:''}</option>{/each}</optgroup>{/if}{#if supportsCloningVoices}<optgroup label="Voice Library references">{#each filteredLibraryVoices as voice}<option value={voice.name}>{voice.name}</option>{/each}</optgroup>{/if}</select></label><div class="flex flex-wrap items-center justify-between gap-3"><p class="muted text-xs">Voice IDs are stored unchanged, while the list uses readable names and language grouping.</p><button type="button" onclick={()=>voiceLibraryOpen=true} class="flex items-center gap-1.5 text-xs font-semibold text-[var(--accent)]"><Library size={14}/> Open Voice Library</button></div>{/if}{#if session.workflow_kind !== 'audiobook'}<div class="rounded-xl border border-[var(--line)] p-4"><div class="text-sm font-semibold">Speech blocks for dubbing</div><p class="muted mt-1 text-xs">These TTS chunks are independent from the final subtitle layout.</p><div class="mt-3 grid grid-cols-2 gap-3"><label class="text-xs font-semibold">Minimum characters<input type="number" min="1" bind:value={speechBlockMinChars} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Maximum characters<input type="number" min="1" bind:value={speechBlockMaxChars} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Merge gap (ms)<input type="number" min="0" bind:value={speechBlockMergeThreshold} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label></div></div>{/if}{/if}
+        {#if settingsStage.key === 'generate_audio'}
+          <label class="text-sm font-semibold">Active TTS service<select value={ttsService} onchange={(event)=>chooseTtsService(event.currentTarget.value)} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal">{#each ttsCatalogue.services??[] as service}<option value={service.id}>{service.name}{service.online===true?' · running':service.online===false?' · offline':''}</option>{/each}</select></label>
+          <div class="flex flex-wrap items-center justify-between gap-3"><p class="muted text-xs">The running configured service is selected automatically. Its live catalogue is refreshed when available.</p><button type="button" onclick={() => ttsServicesOpen = true} class="text-xs font-semibold text-[var(--accent)]">Manage services</button></div>
+          <label class="text-sm font-semibold">{selectedTtsServiceId==='kobold_qwen'?'Voice type':'Model'}<select value={ttsModel} onchange={(event)=>chooseTtsModel(event.currentTarget.value)} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal">{#each ttsModels as item}<option value={item}>{item}</option>{/each}</select></label>
+          <label class="text-sm font-semibold">Speech language<select bind:value={targetLanguage} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal">{#each (ttsLanguages.length?ttsLanguages:LANGUAGE_OPTIONS.filter((item)=>item.value!=='auto')) as item}<option value={item.value}>{item.label}</option>{/each}</select></label>
+          {#if supportsPrebuiltVoices || showClonedVoices}
+            <label class="text-sm font-semibold">Voice<select bind:value={voiceName} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal">{#if !showClonedVoices}<option value="">Service default</option>{/if}{#if supportsPrebuiltVoices}<optgroup label={`${LANGUAGE_OPTIONS.find((item)=>item.value===targetLanguage)?.label??targetLanguage} · pre-built voices`}>{#each filteredPrebuiltVoices as voice}<option value={voice.id}>{voice.name}{voice.gender?` · ${voice.gender}`:''}</option>{/each}</optgroup>{/if}{#if showClonedVoices}<optgroup label="Voices ready in provider">{#each clonedVoiceDescriptors as voice}<option value={voice.id}>{voice.name}</option>{/each}</optgroup>{/if}</select></label>
+            <div class="flex flex-wrap items-center justify-between gap-3"><p class="muted text-xs">{showClonedVoices?'Only voices returned by this provider or uploaded from the Library can be selected.':'Only voices supported by the selected model are shown.'}</p>{#if showClonedVoices}<button type="button" onclick={()=>openVoiceLibrary('references',selectedTtsServiceId)} class="flex items-center gap-1.5 text-xs font-semibold text-[var(--accent)]"><Library size={14}/> Create or upload cloned voice</button>{:else}<button type="button" onclick={()=>openVoiceLibrary('prebuilt')} class="flex items-center gap-1.5 text-xs font-semibold text-[var(--accent)]"><Library size={14}/> Browse pre-built voices</button>{/if}</div>
+          {/if}
+          {#if session.workflow_kind !== 'audiobook'}<div class="rounded-xl border border-[var(--line)] p-4"><div class="text-sm font-semibold">Speech blocks for dubbing</div><p class="muted mt-1 text-xs">These TTS chunks are independent from the final subtitle layout.</p><div class="mt-3 grid grid-cols-2 gap-3"><label class="text-xs font-semibold">Minimum characters<input type="number" min="1" bind:value={speechBlockMinChars} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Maximum characters<input type="number" min="1" bind:value={speechBlockMaxChars} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Merge gap (ms)<input type="number" min="0" bind:value={speechBlockMergeThreshold} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label></div></div>{/if}
+        {/if}
         {#if settingsStage.key === 'export'}<label class="text-sm font-semibold">Audio<select bind:value={audioMode} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="preserve">Preserve source audio</option><option value="mixed">Mix source and dubbing</option><option value="dubbing_only">Dubbing only</option></select></label><label class="text-sm font-semibold">Subtitles<select bind:value={subtitleMode} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="none">None</option><option value="soft">Injected soft tracks / separate files</option><option value="burned">Burned subtitles</option></select></label>{#if subtitleMode !== 'none'}<label class="text-sm font-semibold">Subtitle tracks<select bind:value={subtitleSelection} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="source">Source / corrected</option><option value="translation">Translation</option><option value="dual">Source and translation</option></select></label>{/if}<div class="rounded-xl border border-[var(--line)] p-4"><div class="text-sm font-semibold">Final subtitle layout</div><p class="muted mt-1 text-xs">Applied to derived export subtitles only; dubbing speech blocks are unchanged.</p><div class="mt-3 grid grid-cols-2 gap-3"><label class="text-xs font-semibold">Characters / line<input type="number" min="20" max="100" bind:value={subtitleChars} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Lines<input type="number" min="1" max="3" bind:value={subtitleLines} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Minimum duration (ms)<input type="number" min="250" bind:value={subtitleMinDuration} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Maximum duration (ms)<input type="number" min="1000" bind:value={subtitleMaxDuration} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Characters / second<input type="number" min="5" max="40" step="0.5" bind:value={subtitleCps} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Minimum cue gap (ms)<input type="number" min="0" max="500" bind:value={subtitleMinGap} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Phrase-break silence (ms)<input type="number" min="100" max="3000" bind:value={subtitlePhraseGap} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label></div></div>{/if}
       </div>
       <div class="mt-7 flex flex-wrap justify-end gap-3"><button onclick={() => { fullSettingsSection=stageSection(settingsStage!.key); settingsStage=null; }} class="mr-auto rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold">All {sectionDisplay(stageSection(settingsStage.key))} settings</button><button onclick={() => settingsStage=null} class="rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold">Cancel</button><button onclick={saveSettings} class="rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white">Save settings</button></div>
@@ -581,7 +658,7 @@
 {#if optimizationReviewArtifactId}<TextOptimizationReview artifactId={optimizationReviewArtifactId} onclose={()=>optimizationReviewArtifactId=''} onsaved={load}/>{/if}
 {#if fullSettingsSection}<SettingsModal sessionId={session.id} section={fullSettingsSection} title={`${sectionDisplay(fullSettingsSection)} settings`} description="These settings are saved as session overrides and inherited by future runs." onclose={()=>fullSettingsSection=''}/>{/if}
 {#if ttsServicesOpen}<TtsServicesModal onclose={() => ttsServicesOpen=false}/>{/if}
-{#if voiceLibraryOpen}<VoiceLibraryModal initialView={supportsPrebuiltVoices?'prebuilt':'references'} onclose={async()=>{voiceLibraryOpen=false;await loadSpeechCatalogues()}}/>{/if}
+{#if voiceLibraryOpen}<VoiceLibraryModal initialView={voiceLibraryView} initialService={voiceLibraryService} onvoicepublished={usePublishedVoice} onclose={async()=>{voiceLibraryOpen=false;await loadSpeechCatalogues(true)}}/>{/if}
 <GuidedTour tourId="workflow" steps={workflowTourSteps} bind:open={workflowTour}/>
 
 <style>

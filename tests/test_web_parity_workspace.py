@@ -137,6 +137,8 @@ class WebParityWorkspaceTests(unittest.TestCase):
             {"Aiden", "Dylan", "Eric", "Ono_Anna", "Ryan", "Serena", "Sohee", "Uncle_Fu", "Vivian"},
             set(qwen["voice_catalogues"]["Prebuilt Voices"]),
         )
+        self.assertEqual(["kobo"], qwen["voice_catalogues"]["Voice Cloning"])
+        self.assertEqual("kobo", qwen["default_voices"]["Voice Cloning"])
 
     def test_tts_catalogue_restores_managed_previews_and_marks_unavailable_services(self):
         extension = self.app.extensions["pandrator"]

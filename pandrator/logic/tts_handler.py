@@ -118,6 +118,7 @@ CHATTERBOX_TTS_MODELS = [
 KOBOLD_QWEN_DEFAULT_MODEL = "Prebuilt Voices"
 KOBOLD_QWEN_DEFAULT_VOICE = "Aiden"
 KOBOLD_QWEN_TTS_MODELS = ["Prebuilt Voices", "Voice Cloning"]
+KOBOLD_QWEN_SAMPLE_VOICE = "kobo"
 KOBOLD_QWEN_TTS_VOICES = [
     "Aiden",
     "Dylan",
@@ -129,6 +130,13 @@ KOBOLD_QWEN_TTS_VOICES = [
     "Uncle_Fu",
     "Vivian",
 ]
+VOICE_CLONING_SERVICE_IDS = {
+    "xtts",
+    "voxcpm",
+    "fishs2",
+    "chatterbox",
+    "kobold_qwen",
+}
 FISHS2_DEFAULT_TOP_P = 0.7
 FISHS2_DEFAULT_CHUNK_LENGTH = 200
 FISHS2_DEFAULT_LATENCY = "balanced"
@@ -535,7 +543,7 @@ def _default_service_configs() -> list[dict[str, object]]:
     configs: list[dict[str, object]] = []
     for service_id, api_base in local_services:
         models, default_model, voices, default_voice, prebuilt = local_catalogues[service_id]
-        configs.append({
+        record = {
             "id": service_id,
             "name": FIRST_CLASS_SERVICE_NAMES[service_id],
             "kind": "local",
@@ -547,7 +555,23 @@ def _default_service_configs() -> list[dict[str, object]]:
             "voice_catalogues": {default_model: voices} if default_model else {},
             "default_voices": {default_model: default_voice} if default_model and default_voice else {},
             PREBUILT_VOICE_PROVIDER_FIELD: prebuilt,
-        })
+            "supports_voice_cloning": service_id in VOICE_CLONING_SERVICE_IDS,
+        }
+        if service_id == "kobold_qwen":
+            # Qwen exposes two different model capabilities through one API.
+            # Keep their catalogues separate so clients never offer a preset to
+            # the Base model or an uploaded reference to CustomVoice.  KoboldCpp
+            # ships the ``kobo`` reference internally even before a user uploads
+            # a WAV, so seed it as the cloning model's usable sample voice.
+            record["voice_catalogues"] = {
+                KOBOLD_QWEN_DEFAULT_MODEL: list(KOBOLD_QWEN_TTS_VOICES),
+                "Voice Cloning": [KOBOLD_QWEN_SAMPLE_VOICE],
+            }
+            record["default_voices"] = {
+                KOBOLD_QWEN_DEFAULT_MODEL: KOBOLD_QWEN_DEFAULT_VOICE,
+                "Voice Cloning": KOBOLD_QWEN_SAMPLE_VOICE,
+            }
+        configs.append(record)
     configs.extend(
         [
             {
@@ -2675,12 +2699,12 @@ def get_kobold_qwen_models(base_url: str = KOBOLD_QWEN_API_BASE_URL) -> list[str
     return _merge_catalog_with_discovered(KOBOLD_QWEN_TTS_MODELS, discovered_models)
 
 
-def get_kobold_qwen_voices(base_url: str = KOBOLD_QWEN_API_BASE_URL) -> list[str]:
-    """Fetches available Qwen3 TTS voices from server."""
+def get_kobold_qwen_voice_catalog(base_url: str = KOBOLD_QWEN_API_BASE_URL) -> list[dict[str, str]]:
+    """Fetch Qwen voices while retaining the API's cloned/preset model metadata."""
     normalized_base_url = _normalize_base_url(base_url, KOBOLD_QWEN_API_BASE_URL)
     api_key = _resolve_kobold_qwen_api_key()
 
-    discovered_voices: list[str] = []
+    discovered: list[dict[str, str]] = []
     voice_urls = _dedupe_ordered(
         _openai_voice_catalog_urls(normalized_base_url)
         + _openai_files_urls(normalized_base_url)
@@ -2697,14 +2721,61 @@ def get_kobold_qwen_voices(base_url: str = KOBOLD_QWEN_API_BASE_URL) -> list[str
                 continue
 
             response.raise_for_status()
-            discovered_voices = _extract_voices_from_openai_payload(response.json())
-            if discovered_voices:
+            payload = response.json()
+            if isinstance(payload, list):
+                candidates = payload
+            elif isinstance(payload, dict):
+                candidates = next(
+                    (payload.get(key) for key in ("data", "voices", "items") if isinstance(payload.get(key), list)),
+                    [],
+                )
+            else:
+                candidates = []
+            for item in candidates:
+                if isinstance(item, dict):
+                    voice_id = str(
+                        item.get("voice_id")
+                        or item.get("id")
+                        or item.get("name")
+                        or ""
+                    ).strip()
+                    if not voice_id:
+                        continue
+                    voice_type = str(item.get("type") or "").strip().lower()
+                    model = str(item.get("model") or "").strip()
+                    if not voice_type:
+                        voice_type = (
+                            "preset"
+                            if voice_id.lower() in {voice.lower() for voice in KOBOLD_QWEN_TTS_VOICES}
+                            else "cloned"
+                        )
+                    discovered.append({"id": voice_id, "type": voice_type, "model": model})
+                else:
+                    voice_id = str(item or "").strip()
+                    if voice_id:
+                        discovered.append({"id": voice_id, "type": "cloned", "model": "Voice Cloning"})
+            if discovered:
                 break
         except (requests.exceptions.RequestException, ValueError) as e:
             logging.debug("Could not list Qwen3 TTS voices from %s: %s", voices_url, e)
             continue
 
-    return _merge_catalog_with_discovered(KOBOLD_QWEN_TTS_VOICES, discovered_voices)
+    by_id = {item["id"].lower(): item for item in discovered}
+    for voice_id in KOBOLD_QWEN_TTS_VOICES:
+        by_id.setdefault(
+            voice_id.lower(),
+            {"id": voice_id, "type": "preset", "model": KOBOLD_QWEN_DEFAULT_MODEL},
+        )
+    by_id.setdefault(
+        KOBOLD_QWEN_SAMPLE_VOICE,
+        {"id": KOBOLD_QWEN_SAMPLE_VOICE, "type": "cloned", "model": "Voice Cloning"},
+    )
+    return list(by_id.values())
+
+
+def get_kobold_qwen_voices(base_url: str = KOBOLD_QWEN_API_BASE_URL) -> list[str]:
+    """Fetches all available Qwen3 TTS voice IDs from server."""
+    return [item["id"] for item in get_kobold_qwen_voice_catalog(base_url)]
 
 
 def check_voxtral_connection(base_url: str = VOXTRAL_API_BASE_URL) -> bool:
@@ -4157,13 +4228,34 @@ def _request_chatterbox_audio(text: str, tts_settings: dict, chatterbox_base_url
 def _request_kobold_qwen_audio(text: str, tts_settings: dict, kobold_qwen_base_url: str) -> requests.Response:
     normalized_base_url = _normalize_base_url(kobold_qwen_base_url, KOBOLD_QWEN_API_BASE_URL)
     api_key = _resolve_kobold_qwen_api_key()
-    model = str(tts_settings.get("xtts_model") or KOBOLD_QWEN_DEFAULT_MODEL).strip()
+    model = str(
+        tts_settings.get("xtts_model")
+        or tts_settings.get("model")
+        or KOBOLD_QWEN_DEFAULT_MODEL
+    ).strip()
     if not model:
         model = KOBOLD_QWEN_DEFAULT_MODEL
 
-    voice = str(tts_settings.get("speaker") or KOBOLD_QWEN_DEFAULT_VOICE).strip()
+    normalized_model = model.lower()
+    cloning_model = normalized_model in {
+        "voice cloning",
+        "qwen3-tts",
+        "qwen3-tts-base",
+    }
+    voice = str(tts_settings.get("speaker") or tts_settings.get("voice") or "").strip()
     if not voice:
-        voice = KOBOLD_QWEN_DEFAULT_VOICE
+        voice = KOBOLD_QWEN_SAMPLE_VOICE if cloning_model else KOBOLD_QWEN_DEFAULT_VOICE
+
+    preset_ids = {item.lower() for item in KOBOLD_QWEN_TTS_VOICES}
+    if cloning_model and voice.lower() in preset_ids:
+        raise ValueError(
+            f"Qwen voice '{voice}' is pre-built and cannot be used with Voice Cloning. "
+            "Choose a provider-uploaded reference voice instead."
+        )
+    if normalized_model in {"prebuilt voices", "qwen3-tts-customvoice"} and voice.lower() not in preset_ids:
+        raise ValueError(
+            f"Qwen voice '{voice}' is a cloning reference and cannot be used with Prebuilt Voices."
+        )
 
     payload = {
         "model": model,

@@ -38,6 +38,7 @@ class CrispASRTranscriptionTests(unittest.TestCase):
     def test_legacy_backend_names_migrate_to_crispasr_engines(self):
         self.assertEqual(stt_backends.normalize_stt_backend("whisperx"), "whisper")
         self.assertEqual(stt_backends.normalize_stt_backend("parakeet_onnx"), "parakeet")
+        self.assertEqual(crispasr.normalize_engine("parakeet-tdt-0.6b-v3"), "parakeet")
 
     def test_whisper_command_pins_f16_large_v3_and_dtw(self):
         command = crispasr.build_command(

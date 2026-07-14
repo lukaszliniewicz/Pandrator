@@ -1,22 +1,35 @@
 <script lang="ts">
   import { page } from '$app/state';
-  import { ArrowLeft, AudioLines, CircleAlert, Library, Mic, Play, Plus, Save, Settings2, Square, Trash2, Volume2, WandSparkles } from '@lucide/svelte';
+  import { ArrowLeft, AudioLines, CheckCircle2, CircleAlert, CloudUpload, Library, LoaderCircle, Mic, Play, Plus, Save, Settings2, Square, Trash2, Volume2, WandSparkles } from '@lucide/svelte';
   import { api, type JobRecord } from './api';
   import { onDestroy, onMount } from 'svelte';
   import GuidedTour from './GuidedTour.svelte';
   import SettingsModal from './SettingsModal.svelte';
   import PrebuiltVoiceLibrary from './PrebuiltVoiceLibrary.svelte';
 
-  type Voice = { id: string; name: string; language?: string; description?: string };
+  type ProviderRegistration = { voice_id: string; sample_id?: string; status?: string; updated_at?: string };
+  type Voice = { id: string; name: string; language?: string; description?: string; metadata_json?: { providers?: Record<string, ProviderRegistration>; bundled_voice?: string } };
   type Sample = { id: string; artifact_id: string; transcript?: string; transcript_language?: string; transcript_reviewed: boolean };
+  type TtsService = { id: string; name: string; available?: boolean; availability_reason?: string; supports_voice_cloning?: boolean };
 
-  let { onback, initialView }: { onback: () => void; initialView?: 'references' | 'prebuilt' } = $props();
+  let {
+    onback,
+    initialView,
+    initialService = '',
+    onvoicepublished
+  }: {
+    onback: () => void;
+    initialView?: 'references' | 'prebuilt';
+    initialService?: string;
+    onvoicepublished?: (providerVoiceId: string) => void;
+  } = $props();
   let activeView = $state<'references' | 'prebuilt'>('references');
-  const initialService = page.url.searchParams.get('service') ?? '';
+  const requestedService = $derived(initialService || page.url.searchParams.get('service') || '');
   let voices = $state<Voice[]>([]);
   let selected = $state<Voice | null>(null);
   let samples = $state<Sample[]>([]);
   let capabilities = $state<any>({});
+  let ttsServices = $state<TtsService[]>([]);
   let error = $state('');
   let notice = $state('');
   let newName = $state('');
@@ -47,6 +60,9 @@
   let playingKey = $state('');
   let tourOpen = $state(false);
   let sttSettingsOpen = $state(false);
+  let transcribing = $state<Record<string, boolean>>({});
+  let transcribingMissing = $state(false);
+  let publishing = $state(false);
 
   const tourSteps = [
     { section: 'Voices', title: 'References stay reviewable', body: 'Each voice can contain multiple playable samples and an editable, explicitly reviewed transcript.' },
@@ -55,6 +71,16 @@
   ];
   const canTranscribe = $derived(Boolean(capabilities?.stt?.crispasr));
   const canRecord = $derived(Boolean(capabilities?.ffmpeg?.available && capabilities?.recording?.browser_media_recorder !== false));
+  const providerTarget = $derived(ttsServices.find((service) => service.id === requestedService));
+  const providerRegistration = $derived(selected?.metadata_json?.providers?.[providerTarget?.id ?? '']);
+  const transcribingCount = $derived(Object.values(transcribing).filter(Boolean).length);
+  const sttModelInfo = $derived(capabilities?.stt?.models?.[engine] ?? {});
+
+  const sttModelLabel = (modelId: 'whisper' | 'parakeet', label: string) => {
+    const info = capabilities?.stt?.models?.[modelId] ?? {};
+    if (info.default) return `${label} · default${info.installed ? '' : ' · downloads on first use'}`;
+    return `${label}${info.installed ? ' · ready' : ' · downloads on first use'}`;
+  };
 
   function report(caught: unknown, prefix = '') {
     error = `${prefix}${caught instanceof Error ? caught.message : String(caught)}`;
@@ -206,7 +232,9 @@
       const job = await api<JobRecord>(`/voices/${selected.id}/samples`, { method: 'POST', body });
       await waitJob(job.id);
       clearRecording();
-      notice = 'The normalized voice sample was saved.';
+      notice = providerTarget
+        ? `The sample is ready. Upload this voice to ${providerTarget.name} to use it for generation.`
+        : 'The normalized voice sample was saved.';
       await choose(selected);
     } catch (caught) {
       report(caught);
@@ -226,7 +254,9 @@
     try {
       const job = await api<JobRecord>(`/voices/${selected.id}/samples`, { method: 'POST', body });
       await waitJob(job.id);
-      notice = 'Voice sample saved.';
+      notice = providerTarget
+        ? `The sample is ready. Upload this voice to ${providerTarget.name} to use it for generation.`
+        : 'Voice sample saved.';
       await choose(selected);
     } catch (caught) {
       report(caught);
@@ -239,15 +269,17 @@
     for (let attempt = 0; attempt < 240; attempt += 1) {
       const job = await api<JobRecord>(`/jobs/${id}`);
       if (job.status === 'succeeded') return job;
-      if (['failed', 'canceled'].includes(job.status)) throw new Error(job.error_message || `Job ${job.status}`);
+      if (['failed', 'canceled', 'interrupted'].includes(job.status)) throw new Error(job.error_message || `Job ${job.status}`);
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
     throw new Error('The operation is still running. Check the job queue.');
   }
 
   async function transcribe(sample: Sample) {
-    if (!selected) return;
+    if (!selected || transcribing[sample.id]) return;
     error = '';
+    transcribing = { ...transcribing, [sample.id]: true };
+    notice = `Transcribing sample with ${engine === 'parakeet' ? 'Parakeet' : 'Whisper'}${sttModelInfo.download_on_demand ? ' (the model will download first)' : ''}…`;
     try {
       const job = await api<JobRecord>(`/voices/${selected.id}/samples/${sample.id}/transcribe`, {
         method: 'POST',
@@ -266,11 +298,42 @@
       notice = 'Transcript ready for review. Save it when the text is correct.';
     } catch (caught) {
       report(caught);
+    } finally {
+      const next = { ...transcribing };
+      delete next[sample.id];
+      transcribing = next;
     }
   }
 
   async function transcribeMissing() {
-    for (const sample of samples.filter((item) => !item.transcript_reviewed)) await transcribe(sample);
+    if (transcribingMissing) return;
+    transcribingMissing = true;
+    try {
+      for (const sample of samples.filter((item) => !item.transcript_reviewed)) await transcribe(sample);
+    } finally {
+      transcribingMissing = false;
+    }
+  }
+
+  async function publishVoice() {
+    if (!selected || !providerTarget || !samples.length || publishing) return;
+    publishing = true;
+    error = '';
+    notice = `Uploading ${selected.name} to ${providerTarget.name}…`;
+    try {
+      const job = await api<JobRecord>(`/voices/${selected.id}/providers/${providerTarget.id}`, { method: 'POST' });
+      const completed = await waitJob(job.id);
+      const providerVoiceId = String(completed.result_json?.provider_voice_id ?? '');
+      if (!providerVoiceId) throw new Error(`${providerTarget.name} did not return a voice ID.`);
+      await loadVoices();
+      if (selected) await choose(selected);
+      notice = `${selected?.name ?? 'Voice'} is ready in ${providerTarget.name} as “${providerVoiceId}”.`;
+      onvoicepublished?.(providerVoiceId);
+    } catch (caught) {
+      report(caught, `Could not upload the voice to ${providerTarget.name}: `);
+    } finally {
+      publishing = false;
+    }
   }
 
   async function saveTranscript(sample: Sample) {
@@ -315,7 +378,15 @@
   onMount(async () => {
     activeView = initialView ?? (page.url.searchParams.get('view') === 'prebuilt' ? 'prebuilt' : 'references');
     try {
-      [capabilities] = await Promise.all([api('/capabilities'), loadVoices()]);
+      const [capabilityPayload, servicesPayload] = await Promise.all([
+        api<any>('/capabilities'),
+        requestedService ? api<any>('/services/tts?refresh=true') : Promise.resolve({ services: [] }),
+        loadVoices()
+      ]);
+      capabilities = capabilityPayload;
+      ttsServices = servicesPayload.services ?? [];
+      engine = String(capabilities?.stt?.default_engine ?? 'whisper');
+      modelQuantization = String(capabilities?.stt?.default_model_quantization ?? 'f16');
       await refreshMicrophones(false);
     } catch (caught) {
       report(caught);
@@ -354,10 +425,16 @@
       {#if selected}
         <div class="mb-6 flex flex-wrap items-center justify-between gap-4">
           <div><h2 class="text-2xl font-semibold">{selected.name}</h2><p class="muted text-sm">Review playback, transcripts, and recordings in one place.</p></div>
-          <div class="stt-toolbar"><select bind:value={engine} onchange={() => modelQuantization = 'f16'} disabled={!canTranscribe} aria-label="Transcription model"><option value="whisper">Whisper large-v3</option><option value="parakeet">Parakeet 0.6B v3</option></select><select bind:value={modelQuantization} disabled={!canTranscribe} aria-label="Transcription model precision"><option value="f16">FP16</option>{#if engine === 'whisper'}<option value="q5_0">Q5_0</option>{:else}<option value="q8_0">Q8_0</option><option value="q5_0">Q5_0</option><option value="q4_k">Q4_K</option>{/if}</select><select bind:value={computeBackend} disabled={!canTranscribe} aria-label="Transcription compute backend"><option value="auto">Automatic compute</option><option value="cpu">CPU</option><option value="cuda">CUDA</option><option value="vulkan">Vulkan</option><option value="metal">Metal</option></select><label class="stt-control"><input bind:checked={vadEnabled} type="checkbox" class="accent-[var(--accent)]"/><span>VAD</span></label><label class:opacity-45={!vadEnabled} class="stt-control vad-threshold"><span>VAD threshold</span><input bind:value={vadThreshold} aria-label="VAD threshold" type="range" min="0" max="1" step="0.05" disabled={!vadEnabled}/><output>{Number(vadThreshold).toFixed(2)}</output></label><button onclick={transcribeMissing} disabled={!canTranscribe} class="stt-control font-semibold disabled:opacity-40"><WandSparkles size={16}/> Transcribe missing</button></div>
+          <div class="stt-toolbar"><select bind:value={engine} onchange={() => modelQuantization = String(capabilities?.stt?.models?.[engine]?.precision ?? 'f16')} disabled={!canTranscribe || transcribingCount > 0} aria-label="Transcription model"><option value="whisper">{sttModelLabel('whisper', 'Whisper large-v3')}</option><option value="parakeet">{sttModelLabel('parakeet', 'Parakeet 0.6B v3')}</option></select><select bind:value={modelQuantization} disabled={!canTranscribe || transcribingCount > 0} aria-label="Transcription model precision"><option value="f16">FP16</option>{#if engine === 'whisper'}<option value="q5_0">Q5_0</option>{:else}<option value="q8_0">Q8_0</option><option value="q5_0">Q5_0</option><option value="q4_k">Q4_K</option>{/if}</select><select bind:value={computeBackend} disabled={!canTranscribe || transcribingCount > 0} aria-label="Transcription compute backend"><option value="auto">Automatic compute</option><option value="cpu">CPU</option><option value="cuda">CUDA</option><option value="vulkan">Vulkan</option><option value="metal">Metal</option></select><label class="stt-control"><input bind:checked={vadEnabled} disabled={transcribingCount > 0} type="checkbox" class="accent-[var(--accent)]"/><span>VAD</span></label><label class:opacity-45={!vadEnabled} class="stt-control vad-threshold"><span>VAD threshold</span><input bind:value={vadThreshold} aria-label="VAD threshold" type="range" min="0" max="1" step="0.05" disabled={!vadEnabled || transcribingCount > 0}/><output>{Number(vadThreshold).toFixed(2)}</output></label><button onclick={transcribeMissing} disabled={!canTranscribe || transcribingMissing || transcribingCount > 0 || !samples.some((item) => !item.transcript_reviewed)} class="stt-control font-semibold disabled:opacity-40">{#if transcribingMissing}<LoaderCircle class="animate-spin" size={16}/>{:else}<WandSparkles size={16}/>{/if} {transcribingMissing ? 'Transcribing…' : 'Transcribe missing'}</button></div>
         </div>
 
         <div class="mb-4 flex justify-end"><button onclick={()=>sttSettingsOpen=true} class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-xs font-semibold"><Settings2 size={15}/> All speech recognition and VAD defaults</button></div>
+        {#if providerTarget}
+          <section class="mb-5 flex flex-wrap items-center gap-4 rounded-2xl border border-[var(--accent)]/35 bg-[var(--accent-soft)] p-4">
+            <div class="min-w-0 flex-1"><div class="flex items-center gap-2 font-semibold">{#if providerRegistration?.status === 'ready'}<CheckCircle2 size={17}/>{:else}<CloudUpload size={17}/>{/if} Use with {providerTarget.name}</div><p class="muted mt-1 text-xs">{#if providerRegistration?.status === 'ready'}Uploaded as “{providerRegistration.voice_id}”. Upload again after changing the reference sample.{:else if samples.length}Uploads the newest normalized sample and stores the exact provider voice ID returned by the API.{:else}Add or record a sample first; local library names are not sent to synthesis until the provider accepts them.{/if}</p>{#if providerTarget.available === false}<p class="mt-1 text-xs text-[var(--warning)]">{providerTarget.availability_reason || 'Start this service before uploading.'}</p>{/if}</div>
+            <button onclick={publishVoice} disabled={!samples.length || publishing || providerTarget.available === false} class="btn btn-primary disabled:opacity-40">{#if publishing}<LoaderCircle class="animate-spin" size={16}/>{:else}<CloudUpload size={16}/>{/if} {publishing ? 'Uploading…' : providerRegistration?.status === 'ready' ? 'Update provider voice' : `Upload to ${providerTarget.name}`}</button>
+          </section>
+        {/if}
         <section class="mb-7 rounded-2xl border border-[var(--line)] p-4">
           <div class="mb-3"><h3 class="font-semibold">Record a reference</h3><p class="muted mt-1 text-xs">Permission is requested only when you enable the microphone. The recording remains local until you save it.</p></div>
           <div class="flex flex-wrap items-center gap-3">
@@ -378,8 +455,8 @@
             <article class="rounded-2xl border border-[var(--line)] p-4">
               <div class="flex flex-wrap items-center gap-3">
                 <button aria-label={playingKey === sample.id ? 'Stop sample playback' : 'Play sample'} onclick={() => togglePlayback(sample.id, `/api/v1/artifacts/${sample.artifact_id}/content`)} class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-sm font-semibold">{#if playingKey === sample.id}<Square size={15}/> Stop{:else}<Volume2 size={16}/> Play sample{/if}</button>
-                <button onclick={() => transcribe(sample)} disabled={!canTranscribe} class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-sm font-semibold disabled:opacity-40"><WandSparkles size={15}/> Transcribe</button>
-                <span class="muted text-xs">{sample.transcript_reviewed ? 'Transcript reviewed' : 'Transcript not reviewed'}</span>
+                <button onclick={() => transcribe(sample)} disabled={!canTranscribe || Boolean(transcribing[sample.id]) || transcribingMissing} aria-busy={Boolean(transcribing[sample.id])} class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-sm font-semibold disabled:opacity-40">{#if transcribing[sample.id]}<LoaderCircle class="animate-spin" size={15}/>{:else}<WandSparkles size={15}/>{/if} {transcribing[sample.id] ? 'Transcribing…' : 'Transcribe'}</button>
+                <span class="muted text-xs" aria-live="polite">{transcribing[sample.id] ? 'Speech recognition is running' : sample.transcript_reviewed ? 'Transcript reviewed' : 'Transcript not reviewed'}</span>
               </div>
               <textarea bind:value={transcripts[sample.id]} rows="3" placeholder="Transcript will remain unsaved until you review it." class="mt-3 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] p-3 text-sm"></textarea>
               <div class="mt-2 flex justify-end"><button onclick={() => saveTranscript(sample)} disabled={!transcripts[sample.id]?.trim()} class="flex items-center gap-2 rounded-lg bg-[var(--accent)] px-3 py-2 text-xs font-semibold text-white disabled:opacity-40"><Save size={14}/> Save reviewed transcript</button></div>
@@ -394,7 +471,7 @@
     </main>
   </div>
   {:else}
-    <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1"><PrebuiltVoiceLibrary {initialService}/></div>
+    <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1"><PrebuiltVoiceLibrary initialService={requestedService}/></div>
   {/if}
 </div>
 <GuidedTour tourId="voices" steps={tourSteps} bind:open={tourOpen}/>

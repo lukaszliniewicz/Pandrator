@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
 
 from pandrator.runtime import DataPaths
+from pandrator.logic.dubbing.crispasr import MODELS, normalize_engine, normalize_model_quantization
 from pandrator.logic.dubbing.stt_backends import probe_crispasr_runtime
 
 
@@ -47,18 +50,76 @@ def probe_gpu() -> dict[str, Any]:
         return {"available": False, "devices": [], "guidance": "GPU probing failed; choose a model based on the endpoint's own memory report."}
 
 
+def crispasr_install_preferences(paths: DataPaths) -> dict[str, Any]:
+    """Read the model selected by the installer without overriding user settings."""
+
+    config: dict[str, Any] = {}
+    for candidate in (
+        paths.root / "config.json",
+        paths.root / "Pandrator" / "config.json",
+        Path(__file__).resolve().parents[2] / "config.json",
+    ):
+        try:
+            loaded = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(loaded, dict) and (
+            "crispasr_engine" in loaded or "crispasr_model_quantization" in loaded
+        ):
+            config = loaded
+            break
+
+    raw_engine = str(config.get("crispasr_engine") or "whisper-large-v3")
+    engine = normalize_engine(raw_engine)
+    quantization = normalize_model_quantization(
+        str(config.get("crispasr_model_quantization") or "f16"),
+        engine,
+    )
+    return {
+        "configured": bool(config),
+        "engine": engine,
+        "quantization": quantization,
+    }
+
+
+def _crispasr_model_cached(paths: DataPaths, engine: str, quantization: str) -> bool:
+    filename = MODELS[engine].filename_for(quantization)
+    cache_dir = Path(
+        os.environ.get("CRISPASR_CACHE_DIR")
+        or paths.root / "cache" / "crispasr"
+    )
+    if not cache_dir.is_dir():
+        return False
+    return any(cache_dir.rglob(filename))
+
+
 def probe_capabilities(paths: DataPaths, *, local_mode: bool) -> dict[str, Any]:
     ffmpeg = shutil.which("ffmpeg")
     crispasr = probe_crispasr_runtime()
+    preferences = crispasr_install_preferences(paths)
+    default_engine = str(preferences["engine"])
+    default_quantization = str(preferences["quantization"])
+    model_capabilities: dict[str, Any] = {}
+    for engine, model in MODELS.items():
+        preferred_quantization = default_quantization if engine == default_engine else model.default_quantization
+        cached = _crispasr_model_cached(paths, engine, preferred_quantization)
+        model_capabilities[engine] = {
+            "available": crispasr.installed,
+            "installed": cached,
+            "download_on_demand": crispasr.installed and not cached,
+            "default": engine == default_engine,
+            "model": "large-v3" if engine == "whisper" else "tdt-0.6b-v3",
+            "precision": preferred_quantization,
+            "word_timing": model.word_timing,
+        }
     stt = {
         "crispasr": crispasr.installed,
         "version": crispasr.version,
         "executable": crispasr.executable,
         "compute_backends": list(crispasr.compute_backends),
-        "models": {
-            "whisper": {"available": crispasr.installed, "model": "large-v3", "precision": "f16", "word_timing": "dtw"},
-            "parakeet": {"available": crispasr.installed, "model": "tdt-0.6b-v3", "precision": "f16", "word_timing": "native"},
-        },
+        "default_engine": default_engine,
+        "default_model_quantization": default_quantization,
+        "models": model_capabilities,
     }
     services = {
         "xtts": _exists(paths, "xtts2_api/run.bat", "xtts2_api/pixi.toml"),

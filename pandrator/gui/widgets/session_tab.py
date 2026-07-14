@@ -2110,11 +2110,11 @@ class SessionTab(ScrollableSettingsPage):
                 
                 is_preset = dedupe_key in presets
                 
-                if active_model in ("qwen3-tts-customvoice", "Prebuilt Voices"):
+                if active_model in ("qwen3-tts-customvoice", "prebuilt voices"):
                     if is_preset:
                         options.append((normalized_speaker_id, normalized_speaker_id, True))
-                elif active_model in ("qwen3-tts-base", "qwen3-tts", "Voice Cloning"):
-                    if not is_preset or dedupe_key in ("kobo", "aiden"):
+                elif active_model in ("qwen3-tts-base", "qwen3-tts", "voice cloning"):
+                    if not is_preset:
                         options.append((normalized_speaker_id, normalized_speaker_id, True))
                 else:
                     options.append((normalized_speaker_id, normalized_speaker_id, True))

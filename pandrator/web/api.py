@@ -17,7 +17,7 @@ from typing import Any
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory, session
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import func, select
 from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.utils import secure_filename
@@ -26,7 +26,7 @@ from pandrator.runtime import DataPaths
 
 from .artifacts import ArtifactService, sha256_file
 from .auth import AuthService, BootstrapTokenStore
-from .capabilities import probe_capabilities
+from .capabilities import crispasr_install_preferences, probe_capabilities
 from .database import Database
 from .jobs import JobQueue
 from .legacy_migration import import_legacy_data
@@ -39,6 +39,7 @@ from .sessions import RevisionConflict, SessionService
 from .subtitle_review import SubtitleReviewService
 from .workflows import WorkflowService
 from .uploads import ChunkUploadService
+from .voice_library import ensure_bundled_voice
 from .workspace import BUILTIN_DEFAULTS, SETTING_SECTIONS, GenerationService, OutcomePlanService, RevisionConflict as WorkspaceRevisionConflict, SourceLibraryService, WorkspaceSettingsService
 
 
@@ -106,6 +107,19 @@ def create_app(
     paths = DataPaths.from_value(data_root).ensure()
     migration = import_legacy_data(paths)
     database = Database(paths.database)
+    stt_preferences = crispasr_install_preferences(paths)
+    if stt_preferences["configured"]:
+        with database.session() as settings_session:
+            if settings_session.get(AppSetting, "defaults.stt") is None:
+                settings_session.add(
+                    AppSetting(
+                        key="defaults.stt",
+                        value_json={
+                            "stt_engine": stt_preferences["engine"],
+                            "stt_model_quantization": stt_preferences["quantization"],
+                        },
+                    )
+                )
     with database.session() as retention_session:
         retention_record = retention_session.get(AppSetting, "web.preferences")
         retention_days = int((retention_record.value_json or {}).get("retention_days", 30)) if retention_record and isinstance(retention_record.value_json, dict) else 30
@@ -366,6 +380,34 @@ def create_app(
                     service["availability_reason"] = "" if online else "Service is not running"
 
             for service in services:
+                if service.get("id") == "kobold_qwen" and service.get("online"):
+                    base_url = str(service.get("api_base") or tts_handler.KOBOLD_QWEN_API_BASE_URL)
+                    entries = tts_handler.get_kobold_qwen_voice_catalog(base_url)
+                    preset_voices = [
+                        str(item["id"])
+                        for item in entries
+                        if str(item.get("type") or "").lower() == "preset"
+                    ]
+                    cloned_voices = [
+                        str(item["id"])
+                        for item in entries
+                        if str(item.get("type") or "").lower() != "preset"
+                    ]
+                    service["voice_catalogues"] = {
+                        tts_handler.KOBOLD_QWEN_DEFAULT_MODEL: preset_voices,
+                        "Voice Cloning": cloned_voices,
+                    }
+                    service["default_voices"] = {
+                        tts_handler.KOBOLD_QWEN_DEFAULT_MODEL: tts_handler.KOBOLD_QWEN_DEFAULT_VOICE,
+                        "Voice Cloning": tts_handler.KOBOLD_QWEN_SAMPLE_VOICE,
+                    }
+                    service["voice_metadata"] = {
+                        f"{str(item.get('model') or ('Prebuilt Voices' if item.get('type') == 'preset' else 'Voice Cloning'))}:{item['id']}": item
+                        for item in entries
+                    }
+                    active_model = str(service.get("default_model") or tts_handler.KOBOLD_QWEN_DEFAULT_MODEL)
+                    service["voices"] = list(service["voice_catalogues"].get(active_model, []))
+
                 if service.get("id") != "silero" or not service.get("online"):
                     continue
                 base_url = str(service.get("api_base") or tts_handler.SILERO_API_BASE_URL)
@@ -1682,6 +1724,7 @@ def create_app(
     @app.get("/api/v1/voices")
     @require_auth
     def voice_list():
+        ensure_bundled_voice(database, paths, artifacts)
         with database.session() as db_session:
             records = list(db_session.scalars(select(Voice).order_by(Voice.name)).all())
             return jsonify({"items": [_model_dict(item, ("id", "name", "language", "description", "rvc_model_ref", "metadata_json", "revision")) for item in records]})
@@ -1724,6 +1767,43 @@ def create_app(
         job = jobs.enqueue(
             "voice.normalize_recording",
             {"voice_id": voice_id, "source_artifact_id": source_artifact.id, "ffmpeg_executable": shutil.which("ffmpeg") or "ffmpeg"},
+        )
+        return jsonify(_job_payload(job)), 202
+
+    @app.post("/api/v1/voices/<voice_id>/providers/<service_id>")
+    @require_auth
+    def voice_publish_to_provider(voice_id: str, service_id: str):
+        """Upload a managed reference to a supported cloning provider."""
+        from pandrator.logic import tts_handler
+
+        with database.session() as db_session:
+            voice = db_session.get(Voice, voice_id)
+            if voice is None:
+                return error_response("not_found", "Voice not found.", 404)
+            sample_count = db_session.scalar(
+                select(VoiceSample).where(VoiceSample.voice_id == voice_id).with_only_columns(func.count())
+            )
+            connections = db_session.get(AppSetting, "services.tts")
+            defaults = db_session.get(AppSetting, "defaults.tts")
+            connection_value = dict(connections.value_json or {}) if connections and isinstance(connections.value_json, dict) else {}
+            default_value = dict(defaults.value_json or {}) if defaults and isinstance(defaults.value_json, dict) else {}
+        if not sample_count:
+            return error_response("missing_sample", "Add a voice sample before uploading this voice.", 422)
+        service = tts_handler.get_service_config({**default_value, **connection_value}, service_id)
+        if service is None:
+            return error_response("not_found", "TTS service not found.", 404)
+        if not bool(service.get("supports_voice_cloning")):
+            return error_response("unsupported", "This TTS service does not support managed voice uploads.", 422)
+        resolved_service_id = str(service.get("id") or service_id)
+        job = jobs.enqueue(
+            "voice.publish",
+            {
+                "voice_id": voice_id,
+                "service_id": resolved_service_id,
+                "service": str(service.get("name") or resolved_service_id),
+                "base_url": str(service.get("api_base") or ""),
+            },
+            resource_keys=[f"service:tts:{resolved_service_id}"],
         )
         return jsonify(_job_payload(job)), 202
 

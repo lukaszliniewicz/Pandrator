@@ -72,6 +72,7 @@ class WorkflowHandlers:
             "export.create": self.export,
             "voice.transcribe": self.transcribe_voice,
             "voice.normalize_recording": self.normalize_voice_recording,
+            "voice.publish": self.publish_voice,
             "rvc.model.upload": self.upload_rvc_model,
             "rvc.convert": self.convert_with_rvc,
             "training.xtts": self.train_xtts,
@@ -842,6 +843,71 @@ class WorkflowHandlers:
             sample_id = sample.id
         progress(1.0, "Voice sample ready")
         return {"sample_id": sample_id, "artifact_id": artifact.id, "path": artifact.relative_path}
+
+    def publish_voice(self, payload, progress, cancel_event):
+        """Upload the newest managed sample and persist the provider's voice ID."""
+        from pandrator.logic import tts_handler
+
+        voice_id = str(payload.get("voice_id") or "")
+        service_id = str(payload.get("service_id") or "").strip()
+        service_name = str(payload.get("service") or service_id).strip()
+        base_url = str(payload.get("base_url") or "").strip()
+        with self.database.session() as session:
+            voice = session.get(Voice, voice_id)
+            if voice is None:
+                raise ValueError("Voice not found.")
+            samples = list(
+                session.scalars(
+                    select(VoiceSample)
+                    .where(VoiceSample.voice_id == voice_id)
+                    .order_by(VoiceSample.created_at.desc())
+                ).all()
+            )
+            if not samples:
+                raise ValueError("Add a voice sample before uploading this voice.")
+            sample = samples[0]
+            provider_records = dict((voice.metadata_json or {}).get("providers") or {})
+            existing = dict(provider_records.get(service_id) or {})
+            requested_provider_voice_id = str(existing.get("voice_id") or voice.name).strip()
+            voice_name = voice.name
+
+        _artifact, sample_path = self._resolve_input(sample.artifact_id)
+        if sample_path.suffix.lower() != ".wav":
+            raise ValueError("Provider voice uploads require a normalized WAV sample.")
+        if cancel_event.is_set():
+            return {}
+        progress(0.1, f"Uploading {voice_name} to {service_name}")
+        provider_voice_id = tts_handler.upload_speaker_voice(
+            str(sample_path),
+            base_url=base_url,
+            service=service_name,
+            prompt_text=sample.transcript if sample.transcript_reviewed else None,
+            voice_id=requested_provider_voice_id,
+        )
+        if cancel_event.is_set():
+            return {}
+        with self.database.session() as session:
+            voice = session.get(Voice, voice_id)
+            if voice is None:
+                raise ValueError("Voice was removed while it was being uploaded.")
+            metadata = deepcopy(voice.metadata_json or {})
+            providers = dict(metadata.get("providers") or {})
+            providers[service_id] = {
+                "voice_id": provider_voice_id,
+                "sample_id": sample.id,
+                "status": "ready",
+                "updated_at": utcnow().isoformat(),
+            }
+            metadata["providers"] = providers
+            voice.metadata_json = metadata
+            voice.revision += 1
+            voice.updated_at = utcnow()
+        progress(1.0, f"{voice_name} is ready in {service_name}")
+        return {
+            "voice_id": voice_id,
+            "service_id": service_id,
+            "provider_voice_id": provider_voice_id,
+        }
 
     def upload_rvc_model(self, payload, progress, cancel_event):
         from pandrator.logic import rvc_handler
