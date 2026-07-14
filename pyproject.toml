@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pandrator"
-version = "0.5.0"
+version = "0.5.1"
 description = "Browser-based audiobook, subtitle, and voiceover production workspace"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
