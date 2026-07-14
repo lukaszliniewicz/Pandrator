@@ -79,6 +79,10 @@ class PixiEnvironmentMixin:
         env['HF_HUB_CACHE'] = os.path.join(local_cache_root, 'huggingface', 'hub')
         env['HUGGINGFACE_HUB_CACHE'] = os.path.join(local_cache_root, 'huggingface', 'hub')
         env['TRANSFORMERS_CACHE'] = os.path.join(local_cache_root, 'huggingface', 'transformers')
+        # Hugging Face's public Xet CAS can return 401 responses for public
+        # files. Default to the standard HTTP path for unattended installs;
+        # users may explicitly opt back into Xet with a value of 0.
+        env.setdefault('HF_HUB_DISABLE_XET', '1')
         env['HF_HUB_DISABLE_SYMLINKS'] = '1'
         env['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'
         env['TORCH_HOME'] = os.path.join(local_cache_root, 'torch')

@@ -272,8 +272,17 @@ class InstallerArchitectureTests(unittest.TestCase):
 
         self.assertEqual(env["PYTHONUTF8"], "1")
         self.assertEqual(env["PYTHONIOENCODING"], "utf-8")
+        self.assertEqual(env["HF_HUB_DISABLE_XET"], "1")
         self.assertTrue(env["PADDLE_PDX_CACHE_HOME"].endswith(os.path.join("cache", "paddlex")))
         self.assertEqual(env["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"], "True")
+
+    def test_installer_environment_respects_explicit_xet_opt_in(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        with tempfile.TemporaryDirectory() as install_root:
+            with patch.dict(os.environ, {"HF_HUB_DISABLE_XET": "0"}):
+                env = installer.get_pixi_subprocess_env(install_root)
+
+        self.assertEqual(env["HF_HUB_DISABLE_XET"], "0")
 
     def test_package_cache_cleanup_preserves_model_caches(self):
         installer = HeadlessInstaller(working_dir="workspace")
