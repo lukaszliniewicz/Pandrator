@@ -246,6 +246,18 @@
     else playlistAudio?.play().catch(() => { error = 'Playback could not be resumed.'; });
   }
 
+  function togglePlaylistPlayback() {
+    if (!playlistActive) {
+      void playFromSelection();
+      return;
+    }
+    togglePlaylistPause();
+  }
+
+  function readingSegmentText(item: any) {
+    return String(item.optimized_text || item.text || '').replace(/\s+/g, ' ').trim();
+  }
+
   async function waitForSilence(milliseconds: number, token: number) {
     let remaining = Math.max(0, milliseconds);
     let previous = performance.now();
@@ -350,6 +362,21 @@
         </div>
         <span class="muted text-[.65rem]">{Math.round((run.progress ?? 0) * 100)}%</span>
       {/if}
+      <div class="header-playback flex items-center gap-1">
+        <button
+          onclick={togglePlaylistPlayback}
+          class:active={playlistActive}
+          class="action"
+          title={playlistActive ? (playlistPaused ? 'Resume playlist' : 'Pause playlist') : 'Play from the selected segment'}
+          aria-label={playlistActive ? (playlistPaused ? 'Resume playlist' : 'Pause playlist') : 'Play as playlist'}
+        >
+          {#if playlistActive && !playlistPaused}<Pause size={14}/>{:else}<Play size={14}/>{/if}
+          {playlistActive ? (playlistPaused ? 'Resume' : 'Pause') : 'Play as playlist'}
+        </button>
+        {#if playlistActive}
+          <button onclick={stopPlayback} class="action icon-action" title="Stop playlist" aria-label="Stop playlist"><Square size={14}/></button>
+        {/if}
+      </div>
       <div class="ml-auto flex flex-wrap gap-2">
         {#if !run || ['completed', 'failed', 'canceled'].includes(run.status)}
           <button onclick={() => start()} class="action primary"><Play size={14} /> Start</button>
@@ -376,8 +403,6 @@
             <button onclick={() => viewMode='reading'} class:active={viewMode==='reading'}><BookOpenText size={13}/> Reading</button>
           </div>
           <button onkeydown={keyboard} class="action" title="Focus, then use arrows, Space to mark, and Delete to remove">Keyboard navigation</button>
-          <button onclick={() => playFromSelection()} class="action"><ListMusic size={14} /> Play as playlist</button>
-          {#if playlistActive}<button onclick={togglePlaylistPause} class="action">{#if playlistPaused}<Play size={14}/>{:else}<Pause size={14}/>{/if} {playlistPaused?'Resume':'Pause'}</button><button onclick={stopPlayback} class="action"><Square size={14} /> Stop</button>{/if}
           <button onclick={() => start('regenerate', marked)} disabled={!marked.length} class="action"><RefreshCw size={14} /> Regenerate marked</button>
           <button onclick={assemble} disabled={loading || assembly?.status === 'queued' || assembly?.status === 'running'} class="action primary">
             <Sparkles size={14} /> {assembly?.status === 'stale' ? 'Reassemble output' : 'Assemble output'}
@@ -478,16 +503,16 @@
                   </h4>
                 {:else}
                   <p class="reading-paragraph">
-                    {#each block.items as item}
+                    {#each block.items as item, index}
                       <span class:now-playing={item.id===activePlayingId} class:selected-sentence={item.id===selectedRow} class:removed={item.removed} class="reading-segment">
-                        <button onclick={() => { selectedRow=item.id; if (activeTake(item) && !item.removed) playOnly(item); }} class="reading-sentence" title={activeTake(item)?`Play segment ${item.ordinal + 1}`:'Select segment actions'}>{item.optimized_text || item.text}</button>
+                        <button onclick={() => { selectedRow=item.id; if (activeTake(item) && !item.removed) playOnly(item); }} class="reading-sentence" title={activeTake(item)?`Play segment ${item.ordinal + 1}`:'Select segment actions'}>{readingSegmentText(item)}</button>
                         <span class="reading-actions" aria-label={`Actions for segment ${item.ordinal + 1}`}>
                           <button onclick={(event)=>{event.stopPropagation();playOnly(item)}} disabled={!activeTake(item)||item.removed} title="Play segment" aria-label={`Play segment ${item.ordinal + 1}`}><Play size={13}/></button>
                           <button onclick={(event)=>{event.stopPropagation();start('regenerate',[item.id])}} disabled={loading||item.removed} title="Regenerate segment" aria-label={`Regenerate segment ${item.ordinal + 1}`}><RefreshCw size={13}/></button>
                           <button onclick={(event)=>{event.stopPropagation();patchSegment(item,{marked:!item.marked})}} class:active={item.marked} title={item.marked?'Unmark segment':'Mark for bulk regeneration'} aria-label={item.marked?`Unmark segment ${item.ordinal + 1}`:`Mark segment ${item.ordinal + 1}`}><Flag size={13}/></button>
                           <button onclick={(event)=>{event.stopPropagation();patchSegment(item,{removed:!item.removed})}} title={item.removed?'Restore segment':'Remove segment'} aria-label={item.removed?`Restore segment ${item.ordinal + 1}`:`Remove segment ${item.ordinal + 1}`}>{#if item.removed}<RotateCcw size={13}/>{:else}<Trash2 size={13}/>{/if}</button>
                         </span>
-                      </span>{' '}
+                      </span>{#if index < block.items.length - 1}{' '}{/if}
                     {/each}
                   </p>
                 {/if}
@@ -523,6 +548,6 @@
   th,td{border-bottom:1px solid var(--line);padding:.55rem;text-align:center;vertical-align:middle}tr.removed{opacity:.42}tr.selected{background:var(--accent-soft)}
   .status{font-size:.68rem;text-transform:uppercase;color:var(--muted)}.mini{border:1px solid var(--line);border-radius:.45rem;background:var(--paper);padding:.3rem .45rem;font-size:.68rem}
   .reading-view{font-family:Georgia,'Times New Roman',serif}.reading-heading{margin:2rem 0 .75rem;font-size:1.32rem;font-weight:700;line-height:1.35}.reading-heading button{text-align:left}.reading-heading.now-playing button{color:var(--accent)}
-  .reading-paragraph{margin:0 0 1.2rem;font-size:1.02rem;line-height:1.9}.reading-segment{position:relative;display:inline}.reading-sentence{display:inline;border-radius:.28rem;padding:.03rem .06rem;text-align:left;transition:background .12s ease,color .12s ease}.reading-segment:hover .reading-sentence,.reading-segment:focus-within .reading-sentence,.reading-segment.selected-sentence .reading-sentence{background:var(--accent-soft)}.reading-segment.now-playing .reading-sentence{background:var(--action-bg);color:white;box-shadow:0 0 0 .16rem color-mix(in srgb,var(--accent) 18%,transparent)}.reading-segment.removed .reading-sentence{text-decoration:line-through;opacity:.42}.reading-actions{position:absolute;bottom:calc(100% + .32rem);left:50%;z-index:25;display:flex;gap:.18rem;border:1px solid var(--line);border-radius:.65rem;background:var(--paper-strong);padding:.22rem;box-shadow:var(--shadow);opacity:0;pointer-events:none;transform:translate(-50%,.25rem);transition:opacity .12s ease,transform .12s ease}.reading-segment:hover .reading-actions,.reading-segment:focus-within .reading-actions{opacity:1;pointer-events:auto;transform:translate(-50%,0)}.reading-actions button{display:grid;height:1.8rem;width:1.8rem;place-items:center;border-radius:.45rem;color:var(--muted)}.reading-actions button:hover:not(:disabled),.reading-actions button:focus-visible,.reading-actions button.active{background:var(--accent-soft);color:var(--accent)}.reading-actions button:disabled{opacity:.35}
+  .reading-paragraph{margin:0 0 1.2rem;font-size:1.02rem;line-height:1.9;white-space:normal}.reading-segment{position:relative;display:inline}.reading-sentence{display:inline;white-space:normal;border-radius:.28rem;padding:.03rem .06rem;text-align:left;transition:background .12s ease,color .12s ease}.reading-segment:hover .reading-sentence,.reading-segment:focus-within .reading-sentence,.reading-segment.selected-sentence .reading-sentence{background:var(--accent-soft)}.reading-segment.now-playing .reading-sentence{background:var(--action-bg);color:white;box-shadow:0 0 0 .16rem color-mix(in srgb,var(--accent) 18%,transparent)}.reading-segment.removed .reading-sentence{text-decoration:line-through;opacity:.42}.reading-actions{position:absolute;bottom:calc(100% + .32rem);left:50%;z-index:25;display:flex;gap:.18rem;border:1px solid var(--line);border-radius:.65rem;background:var(--paper-strong);padding:.22rem;box-shadow:var(--shadow);opacity:0;pointer-events:none;transform:translate(-50%,.25rem);transition:opacity .12s ease,transform .12s ease}.reading-segment:hover .reading-actions,.reading-segment:focus-within .reading-actions{opacity:1;pointer-events:auto;transform:translate(-50%,0)}.reading-actions button{display:grid;height:1.8rem;width:1.8rem;place-items:center;border-radius:.45rem;color:var(--muted)}.reading-actions button:hover:not(:disabled),.reading-actions button:focus-visible,.reading-actions button.active{background:var(--accent-soft);color:var(--accent)}.reading-actions button:disabled{opacity:.35}
   @media(prefers-reduced-motion:reduce){.generation-drawer{transition:none}}
 </style>
