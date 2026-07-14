@@ -4,7 +4,7 @@ sentence-splitter
 num2words
 ffmpeg-python
 regex
-hasami
+hasami>=0.0.1,<1
 ebooklib
 beautifulsoup4
 mutagen
