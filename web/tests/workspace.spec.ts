@@ -44,6 +44,7 @@ test('theme and setup dock remain available after navigation', async ({ page }) 
 });
 
 test('editorial workspace visual baseline', async ({ page }) => {
+  test.skip(process.platform === 'win32', 'The visual baseline is captured on Linux to avoid platform font-metric differences.');
   await signIn(page);
   await expect(page).toHaveScreenshot('workspace.png', {
     fullPage: true,
