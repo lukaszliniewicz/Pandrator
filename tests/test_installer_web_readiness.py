@@ -6,10 +6,26 @@ import time
 import unittest
 from unittest.mock import MagicMock, patch
 
+from pandrator_installer.models import LaunchSelection
 from pandrator_installer.service import HeadlessInstaller
 
 
 class InstallerWebReadinessTests(unittest.TestCase):
+    def test_launcher_rejects_legacy_desktop_only_install(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            install_root = os.path.join(workspace, "Pandrator")
+            repo_root = os.path.join(install_root, "Pandrator")
+            os.makedirs(repo_root)
+            with open(os.path.join(repo_root, "main.py"), "w", encoding="utf-8") as handle:
+                handle.write("# retired desktop entry point")
+
+            installer = HeadlessInstaller(working_dir=workspace)
+            with patch.object(installer, "check_pixi", return_value=True), patch.object(
+                installer, "get_pixi_executable", return_value="pixi.exe"
+            ), patch.object(installer, "load_install_config", return_value={}):
+                with self.assertRaisesRegex(FileNotFoundError, "web runtime is incomplete"):
+                    installer.launch_process(LaunchSelection(pandrator=True))
+
     def test_launcher_waits_for_supervisor_ready_marker_and_health(self):
         with tempfile.TemporaryDirectory() as workspace:
             install_root = os.path.join(workspace, "Pandrator")

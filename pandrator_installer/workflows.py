@@ -752,8 +752,6 @@ class WorkflowMixin:
             self.reporter.status("Checking Pandrator environment...")
             self.create_pixi_env(pandrator_base_path, 'pandrator_installer', PANDRATOR_PYTHON_VERSION)
             self.ensure_pandrator_environment_conda_packages(pandrator_base_path)
-            self.reporter.status("Checking Pandrator runtime...")
-            self.ensure_pandrator_runtime(pandrator_base_path, 'pandrator_installer')
 
             requirements_file = os.path.join(pandrator_repo_path, 'requirements.txt')
             logging.info(f"Checking requirements from: {requirements_file}")

@@ -90,7 +90,10 @@ def command_probe(args) -> int:
         "workspace": str(paths.workspace),
         "install_root": str(paths.install_root),
         "pandrator": {
-            "installed": (paths.pandrator_repo / "pyproject.toml").is_file() or (paths.pandrator_repo / "main.py").is_file(),
+            "installed": (
+                (paths.pandrator_repo / "pyproject.toml").is_file()
+                and (paths.pandrator_repo / "pandrator" / "web" / "static" / "index.html").is_file()
+            ),
             "repository": str(paths.pandrator_repo),
         },
         "components": [_component_status(paths, key) for key in COMPONENTS],

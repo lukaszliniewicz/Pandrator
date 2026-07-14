@@ -22,7 +22,6 @@ from .constants import (
     NEMO_TEXT_PROCESSING_PIP_DEPS,
     NEMO_TEXT_PROCESSING_SPEC,
     OPTIONAL_REQUIREMENT_EXCLUSIONS_BY_ENV,
-    PANDRATOR_RUNTIME_REPAIR_SPECS,
     PIXI_CACHE_DIRNAME,
     PIXI_HOME_DIRNAME,
     PIXI_PIP_CACHE_SUBDIRNAME,
@@ -855,52 +854,6 @@ class PixiEnvironmentMixin:
             f.write(NEMO_TEXT_PROCESSING_CDIFFLIB_SHIM)
         logging.info("cdifflib fallback shim written to %s", shim_path)
 
-    def ensure_pandrator_runtime(self, pandrator_path, env_name):
-        if env_name != 'pandrator_installer':
-            return
-
-        check_command = ['python', '-c', 'from PyQt6.QtWidgets import QApplication; import PyQt6.sip; import pygame']
-        logging.info("Checking Pandrator runtime imports (PyQt6 + pygame) in pandrator_installer...")
-
-        try:
-            self.run_pixi_in_env(
-                pandrator_path,
-                env_name,
-                check_command,
-                log_errors=False,
-            )
-            logging.info("Pandrator runtime import check passed.")
-            return
-        except subprocess.CalledProcessError as e:
-            logging.warning(
-                "Pandrator runtime import check failed in pandrator_installer. "
-                f"Reinstalling runtime packages {PANDRATOR_RUNTIME_REPAIR_SPECS}. STDERR: {e.stderr}"
-            )
-
-        self.run_pixi_in_env(
-            pandrator_path,
-            env_name,
-            [
-                'python', '-m', 'pip', 'install',
-                '--upgrade', '--force-reinstall', '--no-cache-dir',
-                *PANDRATOR_RUNTIME_REPAIR_SPECS,
-            ]
-        )
-
-        self.run_pixi_in_env(
-            pandrator_path,
-            env_name,
-            check_command,
-            log_errors=False,
-        )
-        logging.info(
-            "Pandrator runtime repaired successfully using %s.",
-            ', '.join(PANDRATOR_RUNTIME_REPAIR_SPECS),
-        )
-
-    def ensure_pyqt6_runtime(self, pandrator_path, env_name):
-        self.ensure_pandrator_runtime(pandrator_path, env_name)
-
     def try_import_requirements(self, pandrator_path, env_name, requirements_file):
         logging.info(f"Running best-effort import checks for {requirements_file}...")
 
@@ -980,8 +933,6 @@ class PixiEnvironmentMixin:
                         logging.warning(
                             f"Failed to remove temporary requirements file {temporary_requirements_file}: {e}"
                         )
-
-        self.ensure_pandrator_runtime(pandrator_path, env_name)
 
         self.try_import_requirements(pandrator_path, env_name, requirements_file)
 

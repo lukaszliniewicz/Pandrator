@@ -52,7 +52,10 @@ def is_appimage_environment(environ=None):
 def _looks_like_install_root(path):
     return (
         os.path.isfile(os.path.join(path, "config.json"))
-        and os.path.isfile(os.path.join(path, "Pandrator", "main.py"))
+        and os.path.isfile(os.path.join(path, "Pandrator", "pyproject.toml"))
+        and os.path.isfile(
+            os.path.join(path, "Pandrator", "pandrator", "web", "static", "index.html")
+        )
     )
 
 

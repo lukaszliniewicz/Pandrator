@@ -8,6 +8,8 @@ Pandrator is a local-first workspace for creating audiobooks, subtitles, and voi
 
 The desktop installer and launcher manage Pandrator and its optional local model services. Docker and WSL are not required.
 
+The application itself is web-only. The retired Qt application is preserved on the `qt-maintenance` branch; Qt remains in `main` only for the desktop installer and launcher.
+
 ## TL;DR
 
 | If you want to… | Start with… |

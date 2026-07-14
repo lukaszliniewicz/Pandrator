@@ -76,7 +76,7 @@ class BuildReleasePackagesTests(unittest.TestCase):
         self.assertTrue(build_release_packages.should_exclude_file("test.log"))
         self.assertTrue(build_release_packages.should_exclude_file("pandrator_state.sqlite3"))
         self.assertTrue(build_release_packages.should_exclude_file("pandrator_state.sqlite3-journal"))
-        self.assertFalse(build_release_packages.should_exclude_file("main.py"))
+        self.assertFalse(build_release_packages.should_exclude_file("pyproject.toml"))
         self.assertFalse(build_release_packages.should_exclude_file("config.json"))
 
 

@@ -188,7 +188,6 @@ class TestInstallerLauncherChatterbox(unittest.TestCase):
     @patch("pandrator_installer_launcher.PandratorInstaller.create_pixi_env")
     @patch("pandrator_installer_launcher.PandratorInstaller.add_pixi_conda_package")
     @patch("pandrator_installer_launcher.PandratorInstaller.run_pixi_command")
-    @patch("pandrator_installer_launcher.PandratorInstaller.ensure_pandrator_runtime")
     @patch("pandrator_installer_launcher.PandratorInstaller.ensure_nemo_text_processing_runtime")
     @patch("pandrator_installer_launcher.PandratorInstaller.ensure_wtpsplit_runtime")
     @patch("pandrator_installer_launcher.PandratorInstaller.ensure_pdf_ocr_runtime")
@@ -207,7 +206,6 @@ class TestInstallerLauncherChatterbox(unittest.TestCase):
         mock_ensure_pdf_ocr,
         mock_ensure_wtpsplit,
         mock_ensure_nemo,
-        mock_ensure_runtime,
         mock_run_pixi_cmd,
         mock_add_pixi_package,
         mock_create_pixi,

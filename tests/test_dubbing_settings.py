@@ -1,7 +1,5 @@
 import unittest
-from dataclasses import asdict
 
-from pandrator.app_state import DubbingSettings
 from pandrator.logic import llm_handler
 from pandrator.logic.dubbing import llm_config, settings
 
@@ -30,8 +28,8 @@ class DubbingSettingsTests(unittest.TestCase):
         self.assertNotIn("translation_provider", migrated)
         self.assertNotIn("custom_api_base", migrated)
 
-    def test_current_state_serializes_only_native_dubbing_fields(self):
-        payload = asdict(DubbingSettings())
+    def test_default_payload_contains_only_native_dubbing_fields(self):
+        payload = settings.migrate_dubbing_payload({}, self.providers)
 
         self.assertEqual(payload["stt_language"], "English")
         self.assertEqual(payload["correction_model"], "default")

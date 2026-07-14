@@ -1,8 +1,6 @@
-PyQt6==6.7.1
 pydub
 unidecode
 sentence-splitter
-pygame
 num2words
 ffmpeg-python
 regex
@@ -15,7 +13,6 @@ yt-dlp
 requests
 litellm
 deepl
-qdarkstyle
 nemo_text_processing==1.2.0
 numpy==1.26.4
 wtpsplit-lite==0.2.0

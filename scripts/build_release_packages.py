@@ -301,7 +301,11 @@ def prepare_tailored_source(
 
     has_valid_source = not force_prepare and install_root.exists()
     if has_valid_source:
-        core_markers = ("Pandrator/main.py", "envs/pandrator_installer/pixi.toml")
+        core_markers = (
+            "Pandrator/pyproject.toml",
+            "Pandrator/pandrator/web/static/index.html",
+            "envs/pandrator_installer/pixi.toml",
+        )
         for marker in core_markers:
             if not (install_root / Path(normalize_relative_path(marker))).exists():
                 has_valid_source = False
@@ -331,7 +335,11 @@ def prepare_tailored_source(
     )
 
     # Double check markers
-    core_markers = ("Pandrator/main.py", "envs/pandrator_installer/pixi.toml")
+    core_markers = (
+        "Pandrator/pyproject.toml",
+        "Pandrator/pandrator/web/static/index.html",
+        "envs/pandrator_installer/pixi.toml",
+    )
     for marker in core_markers:
         if not (install_root / Path(normalize_relative_path(marker))).exists():
             raise RuntimeError(f"Source workspace preparation failed. Missing core file: {marker}")
@@ -828,7 +836,8 @@ def main() -> int:
         source_root=source_root,
         include_paths=shared_paths,
         required_markers=(
-            "Pandrator/main.py",
+            "Pandrator/pyproject.toml",
+            "Pandrator/pandrator/web/static/index.html",
             "envs/pandrator_installer/pixi.toml",
         ),
         config_overrides={},

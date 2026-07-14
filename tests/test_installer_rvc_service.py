@@ -153,7 +153,6 @@ class InstallerRVCServiceTests(unittest.TestCase):
 
     @patch("pandrator_installer.service.HeadlessInstaller.check_rvc_server_online")
     @patch("pandrator_installer.service.HeadlessInstaller.run_rvc_api_server")
-    @patch("pandrator_installer.service.HeadlessInstaller.ensure_pandrator_runtime")
     @patch("pandrator_installer.service.HeadlessInstaller.is_port_in_use", return_value=False)
     @patch("pandrator_installer.service.HeadlessInstaller.check_pixi", return_value=True)
     @patch("pandrator_installer.service.HeadlessInstaller.get_pixi_executable", return_value="pixi.exe")
@@ -167,7 +166,6 @@ class InstallerRVCServiceTests(unittest.TestCase):
         _get_pixi,
         _check_pixi,
         _is_port_in_use,
-        _ensure_pandrator,
         run_rvc,
         check_rvc,
     ):
@@ -188,7 +186,6 @@ class InstallerRVCServiceTests(unittest.TestCase):
 
     @patch("pandrator_installer.service.HeadlessInstaller.check_rvc_server_online")
     @patch("pandrator_installer.service.HeadlessInstaller.run_rvc_api_server")
-    @patch("pandrator_installer.service.HeadlessInstaller.ensure_pandrator_runtime")
     @patch("pandrator_installer.service.HeadlessInstaller.is_port_in_use", return_value=False)
     @patch("pandrator_installer.service.HeadlessInstaller.check_pixi", return_value=True)
     @patch("pandrator_installer.service.HeadlessInstaller.get_pixi_executable", return_value="pixi.exe")
@@ -202,7 +199,6 @@ class InstallerRVCServiceTests(unittest.TestCase):
         _get_pixi,
         _check_pixi,
         _is_port_in_use,
-        _ensure_pandrator,
         run_rvc,
         check_rvc,
     ):

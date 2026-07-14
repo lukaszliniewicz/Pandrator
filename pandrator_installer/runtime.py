@@ -76,23 +76,6 @@ class RuntimeMixin:
 
         return running
 
-    def _get_running_pandrator_process(self):
-        process = self.pandrator_process
-        if not process:
-            return None
-
-        try:
-            return_code = process.poll()
-        except Exception:
-            return_code = 1
-
-        if return_code is None:
-            return process
-
-        self._close_process_log_handle(process)
-        self.pandrator_process = None
-        return None
-
     def _get_running_rvc_process(self):
         process = self.rvc_process
         if not process:
@@ -241,10 +224,14 @@ class RuntimeMixin:
         shared_pixi_path = self.get_pixi_executable(pandrator_path)
 
         pandrator_repo_path = os.path.join(pandrator_path, 'Pandrator')
-        web_runtime = self.launch_pandrator_var and os.path.isfile(os.path.join(pandrator_repo_path, "pyproject.toml")) and os.path.isfile(
+        web_runtime_available = os.path.isfile(os.path.join(pandrator_repo_path, "pyproject.toml")) and os.path.isfile(
             os.path.join(pandrator_repo_path, "pandrator", "web", "static", "index.html")
         )
-        if web_runtime:
+        if self.launch_pandrator_var:
+            if not web_runtime_available:
+                raise FileNotFoundError(
+                    "Pandrator web runtime is incomplete. Reinstall or update Pandrator before launching it."
+                )
             self.reporter.status("Starting supervised Pandrator web runtime...")
             self.pandrator_process = self.run_web_supervisor(
                 pandrator_repo_path,
@@ -290,10 +277,8 @@ class RuntimeMixin:
             backend_key
             for backend_key, _, _ in running_backends
         }
-        running_pandrator_process = self._get_running_pandrator_process()
         running_rvc_process = self._get_running_rvc_process()
 
-        pandrator_args = []
         tts_engine_launched = False
 
         if self.launch_xtts_var:
@@ -335,7 +320,6 @@ class RuntimeMixin:
                     self.shutdown_xtts()
                     raise RuntimeError(error_msg)
 
-            pandrator_args = ['-connect', '-xtts']
             tts_engine_launched = True
 
         if self.launch_voxcpm_var and not tts_engine_launched:
@@ -373,7 +357,6 @@ class RuntimeMixin:
                     self.shutdown_voxcpm()
                     raise RuntimeError(error_msg)
 
-            pandrator_args = ['-connect', '-voxcpm']
             tts_engine_launched = True
 
         if self.launch_fishs2_var and not tts_engine_launched:
@@ -419,7 +402,6 @@ class RuntimeMixin:
                     self.shutdown_fishs2()
                     raise RuntimeError(error_msg)
 
-            pandrator_args = ['-connect', '-fishs2']
             tts_engine_launched = True
 
         if self.launch_voxtral_var and not tts_engine_launched:
@@ -454,7 +436,6 @@ class RuntimeMixin:
                     self.shutdown_voxtral()
                     raise RuntimeError(error_msg)
 
-            pandrator_args = ['-connect', '-voxtral']
             tts_engine_launched = True
 
         if self.launch_silero_var and not tts_engine_launched:
@@ -484,7 +465,6 @@ class RuntimeMixin:
                     self.shutdown_silero()
                     raise RuntimeError(error_msg)
 
-            pandrator_args = ['-connect', '-silero']
             tts_engine_launched = True
 
         if self.launch_kokoro_var and not tts_engine_launched:
@@ -541,7 +521,6 @@ class RuntimeMixin:
                     self.shutdown_kokoro()
                     raise RuntimeError(error_msg)
 
-            pandrator_args = ['-connect', '-kokoro']
             tts_engine_launched = True
 
         if self.launch_chatterbox_var and not tts_engine_launched:
@@ -583,7 +562,6 @@ class RuntimeMixin:
                     self.shutdown_chatterbox()
                     raise RuntimeError(error_msg)
 
-            pandrator_args = ['-connect', '-chatterbox']
             tts_engine_launched = True
 
         if self.launch_kobold_qwen_var and not tts_engine_launched:
@@ -631,7 +609,6 @@ class RuntimeMixin:
                     self.shutdown_kobold_qwen()
                     raise RuntimeError(error_msg)
 
-            pandrator_args = ['-connect', '-kobold-qwen']
             tts_engine_launched = True
 
         if self.launch_magpie_var and not tts_engine_launched:
@@ -673,7 +650,6 @@ class RuntimeMixin:
                     self.shutdown_magpie()
                     raise RuntimeError(error_msg)
 
-            pandrator_args = ['-connect', '-magpie']
             tts_engine_launched = True
 
         if self.launch_rvc_var:
@@ -702,71 +678,6 @@ class RuntimeMixin:
                     self.shutdown_rvc()
                     raise RuntimeError("RVC service failed to come online")
 
-        if self.launch_pandrator_var:
-            self.reporter.progress(0.85)
-            if running_pandrator_process:
-                self.reporter.progress(0.9)
-                self.reporter.status(
-                    "Pandrator is already running. Reusing the current instance."
-                )
-            else:
-                self.reporter.status("Checking Pandrator runtime...")
-                self.ensure_pandrator_runtime(pandrator_path, 'pandrator_installer')
-
-                self.reporter.progress(0.9)
-                self.reporter.status("Starting Pandrator...")
-                pandrator_repo_path = os.path.join(pandrator_path, 'Pandrator')
-                web_runtime = os.path.isfile(os.path.join(pandrator_repo_path, "pyproject.toml")) and os.path.isfile(
-                    os.path.join(pandrator_repo_path, "pandrator", "web", "static", "index.html")
-                )
-                pandrator_script_candidates = [
-                    os.path.join(pandrator_repo_path, 'main.py'),
-                    os.path.join(pandrator_repo_path, 'pandrator.py'),
-                ]
-                pandrator_script_path = next(
-                    (candidate for candidate in pandrator_script_candidates if os.path.exists(candidate)),
-                    '',
-                )
-
-                if web_runtime:
-                    logging.info("Pandrator browser runtime detected: %s", pandrator_repo_path)
-                elif pandrator_script_path:
-                    logging.info(f"Pandrator script path: {pandrator_script_path}")
-                else:
-                    logging.error(
-                        "Pandrator script not found. Checked candidates: %s",
-                        ", ".join(pandrator_script_candidates),
-                    )
-                    error_msg = (
-                        "Pandrator script not found. Checked: "
-                        + ", ".join(pandrator_script_candidates)
-                    )
-                    self.reporter.status(error_msg)
-                    raise FileNotFoundError(error_msg)
-
-                try:
-                    if web_runtime:
-                        self.pandrator_process = self.run_web_supervisor(pandrator_repo_path)
-                        self.reporter.status("Waiting for the Pandrator web application to become ready...")
-                        self.wait_for_web_runtime_ready(
-                            self.pandrator_process,
-                            pandrator_path,
-                            port=getattr(self, 'pandrator_port_var', 8097),
-                        )
-                    else:
-                        self.pandrator_process = self.run_script(pandrator_path, 'pandrator_installer', pandrator_script_path, pandrator_args)
-                        self.ensure_process_started(
-                            self.pandrator_process,
-                            'Pandrator',
-                            getattr(self.pandrator_process, 'log_file_path', ''),
-                        )
-                except Exception as e:
-                    error_msg = f"Failed to start Pandrator: {str(e)}"
-                    self.reporter.status(error_msg)
-                    logging.error(error_msg)
-                    logging.exception("Exception details:")
-                    raise
-
         self.reporter.progress(1.0)
         self.reporter.status("Applications are ready.")
 
@@ -776,40 +687,6 @@ class RuntimeMixin:
         import socket
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             return s.connect_ex(('localhost', port)) == 0
-
-    def run_script(self, pandrator_path, env_name, script_path, additional_args=None):
-        if additional_args is None:
-            additional_args = []
-
-        logging.info(f"Running script {script_path} in {env_name} with args: {additional_args}")
-
-        script_dir = os.path.dirname(script_path)
-        command = self.build_pixi_run_command(
-            pandrator_path,
-            env_name,
-            ['python', script_path] + additional_args
-        )
-
-        pandrator_log_file = os.path.join(script_dir, 'pandrator_startup.log')
-        log_handle = open(pandrator_log_file, 'a', encoding='utf-8')
-
-        try:
-            process = subprocess.Popen(
-                command,
-                cwd=script_dir,
-                env=self.get_pixi_subprocess_env(pandrator_path),
-                stdout=log_handle,
-                stderr=subprocess.STDOUT,
-                **self.get_hidden_subprocess_kwargs(),
-            )
-        except Exception:
-            log_handle.close()
-            raise
-
-        process.log_handle = log_handle
-        process.log_file_path = pandrator_log_file
-        logging.info(f"Pandrator startup log: {pandrator_log_file}")
-        return process
 
     def run_web_supervisor(
         self,

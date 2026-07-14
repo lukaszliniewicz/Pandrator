@@ -362,7 +362,10 @@ class InstallerArchitectureTests(unittest.TestCase):
             repo_root = install_root / "Pandrator"
             repo_root.mkdir(parents=True)
             (install_root / "config.json").write_text("{}", encoding="utf-8")
-            (repo_root / "main.py").write_text("", encoding="utf-8")
+            (repo_root / "pyproject.toml").write_text("", encoding="utf-8")
+            web_index = repo_root / "pandrator" / "web" / "static" / "index.html"
+            web_index.parent.mkdir(parents=True)
+            web_index.write_text("", encoding="utf-8")
 
             resolved = platforms.resolve_launcher_workspace(
                 system="Windows",
@@ -378,7 +381,10 @@ class InstallerArchitectureTests(unittest.TestCase):
             repo_root = install_root / "Pandrator"
             repo_root.mkdir(parents=True)
             (install_root / "config.json").write_text("{}", encoding="utf-8")
-            (repo_root / "main.py").write_text("", encoding="utf-8")
+            (repo_root / "pyproject.toml").write_text("", encoding="utf-8")
+            web_index = repo_root / "pandrator" / "web" / "static" / "index.html"
+            web_index.parent.mkdir(parents=True)
+            web_index.write_text("", encoding="utf-8")
 
             resolved = platforms.resolve_launcher_workspace(
                 system="Windows",
@@ -390,7 +396,7 @@ class InstallerArchitectureTests(unittest.TestCase):
 
     def test_launcher_workspace_keeps_uninstalled_repo_cwd(self):
         with tempfile.TemporaryDirectory() as repo_root:
-            Path(repo_root, "main.py").write_text("", encoding="utf-8")
+            Path(repo_root, "pyproject.toml").write_text("", encoding="utf-8")
 
             resolved = platforms.resolve_launcher_workspace(
                 system="Windows",

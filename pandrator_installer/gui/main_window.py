@@ -288,10 +288,10 @@ class PandratorInstaller(
         pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
         install_markers = (
             os.path.join(pandrator_path, 'config.json'),
-            os.path.join(pandrator_path, 'Pandrator', 'main.py'),
-            os.path.join(pandrator_path, 'Pandrator', 'pandrator.py'),
+            os.path.join(pandrator_path, 'Pandrator', 'pyproject.toml'),
+            os.path.join(pandrator_path, 'Pandrator', 'pandrator', 'web', 'static', 'index.html'),
         )
-        if any(os.path.exists(marker) for marker in install_markers):
+        if all(os.path.exists(marker) for marker in install_markers):
             self.tabs.setCurrentWidget(self.launch_tab)
         else:
             self.tabs.setCurrentWidget(self.install_tab)
