@@ -753,19 +753,27 @@ class ComponentOperationsMixin:
         return process
 
     def build_xtts_launcher_command(self, use_cpu=False, pixi_path=None):
-        command = ['cmd', '/c', 'run.bat']
-        if use_cpu:
-            command.append('--cpu')
-        else:
-            command.extend(['--backend', 'cuda'])
+        backend = 'cpu' if use_cpu else ('cuda' if is_windows() else 'auto')
+        options = ['--backend', backend]
+        if is_windows():
+            command = ['cmd', '/c', 'run.bat', *options]
+            if pixi_path:
+                command.extend(['--pixi-path', pixi_path])
+            return command
 
+        command = [pixi_path or 'pixi', 'run', 'python', 'run.py', *options]
         if pixi_path:
             command.extend(['--pixi-path', pixi_path])
-
         return command
 
     def build_voxcpm_launcher_command(self, pixi_path=None):
-        command = ['cmd', '/c', 'run.bat']
+        if is_windows():
+            command = ['cmd', '/c', 'run.bat']
+            if pixi_path:
+                command.extend(['--pixi-path', pixi_path])
+            return command
+
+        command = [pixi_path or 'pixi', 'run', 'python', 'run.py']
         if pixi_path:
             command.extend(['--pixi-path', pixi_path])
         return command
@@ -824,10 +832,58 @@ class ComponentOperationsMixin:
             *options,
         ]
 
-    def build_magpie_launcher_command(self, pixi_path=None):
-        command = ['cmd', '/c', 'run.bat']
+    def build_magpie_launcher_command(self, use_cpu=False, pixi_path=None):
+        options = ['--device', 'cpu' if use_cpu else 'cuda']
+        if is_windows():
+            command = ['cmd', '/c', 'run.bat', *options]
+            if pixi_path:
+                command.extend(['--pixi-path', pixi_path])
+            return command
+
+        command = [pixi_path or 'pixi', 'run', 'python', 'run.py', *options]
         if pixi_path:
             command.extend(['--pixi-path', pixi_path])
+        return command
+
+    def build_voxtral_launcher_command(self, voxtral_repo_path, prepare_only=False):
+        run_script_path = os.path.join(
+            voxtral_repo_path,
+            'run.ps1' if is_windows() else 'run.sh',
+        )
+        if is_windows():
+            command = [
+                'powershell',
+                '-ExecutionPolicy',
+                'Bypass',
+                '-File',
+                run_script_path,
+                '-ProjectRoot',
+                voxtral_repo_path,
+                '-BindHost',
+                '127.0.0.1',
+                '-Port',
+                '8000',
+                '-Model',
+                'gguf',
+            ]
+            if prepare_only:
+                command.append('-NoStart')
+            return command
+
+        command = [
+            'bash',
+            run_script_path,
+            '--project-root',
+            voxtral_repo_path,
+            '--host',
+            '127.0.0.1',
+            '--port',
+            '8000',
+            '--model',
+            'gguf',
+        ]
+        if prepare_only:
+            command.append('--no-start')
         return command
 
     def _read_text_if_exists(self, file_path):
@@ -956,9 +1012,9 @@ class ComponentOperationsMixin:
             return
 
     def is_xtts_runtime_ready(self, xtts_repo_path):
-        run_bat_path = os.path.join(xtts_repo_path, 'run.bat')
-        env_python_path = os.path.join(xtts_repo_path, '.pixi', 'envs', 'default', 'python.exe')
-        return all(os.path.exists(path) for path in (run_bat_path, env_python_path))
+        run_script_path = os.path.join(xtts_repo_path, 'run.bat' if is_windows() else 'run.py')
+        env_python_path = pixi_env_python_path(os.path.join(xtts_repo_path, '.pixi', 'envs', 'default'))
+        return all(os.path.exists(path) for path in (run_script_path, env_python_path))
 
     def install_xtts_api_server(self, xtts_repo_path, use_cpu=False, pixi_path=None):
         logging.info(f"Bootstrapping XTTS2 API server in {xtts_repo_path}...")
@@ -966,7 +1022,7 @@ class ComponentOperationsMixin:
             "XTTS bootstrap starts the server temporarily to validate runtime and will stop it after health checks."
         )
 
-        run_script_path = os.path.join(xtts_repo_path, 'run.bat')
+        run_script_path = os.path.join(xtts_repo_path, 'run.bat' if is_windows() else 'run.py')
         if not os.path.exists(run_script_path):
             raise FileNotFoundError(f"XTTS2 run script not found at: {run_script_path}")
 
@@ -985,6 +1041,7 @@ class ComponentOperationsMixin:
             process = subprocess.Popen(
                 command,
                 cwd=xtts_repo_path,
+                env=self.get_pixi_subprocess_env(os.path.dirname(xtts_repo_path)),
                 stdout=log_handle,
                 stderr=subprocess.STDOUT,
                 **self.get_hidden_subprocess_kwargs(),
@@ -1013,9 +1070,9 @@ class ComponentOperationsMixin:
             log_handle.close()
 
     def is_voxcpm_runtime_ready(self, voxcpm_repo_path):
-        run_bat_path = os.path.join(voxcpm_repo_path, 'run.bat')
-        env_python_path = os.path.join(voxcpm_repo_path, '.pixi', 'envs', 'default', 'python.exe')
-        return all(os.path.exists(path) for path in (run_bat_path, env_python_path))
+        run_script_path = os.path.join(voxcpm_repo_path, 'run.bat' if is_windows() else 'run.py')
+        env_python_path = pixi_env_python_path(os.path.join(voxcpm_repo_path, '.pixi', 'envs', 'default'))
+        return all(os.path.exists(path) for path in (run_script_path, env_python_path))
 
     def install_voxcpm_api_server(self, voxcpm_repo_path, pixi_path=None):
         logging.info(f"Bootstrapping VoxCPM API server in {voxcpm_repo_path}...")
@@ -1023,7 +1080,7 @@ class ComponentOperationsMixin:
             "VoxCPM bootstrap starts the server temporarily to validate runtime and will stop it after health checks."
         )
 
-        run_script_path = os.path.join(voxcpm_repo_path, 'run.bat')
+        run_script_path = os.path.join(voxcpm_repo_path, 'run.bat' if is_windows() else 'run.py')
         if not os.path.exists(run_script_path):
             raise FileNotFoundError(f"VoxCPM run script not found at: {run_script_path}")
 
@@ -1041,6 +1098,7 @@ class ComponentOperationsMixin:
             process = subprocess.Popen(
                 command,
                 cwd=voxcpm_repo_path,
+                env=self.get_pixi_subprocess_env(os.path.dirname(voxcpm_repo_path)),
                 stdout=log_handle,
                 stderr=subprocess.STDOUT,
                 **self.get_hidden_subprocess_kwargs(),
@@ -1281,9 +1339,9 @@ class ComponentOperationsMixin:
             log_handle.close()
 
     def is_magpie_runtime_ready(self, magpie_repo_path):
-        run_bat_path = os.path.join(magpie_repo_path, 'run.bat')
-        env_python_path = os.path.join(magpie_repo_path, '.pixi', 'envs', 'default', 'python.exe')
-        return all(os.path.exists(path) for path in (run_bat_path, env_python_path))
+        run_script_path = os.path.join(magpie_repo_path, 'run.bat' if is_windows() else 'run.py')
+        env_python_path = pixi_env_python_path(os.path.join(magpie_repo_path, '.pixi', 'envs', 'default'))
+        return all(os.path.exists(path) for path in (run_script_path, env_python_path))
 
     def install_magpie_api_server(self, magpie_repo_path, use_cpu=False, pixi_path=None):
         logging.info(f"Bootstrapping Magpie API server in {magpie_repo_path}...")
@@ -1291,7 +1349,7 @@ class ComponentOperationsMixin:
             "Magpie bootstrap starts the server temporarily to validate runtime and will stop it after health checks."
         )
 
-        run_script_path = os.path.join(magpie_repo_path, 'run.bat')
+        run_script_path = os.path.join(magpie_repo_path, 'run.bat' if is_windows() else 'run.py')
         if not os.path.exists(run_script_path):
             raise FileNotFoundError(f"Magpie run script not found at: {run_script_path}")
 
@@ -1299,9 +1357,12 @@ class ComponentOperationsMixin:
             raise RuntimeError("Magpie server cannot be bootstrapped because port 8030 is already in use.")
 
         magpie_install_log_file = os.path.join(magpie_repo_path, 'magpie_install.log')
-        command = [run_script_path]
-        if pixi_path:
-            command.extend(['--pixi-path', pixi_path])
+        command = self.build_magpie_launcher_command(
+            use_cpu=use_cpu,
+            pixi_path=self.get_magpie_pixi_argument(magpie_repo_path, pixi_path)
+            if is_windows()
+            else pixi_path,
+        )
 
         pandrator_path = os.path.dirname(magpie_repo_path)
         env = self.get_pixi_subprocess_env(pandrator_path)
@@ -1349,27 +1410,19 @@ class ComponentOperationsMixin:
             log_handle.close()
 
     def is_voxtral_runtime_ready(self, voxtral_repo_path):
-        venv_python_path = os.path.join(voxtral_repo_path, '.runtime', 'venv', 'Scripts', 'python.exe')
+        venv_python_path = pixi_env_python_path(os.path.join(voxtral_repo_path, '.runtime', 'venv'))
         return os.path.exists(venv_python_path)
 
     def install_voxtral_api_server(self, voxtral_repo_path):
         logging.info(f"Bootstrapping Voxtral API server in {voxtral_repo_path}...")
-        run_script_path = os.path.join(voxtral_repo_path, 'run.ps1')
+        run_script_path = os.path.join(voxtral_repo_path, 'run.ps1' if is_windows() else 'run.sh')
         if not os.path.exists(run_script_path):
             raise FileNotFoundError(f"Voxtral run script not found at: {run_script_path}")
 
-        command = [
-            'powershell',
-            '-ExecutionPolicy',
-            'Bypass',
-            '-File',
-            run_script_path,
-            '-ProjectRoot',
+        command = self.build_voxtral_launcher_command(
             voxtral_repo_path,
-            '-NoStart',
-            '-Model',
-            'gguf',
-        ]
+            prepare_only=True,
+        )
 
         self.run_command(
             command,

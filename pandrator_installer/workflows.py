@@ -11,7 +11,11 @@ try:
 except ImportError:
     PackagingSpecifierSet = None
 
-from .catalog import COMPONENTS, LINUX_DEFERRED_INSTALL_COMPONENT_KEYS
+from .catalog import (
+    COMPONENTS,
+    LINUX_DEFERRED_INSTALL_COMPONENT_KEYS,
+    LINUX_DEFERRED_REASON_BY_COMPONENT,
+)
 from .constants import (
     CHATTERBOX_API_REPO_DIRNAME,
     CHATTERBOX_API_REPO_URL,
@@ -82,15 +86,15 @@ class WorkflowMixin:
         if not deferred_components:
             return
 
-        labels = ', '.join(
-            COMPONENTS[key].label
+        labels = '; '.join(
+            f"{COMPONENTS[key].label}: "
+            f"{LINUX_DEFERRED_REASON_BY_COMPONENT.get(COMPONENTS[key].packaging_key, 'pending qualification')}"
             for key in deferred_components
             if key in COMPONENTS
         )
         raise RuntimeError(
-            "Linux setup for model server components is deferred pending per-backend review. "
-            f"Selected deferred component(s): {labels}. "
-            "Install Pandrator core first, then validate backend services one by one."
+            "The selected component is not currently available on Linux. "
+            f"{labels}."
         )
 
     def validate_platform_update_config(self, config):
@@ -105,15 +109,18 @@ class WorkflowMixin:
                 continue
             seen_config_flags.add(component.config_flag)
             if config.get(component.config_flag, False):
-                deferred_labels.append(component.label)
+                reason = LINUX_DEFERRED_REASON_BY_COMPONENT.get(
+                    component.packaging_key,
+                    'pending qualification',
+                )
+                deferred_labels.append(f"{component.label}: {reason}")
 
         if not deferred_labels:
             return
 
         raise RuntimeError(
-            "Linux update for model server components is deferred pending per-backend review. "
-            f"Installed deferred component(s): {', '.join(deferred_labels)}. "
-            "Update Pandrator core separately until these services are reviewed."
+            "The installed component cannot currently be updated on Linux. "
+            f"{'; '.join(deferred_labels)}."
         )
 
 

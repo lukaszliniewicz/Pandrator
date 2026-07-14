@@ -232,7 +232,7 @@ TTS_BACKENDS: dict[str, BackendPresentation] = {
         ),
         voice_cloning=False,
         prebuilt_voices=True,
-        note="The packaged service uses preset speakers and a WGPU-compatible accelerator; it does not provide a CPU path.",
+        note="The packaged service uses preset speakers and a WGPU-compatible accelerator on Windows and Linux; it does not provide a CPU path.",
         source_url="https://github.com/lukaszliniewicz/voxtral-fastapi",
     ),
     "silero": BackendPresentation(
@@ -252,7 +252,7 @@ TTS_BACKENDS: dict[str, BackendPresentation] = {
         ),
         voice_cloning=False,
         prebuilt_voices=True,
-        note="The list reflects the Silero model families exposed by Pandrator; speakers are selected within each family.",
+        note="Legacy integration. Its upstream API server currently has incompatible dependencies and a broken language catalogue, so Linux installation is disabled.",
         source_url="https://github.com/snakers4/silero-models",
     ),
     "chatterbox": BackendPresentation(
@@ -302,7 +302,7 @@ TTS_BACKENDS: dict[str, BackendPresentation] = {
         ),
         voice_cloning=False,
         prebuilt_voices=True,
-        note="All five speakers can speak every supported language. This release intentionally has no zero-shot cloning path.",
+        note="All five speakers can speak every supported language. CPU and NVIDIA CUDA runtimes are available on Windows and Linux; the first NeMo installation is comparatively large.",
         source_url="https://huggingface.co/nvidia/magpie_tts_multilingual_357m",
     ),
 }

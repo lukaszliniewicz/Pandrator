@@ -18,7 +18,11 @@ from PyQt6.QtWidgets import (
 )
 
 from ..backend_catalog import TTS_BACKENDS, formatted_crispasr_languages
-from ..catalog import LINUX_DEFERRED_INSTALL_COMPONENT_KEYS
+from ..catalog import (
+    COMPONENTS,
+    LINUX_DEFERRED_INSTALL_COMPONENT_KEYS,
+    LINUX_DEFERRED_REASON_BY_COMPONENT,
+)
 from ..components import ComponentOperationsMixin
 from ..constants import (
     CHATTERBOX_GPU_SUPPORT_CONFIG_FLAG,
@@ -1100,12 +1104,14 @@ class PandratorInstaller(
             'magpie': (self.magpie_checkbox, self.magpie_cpu_checkbox),
             'magpie_cpu': (self.magpie_checkbox, self.magpie_cpu_checkbox),
         }
-        tooltip = (
-            "Linux setup for this component is deferred pending per-backend review. "
-            "Install Pandrator core first; Kokoro, Chatterbox, Qwen3 TTS, and FishS2 are currently reviewed Linux backends."
-        )
         seen_controls = set()
         for component_key in LINUX_DEFERRED_INSTALL_COMPONENT_KEYS:
+            component = COMPONENTS[component_key]
+            reason = LINUX_DEFERRED_REASON_BY_COMPONENT.get(
+                component.packaging_key,
+                "pending qualification",
+            )
+            tooltip = f"Unavailable on Linux: {reason}."
             for control in controls_by_component.get(component_key, ()):
                 if control in seen_controls:
                     continue

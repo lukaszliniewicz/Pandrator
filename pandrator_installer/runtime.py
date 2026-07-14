@@ -445,7 +445,7 @@ class RuntimeMixin:
                     logging.exception("Exception details:")
                     raise
 
-                if not self.check_voxtral_server_online(voxtral_server_url):
+                if not self.check_voxtral_server_online(voxtral_server_url, process=self.voxtral_process):
                     error_msg = "Voxtral server failed to come online"
                     self.reporter.status(error_msg)
                     logging.error(error_msg)
@@ -947,7 +947,7 @@ class RuntimeMixin:
             self.notify_error("Error", error_msg)
             return None
 
-        run_script_path = os.path.join(xtts_server_path, 'run.bat')
+        run_script_path = os.path.join(xtts_server_path, 'run.bat' if is_windows() else 'run.py')
         if not os.path.exists(run_script_path):
             raise FileNotFoundError(f"XTTS run script not found at: {run_script_path}")
 
@@ -1073,7 +1073,7 @@ class RuntimeMixin:
             self.notify_error("Error", error_msg)
             return None
 
-        run_script_path = os.path.join(voxcpm_server_path, 'run.bat')
+        run_script_path = os.path.join(voxcpm_server_path, 'run.bat' if is_windows() else 'run.py')
         if not os.path.exists(run_script_path):
             raise FileNotFoundError(f"VoxCPM run script not found at: {run_script_path}")
 
@@ -1304,14 +1304,17 @@ class RuntimeMixin:
             self.notify_error("Error", error_msg)
             return None
 
-        run_script_path = os.path.join(magpie_server_path, 'run.bat')
+        run_script_path = os.path.join(magpie_server_path, 'run.bat' if is_windows() else 'run.py')
         if not os.path.exists(run_script_path):
             raise FileNotFoundError(f"Magpie run script not found at: {run_script_path}")
 
         magpie_log_file = os.path.join(magpie_server_path, 'magpie_server.log')
-        command = [run_script_path]
-        if pixi_path:
-            command.extend(['--pixi-path', pixi_path])
+        command = self.build_magpie_launcher_command(
+            use_cpu=use_cpu,
+            pixi_path=self.get_magpie_pixi_argument(magpie_server_path, pixi_path)
+            if is_windows()
+            else pixi_path,
+        )
 
         env = self.get_pixi_subprocess_env(os.path.dirname(magpie_server_path))
         if use_cpu:
@@ -1438,28 +1441,14 @@ class RuntimeMixin:
             self.notify_error("Error", error_msg)
             return None
 
-        run_script_path = os.path.join(voxtral_server_path, 'run.ps1')
+        run_script_path = os.path.join(voxtral_server_path, 'run.ps1' if is_windows() else 'run.sh')
         if not os.path.exists(run_script_path):
             raise FileNotFoundError(f"Voxtral run script not found at: {run_script_path}")
 
         voxtral_log_file = os.path.join(voxtral_server_path, 'voxtral_server.log')
         log_handle = open(voxtral_log_file, 'a', encoding='utf-8')
 
-        command = [
-            'powershell',
-            '-ExecutionPolicy',
-            'Bypass',
-            '-File',
-            run_script_path,
-            '-ProjectRoot',
-            voxtral_server_path,
-            '-BindHost',
-            '127.0.0.1',
-            '-Port',
-            '8000',
-            '-Model',
-            'gguf',
-        ]
+        command = self.build_voxtral_launcher_command(voxtral_server_path)
 
         try:
             process = subprocess.Popen(
@@ -1478,9 +1467,12 @@ class RuntimeMixin:
         self.voxtral_process = process
         return process
 
-    def check_voxtral_server_online(self, url, max_attempts=60, wait_interval=5):
+    def check_voxtral_server_online(self, url, max_attempts=60, wait_interval=5, process=None):
         """Check if the Voxtral server is online and responding."""
         for attempt in range(1, max_attempts + 1):
+            if process is not None and process.poll() is not None:
+                logging.error("Voxtral service process exited before coming online.")
+                return False
             try:
                 response = requests.get(url, timeout=5)
                 if response.status_code == 200:

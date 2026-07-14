@@ -68,8 +68,12 @@ class StartupWizardUiTests(unittest.TestCase):
         self.addCleanup(dialog.close)
 
         self.assertFalse(wizard_icon("subtitles").isNull())
-        self.assertTrue(dialog.task_kind_tiles["subtitles"].isChecked())
+        self.assertTrue(dialog.task_kind_tiles["audiobook"].isChecked())
         self.assertTrue(dialog.source_mode_tiles["file"].isChecked())
+
+        dialog.task_kind_tiles["subtitles"].click()
+        self.app.processEvents()
+        self.assertEqual(dialog.task_kind_combo.currentData(), "subtitles")
 
         dialog.task_kind_tiles["audiobook"].click()
         self.app.processEvents()

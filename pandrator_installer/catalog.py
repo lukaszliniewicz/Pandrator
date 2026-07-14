@@ -42,7 +42,7 @@ COMPONENTS: dict[str, ComponentDefinition] = {
         label="XTTS",
         config_flag="xtts_support",
         paths=("xtts2_api",),
-        markers=("xtts2_api/run.bat",),
+        markers=("xtts2_api/run.py", "xtts2_api/pyproject.toml"),
         repo_url="https://github.com/lukaszliniewicz/xtts2_api.git",
         repo_dirname="xtts2_api",
         process_attr="xtts_process",
@@ -53,7 +53,7 @@ COMPONENTS: dict[str, ComponentDefinition] = {
         label="XTTS CPU",
         config_flag="xtts_support",
         paths=("xtts2_api",),
-        markers=("xtts2_api/run.bat",),
+        markers=("xtts2_api/run.py", "xtts2_api/pyproject.toml"),
         variant_of="xtts",
         repo_url="https://github.com/lukaszliniewicz/xtts2_api.git",
         repo_dirname="xtts2_api",
@@ -65,7 +65,7 @@ COMPONENTS: dict[str, ComponentDefinition] = {
         label="VoxCPM",
         config_flag="voxcpm_support",
         paths=("voxcpm_fastapi",),
-        markers=("voxcpm_fastapi/run.bat",),
+        markers=("voxcpm_fastapi/run.py", "voxcpm_fastapi/pyproject.toml"),
         repo_url="https://github.com/lukaszliniewicz/voxcpm_fastapi.git",
         repo_dirname="voxcpm_fastapi",
         process_attr="voxcpm_process",
@@ -99,7 +99,7 @@ COMPONENTS: dict[str, ComponentDefinition] = {
         label="Voxtral",
         config_flag="voxtral_support",
         paths=("voxtral-fastapi",),
-        markers=("voxtral-fastapi/run.ps1",),
+        markers=("voxtral-fastapi/run.ps1", "voxtral-fastapi/run.sh"),
         repo_url="https://github.com/lukaszliniewicz/voxtral-fastapi.git",
         repo_dirname="voxtral-fastapi",
         process_attr="voxtral_process",
@@ -232,7 +232,7 @@ COMPONENTS: dict[str, ComponentDefinition] = {
         label="Magpie",
         config_flag="magpie_support",
         paths=("magpie-fastapi",),
-        markers=("magpie-fastapi/run.bat",),
+        markers=("magpie-fastapi/run.py", "magpie-fastapi/pyproject.toml"),
         repo_url="https://github.com/lukaszliniewicz/magpie-fastapi.git",
         repo_dirname="magpie-fastapi",
         process_attr="magpie_process",
@@ -243,7 +243,7 @@ COMPONENTS: dict[str, ComponentDefinition] = {
         label="Magpie CPU",
         config_flag="magpie_support",
         paths=("magpie-fastapi",),
-        markers=("magpie-fastapi/run.bat",),
+        markers=("magpie-fastapi/run.py", "magpie-fastapi/pyproject.toml"),
         variant_of="magpie",
         repo_url="https://github.com/lukaszliniewicz/magpie-fastapi.git",
         repo_dirname="magpie-fastapi",
@@ -312,7 +312,25 @@ BACKEND_COMPONENT_KEYS = (
     "magpie",
 )
 
-LINUX_READY_BACKEND_KEYS = ("kokoro", "chatterbox", "kobold_qwen", "fishs2", "rvc")
+LINUX_READY_BACKEND_KEYS = (
+    "xtts",
+    "voxcpm",
+    "fishs2",
+    "voxtral",
+    "kokoro",
+    "chatterbox",
+    "kobold_qwen",
+    "magpie",
+    "rvc",
+)
+
+LINUX_DEFERRED_REASON_BY_COMPONENT = {
+    "silero": (
+        "the legacy silero-api-server package no longer starts with current "
+        "TorchAudio releases and its remote language index is unavailable"
+    ),
+    "xtts_finetuning": "the legacy Qt training tool has not completed Linux qualification",
+}
 
 LINUX_DEFERRED_INSTALL_COMPONENT_KEYS = tuple(
     key

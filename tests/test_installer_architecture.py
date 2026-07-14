@@ -426,13 +426,20 @@ class InstallerArchitectureTests(unittest.TestCase):
 
         install_calibre.assert_not_called()
 
-    def test_non_windows_backend_component_install_is_deferred(self):
+    def test_non_windows_legacy_silero_install_is_rejected_with_reason(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        selection = InstallSelection.from_components(["silero"])
+
+        with patch("pandrator_installer.workflows.is_windows", return_value=False):
+            with self.assertRaisesRegex(RuntimeError, "remote language index"):
+                installer.validate_platform_install_selection(selection)
+
+    def test_non_windows_magpie_install_selection_is_allowed(self):
         installer = HeadlessInstaller(working_dir="workspace")
         selection = InstallSelection.from_components(["magpie_cpu"])
 
         with patch("pandrator_installer.workflows.is_windows", return_value=False):
-            with self.assertRaisesRegex(RuntimeError, "deferred"):
-                installer.validate_platform_install_selection(selection)
+            installer.validate_platform_install_selection(selection)
 
     def test_non_windows_chatterbox_install_selection_is_allowed(self):
         installer = HeadlessInstaller(working_dir="workspace")
@@ -462,13 +469,20 @@ class InstallerArchitectureTests(unittest.TestCase):
         with patch("pandrator_installer.workflows.is_windows", return_value=False):
             installer.validate_platform_install_selection(selection)
 
-    def test_non_windows_update_with_backend_config_is_deferred(self):
+    def test_non_windows_update_with_legacy_silero_config_is_rejected(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        config = {"silero_support": True}
+
+        with patch("pandrator_installer.workflows.is_windows", return_value=False):
+            with self.assertRaisesRegex(RuntimeError, "remote language index"):
+                installer.validate_platform_update_config(config)
+
+    def test_non_windows_update_with_magpie_config_is_allowed(self):
         installer = HeadlessInstaller(working_dir="workspace")
         config = {"magpie_support": True}
 
         with patch("pandrator_installer.workflows.is_windows", return_value=False):
-            with self.assertRaisesRegex(RuntimeError, "deferred"):
-                installer.validate_platform_update_config(config)
+            installer.validate_platform_update_config(config)
 
     def test_non_windows_update_with_chatterbox_config_is_allowed(self):
         installer = HeadlessInstaller(working_dir="workspace")
@@ -570,16 +584,115 @@ class InstallerArchitectureTests(unittest.TestCase):
         self.assertEqual(resolved_path, wheel_path)
         self.assertEqual(wheel_directory, wheels_dir)
 
-    def test_linux_deferred_components_do_not_include_kokoro(self):
-        self.assertNotIn("kokoro", LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
-        self.assertNotIn("kokoro_cpu", LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
-        self.assertNotIn("chatterbox", LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
-        self.assertNotIn("chatterbox_cpu", LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
-        self.assertNotIn("kobold_qwen", LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
-        self.assertNotIn("kobold_qwen_cpu", LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
-        self.assertNotIn("rvc", LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
-        self.assertNotIn("rvc_cpu", LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
-        self.assertIn("magpie", LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
+    def test_linux_deferred_components_only_contain_unqualified_tools(self):
+        for component in (
+            "xtts",
+            "xtts_cpu",
+            "voxcpm",
+            "fishs2",
+            "fishs2_cpu",
+            "voxtral",
+            "kokoro",
+            "kokoro_cpu",
+            "chatterbox",
+            "chatterbox_cpu",
+            "kobold_qwen",
+            "kobold_qwen_cpu",
+            "magpie",
+            "magpie_cpu",
+            "rvc",
+            "rvc_cpu",
+        ):
+            self.assertNotIn(component, LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
+
+        self.assertIn("silero", LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
+        self.assertIn("xtts_finetuning", LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
+
+    def test_xtts_and_voxcpm_launchers_use_cross_platform_python_bootstrappers(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+
+        with patch("pandrator_installer.components.is_windows", return_value=False):
+            xtts_command = installer.build_xtts_launcher_command(
+                pixi_path="/home/user/Pandrator/bin/pixi",
+            )
+            voxcpm_command = installer.build_voxcpm_launcher_command(
+                pixi_path="/home/user/Pandrator/bin/pixi",
+            )
+
+        self.assertEqual(
+            xtts_command,
+            [
+                "/home/user/Pandrator/bin/pixi",
+                "run",
+                "python",
+                "run.py",
+                "--backend",
+                "auto",
+                "--pixi-path",
+                "/home/user/Pandrator/bin/pixi",
+            ],
+        )
+        self.assertEqual(
+            voxcpm_command,
+            [
+                "/home/user/Pandrator/bin/pixi",
+                "run",
+                "python",
+                "run.py",
+                "--pixi-path",
+                "/home/user/Pandrator/bin/pixi",
+            ],
+        )
+
+    def test_magpie_launcher_uses_cross_platform_python_bootstrapper(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+
+        with patch("pandrator_installer.components.is_windows", return_value=False):
+            command = installer.build_magpie_launcher_command(
+                use_cpu=True,
+                pixi_path="/home/user/Pandrator/bin/pixi",
+            )
+
+        self.assertEqual(
+            command,
+            [
+                "/home/user/Pandrator/bin/pixi",
+                "run",
+                "python",
+                "run.py",
+                "--device",
+                "cpu",
+                "--pixi-path",
+                "/home/user/Pandrator/bin/pixi",
+            ],
+        )
+
+    def test_voxtral_launcher_uses_linux_shell_bootstrapper(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+
+        with patch("pandrator_installer.components.is_windows", return_value=False):
+            run_command = installer.build_voxtral_launcher_command("/srv/voxtral")
+            prepare_command = installer.build_voxtral_launcher_command(
+                "/srv/voxtral",
+                prepare_only=True,
+            )
+
+        self.assertEqual(run_command[0], "bash")
+        self.assertEqual(run_command[1].replace("\\", "/"), "/srv/voxtral/run.sh")
+        self.assertEqual(
+            run_command[2:],
+            [
+                "--project-root",
+                "/srv/voxtral",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "8000",
+                "--model",
+                "gguf",
+            ],
+        )
+        self.assertEqual(prepare_command[-1], "--no-start")
 
     def test_chatterbox_launcher_uses_platform_launcher(self):
         installer = HeadlessInstaller(working_dir="workspace")
