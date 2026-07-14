@@ -17,7 +17,11 @@ from PyQt6.QtWidgets import (
     QInputDialog, QLineEdit, QSpinBox,
 )
 
-from ..backend_catalog import TTS_BACKENDS, formatted_crispasr_languages
+from ..backend_catalog import (
+    TTS_BACKENDS,
+    formatted_crispasr_languages,
+    formatted_crispasr_model_licences,
+)
 from ..catalog import (
     COMPONENTS,
     LINUX_DEFERRED_INSTALL_COMPONENT_KEYS,
@@ -357,6 +361,7 @@ class PandratorInstaller(
         voice_capability="",
         details="",
         languages="",
+        models="",
         voice_cloning=None,
         prebuilt_voices=None,
     ):
@@ -376,6 +381,7 @@ class PandratorInstaller(
             extra_controls=extra_controls,
             details=details,
             languages=languages,
+            models=models,
             voice_cloning=voice_cloning,
             prebuilt_voices=prebuilt_voices,
         )
@@ -471,6 +477,7 @@ class PandratorInstaller(
                 extra_controls,
                 details=presentation.note,
                 languages=presentation.formatted_languages,
+                models=presentation.formatted_model_licences,
                 voice_cloning=presentation.voice_cloning,
                 prebuilt_voices=presentation.prebuilt_voices,
             )
@@ -513,6 +520,7 @@ class PandratorInstaller(
                 "One native runtime for Whisper large-v3 and Parakeet 0.6B v3 with CPU, CUDA, Vulkan, and Apple Metal support.",
                 (self.crispasr_settings_button,),
                 languages=formatted_crispasr_languages(),
+                models=formatted_crispasr_model_licences(),
                 details="Choose FP16 or a supported quantized model, plus an explicit accelerator when automatic detection is not appropriate. VAD, decoding, chunking, hotwords, and language identification remain adjustable per session in Pandrator.",
             ),
         )
@@ -528,6 +536,10 @@ class PandratorInstaller(
                 self.rvc_checkbox,
                 "Reshapes generated speech with an RVC voice model for voice conversion and post-processing.",
                 (self.rvc_cpu_checkbox,),
+                details=(
+                    "No RVC voice model is bundled. Uploaded .pth and .index files retain "
+                    "their own terms, which the user is responsible for reviewing."
+                ),
             ),
         )
         self._add_option_cards(speech_to_speech_grid, speech_to_speech_cards)
@@ -540,6 +552,11 @@ class PandratorInstaller(
             self._create_option_card(
                 self.xtts_finetuning_checkbox,
                 "Adds tools for training custom XTTS voices.",
+                models=TTS_BACKENDS["xtts"].formatted_model_licences,
+                details=(
+                    "Training uses XTTS v2 and does not change the model licence. Rights in "
+                    "training recordings and resulting voices remain the user's responsibility."
+                ),
             ),
         )
         self._add_option_cards(tools_grid, tool_cards)

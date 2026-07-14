@@ -16,7 +16,7 @@ export const LANGUAGE_LABELS: Record<string, string> = {
   kaz: 'Kazakh', kbd: 'Kabardian-Cherkess', kir: 'Kyrgyz', kjh: 'Khakas', kn: 'Kannada',
   mdf: 'Moksha', ml: 'Malayalam', mni: 'Manipuri', raj: 'Rajasthani', sah: 'Yakut',
   ta: 'Tamil', tat: 'Tatar', te: 'Telugu', tgk: 'Tajik', udm: 'Udmurt',
-  ukr: 'Ukrainian', uzb: 'Uzbek', xal: 'Kalmyk', 'en-in': 'Indian English'
+  ukr: 'Ukrainian', uzb: 'Uzbek', xal: 'Kalmyk', indic: 'Indic languages', 'en-in': 'Indian English'
 };
 
 const KOKORO_PREFIX_LANGUAGES: Record<string, string> = {

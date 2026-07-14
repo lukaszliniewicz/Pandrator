@@ -423,7 +423,7 @@ class WorkflowMixin:
 
             if silero_var:
                 self.reporter.progress(0.8)
-                self.reporter.status("Installing Silero and its modern CIS voice pack...")
+                self.reporter.status("Installing Silero and all supported voice packs...")
                 self.install_silero_api_server(
                     silero_repo_path,
                     pandrator_path=pandrator_path,
@@ -835,7 +835,7 @@ class WorkflowMixin:
                     )
 
             if config.get('silero_support', False):
-                self.reporter.status("Installing/upgrading Silero and verifying its default model...")
+                self.reporter.status("Installing/upgrading Silero and verifying all voice packs...")
                 self.install_silero_api_server(
                     silero_repo_path,
                     pandrator_path=pandrator_base_path,

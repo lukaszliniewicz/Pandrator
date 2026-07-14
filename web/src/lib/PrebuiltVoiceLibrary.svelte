@@ -39,6 +39,14 @@
   const languages = $derived(languagesForService(service?.id ?? '', descriptors));
   const visibleVoices = $derived(descriptors.filter((voice) => !language || !voice.languageCode || voice.languageCode === language));
   const languageDefault = $derived(String(service?.default_voices_by_language?.[model]?.[language] ?? service?.default_voices?.[model] ?? service?.default_voice ?? ''));
+  const modelInfo = $derived((service?.model_catalog ?? []).find((item: any) => item.id === model));
+  const modelLanguageNames = $derived((modelInfo?.languages ?? []).map((item: any) => typeof item === 'string' ? item : item.name).filter(Boolean));
+
+  function modelLabel(modelId: string) {
+    const info = (service?.model_catalog ?? []).find((item: any) => item.id === modelId);
+    const friendly = String(info?.display_name ?? info?.name ?? '').trim();
+    return friendly ? `${friendly} · ${modelId}` : modelId;
+  }
 
   $effect(() => {
     if (service && serviceId !== service.id) serviceId = service.id;
@@ -238,9 +246,24 @@
   <div class="surface mt-5 rounded-3xl p-4 sm:p-6">
     <div class="catalogue-controls">
       <label class="control-label">Service<select bind:value={serviceId} class="field"><option value="">Choose a service</option>{#each services as item}<option value={item.id} disabled={item.available === false}>{item.name}{item.available === false ? ` · ${item.availability_reason || 'unavailable'}` : ' · ready'}</option>{/each}</select></label>
-      <label class="control-label">Model<select bind:value={model} class="field">{#each models as item}<option value={item}>{item}</option>{/each}</select></label>
+      <label class="control-label">Model<select bind:value={model} class="field">{#each models as item}<option value={item}>{modelLabel(item)}</option>{/each}</select></label>
       <label class="control-label">Language<select bind:value={language} class="field" disabled={!languages.length}>{#if !languages.length}<option value="">Multilingual</option>{/if}{#each languages as item}<option value={item.value}>{item.label}</option>{/each}</select></label>
     </div>
+    {#if service?.id === 'silero' && modelInfo}
+      <div class="model-summary mt-4">
+        <div class="min-w-0">
+          <div class="flex flex-wrap items-center gap-2">
+            <strong>{modelInfo.display_name ?? modelInfo.name ?? model}</strong>
+            {#if modelInfo.recommended}<span class="model-badge">Recommended</span>{/if}
+            {#if modelInfo.legacy}<span class="model-badge model-badge-muted">Legacy</span>{/if}
+          </div>
+          <p class="muted mt-1 text-xs">{modelLanguageNames.join(', ')} · {rawVoices.length} pre-built voice{rawVoices.length === 1 ? '' : 's'}</p>
+        </div>
+        {#if modelInfo.license}
+          <a class="license-link" href={modelInfo.license.url} target="_blank" rel="noreferrer" title="Open model licence">{modelInfo.license.name ?? modelInfo.license.id}</a>
+        {/if}
+      </div>
+    {/if}
     <label class="mt-5 block text-sm font-semibold">Preview text<textarea bind:value={previewText} rows="2" maxlength="1000" class="field resize-y"></textarea></label>
     {#if service?.available === false}<p class="mt-3 text-xs text-[var(--warning)]">{service.availability_reason}. Start the local service or add the required credentials in Providers & services.</p>{/if}
     <div class="mt-4 flex flex-wrap items-center justify-between gap-3"><p class="muted text-xs">{visibleVoices.length} voice{visibleVoices.length === 1 ? '' : 's'} in this view. Preview generation runs sequentially so the speech service is not overloaded.</p><button onclick={generateVisible} disabled={!visibleVoices.length || generatingAll || service?.available === false} class="btn btn-primary"><Volume2 size={15}/>{generatingAll ? `Generating ${generatedCount + 1} of ${visibleVoices.length}…` : `Generate all ${languages.length ? 'for this language' : 'visible voices'}`}</button></div>
@@ -269,6 +292,7 @@
 <style>
   .field{margin-top:.4rem;width:100%;min-width:0;border:1px solid var(--line);border-radius:.75rem;background:var(--paper);padding:.68rem .78rem;font-weight:400;color:var(--ink)}
   .control-label{min-width:0;font-size:.78rem;font-weight:700}.catalogue-controls{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.8rem}
+  .model-summary{display:flex;align-items:center;justify-content:space-between;gap:1rem;border:1px solid var(--line);border-radius:1rem;background:var(--paper);padding:.75rem .9rem}.model-badge{border-radius:999px;background:var(--accent-soft);padding:.2rem .5rem;color:var(--accent);font-size:.62rem;font-weight:800;text-transform:uppercase;letter-spacing:.04em}.model-badge-muted{background:var(--paper-strong);color:var(--muted)}.license-link{flex:none;border-radius:999px;border:1px solid var(--line);padding:.35rem .65rem;color:var(--accent);font-size:.72rem;font-weight:700;text-decoration:none}.license-link:hover{background:var(--accent-soft)}
   .voice-row{display:grid;grid-template-columns:minmax(12rem,1fr) minmax(9rem,.45fr) auto;align-items:center;gap:1rem}.voice-meta{display:flex;flex-wrap:wrap;gap:.4rem;color:var(--muted);font-size:.75rem}.voice-meta span{border-radius:999px;background:var(--accent-soft);padding:.25rem .55rem}
   @media(max-width:800px){.voice-row{grid-template-columns:minmax(0,1fr) auto}.voice-meta{grid-column:1}.voice-row>div:nth-of-type(3){grid-column:2;grid-row:1/3}.catalogue-controls{grid-template-columns:1fr 1fr}.catalogue-controls label:last-child{grid-column:1/-1}}
   @media(max-width:560px){.catalogue-controls,.voice-row{grid-template-columns:minmax(0,1fr)}.catalogue-controls label:last-child,.voice-meta,.voice-row>div:nth-of-type(3){grid-column:1;grid-row:auto}.voice-row>div:nth-of-type(3){justify-content:flex-start}}

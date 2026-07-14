@@ -4,11 +4,13 @@ import unittest
 from PyQt6.QtWidgets import QApplication, QCheckBox, QLabel, QPushButton
 
 from pandrator_installer.backend_catalog import (
+    CRISPASR_MODELS,
     PARAKEET_06B_V3_LANGUAGES,
     TTS_BACKENDS,
     TTS_BACKEND_ORDER,
     WHISPER_LARGE_V3_LANGUAGES,
     formatted_crispasr_languages,
+    formatted_crispasr_model_licences,
 )
 from pandrator_installer.gui.backend_card import BackendOptionCard
 
@@ -28,6 +30,45 @@ class TestInstallerBackendCatalog(unittest.TestCase):
                 self.assertEqual(len(backend.languages), len(set(backend.languages)))
                 self.assertTrue(backend.note)
                 self.assertTrue(backend.source_url.startswith("https://"))
+                self.assertTrue(backend.models)
+                for model in backend.models:
+                    self.assertTrue(model.name)
+                    self.assertTrue(model.licence)
+                    self.assertTrue(model.licence_url.startswith("https://"))
+                    self.assertTrue(model.usage)
+
+    def test_every_offered_tts_model_variant_has_licence_metadata(self):
+        expected_counts = {
+            "kokoro": 1,
+            "kobold_qwen": 3,
+            "xtts": 1,
+            "voxcpm": 1,
+            "fishs2": 1,
+            "voxtral": 1,
+            "silero": 10,
+            "chatterbox": 3,
+            "magpie": 1,
+        }
+        self.assertEqual(
+            {key: len(value.models) for key, value in TTS_BACKENDS.items()},
+            expected_counts,
+        )
+        silero_names = {model.name for model in TTS_BACKENDS["silero"].models}
+        self.assertEqual(
+            silero_names,
+            {
+                "v5_cis_base",
+                "v5_cis_base_nostress",
+                "v5_cis_ext",
+                "v5_5_ru",
+                "v3_en",
+                "v3_en_indic",
+                "v3_de",
+                "v3_es",
+                "v3_fr",
+                "v3_indic",
+            },
+        )
 
     def test_expected_language_catalogue_sizes(self):
         expected_sizes = {
@@ -52,12 +93,20 @@ class TestInstallerBackendCatalog(unittest.TestCase):
         formatted = formatted_crispasr_languages()
         self.assertIn("Whisper large-v3 (100)", formatted)
         self.assertIn("Parakeet TDT 0.6B v3 (25)", formatted)
+        self.assertEqual(len(CRISPASR_MODELS), 2)
+        licences = formatted_crispasr_model_licences()
+        self.assertIn("Apache-2.0", licences)
+        self.assertIn("CC BY 4.0", licences)
 
     def test_card_expands_without_a_large_details_button(self):
         card = BackendOptionCard(
             QCheckBox("Engine"),
             "Description",
             languages="English, Polish.",
+            models=(
+                '<b>Example model</b> — '
+                '<a href="https://example.com/license">Example licence</a>'
+            ),
             details="A note.",
             voice_cloning=True,
             prebuilt_voices=False,
@@ -75,6 +124,9 @@ class TestInstallerBackendCatalog(unittest.TestCase):
         self.assertTrue(card.is_expanded)
         self.assertTrue(card.details_panel.isVisibleTo(card))
         self.assertGreater(card.maximumHeight(), card.COLLAPSED_HEIGHT)
+        model_label = card.findChild(QLabel, "optionCardModels")
+        self.assertIsNotNone(model_label)
+        self.assertTrue(model_label.openExternalLinks())
         self.assertFalse(
             any(button.text() == "More details" for button in card.findChildren(QPushButton))
         )

@@ -235,7 +235,8 @@ def run_gui_app(args=None):
             font-size: 9px;
             font-weight: bold;
         }}
-        QLabel#optionCardLanguages {{
+        QLabel#optionCardLanguages,
+        QLabel#optionCardModels {{
             color: #DDD9E2;
             font-size: 11px;
         }}

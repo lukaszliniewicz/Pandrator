@@ -1463,7 +1463,7 @@ class ComponentOperationsMixin:
                 raise
 
     def install_silero_api_server(self, silero_repo_path, pandrator_path=None, pixi_path=None):
-        """Install the locked Silero runtime and its MIT-licensed default model."""
+        """Install the locked Silero runtime and every supported voice pack."""
         pandrator_path = pandrator_path or os.path.dirname(silero_repo_path)
         pixi_executable = pixi_path or self.get_pixi_executable(pandrator_path)
         manifest_path = os.path.join(silero_repo_path, "pyproject.toml")
@@ -1490,8 +1490,7 @@ class ComponentOperationsMixin:
                     "silero-fastapi",
                     "--data-dir",
                     model_dir,
-                    "download",
-                    "v5_cis_base_nostress",
+                    "download-all",
                 ],
                 cwd=silero_repo_path,
                 env=env,

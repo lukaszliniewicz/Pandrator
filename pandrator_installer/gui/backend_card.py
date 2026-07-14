@@ -41,6 +41,7 @@ class BackendOptionCard(QFrame):
         extra_controls=(),
         details: str = "",
         languages: str = "",
+        models: str = "",
         voice_cloning: bool | None = None,
         prebuilt_voices: bool | None = None,
         parent=None,
@@ -99,6 +100,30 @@ class BackendOptionCard(QFrame):
         details_layout.setContentsMargins(16, 14, right_margin, 16)
         details_layout.setSpacing(7)
 
+        if models:
+            models_heading = QLabel("MODELS & LICENCES")
+            models_heading.setObjectName("optionCardEyebrow")
+            details_layout.addWidget(models_heading)
+            models_label = QLabel(models)
+            models_label.setObjectName("optionCardModels")
+            models_label.setTextFormat(Qt.TextFormat.RichText)
+            models_label.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextBrowserInteraction
+            )
+            models_label.setOpenExternalLinks(True)
+            models_label.setWordWrap(True)
+            details_layout.addWidget(models_label)
+
+            responsibility_label = QLabel(
+                "Licence information is provided for convenience. Model terms may change, "
+                "and voice, reference-audio, dataset, output, or local-law rights can be "
+                "separate. The user is responsible for reviewing and complying with the "
+                "linked terms."
+            )
+            responsibility_label.setObjectName("mutedLabel")
+            responsibility_label.setWordWrap(True)
+            details_layout.addWidget(responsibility_label)
+
         if languages:
             languages_heading = QLabel("SUPPORTED LANGUAGES")
             languages_heading.setObjectName("optionCardEyebrow")
@@ -124,7 +149,7 @@ class BackendOptionCard(QFrame):
             settings_row.addStretch()
             details_layout.addLayout(settings_row)
 
-        self._expandable = bool(languages or details or extra_controls)
+        self._expandable = bool(languages or models or details or extra_controls)
         self.details_panel.setVisible(False)
 
         self.chevron = QToolButton(summary)

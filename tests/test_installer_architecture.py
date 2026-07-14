@@ -38,6 +38,24 @@ from pandrator_installer.constants import (
 
 
 class InstallerArchitectureTests(unittest.TestCase):
+    def test_silero_install_downloads_the_complete_catalogue(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            service = root / "silero-fastapi"
+            service.mkdir()
+            (service / "pyproject.toml").touch()
+            (service / "pixi.lock").touch()
+            with patch.object(installer, "run_command") as run_command:
+                installer.install_silero_api_server(
+                    str(service),
+                    pandrator_path=str(root),
+                    pixi_path="pixi",
+                )
+
+        self.assertEqual(run_command.call_count, 2)
+        self.assertEqual(run_command.call_args_list[1].args[0][-1], "download-all")
+
     def test_pandrator_environment_installs_url_downloader_with_pixi(self):
         installer = HeadlessInstaller(working_dir="workspace")
 
