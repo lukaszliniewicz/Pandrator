@@ -11,7 +11,7 @@ mutagen
 Pillow
 yt-dlp
 requests
-litellm
+litellm>=1.60,<1.92
 deepl
 nemo_text_processing==1.2.0
 numpy==1.26.4
