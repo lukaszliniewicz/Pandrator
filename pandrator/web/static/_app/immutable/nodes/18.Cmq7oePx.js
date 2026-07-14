@@ -1,0 +1,1 @@
+import{a as m,f as c}from"../chunks/OnXm6en5.js";import"../chunks/BbO1WrzG.js";import{c as e,r as i}from"../chunks/DOQudeyc.js";import{V as s}from"../chunks/k2ToD7JP.js";var t=c('<div class="h-[calc(100dvh-11.5rem)] min-h-[30rem] md:h-[calc(100svh-8.75rem)]"><!></div>');function v(a){var r=t(),o=e(r);s(o,{onback:()=>history.back()}),i(r),m(a,r)}export{v as component};

@@ -25,6 +25,17 @@ const KOKORO_PREFIX_LANGUAGES: Record<string, string> = {
 
 const KOKORO_LANGUAGES = ['en', 'en-gb', 'de', 'es', 'fr', 'hi', 'it', 'ja', 'pt', 'zh-cn'];
 const QWEN_LANGUAGES = ['zh-cn', 'en', 'ja', 'ko', 'de', 'fr', 'ru', 'pt', 'es', 'it'];
+const QWEN_PRESET_VOICES: Record<string, { name: string; language: string; gender: string }> = {
+  aiden: { name: 'Aiden', language: 'Native accent: American English', gender: 'Male' },
+  dylan: { name: 'Dylan', language: 'Native accent: Beijing Chinese', gender: 'Male' },
+  eric: { name: 'Eric', language: 'Native accent: Sichuan Chinese', gender: 'Male' },
+  ono_anna: { name: 'Ono Anna', language: 'Native language: Japanese', gender: 'Female' },
+  ryan: { name: 'Ryan', language: 'Native language: English', gender: 'Male' },
+  serena: { name: 'Serena', language: 'Native language: Chinese', gender: 'Female' },
+  sohee: { name: 'Sohee', language: 'Native language: Korean', gender: 'Female' },
+  uncle_fu: { name: 'Uncle Fu', language: 'Native language: Chinese', gender: 'Male' },
+  vivian: { name: 'Vivian', language: 'Native language: Chinese', gender: 'Female' }
+};
 const XTTS_LANGUAGES = ['en', 'es', 'fr', 'de', 'it', 'pt', 'pl', 'tr', 'ru', 'nl', 'cs', 'ar', 'zh-cn', 'ja', 'hu', 'ko', 'hi'];
 const VOXTRAL_LANGUAGES = ['ar', 'en', 'de', 'es', 'fr', 'hi', 'it', 'nl', 'pt'];
 const MAGPIE_LOCALES: Record<string, string> = {
@@ -54,6 +65,15 @@ function kokoroDescriptor(id: string): VoiceDescriptor {
 export function describeVoice(serviceId: string, voiceId: string, metadata?: Record<string, any>): VoiceDescriptor {
   const service = serviceId.toLowerCase().replaceAll('-', '_');
   if (service === 'kokoro') return kokoroDescriptor(voiceId);
+  if (service === 'kobold_qwen' || service.includes('qwen')) {
+    const preset = QWEN_PRESET_VOICES[voiceId.trim().toLowerCase()];
+    if (preset) {
+      // CustomVoice speakers are multilingual. Keep languageCode empty so a
+      // preset remains selectable for every supported synthesis language;
+      // `language` describes its native accent instead of filtering it out.
+      return { id: voiceId, ...preset, languageCode: '' };
+    }
+  }
   if (service === 'magpie') {
     const [, locale = '', speaker = voiceId, emotion = ''] = voiceId.split('.');
     const languageCode = MAGPIE_LOCALES[locale.toUpperCase()] ?? '';
