@@ -426,13 +426,12 @@ class InstallerArchitectureTests(unittest.TestCase):
 
         install_calibre.assert_not_called()
 
-    def test_non_windows_legacy_silero_install_is_rejected_with_reason(self):
+    def test_non_windows_first_party_silero_install_is_allowed(self):
         installer = HeadlessInstaller(working_dir="workspace")
         selection = InstallSelection.from_components(["silero"])
 
         with patch("pandrator_installer.workflows.is_windows", return_value=False):
-            with self.assertRaisesRegex(RuntimeError, "remote language index"):
-                installer.validate_platform_install_selection(selection)
+            installer.validate_platform_install_selection(selection)
 
     def test_non_windows_magpie_install_selection_is_allowed(self):
         installer = HeadlessInstaller(working_dir="workspace")
@@ -469,13 +468,12 @@ class InstallerArchitectureTests(unittest.TestCase):
         with patch("pandrator_installer.workflows.is_windows", return_value=False):
             installer.validate_platform_install_selection(selection)
 
-    def test_non_windows_update_with_legacy_silero_config_is_rejected(self):
+    def test_non_windows_update_with_first_party_silero_is_allowed(self):
         installer = HeadlessInstaller(working_dir="workspace")
         config = {"silero_support": True}
 
         with patch("pandrator_installer.workflows.is_windows", return_value=False):
-            with self.assertRaisesRegex(RuntimeError, "remote language index"):
-                installer.validate_platform_update_config(config)
+            installer.validate_platform_update_config(config)
 
     def test_non_windows_update_with_magpie_config_is_allowed(self):
         installer = HeadlessInstaller(working_dir="workspace")
@@ -594,6 +592,7 @@ class InstallerArchitectureTests(unittest.TestCase):
             "voxtral",
             "kokoro",
             "kokoro_cpu",
+            "silero",
             "chatterbox",
             "chatterbox_cpu",
             "kobold_qwen",
@@ -605,7 +604,6 @@ class InstallerArchitectureTests(unittest.TestCase):
         ):
             self.assertNotIn(component, LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
 
-        self.assertIn("silero", LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
         self.assertIn("xtts_finetuning", LINUX_DEFERRED_INSTALL_COMPONENT_KEYS)
 
     def test_xtts_and_voxcpm_launchers_use_cross_platform_python_bootstrappers(self):
@@ -664,6 +662,32 @@ class InstallerArchitectureTests(unittest.TestCase):
                 "cpu",
                 "--pixi-path",
                 "/home/user/Pandrator/bin/pixi",
+            ],
+        )
+
+    def test_silero_launcher_uses_locked_repo_and_persistent_model_directory(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        command = installer.build_silero_launcher_command(
+            "/srv/Pandrator",
+            pixi_path="/srv/Pandrator/bin/pixi",
+        )
+
+        self.assertEqual(
+            command,
+            [
+                "/srv/Pandrator/bin/pixi",
+                "run",
+                "--locked",
+                "silero-fastapi",
+                "--data-dir",
+                os.path.join("/srv/Pandrator", "models", "silero"),
+                "serve",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "8001",
+                "--device",
+                "cpu",
             ],
         )
 

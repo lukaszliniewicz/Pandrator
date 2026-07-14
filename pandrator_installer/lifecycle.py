@@ -35,7 +35,7 @@ SERVICE_HEALTH_URLS = {
     "fishs2": "http://127.0.0.1:8020/docs",
     "fishs2_cpu": "http://127.0.0.1:8020/docs",
     "voxtral": "http://127.0.0.1:8000/docs",
-    "silero": "http://127.0.0.1:8001/docs",
+    "silero": "http://127.0.0.1:8001/ready",
     "kokoro": "http://127.0.0.1:8880/docs",
     "kokoro_cpu": "http://127.0.0.1:8880/docs",
     "chatterbox": "http://127.0.0.1:8040/docs",

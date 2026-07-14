@@ -582,21 +582,17 @@ def split_into_sentences(text, language, tts_service):
         else:
             return _split_with_sentence_splitter(text, normalized_language)
     elif tts_service == "Silero":
-        # This mapping is more robust than parsing the code string from constants
-        silero_name_to_lang_code = {
-            "German (v3)": "de",
-            "English (v3)": "en",
-            "English Indic (v3)": "en",
-            "Spanish (v3)": "es",
-            "French (v3)": "fr",
-            "Indic (v3)": "hi",
-            "Russian (v3.1)": "ru",
-            "Tatar (v3)": "tt",
-            "Ukrainian (v3)": "uk",
-            "Uzbek (v3)": "uz",
-            "Kalmyk (v3)": "ru",  # Fallback for Kalmyk to Russian
+        from .tts_handler import normalize_silero_language_code
+
+        normalized_silero = normalize_silero_language_code(language)
+        sentence_splitter_aliases = {
+            "ukr": "uk", "tat": "ru", "uzb": "ru", "xal": "ru",
+            "hye": "hy", "kat": "ka", "kir": "ky", "bel": "be",
         }
-        simple_lang = silero_name_to_lang_code.get(language, normalized_language or "en")
+        simple_lang = sentence_splitter_aliases.get(
+            normalized_silero,
+            normalized_silero or normalized_language or "en",
+        )
         return _split_with_sentence_splitter(text, simple_lang)
 
     return _split_with_sentence_splitter(text, "en")

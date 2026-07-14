@@ -188,6 +188,8 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "fishs2_prosody_volume": 0,
         "fishs2_normalize_loudness": True,
         "kokoro_default_voices": {"en": "af_heart"},
+        "silero_stress_mode": "auto",
+        "silero_sample_rate": 48000,
         "voxtral_max_frames": 1024,
         "voxtral_euler_steps": 8,
         "voxtral_chunk": False,

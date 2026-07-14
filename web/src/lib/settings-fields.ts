@@ -35,6 +35,8 @@ const CHOICES: Record<string, SettingOption[]> = {
   subtitle_mode: [option('none', 'No subtitles'), option('soft', 'Inject soft subtitle tracks'), option('burn', 'Burn subtitles into video')],
   subtitle_selection: [option('translation', 'Translation only'), option('source', 'Source or corrected only'), option('both', 'Source and translation')],
   fishs2_latency: [option('low', 'Low latency'), option('balanced', 'Balanced'), option('normal', 'Quality')],
+  silero_stress_mode: [option('auto', 'Automatic stress'), option('manual', 'Use supplied stress marks'), option('off', 'Do not add stress marks')],
+  silero_sample_rate: [option(8000, '8 kHz'), option(24000, '24 kHz'), option(48000, '48 kHz')],
   service: ['XTTS', 'VoxCPM', 'FishS2', 'Voxtral', 'Kokoro', 'Magpie', 'Silero', 'Chatterbox', 'Qwen3 TTS', 'OpenAI', 'Google Gemini'].map((value) => option(value))
 };
 
@@ -87,7 +89,9 @@ export function settingLabel(key: string): string {
     combined_prompt: 'Single optimization prompt',
     first_prompt: 'First optimization prompt',
     second_prompt: 'Second optimization prompt',
-    third_prompt: 'Third optimization prompt'
+    third_prompt: 'Third optimization prompt',
+    silero_stress_mode: 'Stress handling',
+    silero_sample_rate: 'Sample rate'
   };
   if (labels[key]) return labels[key];
   return key.split('_').map((word) => ACRONYMS[word.toLowerCase()] ?? word.charAt(0).toUpperCase() + word.slice(1)).join(' ')

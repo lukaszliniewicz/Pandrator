@@ -5076,30 +5076,50 @@ class AppLogic(QObject):
                     self._tts_connection_result.emit(result)
                     return
 
-                from .constants import SILERO_LANGUAGES
+                models = tts_handler.get_silero_models(base_url, installed_only=True)
+                selected_model = str(
+                    tts_snapshot.get("silero_model")
+                    or tts_snapshot.get("xtts_model")
+                    or ""
+                ).strip()
+                if models and selected_model not in models:
+                    selected_model = (
+                        tts_handler.SILERO_DEFAULT_MODEL
+                        if tts_handler.SILERO_DEFAULT_MODEL in models
+                        else models[0]
+                    )
+                elif not selected_model:
+                    selected_model = tts_handler.SILERO_DEFAULT_MODEL
 
-                language_name = tts_snapshot.get("language")
-                language_code = next(
-                    (lang["code"] for lang in SILERO_LANGUAGES if lang["name"] == language_name),
-                    None,
+                language_code = tts_handler.normalize_silero_language_code(
+                    tts_snapshot.get("language")
                 )
-                if language_code and not tts_handler.set_silero_language(language_code, base_url):
-                    result["error_title"] = "Connection Error"
-                    result["error_message"] = "Could not set language on Silero server."
-                    self._tts_connection_result.emit(result)
-                    return
-
-                speakers = tts_handler.get_silero_speakers(base_url)
+                speakers = tts_handler.get_silero_speakers(
+                    base_url,
+                    model=selected_model,
+                    language=language_code,
+                )
+                if not speakers:
+                    speakers = tts_handler.get_silero_speakers(
+                        base_url,
+                        model=selected_model,
+                    )
                 selected_speaker = (tts_snapshot.get("speaker") or "").strip()
                 if speakers and selected_speaker not in speakers:
                     selected_speaker = speakers[0]
 
                 result["updates"] = {
-                    "tts_models": [],
+                    "tts_models": models,
                     "tts_speakers": speakers,
+                    "xtts_model": selected_model,
+                    "silero_model": selected_model,
+                    "language": language_code,
                     "speaker": selected_speaker,
                 }
-                result["log_message"] = "Connected to Silero server."
+                result["log_message"] = (
+                    f"Connected to Silero server ({len(models)} installed model(s), "
+                    f"{len(speakers)} compatible voice(s))."
+                )
 
             elif service in {
                 tts_handler.OPENAI_SERVICE,
@@ -5241,6 +5261,12 @@ class AppLogic(QObject):
             self.state_changed.emit()
             return
 
+        if self.state.tts.service == "Silero":
+            self.state.tts.xtts_model = model_name
+            self.state.tts.silero_model = model_name
+            self.connect_tts_server()
+            return
+
         self.state.tts.xtts_model = model_name
         self.state_changed.emit()
 
@@ -5340,7 +5366,13 @@ class AppLogic(QObject):
             )
         elif service == "Silero":
             voices = tts_handler.get_silero_speakers(
-                self._resolve_tts_service_base_url(tts_snapshot, service)
+                self._resolve_tts_service_base_url(tts_snapshot, service),
+                model=str(
+                    tts_snapshot.get("silero_model")
+                    or tts_snapshot.get("xtts_model")
+                    or tts_handler.SILERO_DEFAULT_MODEL
+                ),
+                language=str(tts_snapshot.get("language") or ""),
             )
         elif service in {
             tts_handler.OPENAI_SERVICE,

@@ -457,14 +457,14 @@ class RuntimeMixin:
 
         if self.launch_silero_var and not tts_engine_launched:
             self.reporter.progress(0.6)
-            silero_server_url = 'http://127.0.0.1:8001/docs'
+            silero_server_url = 'http://127.0.0.1:8001/ready'
             if 'silero' in running_backend_keys and self.silero_process:
                 self.reporter.status("Silero server is already running. Reusing existing backend.")
             else:
                 self.reporter.status("Starting Silero server...")
 
                 try:
-                    self.silero_process = self.run_silero_api_server(pandrator_path, 'silero_api_server_installer')
+                    self.silero_process = self.run_silero_api_server(pandrator_path)
                 except Exception as e:
                     error_msg = f"Failed to start Silero server: {str(e)}"
                     self.reporter.status(error_msg)
@@ -472,7 +472,10 @@ class RuntimeMixin:
                     logging.exception("Exception details:")
                     raise
 
-                if not self.check_silero_server_online(silero_server_url):
+                if not self.check_silero_server_online(
+                    silero_server_url,
+                    process=self.silero_process,
+                ):
                     error_msg = "Silero server failed to come online"
                     self.reporter.status(error_msg)
                     logging.error(error_msg)
@@ -1487,9 +1490,10 @@ class RuntimeMixin:
         logging.error("Voxtral server failed to come online within the specified attempts.")
         return False
 
-    def run_silero_api_server(self, pandrator_path, env_name):
-        """Run the Silero API server"""
-        logging.info(f"Running Silero API server in {env_name}...")
+    def run_silero_api_server(self, pandrator_path, env_name=None):
+        """Run Pandrator's first-party, stateless Silero API service."""
+        del env_name  # Compatibility with callers from pre-migration installers.
+        logging.info("Running the first-party Silero API server...")
 
         if self.is_port_in_use(8001):
             error_msg = "Silero server cannot be started because port 8001 is already in use."
@@ -1497,18 +1501,21 @@ class RuntimeMixin:
             self.notify_error("Error", error_msg)
             return None
 
-        silero_log_file = os.path.join(pandrator_path, 'silero_server.log')
-        silero_server_command = self.build_pixi_run_command(
+        silero_repo_path = os.path.join(pandrator_path, "silero-fastapi")
+        if not os.path.isfile(os.path.join(silero_repo_path, "pyproject.toml")):
+            raise FileNotFoundError(f"Silero service is not installed at {silero_repo_path}.")
+
+        silero_log_file = os.path.join(silero_repo_path, 'silero_server.log')
+        silero_server_command = self.build_silero_launcher_command(
             pandrator_path,
-            env_name,
-            ['python', '-m', 'silero_api_server']
+            pixi_path=self.get_pixi_executable(pandrator_path),
         )
 
         log_handle = open(silero_log_file, 'a', encoding='utf-8')
         try:
             process = subprocess.Popen(
                 silero_server_command,
-                cwd=pandrator_path,
+                cwd=silero_repo_path,
                 env=self.get_pixi_subprocess_env(pandrator_path),
                 stdout=log_handle,
                 stderr=subprocess.STDOUT,
@@ -1522,12 +1529,15 @@ class RuntimeMixin:
         self.silero_process = process
         return process
 
-    def check_silero_server_online(self, url, max_attempts=30, wait_interval=10):
+    def check_silero_server_online(self, url, max_attempts=60, wait_interval=2, process=None):
         """Check if the Silero server is online and responding"""
         attempt = 1
         while attempt <= max_attempts:
+            if process is not None and process.poll() is not None:
+                logging.error("Silero service process exited before becoming ready.")
+                return False
             try:
-                response = requests.get(url)
+                response = requests.get(url, timeout=5)
                 if response.status_code == 200:
                     logging.info("Silero server is online.")
                     return True

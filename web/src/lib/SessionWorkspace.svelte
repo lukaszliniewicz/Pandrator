@@ -357,7 +357,11 @@
   const selectedTtsService = $derived((ttsCatalogue.services??[]).find((item:any)=>[item.id,item.name].map((value)=>String(value??'').toLowerCase()).includes(ttsService.toLowerCase())));
   const ttsModels = $derived(selectedTtsService?.models??[]);
   const selectedTtsDefaultVoice = $derived(selectedTtsService?.default_voices_by_language?.[ttsModel]?.[targetLanguage] ?? selectedTtsService?.default_voices?.[ttsModel] ?? selectedTtsService?.default_voice ?? '');
-  const ttsVoiceDescriptors = $derived(Array.from(new Set(selectedTtsService?.voice_catalogues?.[ttsModel] ?? selectedTtsService?.voices ?? [])).map((voice)=>describeVoice(String(selectedTtsService?.id??ttsService),String(voice))));
+  const ttsVoiceDescriptors = $derived(Array.from(new Set(selectedTtsService?.voice_catalogues?.[ttsModel] ?? selectedTtsService?.voices ?? [])).map((voice)=>describeVoice(
+    String(selectedTtsService?.id??ttsService),
+    String(voice),
+    selectedTtsService?.voice_metadata?.[`${ttsModel}:${String(voice)}`]
+  )));
   const ttsLanguages = $derived(languagesForService(String(selectedTtsService?.id??ttsService),ttsVoiceDescriptors));
   const filteredPrebuiltVoices = $derived(ttsVoiceDescriptors.filter((voice)=>!voice.languageCode||voice.languageCode===targetLanguage));
   const filteredLibraryVoices = $derived(libraryVoices.filter((voice:any)=>!voice.language||voice.language===targetLanguage||session.source_language==='auto'));

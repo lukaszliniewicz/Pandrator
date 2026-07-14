@@ -31,7 +31,11 @@
     service?.default_voices?.[model],
     model === service?.default_model ? service?.default_voice : ''
   ].filter(Boolean))) as string[]);
-  const descriptors = $derived(rawVoices.map((voice) => describeVoice(service?.id ?? '', voice)));
+  const descriptors = $derived(rawVoices.map((voice) => describeVoice(
+    service?.id ?? '',
+    voice,
+    service?.voice_metadata?.[`${model}:${voice}`]
+  )));
   const languages = $derived(languagesForService(service?.id ?? '', descriptors));
   const visibleVoices = $derived(descriptors.filter((voice) => !language || !voice.languageCode || voice.languageCode === language));
   const languageDefault = $derived(String(service?.default_voices_by_language?.[model]?.[language] ?? service?.default_voices?.[model] ?? service?.default_voice ?? ''));

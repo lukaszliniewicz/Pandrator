@@ -365,6 +365,53 @@ def create_app(
                     service["available"] = online
                     service["availability_reason"] = "" if online else "Service is not running"
 
+            for service in services:
+                if service.get("id") != "silero" or not service.get("online"):
+                    continue
+                base_url = str(service.get("api_base") or tts_handler.SILERO_API_BASE_URL)
+                model_catalog = tts_handler.get_silero_model_catalog(base_url)
+                installed_models = [
+                    str(item["id"])
+                    for item in model_catalog
+                    if isinstance(item.get("status"), dict)
+                    and item["status"].get("installed")
+                ]
+                voice_catalogues: dict[str, list[str]] = {}
+                voice_metadata: dict[str, dict[str, Any]] = {}
+                default_voices_by_language: dict[str, dict[str, str]] = {}
+                for model_id in installed_models:
+                    entries = tts_handler.get_silero_voice_catalog(
+                        base_url,
+                        model=model_id,
+                        include_unavailable=False,
+                    )
+                    voice_catalogues[model_id] = [str(item["id"]) for item in entries]
+                    language_defaults: dict[str, str] = {}
+                    for item in entries:
+                        voice_id = str(item["id"])
+                        voice_metadata[f"{model_id}:{voice_id}"] = item
+                        language = str(item.get("language") or "")
+                        if language and language not in language_defaults:
+                            language_defaults[language] = voice_id
+                    default_voices_by_language[model_id] = language_defaults
+
+                if installed_models:
+                    service["models"] = installed_models
+                    if service.get("default_model") not in installed_models:
+                        service["default_model"] = (
+                            tts_handler.SILERO_DEFAULT_MODEL
+                            if tts_handler.SILERO_DEFAULT_MODEL in installed_models
+                            else installed_models[0]
+                        )
+                service["model_catalog"] = model_catalog
+                service["voice_catalogues"] = voice_catalogues
+                service["voice_metadata"] = voice_metadata
+                service["default_voices_by_language"] = default_voices_by_language
+                default_catalogue = voice_catalogues.get(str(service.get("default_model") or ""), [])
+                service["voices"] = default_catalogue
+                if default_catalogue and service.get("default_voice") not in default_catalogue:
+                    service["default_voice"] = default_catalogue[0]
+
         previews = []
         with database.session() as db_session:
             preview_artifacts = list(

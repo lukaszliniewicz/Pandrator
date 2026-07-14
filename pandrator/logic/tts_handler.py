@@ -56,6 +56,18 @@ VOXTRAL_API_BASE_URL = "http://127.0.0.1:8000"
 
 # Silero default URLs
 SILERO_API_BASE_URL = "http://127.0.0.1:8001"
+SILERO_DEFAULT_MODEL = "v5_cis_base_nostress"
+SILERO_TTS_MODELS = [
+    "v5_cis_base_nostress",
+    "v5_cis_ext",
+    "v5_5_ru",
+    "v3_en",
+    "v3_en_indic",
+    "v3_de",
+    "v3_es",
+    "v3_fr",
+    "v3_indic",
+]
 
 # Kokoro default URLs
 KOKORO_API_BASE_URL = "http://127.0.0.1:8880"
@@ -516,7 +528,7 @@ def _default_service_configs() -> list[dict[str, object]]:
         "voxtral": (list(VOXTRAL_TTS_MODELS), VOXTRAL_DEFAULT_MODEL, [VOXTRAL_DEFAULT_VOICE], VOXTRAL_DEFAULT_VOICE, True),
         "kokoro": (list(KOKORO_TTS_MODELS), KOKORO_DEFAULT_MODEL, list(KOKORO_TTS_VOICES), KOKORO_DEFAULT_VOICE, True),
         "magpie": (list(MAGPIE_TTS_MODELS), MAGPIE_TTS_MODELS[0], magpie_voice_catalog(), magpie_voice_catalog()[0], True),
-        "silero": ([str(item["code"]) for item in SILERO_LANGUAGES], str(SILERO_LANGUAGES[0]["code"]), [], "", True),
+        "silero": (list(SILERO_TTS_MODELS), SILERO_DEFAULT_MODEL, [], "", True),
         "chatterbox": (list(CHATTERBOX_TTS_MODELS), CHATTERBOX_DEFAULT_MODEL, [], "", False),
         "kobold_qwen": (list(KOBOLD_QWEN_TTS_MODELS), KOBOLD_QWEN_DEFAULT_MODEL, list(KOBOLD_QWEN_TTS_VOICES), KOBOLD_QWEN_DEFAULT_VOICE, True),
     }
@@ -2912,12 +2924,15 @@ def check_xtts_connection(base_url: str = XTTS_API_BASE_URL) -> bool:
 
 def check_silero_connection(base_url: str = SILERO_API_BASE_URL) -> bool:
     """Checks if the Silero server is reachable."""
-    try:
-        response = requests.get(f"{_normalize_base_url(base_url, SILERO_API_BASE_URL)}/docs", timeout=3)
-        response.raise_for_status()
-        return True
-    except requests.exceptions.RequestException:
-        return False
+    normalized_base_url = _normalize_base_url(base_url, SILERO_API_BASE_URL)
+    for path in ("/ready", "/health", "/v1/models"):
+        try:
+            response = requests.get(f"{normalized_base_url}{path}", timeout=4)
+            if response.status_code < 400:
+                return True
+        except requests.exceptions.RequestException:
+            continue
+    return False
 
 
 # Magpie Functions
@@ -3451,33 +3466,106 @@ def upload_speaker_voice(
 
 # Silero Functions
 def set_silero_language(language_code: str, base_url: str = SILERO_API_BASE_URL) -> bool:
-    """Sets the active language on the Silero server."""
-    try:
-        response = requests.post(
-            f"{_normalize_base_url(base_url, SILERO_API_BASE_URL)}/tts/language",
-            json={"id": language_code},
-            timeout=8,
-        )
-        response.raise_for_status()
-        logging.info("Silero language set to %s", language_code)
-        return True
-    except requests.exceptions.RequestException as e:
-        logging.error("Failed to set Silero language: %s", e)
-        return False
+    """Compatibility no-op; the new service receives language per request."""
+    del language_code
+    return check_silero_connection(base_url)
 
 
-def get_silero_speakers(base_url: str = SILERO_API_BASE_URL) -> list[str]:
-    """Fetches the list of available speakers from the Silero server."""
+def normalize_silero_language_code(value: object) -> str:
+    normalized = str(value or "").strip().lower().replace("_", "-")
+    aliases = {
+        "hy": "hye", "ka": "kat", "ky": "kir", "tt": "tat", "uk": "ukr",
+        "ua": "ukr", "uz": "uzb", "ba": "bak", "be": "bel", "cv": "chv",
+        "kk": "kaz", "tg": "tgk", "sah": "sah", "xal": "xal",
+        "english (v3)": "en", "english indic (v3)": "en-in", "german (v3)": "de",
+        "spanish (v3)": "es", "french (v3)": "fr", "indic (v3)": "indic",
+        "russian (v3.1)": "ru", "tatar (v3)": "tat", "ukrainian (v3)": "ukr",
+        "uzbek (v3)": "uzb", "kalmyk (v3)": "xal",
+    }
+    if normalized in aliases:
+        return aliases[normalized]
+    for item in SILERO_LANGUAGES:
+        if normalized == str(item.get("name") or "").strip().lower():
+            return str(item.get("code") or "").strip()
+    return normalized
+
+
+def get_silero_model_catalog(base_url: str = SILERO_API_BASE_URL) -> list[dict]:
+    """Return model metadata, including installation and licence state."""
     try:
         response = requests.get(
-            f"{_normalize_base_url(base_url, SILERO_API_BASE_URL)}/tts/speakers",
-            timeout=8,
+            f"{_normalize_base_url(base_url, SILERO_API_BASE_URL)}/v1/models",
+            timeout=10,
         )
         response.raise_for_status()
-        return [speaker["name"] for speaker in response.json()]
-    except requests.exceptions.RequestException as e:
-        logging.error("Failed to fetch Silero speakers: %s", e)
+        payload = response.json()
+        data = payload.get("data", []) if isinstance(payload, dict) else []
+        return [dict(item) for item in data if isinstance(item, dict) and item.get("id")]
+    except (requests.exceptions.RequestException, ValueError) as exc:
+        logging.error("Failed to fetch Silero models: %s", exc)
         return []
+
+
+def get_silero_models(
+    base_url: str = SILERO_API_BASE_URL,
+    *,
+    installed_only: bool = True,
+) -> list[str]:
+    catalog = get_silero_model_catalog(base_url)
+    models = []
+    for item in catalog:
+        status = item.get("status") if isinstance(item.get("status"), dict) else {}
+        if installed_only and not status.get("installed"):
+            continue
+        models.append(str(item["id"]))
+    if models:
+        return _dedupe_ordered(models)
+    return [] if catalog and installed_only else list(SILERO_TTS_MODELS)
+
+
+def get_silero_voice_catalog(
+    base_url: str = SILERO_API_BASE_URL,
+    *,
+    model: str = "",
+    language: str = "",
+    include_unavailable: bool = False,
+) -> list[dict]:
+    params = {
+        "model": str(model or "").strip(),
+        "language": normalize_silero_language_code(language),
+        "include_unavailable": str(bool(include_unavailable)).lower(),
+    }
+    params = {key: value for key, value in params.items() if value != ""}
+    try:
+        response = requests.get(
+            f"{_normalize_base_url(base_url, SILERO_API_BASE_URL)}/v1/audio/voices",
+            params=params,
+            timeout=15,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        data = payload.get("data", []) if isinstance(payload, dict) else []
+        return [dict(item) for item in data if isinstance(item, dict) and item.get("id")]
+    except (requests.exceptions.RequestException, ValueError) as exc:
+        logging.error("Failed to fetch Silero voices: %s", exc)
+        return []
+
+
+def get_silero_speakers(
+    base_url: str = SILERO_API_BASE_URL,
+    model: str = "",
+    language: str = "",
+) -> list[str]:
+    """Fetches the list of available speakers from the Silero server."""
+    return _dedupe_ordered(
+        str(item["id"])
+        for item in get_silero_voice_catalog(
+            base_url,
+            model=model,
+            language=language,
+            include_unavailable=False,
+        )
+    )
 
 
 def _build_xtts_openai_payload(text: str, tts_settings: dict) -> dict:
@@ -4155,12 +4243,21 @@ def text_to_audio(
                 response = _request_openai_compatible_audio(text, tts_settings)
             elif service == "Silero":
                 data = {
-                    "speaker": tts_settings.get("speaker"),
-                    "text": text,
-                    "session": "",
+                    "model": str(
+                        tts_settings.get("silero_model")
+                        or tts_settings.get("xtts_model")
+                        or SILERO_DEFAULT_MODEL
+                    ),
+                    "input": text,
+                    "voice": str(tts_settings.get("speaker") or ""),
+                    "language": normalize_silero_language_code(tts_settings.get("language")),
+                    "response_format": "wav",
+                    "speed": _coerce_float(tts_settings.get("speed"), 1.0),
+                    "sample_rate": int(tts_settings.get("silero_sample_rate") or 48000),
+                    "stress_mode": str(tts_settings.get("silero_stress_mode") or "auto"),
                 }
                 response = requests.post(
-                    f"{normalized_silero_base_url}/tts/generate",
+                    f"{normalized_silero_base_url}/v1/audio/speech",
                     json=data,
                     timeout=TTS_GENERATION_TIMEOUT_SECONDS,
                 )

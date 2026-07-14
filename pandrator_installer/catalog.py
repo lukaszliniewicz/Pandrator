@@ -132,8 +132,10 @@ COMPONENTS: dict[str, ComponentDefinition] = {
         key="silero",
         label="Silero",
         config_flag="silero_support",
-        paths=("envs/silero_api_server_installer",),
-        markers=("envs/silero_api_server_installer/pixi.toml",),
+        paths=("silero-fastapi",),
+        markers=("silero-fastapi/pyproject.toml", "silero-fastapi/pixi.lock"),
+        repo_url="https://github.com/lukaszliniewicz/silero-fastapi.git",
+        repo_dirname="silero-fastapi",
         process_attr="silero_process",
         port=8001,
     ),
@@ -318,6 +320,7 @@ LINUX_READY_BACKEND_KEYS = (
     "fishs2",
     "voxtral",
     "kokoro",
+    "silero",
     "chatterbox",
     "kobold_qwen",
     "magpie",
@@ -325,10 +328,6 @@ LINUX_READY_BACKEND_KEYS = (
 )
 
 LINUX_DEFERRED_REASON_BY_COMPONENT = {
-    "silero": (
-        "the legacy silero-api-server package no longer starts with current "
-        "TorchAudio releases and its remote language index is unavailable"
-    ),
     "xtts_finetuning": "the legacy Qt training tool has not completed Linux qualification",
 }
 

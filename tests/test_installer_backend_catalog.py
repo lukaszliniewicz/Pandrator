@@ -37,7 +37,7 @@ class TestInstallerBackendCatalog(unittest.TestCase):
             "voxcpm": 30,
             "fishs2": 83,
             "voxtral": 9,
-            "silero": 11,
+            "silero": 25,
             "chatterbox": 23,
             "magpie": 9,
         }

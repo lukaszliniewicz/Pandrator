@@ -1340,6 +1340,7 @@ class SessionTab(ScrollableSettingsPage):
         is_voxtral = state.tts.service == "Voxtral"
         is_kokoro = state.tts.service == "Kokoro"
         is_magpie = state.tts.service == "Magpie"
+        is_silero = state.tts.service == "Silero"
         is_chatterbox = state.tts.service == "Chatterbox"
         is_kobold_qwen = state.tts.service == "Qwen3 TTS"
         is_cloud_tts = state.tts.service in {
@@ -1355,6 +1356,7 @@ class SessionTab(ScrollableSettingsPage):
             or is_voxtral
             or is_kokoro
             or is_magpie
+            or is_silero
             or is_cloud_tts
             or is_chatterbox
             or is_kobold_qwen
@@ -1378,10 +1380,10 @@ class SessionTab(ScrollableSettingsPage):
         )
 
         self.use_external_server_checkbox.setVisible(
-            is_xtts or is_voxcpm or is_fishs2 or is_voxtral or is_kokoro or is_chatterbox or is_kobold_qwen
+            is_xtts or is_voxcpm or is_fishs2 or is_voxtral or is_kokoro or is_silero or is_chatterbox or is_kobold_qwen
         )
         self.external_server_url_edit.setVisible(
-            (is_xtts or is_voxcpm or is_fishs2 or is_voxtral or is_kokoro or is_chatterbox or is_kobold_qwen)
+            (is_xtts or is_voxcpm or is_fishs2 or is_voxtral or is_kokoro or is_silero or is_chatterbox or is_kobold_qwen)
             and state.tts.use_external_server
         )
         self.external_server_url_edit.setPlaceholderText(
@@ -1391,9 +1393,13 @@ class SessionTab(ScrollableSettingsPage):
                 "http://localhost:8880"
                 if is_kokoro
                 else (
-                    "http://localhost:8042"
-                    if is_kobold_qwen
-                    else ("http://localhost:8040" if is_chatterbox else "http://localhost:8020")
+                    "http://localhost:8001"
+                    if is_silero
+                    else (
+                        "http://localhost:8042"
+                        if is_kobold_qwen
+                        else ("http://localhost:8040" if is_chatterbox else "http://localhost:8020")
+                    )
                 )
             )
         )
@@ -1732,17 +1738,6 @@ class SessionTab(ScrollableSettingsPage):
 
         self.language_combo.blockSignals(True)
         self.language_combo.clear()
-
-        if service == "Silero":
-            lang_names = [lang["name"] for lang in SILERO_LANGUAGES]
-            self.language_combo.addItems(lang_names)
-            if current_lang in lang_names:
-                self.language_combo.setCurrentText(current_lang)
-            else:
-                self.logic.state.tts.language = "English (v3)"
-                self.language_combo.setCurrentText("English (v3)")
-            self.language_combo.blockSignals(False)
-            return
 
         language_codes = self._language_codes_for_service(service)
         if service == "Chatterbox":
@@ -2152,6 +2147,8 @@ class SessionTab(ScrollableSettingsPage):
             return list(MAGPIE_LANGUAGES)
         if service == "Qwen3 TTS":
             return QWEN_LANGUAGES
+        if service == "Silero":
+            return [str(item["code"]) for item in SILERO_LANGUAGES]
         if service in {"XTTS", "VoxCPM", "OpenAI", "Google Gemini", "Gemini", "Custom", "OpenAI-Compatible", "Chatterbox"}:
             return XTTS_LANGUAGES
         return []
@@ -2180,6 +2177,10 @@ class SessionTab(ScrollableSettingsPage):
             return "American English"
         if service == "Kokoro" and normalized == "en-gb":
             return "British English"
+        if service == "Silero":
+            for item in SILERO_LANGUAGES:
+                if str(item["code"]).lower() == normalized:
+                    return str(item["name"])
         return LANGUAGE_DISPLAY_NAMES.get(normalized, str(language_code or "").strip())
 
     def _prompt_for_new_session_name(self) -> str | None:

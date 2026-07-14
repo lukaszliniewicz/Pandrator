@@ -9,6 +9,7 @@
     fishs2: ['fishs2_temperature', 'fishs2_top_p', 'fishs2_chunk_length', 'fishs2_latency', 'fishs2_normalize', 'fishs2_prosody_volume', 'fishs2_normalize_loudness'],
     voxtral: ['voxtral_max_frames', 'voxtral_euler_steps', 'voxtral_chunk', 'voxtral_max_chunk_chars', 'voxtral_chunk_silence_ms', 'voxtral_strip_quotes', 'voxtral_strip_diacritics', 'voxtral_level_audio'],
     chatterbox: ['chatterbox_temperature', 'chatterbox_repetition_penalty', 'chatterbox_min_p', 'chatterbox_top_p', 'chatterbox_top_k', 'chatterbox_exaggeration', 'chatterbox_cfg_weight', 'chatterbox_norm_loudness'],
+    silero: ['silero_stress_mode', 'silero_sample_rate'],
     openai: ['openai_audio_instructions'], gemini: ['openai_audio_instructions']
   };
 
@@ -26,7 +27,7 @@
   const settingKeys = $derived(SERVICE_SETTING_KEYS[normalizedId(editing)] ?? []);
   const modelChoices = $derived(Array.from(new Set([...(editing?.models ?? []), editing?.default_model].filter(Boolean))));
 
-  async function load() { payload = await api('/services/tts'); }
+  async function load() { payload = await api('/services/tts?refresh=true'); }
   async function persist(value: any) {
     await api('/settings/services.tts', { method: 'PUT', headers: { 'If-Match': `"${payload.revision}"` }, body: JSON.stringify({ value }) });
     await load();

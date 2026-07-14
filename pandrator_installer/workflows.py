@@ -42,8 +42,8 @@ from .constants import (
     RVC_API_REPO_DIRNAME,
     RVC_API_REPO_URL,
     RVC_GPU_SUPPORT_CONFIG_FLAG,
-    SILERO_PYTHON_VERSION,
-    SILERO_REQUIRED_PACKAGE_SPECS,
+    SILERO_API_REPO_DIRNAME,
+    SILERO_API_REPO_URL,
     VOXCPM_API_REPO_DIRNAME,
     VOXCPM_API_REPO_URL,
     VOXTRAL_API_REPO_DIRNAME,
@@ -209,6 +209,7 @@ class WorkflowMixin:
         chatterbox_repo_path = os.path.join(pandrator_path, CHATTERBOX_API_REPO_DIRNAME)
         kobold_qwen_repo_path = os.path.join(pandrator_path, KOBOLD_QWEN_API_REPO_DIRNAME)
         magpie_repo_path = os.path.join(pandrator_path, MAGPIE_API_REPO_DIRNAME)
+        silero_repo_path = os.path.join(pandrator_path, SILERO_API_REPO_DIRNAME)
         rvc_repo_path = os.path.join(pandrator_path, RVC_API_REPO_DIRNAME)
 
         pandrator_repo_missing = not os.path.exists(pandrator_repo_path)
@@ -294,6 +295,8 @@ class WorkflowMixin:
                 concurrent_tasks["Clone Qwen3 TTS"] = (self.clone_repo, (KOBOLD_QWEN_API_REPO_URL, kobold_qwen_repo_path), {})
             if (magpie_var or magpie_cpu_var) and not os.path.exists(magpie_repo_path):
                 concurrent_tasks["Clone Magpie"] = (self.clone_repo, (MAGPIE_API_REPO_URL, magpie_repo_path), {})
+            if silero_var and not os.path.exists(silero_repo_path):
+                concurrent_tasks["Clone Silero"] = (self.clone_repo, (SILERO_API_REPO_URL, silero_repo_path), {})
             if (rvc_var or rvc_cpu_var) and not os.path.exists(rvc_repo_path):
                 concurrent_tasks["Clone RVC"] = (self.clone_repo, (RVC_API_REPO_URL, rvc_repo_path), {})
 
@@ -420,12 +423,12 @@ class WorkflowMixin:
 
             if silero_var:
                 self.reporter.progress(0.8)
-                self.reporter.status("Creating Silero Pixi environment...")
-                self.create_pixi_env(pandrator_path, 'silero_api_server_installer', SILERO_PYTHON_VERSION)
-
-                self.reporter.progress(0.9)
-                self.reporter.status("Installing Silero API server...")
-                self.install_silero_api_server(pandrator_path, 'silero_api_server_installer')
+                self.reporter.status("Installing Silero and its modern CIS voice pack...")
+                self.install_silero_api_server(
+                    silero_repo_path,
+                    pandrator_path=pandrator_path,
+                    pixi_path=shared_pixi_path,
+                )
 
             if voxtral_var:
                 self.reporter.progress(0.9)
@@ -586,6 +589,7 @@ class WorkflowMixin:
         chatterbox_repo_path = os.path.join(pandrator_base_path, CHATTERBOX_API_REPO_DIRNAME)
         kobold_qwen_repo_path = os.path.join(pandrator_base_path, KOBOLD_QWEN_API_REPO_DIRNAME)
         magpie_repo_path = os.path.join(pandrator_base_path, MAGPIE_API_REPO_DIRNAME)
+        silero_repo_path = os.path.join(pandrator_base_path, SILERO_API_REPO_DIRNAME)
         rvc_repo_path = os.path.join(pandrator_base_path, RVC_API_REPO_DIRNAME)
         if stop_running_processes:
             self.reporter.status("Stopping Pandrator and running services before the update...")
@@ -602,7 +606,6 @@ class WorkflowMixin:
         self.validate_platform_update_config(config)
 
         pandrator_env_missing = not os.path.exists(self.get_pixi_manifest_path(pandrator_base_path, 'pandrator_installer'))
-        silero_env_missing = not os.path.exists(self.get_pixi_manifest_path(pandrator_base_path, 'silero_api_server_installer'))
         kokoro_env_missing = not os.path.exists(self.get_pixi_manifest_path(pandrator_base_path, KOKORO_ENV_NAME))
 
         # Check admin status
@@ -698,6 +701,12 @@ class WorkflowMixin:
                     update_tasks["Update Magpie"] = (self.pull_repo, (magpie_repo_path,), {})
                 else:
                     update_tasks["Clone Magpie"] = (self.clone_repo, (MAGPIE_API_REPO_URL, magpie_repo_path), {})
+
+            if config.get('silero_support', False):
+                if os.path.exists(silero_repo_path):
+                    update_tasks["Update Silero"] = (self.pull_repo, (silero_repo_path,), {})
+                else:
+                    update_tasks["Clone Silero"] = (self.clone_repo, (SILERO_API_REPO_URL, silero_repo_path), {})
 
             if config.get('rvc_support', False):
                 if os.path.exists(rvc_repo_path):
@@ -826,22 +835,12 @@ class WorkflowMixin:
                     )
 
             if config.get('silero_support', False):
-                silero_needs_install = silero_env_missing
-                silero_reason = "Pixi manifest is missing"
-                if not silero_needs_install:
-                    silero_needs_install, silero_reason = self.component_needs_package_sync(
-                        pandrator_base_path,
-                        'silero_api_server_installer',
-                        SILERO_REQUIRED_PACKAGE_SPECS,
-                    )
-
-                if silero_needs_install:
-                    self.reporter.status("Installing/upgrading Silero dependencies...")
-                    logging.info(f"Installing Silero packages because {silero_reason}")
-                    self.create_pixi_env(pandrator_base_path, 'silero_api_server_installer', SILERO_PYTHON_VERSION)
-                    self.install_silero_api_server(pandrator_base_path, 'silero_api_server_installer')
-                else:
-                    logging.info(f"Skipping Silero reinstall: {silero_reason}")
+                self.reporter.status("Installing/upgrading Silero and verifying its default model...")
+                self.install_silero_api_server(
+                    silero_repo_path,
+                    pandrator_path=pandrator_base_path,
+                    pixi_path=shared_pixi_path,
+                )
 
             if config.get('voxtral_support', False):
                 if not self.is_voxtral_runtime_ready(voxtral_repo_path):

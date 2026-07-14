@@ -845,6 +845,25 @@ class ComponentOperationsMixin:
             command.extend(['--pixi-path', pixi_path])
         return command
 
+    def build_silero_launcher_command(self, pandrator_path, pixi_path=None):
+        """Build the first-party Silero service command with persistent model storage."""
+        model_dir = os.path.join(pandrator_path, "models", "silero")
+        return [
+            pixi_path or "pixi",
+            "run",
+            "--locked",
+            "silero-fastapi",
+            "--data-dir",
+            model_dir,
+            "serve",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8001",
+            "--device",
+            "cpu",
+        ]
+
     def build_voxtral_launcher_command(self, voxtral_repo_path, prepare_only=False):
         run_script_path = os.path.join(
             voxtral_repo_path,
@@ -1443,14 +1462,42 @@ class ComponentOperationsMixin:
                 logging.error(traceback.format_exc())
                 raise
 
-    def install_silero_api_server(self, pandrator_path, env_name):
-        logging.info(f"Installing Silero API server in {env_name}...")
+    def install_silero_api_server(self, silero_repo_path, pandrator_path=None, pixi_path=None):
+        """Install the locked Silero runtime and its MIT-licensed default model."""
+        pandrator_path = pandrator_path or os.path.dirname(silero_repo_path)
+        pixi_executable = pixi_path or self.get_pixi_executable(pandrator_path)
+        manifest_path = os.path.join(silero_repo_path, "pyproject.toml")
+        lock_path = os.path.join(silero_repo_path, "pixi.lock")
+        if not os.path.isfile(manifest_path) or not os.path.isfile(lock_path):
+            raise FileNotFoundError(
+                f"Silero service manifest or lock file is missing in {silero_repo_path}."
+            )
+
+        model_dir = os.path.join(pandrator_path, "models", "silero")
+        os.makedirs(model_dir, exist_ok=True)
+        env = self.get_pixi_subprocess_env(pandrator_path)
         try:
-            self.install_package(pandrator_path, env_name, 'requests')
-            self.install_package(pandrator_path, env_name, 'silero-api-server')
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Failed to install Silero API server in {env_name}")
-            logging.error(f"Error message: {str(e)}")
+            self.run_command(
+                [pixi_executable, "install", "--locked"],
+                cwd=silero_repo_path,
+                env=env,
+            )
+            self.run_command(
+                [
+                    pixi_executable,
+                    "run",
+                    "--locked",
+                    "silero-fastapi",
+                    "--data-dir",
+                    model_dir,
+                    "download",
+                    "v5_cis_base_nostress",
+                ],
+                cwd=silero_repo_path,
+                env=env,
+            )
+        except subprocess.CalledProcessError as exc:
+            logging.error("Failed to install the first-party Silero service: %s", exc)
             raise
 
     def run_git_command(self, arguments, cwd=None):

@@ -169,6 +169,56 @@ class WebParityWorkspaceTests(unittest.TestCase):
         self.assertFalse(openai["available"])
         self.assertEqual("API key not configured", openai["availability_reason"])
 
+    def test_silero_refresh_exposes_installed_models_and_language_voice_metadata(self):
+        model_catalog = [
+            {
+                "id": "v5_cis_base_nostress",
+                "status": {"installed": True},
+                "license": {"id": "MIT", "commercial_use_allowed": True},
+            },
+            {
+                "id": "v5_cis_ext",
+                "status": {"installed": False},
+                "license": {"id": "CC-BY-NC-SA-4.0", "commercial_use_allowed": False},
+            },
+        ]
+        voices = [
+            {
+                "id": "ukr_igor",
+                "display_name": "Igor",
+                "language": "ukr",
+                "language_name": "Ukrainian",
+                "model": "v5_cis_base_nostress",
+                "available": True,
+            }
+        ]
+        with patch("socket.create_connection"), patch(
+            "pandrator.logic.tts_handler.get_silero_model_catalog",
+            return_value=model_catalog,
+        ), patch(
+            "pandrator.logic.tts_handler.get_silero_voice_catalog",
+            return_value=voices,
+        ):
+            response = self.client.get("/api/v1/services/tts?refresh=true")
+
+        self.assertEqual(200, response.status_code, response.get_json())
+        silero = next(
+            item for item in response.get_json()["services"] if item["id"] == "silero"
+        )
+        self.assertEqual(["v5_cis_base_nostress"], silero["models"])
+        self.assertEqual(
+            ["ukr_igor"],
+            silero["voice_catalogues"]["v5_cis_base_nostress"],
+        )
+        self.assertEqual(
+            "ukr_igor",
+            silero["default_voices_by_language"]["v5_cis_base_nostress"]["ukr"],
+        )
+        self.assertEqual(
+            "Igor",
+            silero["voice_metadata"]["v5_cis_base_nostress:ukr_igor"]["display_name"],
+        )
+
     def test_generate_run_adapts_flat_web_service_ids_after_stage_overrides(self):
         record = self.create_session("audiobook")
         uploaded = self.client.post(

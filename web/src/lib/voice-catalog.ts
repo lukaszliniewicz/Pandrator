@@ -10,7 +10,13 @@ export const LANGUAGE_LABELS: Record<string, string> = {
   ar: 'Arabic', de: 'German', en: 'American English', 'en-gb': 'British English', es: 'Spanish',
   fr: 'French', hi: 'Hindi', it: 'Italian', ja: 'Japanese', ko: 'Korean', nl: 'Dutch',
   pl: 'Polish', pt: 'Portuguese', ru: 'Russian', tr: 'Turkish', cs: 'Czech', hu: 'Hungarian',
-  vi: 'Vietnamese', 'zh-cn': 'Chinese (Simplified)', zh: 'Chinese'
+  vi: 'Vietnamese', 'zh-cn': 'Chinese (Simplified)', zh: 'Chinese',
+  as: 'Assamese', aze: 'Azerbaijani', bak: 'Bashkir', bel: 'Belarusian', bn: 'Bengali',
+  chv: 'Chuvash', erz: 'Erzya', gu: 'Gujarati', hye: 'Armenian', kat: 'Georgian',
+  kaz: 'Kazakh', kbd: 'Kabardian-Cherkess', kir: 'Kyrgyz', kjh: 'Khakas', kn: 'Kannada',
+  mdf: 'Moksha', ml: 'Malayalam', mni: 'Manipuri', raj: 'Rajasthani', sah: 'Yakut',
+  ta: 'Tamil', tat: 'Tatar', te: 'Telugu', tgk: 'Tajik', udm: 'Udmurt',
+  ukr: 'Ukrainian', uzb: 'Uzbek', xal: 'Kalmyk', 'en-in': 'Indian English'
 };
 
 const KOKORO_PREFIX_LANGUAGES: Record<string, string> = {
@@ -45,7 +51,7 @@ function kokoroDescriptor(id: string): VoiceDescriptor {
   return { id, name: titleize(first), languageCode: '', language: 'Multilingual', gender: '' };
 }
 
-export function describeVoice(serviceId: string, voiceId: string): VoiceDescriptor {
+export function describeVoice(serviceId: string, voiceId: string, metadata?: Record<string, any>): VoiceDescriptor {
   const service = serviceId.toLowerCase().replaceAll('-', '_');
   if (service === 'kokoro') return kokoroDescriptor(voiceId);
   if (service === 'magpie') {
@@ -62,6 +68,19 @@ export function describeVoice(serviceId: string, voiceId: string): VoiceDescript
     const name = styles[prefix] ? `${styles[prefix]}${gender ? ` ${gender}` : ''}` : languageCode ? `Standard${gender ? ` ${gender}` : ''}` : titleize(voiceId);
     return { id: voiceId, name, languageCode, language: LANGUAGE_LABELS[languageCode] ?? 'Multilingual', gender };
   }
+  if (service === 'silero') {
+    const knownPrefixes = new Set(['aze', 'hye', 'bak', 'bel', 'kat', 'kbd', 'kaz', 'xal', 'kir', 'mdf', 'tgk', 'tat', 'udm', 'uzb', 'ukr', 'kjh', 'chv', 'erz', 'sah', 'ru', 'en']);
+    const prefix = voiceId.toLowerCase().split('_')[0];
+    const languageCode = String(metadata?.language ?? (knownPrefixes.has(prefix) ? prefix : ''));
+    const rawName = String(metadata?.display_name ?? voiceId.replace(new RegExp(`^${prefix}_`, 'i'), ''));
+    return {
+      id: voiceId,
+      name: titleize(rawName),
+      languageCode,
+      language: LANGUAGE_LABELS[languageCode] ?? (languageCode || 'Multilingual'),
+      gender: ''
+    };
+  }
   return { id: voiceId, name: titleize(voiceId), languageCode: '', language: 'Multilingual', gender: '' };
 }
 
@@ -71,6 +90,7 @@ export function languagesForService(serviceId: string, descriptors: VoiceDescrip
     : service === 'kobold_qwen' || service.includes('qwen') ? QWEN_LANGUAGES
       : ['xtts', 'fishs2'].includes(service) ? XTTS_LANGUAGES
       : service === 'voxtral' ? VOXTRAL_LANGUAGES
+        : service === 'silero' ? Array.from(new Set(descriptors.map((voice) => voice.languageCode).filter(Boolean)))
         : service === 'magpie' ? Object.values(MAGPIE_LOCALES)
           : Array.from(new Set(descriptors.map((voice) => voice.languageCode).filter(Boolean)));
   return Array.from(new Set(codes)).map((code) => ({ value: code, label: LANGUAGE_LABELS[code] ?? code }));

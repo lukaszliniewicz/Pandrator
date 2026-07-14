@@ -231,6 +231,9 @@ class TTSSettings:
     openai_audio_endpoints_json: str = ""
     openai_audio_instructions: str = ""
     xtts_model: str = ""
+    silero_model: str = "v5_cis_base_nostress"
+    silero_stress_mode: str = "auto"
+    silero_sample_rate: int = 48000
     language: str = "en"
     speaker: str = ""
     speed: float = 1.0

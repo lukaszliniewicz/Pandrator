@@ -52,7 +52,6 @@ WTPSPLIT_RETIRED_MODELS = ('sat-3l-sm',)
 PANDRATOR_PYMUPDF_SPEC = 'PyMuPDF>=1.25,<2'
 PANDRATOR_ONNXRUNTIME_SPEC = 'onnxruntime>=1.20,<2'
 PANDRATOR_PADDLEOCR_SPEC = 'paddleocr==3.7.0'
-SILERO_PYTHON_VERSION = '3.10'
 KOKORO_PYTHON_VERSION = '3.11'
 KOKORO_TORCH_BASE_VERSION = '2.8.0'
 KOKORO_CPU_TORCH_INDEX_URL = 'https://download.pytorch.org/whl/cpu'
@@ -101,6 +100,8 @@ KOBOLD_QWEN_API_REPO_URL = COMPONENTS['kobold_qwen'].repo_url
 KOBOLD_QWEN_API_REPO_DIRNAME = COMPONENTS['kobold_qwen'].repo_dirname
 MAGPIE_API_REPO_URL = COMPONENTS['magpie'].repo_url
 MAGPIE_API_REPO_DIRNAME = COMPONENTS['magpie'].repo_dirname
+SILERO_API_REPO_URL = COMPONENTS['silero'].repo_url
+SILERO_API_REPO_DIRNAME = COMPONENTS['silero'].repo_dirname
 RVC_API_REPO_URL = COMPONENTS['rvc'].repo_url
 RVC_API_REPO_DIRNAME = COMPONENTS['rvc'].repo_dirname
 PANDRATOR_REPO_URL = 'https://github.com/lukaszliniewicz/Pandrator.git'
@@ -125,10 +126,6 @@ FFMPEG_BUNDLED_RELATIVE_PATH = os.path.join('bin', 'ffmpeg.exe')
 
 BUNDLED_WHEELS_RELATIVE_PATH = os.path.join('vendor', 'wheels')
 PYOPENJTALK_WHEEL_PREFIX = 'pyopenjtalk-'
-SILERO_REQUIRED_PACKAGE_SPECS = (
-    'requests',
-    'silero-api-server',
-)
 WHISPERX_REQUIRED_PACKAGE_SPECS = (
     f'whisperx=={WHISPERX_VERSION}',
     f'ctranslate2=={WHISPERX_CTRANSLATE2_VERSION}',

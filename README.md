@@ -20,7 +20,7 @@ Pandrator aspires to be easy to use and install - it has a one-click installer a
 - transform text, PDF (including see-through cropping), EPUB and SRT files into spoken audio in multiple languages based chiefly on open source software run locally, including preprocessing to make the generated speech sound as natural as possible by, among other things, splitting the text into paragraphs, sentences and smaller logical text blocks (clauses), which the TTS models can process with minimal artifacts. Each sentence can be regenerated if the first attempt is not satisfactory, including marking for regeneration using mouse or keyboard actions when listening back to the generation. Voice cloning is possible for models that support it, and text can be additionally preprocessed using LLMs (to remove OCR artifacts or spell out things that the TTS models struggle with, like Roman numerals and abbreviations, for example),
 - generate dubbing either directly from a video file, including transcription through optional STT backends such as [WhisperX](https://github.com/m-bain/whisperX) or ONNX Parakeet, or from an .srt file. It includes a Pandrator-native workflow from a video file to a dubbed video file with subtitles, including correction, translation, manual timing edits, audio alignment, and final video rendering. You can also correct or translate subtitles without generating audio.
 
-At the moment, Pandrator supports multiple TTS backends: [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) via [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI), [Fish Audio S2 Pro GGUF](https://huggingface.co/rodrigomt/s2-pro-gguf) via [fishs2-cpp-fastapi](https://github.com/lukaszliniewicz/fishs2-cpp-fastapi), [Chatterbox](https://huggingface.co/ResembleAI/chatterbox) via [chatterbox-fastapi](https://github.com/lukaszliniewicz/chatterbox-fastapi), Qwen3 TTS through KoboldCpp via [kobold-qwen-fastapi](https://github.com/lukaszliniewicz/kobold-qwen-fastapi), [VoxCPM2](https://huggingface.co/openbmb/VoxCPM2) via [voxcpm_fastapi](https://github.com/lukaszliniewicz/voxcpm_fastapi), [Voxtral](https://huggingface.co/mistralai/Voxtral-4B-TTS-2603) via [voxtral-fastapi](https://github.com/lukaszliniewicz/voxtral-fastapi), [XTTS v2](https://huggingface.co/coqui/XTTS-v2) via the OpenAI-compatible [XTTS2 API server](https://github.com/lukaszliniewicz/xtts2_api), [Silero](https://github.com/snakers4/silero-models) via `silero-api-server`, and [Magpie](https://huggingface.co/nvidia/magpie_tts_multilingual_357m) via [magpie-fastapi](https://github.com/lukaszliniewicz/magpie-fastapi). It also supports commercial speech APIs and custom TTS endpoints, including OpenAI-compatible and common JSON APIs, plus optional post-processing via a dedicated [RVC Python API Service](https://github.com/lukaszliniewicz/rvc-python). For local LLM text preprocessing, Pandrator works well with OpenAI-compatible local servers such as LM Studio and Ollama-compatible endpoints.
+At the moment, Pandrator supports multiple TTS backends: [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) via [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI), [Fish Audio S2 Pro GGUF](https://huggingface.co/rodrigomt/s2-pro-gguf) via [fishs2-cpp-fastapi](https://github.com/lukaszliniewicz/fishs2-cpp-fastapi), [Chatterbox](https://huggingface.co/ResembleAI/chatterbox) via [chatterbox-fastapi](https://github.com/lukaszliniewicz/chatterbox-fastapi), Qwen3 TTS through KoboldCpp via [kobold-qwen-fastapi](https://github.com/lukaszliniewicz/kobold-qwen-fastapi), [VoxCPM2](https://huggingface.co/openbmb/VoxCPM2) via [voxcpm_fastapi](https://github.com/lukaszliniewicz/voxcpm_fastapi), [Voxtral](https://huggingface.co/mistralai/Voxtral-4B-TTS-2603) via [voxtral-fastapi](https://github.com/lukaszliniewicz/voxtral-fastapi), [XTTS v2](https://huggingface.co/coqui/XTTS-v2) via the OpenAI-compatible [XTTS2 API server](https://github.com/lukaszliniewicz/xtts2_api), official [Silero](https://github.com/snakers4/silero-models) checkpoints through Pandrator's first-party [silero-fastapi](https://github.com/lukaszliniewicz/silero-fastapi) service, and [Magpie](https://huggingface.co/nvidia/magpie_tts_multilingual_357m) via [magpie-fastapi](https://github.com/lukaszliniewicz/magpie-fastapi). It also supports commercial speech APIs and custom TTS endpoints, including OpenAI-compatible and common JSON APIs, plus optional post-processing via a dedicated [RVC Python API Service](https://github.com/lukaszliniewicz/rvc-python). For local LLM text preprocessing, Pandrator works well with OpenAI-compatible local servers such as LM Studio and Ollama-compatible endpoints.
 
 ## Supported Languages & Quality Characteristics
 
@@ -70,9 +70,10 @@ Speech quality, emotional expression, and voice variety differ significantly bet
   * **Limitations:** Prone to speed drift, mumbling, and phonetic artifacts if the reference audio contains background noise or is too short.
 
 ### 8. Silero
-* **Supported Languages:** English, German, Russian, Spanish, French, Hindi, Tatar, Ukrainian, Uzbek, and Kalmyk.
+* **Supported Languages:** The modern base pack covers Armenian, Azerbaijani, Bashkir, Belarusian, Chuvash, Erzya, Georgian, Kabardian-Cherkess, Kalmyk, Kazakh, Khakas, Kyrgyz, Moksha, Russian, Tajik, Tatar, Udmurt, Ukrainian, Uzbek, and Yakut. Optional legacy packs add English, German, Spanish, French, Indian English, and Indic languages.
 * **Quality & Performance:**
-  * **All Languages:** *Legible / Robotic.* Highly optimized for CPU and low-resource devices, but the voice sounds dated, flat, and robotic compared to modern diffusion/neural architectures.
+  * **Modern CIS voices:** *Good / efficient.* Recent regional voices are substantially better than the old v3 catalogue and remain practical on ordinary CPUs. Automatic stress processing is included where the model needs it.
+  * **Licensing:** The installer downloads the MIT-licensed modern CIS base pack. Optional model packs display their own licence and commercial-use status before download.
 
 ### 9. Magpie
 * **Supported Languages:** English (en-US), Spanish (es-US), German (de-DE), French (fr-FR), Italian (it-IT), Chinese (zh-CN), Vietnamese (vi-VN), Hindi (hi-IN), and Japanese (ja-JP).
@@ -110,7 +111,7 @@ This project relies on several APIs and services (running locally) and libraries
   - [voxcpm_fastapi](https://github.com/lukaszliniewicz/voxcpm_fastapi) (OpenAI-compatible VoxCPM2 server)
   - [voxtral-fastapi](https://github.com/lukaszliniewicz/voxtral-fastapi) (OpenAI-compatible Voxtral server)
   - [XTTS2 API](https://github.com/lukaszliniewicz/xtts2_api) (OpenAI-compatible XTTS v2 server)
-  - [silero-api-server](https://pypi.org/project/silero-api-server/) (Silero backend)
+  - [silero-fastapi](https://github.com/lukaszliniewicz/silero-fastapi) (first-party Silero backend with verified model downloads and stress processing)
   - [magpie-fastapi](https://github.com/lukaszliniewicz/magpie-fastapi) (OpenAI-compatible Magpie server)
   - Commercial speech APIs and custom TTS endpoints
 - [FFmpeg](https://github.com/FFmpeg/FFmpeg) for audio encoding.
@@ -433,7 +434,11 @@ Please refer to the repositories linked under [Dependencies](#dependencies) for 
 10. (Optional) Install Silero API:
 
    ```
-   python -m pip install silero-api-server
+   git clone https://github.com/lukaszliniewicz/silero-fastapi.git
+   cd silero-fastapi
+   pixi install --locked
+   pixi run silero-fastapi download v5_cis_base_nostress
+   pixi run serve
    ```
 
 11. (Optional) Install Easy XTTS Trainer:

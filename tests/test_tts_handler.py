@@ -429,6 +429,76 @@ class TTSHandlerTests(unittest.TestCase):
             tts_handler.KOBOLD_QWEN_MODEL_PREPARATION_TIMEOUT_SECONDS,
         )
 
+    def test_silero_catalog_filters_installed_models_and_voices(self):
+        models_response = Mock()
+        models_response.json.return_value = {
+            "data": [
+                {"id": "v5_cis_base_nostress", "status": {"installed": True}},
+                {"id": "v5_cis_ext", "status": {"installed": False}},
+            ]
+        }
+        models_response.raise_for_status.return_value = None
+        voices_response = Mock()
+        voices_response.json.return_value = {
+            "data": [{"id": "ukr_igor", "language": "ukr", "available": True}]
+        }
+        voices_response.raise_for_status.return_value = None
+
+        with patch("pandrator.logic.tts_handler.requests.get", side_effect=[models_response, voices_response]) as get:
+            self.assertEqual(
+                tts_handler.get_silero_models("http://silero", installed_only=True),
+                ["v5_cis_base_nostress"],
+            )
+            self.assertEqual(
+                tts_handler.get_silero_speakers(
+                    "http://silero",
+                    model="v5_cis_base_nostress",
+                    language="uk",
+                ),
+                ["ukr_igor"],
+            )
+
+        self.assertEqual(get.call_args_list[1].kwargs["params"]["language"], "ukr")
+
+    def test_silero_generation_uses_stateless_speech_contract(self):
+        response = Mock()
+        response.raise_for_status.return_value = None
+        decoded = object()
+        with patch("pandrator.logic.tts_handler.requests.post", return_value=response) as post, patch(
+            "pandrator.logic.tts_handler._decode_audio_response",
+            return_value=decoded,
+        ):
+            result = tts_handler.text_to_audio(
+                "Привіт, світе!",
+                {
+                    "service": "Silero",
+                    "xtts_model": "v5_cis_base_nostress",
+                    "speaker": "ukr_igor",
+                    "language": "uk",
+                    "speed": 1.1,
+                    "silero_sample_rate": 24000,
+                    "silero_stress_mode": "auto",
+                },
+                silero_base_url="http://silero",
+                max_attempts=1,
+            )
+
+        self.assertIs(result, decoded)
+        self.assertEqual(post.call_args.args[0], "http://silero/v1/audio/speech")
+        self.assertEqual(
+            post.call_args.kwargs["json"],
+            {
+                "model": "v5_cis_base_nostress",
+                "input": "Привіт, світе!",
+                "voice": "ukr_igor",
+                "language": "ukr",
+                "response_format": "wav",
+                "speed": 1.1,
+                "sample_rate": 24000,
+                "stress_mode": "auto",
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
