@@ -33,10 +33,26 @@ from pandrator_installer.constants import (
     ONNX_ASR_INSTALL_SPEC,
     PANDRATOR_NUMPY_SPEC,
     PANDRATOR_REPO_BRANCH,
+    PANDRATOR_URL_DOWNLOADER_CONDA_SPEC,
 )
 
 
 class InstallerArchitectureTests(unittest.TestCase):
+    def test_pandrator_environment_installs_url_downloader_with_pixi(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+
+        with patch.object(installer, "add_pixi_conda_package") as add_package:
+            installer.ensure_pandrator_environment_conda_packages("C:/Pandrator")
+
+        self.assertEqual(
+            [call.args[2] for call in add_package.call_args_list],
+            ["ffmpeg", PANDRATOR_URL_DOWNLOADER_CONDA_SPEC, NEMO_PYNINI_CONDA_SPEC],
+        )
+        self.assertIn(
+            "yt-dlp",
+            installer.get_optional_requirement_exclusions("pandrator_installer"),
+        )
+
     def test_installer_does_not_manage_legacy_pycroppdf(self):
         install_source = inspect.getsource(WorkflowMixin.install_process)
         update_source = inspect.getsource(WorkflowMixin.update_process)

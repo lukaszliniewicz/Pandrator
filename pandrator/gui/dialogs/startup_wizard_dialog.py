@@ -187,9 +187,9 @@ class StartupWizardDialog(QDialog):
 
         self._section_header(layout, "Step 1", "What are you making?")
         self.task_kind_combo = QComboBox()
+        self.task_kind_combo.addItem("Create an audiobook", "audiobook")
         self.task_kind_combo.addItem("Create subtitles", "subtitles")
         self.task_kind_combo.addItem("Create a voiceover", "voiceover")
-        self.task_kind_combo.addItem("Create an audiobook", "audiobook")
         self.task_kind_combo.setVisible(False)
         self.task_kind_tiles: dict[str, WizardTile] = {}
         self.task_kind_group = QButtonGroup(self)
@@ -197,9 +197,9 @@ class StartupWizardDialog(QDialog):
         goal_grid = QGridLayout()
         goal_grid.setSpacing(10)
         goal_options = (
+            ("audiobook", "Audiobook", "Turn a document or pasted text into long-form narration.", "audiobook"),
             ("subtitles", "Subtitles", "Transcribe, correct, translate, review, and export timed text.", "subtitles"),
             ("voiceover", "Voiceover", "Prepare subtitles and generate synchronized dubbing audio.", "voiceover"),
-            ("audiobook", "Audiobook", "Turn a document or pasted text into long-form narration.", "audiobook"),
         )
         for index, (key, tile_title, description, icon_name) in enumerate(goal_options):
             tile = WizardTile(tile_title, description, icon_name)

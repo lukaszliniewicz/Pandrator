@@ -31,6 +31,7 @@ from .constants import (
     KOKORO_GPU_SUPPORT_CONFIG_FLAG,
     KOKORO_PYTHON_VERSION,
     NEMO_PYNINI_CONDA_SPEC,
+    PANDRATOR_URL_DOWNLOADER_CONDA_SPEC,
     PANDRATOR_PYTHON_VERSION,
     PANDRATOR_REPO_BRANCH,
     PANDRATOR_REPO_URL,
@@ -56,6 +57,19 @@ from .reporting import HeadlessReporter, NullReporter
 
 
 class WorkflowMixin:
+    def ensure_pandrator_environment_conda_packages(self, pandrator_path):
+        """Install application command-line tools inside the portable Pixi environment."""
+        for package_spec in (
+            'ffmpeg',
+            PANDRATOR_URL_DOWNLOADER_CONDA_SPEC,
+            NEMO_PYNINI_CONDA_SPEC,
+        ):
+            self.add_pixi_conda_package(
+                pandrator_path,
+                'pandrator_installer',
+                package_spec,
+            )
+
     def validate_platform_install_selection(self, selection):
         if is_windows():
             return
@@ -289,8 +303,7 @@ class WorkflowMixin:
                 self.reporter.progress(0.6)
                 self.reporter.status("Creating Pandrator Pixi environment...")
                 self.create_pixi_env(pandrator_path, 'pandrator_installer', PANDRATOR_PYTHON_VERSION)
-                self.add_pixi_conda_package(pandrator_path, 'pandrator_installer', 'ffmpeg')
-                self.add_pixi_conda_package(pandrator_path, 'pandrator_installer', NEMO_PYNINI_CONDA_SPEC)
+                self.ensure_pandrator_environment_conda_packages(pandrator_path)
 
                 self.reporter.progress(0.7)
                 self.reporter.status("Installing Pandrator dependencies...")
@@ -722,8 +735,7 @@ class WorkflowMixin:
             # Setup environments
             self.reporter.status("Checking Pandrator environment...")
             self.create_pixi_env(pandrator_base_path, 'pandrator_installer', PANDRATOR_PYTHON_VERSION)
-            self.add_pixi_conda_package(pandrator_base_path, 'pandrator_installer', 'ffmpeg')
-            self.add_pixi_conda_package(pandrator_base_path, 'pandrator_installer', NEMO_PYNINI_CONDA_SPEC)
+            self.ensure_pandrator_environment_conda_packages(pandrator_base_path)
             self.reporter.status("Checking Pandrator runtime...")
             self.ensure_pandrator_runtime(pandrator_base_path, 'pandrator_installer')
 

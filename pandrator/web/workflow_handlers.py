@@ -176,9 +176,20 @@ class WorkflowHandlers:
             return {}
         if destination_dir.resolve() not in output.parents or not output.is_file():
             raise RuntimeError("Downloaded source was not created in the managed session directory.")
-        artifact = self.artifacts.register(output, kind="source", role="upload", session_id=session_id, metadata={"original_filename": output.name, "source_url": url})
+        source_metadata = {
+            "original_filename": output.name,
+            "source_url": url,
+            "downloader": "yt-dlp",
+        }
+        artifact = self.artifacts.register(
+            output,
+            kind="source",
+            role="upload",
+            session_id=session_id,
+            metadata=source_metadata,
+        )
         with self.database.session() as session:
-            session.add(SourceRecord(session_id=session_id, kind=output.suffix.lower().lstrip(".") or "url", display_name=output.name, artifact_id=artifact.id, content_hash=artifact.content_hash, metadata_json={"url": url}))
+            session.add(SourceRecord(session_id=session_id, kind=output.suffix.lower().lstrip(".") or "url", display_name=output.name, artifact_id=artifact.id, content_hash=artifact.content_hash, metadata_json={"url": url, "downloader": "yt-dlp"}))
         library = SourceLibraryService(self.database)
         asset = library.ensure_for_artifact(artifact.id, display_name=output.name, kind=output.suffix.lower().lstrip(".") or "url")
         library.attach(session_id, asset.id)

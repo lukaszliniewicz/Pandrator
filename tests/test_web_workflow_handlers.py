@@ -82,6 +82,46 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         self.assertEqual(artifact.role, "audiobook_audio")
         self.assertTrue(output.is_file())
 
+    def test_url_download_uses_ytdlp_and_records_provenance(self):
+        captured = {}
+        destination = self.session_dir / "sources" / "example-video.mp4"
+
+        class FakeYoutubeDL:
+            def __init__(self, options):
+                captured.update(options)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def extract_info(self, _url, download):
+                self.download = download
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(b"media")
+                return {"title": "Example video", "id": "fixture", "ext": "mp4"}
+
+            def prepare_filename(self, _information):
+                return str(destination)
+
+        with mock.patch.object(
+            self.handlers,
+            "_validate_download_url",
+            return_value="https://example.com/watch?v=fixture",
+        ), mock.patch("yt_dlp.YoutubeDL", FakeYoutubeDL):
+            result = self.handlers.download_source_url(
+                {"session_id": self.session.id, "url": "https://example.com/watch?v=fixture"},
+                self.progress,
+                threading.Event(),
+            )
+
+        artifact, output = self.artifacts.resolve(result["artifact_id"])
+        self.assertEqual(output, destination.resolve())
+        self.assertEqual(artifact.metadata_json["downloader"], "yt-dlp")
+        self.assertTrue(captured["noplaylist"])
+        self.assertTrue(captured["restrictfilenames"])
+
     def test_audiobook_generation_rejects_unsegmented_text_with_actionable_error(self):
         raw_path = self.session_dir / "raw.txt"
         raw_path.write_text("Raw narration", encoding="utf-8")

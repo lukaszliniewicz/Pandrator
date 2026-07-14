@@ -5,7 +5,7 @@
   import { appState } from './app-state.svelte';
   import { LANGUAGE_OPTIONS } from './settings-fields';
 
-  let { initialKind = 'subtitles', startAtSource = false, onclose }: { initialKind?: 'audiobook'|'subtitles'|'voiceover'; startAtSource?: boolean; onclose: () => void } = $props();
+  let { initialKind = 'audiobook', startAtSource = false, onclose }: { initialKind?: 'audiobook'|'subtitles'|'voiceover'; startAtSource?: boolean; onclose: () => void } = $props();
   let step = $state(untrack(() => startAtSource ? 2 : 1));
   let kind = $state<'audiobook'|'subtitles'|'voiceover'>(untrack(() => initialKind));
   let custom = $state(false);
@@ -103,11 +103,24 @@
     <header class="flex items-start justify-between gap-4"><div><div class="eyebrow">New {kind} session · step {step} of 4</div><h1 id="wizard-title" class="mt-1 text-2xl font-semibold">{step===1?'What would you like to make?':step===2?'Choose the source':step===3?'Choose the result':'Review your workspace'}</h1></div><button onclick={onclose} class="rounded-xl p-2" aria-label="Close"><X size={20}/></button></header>
     {#if error}<div class="mt-5 rounded-xl border border-red-400/40 bg-red-500/10 p-3 text-sm">{error}</div>{/if}
     {#if step===1}
-      <div class="mt-7 grid gap-4 md:grid-cols-3"><button onclick={()=>chooseKind('subtitles')} class="choice"><Captions size={25}/><strong>Create subtitles</strong><span>Transcribe, refine, translate, and export.</span></button><button onclick={()=>chooseKind('voiceover')} class="choice"><AudioLines size={25}/><strong>Create a voiceover</strong><span>Start with media or an existing subtitle file.</span></button><button onclick={()=>chooseKind('audiobook')} class="choice"><BookOpenText size={25}/><strong>Generate an audiobook</strong><span>Prepare a document or pasted text for narration.</span></button></div>
+      <div class="mt-7 grid gap-4 md:grid-cols-3"><button onclick={()=>chooseKind('audiobook')} class="choice"><BookOpenText size={25}/><strong>Generate an audiobook</strong><span>Prepare a document or pasted text for narration.</span></button><button onclick={()=>chooseKind('subtitles')} class="choice"><Captions size={25}/><strong>Create subtitles</strong><span>Transcribe, refine, translate, and export.</span></button><button onclick={()=>chooseKind('voiceover')} class="choice"><AudioLines size={25}/><strong>Create a voiceover</strong><span>Start with media or an existing subtitle file.</span></button></div>
       <button onclick={()=>chooseKind(kind,true)} class="mt-5 flex w-full items-center justify-center gap-2 rounded-xl border border-[var(--line)] px-4 py-3 text-sm font-semibold"><Gauge size={17}/> Skip guidance and open a fully customizable workspace</button>
     {:else if step===2}
       <div class="mt-7 grid gap-3 sm:grid-cols-5">{#each [{id:'upload',label:'Upload',icon:Upload},{id:'paste',label:'Paste',icon:FileText},{id:'url',label:'URL',icon:Link2},{id:'reuse',label:'Reuse',icon:BookOpenText},{id:'later',label:'Add later',icon:Gauge}] as mode}{@const Icon=mode.icon}<button onclick={()=>sourceMode=mode.id as typeof sourceMode} class:active={sourceMode===mode.id} class="source-choice"><Icon size={18}/>{mode.label}</button>{/each}</div>
-      <div class="mt-5 rounded-2xl border border-[var(--line)] p-5">{#if sourceMode==='upload'}<label class="text-sm font-semibold">Source file<input type="file" onchange={(event)=>{sourceFile=(event.currentTarget as HTMLInputElement).files?.[0]??null;inferName()}} class="mt-2 block w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] p-3"/></label>{:else if sourceMode==='paste'}<textarea bind:value={pastedText} rows="8" placeholder="Paste text here…" class="w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] p-4"></textarea>{:else if sourceMode==='url'}<label class="text-sm font-semibold">Public source URL<input bind:value={sourceUrl} type="url" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3"/></label>{:else if sourceMode==='reuse'}<label class="text-sm font-semibold">Source library<select bind:value={sourceAssetId} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3">{#each reusableSources as source}<option value={source.id}>{source.display_name} · {source.kind}</option>{/each}</select></label>{:else}<p class="muted text-sm">Create the session now and attach one or more sources from its Sources tab later.</p>{/if}</div>
+      <div class="mt-5 rounded-2xl border border-[var(--line)] p-5">
+        {#if sourceMode==='upload'}
+          <label class="text-sm font-semibold">Source file<input type="file" onchange={(event)=>{sourceFile=(event.currentTarget as HTMLInputElement).files?.[0]??null;inferName()}} class="mt-2 block w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] p-3"/></label>
+        {:else if sourceMode==='paste'}
+          <textarea bind:value={pastedText} rows="8" placeholder="Paste text here…" class="w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] p-4"></textarea>
+        {:else if sourceMode==='url'}
+          <label class="text-sm font-semibold">Public media URL<input bind:value={sourceUrl} type="url" placeholder="https://www.youtube.com/watch?v=…" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3"/></label>
+          <p class="muted mt-3 text-xs leading-relaxed">Pandrator uses yt-dlp for supported public video and audio sites. Playlists are not downloaded automatically.</p>
+        {:else if sourceMode==='reuse'}
+          <label class="text-sm font-semibold">Source library<select bind:value={sourceAssetId} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3">{#each reusableSources as source}<option value={source.id}>{source.display_name} · {source.kind}</option>{/each}</select></label>
+        {:else}
+          <p class="muted text-sm">Create the session now and attach one or more sources from its Sources tab later.</p>
+        {/if}
+      </div>
     {:else if step===3}
       {#if kind==='audiobook'}
         <div class="mt-7 grid gap-4 md:grid-cols-2">
