@@ -1,10 +1,12 @@
 import unittest
 from unittest.mock import MagicMock, patch
+import json
 import os
+import tempfile
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QApplication, QCheckBox, QLabel, QScrollArea, QSizePolicy
+from PyQt6.QtWidgets import QApplication, QCheckBox, QDialog, QLabel, QScrollArea, QSizePolicy
 from pandrator_installer_launcher import PandratorInstaller
-from pandrator_installer.gui.main_window import QwenConfigDialog
+from pandrator_installer.gui.main_window import OwnerPasswordDialog, QwenConfigDialog
 from pandrator_installer.gui.support import ToggleSwitch
 
 
@@ -50,6 +52,48 @@ class TestInstallerLauncherChatterbox(unittest.TestCase):
         launch_selection = installer.snapshot_launch_selection()
         self.assertTrue(launch_selection.kobold_qwen)
         self.assertTrue(launch_selection.kobold_qwen_cpu)
+
+    def test_password_policy_tracks_local_and_lan_exposure(self):
+        installer = PandratorInstaller(headless=True)
+        local_index = installer.pandrator_password_scope_combo.findData("local")
+        installer.pandrator_password_scope_combo.setCurrentIndex(local_index)
+        self.assertEqual(installer.snapshot_launch_selection().pandrator_password_scope, "local")
+
+        installer.pandrator_network_checkbox.setChecked(True)
+        lan_selection = installer.snapshot_launch_selection()
+        self.assertTrue(lan_selection.pandrator_network_access)
+        self.assertEqual(lan_selection.pandrator_password_scope, "all")
+
+        installer.pandrator_network_checkbox.setChecked(False)
+        self.assertEqual(installer.snapshot_launch_selection().pandrator_password_scope, "local")
+
+    def test_owner_password_dialog_validates_confirmation(self):
+        dialog = OwnerPasswordDialog()
+        dialog.password_edit.setText("a-secure-password")
+        dialog.confirmation_edit.setText("different-password")
+        dialog.accept_password()
+        self.assertNotEqual(dialog.result(), QDialog.DialogCode.Accepted)
+        self.assertIn("do not match", dialog.error_label.text())
+
+        dialog.confirmation_edit.setText("a-secure-password")
+        dialog.accept_password()
+        self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+
+    def test_launch_preferences_never_persist_plaintext_password(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            installer = PandratorInstaller(headless=True, working_dir=workspace)
+            installer.pandrator_network_checkbox.setChecked(True)
+            installer.pandrator_owner_password = "a-secure-password"
+            selection = installer.snapshot_launch_selection()
+            installer.persist_launch_preferences(selection)
+            config_path = os.path.join(workspace, "Pandrator", "config.json")
+            with open(config_path, encoding="utf-8") as config_file:
+                config = json.load(config_file)
+
+        self.assertEqual(config["pandrator_password_scope"], "remote")
+        self.assertTrue(config["pandrator_network_access"])
+        self.assertNotIn("pandrator_owner_password", config)
+        self.assertNotIn("a-secure-password", json.dumps(config))
 
     def test_qwen_dialog_offers_both_models_and_forces_1_7b(self):
         installer = PandratorInstaller(headless=True)

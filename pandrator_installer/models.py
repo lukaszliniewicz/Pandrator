@@ -9,6 +9,19 @@ from typing import Iterable
 from .catalog import INSTALL_COMPONENT_KEYS, resolve_dependencies
 
 
+PASSWORD_SCOPES = ("none", "local", "remote", "all")
+
+
+def normalize_password_scope(value: str | None, *, network_access: bool) -> str:
+    """Return a safe password policy for the selected network exposure."""
+    scope = str(value or "").strip().lower()
+    if scope not in PASSWORD_SCOPES:
+        scope = "remote" if network_access else "none"
+    if network_access:
+        return {"none": "remote", "local": "all"}.get(scope, scope)
+    return {"remote": "none", "all": "local"}.get(scope, scope)
+
+
 @dataclass(frozen=True)
 class WorkspacePaths:
     workspace: Path
@@ -193,6 +206,7 @@ def qwen_effective_model_size(selection: str, model_size: str) -> str:
 class LaunchSelection:
     pandrator: bool = True
     pandrator_network_access: bool = False
+    pandrator_password_scope: str = "none"
     pandrator_port: int = 8097
     rvc: bool = False
     rvc_cpu: bool = False

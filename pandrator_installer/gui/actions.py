@@ -257,9 +257,11 @@ class GuiActionsMixin:
             )
             return
 
-        self.initialize_logging()
-
         selection = self.snapshot_launch_selection()
+        if not self.prepare_launch_security(selection):
+            return
+        self.persist_launch_preferences(selection)
+        self.initialize_logging()
         self._apply_launch_selection_state(selection)
 
         selected_backend_keys = self._selected_launch_backend_keys()

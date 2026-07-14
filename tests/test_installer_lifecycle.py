@@ -10,7 +10,7 @@ from pathlib import Path
 
 from pandrator_installer.cli import main as launcher_main, parse_launcher_cli_args, run_headless_install_from_cli
 from pandrator_installer.lifecycle import _owned_service_processes, _runtime_specs, main
-from pandrator_installer.models import WorkspacePaths
+from pandrator_installer.models import WorkspacePaths, normalize_password_scope
 from pandrator_installer.update import verify_release_manifest
 
 
@@ -52,6 +52,56 @@ class InstallerLifecycleTests(unittest.TestCase):
             self.assertEqual(specs[0].env["PANDRATOR_BOOTSTRAP_TOKEN"], "one-time-token")
             self.assertIn("--no-open-browser", specs[0].command)
             self.assertIsInstance(specs[0].command, tuple)
+
+    def test_runtime_manifest_omits_bootstrap_secret_for_password_login(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            args = type("Args", (), {"host": "127.0.0.1", "port": 8097})()
+            api = _runtime_specs(WorkspacePaths.from_value(workspace), args)[0]
+            self.assertNotIn("PANDRATOR_BOOTSTRAP_TOKEN", api.env)
+
+    def test_password_scope_normalization_never_leaves_lan_unprotected(self):
+        self.assertEqual(normalize_password_scope("none", network_access=True), "remote")
+        self.assertEqual(normalize_password_scope("local", network_access=True), "all")
+        self.assertEqual(normalize_password_scope("remote", network_access=False), "none")
+        self.assertEqual(normalize_password_scope("all", network_access=False), "local")
+
+    def test_local_password_launch_initializes_owner_and_omits_bootstrap(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            secret = Path(workspace, "Pandrator", ".flask-secret")
+            secret.parent.mkdir(parents=True)
+            secret.write_text("old-session-secret", encoding="utf-8")
+            with mock.patch.dict(
+                "os.environ", {"PANDRATOR_OWNER_PASSWORD": "a-secure-password"}
+            ), mock.patch(
+                "pandrator_installer.lifecycle.subprocess.run",
+                return_value=mock.Mock(returncode=0, stdout="", stderr=""),
+            ) as auth_init, mock.patch(
+                "pandrator_installer.lifecycle.ProcessSupervisor"
+            ) as supervisor, mock.patch(
+                "pandrator_installer.lifecycle._open_browser"
+            ) as open_browser:
+                code, _output, error = self.invoke(
+                    ["launch", "--workspace", workspace, "--password-scope", "local"]
+                )
+                supervisor.call_args.kwargs["ready_callback"]()
+        self.assertEqual(code, 0, error)
+        auth_command = auth_init.call_args.args[0]
+        self.assertEqual(auth_command[-2:], ["auth", "init"])
+        api = supervisor.call_args.kwargs["specs"][0]
+        self.assertNotIn("PANDRATOR_BOOTSTRAP_TOKEN", api.env)
+        self.assertFalse(secret.exists())
+        open_browser.assert_called_once_with("http://127.0.0.1:8097/")
+
+    def test_remote_launch_rejects_an_explicit_passwordless_policy(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            code, _output, error = self.invoke(
+                [
+                    "launch", "--workspace", workspace, "--host", "0.0.0.0",
+                    "--allow-insecure-remote", "--password-scope", "none", "--no-browser",
+                ]
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("requires password protection", error)
 
     def test_selected_speech_services_are_owned_by_the_shared_supervisor(self):
         with tempfile.TemporaryDirectory() as workspace:

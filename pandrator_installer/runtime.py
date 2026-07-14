@@ -154,6 +154,7 @@ class RuntimeMixin:
     def _apply_launch_selection_state(self, selection):
         self.launch_pandrator_var = selection.pandrator
         self.pandrator_network_access_var = selection.pandrator_network_access
+        self.pandrator_password_scope_var = selection.pandrator_password_scope
         self.pandrator_port_var = selection.pandrator_port
         self.launch_rvc_var = selection.rvc
         self.rvc_cpu_launch_var = selection.rvc_cpu
@@ -249,6 +250,7 @@ class RuntimeMixin:
                 pandrator_repo_path,
                 self._selected_supervised_component_keys(),
                 network_access=getattr(self, 'pandrator_network_access_var', False),
+                password_scope=getattr(self, 'pandrator_password_scope_var', 'none'),
                 port=getattr(self, 'pandrator_port_var', 8097),
                 owner_password=getattr(self, 'pandrator_owner_password', None),
             )
@@ -814,6 +816,7 @@ class RuntimeMixin:
         pandrator_repo_path,
         components=None,
         network_access=False,
+        password_scope="none",
         port=8097,
         owner_password=None,
     ):
@@ -826,6 +829,7 @@ class RuntimeMixin:
         if components:
             command.extend(["--components", ",".join(components)])
         command.extend(["--port", str(port)])
+        command.extend(["--password-scope", str(password_scope or "none")])
         if network_access:
             command.extend(["--host", "0.0.0.0", "--allow-insecure-remote"])
         log_path = os.path.join(pandrator_repo_path, "pandrator_web_supervisor.log")

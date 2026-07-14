@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
     QFileDialog, QLabel, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar,
     QPushButton, QScrollArea, QSizePolicy, QTabWidget, QVBoxLayout, QWidget, QComboBox, QDialog, QMenu, QSystemTrayIcon,
-    QInputDialog, QLineEdit, QSpinBox,
+    QLineEdit, QSpinBox,
 )
 
 from ..backend_catalog import (
@@ -35,7 +35,12 @@ from ..constants import (
     MAGPIE_GPU_SUPPORT_CONFIG_FLAG,
     RVC_GPU_SUPPORT_CONFIG_FLAG,
 )
-from ..models import InstallSelection, LaunchSelection, qwen_effective_model_size
+from ..models import (
+    InstallSelection,
+    LaunchSelection,
+    normalize_password_scope,
+    qwen_effective_model_size,
+)
 from ..operations import OperationsMixin
 from ..pixi import PixiEnvironmentMixin
 from ..platforms import is_windows
@@ -112,6 +117,7 @@ class PandratorInstaller(
         # Launch options
         self.launch_pandrator_var = True
         self.pandrator_owner_password = None
+        self.pandrator_password_scope_var = "none"
         self.launch_rvc_var = False
         self.rvc_cpu_launch_var = False
         self.launch_xtts_var = False
@@ -691,36 +697,101 @@ class PandratorInstaller(
         except sqlite3.Error:
             return False
 
+    def _selected_password_scope(self):
+        if not hasattr(self, "pandrator_password_scope_combo"):
+            return str(getattr(self, "pandrator_password_scope_var", "none") or "none")
+        return str(self.pandrator_password_scope_combo.currentData() or "none")
+
+    def _configure_password_scope_options(self, network_access, selected_scope=None):
+        selected = normalize_password_scope(
+            selected_scope or self._selected_password_scope(),
+            network_access=bool(network_access),
+        )
+        options = (
+            (
+                ("Password on other devices; automatic here", "remote"),
+                ("Require password everywhere", "all"),
+            )
+            if network_access
+            else (
+                ("Automatic local sign-in", "none"),
+                ("Require password on this computer", "local"),
+            )
+        )
+        self.pandrator_password_scope_combo.blockSignals(True)
+        self.pandrator_password_scope_combo.clear()
+        for label, value in options:
+            self.pandrator_password_scope_combo.addItem(label, value)
+        self.pandrator_password_scope_combo.setCurrentIndex(
+            max(0, self.pandrator_password_scope_combo.findData(selected))
+        )
+        self.pandrator_password_scope_combo.blockSignals(False)
+        self.pandrator_password_scope_var = selected
+        self._update_password_status()
+
     def _handle_network_access_toggle(self, state):
-        if state != Qt.CheckState.Checked.value or self._owner_password_initialized():
-            return
-        password, accepted = QInputDialog.getText(
-            self,
-            "Protect network access",
-            "Create an owner password (at least 10 characters):",
-            QLineEdit.EchoMode.Password,
+        network_access = state == Qt.CheckState.Checked.value
+        self._configure_password_scope_options(
+            network_access,
+            self._selected_password_scope(),
         )
-        if not accepted or len(password) < 10:
-            self.pandrator_network_checkbox.blockSignals(True)
-            self.pandrator_network_checkbox.setChecked(False)
-            self.pandrator_network_checkbox.blockSignals(False)
-            if accepted:
-                QMessageBox.warning(self, "Password too short", "Use at least 10 characters.")
+
+    def _handle_password_scope_changed(self):
+        self.pandrator_password_scope_var = self._selected_password_scope()
+        self._update_password_status()
+
+    def _password_is_configured(self):
+        return bool(self.pandrator_owner_password) or self._owner_password_initialized()
+
+    def _update_password_status(self):
+        if not hasattr(self, "pandrator_password_status_label"):
             return
-        confirmation, confirmed = QInputDialog.getText(
-            self,
-            "Confirm owner password",
-            "Enter the same password again:",
-            QLineEdit.EchoMode.Password,
+        scope = self._selected_password_scope()
+        configured = self._password_is_configured()
+        pending = bool(self.pandrator_owner_password)
+        if scope == "none":
+            text = "The launcher uses a short-lived token; no password is requested locally."
+        elif pending:
+            text = "New password ready; it will be hashed and saved when Pandrator launches."
+        elif configured:
+            text = "Owner password configured. Pandrator stores only its secure hash."
+        else:
+            text = "Set an owner password before launching."
+        self.pandrator_password_status_label.setText(text)
+        self.pandrator_password_button.setText(
+            "Change password" if configured else "Set password"
         )
-        if not confirmed or confirmation != password:
-            self.pandrator_network_checkbox.blockSignals(True)
-            self.pandrator_network_checkbox.setChecked(False)
-            self.pandrator_network_checkbox.blockSignals(False)
-            if confirmed:
-                QMessageBox.warning(self, "Passwords do not match", "Network access was not enabled.")
-            return
-        self.pandrator_owner_password = password
+        self.pandrator_password_button.setEnabled(scope != "none")
+
+    def configure_owner_password(self):
+        dialog = OwnerPasswordDialog(
+            self,
+            replacing=self._owner_password_initialized(),
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return False
+        self.pandrator_owner_password = dialog.password()
+        self._update_password_status()
+        return True
+
+    def prepare_launch_security(self, selection):
+        if not selection.pandrator or selection.pandrator_password_scope == "none":
+            return True
+        if self._password_is_configured():
+            return True
+        return self.configure_owner_password()
+
+    def persist_launch_preferences(self, selection):
+        pandrator_path = os.path.join(self.initial_working_dir, "Pandrator")
+        config = self.load_install_config(pandrator_path)
+        config.update(
+            {
+                "pandrator_network_access": bool(selection.pandrator_network_access),
+                "pandrator_password_scope": str(selection.pandrator_password_scope),
+                "pandrator_port": int(selection.pandrator_port),
+            }
+        )
+        self.save_install_config(pandrator_path, config)
 
     def setup_launch_tab(self):
         """Set up the Launch tab"""
@@ -741,7 +812,34 @@ class PandratorInstaller(
             "Binds the web server to all interfaces. An owner password is required. "
             "For Internet exposure, use HTTPS through a reverse proxy instead."
         )
+        self.pandrator_password_scope_combo = QComboBox()
+        self.pandrator_password_scope_combo.setMinimumWidth(285)
+        self.pandrator_password_scope_combo.setToolTip(
+            "Choose whether the launcher signs in automatically on this computer or asks for the owner password."
+        )
+        self.pandrator_password_button = QPushButton("Set password")
+        self.pandrator_password_button.setObjectName("secondaryButton")
+        self.pandrator_password_button.clicked.connect(self.configure_owner_password)
+        self.pandrator_password_status_label = QLabel()
+        self.pandrator_password_status_label.setObjectName("mutedLabel")
+        self.pandrator_password_status_label.setWordWrap(True)
+
+        security_controls = QWidget()
+        security_layout = QGridLayout(security_controls)
+        security_layout.setContentsMargins(0, 0, 0, 0)
+        security_layout.setHorizontalSpacing(10)
+        security_layout.setVerticalSpacing(7)
+        security_layout.addWidget(self.pandrator_network_checkbox, 0, 0, 1, 3)
+        security_layout.addWidget(QLabel("Password protection"), 1, 0)
+        security_layout.addWidget(self.pandrator_password_scope_combo, 1, 1)
+        security_layout.addWidget(self.pandrator_password_button, 1, 2)
+        security_layout.addWidget(self.pandrator_password_status_label, 2, 0, 1, 3)
+
+        self._configure_password_scope_options(False, "none")
         self.pandrator_network_checkbox.stateChanged.connect(self._handle_network_access_toggle)
+        self.pandrator_password_scope_combo.currentIndexChanged.connect(
+            self._handle_password_scope_changed
+        )
         self.pandrator_port_spin = QSpinBox()
         self.pandrator_port_spin.setRange(1024, 65535)
         self.pandrator_port_spin.setValue(8097)
@@ -769,8 +867,8 @@ class PandratorInstaller(
             self._create_option_card(
                 self.launch_pandrator_checkbox,
                 "Start the local Pandrator web application and open it in your browser.",
-                (self.pandrator_network_checkbox, self.pandrator_port_spin),
-                details="By default Pandrator listens only on 127.0.0.1 and cannot be reached from another computer. LAN access is opt-in, password-protected, and intended for trusted networks; use an HTTPS reverse proxy for broader remote access.",
+                (security_controls, self.pandrator_port_spin),
+                details="By default Pandrator listens only on 127.0.0.1. You can require the owner password locally, expose it to trusted devices on your LAN, or do both. LAN access is always password-protected; use an HTTPS reverse proxy for access beyond a trusted network.",
             ),
             self._create_option_card(
                 self.launch_rvc_checkbox,
@@ -925,6 +1023,20 @@ class PandratorInstaller(
             pandrator_installed and not pandrator_running,
             pandrator_installed and not pandrator_running,
         )
+        network_access = bool(config.get("pandrator_network_access", False))
+        password_scope = normalize_password_scope(
+            config.get("pandrator_password_scope"),
+            network_access=network_access,
+        )
+        self.pandrator_network_checkbox.blockSignals(True)
+        self.pandrator_network_checkbox.setChecked(network_access)
+        self.pandrator_network_checkbox.blockSignals(False)
+        self._configure_password_scope_options(network_access, password_scope)
+        try:
+            configured_port = int(config.get("pandrator_port", 8097))
+        except (TypeError, ValueError):
+            configured_port = 8097
+        self.pandrator_port_spin.setValue(max(1024, min(65535, configured_port)))
         if hasattr(self, 'open_webui_button'):
             self.open_webui_button.setEnabled(pandrator_running)
             self.open_webui_button.setToolTip(
@@ -1329,6 +1441,10 @@ class PandratorInstaller(
         return LaunchSelection(
             pandrator=self.launch_pandrator_checkbox.isChecked(),
             pandrator_network_access=self.pandrator_network_checkbox.isChecked(),
+            pandrator_password_scope=normalize_password_scope(
+                self._selected_password_scope(),
+                network_access=self.pandrator_network_checkbox.isChecked(),
+            ),
             pandrator_port=self.pandrator_port_spin.value(),
             rvc=self.launch_rvc_checkbox.isChecked(),
             rvc_cpu=self.rvc_cpu_launch_checkbox.isChecked(),
@@ -1438,6 +1554,84 @@ class PandratorInstaller(
                 self.fishs2_checkbox.setChecked(False)
                 self.fishs2_checkbox.blockSignals(False)
                 self.update_install_button_state()
+
+class OwnerPasswordDialog(QDialog):
+    """Small password editor that never persists or logs plaintext input."""
+
+    def __init__(self, parent=None, *, replacing=False):
+        super().__init__(parent)
+        self.setWindowTitle("Change owner password" if replacing else "Set owner password")
+        self.setMinimumWidth(440)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+        title = QLabel(
+            "<h2>Change owner password</h2>"
+            if replacing
+            else "<h2>Protect Pandrator</h2>"
+        )
+        explanation = QLabel(
+            "Use at least 10 characters. The installer keeps the password in memory only until launch; "
+            "Pandrator stores an Argon2 password hash, never the plaintext password."
+        )
+        explanation.setWordWrap(True)
+        layout.addWidget(title)
+        layout.addWidget(explanation)
+
+        self.password_edit = QLineEdit()
+        self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.password_edit.setPlaceholderText("Owner password")
+        self.confirmation_edit = QLineEdit()
+        self.confirmation_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.confirmation_edit.setPlaceholderText("Confirm owner password")
+        self.confirmation_edit.returnPressed.connect(self.accept_password)
+        layout.addWidget(self.password_edit)
+        layout.addWidget(self.confirmation_edit)
+
+        show_password = QCheckBox("Show password")
+        show_password.toggled.connect(
+            lambda shown: self._set_password_visible(bool(shown))
+        )
+        layout.addWidget(show_password)
+
+        self.error_label = QLabel()
+        self.error_label.setWordWrap(True)
+        self.error_label.setStyleSheet("color: #ef9a9a;")
+        layout.addWidget(self.error_label)
+
+        buttons = QHBoxLayout()
+        cancel = QPushButton("Cancel")
+        save = QPushButton("Save password")
+        save.setObjectName("primaryButton")
+        save.setDefault(True)
+        cancel.clicked.connect(self.reject)
+        save.clicked.connect(self.accept_password)
+        buttons.addStretch()
+        buttons.addWidget(cancel)
+        buttons.addWidget(save)
+        layout.addLayout(buttons)
+
+    def _set_password_visible(self, visible):
+        mode = QLineEdit.EchoMode.Normal if visible else QLineEdit.EchoMode.Password
+        self.password_edit.setEchoMode(mode)
+        self.confirmation_edit.setEchoMode(mode)
+
+    def accept_password(self):
+        password = self.password_edit.text()
+        if len(password) < 10:
+            self.error_label.setText("Use at least 10 characters.")
+            self.password_edit.setFocus()
+            return
+        if password != self.confirmation_edit.text():
+            self.error_label.setText("The passwords do not match.")
+            self.confirmation_edit.selectAll()
+            self.confirmation_edit.setFocus()
+            return
+        self.error_label.clear()
+        self.accept()
+
+    def password(self):
+        return self.password_edit.text()
 
 
 class CrispASRConfigDialog(QDialog):

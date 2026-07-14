@@ -179,7 +179,7 @@ def _runtime_python(paths: WorkspacePaths) -> Path:
     return next((candidate for candidate in candidates if candidate.is_file()), Path(sys.executable))
 
 
-def _runtime_specs(paths: WorkspacePaths, args, bootstrap_token: str) -> list[ManagedProcessSpec]:
+def _runtime_specs(paths: WorkspacePaths, args, bootstrap_token: str = "") -> list[ManagedProcessSpec]:
     python = str(_runtime_python(paths))
     data_root = str(paths.install_root)
     cwd = str(paths.pandrator_repo if paths.pandrator_repo.is_dir() else Path.cwd())
@@ -225,6 +225,9 @@ def _runtime_specs(paths: WorkspacePaths, args, bootstrap_token: str) -> list[Ma
                 pass
         for trusted_host in dict.fromkeys(trusted_hosts):
             api_command.extend(["--trusted-host", trusted_host])
+    api_environment = dict(speech_environment)
+    if bootstrap_token:
+        api_environment["PANDRATOR_BOOTSTRAP_TOKEN"] = bootstrap_token
     return [
         *service_specs,
         ManagedProcessSpec(
@@ -232,7 +235,7 @@ def _runtime_specs(paths: WorkspacePaths, args, bootstrap_token: str) -> list[Ma
             label="Pandrator API",
             command=tuple(api_command),
             cwd=cwd,
-            env={"PANDRATOR_BOOTSTRAP_TOKEN": bootstrap_token, **speech_environment},
+            env=api_environment,
             health_url=f"http://127.0.0.1:{port}/api/v1/health",
             restart_limit=2,
             startup_timeout_seconds=45,
@@ -334,33 +337,63 @@ def _open_browser(url: str) -> None:
 def command_launch(args) -> int:
     paths = _workspace(args)
     paths.install_root.mkdir(parents=True, exist_ok=True)
-    token = secrets.token_urlsafe(32)
-    url = f"http://127.0.0.1:{args.port}/#bootstrap={token}"
     remote = args.host not in {"127.0.0.1", "localhost", "::1"}
+    configured_scope = getattr(args, "password_scope", None)
+    password_scope = str(
+        configured_scope if configured_scope is not None else ("remote" if remote else "none")
+    ).strip().lower()
+    if password_scope not in {"none", "local", "remote", "all"}:
+        raise RuntimeError(f"Unsupported password scope: {password_scope}")
+    if remote and password_scope not in {"remote", "all"}:
+        raise RuntimeError("LAN access requires password protection for remote clients or all clients.")
+
+    automatic_local_sign_in = password_scope in {"none", "remote"}
+    token = secrets.token_urlsafe(32) if automatic_local_sign_in else ""
+    url = f"http://127.0.0.1:{args.port}/"
+    if token:
+        url += f"#bootstrap={token}"
     password = str(os.environ.pop("PANDRATOR_OWNER_PASSWORD", "") or "")
-    if remote:
-        database_path = paths.install_root / "pandrator.sqlite3"
-        initialized = False
-        if database_path.is_file():
-            try:
-                with sqlite3.connect(database_path) as connection:
-                    initialized = bool(connection.execute("SELECT COUNT(*) FROM owner_account").fetchone()[0])
-            except sqlite3.Error:
-                initialized = False
-        if not initialized:
-            if len(password) < 10:
-                raise RuntimeError("LAN access requires an owner password of at least 10 characters.")
-            environment = os.environ.copy()
-            environment["PANDRATOR_OWNER_PASSWORD"] = password
-            result = subprocess.run(
-                [str(_runtime_python(paths)), "-m", "pandrator", "--data-dir", str(paths.install_root), "auth", "init"],
-                cwd=str(paths.pandrator_repo),
-                env=environment,
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode:
-                raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "Could not initialize the owner password.")
+    database_path = paths.install_root / "pandrator.sqlite3"
+    initialized = False
+    if database_path.is_file():
+        try:
+            with sqlite3.connect(database_path) as connection:
+                initialized = bool(connection.execute("SELECT COUNT(*) FROM owner_account").fetchone()[0])
+        except sqlite3.Error:
+            initialized = False
+
+    protection_enabled = password_scope != "none" or remote
+    if password and protection_enabled:
+        if len(password) < 10:
+            raise RuntimeError("The owner password must contain at least 10 characters.")
+        environment = os.environ.copy()
+        environment["PANDRATOR_OWNER_PASSWORD"] = password
+        auth_command = [
+            str(_runtime_python(paths)), "-m", "pandrator", "--data-dir", str(paths.install_root),
+            "auth", "init",
+        ]
+        if initialized:
+            auth_command.append("--replace")
+        result = subprocess.run(
+            auth_command,
+            cwd=str(paths.pandrator_repo),
+            env=environment,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode:
+            raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "Could not save the owner password.")
+        initialized = True
+    if protection_enabled and not initialized:
+        raise RuntimeError("Password protection requires an owner password of at least 10 characters.")
+    if password_scope in {"local", "all"}:
+        # A local-password policy must not be bypassed by a session cookie from
+        # an earlier automatic-bootstrap launch. Rotating the signing secret at
+        # startup invalidates those cookies without storing server-side sessions.
+        try:
+            (paths.install_root / ".flask-secret").unlink(missing_ok=True)
+        except OSError as exc:
+            raise RuntimeError("Could not invalidate existing browser sessions.") from exc
     supervisor = ProcessSupervisor(
         data_root=paths.install_root,
         specs=_runtime_specs(paths, args, token),
@@ -585,6 +618,12 @@ def build_parser() -> argparse.ArgumentParser:
     launch.add_argument("--components", action="append", default=[])
     launch.add_argument("--trusted-host", action="append", default=[])
     launch.add_argument("--allow-insecure-remote", action="store_true")
+    launch.add_argument(
+        "--password-scope",
+        choices=("none", "local", "remote", "all"),
+        default=None,
+        help="Require the owner password locally, remotely, everywhere, or nowhere (loopback only).",
+    )
     launch.set_defaults(handler=command_launch)
     service = commands.add_parser("service", help=argparse.SUPPRESS)
     service.add_argument("--component", required=True)
