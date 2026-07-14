@@ -27,7 +27,7 @@ test('provider defaults and restartable tours are keyboard reachable', async ({ 
   await page.getByRole('link', { name: 'Providers & services' }).click();
   await expect(page.getByRole('heading', { name: 'LLM connections and models' })).toBeVisible();
   await page.getByRole('button', { name: 'Tour' }).click();
-  await expect(page.getByRole('heading', { name: 'One record per canonical model' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Profiles are editable starting points' })).toBeVisible();
   await page.keyboard.press('Tab');
   await expect(page.locator(':focus')).toBeVisible();
 });
