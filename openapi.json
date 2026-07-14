@@ -2174,6 +2174,16 @@
         }
       }
     },
+    "/api/v1/generation-runs/{runId}": {
+      "delete": {
+        "operationId": "deleteGenerationRun",
+        "responses": {
+          "204": {
+            "description": "Generation run deleted"
+          }
+        }
+      }
+    },
     "/api/v1/generation-runs/{runId}/cancel": {
       "post": {
         "operationId": "cancelGenerationRun",
@@ -2745,6 +2755,14 @@
       }
     },
     "/api/v1/sessions/{sessionId}/generation-runs": {
+      "get": {
+        "operationId": "listGenerationRuns",
+        "responses": {
+          "200": {
+            "description": "Named generation runs"
+          }
+        }
+      },
       "post": {
         "operationId": "startGenerationRun",
         "requestBody": {

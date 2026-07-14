@@ -170,7 +170,7 @@ def create_app(
     outcome_plans = OutcomePlanService(database)
     source_library = SourceLibraryService(database)
     source_library.backfill_legacy()
-    generation = GenerationService(database, jobs, workspace_settings)
+    generation = GenerationService(database, jobs, workspace_settings, artifacts)
     chunk_uploads = ChunkUploadService(database, paths, artifacts, source_library)
     chunk_uploads.cleanup_expired()
 
@@ -1085,6 +1085,15 @@ def create_app(
             return error_response("not_found", "Session not found.", 404)
         return jsonify({"item": generation.latest_run(session_id)})
 
+    @app.get("/api/v1/sessions/<session_id>/generation-runs")
+    @require_auth
+    def generation_run_list(session_id: str):
+        try:
+            sessions.get(session_id)
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
+        return jsonify({"items": generation.list_runs(session_id)})
+
     @app.post("/api/v1/sessions/<session_id>/generation-runs")
     @require_auth
     def generation_run_start(session_id: str):
@@ -1126,6 +1135,17 @@ def create_app(
             return jsonify(generation.cancel(run_id)), 202
         except KeyError:
             return error_response("not_found", "Generation run not found.", 404)
+
+    @app.delete("/api/v1/generation-runs/<run_id>")
+    @require_auth
+    def generation_run_delete(run_id: str):
+        try:
+            generation.delete_run(run_id)
+        except KeyError:
+            return error_response("not_found", "Generation run not found.", 404)
+        except ValueError as error:
+            return error_response("invalid_state", str(error), 409)
+        return "", 204
 
     @app.get("/api/v1/sessions/<session_id>/output-assemblies/latest")
     @require_auth

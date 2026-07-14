@@ -290,10 +290,9 @@ class SourceAwareWorkflowTests(unittest.TestCase):
                 optimization = next(item for item in stages if item["key"] == "optimize_tts")
                 self.assertFalse(optimization["executable"])
                 self.assertTrue(optimization["toggle"])
-                document_optimization = next(item for item in stages if item["key"] == "optimize_document")
-                self.assertTrue(document_optimization["executable"])
-                self.assertTrue(document_optimization["toggle"])
-                self.assertFalse(document_optimization["toggle_only"])
+                self.assertTrue(optimization["toggle_only"])
+                self.assertEqual("generation", optimization["optimization_timing"])
+                self.assertNotIn("optimize_document", {item["key"] for item in stages})
             finally:
                 database.dispose()
 
@@ -312,7 +311,11 @@ class SourceAwareWorkflowTests(unittest.TestCase):
                 outcomes.update(record.id, current["revision"], value)
                 service = WorkflowService(database, JobQueue(database))
                 stages = service.snapshot(record.id)["stages"]
-                self.assertEqual("ready", next(item for item in stages if item["key"] == "optimize_document")["status"])
+                optimization = next(item for item in stages if item["key"] == "optimize_tts")
+                self.assertEqual("ready", optimization["status"])
+                self.assertTrue(optimization["executable"])
+                self.assertFalse(optimization["toggle_only"])
+                self.assertEqual("document", optimization["optimization_timing"])
                 self.assertEqual("unavailable", next(item for item in stages if item["key"] == "generate_audio")["status"])
                 optimized_path = paths.sessions / record.storage_key / "optimized.srt"
                 optimized_path.parent.mkdir(parents=True, exist_ok=True)

@@ -8,7 +8,7 @@ from unittest.mock import patch
 from pandrator.web.api import create_app
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.auth import BootstrapTokenStore
-from pandrator.web.models import AppSetting, Artifact, AudioTake, GenerationRun, Job
+from pandrator.web.models import AppSetting, Artifact, AudioTake, GenerationRun, GenerationSegment, Job
 from pandrator.web.workspace import BUILTIN_DEFAULTS, adapt_runtime_settings
 
 
@@ -411,6 +411,64 @@ class WebParityWorkspaceTests(unittest.TestCase):
         self.assertEqual("failed", latest["status"])
         self.assertEqual(0.42, latest["progress"])
         self.assertEqual("The speech endpoint rejected the request.", latest["error_message"])
+
+    def test_generation_runs_have_readable_labels_and_can_be_deleted_with_their_takes(self):
+        record = self.create_session("audiobook")
+        self.client.post(
+            f"/api/v1/sessions/{record['id']}/generation-plan",
+            json={"segments": [{"text": "One narrated sentence."}]},
+            headers=self.headers,
+        )
+        first = self.client.post(
+            f"/api/v1/sessions/{record['id']}/generation-runs",
+            json={"run_override": {"tts": {"service": "Kokoro", "model": "v1", "voice": "Ada"}}},
+            headers=self.headers,
+        ).get_json()
+        second = self.client.post(
+            f"/api/v1/sessions/{record['id']}/generation-runs",
+            json={"operation": "rvc", "run_override": {"rvc": {"model": "narrator-v2"}}},
+            headers=self.headers,
+        ).get_json()
+        database = self.app.extensions["pandrator"]["database"]
+        paths = self.app.extensions["pandrator"]["paths"]
+        take_path = paths.sessions / record["storage_key"] / "generation" / "first.wav"
+        take_path.parent.mkdir(parents=True, exist_ok=True)
+        take_path.write_bytes(b"test audio")
+        artifact = self.app.extensions["pandrator"]["artifacts"].register(
+            take_path,
+            kind="audio",
+            role="generation_take",
+            session_id=record["id"],
+        )
+        with database.session() as session:
+            session.get(GenerationRun, first["id"]).status = "completed"
+            session.get(GenerationRun, second["id"]).status = "completed"
+            segment = session.query(GenerationSegment).one()
+            session.add(
+                AudioTake(
+                    generation_segment_id=segment.id,
+                    generation_run_id=first["id"],
+                    artifact_id=artifact.id,
+                    kind="tts",
+                    status="completed",
+                    is_active=True,
+                )
+            )
+
+        runs = self.client.get(f"/api/v1/sessions/{record['id']}/generation-runs").get_json()["items"]
+        self.assertEqual([2, 1], [item["sequence_number"] for item in runs])
+        self.assertEqual("Run 1: Kokoro · v1 · Ada", runs[1]["label"])
+        self.assertIn("RVC narrator-v2", runs[0]["label"])
+        self.assertEqual(1, runs[1]["take_count"])
+
+        deleted = self.client.delete(f"/api/v1/generation-runs/{first['id']}", headers=self.headers)
+        self.assertEqual(204, deleted.status_code)
+        self.assertFalse(take_path.exists())
+        remaining = self.client.get(f"/api/v1/sessions/{record['id']}/generation-runs").get_json()["items"]
+        self.assertEqual([second["id"]], [item["id"] for item in remaining])
+        with database.session() as session:
+            self.assertEqual(0, session.query(AudioTake).count())
+            self.assertIsNone(session.get(Artifact, artifact.id))
 
     def test_multiple_generation_take_artifacts_remain_current(self):
         record = self.create_session("audiobook")

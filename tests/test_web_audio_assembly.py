@@ -20,7 +20,7 @@ from pandrator.web.artifacts import ArtifactService
 from pandrator.web.audio_assembly import compose_audio, export_audio
 from pandrator.web.database import Database, upgrade_database
 from pandrator.web.jobs import JobQueue
-from pandrator.web.models import Artifact, ArtifactEdge, AudioTake, GenerationSegment, OutputAssembly
+from pandrator.web.models import Artifact, ArtifactEdge, AudioTake, GenerationRun, GenerationSegment, OutputAssembly
 from pandrator.web.sessions import SessionService
 from pandrator.web.workflow_handlers import WorkflowHandlers
 from pandrator.web.workspace import GenerationService, WorkspaceSettingsService
@@ -190,6 +190,66 @@ class DurableOutputAssemblyTests(unittest.TestCase):
         self.assertEqual("stale", self.generation.latest_assembly(self.record.id)["status"])
         with self.database.session() as session:
             self.assertEqual("stale", session.get(Artifact, artifact.id).state)
+
+    def test_selected_run_assembles_its_cumulative_take_snapshot(self):
+        segment_ids = self._plan_with_takes()
+        with self.database.session() as session:
+            segments = list(session.scalars(select(GenerationSegment).order_by(GenerationSegment.ordinal)).all())
+            first_run = GenerationRun(
+                session_id=self.record.id,
+                plan_revision_id=segments[0].plan_revision_id,
+                sequence_number=1,
+                status="completed",
+                settings_snapshot_json={"tts": {"service": "Kokoro", "voice": "Ada"}},
+            )
+            second_run = GenerationRun(
+                session_id=self.record.id,
+                plan_revision_id=segments[0].plan_revision_id,
+                sequence_number=2,
+                status="completed",
+                settings_snapshot_json={"tts": {"service": "Kokoro", "voice": "Bob"}},
+            )
+            session.add_all([first_run, second_run])
+            session.flush()
+            for take in session.scalars(select(AudioTake).order_by(AudioTake.created_at)).all():
+                take.generation_run_id = first_run.id
+            first_run_id = first_run.id
+            second_run_id = second_run.id
+
+        replacement_path = self.session_dir / "take-replacement.wav"
+        Sine(880).to_audio_segment(duration=200).export(replacement_path, format="wav").close()
+        replacement_artifact = ArtifactService(self.database, self.paths).register(
+            replacement_path,
+            kind="audio",
+            role="generation_take",
+            session_id=self.record.id,
+        )
+        with self.database.session() as session:
+            for take in session.scalars(select(AudioTake).where(AudioTake.generation_segment_id == segment_ids[0])).all():
+                take.is_active = False
+            session.add(
+                AudioTake(
+                    generation_segment_id=segment_ids[0],
+                    generation_run_id=second_run_id,
+                    artifact_id=replacement_artifact.id,
+                    kind="tts",
+                    status="completed",
+                    duration_ms=200,
+                    is_active=True,
+                )
+            )
+
+        first_assembly = self.generation.create_assembly(self.record.id, generation_run_id=first_run_id)
+        first_result = WorkflowHandlers(self.database, self.paths).assemble_generation_output(
+            {"output_assembly_id": first_assembly["id"]}, lambda *_args: None, threading.Event()
+        )
+        second_assembly = self.generation.create_assembly(self.record.id, generation_run_id=second_run_id)
+        second_result = WorkflowHandlers(self.database, self.paths).assemble_generation_output(
+            {"output_assembly_id": second_assembly["id"]}, lambda *_args: None, threading.Event()
+        )
+
+        self.assertEqual(420, first_result["duration_ms"])
+        self.assertEqual(520, second_result["duration_ms"])
 
     def test_chapter_edit_stales_only_the_assembly_and_preserves_the_audio_take(self):
         segment_ids = self._plan_with_takes()

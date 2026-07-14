@@ -57,6 +57,7 @@ class RuntimeMixin:
             process.log_handle = None
 
     def _collect_running_backends(self):
+        """Return backend processes owned directly by this installer instance."""
         running = []
         for backend_key, backend_label, process_attr, _ in self._backend_runtime_specs():
             process = getattr(self, process_attr, None)
@@ -75,6 +76,48 @@ class RuntimeMixin:
                 setattr(self, process_attr, None)
 
         return running
+
+    def _collect_supervised_backends(self):
+        """Discover services owned by an already-running Pandrator supervisor.
+
+        The installer may be reopened, or may install another component while
+        the web application stays up. The durable supervisor state is therefore
+        part of backend discovery rather than relying only on in-memory Popen
+        objects.
+        """
+        state_path = os.path.join(self.initial_working_dir, "Pandrator", "runtime-processes.json")
+        try:
+            with open(state_path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return []
+        try:
+            supervisor_pid = int(payload.get("supervisor_pid") or 0)
+        except (TypeError, ValueError):
+            return []
+        if supervisor_pid <= 0 or not psutil.pid_exists(supervisor_pid):
+            return []
+        discovered = []
+        for process_key, process_record in dict(payload.get("processes") or {}).items():
+            if not str(process_key).startswith("service-") or not isinstance(process_record, dict):
+                continue
+            component_key = str(process_key)[len("service-"):]
+            component = COMPONENTS.get(component_key)
+            if component is None:
+                continue
+            backend_key = component.variant_of or component.key
+            try:
+                pid = int(process_record.get("pid") or 0)
+            except (TypeError, ValueError):
+                continue
+            if pid <= 0 or not psutil.pid_exists(pid):
+                continue
+            try:
+                process = psutil.Process(pid)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+            discovered.append((backend_key, COMPONENTS[backend_key].label, process))
+        return discovered
 
     def _get_running_rvc_process(self):
         process = self.rvc_process
@@ -253,38 +296,43 @@ class RuntimeMixin:
             return
 
         selected_backend_keys = self._selected_launch_backend_keys()
-        selected_backend_key = selected_backend_keys[0] if selected_backend_keys else None
         running_backends = self._collect_running_backends()
-
-        if selected_backend_key and running_backends:
-            conflicting_backends = [
-                backend_key
-                for backend_key, _, _ in running_backends
-                if backend_key != selected_backend_key
-            ]
-            if conflicting_backends:
-                running_names = ", ".join(
-                    self._backend_label_from_key(backend_key)
-                    for backend_key in conflicting_backends
-                )
-                self.reporter.status(
-                    "Stopping running backend(s) before switching: " + running_names
-                )
-                self._stop_backends_by_keys(conflicting_backends)
-                running_backends = self._collect_running_backends()
-
+        supervised_backends = self._collect_supervised_backends()
         running_backend_keys = {
             backend_key
-            for backend_key, _, _ in running_backends
+            for backend_key, _, _ in [*running_backends, *supervised_backends]
         }
+        selected_by_port = {}
+        for backend_key in selected_backend_keys:
+            port = COMPONENTS[backend_key].port
+            if port is not None and port in selected_by_port and selected_by_port[port] != backend_key:
+                raise RuntimeError(
+                    f"{self._backend_label_from_key(selected_by_port[port])} and "
+                    f"{self._backend_label_from_key(backend_key)} both require port {port}; choose one of them."
+                )
+            selected_by_port[port] = backend_key
+        for selected_backend_key in selected_backend_keys:
+            selected_port = COMPONENTS[selected_backend_key].port
+            conflict = next(
+                (
+                    backend_key
+                    for backend_key in running_backend_keys
+                    if backend_key != selected_backend_key and COMPONENTS[backend_key].port == selected_port
+                ),
+                None,
+            )
+            if conflict:
+                raise RuntimeError(
+                    f"{self._backend_label_from_key(selected_backend_key)} cannot start while "
+                    f"{self._backend_label_from_key(conflict)} is using port {selected_port}. "
+                    "Other backends may continue running."
+                )
         running_rvc_process = self._get_running_rvc_process()
-
-        tts_engine_launched = False
 
         if self.launch_xtts_var:
             self.reporter.progress(0.4)
             xtts_server_url = 'http://127.0.0.1:8020'
-            if 'xtts' in running_backend_keys and self.xtts_process:
+            if 'xtts' in running_backend_keys:
                 self.reporter.status("XTTS server is already running. Reusing existing backend.")
             else:
                 self.reporter.status("Starting XTTS server...")
@@ -320,12 +368,10 @@ class RuntimeMixin:
                     self.shutdown_xtts()
                     raise RuntimeError(error_msg)
 
-            tts_engine_launched = True
-
-        if self.launch_voxcpm_var and not tts_engine_launched:
+        if self.launch_voxcpm_var:
             self.reporter.progress(0.5)
             voxcpm_server_url = 'http://127.0.0.1:8020'
-            if 'voxcpm' in running_backend_keys and self.voxcpm_process:
+            if 'voxcpm' in running_backend_keys:
                 self.reporter.status("VoxCPM server is already running. Reusing existing backend.")
             else:
                 self.reporter.status("Starting VoxCPM server...")
@@ -357,12 +403,10 @@ class RuntimeMixin:
                     self.shutdown_voxcpm()
                     raise RuntimeError(error_msg)
 
-            tts_engine_launched = True
-
-        if self.launch_fishs2_var and not tts_engine_launched:
+        if self.launch_fishs2_var:
             self.reporter.progress(0.53)
             fishs2_server_url = 'http://127.0.0.1:8020'
-            if 'fishs2' in running_backend_keys and self.fishs2_process:
+            if 'fishs2' in running_backend_keys:
                 self.reporter.status("FishS2 server is already running. Reusing existing backend.")
             else:
                 self.reporter.status("Starting FishS2 server...")
@@ -402,12 +446,10 @@ class RuntimeMixin:
                     self.shutdown_fishs2()
                     raise RuntimeError(error_msg)
 
-            tts_engine_launched = True
-
-        if self.launch_voxtral_var and not tts_engine_launched:
+        if self.launch_voxtral_var:
             self.reporter.progress(0.55)
             voxtral_server_url = 'http://127.0.0.1:8000/health'
-            if 'voxtral' in running_backend_keys and self.voxtral_process:
+            if 'voxtral' in running_backend_keys:
                 self.reporter.status("Voxtral server is already running. Reusing existing backend.")
             else:
                 self.reporter.status("Starting Voxtral server...")
@@ -436,12 +478,10 @@ class RuntimeMixin:
                     self.shutdown_voxtral()
                     raise RuntimeError(error_msg)
 
-            tts_engine_launched = True
-
-        if self.launch_silero_var and not tts_engine_launched:
+        if self.launch_silero_var:
             self.reporter.progress(0.6)
             silero_server_url = 'http://127.0.0.1:8001/ready'
-            if 'silero' in running_backend_keys and self.silero_process:
+            if 'silero' in running_backend_keys:
                 self.reporter.status("Silero server is already running. Reusing existing backend.")
             else:
                 self.reporter.status("Starting Silero server...")
@@ -465,12 +505,10 @@ class RuntimeMixin:
                     self.shutdown_silero()
                     raise RuntimeError(error_msg)
 
-            tts_engine_launched = True
-
-        if self.launch_kokoro_var and not tts_engine_launched:
+        if self.launch_kokoro_var:
             self.reporter.progress(0.65)
             kokoro_server_url = 'http://127.0.0.1:8880/health'
-            if 'kokoro' in running_backend_keys and self.kokoro_process:
+            if 'kokoro' in running_backend_keys:
                 self.reporter.status("Kokoro server is already running. Reusing existing backend.")
             else:
                 self.reporter.status("Starting Kokoro server...")
@@ -521,12 +559,10 @@ class RuntimeMixin:
                     self.shutdown_kokoro()
                     raise RuntimeError(error_msg)
 
-            tts_engine_launched = True
-
-        if self.launch_chatterbox_var and not tts_engine_launched:
+        if self.launch_chatterbox_var:
             self.reporter.progress(0.70)
             chatterbox_server_url = 'http://127.0.0.1:8040'
-            if 'chatterbox' in running_backend_keys and self.chatterbox_process:
+            if 'chatterbox' in running_backend_keys:
                 self.reporter.status("Chatterbox server is already running. Reusing existing backend.")
             else:
                 self.reporter.status("Starting Chatterbox server...")
@@ -562,12 +598,10 @@ class RuntimeMixin:
                     self.shutdown_chatterbox()
                     raise RuntimeError(error_msg)
 
-            tts_engine_launched = True
-
-        if self.launch_kobold_qwen_var and not tts_engine_launched:
+        if self.launch_kobold_qwen_var:
             self.reporter.progress(0.70)
             kobold_qwen_server_url = 'http://127.0.0.1:8042'
-            if 'kobold_qwen' in running_backend_keys and self.kobold_qwen_process:
+            if 'kobold_qwen' in running_backend_keys:
                 self.reporter.status("Qwen3 TTS server is already running. Reusing existing backend.")
             else:
                 self.reporter.status("Starting Qwen3 TTS server...")
@@ -609,12 +643,10 @@ class RuntimeMixin:
                     self.shutdown_kobold_qwen()
                     raise RuntimeError(error_msg)
 
-            tts_engine_launched = True
-
-        if self.launch_magpie_var and not tts_engine_launched:
+        if self.launch_magpie_var:
             self.reporter.progress(0.70)
             magpie_server_url = 'http://127.0.0.1:8030'
-            if 'magpie' in running_backend_keys and self.magpie_process:
+            if 'magpie' in running_backend_keys:
                 self.reporter.status("Magpie server is already running. Reusing existing backend.")
             else:
                 self.reporter.status("Starting Magpie server...")
@@ -649,8 +681,6 @@ class RuntimeMixin:
                     logging.error(error_msg)
                     self.shutdown_magpie()
                     raise RuntimeError(error_msg)
-
-            tts_engine_launched = True
 
         if self.launch_rvc_var:
             self.reporter.progress(0.8)

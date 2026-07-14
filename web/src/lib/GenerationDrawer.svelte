@@ -27,6 +27,8 @@
   let mode = $state<'collapsed' | 'half' | 'full'>('collapsed');
   let payload = $state<any>({ items: [], total: 0, next_cursor: null });
   let run = $state<any>(null);
+  let runs = $state<any[]>([]);
+  let selectedRunId = $state('');
   let assembly = $state<any>(null);
   let filter = $state<'all' | 'marked' | 'failed' | 'stale' | 'completed' | 'queued'>('all');
   let error = $state('');
@@ -54,6 +56,8 @@
   let initialized = false;
 
   const marked = $derived(payload.items.filter((item: any) => item.marked).map((item: any) => item.id));
+  const selectedRun = $derived(runs.find((item: any) => item.id === selectedRunId) ?? null);
+  const selectedAssembly = $derived(selectedRun?.assembly ?? (!selectedRun ? assembly : null));
   const readingBlocks = $derived.by(() => {
     const blocks: { key: string; kind: string; items: any[]; closed?: boolean }[] = [];
     for (const item of payload.items) {
@@ -79,9 +83,9 @@
       if (filter === 'marked') query.set('marked', 'true');
       else if (filter !== 'all') query.set('status', filter);
       if (!reset && payload.next_cursor != null) query.set('cursor', String(payload.next_cursor));
-      const [next, latestRun, latestAssembly] = await Promise.all([
+      const [next, runPayload, latestAssembly] = await Promise.all([
         api<any>(`/sessions/${sessionId}/generation-segments?${query}`),
-        api<any>(`/sessions/${sessionId}/generation-runs/latest`),
+        api<any>(`/sessions/${sessionId}/generation-runs`),
         api<any>(`/sessions/${sessionId}/output-assemblies/latest`)
       ]);
       const previousTotal = payload.total;
@@ -102,7 +106,9 @@
         };
       } else payload = next;
       loadedFilter = filter;
-      run = latestRun.item;
+      runs = runPayload.items ?? [];
+      run = runs[0] ?? null;
+      if (!selectedRunId || !runs.some((item: any) => item.id === selectedRunId)) selectedRunId = run?.id ?? '';
       assembly = latestAssembly.item;
       if (
         initialized
@@ -162,6 +168,8 @@
     });
     item.revision = result.revision;
     for (const take of item.takes) take.is_active = take.id === takeId;
+    const selectedTake = item.takes.find((take: any) => take.id === takeId);
+    if (selectedTake?.generation_run_id) selectedRunId = selectedTake.generation_run_id;
     payload = { ...payload, items: [...payload.items] };
     await refreshAssembly();
   }
@@ -177,12 +185,13 @@
     error = '';
     try {
       const run_override = operation === 'rvc'
-        ? { rvc: { enabled: true, model: rvcModel, rvc_model: rvcModel, pitch: rvcPitch, f0_method: rvcF0, index_rate: rvcIndexRate } }
+        ? { rvc: { enabled: true, model: rvcModel, rvc_model: rvcModel, pitch: rvcPitch, f0_method: rvcF0, index_rate: rvcIndexRate, source_run_id: selectedRunId || null } }
         : {};
       run = await api(`/sessions/${sessionId}/generation-runs`, {
         method: 'POST',
         body: JSON.stringify({ operation, segment_ids: ids, run_override })
       });
+      selectedRunId = run.id;
       mode = 'half';
       await load();
     } catch (caught) {
@@ -214,7 +223,7 @@
     try {
       assembly = await api(`/sessions/${sessionId}/output-assemblies`, {
         method: 'POST',
-        body: JSON.stringify({ generation_run_id: run?.id ?? null })
+        body: JSON.stringify({ generation_run_id: selectedRunId || null })
       });
       await load();
     } catch (caught) {
@@ -225,7 +234,39 @@
   }
 
   function activeTake(item: any) {
-    return item.takes?.find((take: any) => take.is_active && take.artifact_id);
+    if (selectedRun) {
+      const sequences = new Map(runs.map((item: any) => [item.id, Number(item.sequence_number || 0)]));
+      const targetSequence = Number(selectedRun.sequence_number || 0);
+      const candidates = (item.takes ?? [])
+        .filter((take: any) => take.artifact_id && ['completed', 'stale'].includes(take.status) && take.generation_run_id && Number(sequences.get(take.generation_run_id) ?? Number.POSITIVE_INFINITY) <= targetSequence)
+        .sort((left: any, right: any) => Number(sequences.get(right.generation_run_id) ?? 0) - Number(sequences.get(left.generation_run_id) ?? 0) || String(right.created_at).localeCompare(String(left.created_at)));
+      if (candidates.length) return candidates[0];
+      return item.takes?.find((take: any) => !take.generation_run_id && take.is_active && take.artifact_id)
+        ?? item.takes?.find((take: any) => !take.generation_run_id && take.artifact_id);
+    }
+    return item.takes?.find((take: any) => take.is_active && take.artifact_id)
+      ?? item.takes?.find((take: any) => !take.generation_run_id && take.artifact_id);
+  }
+
+  function takeLabel(take: any) {
+    const owner = runs.find((item: any) => item.id === take.generation_run_id);
+    return owner ? `${owner.label} · ${String(take.kind || 'audio').toUpperCase()}` : `Legacy take · ${String(take.kind || 'audio').toUpperCase()}`;
+  }
+
+  async function deleteSelectedRun() {
+    if (!selectedRun || ['queued', 'running', 'pausing', 'cancel_requested'].includes(selectedRun.status)) return;
+    if (!window.confirm(`Delete ${selectedRun.label} and all audio takes created by it?`)) return;
+    loading = true;
+    error = '';
+    try {
+      await api(`/generation-runs/${selectedRun.id}`, { method: 'DELETE' });
+      selectedRunId = '';
+      await load(true, false);
+    } catch (caught) {
+      error = caught instanceof Error ? caught.message : String(caught);
+    } finally {
+      loading = false;
+    }
   }
 
   function stopPlayback() {
@@ -255,7 +296,7 @@
   }
 
   function readingSegmentText(item: any) {
-    return String(item.optimized_text || item.text || '').replace(/\s+/g, ' ').trim();
+    return String(activeTake(item)?.synthesized_text || item.optimized_text || item.text || '').replace(/\s+/g, ' ').trim();
   }
 
   async function waitForSilence(milliseconds: number, token: number) {
@@ -342,7 +383,7 @@
   $effect(() => { filter; load(true, false); });
   $effect(() => {
     if (timer) clearTimeout(timer);
-    if ((run && ['queued', 'running', 'pausing', 'cancel_requested'].includes(run.status)) || (assembly && ['queued', 'running'].includes(assembly.status))) {
+    if ((run && ['queued', 'running', 'pausing', 'cancel_requested'].includes(run.status)) || (selectedAssembly && ['queued', 'running'].includes(selectedAssembly.status))) {
       timer = window.setTimeout(() => load(true, true), 1200);
     }
   });
@@ -355,7 +396,7 @@
         {#if mode === 'collapsed'}<ChevronUp size={17} />{:else}<ChevronDown size={17} />{/if}
         Generation
       </button>
-      <span class="muted text-xs">{payload.total} segments · {run?.status ?? 'ready'}{#if assembly} · output {assembly.status}{/if}</span>
+      <span class="muted text-xs">{payload.total} segments · {selectedRun?.label ?? 'No run selected'}{#if selectedAssembly} · output {selectedAssembly.status}{/if}</span>
       {#if run && ['queued', 'running', 'pausing', 'cancel_requested'].includes(run.status)}
         <div class="run-progress" aria-label={`Generation progress ${Math.round((run.progress ?? 0) * 100)} percent`}>
           <span style={`width:${Math.max(1, (run.progress ?? 0) * 100)}%`}></span>
@@ -395,6 +436,15 @@
     {#if mode !== 'collapsed'}
       <div class="flex h-[calc(100%-3.8rem)] min-h-0 flex-col">
         <div class="flex flex-wrap items-center gap-2 border-b border-[var(--line)] p-3">
+          {#if runs.length}
+            <label class="run-picker flex items-center gap-2 text-xs font-semibold">Version
+              <select bind:value={selectedRunId} class="mini max-w-[22rem]">
+                {#each runs as item}<option value={item.id}>{item.label} · {item.status}</option>{/each}
+              </select>
+            </label>
+            <button onclick={deleteSelectedRun} disabled={loading || !selectedRun || ['queued','running','pausing','cancel_requested'].includes(selectedRun.status)} class="action text-red-500" title="Delete the selected run and its generated takes"><Trash2 size={14}/> Delete run</button>
+            <span class="h-6 w-px bg-[var(--line)]"></span>
+          {/if}
           {#each ['all', 'completed', 'queued', 'marked', 'failed', 'stale'] as value}
             <button onclick={() => filter = value as typeof filter} class:active={filter === value} class="filter capitalize">{value === 'completed' ? 'generated' : value}</button>
           {/each}
@@ -404,23 +454,23 @@
           </div>
           <button onkeydown={keyboard} class="action" title="Focus, then use arrows, Space to mark, and Delete to remove">Keyboard navigation</button>
           <button onclick={() => start('regenerate', marked)} disabled={!marked.length} class="action"><RefreshCw size={14} /> Regenerate marked</button>
-          <button onclick={assemble} disabled={loading || assembly?.status === 'queued' || assembly?.status === 'running'} class="action primary">
-            <Sparkles size={14} /> {assembly?.status === 'stale' ? 'Reassemble output' : 'Assemble output'}
+          <button onclick={assemble} disabled={loading || selectedAssembly?.status === 'queued' || selectedAssembly?.status === 'running'} class="action primary">
+            <Sparkles size={14} /> {selectedAssembly?.status === 'stale' ? 'Reassemble output' : 'Assemble output'}
           </button>
           <a href={`/sessions/${sessionId}/output`} class="action">Output settings</a>
           <button onclick={() => ttsServicesOpen = true} class="action">Speech services</button>
         </div>
 
-        {#if assembly?.status === 'completed' && assembly.artifact_id}
+        {#if selectedAssembly?.status === 'completed' && selectedAssembly.artifact_id}
           <div class="flex flex-wrap items-center gap-3 border-b border-[var(--line)] bg-[var(--accent-soft)] px-4 py-2">
             <strong class="text-xs">Assembled output</strong>
-            <div class="min-w-64 flex-1"><AudioPlayer src={`/api/v1/artifacts/${assembly.artifact_id}/content`} label="Assembled output"/></div>
-            <a class="action" download href={`/api/v1/artifacts/${assembly.artifact_id}/content`}><Download size={14} /> Download</a>
+            <div class="min-w-64 flex-1"><AudioPlayer src={`/api/v1/artifacts/${selectedAssembly.artifact_id}/content`} label="Assembled output"/></div>
+            <a class="action" download href={`/api/v1/artifacts/${selectedAssembly.artifact_id}/content`}><Download size={14} /> Download</a>
           </div>
-        {:else if assembly?.status === 'stale'}
+        {:else if selectedAssembly?.status === 'stale'}
           <div class="border-b border-amber-400/30 bg-amber-500/10 px-4 py-2 text-xs text-amber-700">The output is out of date because segment order, chapter boundaries, silence, or selected takes changed. Reassemble to apply the changes.</div>
-        {:else if assembly?.status === 'failed'}
-          <div class="border-b border-red-400/30 bg-red-500/10 px-4 py-2 text-xs text-red-600">Assembly failed: {assembly.error_message}</div>
+        {:else if selectedAssembly?.status === 'failed'}
+          <div class="border-b border-red-400/30 bg-red-500/10 px-4 py-2 text-xs text-red-600">Assembly failed: {selectedAssembly.error_message}</div>
         {/if}
 
         {#if run?.status === 'failed'}
@@ -483,7 +533,7 @@
                       <AudioPlayer compact preload="none" src={`/api/v1/artifacts/${activeTake(item).artifact_id}/content`} label={`Segment ${item.ordinal + 1}`}/>
                       <WaveformPeaks artifactId={activeTake(item).artifact_id} />
                       <select value={activeTake(item).id} onchange={(event) => selectTake(item, (event.currentTarget as HTMLSelectElement).value)} class="mini mt-1 w-full">
-                        {#each item.takes as take}<option value={take.id}>{take.kind} · {take.status} · {take.id.slice(0, 6)}</option>{/each}
+                        {#each item.takes as take}<option value={take.id}>{takeLabel(take)} · {take.status}</option>{/each}
                       </select>
                     {:else}<span class="muted text-xs">Not generated</span>{/if}
                   </td>
@@ -495,7 +545,7 @@
           </table>
           {:else}
             <div class="reading-view mx-auto max-w-4xl px-5 py-7 sm:px-8">
-              <div class="mb-7 flex flex-wrap items-end justify-between gap-3 border-b border-[var(--line)] pb-4"><div><div class="eyebrow">Continuous review</div><h3 class="mt-1 text-xl font-semibold">Narration text</h3><p class="muted mt-1 text-xs">Select any sentence to hear its active take. Playlist playback follows the saved pauses and highlights the current sentence.</p></div><span class="muted text-xs">Loaded {payload.items.length} of {payload.total}</span></div>
+              <div class="mb-7 flex flex-wrap items-end justify-between gap-3 border-b border-[var(--line)] pb-4"><div><div class="eyebrow">Continuous review</div><h3 class="mt-1 text-xl font-semibold">Narration text</h3><p class="muted mt-1 text-xs">Reviewing {selectedRun?.label ?? 'the active takes'}. Select any sentence to hear that version; paragraphs are separated only at saved paragraph boundaries.</p></div><span class="muted text-xs">Loaded {payload.items.length} of {payload.total}</span></div>
               {#each readingBlocks as block (block.key)}
                 {#if ['heading','chapter_marker'].includes(block.kind)}
                   <h4 class:now-playing={block.items.some((item)=>item.id===activePlayingId)} class="reading-heading">

@@ -15,11 +15,12 @@ from pandrator.runtime import DataPaths
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.database import Database, upgrade_database
 from pandrator.web.credentials import auxiliary_credential_key, upsert_credential
-from pandrator.web.models import Artifact, ArtifactEdge, AudioTake, GenerationRun, GenerationSegment
+from pandrator.web.jobs import JobQueue
+from pandrator.web.models import Artifact, ArtifactEdge, AudioTake, GenerationRun, GenerationSegment, OutputAssembly
 from pandrator.web.sessions import SessionService
 from pandrator.web.workflow_handlers import WorkflowHandlers
 from pandrator.web.tts_optimization import OptimizationUsage
-from pandrator.web.workspace import OutcomePlanService
+from pandrator.web.workspace import GenerationService, OutcomePlanService, WorkspaceSettingsService
 
 
 class WebWorkflowHandlerTests(unittest.TestCase):
@@ -349,6 +350,74 @@ class WebWorkflowHandlerTests(unittest.TestCase):
             self.assertTrue(exported.relative_path.endswith("Finished_Book.mp3"))
             edge = session.scalar(select(ArtifactEdge).where(ArtifactEdge.child_artifact_id == exported.id))
             self.assertEqual(assembled.id, edge.parent_artifact_id)
+
+    def test_voiceover_export_uses_the_requested_generation_run_assembly(self):
+        voiceover = self.sessions.create("Versioned Voiceover", workflow_kind="voiceover")
+        session_dir = self.paths.sessions / voiceover.storage_key
+        session_dir.mkdir()
+        generation = GenerationService(
+            self.database,
+            JobQueue(self.database),
+            WorkspaceSettingsService(self.database),
+        )
+        plan = generation.create_plan(
+            voiceover.id,
+            source_revision_id=None,
+            segments=[{"text": "Versioned speech."}],
+        )
+        with self.database.session() as session:
+            run = GenerationRun(
+                session_id=voiceover.id,
+                plan_revision_id=plan["active_revision_id"],
+                sequence_number=1,
+                status="completed",
+                settings_snapshot_json={"tts": {"service": "Kokoro", "voice": "Ada"}},
+            )
+            session.add(run)
+            session.flush()
+            run_id = run.id
+        selected_path = session_dir / "selected.wav"
+        AudioSegment.silent(duration=20).export(selected_path, format="wav").close()
+        selected = self.artifacts.register(
+            selected_path,
+            kind="audio",
+            role="assembled_audio",
+            session_id=voiceover.id,
+        )
+        newer_path = session_dir / "newer.wav"
+        AudioSegment.silent(duration=80).export(newer_path, format="wav").close()
+        self.artifacts.register(
+            newer_path,
+            kind="audio",
+            role="assembled_audio",
+            session_id=voiceover.id,
+        )
+        with self.database.session() as session:
+            session.add(
+                OutputAssembly(
+                    session_id=voiceover.id,
+                    generation_run_id=run_id,
+                    artifact_id=selected.id,
+                    status="completed",
+                    settings_json={},
+                )
+            )
+
+        result = self.handlers.export(
+            {
+                "session_id": voiceover.id,
+                "settings": {"generation_run_id": run_id, "audio_mode": "dubbing_only"},
+            },
+            self.progress,
+            threading.Event(),
+        )
+
+        with self.database.session() as session:
+            exported = session.get(Artifact, result["artifact_ids"][0])
+            edge = session.scalar(select(ArtifactEdge).where(ArtifactEdge.child_artifact_id == exported.id))
+            self.assertEqual(selected.id, edge.parent_artifact_id)
+            exported_path = self.paths.root / exported.relative_path
+        self.assertEqual(20, len(AudioSegment.from_file(exported_path)))
         decoded = AudioSegment.from_file(self.paths.root / exported.relative_path)
         self.assertGreater(len(decoded), 0)
 

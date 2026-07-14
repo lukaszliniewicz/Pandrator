@@ -10,6 +10,23 @@ from pandrator.logic.text_preprocessor import (
 
 class TextPreprocessorTests(unittest.TestCase):
     @patch("pandrator.logic.text_preprocessor.sentence_segmenter.split_text")
+    def test_single_newlines_are_wrapping_and_blank_lines_are_paragraphs(self, split_text):
+        split_text.return_value = ["First sentence.", "Second sentence.", "New paragraph."]
+        settings = {
+            "language": "en",
+            "max_sentence_length": 200,
+            "enable_sentence_splitting": True,
+            "enable_sentence_appending": False,
+            "enable_nemo_normalization": False,
+            "tts_service": "XTTS",
+        }
+
+        sentences = preprocess_text("First sentence.\nSecond sentence.\n\nNew paragraph.", settings)
+
+        split_text.assert_called_once_with("First sentence. Second sentence.\n\nNew paragraph.")
+        self.assertEqual([item["paragraph"] for item in sentences], ["no", "yes", "no"])
+
+    @patch("pandrator.logic.text_preprocessor.sentence_segmenter.split_text")
     def test_wtpsplit_is_primary_sentence_segmenter(self, split_text):
         split_text.return_value = ["See Sec. IV, Ch. IX, and pp. 12-14.", "Then continue."]
 

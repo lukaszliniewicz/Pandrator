@@ -28,7 +28,7 @@ DUBBING_STAGES = (
     StageDefinition("correct", "Correct", "Review punctuation, wording, merges, and splits without translating.", prerequisite_roles=("transcription", "upload"), output_role="correction", job_kind="dubbing.correct"),
     StageDefinition("translate", "Translate", "Create a separate target-language subtitle artifact.", prerequisite_roles=("correction", "transcription", "upload"), output_role="translation", job_kind="dubbing.translate"),
     StageDefinition("optimize_document", "Optimize subtitles before generation", "Optionally create a separate, reviewable speech-optimized revision before audio generation. This is useful when the LLM and TTS must not share limited GPU memory.", prerequisite_roles=("translation", "correction", "transcription", "upload"), output_role="tts_optimized", job_kind="text.optimize_tts"),
-    StageDefinition("optimize_tts", "Optimize each segment for speech", "Optional LLM rewriting runs immediately before each segment is synthesized. It does not change the subtitle artifact or timing.", executable=False, prerequisite_roles=("translation", "correction", "transcription", "upload")),
+    StageDefinition("optimize_tts", "Optimize text for speech", "Choose one place for LLM speech optimization: create a reviewable whole-document revision before generation, or optimize segment batches while generation runs.", executable=False, prerequisite_roles=("translation", "correction", "transcription", "upload")),
     StageDefinition("preview", "Preview", "Compare source, correction, and translation with recorded lineage.", executable=False, prerequisite_roles=("translation", "correction", "transcription", "upload")),
     StageDefinition("generate_audio", "Generate audio", "Create reviewable per-segment takes, optionally optimizing each segment immediately before speech generation. Assembly remains manual.", prerequisite_roles=("translation", "correction", "transcription", "upload"), job_kind="dubbing.generate_audio"),
     StageDefinition("export", "Export", "Package selected takes, assembled audio, subtitle tracks, or a rendered video.", prerequisite_roles=("assembled_audio", "dubbing_audio", "translation", "correction", "transcription", "upload"), output_role="export", job_kind="export.create"),
@@ -38,7 +38,7 @@ AUDIOBOOK_STAGES = (
     StageDefinition("clean_source", "Clean source", "Review deterministic extraction and optional agentic cleanup.", prerequisite_roles=("upload",), output_role="clean_text", job_kind="source.clean"),
     StageDefinition("prepare_text", "Segment narration", "Create editable generation segments from the cleaned document. This controls text boundaries and pauses, not the TTS model.", prerequisite_roles=("clean_text",), output_role="prepared_text", job_kind="text.prepare"),
     StageDefinition("optimize_document", "Optimize narration before generation", "Optionally create a separate before-and-after narration revision for review before any audio is generated.", prerequisite_roles=("prepared_text",), output_role="tts_optimized", job_kind="text.optimize_tts"),
-    StageDefinition("optimize_tts", "Optimize each segment for speech", "Optional LLM rewriting runs immediately before each narration segment is synthesized. The source segment remains unchanged for review.", executable=False, prerequisite_roles=("prepared_text",)),
+    StageDefinition("optimize_tts", "Optimize text for speech", "Choose one place for LLM speech optimization: create a reviewable whole-document revision before generation, or optimize segment batches while generation runs.", executable=False, prerequisite_roles=("prepared_text",)),
     StageDefinition("generate_audio", "Generate audio", "Run missing document preparation, then create reviewable narration takes from editable segments. Assembly remains manual.", prerequisite_roles=("prepared_text", "clean_text", "upload"), job_kind="audiobook.generate_audio"),
     StageDefinition("export", "Export", "Package the assembled audio with the selected format, metadata, and cover.", prerequisite_roles=("assembled_audio", "audiobook_audio"), output_role="export", job_kind="export.create"),
 )
@@ -114,13 +114,17 @@ class WorkflowService:
                 job_by_kind["dubbing.generate_audio"] = job_by_kind["workflow.continue"]
                 job_by_kind["audiobook.generate_audio"] = job_by_kind["workflow.continue"]
             stages = []
-            for index, definition in enumerate(self.definitions(record, artifacts), start=1):
-                artifact = latest_roles.get(definition.output_role or "")
-                active = job_by_kind.get(definition.job_kind or "")
-                prerequisite_roles = definition.prerequisite_roles
+            definitions = self.definitions(record, artifacts)
+            document_definition = next((item for item in definitions if item.key == "optimize_document"), None)
+            visible_definitions = tuple(item for item in definitions if item.key != "optimize_document")
+            for index, definition in enumerate(visible_definitions, start=1):
+                effective_definition = document_definition if definition.key == "optimize_tts" and document_optimization_enabled and document_definition else definition
+                artifact = latest_roles.get(effective_definition.output_role or "")
+                active = job_by_kind.get(effective_definition.job_kind or "")
+                prerequisite_roles = effective_definition.prerequisite_roles
                 if definition.key == "translate" and str(input_choices.get("translation") or "correction") != "correction":
                     prerequisite_roles = ("transcription", "upload")
-                elif definition.key in {"optimize_document", "generate_audio"}:
+                elif effective_definition.key in {"optimize_document", "generate_audio"}:
                     if definition.key == "generate_audio" and document_optimization_enabled:
                         prerequisite_roles = ("tts_optimized",)
                     elif record.workflow_kind == "audiobook":
@@ -130,12 +134,12 @@ class WorkflowService:
                             "translation": ("translation",),
                             "correction": ("correction",),
                             "source": ("transcription", "upload"),
-                        }.get(str(input_choices.get("generation") or "translation"), definition.prerequisite_roles)
+                        }.get(str(input_choices.get("generation") or "translation"), effective_definition.prerequisite_roles)
                 prerequisite = next(
                     (
                         roles[role]
                         for role in prerequisite_roles
-                        if role in roles and self._usable_input(definition, roles[role], record.workflow_kind)
+                        if role in roles and self._usable_input(effective_definition, roles[role], record.workflow_kind)
                     ),
                     None,
                 )
@@ -166,9 +170,9 @@ class WorkflowService:
                         status = "ready"
                     else:
                         status = "ready"
-                if definition.key == "optimize_tts" and prerequisite is not None:
+                if definition.key == "optimize_tts" and prerequisite is not None and not document_optimization_enabled:
                     status = "completed" if optimization_enabled else "ready"
-                stage_enabled = optimization_enabled if definition.key == "optimize_tts" else document_optimization_enabled if definition.key == "optimize_document" else None
+                stage_enabled = (optimization_enabled or document_optimization_enabled) if definition.key == "optimize_tts" else None
                 stages.append(
                     {
                         "number": index,
@@ -176,10 +180,11 @@ class WorkflowService:
                         "title": definition.title,
                         "explanation": definition.explanation,
                         "status": status,
-                        "executable": definition.executable,
-                        "toggle": definition.key in {"optimize_tts", "optimize_document"},
-                        "toggle_only": definition.key == "optimize_tts",
+                        "executable": bool(document_optimization_enabled) if definition.key == "optimize_tts" else definition.executable,
+                        "toggle": definition.key == "optimize_tts",
+                        "toggle_only": definition.key == "optimize_tts" and not document_optimization_enabled,
                         "enabled": stage_enabled,
+                        "optimization_timing": "document" if document_optimization_enabled else "generation",
                         "included": definition.key in record.included_stages_json,
                         "required": definition.key == "transcribe" and any(key in record.included_stages_json for key in ("correct", "translate", "generate_audio")),
                         "artifact": {

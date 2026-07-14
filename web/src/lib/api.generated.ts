@@ -276,6 +276,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/generation-runs/{runId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["deleteGenerationRun"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/generation-runs/{runId}/cancel": {
         parameters: {
             query?: never;
@@ -731,7 +747,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        get: operations["listGenerationRuns"];
         put?: never;
         post: operations["startGenerationRun"];
         delete?: never;
@@ -2430,6 +2446,24 @@ export interface operations {
             };
         };
     };
+    deleteGenerationRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Generation run deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     cancelGenerationRun: {
         parameters: {
             query?: never;
@@ -3205,6 +3239,24 @@ export interface operations {
         responses: {
             /** @description Generation plan created */
             201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listGenerationRuns: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Named generation runs */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };

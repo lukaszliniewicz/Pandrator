@@ -12,6 +12,18 @@
   let saving=$state(false);
   const transformations=$derived(payload?.value?.transformations??{});
   const deliverables=$derived(payload?.value?.deliverables??{});
+  const speechOptimizationEnabled=$derived(Boolean(transformations.llm_tts_document_optimization||transformations.llm_tts_optimization));
+  const speechOptimizationTiming=$derived(transformations.llm_tts_document_optimization?'document':'generation');
+
+  function setSpeechOptimizationEnabled(enabled:boolean){
+    transformations.llm_tts_document_optimization=enabled&&speechOptimizationTiming==='document';
+    transformations.llm_tts_optimization=enabled&&speechOptimizationTiming==='generation';
+  }
+
+  function setSpeechOptimizationTiming(timing:string){
+    transformations.llm_tts_document_optimization=speechOptimizationEnabled&&timing==='document';
+    transformations.llm_tts_optimization=speechOptimizationEnabled&&timing==='generation';
+  }
 
   async function load(){
     [payload,session]=await Promise.all([api(`/sessions/${sessionId}/outcome-plan`),api<SessionRecord>(`/sessions/${sessionId}`)]);
@@ -41,7 +53,7 @@
         {#if transformations.translate}<label class="text-sm font-semibold">Target language<select bind:value={targetLanguage} class="field">{#each LANGUAGE_OPTIONS.filter((item)=>item.value!=='auto') as item}<option value={item.value}>{item.label}</option>{/each}</select></label>{/if}
       </div>
       <div class="mt-7 grid gap-4 md:grid-cols-2">
-        <div class="rounded-2xl border border-[var(--line)] p-5"><div class="eyebrow">Transformations</div><div class="mt-4 space-y-3">{#each [{key:'transcribe',label:'Transcribe media'},{key:'correct',label:'Correct same-language subtitles'},{key:'translate',label:'Translate'},{key:'deterministic_normalization',label:'Deterministic speech normalization'},{key:'llm_tts_document_optimization',label:'Optimize and review the whole document first'},{key:'llm_tts_optimization',label:'Optimize batches while generating'},{key:'generate_audio',label:'Generate speech'},{key:'rvc',label:'Create RVC variants'}] as item}<label class="flex items-start gap-3 text-sm"><input type="checkbox" bind:checked={transformations[item.key]} class="mt-1 accent-[var(--accent)]"/><span>{item.label}</span></label>{/each}</div></div>
+        <div class="rounded-2xl border border-[var(--line)] p-5"><div class="eyebrow">Transformations</div><div class="mt-4 space-y-3">{#each [{key:'transcribe',label:'Transcribe media'},{key:'correct',label:'Correct same-language subtitles'},{key:'translate',label:'Translate'},{key:'deterministic_normalization',label:'Deterministic speech normalization'},{key:'generate_audio',label:'Generate speech'},{key:'rvc',label:'Create RVC variants'}] as item}<label class="flex items-start gap-3 text-sm"><input type="checkbox" bind:checked={transformations[item.key]} class="mt-1 accent-[var(--accent)]"/><span>{item.label}</span></label>{/each}<div class="rounded-xl border border-[var(--line)] p-3"><label class="flex items-start gap-3 text-sm"><input type="checkbox" checked={speechOptimizationEnabled} onchange={(event)=>setSpeechOptimizationEnabled(event.currentTarget.checked)} class="mt-1 accent-[var(--accent)]"/><span>Optimize text for speech</span></label>{#if speechOptimizationEnabled}<select value={speechOptimizationTiming} onchange={(event)=>setSpeechOptimizationTiming(event.currentTarget.value)} class="mt-3 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-xs"><option value="document">Before generation · whole document</option><option value="generation">During generation · segment batches</option></select>{/if}</div></div></div>
         <div class="rounded-2xl border border-[var(--line)] p-5"><div class="eyebrow">Deliverables</div><div class="mt-4 space-y-3">{#each [{key:'subtitles',label:'Subtitle files or tracks'},{key:'voiceover',label:'Voiceover / dubbed media'},{key:'audiobook',label:'Audiobook audio'}] as item}<label class="flex items-start gap-3 text-sm"><input type="checkbox" bind:checked={deliverables[item.key]} class="mt-1 accent-[var(--accent)]"/><span>{item.label}</span></label>{/each}</div>{#if transformations.translate}<label class="mt-5 block text-sm font-semibold">Translation input<select bind:value={payload.value.inputs.translation} class="field"><option value="source">Source / transcription directly</option><option value="correction" disabled={!transformations.correct}>Corrected subtitles</option></select></label>{/if}{#if transformations.generate_audio}<label class="mt-4 block text-sm font-semibold">Generation input<select bind:value={payload.value.inputs.generation} class="field"><option value="source">Source text/subtitles</option><option value="correction" disabled={!transformations.correct}>Correction</option><option value="translation" disabled={!transformations.translate}>Translation</option></select></label>{/if}</div>
       </div>
       <div class="mt-5 rounded-2xl bg-[var(--accent-soft)] p-5"><div class="eyebrow">Resolved pipeline</div><div class="mt-3 flex flex-wrap items-center gap-2">{#each payload.pipeline as stage,index}<span class="rounded-lg bg-[var(--paper-strong)] px-3 py-2 text-sm font-semibold">{stage.title}</span>{#if index<payload.pipeline.length-1}<ArrowRight size={15}/>{/if}{/each}</div></div>

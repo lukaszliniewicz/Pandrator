@@ -136,7 +136,11 @@ def build_openapi_document() -> dict:
         "/api/v1/generation-segments/{segmentId}": {"patch": operation("updateGenerationSegment", "Generation segment updated", "GenerationSegmentUpdate")},
         "/api/v1/generation-segments/{segmentId}/takes/{takeId}/select": {"post": operation("selectGenerationTake", "Active audio take selected")},
         "/api/v1/sessions/{sessionId}/generation-runs/latest": {"get": operation("getLatestGenerationRun", "Latest generation run")},
-        "/api/v1/sessions/{sessionId}/generation-runs": {"post": operation("startGenerationRun", "Generation queued", "GenerationStartRequest", "202")},
+        "/api/v1/sessions/{sessionId}/generation-runs": {
+            "get": operation("listGenerationRuns", "Named generation runs"),
+            "post": operation("startGenerationRun", "Generation queued", "GenerationStartRequest", "202"),
+        },
+        "/api/v1/generation-runs/{runId}": {"delete": operation("deleteGenerationRun", "Generation run deleted", status="204")},
         "/api/v1/generation-runs/{runId}/pause": {"post": operation("pauseGenerationRun", "Safe pause requested", status="202")},
         "/api/v1/generation-runs/{runId}/resume": {"post": operation("resumeGenerationRun", "Generation resumed", status="202")},
         "/api/v1/generation-runs/{runId}/cancel": {"post": operation("cancelGenerationRun", "Cancellation requested", status="202")},

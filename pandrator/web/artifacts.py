@@ -29,7 +29,6 @@ SINGLETON_SESSION_ROLES = {
     "speech_blocks",
     "dubbing_audio",
     "audiobook_audio",
-    "assembled_audio",
     "bilingual_subtitle_overlay",
     "export",
 }

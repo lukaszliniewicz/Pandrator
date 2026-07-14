@@ -527,10 +527,9 @@ def resolve_pipeline(plan: dict[str, Any], *, source_requires_transcription: boo
         stages.append(("correct", "Correct subtitles"))
     if transformations.get("translate"):
         stages.append(("translate", "Translate"))
-    if transformations.get("llm_tts_document_optimization"):
-        stages.append(("optimize_document", "Review speech optimization"))
-    if transformations.get("llm_tts_optimization"):
-        stages.append(("optimize_tts", "Optimize while generating"))
+    if transformations.get("llm_tts_document_optimization") or transformations.get("llm_tts_optimization"):
+        timing = "before generation" if transformations.get("llm_tts_document_optimization") else "while generating"
+        stages.append(("optimize_tts", f"Optimize for speech {timing}"))
     if transformations.get("generate_audio") or deliverables.get("audiobook") or deliverables.get("voiceover"):
         stages.append(("generate_audio", "Generate audio"))
     if transformations.get("rvc"):
@@ -769,10 +768,11 @@ class SourceLibraryService:
 
 
 class GenerationService:
-    def __init__(self, database: Database, jobs: JobQueue, settings: WorkspaceSettingsService):
+    def __init__(self, database: Database, jobs: JobQueue, settings: WorkspaceSettingsService, artifacts=None):
         self.database = database
         self.jobs = jobs
         self.settings = settings
+        self.artifacts = artifacts
 
     def create_plan(self, session_id: str, *, source_revision_id: str | None, segments: list[dict[str, Any]], settings: dict[str, Any] | None = None) -> dict[str, Any]:
         clean_segments = [item for item in segments if str(item.get("text") or "").strip()]
@@ -857,6 +857,7 @@ class GenerationService:
                     "takes": [
                         {
                             "id": take.id,
+                            "generation_run_id": take.generation_run_id,
                             "artifact_id": take.artifact_id,
                             "parent_take_id": take.parent_take_id,
                             "kind": take.kind,
@@ -864,6 +865,7 @@ class GenerationService:
                             "duration_ms": take.duration_ms,
                             "is_active": take.is_active,
                             "revision": take.revision,
+                            "created_at": take.created_at.isoformat(),
                             "source_text": (artifacts_by_id.get(take.artifact_id).metadata_json or {}).get("source_text") if take.artifact_id and artifacts_by_id.get(take.artifact_id) else None,
                             "synthesized_text": (artifacts_by_id.get(take.artifact_id).metadata_json or {}).get("synthesized_text") if take.artifact_id and artifacts_by_id.get(take.artifact_id) else None,
                             "llm_optimized": bool((artifacts_by_id.get(take.artifact_id).metadata_json or {}).get("llm_optimized")) if take.artifact_id and artifacts_by_id.get(take.artifact_id) else False,
@@ -958,7 +960,16 @@ class GenerationService:
             plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
             if plan is None or not plan.active_revision_id:
                 raise ValueError("Create generation segments before starting audio generation.")
-            run = GenerationRun(session_id=session_id, plan_revision_id=plan.active_revision_id, status="queued", settings_snapshot_json=snapshot, settings_hash=settings_hash)
+            sequence_number = int(session.scalar(select(func.max(GenerationRun.sequence_number)).where(GenerationRun.session_id == session_id)) or 0) + 1
+            run = GenerationRun(
+                session_id=session_id,
+                plan_revision_id=plan.active_revision_id,
+                sequence_number=sequence_number,
+                operation=operation,
+                status="queued",
+                settings_snapshot_json=snapshot,
+                settings_hash=settings_hash,
+            )
             session.add(run)
             session.flush()
             run_id = run.id
@@ -968,7 +979,8 @@ class GenerationService:
             run = session.get(GenerationRun, run_id)
             run.job_id = job.id
             run.updated_at = utcnow()
-        return {"id": run_id, "job_id": job.id, "status": "queued", "settings_hash": settings_hash}
+        with self.database.session() as session:
+            return self._run_payload(session, session.get(GenerationRun, run_id))
 
     @staticmethod
     def _resource_keys(session_id: str, snapshot: dict[str, Any]) -> list[str]:
@@ -1027,13 +1039,125 @@ class GenerationService:
                 pass
         return {"id": run_id, "job_id": job_id, "status": "cancel_requested"}
 
+    @staticmethod
+    def _run_label(run: GenerationRun) -> str:
+        snapshot = dict(run.settings_snapshot_json or {})
+        tts = dict(snapshot.get("tts") or {})
+        rvc = dict(snapshot.get("rvc") or {})
+        details = []
+        for value in (
+            tts.get("service") or tts.get("tts_service") or tts.get("backend"),
+            tts.get("model") or tts.get("xtts_model"),
+            tts.get("voice") or tts.get("voice_name"),
+        ):
+            normalized = str(value or "").strip()
+            if normalized and normalized.lower() not in {item.lower() for item in details}:
+                details.append(normalized)
+        if run.operation == "rvc":
+            model = str(rvc.get("model") or rvc.get("rvc_model") or "").strip()
+            details.append(f"RVC {model}".strip())
+        if not details:
+            details.append("Speech generation")
+        return f"Run {run.sequence_number}: " + " · ".join(details)
+
+    def _run_payload(self, session, run: GenerationRun | None) -> dict[str, Any] | None:
+        if run is None:
+            return None
+        job = session.get(Job, run.job_id) if run.job_id else None
+        assembly = session.scalar(
+            select(OutputAssembly)
+            .where(OutputAssembly.generation_run_id == run.id)
+            .order_by(OutputAssembly.created_at.desc())
+        )
+        take_count = int(
+            session.scalar(select(func.count()).select_from(AudioTake).where(AudioTake.generation_run_id == run.id)) or 0
+        )
+        return {
+            "id": run.id,
+            "session_id": run.session_id,
+            "plan_revision_id": run.plan_revision_id,
+            "sequence_number": run.sequence_number,
+            "operation": run.operation,
+            "label": self._run_label(run),
+            "job_id": run.job_id,
+            "status": run.status,
+            "progress": float(job.progress) if job else (1.0 if run.status == "completed" else 0.0),
+            "pause_requested": run.pause_requested,
+            "cancel_requested": run.cancel_requested,
+            "settings_hash": run.settings_hash,
+            "error_message": job.error_message if job else None,
+            "take_count": take_count,
+            "assembly": self._assembly_payload(assembly) if assembly else None,
+            "created_at": run.created_at.isoformat(),
+            "updated_at": run.updated_at.isoformat(),
+        }
+
+    def list_runs(self, session_id: str) -> list[dict[str, Any]]:
+        with self.database.session() as session:
+            runs = list(
+                session.scalars(
+                    select(GenerationRun)
+                    .where(GenerationRun.session_id == session_id)
+                    .order_by(GenerationRun.sequence_number.desc(), GenerationRun.created_at.desc())
+                ).all()
+            )
+            return [self._run_payload(session, run) for run in runs]
+
     def latest_run(self, session_id: str) -> dict[str, Any] | None:
         with self.database.session() as session:
-            run = session.scalar(select(GenerationRun).where(GenerationRun.session_id == session_id).order_by(GenerationRun.created_at.desc()))
+            run = session.scalar(
+                select(GenerationRun)
+                .where(GenerationRun.session_id == session_id)
+                .order_by(GenerationRun.sequence_number.desc(), GenerationRun.created_at.desc())
+            )
+            return self._run_payload(session, run)
+
+    def delete_run(self, run_id: str) -> dict[str, Any]:
+        paths_to_remove: list[Path] = []
+        with self.database.session() as session:
+            run = session.get(GenerationRun, run_id)
             if run is None:
-                return None
-            job = session.get(Job, run.job_id) if run.job_id else None
-            return {"id": run.id, "job_id": run.job_id, "status": run.status, "progress": float(job.progress) if job else (1.0 if run.status == "completed" else 0.0), "pause_requested": run.pause_requested, "cancel_requested": run.cancel_requested, "settings_hash": run.settings_hash, "error_message": job.error_message if job else None, "created_at": run.created_at.isoformat(), "updated_at": run.updated_at.isoformat()}
+                raise KeyError(run_id)
+            if run.status in {"queued", "running", "pausing", "cancel_requested"}:
+                raise ValueError("Stop or cancel this run before deleting it.")
+            takes = list(session.scalars(select(AudioTake).where(AudioTake.generation_run_id == run.id)).all())
+            assemblies = list(session.scalars(select(OutputAssembly).where(OutputAssembly.generation_run_id == run.id)).all())
+            affected_segment_ids = {take.generation_segment_id for take in takes}
+            artifact_ids = {take.artifact_id for take in takes if take.artifact_id}
+            artifact_ids.update(item.artifact_id for item in assemblies if item.artifact_id)
+            artifacts = list(session.scalars(select(Artifact).where(Artifact.id.in_(artifact_ids))).all()) if artifact_ids else []
+            if self.artifacts is not None:
+                for artifact in artifacts:
+                    try:
+                        paths_to_remove.append(self.artifacts.paths.managed_path(artifact.relative_path))
+                    except ValueError:
+                        pass
+            from .artifacts import ArtifactService
+
+            for artifact in artifacts:
+                ArtifactService._mark_descendants_stale(session, artifact.id)
+            for assembly in assemblies:
+                session.delete(assembly)
+            for take in takes:
+                session.delete(take)
+            session.flush()
+            for segment_id in affected_segment_ids:
+                remaining = session.scalar(
+                    select(AudioTake)
+                    .where(AudioTake.generation_segment_id == segment_id, AudioTake.artifact_id.is_not(None))
+                    .order_by(AudioTake.created_at.desc())
+                )
+                for candidate in session.scalars(select(AudioTake).where(AudioTake.generation_segment_id == segment_id)).all():
+                    candidate.is_active = remaining is not None and candidate.id == remaining.id
+            for artifact in artifacts:
+                session.delete(artifact)
+            session.delete(run)
+        for path in paths_to_remove:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return {"id": run_id, "status": "deleted"}
 
     @staticmethod
     def _assembly_payload(record: OutputAssembly) -> dict[str, Any]:
@@ -1074,6 +1198,8 @@ class GenerationService:
             run = session.get(GenerationRun, generation_run_id) if generation_run_id else None
             if generation_run_id and (run is None or run.session_id != session_id):
                 raise KeyError(generation_run_id)
+            if run is not None and run.status != "completed":
+                raise ValueError("Only a completed generation run can be assembled.")
             plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
             plan_revision_id = run.plan_revision_id if run else plan.active_revision_id if plan else None
             if not plan_revision_id:

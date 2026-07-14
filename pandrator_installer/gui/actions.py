@@ -153,10 +153,19 @@ class GuiActionsMixin:
             return
 
         running_backends = self._collect_running_backends()
-        if running_backends:
+        supervised_backends = self._collect_supervised_backends()
+        known = []
+        seen = set()
+        for backend_key, label, process in [*running_backends, *supervised_backends]:
+            identity = (backend_key, process.pid)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            known.append((backend_key, label, process, any(item[0] == backend_key and item[2].pid == process.pid for item in supervised_backends)))
+        if known:
             running_details = ", ".join(
-                f"{label} (PID {process.pid})"
-                for _, label, process in running_backends
+                f"{label} (PID {process.pid}{', managed with Pandrator' if supervised else ''})"
+                for _, label, process, supervised in known
             )
             self.active_backend_value_label.setText(f"Running: {running_details}")
         else:
@@ -263,16 +272,6 @@ class GuiActionsMixin:
         self.persist_launch_preferences(selection)
         self.initialize_logging()
         self._apply_launch_selection_state(selection)
-
-        selected_backend_keys = self._selected_launch_backend_keys()
-        if len(selected_backend_keys) > 1:
-            selected_label = self._backend_label_from_key(selected_backend_keys[0])
-            QMessageBox.information(
-                self,
-                "Single Backend Mode",
-                "Only one backend can run at a time. "
-                f"This launch will start: {selected_label}.",
-            )
 
         # Create worker thread to run the launch process
         self.worker = Worker(self.launch_process, selection)

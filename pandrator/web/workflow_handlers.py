@@ -1772,10 +1772,13 @@ class WorkflowHandlers:
             json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
         ).hexdigest()
         with self.database.session() as session:
+            sequence_number = int(session.scalar(select(func.max(GenerationRun.sequence_number)).where(GenerationRun.session_id == session_id)) or 0) + 1
             run = GenerationRun(
                 session_id=session_id,
                 plan_revision_id=plan_revision_id,
                 job_id=job_id,
+                sequence_number=sequence_number,
+                operation="generate",
                 status="queued",
                 settings_snapshot_json=snapshot,
                 settings_hash=frozen_hash or settings_hash,
@@ -1816,6 +1819,7 @@ class WorkflowHandlers:
             settings_snapshot = dict(run.settings_snapshot_json or {})
             session_id = run.session_id
             plan_revision_id = run.plan_revision_id
+            run_sequence_number = run.sequence_number
 
         statement = select(GenerationSegment).where(
             GenerationSegment.plan_revision_id == plan_revision_id,
@@ -1865,6 +1869,15 @@ class WorkflowHandlers:
                         run.updated_at = utcnow()
                 raise
         rvc_settings = adapt_runtime_settings("rvc", dict(settings_snapshot.get("rvc") or {}))
+        rvc_source_sequence = None
+        if operation == "rvc":
+            source_run_id = str(rvc_settings.get("source_run_id") or "").strip()
+            if source_run_id:
+                with self.database.session() as session:
+                    source_run = session.get(GenerationRun, source_run_id)
+                    if source_run is None or source_run.session_id != session_id or source_run.plan_revision_id != plan_revision_id:
+                        raise ValueError("The selected source generation run is unavailable.")
+                    rvc_source_sequence = source_run.sequence_number
         generated = 0
         skipped = 0
         for index, segment_id in enumerate(segment_ids):
@@ -1897,7 +1910,29 @@ class WorkflowHandlers:
                 synthesized_text = text
                 if operation == "rvc":
                     with self.database.session() as session:
-                        source_take = session.scalar(select(AudioTake).where(AudioTake.generation_segment_id == segment_id, AudioTake.is_active.is_(True), AudioTake.status == "completed").order_by(AudioTake.created_at.desc()))
+                        source_take = session.scalar(
+                            select(AudioTake)
+                            .join(GenerationRun, AudioTake.generation_run_id == GenerationRun.id)
+                            .where(
+                                AudioTake.generation_segment_id == segment_id,
+                                AudioTake.status.in_(("completed", "stale")),
+                                GenerationRun.session_id == session_id,
+                                GenerationRun.plan_revision_id == plan_revision_id,
+                                GenerationRun.sequence_number <= (rvc_source_sequence if rvc_source_sequence is not None else run_sequence_number - 1),
+                            )
+                            .order_by(GenerationRun.sequence_number.desc(), AudioTake.created_at.desc())
+                        )
+                        if source_take is None:
+                            source_take = session.scalar(
+                                select(AudioTake)
+                                .where(
+                                    AudioTake.generation_segment_id == segment_id,
+                                    AudioTake.generation_run_id.is_(None),
+                                    AudioTake.is_active.is_(True),
+                                    AudioTake.status.in_(("completed", "stale")),
+                                )
+                                .order_by(AudioTake.created_at.desc())
+                            )
                         if source_take is None or source_take.artifact_id is None:
                             raise ValueError("The selected segment has no active audio take for RVC.")
                         source_artifact = session.get(Artifact, source_take.artifact_id)
@@ -1930,6 +1965,7 @@ class WorkflowHandlers:
                     settings=take_settings,
                     metadata={
                         "generation_segment_id": segment_id,
+                        "generation_run_id": run_id,
                         "kind": take_kind,
                         "source_text": text,
                         "synthesized_text": synthesized_text,
@@ -1945,6 +1981,7 @@ class WorkflowHandlers:
                     session.add(
                         AudioTake(
                             generation_segment_id=segment_id,
+                            generation_run_id=run_id,
                             artifact_id=artifact.id,
                             parent_take_id=parent_take_id,
                             kind=take_kind,
@@ -2001,6 +2038,8 @@ class WorkflowHandlers:
             resolved = settings_container.get("resolved") if isinstance(settings_container.get("resolved"), dict) else {}
             audio_settings = dict(resolved.get("audio") or {})
             output_settings = dict(resolved.get("output") or {})
+            selected_run = session.get(GenerationRun, assembly.generation_run_id) if assembly.generation_run_id else None
+            selected_run_sequence = selected_run.sequence_number if selected_run else None
 
         try:
             with self.database.session() as session:
@@ -2016,16 +2055,36 @@ class WorkflowHandlers:
                 )
                 selected: list[tuple[GenerationSegment, AudioTake, Artifact]] = []
                 for segment in segments:
-                    take = session.scalar(
-                        select(AudioTake)
-                        .where(
-                            AudioTake.generation_segment_id == segment.id,
-                            AudioTake.is_active.is_(True),
+                    if selected_run_sequence is not None:
+                        take = session.scalar(
+                            select(AudioTake)
+                            .join(GenerationRun, AudioTake.generation_run_id == GenerationRun.id)
+                            .where(
+                                AudioTake.generation_segment_id == segment.id,
+                                AudioTake.status.in_(("completed", "stale")),
+                                GenerationRun.session_id == session_id,
+                                GenerationRun.plan_revision_id == plan_revision_id,
+                                GenerationRun.sequence_number <= selected_run_sequence,
+                            )
+                            .order_by(GenerationRun.sequence_number.desc(), AudioTake.created_at.desc())
                         )
-                        .order_by(AudioTake.created_at.desc())
-                    )
-                    if take is None or take.status != "completed" or not take.artifact_id:
-                        raise ValueError(f"Segment {segment.ordinal + 1} has no current completed audio take.")
+                    else:
+                        take = session.scalar(
+                            select(AudioTake)
+                            .where(
+                                AudioTake.generation_segment_id == segment.id,
+                                AudioTake.is_active.is_(True),
+                                AudioTake.status == "completed",
+                            )
+                            .order_by(AudioTake.created_at.desc())
+                        )
+                    allowed_statuses = {"completed", "stale"} if selected_run is not None else {"completed"}
+                    if take is None or take.status not in allowed_statuses or not take.artifact_id:
+                        if selected_run is None:
+                            raise ValueError(f"Segment {segment.ordinal + 1} has no current completed audio take.")
+                        raise ValueError(
+                            f"Segment {segment.ordinal + 1} has no available audio take in Run {selected_run.sequence_number}."
+                        )
                     artifact = session.get(Artifact, take.artifact_id)
                     if artifact is None or artifact.state != "current":
                         raise ValueError(f"Segment {segment.ordinal + 1} references an unavailable audio artifact.")
@@ -2218,6 +2277,25 @@ class WorkflowHandlers:
             current = list(session.scalars(select(Artifact).where(Artifact.session_id == session_id, Artifact.state == "current")).all())
             for item in current:
                 session.expunge(item)
+            selected_assembly = None
+            selected_run_id = str(settings.get("generation_run_id") or "").strip()
+            if selected_run_id:
+                selected_assembly = session.scalar(
+                    select(OutputAssembly)
+                    .where(
+                        OutputAssembly.session_id == session_id,
+                        OutputAssembly.generation_run_id == selected_run_id,
+                        OutputAssembly.status == "completed",
+                        OutputAssembly.artifact_id.is_not(None),
+                    )
+                    .order_by(OutputAssembly.created_at.desc())
+                )
+                if selected_assembly is None:
+                    raise ValueError("Assemble the selected generation run before exporting it.")
+                selected_audio = session.get(Artifact, selected_assembly.artifact_id)
+                if selected_audio is None:
+                    raise ValueError("The selected generation run assembly is unavailable.")
+                session.expunge(selected_audio)
         by_role = {item.role: item for item in current}
         output_dir = self._session_dir(session_id) / "exports"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -2226,7 +2304,7 @@ class WorkflowHandlers:
         produced: list[Artifact] = []
 
         if record.workflow_kind == "audiobook":
-            audio = by_role.get("assembled_audio") or by_role.get("audiobook_audio")
+            audio = selected_audio if selected_assembly is not None else by_role.get("assembled_audio") or by_role.get("audiobook_audio")
             if audio is None:
                 raise ValueError("Audiobook export requires generated audio.")
             _audio_record, audio_path = self._resolve_input(audio.id)
@@ -2265,7 +2343,7 @@ class WorkflowHandlers:
                 finalized_subtitles.append(finalized)
                 produced.append(finalized)
             selected_subtitles = finalized_subtitles
-            dubbing_audio = by_role.get("assembled_audio") or by_role.get("dubbing_audio")
+            dubbing_audio = selected_audio if selected_assembly is not None else by_role.get("assembled_audio") or by_role.get("dubbing_audio")
             audio_mode = str(settings.get("audio_mode") or "source").lower()
             audio_mode = {"preserve": "source", "dubbing_only": "dubbed"}.get(audio_mode, audio_mode)
 

@@ -399,6 +399,8 @@ class GenerationRun(Base):
     session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False, index=True)
     plan_revision_id: Mapped[str] = mapped_column(ForeignKey("generation_plan_revisions.id", ondelete="RESTRICT"), nullable=False, index=True)
     job_id: Mapped[str | None] = mapped_column(ForeignKey("jobs.id", ondelete="SET NULL"), index=True)
+    sequence_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    operation: Mapped[str] = mapped_column(String(32), nullable=False, default="generate")
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="ready", index=True)
     pause_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -406,6 +408,8 @@ class GenerationRun(Base):
     settings_hash: Mapped[str | None] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (UniqueConstraint("session_id", "sequence_number", name="uq_generation_run_sequence"),)
 
 
 class GenerationSegment(Base):
@@ -461,6 +465,7 @@ class AudioTake(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     generation_segment_id: Mapped[str] = mapped_column(ForeignKey("generation_segments.id", ondelete="CASCADE"), nullable=False, index=True)
+    generation_run_id: Mapped[str | None] = mapped_column(ForeignKey("generation_runs.id", ondelete="CASCADE"), index=True)
     artifact_id: Mapped[str | None] = mapped_column(ForeignKey("artifacts.id", ondelete="SET NULL"), index=True)
     parent_take_id: Mapped[str | None] = mapped_column(ForeignKey("audio_takes.id", ondelete="SET NULL"), index=True)
     kind: Mapped[str] = mapped_column(String(32), nullable=False, default="tts")

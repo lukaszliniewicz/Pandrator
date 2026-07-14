@@ -1,5 +1,6 @@
 import unittest
 import inspect
+import json
 import os
 import subprocess
 import sys
@@ -38,6 +39,29 @@ from pandrator_installer.constants import (
 
 
 class InstallerArchitectureTests(unittest.TestCase):
+    def test_runtime_rediscovers_all_supervisor_managed_backends(self):
+        with tempfile.TemporaryDirectory() as directory:
+            installer = HeadlessInstaller(working_dir=directory)
+            install_root = Path(directory) / "Pandrator"
+            install_root.mkdir()
+            (install_root / "runtime-processes.json").write_text(
+                json.dumps(
+                    {
+                        "supervisor_pid": os.getpid(),
+                        "processes": {
+                            "service-xtts": {"pid": os.getpid()},
+                            "service-kokoro": {"pid": os.getpid()},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            running = installer._collect_supervised_backends()
+
+        self.assertEqual({"xtts", "kokoro"}, {item[0] for item in running})
+        self.assertTrue(all(item[2].pid == os.getpid() for item in running))
+
     def test_silero_install_downloads_the_complete_catalogue(self):
         installer = HeadlessInstaller(working_dir="workspace")
         with tempfile.TemporaryDirectory() as directory:

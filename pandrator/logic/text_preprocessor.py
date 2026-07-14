@@ -131,8 +131,19 @@ def _split_structural_text_blocks(text: str) -> list[dict]:
 
 
 def _ensure_line_terminal_punctuation(text: str) -> str:
-    terminal_punctuation = re.escape(".!?。！？｡．…")
-    return re.sub(rf'(^|\n+)([^\n{terminal_punctuation}]+)(?=\n+|$)', r'\1\2.', text)
+    """Treat one newline as wrapping and two or more as a paragraph break."""
+    terminal_punctuation = ".!?。！？｡．…"
+    normalized = re.sub(r"\r\n?", "\n", text)
+    paragraphs = []
+    for paragraph in re.split(r"\n{2,}", normalized):
+        paragraph = re.sub(r"[ \t]*\n[ \t]*", " ", paragraph)
+        paragraph = re.sub(r"[ \t]+", " ", paragraph).strip()
+        if not paragraph:
+            continue
+        if paragraph[-1] not in terminal_punctuation:
+            paragraph += "."
+        paragraphs.append(paragraph)
+    return "\n\n".join(paragraphs)
 
 
 # ---------------------------------------------------------------------------
@@ -445,7 +456,7 @@ def _process_chunk(chunk: str, settings: dict) -> list[dict]:
             continue
 
         body_text = _ensure_line_terminal_punctuation(block["text"].strip())
-        body_paragraph_breaks = list(re.finditer(r'\n', body_text))
+        body_paragraph_breaks = list(re.finditer(r'\n{2,}', body_text))
         sentences = split_into_sentences(body_text, language, tts_service)
 
         for sentence in sentences:
