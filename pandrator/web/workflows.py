@@ -67,7 +67,7 @@ class WorkflowService:
         extension = "." + filename.rsplit(".", 1)[-1] if "." in filename else ""
         if definition.key == "transcribe":
             return extension in {".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v"}
-        if definition.key in {"correct", "translate", "optimize_tts", "optimize_document"}:
+        if definition.key in {"correct", "translate", "optimize_tts", "optimize_document", "preview"}:
             return extension == ".srt"
         if definition.key == "clean_source":
             return extension in {".txt", ".pdf", ".epub", ".docx", ".mobi"}

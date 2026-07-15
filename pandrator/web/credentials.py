@@ -242,6 +242,27 @@ def validate_provider_options(options: dict[str, Any] | None) -> None:
         raise ValueError("Provider secrets must be saved in the API key field, not advanced options.")
 
 
+def validate_vertex_service_account_json(value: object) -> dict[str, Any]:
+    """Validate pasted Vertex service-account JSON without exposing its contents."""
+
+    try:
+        payload = json.loads(str(value or "").strip())
+    except json.JSONDecodeError as error:
+        raise ValueError("Vertex credentials must be valid JSON.") from error
+    if not isinstance(payload, dict):
+        raise ValueError("Vertex credentials must be a JSON object.")
+    if payload.get("type") != "service_account":
+        raise ValueError(
+            "Paste a Google service-account key JSON object. For user or federated credentials, configure Application Default Credentials instead."
+        )
+    required = ("project_id", "client_email", "private_key", "token_uri")
+    if any(not str(payload.get(key) or "").strip() for key in required):
+        raise ValueError(
+            "The service-account JSON must include project_id, client_email, private_key, and token_uri."
+        )
+    return payload
+
+
 def prepare_tts_settings_for_storage(
     session: Session,
     value: Any,

@@ -345,6 +345,37 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(queued.status_code, 202)
         self.assertEqual(queued.get_json()["kind"], "dubbing.correct")
 
+    def test_media_preview_waits_for_transcription_artifact(self):
+        csrf = self.authenticate()
+        record = self.client.post(
+            "/api/v1/sessions",
+            json={"name": "Media preview", "workflow_kind": "voiceover"},
+            headers={"X-CSRF-Token": csrf},
+        ).get_json()
+        session_id = record["id"]
+        uploaded = self.client.post(
+            "/api/v1/uploads",
+            data={"session_id": session_id, "file": (io.BytesIO(b"ID3fixture"), "source.mp3")},
+            headers={"X-CSRF-Token": csrf},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(201, uploaded.status_code, uploaded.get_json())
+
+        snapshot = self.client.get(f"/api/v1/sessions/{session_id}/workflow").get_json()
+        self.assertEqual("unavailable", next(stage for stage in snapshot["stages"] if stage["key"] == "preview")["status"])
+
+        extension = self.app.extensions["pandrator"]
+        transcription_path = extension["paths"].artifacts / "media-preview.srt"
+        transcription_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nReady\n", encoding="utf-8")
+        extension["artifacts"].register(
+            transcription_path,
+            kind="srt",
+            role="transcription",
+            session_id=session_id,
+        )
+        ready = self.client.get(f"/api/v1/sessions/{session_id}/workflow").get_json()
+        self.assertEqual("ready", next(stage for stage in ready["stages"] if stage["key"] == "preview")["status"])
+
     def test_session_languages_are_first_class_and_revision_safe(self):
         csrf = self.authenticate()
         response = self.client.post(

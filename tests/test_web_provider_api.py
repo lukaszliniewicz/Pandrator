@@ -7,6 +7,7 @@ from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.credentials import provider_credential_key
 from pandrator.web.models import StoredCredential
+from pandrator.web.provider_settings import build_llm_settings
 
 
 class ProviderApiTests(unittest.TestCase):
@@ -162,6 +163,49 @@ class ProviderApiTests(unittest.TestCase):
         self.assertFalse(removed.get_json()["credential_configured"])
         with database.session() as session:
             self.assertIsNone(session.get(StoredCredential, provider_credential_key(created["id"])))
+
+    def test_vertex_service_account_json_is_validated_and_hydrated_for_litellm(self):
+        credentials = json.dumps(
+            {
+                "type": "service_account",
+                "project_id": "vertex-project",
+                "client_email": "pandrator@vertex-project.iam.gserviceaccount.com",
+                "private_key": "-----BEGIN PRIVATE KEY-----\nfixture\n-----END PRIVATE KEY-----\n",
+                "token_uri": "https://oauth2.googleapis.com/token",
+            }
+        )
+        rejected = self.client.post(
+            "/api/v1/providers",
+            json={"provider_key": "vertex_ai", "label": "Vertex", "api_key": '{"type":"authorized_user"}'},
+            headers=self.headers,
+        )
+        self.assertEqual(422, rejected.status_code)
+
+        created = self.client.post(
+            "/api/v1/providers",
+            json={
+                "provider_key": "vertex_ai",
+                "label": "Vertex",
+                "api_key": credentials,
+                "options": {"request_options": {"vertex_location": "global"}},
+            },
+            headers=self.headers,
+        ).get_json()
+        self.client.post(
+            f"/api/v1/providers/{created['id']}/models",
+            json={"model_id": "gemini-2.5-flash", "is_default": True},
+            headers=self.headers,
+        )
+
+        extension = self.app.extensions["pandrator"]
+        settings, model_name = build_llm_settings(extension["database"], extension["paths"])
+        vertex = settings.provider_configs[0]
+        self.assertEqual(f"custom:{created['id']}/gemini-2.5-flash", model_name)
+        self.assertEqual("", vertex["api_key"])
+        self.assertEqual(credentials, vertex["request_options"]["vertex_credentials"])
+        self.assertEqual("vertex-project", vertex["request_options"]["vertex_project"])
+        self.assertEqual("global", vertex["request_options"]["vertex_location"])
+        self.assertNotIn(credentials, json.dumps(created))
 
     def test_auxiliary_api_keys_share_write_only_storage(self):
         secret = "deepl-secret-value"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 from copy import deepcopy
@@ -2267,8 +2268,10 @@ class WorkflowHandlers:
         from werkzeug.utils import secure_filename
 
         from pandrator.logic.dubbing.bilingual_ass import write_bilingual_ass
+        from pandrator.logic.dubbing.srt_utils import concatenate_subtitle_text, srt_to_vtt
         from pandrator.logic.dubbing.subtitle_finalization import finalize_srt_file
         from pandrator.logic.dubbing.video_muxing import build_add_subtitles_command, build_multi_soft_subtitle_command, build_replace_video_audio_command
+        from pandrator.logic.dubbing_handler import resolve_ffmpeg_for_burned_subtitles
 
         session_id = str(payload.get("session_id") or "")
         settings = dict(payload.get("settings") or {})
@@ -2315,13 +2318,22 @@ class WorkflowHandlers:
             upload_media = next((item for item in reversed(current) if item.role == "upload" and Path(item.relative_path).suffix.lower() in {".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v"}), None)
             translated = by_role.get("translation")
             source_subtitle = by_role.get("correction") or by_role.get("transcription") or next((item for item in current if item.role == "upload" and Path(item.relative_path).suffix.lower() == ".srt"), None)
+            export_mode = str(settings.get("export_mode") or "media").lower()
+            if export_mode not in {"media", "subtitles", "text"}:
+                export_mode = "media"
+            subtitle_format = str(settings.get("subtitle_format") or "srt").lower()
+            if subtitle_format not in {"srt", "vtt"}:
+                subtitle_format = "srt"
             subtitle_mode = str(settings.get("subtitle_mode") or "none").lower()
             subtitle_selection = str(settings.get("subtitle_selection") or ("dual" if translated and source_subtitle else "translation")).lower()
+            if subtitle_selection == "translation" and translated is None and source_subtitle is not None:
+                subtitle_selection = "source"
+            elif subtitle_selection == "source" and source_subtitle is None and translated is not None:
+                subtitle_selection = "translation"
             selected_subtitles = ([source_subtitle] if source_subtitle and subtitle_selection in {"source", "dual"} else []) + ([translated] if translated and subtitle_selection in {"translation", "dual"} else [])
-            # For media, "none" means no subtitle track. For SRT/audio-only
-            # sessions there is no mux target, so the selected SRT remains a
-            # valid standalone export (and preserves the existing contract).
-            selected_subtitles = [item for item in selected_subtitles if item] if subtitle_mode != "none" or upload_media is None else []
+            # "No subtitles" only suppresses tracks on a media render. A
+            # subtitle/text-only request still uses the selected document.
+            selected_subtitles = [item for item in selected_subtitles if item] if export_mode != "media" or subtitle_mode != "none" or upload_media is None else []
             finalized_subtitles: list[Artifact] = []
             for item in selected_subtitles:
                 _subtitle_record, subtitle_path = self._resolve_input(item.id)
@@ -2341,68 +2353,172 @@ class WorkflowHandlers:
                     },
                 )
                 finalized_subtitles.append(finalized)
-                produced.append(finalized)
             selected_subtitles = finalized_subtitles
             dubbing_audio = selected_audio if selected_assembly is not None else by_role.get("assembled_audio") or by_role.get("dubbing_audio")
             audio_mode = str(settings.get("audio_mode") or "source").lower()
+            audio_mode = {"preserve": "source", "dubbing_only": "dubbed"}.get(audio_mode, audio_mode)
             audio_mode = {"preserve": "source", "dubbing_only": "dubbed"}.get(audio_mode, audio_mode)
 
             def is_translation_track(item: Artifact) -> bool:
                 return str((item.metadata_json or {}).get("source_role") or item.role) == "translation"
 
-            if upload_media:
+            def track_details(item: Artifact) -> tuple[str, str, str, bool]:
+                translation_track = is_translation_track(item)
+                track_name = "translation" if translation_track else "source"
+                language = str((item.metadata_json or {}).get("language") or (settings.get("target_language") if translation_track else settings.get("original_language")) or "und")
+                title = "Translation" if translation_track else "Source"
+                is_default = translation_track or len(selected_subtitles) == 1
+                return track_name, language, title, is_default
+
+            if export_mode in {"subtitles", "text"}:
+                if not selected_subtitles:
+                    raise ValueError("No subtitle artifact is available for this export.")
+                for item in selected_subtitles:
+                    _artifact, subtitle_path = self._resolve_input(item.id)
+                    track_name, language, title, _default = track_details(item)
+                    if export_mode == "text":
+                        destination = output_dir / f"{export_name}_{track_name}.txt"
+                        destination.write_text(
+                            concatenate_subtitle_text(subtitle_path.read_text(encoding="utf-8-sig")),
+                            encoding="utf-8",
+                        )
+                        kind = "text"
+                        role = f"export_text_{track_name}"
+                    else:
+                        destination = output_dir / f"{export_name}_{track_name}.{subtitle_format}"
+                        if subtitle_format == "vtt":
+                            destination.write_text(
+                                srt_to_vtt(subtitle_path.read_text(encoding="utf-8-sig")),
+                                encoding="utf-8",
+                            )
+                        else:
+                            shutil.copy2(subtitle_path, destination)
+                        kind = subtitle_format
+                        role = f"export_subtitle_{track_name}"
+                    produced.append(
+                        self.artifacts.register(
+                            destination,
+                            kind=kind,
+                            role=role,
+                            session_id=session_id,
+                            parent_ids=[item.id],
+                            settings=settings,
+                            metadata={"language": language, "title": title, "source_role": (item.metadata_json or {}).get("source_role")},
+                        )
+                    )
+            elif upload_media:
                 _media_record, media_path = self._resolve_input(upload_media.id)
                 working_video = media_path
                 audio_parent_ids: list[str] = [upload_media.id]
+                temporary_video: Path | None = None
+                ffmpeg_executable = str(os.environ.get("PANDRATOR_FFMPEG_EXE") or shutil.which("ffmpeg") or "ffmpeg")
                 if dubbing_audio and audio_mode in {"dubbed", "mixed"}:
                     _audio_record, audio_path = self._resolve_input(dubbing_audio.id)
-                    audio_video = output_dir / f".{record.storage_key}-audio.mp4"
+                    audio_video = output_dir / f".{record.storage_key}-audio-{new_id()}.mp4"
                     if audio_mode == "dubbed":
-                        command = build_replace_video_audio_command(str(media_path), str(audio_path), str(audio_video))
+                        command = build_replace_video_audio_command(str(media_path), str(audio_path), str(audio_video), ffmpeg_executable=ffmpeg_executable)
                     else:
-                        command = ["ffmpeg", "-y", "-i", str(media_path), "-i", str(audio_path), "-filter_complex", "[0:a][1:a]amix=inputs=2:duration=longest:dropout_transition=2[a]", "-map", "0:v:0", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", str(audio_video)]
+                        command = [ffmpeg_executable, "-y", "-i", str(media_path), "-i", str(audio_path), "-filter_complex", "[0:a][1:a]amix=inputs=2:duration=longest:dropout_transition=2[a]", "-map", "0:v:0", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", str(audio_video)]
                     subprocess.run(command, check=True, capture_output=True, text=True)
                     working_video = audio_video
+                    temporary_video = audio_video
                     audio_parent_ids.append(dubbing_audio.id)
-                destination = output_dir / f"{export_name}.mp4"
-                if subtitle_mode == "soft" and selected_subtitles:
-                    tracks = []
-                    for item in selected_subtitles:
-                        _subtitle, subtitle_path = self._resolve_input(item.id)
-                        translation_track = is_translation_track(item)
-                        tracks.append({"path": str(subtitle_path), "language": str((item.metadata_json or {}).get("language") or (settings.get("target_language") if translation_track else "und") or "und"), "title": "Translation" if translation_track else "Source", "default": translation_track})
-                    command = build_multi_soft_subtitle_command(str(working_video), tracks, str(destination))
-                    subprocess.run(command, check=True, capture_output=True, text=True)
-                elif subtitle_mode == "burned" and selected_subtitles:
-                    subtitle_paths = [self._resolve_input(item.id)[1] for item in selected_subtitles]
-                    burn_path = subtitle_paths[-1]
-                    if len(subtitle_paths) == 2:
-                        burn_path = Path(write_bilingual_ass(str(subtitle_paths[0]), str(subtitle_paths[1]), str(output_dir / "bilingual_subtitles.ass")))
-                        self.artifacts.register(
-                            burn_path,
-                            kind="ass",
-                            role="bilingual_subtitle_overlay",
-                            session_id=session_id,
-                            parent_ids=[item.id for item in selected_subtitles],
-                            settings=settings,
-                        )
-                    command = build_add_subtitles_command(str(working_video), str(burn_path), str(destination), subtitle_mode="burned", subtitle_language=str(settings.get("target_language") or "und"))
-                    subprocess.run(command, check=True, capture_output=True, text=True)
-                else:
-                    shutil.copy2(working_video, destination)
-                produced.append(self.artifacts.register(destination, kind="export", role="export", session_id=session_id, parent_ids=audio_parent_ids + [item.id for item in selected_subtitles], settings=settings))
-                if working_video != media_path and working_video.exists():
-                    working_video.unlink()
+                variant = f"_{subtitle_mode}" if subtitle_mode in {"soft", "burned"} and selected_subtitles else ""
+                destination = output_dir / f"{export_name}{variant}.mp4"
+                render_destination = output_dir / f".{record.storage_key}-render-{new_id()}.mp4"
+                video_track_artifacts: list[Artifact] = []
+                try:
+                    if subtitle_mode == "soft" and selected_subtitles:
+                        tracks = []
+                        for item in selected_subtitles:
+                            _subtitle, subtitle_path = self._resolve_input(item.id)
+                            track_name, language, title, is_default = track_details(item)
+                            tracks.append({"path": str(subtitle_path), "language": language, "title": title, "default": is_default})
+                            vtt_path = output_dir / f"{record.storage_key}_{track_name}_player.vtt"
+                            vtt_path.write_text(srt_to_vtt(subtitle_path.read_text(encoding="utf-8-sig")), encoding="utf-8")
+                            video_track_artifacts.append(
+                                self.artifacts.register(
+                                    vtt_path,
+                                    kind="vtt",
+                                    role=f"video_subtitle_track_{track_name}",
+                                    session_id=session_id,
+                                    parent_ids=[item.id],
+                                    settings=settings,
+                                    metadata={"language": language, "title": title, "default": is_default},
+                                )
+                            )
+                        command = build_multi_soft_subtitle_command(str(working_video), tracks, str(render_destination), ffmpeg_executable=ffmpeg_executable)
+                        subprocess.run(command, check=True, capture_output=True, text=True)
+                    elif subtitle_mode == "burned" and selected_subtitles:
+                        subtitle_paths = [self._resolve_input(item.id)[1] for item in selected_subtitles]
+                        burn_path = subtitle_paths[-1]
+                        if len(subtitle_paths) == 2:
+                            burn_path = Path(write_bilingual_ass(str(subtitle_paths[0]), str(subtitle_paths[1]), str(output_dir / "bilingual_subtitles.ass")))
+                            self.artifacts.register(
+                                burn_path,
+                                kind="ass",
+                                role="bilingual_subtitle_overlay",
+                                session_id=session_id,
+                                parent_ids=[item.id for item in selected_subtitles],
+                                settings=settings,
+                            )
+                        burn_ffmpeg = resolve_ffmpeg_for_burned_subtitles()
+                        if not burn_ffmpeg:
+                            raise RuntimeError("Burned subtitles require an FFmpeg build with the subtitles/libass filter. Install or select Pandrator's bundled FFmpeg, or use soft subtitles.")
+                        command = build_add_subtitles_command(str(working_video), str(burn_path), str(render_destination), subtitle_mode="burned", subtitle_language=str(settings.get("target_language") or "und"), ffmpeg_executable=burn_ffmpeg)
+                        subprocess.run(command, check=True, capture_output=True, text=True)
+                    else:
+                        shutil.copy2(working_video, render_destination)
+                    os.replace(render_destination, destination)
+                finally:
+                    if render_destination.exists():
+                        render_destination.unlink()
+                    if temporary_video is not None and temporary_video.exists():
+                        temporary_video.unlink()
+                subtitle_track_metadata = [
+                    {
+                        "artifact_id": item.id,
+                        "language": str((item.metadata_json or {}).get("language") or "und"),
+                        "title": str((item.metadata_json or {}).get("title") or "Subtitles"),
+                        "default": bool((item.metadata_json or {}).get("default")),
+                    }
+                    for item in video_track_artifacts
+                ]
+                produced.append(
+                    self.artifacts.register(
+                        destination,
+                        kind="export",
+                        role="export",
+                        session_id=session_id,
+                        parent_ids=audio_parent_ids + [item.id for item in selected_subtitles] + [item.id for item in video_track_artifacts],
+                        settings=settings,
+                        metadata={"subtitle_mode": subtitle_mode, "subtitle_tracks": subtitle_track_metadata},
+                    )
+                )
             else:
-                for item in selected_subtitles + ([dubbing_audio] if dubbing_audio and audio_mode != "source" else []):
+                # Preserve the historical behavior for SRT/audio-only sessions:
+                # a media export falls back to managed standalone artifacts.
+                for item in selected_subtitles:
+                    _artifact, item_path = self._resolve_input(item.id)
+                    track_name, language, title, _default = track_details(item)
+                    destination = output_dir / f"{export_name}_{track_name}.srt"
+                    shutil.copy2(item_path, destination)
+                    produced.append(
+                        self.artifacts.register(
+                            destination,
+                            kind="srt",
+                            role=f"export_subtitle_{track_name}",
+                            session_id=session_id,
+                            parent_ids=[item.id],
+                            settings=settings,
+                            metadata={"language": language, "title": title, "source_role": (item.metadata_json or {}).get("source_role")},
+                        )
+                    )
+                for item in [dubbing_audio] if dubbing_audio and audio_mode != "source" else []:
                     if item is None:
                         continue
                     _artifact, item_path = self._resolve_input(item.id)
-                    destination = (
-                        output_dir / f"{export_name}{item_path.suffix.lower()}"
-                        if item.role in {"assembled_audio", "dubbing_audio"}
-                        else output_dir / item_path.name
-                    )
+                    destination = output_dir / f"{export_name}{item_path.suffix.lower()}"
                     if item_path.resolve() == destination.resolve():
                         continue
                     shutil.copy2(item_path, destination)

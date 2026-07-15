@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Columns3, Filter, Merge, Play, Save, Scissors, Trash2, X } from '@lucide/svelte';
   import { api } from './api';
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import GuidedTour from './GuidedTour.svelte';
   import AudioPlayer from './AudioPlayer.svelte';
 
@@ -19,6 +19,8 @@
   let editStage = $state<ReviewStage>('translation');
   let saving = $state(false);
   let audioPreview = $state<HTMLAudioElement>();
+  let cuePreviewFrame: number | null = null;
+  let cuePreviewEnd = 0;
   let tourOpen = $state(false);
   const tourSteps = [{section:'Review',title:'Lineage keeps changes together',body:'Rows group transcription, correction, and translation through split/merge lineage, with temporal overlap for legacy artifacts.'},{section:'Review',title:'Edit the selected revision',body:'Change text and boundaries, split a segment, or merge it with the next while comparison columns remain visible.'},{section:'Review',title:'Saving creates history',body:'A save creates a reviewed immutable revision and invalidates only affected descendants.'}];
   const availableStages = $derived((['transcription', 'correction', 'translation', 'tts_optimization'] as const).filter((stage) => payload?.stages[stage]));
@@ -55,7 +57,37 @@
   }
 
   function removeSegment(segment: Segment) { const records=payload?.stages[editStage]?.segments; if(records) records.splice(records.indexOf(segment),1); }
-  function previewSegment(segment: Segment) { if(!audioPreview)return; audioPreview.currentTime=segment.start_ms/1000; audioPreview.play(); window.setTimeout(()=>{if(audioPreview&&audioPreview.currentTime>=segment.end_ms/1000)audioPreview.pause()},Math.max(100,segment.end_ms-segment.start_ms)); }
+  function stopCuePreview(pause = false) {
+    if (cuePreviewFrame !== null) window.cancelAnimationFrame(cuePreviewFrame);
+    cuePreviewFrame = null;
+    if (pause) audioPreview?.pause();
+  }
+
+  function watchCueBoundary() {
+    if (!audioPreview || audioPreview.paused) { cuePreviewFrame = null; return; }
+    if (audioPreview.currentTime >= cuePreviewEnd - 0.01) {
+      audioPreview.pause();
+      audioPreview.currentTime = cuePreviewEnd;
+      cuePreviewFrame = null;
+      return;
+    }
+    cuePreviewFrame = window.requestAnimationFrame(watchCueBoundary);
+  }
+
+  async function previewSegment(segment: Segment) {
+    if (!audioPreview) return;
+    stopCuePreview(true);
+    audioPreview.currentTime = segment.start_ms / 1000;
+    cuePreviewEnd = segment.end_ms / 1000;
+    try {
+      await audioPreview.play();
+      cuePreviewFrame = window.requestAnimationFrame(watchCueBoundary);
+    } catch {
+      cuePreviewFrame = null;
+    }
+  }
+
+  onDestroy(() => stopCuePreview(true));
 
   async function save() {
     const stage = payload?.stages[editStage];

@@ -12,6 +12,8 @@
   let comparisonName = $state('');
   let comparisonId = $state('');
   let comparisonMode = $state(false);
+  type SubtitleTrack = { artifact_id: string; language: string; title: string; default: boolean };
+  let subtitleTracks = $state<SubtitleTrack[]>([]);
   const url = $derived(`/api/v1/artifacts/${artifact.id}/content`);
   const filename = $derived(artifactFilename(artifact));
   const extension = $derived(filename.split('.').at(-1)?.toLowerCase() ?? '');
@@ -22,29 +24,63 @@
   const isPdf = $derived(mime === 'application/pdf' || extension === 'pdf');
   const isText = $derived(mime.startsWith('text/') || ['txt','srt','vtt','ass','ssa','json','xml','csv','md','log','yaml','yml'].includes(extension));
 
+  function parsedSubtitleTracks(value: unknown): SubtitleTrack[] {
+    if (!Array.isArray(value)) return [];
+    return value.flatMap((item: any) => item?.artifact_id ? [{
+      artifact_id: String(item.artifact_id),
+      language: String(item.language || 'und'),
+      title: String(item.title || 'Subtitles'),
+      default: Boolean(item.default)
+    }] : []);
+  }
+
+  function showDefaultSubtitleTrack(event: Event) {
+    const video = event.currentTarget as HTMLVideoElement;
+    Array.from(video.textTracks).forEach((track, index) => {
+      track.mode = subtitleTracks[index]?.default ? 'showing' : 'disabled';
+    });
+  }
+
+  function loadSubtitleTrack(event: Event, isDefault: boolean) {
+    (event.currentTarget as HTMLTrackElement).track.mode = isDefault ? 'showing' : 'disabled';
+  }
+
   onMount(async () => {
-    if (!isText) return;
-    loading = true;
+    loading = isText;
     try {
-      const response = await fetch(url, { credentials: 'same-origin', headers: { Range: 'bytes=0-2097151' } });
-      if (!response.ok && response.status !== 206) throw new Error(`Preview failed (${response.status})`);
-      text = await response.text();
-      if (text.length >= 2_097_000) text += '\n\n— Preview truncated at 2 MiB —';
+      if (isText) {
+        const response = await fetch(url, { credentials: 'same-origin', headers: { Range: 'bytes=0-2097151' } });
+        if (!response.ok && response.status !== 206) throw new Error(`Preview failed (${response.status})`);
+        text = await response.text();
+        if (text.length >= 2_097_000) text += '\n\n— Preview truncated at 2 MiB —';
+      }
 
       const contextResponse = await fetch(`/api/v1/artifacts/${artifact.id}/context`, { credentials: 'same-origin' });
       if (contextResponse.ok) {
         const context = await contextResponse.json();
-        const parent = (context.parents ?? []).find((item: any) => {
-          const name = String(item.relative_path ?? '').toLowerCase();
-          const type = String(item.mime_type ?? '').toLowerCase();
-          return item.kind === 'text' || type.startsWith('text/') || ['.txt','.md','.srt','.vtt','.json'].some((suffix) => name.endsWith(suffix));
-        });
-        if (parent) {
-          const parentResponse = await fetch(`/api/v1/artifacts/${parent.id}/content`, { credentials: 'same-origin', headers: { Range: 'bytes=0-2097151' } });
-          if (parentResponse.ok || parentResponse.status === 206) {
-            comparisonText = await parentResponse.text();
-            comparisonId = parent.id;
-            comparisonName = artifactFilename(parent);
+        if (isVideo) {
+          subtitleTracks = parsedSubtitleTracks(context.artifact?.metadata_json?.subtitle_tracks ?? artifact.metadata_json?.subtitle_tracks);
+          if (!subtitleTracks.length) {
+            subtitleTracks = (context.parents ?? []).flatMap((item: any) => {
+              const name = String(item.relative_path ?? '').toLowerCase();
+              if (item.kind !== 'vtt' && !name.endsWith('.vtt')) return [];
+              return [{ artifact_id: String(item.id), language: String(item.metadata_json?.language || 'und'), title: String(item.metadata_json?.title || 'Subtitles'), default: Boolean(item.metadata_json?.default) }];
+            });
+          }
+        }
+        if (isText) {
+          const parent = (context.parents ?? []).find((item: any) => {
+            const name = String(item.relative_path ?? '').toLowerCase();
+            const type = String(item.mime_type ?? '').toLowerCase();
+            return item.kind === 'text' || type.startsWith('text/') || ['.txt','.md','.srt','.vtt','.json'].some((suffix) => name.endsWith(suffix));
+          });
+          if (parent) {
+            const parentResponse = await fetch(`/api/v1/artifacts/${parent.id}/content`, { credentials: 'same-origin', headers: { Range: 'bytes=0-2097151' } });
+            if (parentResponse.ok || parentResponse.status === 206) {
+              comparisonText = await parentResponse.text();
+              comparisonId = parent.id;
+              comparisonName = artifactFilename(parent);
+            }
           }
         }
       }
@@ -63,7 +99,7 @@
     </header>
     <div class="min-h-0 flex-1 overflow-auto bg-[var(--paper)] p-4 sm:p-6">
       {#if isAudio}<div class="grid min-h-72 place-items-center"><div class="w-full max-w-3xl"><AudioPlayer src={url}/></div></div>
-      {:else if isVideo}<!-- svelte-ignore a11y_media_has_caption --><video controls preload="metadata" src={url} class="mx-auto max-h-[72vh] max-w-full rounded-xl bg-black"></video>
+      {:else if isVideo}<!-- svelte-ignore a11y_media_has_caption --><video controls preload="metadata" src={url} onloadedmetadata={showDefaultSubtitleTrack} class="mx-auto max-h-[72vh] max-w-full rounded-xl bg-black">{#each subtitleTracks as track}<track kind="subtitles" src={`/api/v1/artifacts/${track.artifact_id}/content`} srclang={track.language} label={track.title} default={track.default} onload={(event)=>loadSubtitleTrack(event,track.default)}/>{/each}</video>
       {:else if isImage}<img src={url} alt={filename} class="mx-auto max-h-[74vh] max-w-full rounded-xl object-contain"/>
       {:else if isPdf}<iframe src={url} title={filename} class="h-[74vh] w-full rounded-xl border border-[var(--line)] bg-white"></iframe>
       {:else if isText}

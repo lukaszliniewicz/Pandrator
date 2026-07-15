@@ -36,6 +36,17 @@ class DubbingSubtitleLogicTests(unittest.TestCase):
         self.assertIn("2\n00:00:02,050 --> 00:00:02,500", renumbered)
         self.assertIn("3\n00:00:03,000 --> 00:00:04,000", renumbered)
 
+    def test_srt_converts_to_webvtt_and_concatenated_text(self):
+        webvtt = srt_utils.srt_to_vtt(SAMPLE_SRT)
+        transcript = srt_utils.concatenate_subtitle_text(SAMPLE_SRT)
+
+        self.assertTrue(webvtt.startswith("WEBVTT\n\n"))
+        self.assertIn("00:00:01.000 --> 00:00:02.000", webvtt)
+        self.assertEqual(
+            "[SPEAKER_00]: I think [SPEAKER_00]: so [SPEAKER_01]: No.\n",
+            transcript,
+        )
+
     def test_merge_subtitles_respects_speaker_labels_and_timing(self):
         merged_srt, diarization_detected = srt_utils.merge_subtitles_with_speaker_awareness(
             SAMPLE_SRT,

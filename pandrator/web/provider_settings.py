@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -95,7 +96,8 @@ LLM_PROVIDER_PROFILES: tuple[dict[str, Any], ...] = (
         "provider_key": "vertex_ai",
         "base_url": "",
         "secret_ref": "",
-        "description": "Vertex AI using Google application-default credentials and advanced project/location options.",
+        "description": "Vertex AI using preferred application-default credentials or a pasted service-account JSON key. The project is read from the JSON and the location defaults to global.",
+        "options": {"request_options": {"vertex_location": "global"}},
     },
     {
         "id": "bedrock",
@@ -186,6 +188,19 @@ def build_llm_settings(
             }
             for row in rows
         ]
+        request_options = _request_options(provider.options_json)
+        credential_value = credential.value
+        if str(provider.provider_key or "").strip().lower() == "vertex_ai":
+            if credential_value:
+                request_options["vertex_credentials"] = credential_value
+                try:
+                    credential_payload = json.loads(credential_value)
+                except (TypeError, ValueError):
+                    credential_payload = {}
+                if isinstance(credential_payload, dict) and credential_payload.get("project_id"):
+                    request_options.setdefault("vertex_project", str(credential_payload["project_id"]))
+            request_options.setdefault("vertex_location", "global")
+            credential_value = ""
         provider_configs.append(
             {
                 "id": provider_id,
@@ -193,11 +208,11 @@ def build_llm_settings(
                 "provider": provider.provider_key,
                 "api_base": provider.base_url or "",
                 "api_key_env": credential.environment_variable,
-                "api_key": credential.value,
+                "api_key": credential_value,
                 "is_custom": is_custom,
                 "models": records,
                 "models_explicit": True,
-                "request_options": _request_options(provider.options_json),
+                "request_options": request_options,
             }
         )
         default_row = next((row for row in rows if row.is_default), None)

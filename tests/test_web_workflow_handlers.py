@@ -309,13 +309,82 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         self.assertEqual(len(result["artifact_ids"]), 1)
         with self.database.session() as session:
             exported = session.scalar(select(Artifact).where(Artifact.id == result["artifact_ids"][0]))
-            self.assertEqual(exported.role, "final_subtitle_source")
+            self.assertEqual(exported.role, "export_subtitle_source")
             edge = session.scalar(
                 select(ArtifactEdge).where(ArtifactEdge.child_artifact_id == exported.id)
             )
-            self.assertEqual(edge.parent_artifact_id, uploaded.id)
+            finalized = session.get(Artifact, edge.parent_artifact_id)
+            self.assertEqual(finalized.role, "final_subtitle_source")
             final_path = self.paths.root / exported.relative_path
             self.assertIn("00:00:00,000 --> 00:00:01,000", final_path.read_text(encoding="utf-8"))
+
+    def test_subtitle_exports_support_vtt_and_concatenated_text(self):
+        subtitle_session = self.sessions.create("Portable subtitles", workflow_kind="subtitles")
+        session_dir = self.paths.sessions / subtitle_session.storage_key
+        session_dir.mkdir()
+        source_path = self.paths.uploads / "portable.srt"
+        source_path.write_text(
+            "1\n00:00:00,000 --> 00:00:01,000\nHello\nworld\n\n"
+            "2\n00:00:01,100 --> 00:00:02,000\nAgain.\n",
+            encoding="utf-8",
+        )
+        self.artifacts.register(
+            source_path,
+            kind="source",
+            role="upload",
+            session_id=subtitle_session.id,
+            metadata={"original_filename": "portable.srt"},
+        )
+
+        vtt_result = self.handlers.export(
+            {
+                "session_id": subtitle_session.id,
+                "settings": {"export_mode": "subtitles", "subtitle_format": "vtt", "subtitle_selection": "source"},
+            },
+            self.progress,
+            threading.Event(),
+        )
+        text_result = self.handlers.export(
+            {
+                "session_id": subtitle_session.id,
+                "settings": {"export_mode": "text", "subtitle_selection": "source"},
+            },
+            self.progress,
+            threading.Event(),
+        )
+
+        vtt, vtt_path = self.artifacts.resolve(vtt_result["artifact_ids"][0])
+        transcript, transcript_path = self.artifacts.resolve(text_result["artifact_ids"][0])
+        self.assertEqual("export_subtitle_source", vtt.role)
+        self.assertEqual("vtt", vtt.kind)
+        self.assertIn("00:00:00.000 --> 00:00:01.000", vtt_path.read_text(encoding="utf-8"))
+        self.assertEqual("export_text_source", transcript.role)
+        self.assertEqual("Hello world Again.\n", transcript_path.read_text(encoding="utf-8"))
+
+    def test_subtitle_export_falls_back_to_the_available_source_track(self):
+        subtitle_session = self.sessions.create("Source-only subtitles", workflow_kind="subtitles")
+        source_path = self.paths.uploads / "source-only.srt"
+        source_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nOnly source\n", encoding="utf-8")
+        self.artifacts.register(
+            source_path,
+            kind="source",
+            role="upload",
+            session_id=subtitle_session.id,
+            metadata={"original_filename": "source-only.srt"},
+        )
+
+        result = self.handlers.export(
+            {
+                "session_id": subtitle_session.id,
+                "settings": {"export_mode": "subtitles", "subtitle_format": "srt"},
+            },
+            self.progress,
+            threading.Event(),
+        )
+
+        exported, exported_path = self.artifacts.resolve(result["artifact_ids"][0])
+        self.assertEqual("export_subtitle_source", exported.role)
+        self.assertIn("Only source", exported_path.read_text(encoding="utf-8"))
 
     def test_audiobook_export_prefers_assembled_audio_and_preserves_container(self):
         audiobook = self.sessions.create("Finished Book", workflow_kind="audiobook")
@@ -568,7 +637,11 @@ class WebWorkflowHandlerTests(unittest.TestCase):
                 if subtitle_mode == "soft":
                     self.assertEqual(["eng", "pol"], [stream.get("tags", {}).get("language") for stream in subtitle_streams])
                     self.assertEqual(1, subtitle_streams[1].get("disposition", {}).get("default"))
+                    self.assertTrue(output.name.endswith("_soft.mp4"))
+                    self.assertEqual(2, len(exported.metadata_json.get("subtitle_tracks", [])))
+                    self.assertTrue(all(item.get("artifact_id") for item in exported.metadata_json["subtitle_tracks"]))
                 if subtitle_mode == "burned":
+                    self.assertTrue(output.name.endswith("_burned.mp4"))
                     with self.database.session() as session:
                         overlay = session.scalar(
                             select(Artifact).where(

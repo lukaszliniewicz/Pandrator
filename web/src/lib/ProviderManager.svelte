@@ -45,8 +45,9 @@
 
   const allModels = $derived(Object.values(models).flat());
   const selectedProviderProfile = $derived(profiles.find((item) => item.id === providerProfileId));
+  const isVertexProvider = $derived(providerKey.trim().toLowerCase() === 'vertex_ai');
   const providerKeys = ['openai', 'anthropic', 'gemini', 'openrouter', 'ollama', 'groq', 'mistral', 'vertex_ai', 'azure', 'bedrock'];
-  const requestOptionKeys = ['organization', 'project', 'api_version', 'location', 'region_name', 'aws_region_name', 'deployment_id'];
+  const requestOptionKeys = ['organization', 'vertex_project', 'vertex_location', 'api_version', 'region_name', 'aws_region_name', 'deployment_id'];
   const tourSteps = [
     { section: 'Connections', title: 'Profiles are editable starting points', body: 'Choose a LiteLLM profile, then adjust its display name, provider adapter, URL, API key, and advanced request options.' },
     { section: 'Models', title: 'One record per canonical model', body: 'Discovery adds new IDs without removing manual models or their temperature, reasoning, and cost settings.' },
@@ -97,6 +98,21 @@
 
   function addRequestOption() { requestOptionRows = [...requestOptionRows, { id: rowId(), key: '', value: '', type: 'text' }]; }
   function removeRequestOption(id: string) { requestOptionRows = requestOptionRows.filter((row) => row.id !== id); }
+  function setRequestOption(key: string, value: string) {
+    const existing = requestOptionRows.find((row) => row.key.trim() === key);
+    if (existing) existing.value = value;
+    else requestOptionRows = [...requestOptionRows, { id: rowId(), key, value, type: 'text' }];
+  }
+  function readVertexProjectFromCredentials() {
+    const value = providerApiKey.trim();
+    if (!value) return;
+    const payload = JSON.parse(value);
+    if (!payload || payload.type !== 'service_account' || !payload.project_id || !payload.client_email || !payload.private_key || !payload.token_uri) {
+      throw new Error('Paste a complete Google service-account JSON key. For user or federated credentials, configure Application Default Credentials instead.');
+    }
+    setRequestOption('vertex_project', String(payload.project_id));
+    if (!requestOptionRows.some((row) => row.key.trim() === 'vertex_location')) setRequestOption('vertex_location', 'global');
+  }
   function requestOptionsValue() {
     return Object.fromEntries(requestOptionRows.filter((row) => row.key.trim()).map((row) => [row.key.trim(), row.type === 'number' ? Number(row.value) : row.type === 'boolean' ? row.value === 'true' : row.value]));
   }
@@ -127,6 +143,10 @@
   async function saveProvider() {
     if (!providerLabel.trim()) { error = 'A display name is required.'; return; }
     if (!providerKey.trim()) { error = 'A LiteLLM provider adapter is required.'; return; }
+    if (isVertexProvider && providerApiKey.trim()) {
+      try { readVertexProjectFromCredentials(); }
+      catch { error = 'Vertex credentials must be a complete, valid Google service-account JSON key.'; return; }
+    }
     const options: Record<string, any> = { ...providerMetadata, ...(providerProfileId ? { profile_id: providerProfileId } : {}), ...(requestOptionRows.some((row) => row.key.trim()) ? { request_options: requestOptionsValue() } : {}) };
     const body = JSON.stringify({ provider_key: providerKey.trim(), label: providerLabel.trim(), enabled: providerEnabled, base_url: providerUrl.trim() || null, secret_ref: providerSecretRef.trim() || null, ...(providerApiKey.trim() ? { api_key: providerApiKey.trim() } : {}), ...(removeProviderApiKey ? { clear_api_key: true } : {}), options });
     try {
@@ -277,10 +297,14 @@
       <label class="text-sm font-semibold">Display name<input bind:value={providerLabel} class="field"/></label>
       <label class="text-sm font-semibold">LiteLLM provider<input bind:value={providerKey} list="litellm-providers" class="field"/><datalist id="litellm-providers">{#each providerKeys as key}<option value={key}></option>{/each}</datalist></label>
       <label class="text-sm font-semibold sm:col-span-2">API base URL<input bind:value={providerUrl} placeholder="Provider default, or http://127.0.0.1:1234/v1" class="field"/><small class="muted mt-1 block font-normal">Leave blank when the LiteLLM adapter owns endpoint discovery.</small></label>
-      <label class="text-sm font-semibold sm:col-span-2">API key<input bind:value={providerApiKey} oninput={() => removeProviderApiKey = false} type="password" autocomplete="new-password" placeholder={editingProvider?.credential_configured ? 'Leave blank to keep the saved key' : 'Paste API key'} class="field"/><small class="muted mt-1 block font-normal">Saved in Pandrator's local database and never shown again.{editingProvider?.credential_configured ? ` Current source: ${editingProvider.credential_source}.` : ''}</small></label>
+      {#if isVertexProvider}
+        <label class="text-sm font-semibold sm:col-span-2">Google service-account JSON<textarea bind:value={providerApiKey} oninput={() => removeProviderApiKey = false} onblur={() => { try { readVertexProjectFromCredentials(); } catch {} }} rows="8" spellcheck="false" autocomplete="off" placeholder={editingProvider?.credential_configured ? 'Leave blank to keep the saved JSON credentials' : '{\n  "type": "service_account",\n  "project_id": "your-project",\n  …\n}'} class="field font-mono text-xs"></textarea><small class="muted mt-1 block font-normal">For convenience, paste the complete downloaded JSON key; Pandrator stores it write-only and fills <code>vertex_project</code> automatically. Google recommends Application Default Credentials for a local workstation, so you may leave this blank after running <code>gcloud auth application-default login</code>. Location defaults to <code>global</code>.{editingProvider?.credential_configured ? ` Current source: ${editingProvider.credential_source}.` : ''}</small></label>
+      {:else}
+        <label class="text-sm font-semibold sm:col-span-2">API key<input bind:value={providerApiKey} oninput={() => removeProviderApiKey = false} type="password" autocomplete="new-password" placeholder={editingProvider?.credential_configured ? 'Leave blank to keep the saved key' : 'Paste API key'} class="field"/><small class="muted mt-1 block font-normal">Saved in Pandrator's local database and never shown again.{editingProvider?.credential_configured ? ` Current source: ${editingProvider.credential_source}.` : ''}</small></label>
+      {/if}
       {#if editingProvider?.credential_source === 'database'}<label class="flex items-center gap-2 text-sm sm:col-span-2"><input type="checkbox" bind:checked={removeProviderApiKey} onchange={() => { if (removeProviderApiKey) providerApiKey = ''; }} class="accent-[var(--accent)]"/> Remove the database key</label>{/if}
       <label class="flex items-center gap-3 rounded-xl border border-[var(--line)] p-3 text-sm font-semibold sm:col-span-2"><input type="checkbox" bind:checked={providerEnabled} class="accent-[var(--accent)]"/><span><span class="block">Provider enabled</span><small class="muted font-normal">Disabled providers remain configured but cannot be selected by new runs.</small></span></label>
-      <details class="rounded-xl border border-[var(--line)] p-4 sm:col-span-2"><summary class="cursor-pointer text-sm font-semibold">Advanced LiteLLM request options</summary><label class="mt-4 block text-sm font-semibold">External credential reference<input bind:value={providerSecretRef} placeholder="env:OPENAI_API_KEY" class="field"/><small class="muted mt-1 block font-normal">Optional compatibility fallback: env:VARIABLE, keyring:service/user, or file:key. Entering an API key above switches this provider to database storage.</small></label><p class="muted mt-4 text-xs">Add only endpoint-specific options such as organization, API version, project, location, or AWS region. Pandrator controls the model, messages, credential, timeout, temperature, and reasoning fields.</p><div class="mt-4 space-y-2">{#each requestOptionRows as row (row.id)}<div class="grid gap-2 sm:grid-cols-[minmax(9rem,.8fr)_7rem_1fr_auto]"><input bind:value={row.key} list="request-option-keys" aria-label="Request option name" placeholder="Option name" class="subfield"/><select bind:value={row.type} aria-label="Request option type" class="subfield"><option value="text">Text</option><option value="number">Number</option><option value="boolean">Boolean</option></select>{#if row.type === 'boolean'}<select bind:value={row.value} aria-label={`${row.key || 'Request option'} value`} class="subfield"><option value="true">True</option><option value="false">False</option></select>{:else}<input bind:value={row.value} type={row.type === 'number' ? 'number' : 'text'} aria-label={`${row.key || 'Request option'} value`} placeholder="Value" class="subfield"/>{/if}<button type="button" onclick={() => removeRequestOption(row.id)} aria-label="Remove request option" class="btn btn-icon btn-quiet"><Trash2 size={14}/></button></div>{/each}</div><datalist id="request-option-keys">{#each requestOptionKeys as key}<option value={key}></option>{/each}</datalist><button type="button" onclick={addRequestOption} class="btn btn-sm btn-secondary mt-3"><Plus size={13}/> Add request option</button></details>
+      <details class="rounded-xl border border-[var(--line)] p-4 sm:col-span-2"><summary class="cursor-pointer text-sm font-semibold">Advanced LiteLLM request options</summary><label class="mt-4 block text-sm font-semibold">External credential reference<input bind:value={providerSecretRef} placeholder="env:OPENAI_API_KEY" class="field"/><small class="muted mt-1 block font-normal">Optional compatibility fallback: env:VARIABLE, keyring:service/user, or file:key. Entering credentials above switches this provider to database storage.</small></label><p class="muted mt-4 text-xs">Add only endpoint-specific options such as organization, API version, <code>vertex_project</code>, <code>vertex_location</code>, or AWS region. Pandrator controls the model, messages, credential, timeout, temperature, and reasoning fields.</p><div class="mt-4 space-y-2">{#each requestOptionRows as row (row.id)}<div class="grid gap-2 sm:grid-cols-[minmax(9rem,.8fr)_7rem_1fr_auto]"><input bind:value={row.key} list="request-option-keys" aria-label="Request option name" placeholder="Option name" class="subfield"/><select bind:value={row.type} aria-label="Request option type" class="subfield"><option value="text">Text</option><option value="number">Number</option><option value="boolean">Boolean</option></select>{#if row.type === 'boolean'}<select bind:value={row.value} aria-label={`${row.key || 'Request option'} value`} class="subfield"><option value="true">True</option><option value="false">False</option></select>{:else}<input bind:value={row.value} type={row.type === 'number' ? 'number' : 'text'} aria-label={`${row.key || 'Request option'} value`} placeholder="Value" class="subfield"/>{/if}<button type="button" onclick={() => removeRequestOption(row.id)} aria-label="Remove request option" class="btn btn-icon btn-quiet"><Trash2 size={14}/></button></div>{/each}</div><datalist id="request-option-keys">{#each requestOptionKeys as key}<option value={key}></option>{/each}</datalist><button type="button" onclick={addRequestOption} class="btn btn-sm btn-secondary mt-3"><Plus size={13}/> Add request option</button></details>
     </div>
     <footer class="mt-6 flex justify-end gap-2"><button onclick={() => providerModal = false} class="btn btn-secondary">Cancel</button><button onclick={saveProvider} class="btn btn-primary">{editingProvider ? 'Save provider' : 'Create provider'}</button></footer>
   </div></div>

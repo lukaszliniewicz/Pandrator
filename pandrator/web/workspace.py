@@ -238,9 +238,11 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
     "output": {
         "format": "wav",
         "bitrate": "192k",
+        "export_mode": "media",
         "audio_mode": "preserve",
         "subtitle_mode": "none",
         "subtitle_selection": "translation",
+        "subtitle_format": "srt",
         "title": "",
         "artist": "",
         "album": "",

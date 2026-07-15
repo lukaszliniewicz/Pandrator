@@ -51,6 +51,12 @@ def format_srt_timestamp(milliseconds: int) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d},{millis:03d}"
 
 
+def format_vtt_timestamp(milliseconds: int) -> str:
+    """Format milliseconds as a WebVTT timestamp."""
+
+    return format_srt_timestamp(milliseconds).replace(",", ".")
+
+
 def parse_srt(srt_content: str) -> list[SubtitleSegment]:
     """Parse SRT content into subtitle segments.
 
@@ -113,6 +119,35 @@ def compose_srt(segments: list[SubtitleSegment]) -> str:
             )
         )
     return "\n\n".join(blocks) + ("\n" if blocks else "")
+
+
+def compose_vtt(segments: list[SubtitleSegment]) -> str:
+    """Compose subtitle segments as browser-compatible WebVTT."""
+
+    blocks = [
+        "\n".join(
+            [
+                f"{format_vtt_timestamp(segment.start_ms)} --> {format_vtt_timestamp(segment.end_ms)}",
+                str(segment.text or "").strip(),
+            ]
+        )
+        for segment in segments
+        if str(segment.text or "").strip()
+    ]
+    return "WEBVTT\n\n" + "\n\n".join(blocks) + ("\n" if blocks else "")
+
+
+def srt_to_vtt(srt_content: str) -> str:
+    """Convert forgiving SRT input to WebVTT."""
+
+    return compose_vtt(parse_srt(srt_content))
+
+
+def concatenate_subtitle_text(srt_content: str) -> str:
+    """Join cue text into a readable plain-text transcript."""
+
+    cues = [re.sub(r"\s+", " ", segment.text).strip() for segment in parse_srt(srt_content)]
+    return " ".join(cue for cue in cues if cue) + ("\n" if cues else "")
 
 
 def renumber_subtitles(srt_content: str) -> str:

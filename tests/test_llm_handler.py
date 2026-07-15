@@ -240,6 +240,35 @@ class LlmHandlerTests(unittest.TestCase):
         self.assertFalse(status.needs_api_key)
         self.assertEqual(status.provider_id, "local-openai")
 
+    def test_vertex_credentials_are_forwarded_as_vertex_json_not_api_key(self):
+        credentials = '{"type":"service_account","project_id":"fixture"}'
+        provider = {
+            "id": "vertex",
+            "name": "Vertex",
+            "provider": "vertex_ai",
+            "api_key": "",
+            "api_key_env": "",
+            "is_custom": True,
+            "models": ["gemini-2.5-flash"],
+            "request_options": {
+                "vertex_credentials": credentials,
+                "vertex_project": "fixture",
+                "vertex_location": "global",
+            },
+        }
+        details = llm_handler._resolve_model_request_details(
+            "custom:vertex/gemini-2.5-flash",
+            {"provider_configs": [provider]},
+        )
+        self.assertEqual(credentials, details["request_overrides"]["vertex_credentials"])
+        self.assertNotIn("api_key", details["request_overrides"])
+        self.assertTrue(
+            llm_handler.validate_model_credentials(
+                "custom:vertex/gemini-2.5-flash",
+                {"provider_configs": [provider]},
+            ).ok
+        )
+
     def test_validate_model_credentials_requires_openrouter_env_for_prefixed_model(self):
         with patch.dict(os.environ, {}, clear=True):
             status = llm_handler.validate_model_credentials(

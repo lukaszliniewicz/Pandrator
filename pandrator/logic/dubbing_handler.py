@@ -615,6 +615,12 @@ def _resolve_ffmpeg_for_burned_subtitles() -> str | None:
     return None
 
 
+def resolve_ffmpeg_for_burned_subtitles() -> str | None:
+    """Return an FFmpeg build with libass subtitle-filter support, if available."""
+
+    return _resolve_ffmpeg_for_burned_subtitles()
+
+
 def replace_video_audio_track(video_path: str, audio_path: str, output_video_path: str) -> bool:
     """Creates a copy of a video with its audio replaced by the provided track."""
     if not video_path or not os.path.exists(video_path):

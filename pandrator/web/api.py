@@ -45,6 +45,7 @@ from .credentials import (
     tts_credential_key,
     upsert_credential,
     validate_provider_options,
+    validate_vertex_service_account_json,
 )
 from .database import Database
 from .jobs import JobQueue
@@ -1679,6 +1680,8 @@ def create_app(
         payload = ProviderCreate.model_validate(request.get_json(silent=True) or {})
         try:
             validate_provider_options(payload.options)
+            if payload.provider_key.strip().lower() == "vertex_ai" and str(payload.api_key or "").strip():
+                validate_vertex_service_account_json(payload.api_key)
         except ValueError as error:
             return error_response("validation_error", str(error), 422)
         with database.session() as db_session:
@@ -1687,7 +1690,8 @@ def create_app(
             db_session.flush()
             if str(payload.api_key or "").strip():
                 key = provider_credential_key(provider.id)
-                upsert_credential(db_session, key, f"{provider.label} API key", payload.api_key)
+                credential_kind = "credentials" if provider.provider_key.strip().lower() == "vertex_ai" else "API key"
+                upsert_credential(db_session, key, f"{provider.label} {credential_kind}", payload.api_key)
                 provider.secret_ref = database_reference(key)
                 db_session.flush()
         result = _provider_payload(provider, database, paths)
@@ -1714,6 +1718,12 @@ def create_app(
             clear_key = bool(changes.pop("clear_api_key", False))
             if submitted_key and clear_key:
                 return error_response("validation_error", "Choose either a replacement API key or remove the current key.", 422)
+            effective_provider_key = str(changes.get("provider_key") or provider.provider_key or "").strip().lower()
+            if submitted_key and effective_provider_key == "vertex_ai":
+                try:
+                    validate_vertex_service_account_json(submitted_key)
+                except ValueError as error:
+                    return error_response("validation_error", str(error), 422)
             if "options" in changes:
                 try:
                     validate_provider_options(changes["options"])
@@ -1727,7 +1737,8 @@ def create_app(
                 previous_key = reference_key(previous_secret_ref)
                 if previous_key and previous_key != key:
                     delete_credential(db_session, previous_key)
-                upsert_credential(db_session, key, f"{provider.label} API key", submitted_key)
+                credential_kind = "credentials" if provider.provider_key.strip().lower() == "vertex_ai" else "API key"
+                upsert_credential(db_session, key, f"{provider.label} {credential_kind}", submitted_key)
                 provider.secret_ref = database_reference(key)
             elif clear_key:
                 key = reference_key(provider.secret_ref) or provider_credential_key(provider.id)

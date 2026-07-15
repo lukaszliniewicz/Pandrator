@@ -86,7 +86,6 @@ CLOUD_API_KEY_PROVIDER_KEYS = {
     "groq",
     "mistral",
     "openrouter",
-    "vertex_ai",
 }
 KEYLESS_PROVIDER_KEYS = {
     "ollama",
@@ -1067,7 +1066,10 @@ def _resolve_model_request_details(
             request_overrides["api_base"] = api_base
 
         resolved_api_key = _resolve_api_key(provider)
-        if custom_provider_key == "openai":
+        if custom_provider_key == "vertex_ai":
+            if resolved_api_key and "vertex_credentials" not in request_overrides:
+                request_overrides["vertex_credentials"] = resolved_api_key
+        elif custom_provider_key == "openai":
             request_overrides["api_key"] = resolved_api_key or PLACEHOLDER_API_KEY
         elif resolved_api_key:
             request_overrides["api_key"] = resolved_api_key
@@ -1101,7 +1103,9 @@ def _resolve_model_request_details(
     if provider_api_base:
         request_overrides["api_base"] = provider_api_base
     resolved_api_key = _resolve_api_key(provider_config) if provider_config else _common_provider_api_key(provider_key)
-    if resolved_api_key:
+    if provider_key == "vertex_ai" and resolved_api_key:
+        request_overrides.setdefault("vertex_credentials", resolved_api_key)
+    elif resolved_api_key:
         request_overrides["api_key"] = resolved_api_key
 
     return {
