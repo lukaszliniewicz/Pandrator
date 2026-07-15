@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ImagePlus, Save, Trash2 } from '@lucide/svelte';
+  import { ImagePlus, RotateCcw, Save, Trash2 } from '@lucide/svelte';
   import { api } from './api';
   import ArtifactPreview from './ArtifactPreview.svelte';
   import { artifactFilename } from './artifact-display';
@@ -42,6 +42,19 @@
     } catch(caught){error=caught instanceof Error?caught.message:String(caught)} finally{busy=false}
   }
 
+  async function saveAsDefaults() {
+    busy=true;error='';message='';
+    try {
+      const promoted=Object.fromEntries(Object.entries(draft).filter(([key])=>key!=='cover_artifact_id'));
+      const defaults=await api<any>('/defaults/output');
+      await api('/settings/defaults.output',{method:'PUT',headers:{'If-Match':`"${defaults.revision}"`},body:JSON.stringify({value:{...(defaults.value??{}),...promoted}})});
+      const retained=Object.fromEntries(Object.entries(draft).filter(([key])=>!Object.prototype.hasOwnProperty.call(promoted,key)));
+      settings=await api<any>(`/sessions/${sessionId}/settings/output`,{method:'PUT',headers:{'If-Match':`"${settings.revision}"`},body:JSON.stringify({value:retained})});
+      draft={...settings.override};
+      message='Saved as the application output defaults.';
+    } catch(caught){error=caught instanceof Error?caught.message:String(caught)} finally{busy=false}
+  }
+
   async function uploadCover(event:Event) {
     const input=event.currentTarget as HTMLInputElement; const file=input.files?.[0]; if(!file)return;
     busy=true;error='';message='Uploading cover artwork…';
@@ -58,7 +71,7 @@
 </script>
 
 <section class="surface rounded-2xl p-5">
-  <div class="flex flex-wrap items-start justify-between gap-4"><div><div class="eyebrow">Output profile</div><h2 class="mt-1 text-xl font-semibold">{subtitleWorkspace?'Subtitle files':'Container, metadata, artwork, and tracks'}</h2><p class="muted mt-2 text-sm">{subtitleWorkspace?'Choose SRT, WebVTT, or a plain-text transcript. Video rendering is available after converting the workspace to voiceover.':'M4B preserves audiobook metadata, cover artwork, and chapter markers carried by the generation plan.'}</p></div><div class="flex gap-2"><button onclick={()=>{draft={};save({})}} disabled={busy||!Object.keys(draft).length} class="tool">Inherit defaults</button><button onclick={()=>save()} disabled={busy} class="tool primary"><Save size={15}/> {busy?'Saving…':'Save output profile'}</button></div></div>
+  <div class="flex flex-wrap items-start justify-between gap-4"><div><div class="eyebrow">Output profile</div><h2 class="mt-1 text-xl font-semibold">{subtitleWorkspace?'Subtitle files':'Container, metadata, artwork, and tracks'}</h2><p class="muted mt-2 text-sm">{subtitleWorkspace?'Choose SRT, WebVTT, or a plain-text transcript. Video rendering is available after converting the workspace to voiceover.':'M4B preserves audiobook metadata, cover artwork, and chapter markers carried by the generation plan.'}</p></div><div class="flex flex-wrap gap-2"><button onclick={()=>{draft={};save({})}} disabled={busy||!Object.keys(draft).length} class="tool"><RotateCcw size={15}/> Revert to defaults</button><button onclick={saveAsDefaults} disabled={busy||!Object.keys(draft).filter((key)=>key!=='cover_artifact_id').length} class="tool"><Save size={15}/> Save as defaults</button><button onclick={()=>save()} disabled={busy} class="tool primary"><Save size={15}/> {busy?'Saving…':'Save output profile'}</button></div></div>
   {#if error}<p class="mt-4 rounded-xl bg-red-500/10 p-3 text-sm text-red-500">{error}</p>{/if}{#if message}<p class="mt-4 rounded-xl bg-[var(--accent-soft)] p-3 text-sm">{message}</p>{/if}
   {#if settings}
     {#if subtitleWorkspace}

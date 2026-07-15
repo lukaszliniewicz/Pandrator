@@ -220,7 +220,7 @@ def build_command(
                 "--vad-min-speech-duration-ms",
                 str(max(0, int(setting("crispasr_vad_min_speech_ms", 250)))),
                 "--vad-min-silence-duration-ms",
-                str(max(0, int(setting("crispasr_vad_min_silence_ms", 100)))),
+                str(max(0, int(setting("crispasr_vad_min_silence_ms", 800)))),
                 "--vad-max-speech-duration-s",
                 str(max(1.0, float(setting("crispasr_vad_max_speech_seconds", 300.0)))),
                 "--vad-speech-pad-ms",

@@ -6,7 +6,7 @@
 
   type Provider = { id: string; provider_key: string; label: string; base_url?: string; secret_ref?: string; enabled: boolean; options_json: Record<string, any>; revision: number; credential_configured: boolean; credential_source: string };
   type ProviderProfile = { id: string; label: string; provider_key: string; base_url: string; secret_ref: string; description: string; options?: Record<string, any> };
-  type Model = { id: string; provider_id: string; model_id: string; is_default: boolean; default_temperature: number | null; default_reasoning_effort: string | null; input_cost_per_million: number | null; cached_input_cost_per_million: number | null; output_cost_per_million: number | null; options_json: Record<string, any>; revision: number };
+  type Model = { id: string; provider_id: string; model_id: string; is_active: boolean; is_default: boolean; default_temperature: number | null; default_reasoning_effort: string | null; input_cost_per_million: number | null; cached_input_cost_per_million: number | null; output_cost_per_million: number | null; options_json: Record<string, any>; revision: number };
   type RequestOptionRow = { id: string; key: string; value: string; type: 'text' | 'number' | 'boolean' };
 
   let { onback }: { onback: () => void } = $props();
@@ -191,10 +191,18 @@
     } catch (caught) { report(caught); }
   }
 
+  async function setActive(model: Model, active: boolean) {
+    try {
+      await api(`/providers/${model.provider_id}/models/${model.id}`, { method: 'PATCH', headers: { 'If-Match': `"${model.revision}"` }, body: JSON.stringify({ is_active: active }) });
+      notice = `${model.model_id} is now ${active ? 'available' : 'hidden'} in workflow selectors.`;
+      await load();
+    } catch (caught) { report(caught); }
+  }
+
   async function createModel(providerId: string) {
     if (!modelId.trim()) { error = 'A canonical model ID is required.'; return; }
     try {
-      await api(`/providers/${providerId}/models`, { method: 'POST', body: JSON.stringify({ model_id: modelId.trim(), is_default: !allModels.some((item) => item.is_default) }) });
+      await api(`/providers/${providerId}/models`, { method: 'POST', body: JSON.stringify({ model_id: modelId.trim(), is_active: true, is_default: !allModels.some((item) => item.is_default) }) });
       modelId = '';
       addModelProvider = null;
       notice = 'Model added.';
@@ -204,7 +212,7 @@
 
   function requestModelDelete(model: Model) {
     deletingModel = model;
-    replacementModelRecordId = model.is_default ? allModels.find((item) => item.id !== model.id)?.id ?? '' : '';
+    replacementModelRecordId = model.is_default ? allModels.find((item) => item.is_active && item.id !== model.id)?.id ?? '' : '';
   }
 
   async function removeModel() {
@@ -220,7 +228,7 @@
   function requestProviderDelete(provider: Provider) {
     deletingProvider = provider;
     const ownsDefault = (models[provider.id] ?? []).some((item) => item.is_default);
-    replacementModelRecordId = ownsDefault ? allModels.find((item) => item.provider_id !== provider.id)?.id ?? '' : '';
+    replacementModelRecordId = ownsDefault ? allModels.find((item) => item.is_active && item.provider_id !== provider.id)?.id ?? '' : '';
   }
 
   async function removeProvider() {
@@ -246,8 +254,8 @@
   }
 
   async function testProvider(providerId: string) {
-    const selected = models[providerId]?.find((item) => item.is_default) ?? models[providerId]?.[0];
-    if (!selected) { error = 'Add a model before testing this provider.'; return; }
+    const selected = models[providerId]?.find((item) => item.is_active && item.is_default) ?? models[providerId]?.find((item) => item.is_active);
+    if (!selected) { error = 'Activate a model before testing this provider.'; return; }
     try {
       const result = await api<{model: string}>(`/providers/${providerId}/test`, { method: 'POST', body: JSON.stringify({ model_id: selected.model_id }) });
       error = '';
@@ -273,13 +281,13 @@
       <section class:opacity-60={!provider.enabled} class="surface overflow-hidden rounded-[1.5rem]">
         <header class="flex flex-wrap items-center justify-between gap-4 border-b border-[var(--line)] p-5">
           <div class="flex min-w-0 items-center gap-3"><div class="grid size-10 shrink-0 place-items-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]"><Bot size={19}/></div><div class="min-w-0"><div class="flex flex-wrap items-center gap-2"><h2 class="font-semibold">{provider.label}</h2><span class="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[.65rem] font-bold uppercase text-[var(--accent)]">{provider.enabled ? 'Enabled' : 'Disabled'}</span><span class="rounded-full border border-[var(--line)] px-2 py-0.5 text-[.65rem] font-bold uppercase">{provider.credential_configured ? `Key: ${provider.credential_source}` : 'No key'}</span></div><p class="muted mt-1 truncate text-xs">LiteLLM: {provider.provider_key}{provider.base_url ? ` · ${provider.base_url}` : ' · provider-managed endpoint'}</p></div></div>
-          <div class="flex flex-wrap gap-2"><button onclick={() => testProvider(provider.id)} disabled={!provider.enabled || !(models[provider.id]?.length)} class="btn btn-sm btn-secondary">Test</button><button onclick={() => refresh(provider.id)} disabled={!provider.enabled} class="btn btn-sm btn-secondary"><RefreshCw size={14}/> Discover</button><button onclick={() => openProvider(provider)} class="btn btn-sm btn-secondary"><Pencil size={14}/> Edit</button><button onclick={() => { addModelProvider = provider.id; modelId = ''; }} class="btn btn-sm btn-secondary"><Plus size={14}/> Add model</button><button onclick={() => requestProviderDelete(provider)} aria-label={`Delete ${provider.label}`} class="btn btn-sm btn-secondary text-red-500"><Trash2 size={15}/></button></div>
+          <div class="flex flex-wrap gap-2"><button onclick={() => testProvider(provider.id)} disabled={!provider.enabled || !(models[provider.id]?.some((item) => item.is_active))} class="btn btn-sm btn-secondary">Test</button><button onclick={() => refresh(provider.id)} disabled={!provider.enabled} class="btn btn-sm btn-secondary"><RefreshCw size={14}/> Discover</button><button onclick={() => openProvider(provider)} class="btn btn-sm btn-secondary"><Pencil size={14}/> Edit</button><button onclick={() => { addModelProvider = provider.id; modelId = ''; }} class="btn btn-sm btn-secondary"><Plus size={14}/> Add model</button><button onclick={() => requestProviderDelete(provider)} aria-label={`Delete ${provider.label}`} class="btn btn-sm btn-secondary text-red-500"><Trash2 size={15}/></button></div>
         </header>
         <div>
           {#each models[provider.id] ?? [] as model}
             <div class="flex flex-wrap items-center gap-4 border-b border-[var(--line)] px-5 py-4 last:border-0">
-              <div class="min-w-0 flex-1"><div class="flex items-center gap-2"><span class="truncate font-mono text-sm font-semibold">{model.model_id}</span>{#if model.is_default}<span class="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[.65rem] font-bold uppercase text-[var(--accent)]">Application default</span>{/if}</div><p class="muted mt-1 text-xs">Temperature {model.default_temperature ?? 'omit'} · Reasoning {model.default_reasoning_effort || 'omit'} · Input ${model.input_cost_per_million ?? '—'} / cached ${model.cached_input_cost_per_million ?? model.input_cost_per_million ?? '—'} / output ${model.output_cost_per_million ?? '—'}</p></div>
-              <div class="flex gap-2">{#if !model.is_default}<button onclick={() => makeDefault(model)} class="btn btn-sm btn-secondary">Make default</button>{/if}<button onclick={() => openSettings(model)} aria-label={`Settings for ${model.model_id}`} class="btn btn-sm btn-icon btn-secondary"><Settings2 size={16}/></button><button onclick={() => requestModelDelete(model)} aria-label={`Delete ${model.model_id}`} class="btn btn-sm btn-icon btn-secondary text-red-500"><Trash2 size={16}/></button></div>
+              <div class="min-w-0 flex-1"><div class="flex flex-wrap items-center gap-2"><span class="truncate font-mono text-sm font-semibold">{model.model_id}</span><span class="rounded-full border border-[var(--line)] px-2 py-0.5 text-[.65rem] font-bold uppercase" class:bg-[var(--accent-soft)]={model.is_active} class:text-[var(--accent)]={model.is_active}>{model.is_active ? 'Active' : 'Inactive'}</span>{#if model.is_default}<span class="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[.65rem] font-bold uppercase text-[var(--accent)]">Application default</span>{/if}</div><p class="muted mt-1 text-xs">Temperature {model.default_temperature ?? 'omit'} · Reasoning {model.default_reasoning_effort || 'omit'} · Input ${model.input_cost_per_million ?? '—'} / cached ${model.cached_input_cost_per_million ?? model.input_cost_per_million ?? '—'} / output ${model.output_cost_per_million ?? '—'}</p></div>
+              <div class="flex flex-wrap gap-2"><button onclick={() => setActive(model, !model.is_active)} disabled={model.is_default} class="btn btn-sm btn-secondary">{model.is_active ? 'Deactivate' : 'Activate'}</button>{#if !model.is_default}<button onclick={() => makeDefault(model)} class="btn btn-sm btn-secondary">Make default</button>{/if}<button onclick={() => openSettings(model)} aria-label={`Settings for ${model.model_id}`} class="btn btn-sm btn-icon btn-secondary"><Settings2 size={16}/></button><button onclick={() => requestModelDelete(model)} aria-label={`Delete ${model.model_id}`} class="btn btn-sm btn-icon btn-secondary text-red-500"><Trash2 size={16}/></button></div>
             </div>
           {:else}<div class="muted p-6 text-sm">No models yet. Add one manually or discover the endpoint catalogue.</div>{/each}
         </div>
@@ -314,9 +322,9 @@
 
 {#if edit}<div class="fixed inset-0 z-50 grid place-items-center bg-black/35 p-5"><div class="surface w-full max-w-xl rounded-3xl p-7"><div class="flex justify-between"><div><div class="eyebrow">Model settings</div><h2 class="mt-1 font-mono text-xl font-semibold">{edit.model_id}</h2></div><button onclick={() => edit = null} aria-label="Close model settings" class="btn btn-icon btn-secondary"><X size={18}/></button></div><div class="mt-6 grid gap-4 sm:grid-cols-2"><label class="text-sm font-semibold">Temperature<input bind:value={temperature} type="number" step="any" placeholder="Omit" class="field font-normal"/><small class="muted mt-1 block font-normal">Blank omits it; 0 is sent explicitly.</small></label><label class="text-sm font-semibold">Reasoning effort<input bind:value={reasoning} list="reasoning-values" placeholder="Omit or custom" class="field font-normal"/><datalist id="reasoning-values"><option value="minimal"></option><option value="low"></option><option value="medium"></option><option value="high"></option></datalist></label><label class="text-sm font-semibold">Input USD / million<input bind:value={inputCost} type="number" min="0" step="any" class="field font-normal"/></label><label class="text-sm font-semibold">Cached input USD / million<input bind:value={cachedCost} type="number" min="0" step="any" placeholder="Use input rate" class="field font-normal"/></label><label class="text-sm font-semibold sm:col-span-2">Output USD / million<input bind:value={outputCost} type="number" min="0" step="any" class="field font-normal"/></label></div><button onclick={saveModel} class="btn btn-primary mt-6 w-full">Save model defaults</button></div></div>{/if}
 
-{#if deletingModel}<div class="fixed inset-0 z-50 grid place-items-center bg-black/35 p-5"><div class="surface w-full max-w-md rounded-3xl p-7"><h2 class="text-xl font-semibold">Remove {deletingModel.model_id}?</h2>{#if deletingModel.is_default}<label class="mt-5 block text-sm font-semibold">Replacement application default<select bind:value={replacementModelRecordId} class="field"><option value="">Choose a replacement</option>{#each allModels.filter((item) => item.id !== deletingModel?.id) as model}<option value={model.id}>{providers.find((item) => item.id === model.provider_id)?.label} · {model.model_id}</option>{/each}</select></label>{:else}<p class="muted mt-3 text-sm">Its settings are removed; completed run snapshots remain unchanged.</p>{/if}<div class="mt-6 flex justify-end gap-2"><button onclick={() => deletingModel = null} class="btn btn-secondary">Cancel</button><button onclick={removeModel} disabled={deletingModel.is_default && !replacementModelRecordId} class="btn btn-primary">Remove model</button></div></div></div>{/if}
+{#if deletingModel}<div class="fixed inset-0 z-50 grid place-items-center bg-black/35 p-5"><div class="surface w-full max-w-md rounded-3xl p-7"><h2 class="text-xl font-semibold">Remove {deletingModel.model_id}?</h2>{#if deletingModel.is_default}<label class="mt-5 block text-sm font-semibold">Replacement application default<select bind:value={replacementModelRecordId} class="field"><option value="">Choose a replacement</option>{#each allModels.filter((item) => item.is_active && item.id !== deletingModel?.id) as model}<option value={model.id}>{providers.find((item) => item.id === model.provider_id)?.label} · {model.model_id}</option>{/each}</select></label>{:else}<p class="muted mt-3 text-sm">Its settings are removed; completed run snapshots remain unchanged.</p>{/if}<div class="mt-6 flex justify-end gap-2"><button onclick={() => deletingModel = null} class="btn btn-secondary">Cancel</button><button onclick={removeModel} disabled={deletingModel.is_default && !replacementModelRecordId} class="btn btn-primary">Remove model</button></div></div></div>{/if}
 
-{#if deletingProvider}<div class="fixed inset-0 z-50 grid place-items-center bg-black/35 p-5"><div class="surface w-full max-w-md rounded-3xl p-7"><h2 class="text-xl font-semibold">Remove {deletingProvider.label}?</h2><p class="muted mt-3 text-sm">The provider and its model records will be removed. Completed run snapshots remain unchanged.</p>{#if (models[deletingProvider.id] ?? []).some((item) => item.is_default)}<label class="mt-5 block text-sm font-semibold">Replacement application default<select bind:value={replacementModelRecordId} class="field"><option value="">Choose a replacement</option>{#each allModels.filter((item) => item.provider_id !== deletingProvider?.id) as model}<option value={model.id}>{providers.find((item) => item.id === model.provider_id)?.label} · {model.model_id}</option>{/each}</select></label>{/if}<div class="mt-6 flex justify-end gap-2"><button onclick={() => deletingProvider = null} class="btn btn-secondary">Cancel</button><button onclick={removeProvider} disabled={(models[deletingProvider.id] ?? []).some((item) => item.is_default) && !replacementModelRecordId} class="btn btn-primary">Remove provider</button></div></div></div>{/if}
+{#if deletingProvider}<div class="fixed inset-0 z-50 grid place-items-center bg-black/35 p-5"><div class="surface w-full max-w-md rounded-3xl p-7"><h2 class="text-xl font-semibold">Remove {deletingProvider.label}?</h2><p class="muted mt-3 text-sm">The provider and its model records will be removed. Completed run snapshots remain unchanged.</p>{#if (models[deletingProvider.id] ?? []).some((item) => item.is_default)}<label class="mt-5 block text-sm font-semibold">Replacement application default<select bind:value={replacementModelRecordId} class="field"><option value="">Choose a replacement</option>{#each allModels.filter((item) => item.is_active && item.provider_id !== deletingProvider?.id) as model}<option value={model.id}>{providers.find((item) => item.id === model.provider_id)?.label} · {model.model_id}</option>{/each}</select></label>{/if}<div class="mt-6 flex justify-end gap-2"><button onclick={() => deletingProvider = null} class="btn btn-secondary">Cancel</button><button onclick={removeProvider} disabled={(models[deletingProvider.id] ?? []).some((item) => item.is_default) && !replacementModelRecordId} class="btn btn-primary">Remove provider</button></div></div></div>{/if}
 
 <GuidedTour tourId="models" steps={tourSteps} bind:open={tourOpen}/>
 

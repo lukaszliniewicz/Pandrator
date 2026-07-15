@@ -98,7 +98,7 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "crispasr_vad_model": "silero",
         "crispasr_vad_threshold": 0.5,
         "crispasr_vad_min_speech_ms": 250,
-        "crispasr_vad_min_silence_ms": 100,
+        "crispasr_vad_min_silence_ms": 800,
         "crispasr_vad_speech_pad_ms": 30,
         "crispasr_vad_max_speech_seconds": 300,
         "diarization_enabled": False,
@@ -330,6 +330,12 @@ def adapt_runtime_settings(section: str, values: dict[str, Any]) -> dict[str, An
                 }
                 if base_url and canonical in base_url_keys:
                     result.setdefault(base_url_keys[canonical], base_url)
+        elif selected:
+            # Custom services keep their stable catalogue ID in storage but
+            # use the legacy OpenAI-compatible dispatch boundary at runtime.
+            result["service"] = tts_handler.OPENAI_COMPAT_SERVICE
+            result["tts_service"] = tts_handler.OPENAI_COMPAT_SERVICE
+            result["openai_audio_endpoint"] = str(selected.get("id") or selected_value)
     return result
 
 SECRET_KEYS = {"secret", "password", "api_key", "token", "access_token", "refresh_token", "credential", "credentials"}

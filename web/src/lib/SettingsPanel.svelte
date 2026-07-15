@@ -29,14 +29,26 @@
 
   async function load() { payload = await api(`/sessions/${sessionId}/settings/${section}`); override = { ...(payload.override ?? {}) }; }
   async function save() { saving = true; message = ''; try { if (section === 'tts') override = Object.fromEntries(Object.entries(override).filter(([key]) => !providerSetting(key))); payload = await api(`/sessions/${sessionId}/settings/${section}`, { method: 'PUT', headers: { 'If-Match': `"${payload.revision}"` }, body: JSON.stringify({ value: override }) }); override = { ...payload.override }; message = 'Saved for this session.'; } catch (caught) { message = caught instanceof Error ? caught.message : String(caught); } finally { saving = false; } }
-  function reset() { override = {}; message = 'Overrides cleared locally; save to inherit global defaults.'; }
+  async function reset() { saving = true; message = ''; try { payload = await api(`/sessions/${sessionId}/settings/${section}`, { method: 'PUT', headers: { 'If-Match': `"${payload.revision}"` }, body: JSON.stringify({ value: {} }) }); override = {}; message = 'Reverted to application defaults.'; } catch (caught) { message = caught instanceof Error ? caught.message : String(caught); } finally { saving = false; } }
+  async function saveAsDefaults() {
+    saving = true; message = '';
+    try {
+      const promoted = section === 'tts' ? Object.fromEntries(Object.entries(override).filter(([key]) => !providerSetting(key))) : override;
+      const defaults = await api<any>(`/defaults/${section}`);
+      await api(`/settings/defaults.${section}`, { method: 'PUT', headers: { 'If-Match': `"${defaults.revision}"` }, body: JSON.stringify({ value: { ...(defaults.value ?? {}), ...promoted } }) });
+      payload = await api(`/sessions/${sessionId}/settings/${section}`, { method: 'PUT', headers: { 'If-Match': `"${payload.revision}"` }, body: JSON.stringify({ value: Object.fromEntries(Object.entries(override).filter(([key]) => !Object.prototype.hasOwnProperty.call(promoted, key))) }) });
+      override = { ...payload.override };
+      message = 'Saved as application defaults.';
+    } catch (caught) { message = caught instanceof Error ? caught.message : String(caught); }
+    finally { saving = false; }
+  }
   load();
 </script>
 
 <section class="surface rounded-2xl p-5">
   <div class="flex flex-wrap items-start justify-between gap-4">
     <div><div class="eyebrow">{sectionName(section)}</div><h2 class="mt-1 text-xl font-semibold">{title}</h2>{#if description}<p class="muted mt-2 max-w-2xl text-sm">{description}</p>{/if}</div>
-    <div class="flex flex-wrap gap-2">{#if section === 'tts'}<a href="/providers?tab=tts" class="tool"><ExternalLink size={14}/> TTS services</a>{/if}<button onclick={reset} class="tool"><RotateCcw size={14}/> Inherit defaults</button><button onclick={save} disabled={saving} class="tool bg-[var(--accent)] text-white"><Save size={14}/> {saving ? 'Saving…' : 'Save'}</button></div>
+    <div class="flex flex-wrap gap-2">{#if section === 'tts'}<a href="/providers?tab=tts" class="tool"><ExternalLink size={14}/> TTS services</a>{/if}<button onclick={reset} disabled={saving || !Object.keys(override).length} class="tool"><RotateCcw size={14}/> Revert to defaults</button><button onclick={saveAsDefaults} disabled={saving || !Object.keys(override).length} class="tool"><Save size={14}/> Save as defaults</button><button onclick={save} disabled={saving} class="tool bg-[var(--accent)] text-white"><Save size={14}/> {saving ? 'Saving…' : 'Save'}</button></div>
   </div>
   {#if payload}
     {#if section==='text'}

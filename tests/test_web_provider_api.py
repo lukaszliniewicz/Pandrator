@@ -5,7 +5,7 @@ from unittest import mock
 
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
-from pandrator.web.credentials import provider_credential_key
+from pandrator.web.credentials import shared_provider_credential_key
 from pandrator.web.models import StoredCredential
 from pandrator.web.provider_settings import build_llm_settings
 
@@ -77,7 +77,24 @@ class ProviderApiTests(unittest.TestCase):
         self.assertEqual(result.get_json()["added"], ["discovered"])
         records = self.client.get(f"/api/v1/providers/{provider['id']}/models").get_json()["items"]
         manual = next(item for item in records if item["model_id"] == "manual")
+        discovered = next(item for item in records if item["model_id"] == "discovered")
         self.assertEqual(manual["default_reasoning_effort"], "custom-fast")
+        self.assertTrue(manual["is_active"])
+        self.assertFalse(discovered["is_active"])
+
+        activated = self.client.patch(
+            f"/api/v1/providers/{provider['id']}/models/{discovered['id']}",
+            json={"is_active": True},
+            headers={**self.headers, "If-Match": f'"{discovered["revision"]}"'},
+        )
+        self.assertEqual(200, activated.status_code, activated.get_json())
+        self.assertTrue(activated.get_json()["is_active"])
+        blocked = self.client.patch(
+            f"/api/v1/providers/{provider['id']}/models/{manual['id']}",
+            json={"is_active": False},
+            headers={**self.headers, "If-Match": f'"{manual["revision"]}"'},
+        )
+        self.assertEqual(422, blocked.status_code)
 
     def test_provider_profiles_update_and_global_default_selection(self):
         profiles = self.client.get("/api/v1/providers/profiles").get_json()["items"]
@@ -139,7 +156,7 @@ class ProviderApiTests(unittest.TestCase):
 
         database = self.app.extensions["pandrator"]["database"]
         with database.session() as session:
-            stored = session.get(StoredCredential, provider_credential_key(created["id"]))
+            stored = session.get(StoredCredential, shared_provider_credential_key("openai"))
             self.assertEqual(secret, stored.secret_value)
 
         rejected = self.client.patch(
@@ -162,7 +179,7 @@ class ProviderApiTests(unittest.TestCase):
         self.assertEqual(200, removed.status_code, removed.get_json())
         self.assertFalse(removed.get_json()["credential_configured"])
         with database.session() as session:
-            self.assertIsNone(session.get(StoredCredential, provider_credential_key(created["id"])))
+            self.assertIsNone(session.get(StoredCredential, shared_provider_credential_key("openai")))
 
     def test_vertex_service_account_json_is_validated_and_hydrated_for_litellm(self):
         credentials = json.dumps(

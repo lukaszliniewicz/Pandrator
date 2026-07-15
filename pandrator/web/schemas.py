@@ -89,6 +89,7 @@ class ProviderTestRequest(StrictModel):
 
 class ModelCreate(StrictModel):
     model_id: str
+    is_active: bool = True
     is_default: bool = False
     default_temperature: float | None = None
     default_reasoning_effort: str | None = None
@@ -100,6 +101,7 @@ class ModelCreate(StrictModel):
 
 class ModelUpdate(StrictModel):
     model_id: str | None = None
+    is_active: bool | None = None
     is_default: bool | None = None
     default_temperature: float | None = None
     default_reasoning_effort: str | None = None

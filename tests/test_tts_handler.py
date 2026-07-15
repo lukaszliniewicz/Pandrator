@@ -1,10 +1,69 @@
 import unittest
+import base64
 from unittest.mock import Mock, patch
 
 from pandrator.logic import tts_handler
 
 
 class TTSHandlerTests(unittest.TestCase):
+    def test_azure_openai_profile_uses_api_key_header_and_manual_deployment_directly(self):
+        settings = {
+            "service": tts_handler.OPENAI_COMPAT_SERVICE,
+            "openai_audio_endpoint": "azure-openai-v1",
+            "xtts_model": "my-tts-deployment",
+            "speaker": "alloy",
+            "provider_configs": [
+                {
+                    "id": "azure-openai-v1",
+                    "name": "Azure OpenAI (v1 TTS)",
+                    "provider": "openai",
+                    "api_base": "https://example-resource.openai.azure.com",
+                    "adapter": "openai_compatible",
+                    "speech_path": "/openai/v1/audio/speech?api-version=preview",
+                    "auth_mode": "api-key",
+                    "direct_http": True,
+                    "api_key": "azure-secret",
+                    "models": ["my-tts-deployment"],
+                    "default_model": "my-tts-deployment",
+                }
+            ],
+        }
+        with patch("pandrator.logic.tts_handler._request_litellm_audio") as litellm, patch(
+            "pandrator.logic.tts_handler.requests.post"
+        ) as post:
+            post.return_value.status_code = 200
+            tts_handler._request_openai_compatible_audio("Hello", settings)
+
+        litellm.assert_not_called()
+        self.assertEqual(
+            "https://example-resource.openai.azure.com/openai/v1/audio/speech?api-version=preview",
+            post.call_args.args[0],
+        )
+        self.assertEqual({"api-key": "azure-secret"}, post.call_args.kwargs["headers"])
+        self.assertEqual("my-tts-deployment", post.call_args.kwargs["json"]["model"])
+
+    def test_vertex_tts_wraps_raw_pcm_as_wav(self):
+        pcm = b"\x00\x00\x01\x00"
+        response = Mock()
+        response.ok = True
+        response.json.return_value = {
+            "candidates": [{"content": {"parts": [{"inlineData": {"data": base64.b64encode(pcm).decode()}}]}}]
+        }
+        settings = {
+            "service": tts_handler.VERTEX_SERVICE,
+            "model": "gemini-2.5-flash-tts",
+            "voice": "Kore",
+            "provider_configs": [{"id": "vertex_ai", "vertex_location": "us-central1"}],
+        }
+        with patch("pandrator.logic.tts_handler._vertex_access_token", return_value=("token", "project")), patch(
+            "pandrator.logic.tts_handler.requests.post", return_value=response
+        ) as post:
+            audio_response = tts_handler._request_vertex_ai_audio("Hello", settings)
+
+        self.assertTrue(audio_response.content.startswith(b"RIFF"))
+        self.assertIn("/projects/project/locations/us-central1/", post.call_args.args[0])
+        self.assertEqual("Bearer token", post.call_args.kwargs["headers"]["Authorization"])
+        self.assertEqual("AUDIO", post.call_args.kwargs["json"]["generationConfig"]["responseModalities"][0])
     def test_json_speech_response_reports_provider_error_instead_of_audio_decode_noise(self):
         response = Mock()
         response.headers = {"Content-Type": "application/json"}

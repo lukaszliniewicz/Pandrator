@@ -159,7 +159,7 @@ def migrate_dubbing_payload(
     legacy_vad_fields = {
         "crispasr_vad_threshold": ("parakeet_vad_threshold", 0.5),
         "crispasr_vad_min_speech_ms": ("parakeet_vad_min_speech_ms", 250),
-        "crispasr_vad_min_silence_ms": ("parakeet_vad_min_silence_ms", 100),
+        "crispasr_vad_min_silence_ms": ("parakeet_vad_min_silence_ms", 800),
         "crispasr_vad_max_speech_seconds": ("parakeet_vad_max_speech_seconds", 300.0),
         "crispasr_vad_speech_pad_ms": ("parakeet_vad_speech_pad_ms", 30),
     }

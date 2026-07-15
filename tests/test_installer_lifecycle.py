@@ -132,6 +132,29 @@ class InstallerLifecycleTests(unittest.TestCase):
             self.assertIn("localhost", trusted_hosts)
             self.assertEqual(api.command[api.command.index("--host") + 1], "0.0.0.0")
 
+    def test_remote_runtime_discovers_local_trusted_hosts_when_none_are_supplied(self):
+        with tempfile.TemporaryDirectory() as workspace, mock.patch(
+            "pandrator_installer.lifecycle.socket.gethostname", return_value="fedora-temp"
+        ), mock.patch(
+            "pandrator_installer.lifecycle.socket.gethostbyname_ex",
+            return_value=("fedora-temp", [], ["192.168.1.42"]),
+        ):
+            args = type(
+                "Args",
+                (),
+                {
+                    "host": "0.0.0.0",
+                    "port": 8123,
+                    "components": [],
+                    "allow_insecure_remote": True,
+                    "trusted_host": [],
+                },
+            )()
+            api = _runtime_specs(WorkspacePaths.from_value(workspace), args, "token")[0]
+        trusted_hosts = [api.command[index + 1] for index, value in enumerate(api.command) if value == "--trusted-host"]
+        self.assertIn("fedora-temp", trusted_hosts)
+        self.assertIn("192.168.1.42", trusted_hosts)
+
     def test_service_process_collection_uses_runtime_tuple_contract(self):
         first = object()
         installer = mock.Mock()

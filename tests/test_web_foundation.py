@@ -70,6 +70,7 @@ class SchemaUpgradeTests(unittest.TestCase):
                 self.assertIn("stored_credentials", [row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")])
                 self.assertIn("source_language", [row[1] for row in connection.execute("PRAGMA table_info(sessions)")])
                 self.assertIn("target_language", [row[1] for row in connection.execute("PRAGMA table_info(sessions)")])
+                self.assertIn("is_active", [row[1] for row in connection.execute("PRAGMA table_info(provider_models)")])
 
     def test_inline_tts_key_is_migrated_to_write_only_credential_table(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -88,13 +89,13 @@ class SchemaUpgradeTests(unittest.TestCase):
                 connection.commit()
             upgrade_database(database_path)
             with closing(sqlite3.connect(database_path)) as connection:
-                stored = connection.execute("SELECT secret_value FROM stored_credentials WHERE key = 'tts:openai'").fetchone()
+                stored = connection.execute("SELECT secret_value FROM stored_credentials WHERE key = 'shared:openai'").fetchone()
                 stored_deepl = connection.execute("SELECT secret_value FROM stored_credentials WHERE key = 'aux:deepl'").fetchone()
                 setting = connection.execute("SELECT value_json FROM app_settings WHERE key = 'services.tts'").fetchone()
             self.assertEqual(secret, stored[0])
             self.assertEqual("legacy-deepl-secret", stored_deepl[0])
             self.assertNotIn(secret, setting[0])
-            self.assertEqual("db:tts:openai", json.loads(setting[0])["provider_configs"][0]["secret_ref"])
+            self.assertEqual("db:shared:openai", json.loads(setting[0])["provider_configs"][0]["secret_ref"])
 
 
 class LegacyMigrationTests(unittest.TestCase):

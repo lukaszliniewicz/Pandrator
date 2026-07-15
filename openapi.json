@@ -630,6 +630,11 @@
             "default": null,
             "title": "Input Cost Per Million"
           },
+          "is_active": {
+            "default": true,
+            "title": "Is Active",
+            "type": "boolean"
+          },
           "is_default": {
             "default": false,
             "title": "Is Default",
@@ -716,6 +721,18 @@
             ],
             "default": null,
             "title": "Input Cost Per Million"
+          },
+          "is_active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Is Active"
           },
           "is_default": {
             "anyOf": [

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ExternalLink, Save } from '@lucide/svelte';
+  import { ExternalLink, RotateCcw, Save } from '@lucide/svelte';
   import { api } from './api';
   import SettingField from './SettingField.svelte';
   import { GLOBAL_TTS_KEYS } from './settings-fields';
@@ -40,6 +40,17 @@
     finally { saving = false; }
   }
 
+  async function restoreBuiltins() {
+    saving = true; message = '';
+    try {
+      const result = await api<any>(`/settings/defaults.${section}`, { method: 'PUT', headers: { 'If-Match': `"${payload.revision}"` }, body: JSON.stringify({ value: {} }) });
+      payload = { ...payload, revision: result.revision, value: {}, effective: { ...payload.builtin } };
+      value = {};
+      message = 'Restored built-in defaults.';
+    } catch (caught) { message = caught instanceof Error ? caught.message : String(caught); }
+    finally { saving = false; }
+  }
+
   load();
 </script>
 
@@ -53,6 +64,6 @@
         <SettingField {section} keyName={key} value={current(key, fallback)} onchange={(next) => set(key, next)} compact/>
       {/each}
     </div>
-    <div class="mt-4 flex items-center gap-3"><button onclick={save} disabled={saving} class="btn btn-sm btn-primary"><Save size={13}/>{saving ? 'Saving…' : 'Save global defaults'}</button>{#if message}<span class="muted text-xs">{message}</span>{/if}</div>
+    <div class="mt-4 flex flex-wrap items-center gap-3"><button onclick={restoreBuiltins} disabled={saving || !Object.keys(value).length} class="btn btn-sm btn-secondary"><RotateCcw size={13}/> Restore built-in defaults</button><button onclick={save} disabled={saving} class="btn btn-sm btn-primary"><Save size={13}/>{saving ? 'Saving…' : 'Save global defaults'}</button>{#if message}<span class="muted text-xs">{message}</span>{/if}</div>
   {/if}
 </div>

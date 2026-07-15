@@ -15,8 +15,8 @@ class TTSProviderProfileTests(unittest.TestCase):
             self.assertTrue(profile["api_base"].startswith(("http://", "https://")))
             self.assertTrue(profile["speech_path"].startswith("/"))
             self.assertTrue(profile["request_fields"]["text"])
-            self.assertTrue(profile["models"])
-            self.assertTrue(profile["source_url"].startswith("https://github.com/"))
+            self.assertTrue(profile["models"] or profile.get("models_are_manual"))
+            self.assertTrue(profile["source_url"].startswith("https://"))
 
     def test_primary_source_corrected_profiles_use_expected_contracts(self):
         profiles = {
@@ -24,6 +24,8 @@ class TTSProviderProfileTests(unittest.TestCase):
             for profile in tts_provider_profiles.list_tts_provider_profiles()
         }
 
+        self.assertTrue(profiles["azure-openai-v1"]["models_are_manual"])
+        self.assertEqual(profiles["azure-openai-v1"]["models"], [])
         self.assertEqual(profiles["styletts2-salad"]["api_base"], "http://127.0.0.1:4321")
         self.assertEqual(profiles["styletts2-salad"]["request_fields"]["voice"], "")
         self.assertEqual(profiles["piper-native-http"]["speech_path"], "/")

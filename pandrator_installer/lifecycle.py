@@ -9,6 +9,7 @@ import os
 import secrets
 import shutil
 import signal
+import socket
 import sys
 import webbrowser
 import subprocess

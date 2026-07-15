@@ -22,8 +22,9 @@ from .credentials import (
     auxiliary_credential_key,
     database_reference,
     hydrate_tts_settings,
+    resolve_provider_credential,
     resolve_secret_reference,
-    tts_credential_key,
+    tts_service_credential_key,
 )
 from .database import Database
 from .models import (
@@ -905,10 +906,11 @@ class WorkflowHandlers:
             default_value = dict(defaults.value_json or {}) if defaults and isinstance(defaults.value_json, dict) else {}
         service_config = tts_handler.get_service_config({**default_value, **connection_value}, service_id) or {}
         normalized_service_id = str(service_config.get("id") or service_id).strip().lower().replace("-", "_")
-        credential = resolve_secret_reference(
+        credential = resolve_provider_credential(
             self.database,
             self.paths,
-            service_config.get("secret_ref") or database_reference(tts_credential_key(normalized_service_id)),
+            normalized_service_id,
+            service_config.get("secret_ref") or database_reference(tts_service_credential_key(normalized_service_id)),
             fallback_environment_variable=str(service_config.get("api_key_env") or TTS_SERVICE_ENVS.get(normalized_service_id, "")),
         )
         provider_voice_id = tts_handler.upload_speaker_voice(

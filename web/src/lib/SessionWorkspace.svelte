@@ -11,6 +11,8 @@
     Library,
     Play,
     RefreshCw,
+    RotateCcw,
+    Save,
     Settings2,
     Sparkles,
     X
@@ -68,6 +70,7 @@
   let error = $state('');
   let uploading = $state(false);
   let settingsStage = $state<Stage | null>(null);
+  let stageMessage = $state('');
   let fullSettingsSection = $state('');
   let ttsServicesOpen = $state(false);
   let voiceLibraryOpen = $state(false);
@@ -97,7 +100,7 @@
   let vadModel = $state('silero');
   let vadThreshold = $state(0.5);
   let vadMinSpeech = $state(250);
-  let vadMinSilence = $state(100);
+  let vadMinSilence = $state(800);
   let vadMaxSpeech = $state(300);
   let vadSpeechPad = $state(30);
   let subtitleChars = $state(48);
@@ -233,6 +236,7 @@
       return;
     }
     settingsStage = stage;
+    stageMessage = '';
     let saved = stageSettings[stage.key] ?? {};
     let storedSettings:any = null;
     try {
@@ -262,7 +266,7 @@
     vadModel = String(saved.crispasr_vad_model ?? 'silero');
     vadThreshold = Number(saved.crispasr_vad_threshold ?? 0.5);
     vadMinSpeech = Number(saved.crispasr_vad_min_speech_ms ?? 250);
-    vadMinSilence = Number(saved.crispasr_vad_min_silence_ms ?? 100);
+    vadMinSilence = Number(saved.crispasr_vad_min_silence_ms ?? 800);
     vadMaxSpeech = Number(saved.crispasr_vad_max_speech_seconds ?? 300);
     vadSpeechPad = Number(saved.crispasr_vad_speech_pad_ms ?? 30);
     subtitleChars = Number(saved.subtitle_max_chars_per_line ?? 48);
@@ -338,6 +342,22 @@
     return api(`/sessions/${session.id}/settings/${section}`,{method:'PUT',headers:{'If-Match':`"${stored.revision}"`},body:JSON.stringify({value:{...stored.override,...value}})});
   }
 
+  async function persistDefaultSection(section:string,value:Record<string,unknown>) {
+    const defaults=await api<any>(`/defaults/${section}`);
+    await api(`/settings/defaults.${section}`,{method:'PUT',headers:{'If-Match':`"${defaults.revision}"`},body:JSON.stringify({value:{...(defaults.value??{}),...value}})});
+    const stored=await api<any>(`/sessions/${session.id}/settings/${section}`);
+    const cleaned={...(stored.override??{})};
+    for(const key of Object.keys(value)) delete cleaned[key];
+    await api(`/sessions/${session.id}/settings/${section}`,{method:'PUT',headers:{'If-Match':`"${stored.revision}"`},body:JSON.stringify({value:cleaned})});
+  }
+
+  async function clearSectionOverrides(section:string,keys:string[]) {
+    const stored=await api<any>(`/sessions/${session.id}/settings/${section}`);
+    const cleaned={...(stored.override??{})};
+    for(const key of keys) delete cleaned[key];
+    await api(`/sessions/${session.id}/settings/${section}`,{method:'PUT',headers:{'If-Match':`"${stored.revision}"`},body:JSON.stringify({value:cleaned})});
+  }
+
   async function loadSpeechCatalogues(preserveSelection = false) {
     const previousService = ttsService;
     const previousModel = ttsModel;
@@ -377,7 +397,7 @@
       const providerPayload=await api<any>('/providers');
       const enabled=(providerPayload.items??[]).filter((provider:any)=>provider.enabled);
       const groups=await Promise.all(enabled.map(async(provider:any)=>({provider,models:(await api<any>(`/providers/${provider.id}/models`)).items??[]})));
-      llmModels=groups.flatMap(({provider,models}:any)=>models.map((item:any)=>{
+      llmModels=groups.flatMap(({provider,models}:any)=>models.filter((item:any)=>item.is_active).map((item:any)=>{
         const custom=Boolean(provider.options_json?.is_custom)||!['openai','gemini','anthropic'].includes(provider.provider_key);
         const providerId=custom?(provider.options_json?.provider_id||provider.id):(provider.options_json?.provider_id||provider.provider_key);
         return {value:custom?`custom:${providerId}/${item.model_id}`:`${provider.provider_key}/${item.model_id}`,label:`${provider.label} · ${item.model_id}`,isDefault:Boolean(item.is_default)};
@@ -511,7 +531,31 @@
     preview = { ...stage.artifact, role, relative_path: stage.artifact.relative_path ?? stage.artifact.path };
   }
 
-  async function saveSettings() {
+  function stageSectionUpdates(key:string):{section:string;value:Record<string,unknown>}[] {
+    if(key==='transcribe') return [
+      {section:'stt',value:stageSettings[key]},
+      {section:'subtitles',value:{max_chars_per_line:subtitleChars,max_lines:subtitleLines,min_duration_ms:subtitleMinDuration,max_duration_ms:subtitleMaxDuration,max_cps:subtitleCps,min_gap_ms:subtitleMinGap,phrase_gap_ms:subtitlePhraseGap}}
+    ];
+    if(key==='correct') return [{section:'correction',value:{enabled:true,model_name:model==='default'?'':model,instructions}}];
+    if(key==='translate') return [{section:'translation',value:{enabled:true,backend,target_language:targetLanguage,model_name:model==='default'?'':model,instructions}}];
+    if(key==='optimize_tts') return [{section:'text',value:{llm_tts_optimization:optimizationEnabled,llm_processing_enabled:optimizationEnabled,llm_tts_document_optimization:documentOptimizationEnabled,tts_optimization_model:model==='default'?'':model,llm_tts_batch_size:optimizationBatchSize,llm_tts_document_batch_size:documentOptimizationBatchSize,llm_concurrent_calls:optimizationConcurrent,llm_multi_stage:optimizationMultiStage,combined_prompt:optimizationPrompt,first_prompt:optimizationFirstPrompt,second_prompt:optimizationSecondPrompt,third_prompt:optimizationThirdPrompt}}];
+    if(key==='optimize_document') return [{section:'text',value:{llm_tts_document_optimization:documentOptimizationEnabled,tts_optimization_model:model==='default'?'':model,llm_tts_document_batch_size:documentOptimizationBatchSize,llm_concurrent_calls:optimizationConcurrent,llm_multi_stage:optimizationMultiStage,combined_prompt:optimizationPrompt,first_prompt:optimizationFirstPrompt,second_prompt:optimizationSecondPrompt,third_prompt:optimizationThirdPrompt}}];
+    return [{section:stageSection(key),value:stageSettings[key]}];
+  }
+
+  async function revertStageToDefaults() {
+    if(!settingsStage) return;
+    const stage=settingsStage;
+    const updates=stageSectionUpdates(stage.key);
+    try {
+      for(const update of updates) await clearSectionOverrides(update.section,Object.keys(update.value));
+      const next={...stageSettings}; delete next[stage.key]; stageSettings=next;
+      await openSettings(stage);
+      stageMessage='Reverted to application defaults.';
+    } catch(caught){error=caught instanceof Error?caught.message:String(caught)}
+  }
+
+  async function saveSettings(mode:'session'|'defaults'='session') {
     if (!settingsStage) return;
     const key = settingsStage.key;
     if (key === 'generate_audio' && showClonedVoices && (!voiceName || !clonedVoiceIds.some((voice)=>voice.toLowerCase()===voiceName.toLowerCase()))) {
@@ -563,24 +607,23 @@
       subtitle_phrase_gap_ms: subtitlePhraseGap
     };
     else stageSettings[key] = common;
+    const updates=stageSectionUpdates(key);
     try {
-      if (key === 'transcribe') {
-        await persistSection('stt', stageSettings[key]);
-        await persistSection('subtitles',{max_chars_per_line:subtitleChars,max_lines:subtitleLines,min_duration_ms:subtitleMinDuration,max_duration_ms:subtitleMaxDuration,max_cps:subtitleCps,min_gap_ms:subtitleMinGap,phrase_gap_ms:subtitlePhraseGap});
-      } else if (key === 'correct') await persistSection('correction',{enabled:true,model_name:model==='default'?'':model,instructions});
-      else if (key === 'translate') await persistSection('translation',{enabled:true,backend,target_language:targetLanguage,model_name:model==='default'?'':model,instructions});
-      else if (key === 'optimize_tts') {
-        await persistSection('text',{llm_tts_optimization:optimizationEnabled,llm_processing_enabled:optimizationEnabled,llm_tts_document_optimization:documentOptimizationEnabled,tts_optimization_model:model==='default'?'':model,llm_tts_batch_size:optimizationBatchSize,llm_tts_document_batch_size:documentOptimizationBatchSize,llm_concurrent_calls:optimizationConcurrent,llm_multi_stage:optimizationMultiStage,combined_prompt:optimizationPrompt,first_prompt:optimizationFirstPrompt,second_prompt:optimizationSecondPrompt,third_prompt:optimizationThirdPrompt});
+      if(mode==='defaults') {
+        for(const update of updates) await persistDefaultSection(update.section,update.value);
+        stageMessage='Saved as the application defaults for future sessions.';
+      } else {
+        for(const update of updates) await persistSection(update.section,update.value);
+      }
+      if (mode==='session' && key === 'optimize_tts') {
         const current=await api<any>(`/sessions/${session.id}/outcome-plan`);
         await api(`/sessions/${session.id}/outcome-plan`,{method:'PUT',headers:{'If-Match':`"${current.revision}"`},body:JSON.stringify({value:{...current.value,transformations:{...(current.value?.transformations??{}),llm_tts_optimization:optimizationEnabled,llm_tts_document_optimization:documentOptimizationEnabled}}})});
       }
-      else if (key === 'optimize_document') {
-        await persistSection('text',{llm_tts_document_optimization:documentOptimizationEnabled,tts_optimization_model:model==='default'?'':model,llm_tts_document_batch_size:documentOptimizationBatchSize,llm_concurrent_calls:optimizationConcurrent,llm_multi_stage:optimizationMultiStage,combined_prompt:optimizationPrompt,first_prompt:optimizationFirstPrompt,second_prompt:optimizationSecondPrompt,third_prompt:optimizationThirdPrompt});
+      else if (mode==='session' && key === 'optimize_document') {
         const current=await api<any>(`/sessions/${session.id}/outcome-plan`);
         await api(`/sessions/${session.id}/outcome-plan`,{method:'PUT',headers:{'If-Match':`"${current.revision}"`},body:JSON.stringify({value:{...current.value,transformations:{...(current.value?.transformations??{}),llm_tts_document_optimization:documentOptimizationEnabled}}})});
       }
-      else await persistSection(stageSection(key),stageSettings[key]);
-      settingsStage = null;
+      if(mode==='session') settingsStage = null;
     } catch (caught) { error=caught instanceof Error?caught.message:String(caught); }
   }
 
@@ -704,7 +747,8 @@
           <div class="rounded-xl border border-[var(--line)] p-4"><div class="text-sm font-semibold">Final subtitle layout</div><p class="muted mt-1 text-xs">Applied only to derived export subtitles; source and reviewed revisions remain unchanged.</p><div class="mt-3 grid grid-cols-2 gap-3"><label class="text-xs font-semibold">Characters / line<input type="number" min="20" max="100" bind:value={subtitleChars} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Lines<input type="number" min="1" max="3" bind:value={subtitleLines} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Minimum duration (ms)<input type="number" min="250" bind:value={subtitleMinDuration} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Maximum duration (ms)<input type="number" min="1000" bind:value={subtitleMaxDuration} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Characters / second<input type="number" min="5" max="40" step="0.5" bind:value={subtitleCps} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Minimum cue gap (ms)<input type="number" min="0" max="500" bind:value={subtitleMinGap} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Phrase-break silence (ms)<input type="number" min="100" max="3000" bind:value={subtitlePhraseGap} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label></div></div>
         {/if}
       </div>
-      <div class="mt-7 flex flex-wrap justify-end gap-3"><button onclick={() => { fullSettingsSection=stageSection(settingsStage!.key); settingsStage=null; }} class="mr-auto rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold">All {sectionDisplay(stageSection(settingsStage.key))} settings</button><button onclick={() => settingsStage=null} class="rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold">Cancel</button><button onclick={saveSettings} class="rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white">Save settings</button></div>
+      {#if stageMessage}<p role="status" class="mt-5 rounded-xl bg-[var(--accent-soft)] p-3 text-xs">{stageMessage}</p>{/if}
+      <div class="mt-7 flex flex-wrap justify-end gap-3"><button onclick={() => { fullSettingsSection=stageSection(settingsStage!.key); settingsStage=null; }} class="mr-auto rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold">All {sectionDisplay(stageSection(settingsStage.key))} settings</button><button onclick={revertStageToDefaults} class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold"><RotateCcw size={15}/> Revert to defaults</button><button onclick={() => saveSettings('defaults')} class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold"><Save size={15}/> Save as defaults</button><button onclick={() => settingsStage=null} class="rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold">Cancel</button><button onclick={() => saveSettings('session')} class="rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white">Save settings</button></div>
     </div>
   </div>
 {/if}

@@ -474,7 +474,7 @@ def command_provider_list(args) -> int:
             payload = []
             for provider in providers:
                 models = list(session.scalars(select(ProviderModel).where(ProviderModel.provider_id == provider.id).order_by(ProviderModel.model_id)).all())
-                payload.append({"id": provider.id, "key": provider.provider_key, "label": provider.label, "base_url": provider.base_url, "models": [{"id": item.model_id, "default": item.is_default, "temperature": item.default_temperature, "reasoning": item.default_reasoning_effort} for item in models]})
+                payload.append({"id": provider.id, "key": provider.provider_key, "label": provider.label, "base_url": provider.base_url, "models": [{"id": item.model_id, "active": item.is_active, "default": item.is_default, "temperature": item.default_temperature, "reasoning": item.default_reasoning_effort} for item in models]})
             _emit(payload, args.json)
         return 0
     finally:

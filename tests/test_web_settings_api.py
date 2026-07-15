@@ -6,7 +6,7 @@ from sqlalchemy import func, select
 
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
-from pandrator.web.credentials import hydrate_tts_settings, tts_credential_key
+from pandrator.web.credentials import hydrate_tts_settings, shared_provider_credential_key
 from pandrator.web.models import AppSetting, AppSettingHistory, StoredCredential
 
 
@@ -73,7 +73,7 @@ class SettingsApiTests(unittest.TestCase):
             self.assertNotIn("api_key", json.dumps(setting.value_json))
             self.assertNotIn("credential_configured", json.dumps(setting.value_json))
             self.assertNotIn("credential_source", json.dumps(setting.value_json))
-            stored = session.get(StoredCredential, tts_credential_key("openai"))
+            stored = session.get(StoredCredential, shared_provider_credential_key("openai"))
             self.assertEqual(secret, stored.secret_value)
             stored_value = dict(setting.value_json)
         hydrated = hydrate_tts_settings(
@@ -95,7 +95,28 @@ class SettingsApiTests(unittest.TestCase):
         )
         self.assertEqual(200, cleared.status_code, cleared.get_json())
         with database.session() as session:
-            self.assertIsNone(session.get(StoredCredential, tts_credential_key("openai")))
+            self.assertIsNone(session.get(StoredCredential, shared_provider_credential_key("openai")))
+
+    def test_openai_key_saved_for_llm_is_reused_by_tts(self):
+        secret = "one-openai-key"
+        provider = self.client.post(
+            "/api/v1/providers",
+            json={"provider_key": "openai", "label": "OpenAI", "api_key": secret},
+            headers=self.headers,
+        )
+        self.assertEqual(201, provider.status_code, provider.get_json())
+        catalogue = self.client.get("/api/v1/services/tts").get_json()
+        openai = next(item for item in catalogue["services"] if item["id"] == "openai")
+        self.assertTrue(openai["credential_configured"])
+
+        database = self.app.extensions["pandrator"]["database"]
+        hydrated = hydrate_tts_settings(
+            database,
+            self.app.extensions["pandrator"]["paths"],
+            {"service": "OpenAI"},
+        )
+        from pandrator.logic import tts_handler
+        self.assertEqual(secret, tts_handler.get_service_config(hydrated, "openai")["api_key"])
 
     def test_generic_settings_reject_inline_credentials_but_allow_token_counts(self):
         rejected = self.client.put(

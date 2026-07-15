@@ -1566,6 +1566,11 @@ export interface components {
              */
             input_cost_per_million: number | null;
             /**
+             * Is Active
+             * @default true
+             */
+            is_active: boolean;
+            /**
              * Is Default
              * @default false
              */
@@ -1604,6 +1609,11 @@ export interface components {
              * @default null
              */
             input_cost_per_million: number | null;
+            /**
+             * Is Active
+             * @default null
+             */
+            is_active: boolean | null;
             /**
              * Is Default
              * @default null

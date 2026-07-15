@@ -4,8 +4,10 @@ import logging
 import os
 import copy
 import re
+import base64
+import wave
 from contextlib import ExitStack
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import quote, urljoin, urlparse, urlunparse
 
 import requests
 from pydub import AudioSegment
@@ -282,17 +284,20 @@ OPENAI_AUDIO_DEFAULT_MODEL = "gpt-4o-mini-tts"
 OPENAI_AUDIO_DEFAULT_VOICE = "alloy"
 GEMINI_AUDIO_DEFAULT_MODEL = "gemini-3.1-flash-tts-preview"
 GEMINI_AUDIO_DEFAULT_VOICE = "Kore"
+VERTEX_AUDIO_DEFAULT_LOCATION = "us-central1"
 OPENAI_AUDIO_BASE_URL = "https://api.openai.com/v1"
 GEMINI_AUDIO_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 
 OPENAI_SERVICE = "OpenAI"
 GEMINI_SERVICE = "Google Gemini"
+VERTEX_SERVICE = "Google Vertex AI"
 LEGACY_GEMINI_SERVICE = "Gemini"
 OPENAI_COMPAT_SERVICE = "Custom"
 LEGACY_OPENAI_COMPAT_SERVICE = "OpenAI-Compatible"
 
 OPENAI_PROVIDER = "openai"
 GEMINI_PROVIDER = "gemini"
+VERTEX_PROVIDER = "vertex_ai"
 SUPPORTED_AUDIO_PROVIDERS = {OPENAI_PROVIDER, GEMINI_PROVIDER}
 
 OPENAI_TTS_MODELS = [
@@ -303,8 +308,8 @@ OPENAI_TTS_MODELS = [
 
 GEMINI_TTS_MODELS = [
     "gemini-3.1-flash-tts-preview",
-    "gemini-2.5-flash-preview-tts",
-    "gemini-2.5-pro-preview-tts",
+    "gemini-2.5-flash-tts",
+    "gemini-2.5-pro-tts",
 ]
 
 OPENAI_TTS_VOICES = [
@@ -370,8 +375,8 @@ GEMINI_TTS_VOICES = [
 
 GEMINI_MODEL_ALIASES = {
     "gemini-3.1-flash-tts": "gemini-3.1-flash-tts-preview",
-    "gemini-2.5-flash-tts": "gemini-2.5-flash-preview-tts",
-    "gemini-2.5-pro-tts": "gemini-2.5-pro-preview-tts",
+    "gemini-2.5-flash-preview-tts": "gemini-2.5-flash-tts",
+    "gemini-2.5-pro-preview-tts": "gemini-2.5-pro-tts",
 }
 
 FIRST_CLASS_SERVICE_ORDER = [
@@ -386,6 +391,7 @@ FIRST_CLASS_SERVICE_ORDER = [
     "kobold_qwen",
     OPENAI_PROVIDER,
     GEMINI_PROVIDER,
+    VERTEX_PROVIDER,
 ]
 FIRST_CLASS_SERVICE_IDS = set(FIRST_CLASS_SERVICE_ORDER)
 FIRST_CLASS_SERVICE_NAMES = {
@@ -400,6 +406,7 @@ FIRST_CLASS_SERVICE_NAMES = {
     "kobold_qwen": "Qwen3 TTS",
     OPENAI_PROVIDER: OPENAI_SERVICE,
     GEMINI_PROVIDER: GEMINI_SERVICE,
+    VERTEX_PROVIDER: VERTEX_SERVICE,
 }
 SERVICE_ID_ALIASES = {
     "voxcpm2": "voxcpm",
@@ -409,6 +416,9 @@ SERVICE_ID_ALIASES = {
     "google": GEMINI_PROVIDER,
     "google-gemini": GEMINI_PROVIDER,
     "gemini": GEMINI_PROVIDER,
+    "vertex": VERTEX_PROVIDER,
+    "vertex-ai": VERTEX_PROVIDER,
+    "google-vertex-ai": VERTEX_PROVIDER,
     "kobold-qwen": "kobold_qwen",
     "koboldqwen": "kobold_qwen",
     "qwen": "kobold_qwen",
@@ -477,6 +487,8 @@ def _normalize_adapter_config(raw_config) -> dict[str, object]:
         "voices_path": str(config.get("voices_path") or "").strip(),
         "request_fields": normalized_fields,
         "request_defaults": normalized_defaults,
+        "auth_mode": str(config.get("auth_mode") or "bearer").strip().lower(),
+        "direct_http": _coerce_bool(config.get("direct_http"), False),
     }
 
 
@@ -604,6 +616,23 @@ def _default_service_configs() -> list[dict[str, object]]:
                 "default_voice": GEMINI_AUDIO_DEFAULT_VOICE,
                 PREBUILT_VOICE_PROVIDER_FIELD: True,
             },
+            {
+                "id": VERTEX_PROVIDER,
+                "name": VERTEX_SERVICE,
+                "kind": "commercial",
+                "provider": VERTEX_PROVIDER,
+                "api_base": "https://aiplatform.googleapis.com",
+                "api_key_env": "",
+                "api_key": "",
+                "is_custom": False,
+                "models": list(GEMINI_TTS_MODELS),
+                "default_model": GEMINI_AUDIO_DEFAULT_MODEL,
+                "voices": list(GEMINI_TTS_VOICES),
+                "default_voice": GEMINI_AUDIO_DEFAULT_VOICE,
+                "vertex_project": "",
+                "vertex_location": VERTEX_AUDIO_DEFAULT_LOCATION,
+                PREBUILT_VOICE_PROVIDER_FIELD: True,
+            },
         ]
     )
     return configs
@@ -642,9 +671,20 @@ def _merge_service_config(
     if str(raw_record.get("secret_ref") or "").strip():
         record["secret_ref"] = str(raw_record["secret_ref"]).strip()
 
-    for key in ("adapter", "profile_id", "speech_path", "models_path", "voices_path"):
+    for key in (
+        "adapter",
+        "profile_id",
+        "speech_path",
+        "models_path",
+        "voices_path",
+        "auth_mode",
+        "vertex_project",
+        "vertex_location",
+    ):
         if str(raw_record.get(key) or "").strip():
             record[key] = str(raw_record[key]).strip()
+    if "direct_http" in raw_record:
+        record["direct_http"] = _coerce_bool(raw_record.get("direct_http"), False)
     for key in ("request_fields", "request_defaults"):
         if isinstance(raw_record.get(key), dict):
             record[key] = copy.deepcopy(raw_record[key])
@@ -1975,6 +2015,8 @@ def _parse_openai_audio_endpoints(tts_settings: dict) -> dict[str, dict[str, obj
             "voices_path": str(provider_record.get("voices_path") or ""),
             "request_fields": dict(provider_record.get("request_fields") or {}),
             "request_defaults": dict(provider_record.get("request_defaults") or {}),
+            "auth_mode": str(provider_record.get("auth_mode") or "bearer"),
+            "direct_http": _coerce_bool(provider_record.get("direct_http"), False),
         }
 
     return endpoints
@@ -2047,10 +2089,18 @@ def _configured_endpoint_auth_headers(endpoint: dict[str, object]) -> dict[str, 
     if key_env:
         env_value = os.getenv(key_env, "").strip()
         if env_value:
-            return _openai_auth_headers(env_value)
+            return (
+                {"api-key": env_value}
+                if str(endpoint.get("auth_mode") or "").lower() == "api-key"
+                else _openai_auth_headers(env_value)
+            )
 
     explicit_key = str(endpoint.get("api_key", "") or "").strip()
-    return _openai_auth_headers(explicit_key) if explicit_key else {}
+    if not explicit_key:
+        return {}
+    if str(endpoint.get("auth_mode") or "").lower() == "api-key":
+        return {"api-key": explicit_key}
+    return _openai_auth_headers(explicit_key)
 
 
 def _resolve_service_api_key(tts_settings: dict | None, service_id: str, default_env: str) -> str:
@@ -4085,7 +4135,11 @@ def _request_openai_compatible_audio(text: str, tts_settings: dict) -> requests.
         provider == GEMINI_PROVIDER
         and _normalize_base_url(endpoint.get("base_url"), "") != GEMINI_AUDIO_BASE_URL
     )
-    if provider in SUPPORTED_AUDIO_PROVIDERS and not uses_nonstandard_gemini_base:
+    if (
+        provider in SUPPORTED_AUDIO_PROVIDERS
+        and not uses_nonstandard_gemini_base
+        and not _coerce_bool(endpoint.get("direct_http"), False)
+    ):
         try:
             return _request_litellm_audio(payload, endpoint)
         except Exception as e:
@@ -4095,7 +4149,6 @@ def _request_openai_compatible_audio(text: str, tts_settings: dict) -> requests.
                 e,
             )
 
-    api_key = _resolve_openai_audio_api_key(endpoint)
     last_response = None
     for speech_url in _configured_openai_urls(
         endpoint,
@@ -4104,7 +4157,7 @@ def _request_openai_compatible_audio(text: str, tts_settings: dict) -> requests.
     ):
         response = requests.post(
             speech_url,
-            headers=_openai_auth_headers(api_key),
+            headers=_configured_endpoint_auth_headers(endpoint),
             json=payload,
             timeout=TTS_GENERATION_TIMEOUT_SECONDS,
         )
@@ -4117,6 +4170,111 @@ def _request_openai_compatible_audio(text: str, tts_settings: dict) -> requests.
         return last_response
 
     raise RuntimeError(f"No speech endpoint could be resolved for '{endpoint['name']}'.")
+
+
+def _vertex_access_token(service: dict[str, object]) -> tuple[str, str]:
+    """Create a short-lived Vertex token from the shared service-account JSON or ADC."""
+
+    try:
+        import google.auth
+        from google.auth.transport.requests import Request as GoogleAuthRequest
+        from google.oauth2 import service_account
+    except ImportError as error:  # pragma: no cover - dependency guard
+        raise RuntimeError("Vertex AI TTS requires the google-auth package.") from error
+
+    scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+    credential_json = str(service.get("api_key") or "").strip()
+    if credential_json:
+        try:
+            credential_info = json.loads(credential_json)
+        except json.JSONDecodeError as error:
+            raise ValueError("Vertex credentials must be valid service-account JSON.") from error
+        credentials = service_account.Credentials.from_service_account_info(
+            credential_info,
+            scopes=scopes,
+        )
+        project_id = str(credential_info.get("project_id") or "").strip()
+    else:
+        credentials, detected_project = google.auth.default(scopes=scopes)
+        project_id = str(detected_project or "").strip()
+
+    configured_project = str(service.get("vertex_project") or "").strip()
+    project_id = configured_project or project_id
+    if not project_id:
+        raise ValueError("Vertex AI TTS requires a Google Cloud project ID.")
+    if not credentials.valid or not credentials.token:
+        credentials.refresh(GoogleAuthRequest())
+    token = str(credentials.token or "").strip()
+    if not token:
+        raise RuntimeError("Google authentication did not return a Vertex access token.")
+    return token, project_id
+
+
+def _pcm_to_wav_bytes(pcm: bytes, *, sample_rate: int = 24000) -> bytes:
+    output = io.BytesIO()
+    with wave.open(output, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(pcm)
+    return output.getvalue()
+
+
+def _request_vertex_ai_audio(text: str, tts_settings: dict) -> requests.Response:
+    service = get_service_config(tts_settings, VERTEX_PROVIDER) or {}
+    token, project_id = _vertex_access_token(service)
+    location = str(service.get("vertex_location") or VERTEX_AUDIO_DEFAULT_LOCATION).strip()
+    model = str(
+        tts_settings.get("xtts_model")
+        or tts_settings.get("model")
+        or service.get("default_model")
+        or GEMINI_AUDIO_DEFAULT_MODEL
+    ).strip()
+    model = _normalize_model_for_provider(model, GEMINI_PROVIDER)
+    voice = str(
+        tts_settings.get("speaker")
+        or tts_settings.get("voice")
+        or service.get("default_voice")
+        or GEMINI_AUDIO_DEFAULT_VOICE
+    ).strip()
+    endpoint = (
+        "https://aiplatform.googleapis.com/v1beta1/projects/"
+        f"{quote(project_id, safe='')}/locations/{quote(location, safe='')}/"
+        f"publishers/google/models/{quote(model, safe='')}:generateContent"
+    )
+    payload = {
+        "contents": [{"role": "user", "parts": [{"text": text}]}],
+        "generationConfig": {
+            "responseModalities": ["AUDIO"],
+            "speechConfig": {
+                "voiceConfig": {
+                    "prebuiltVoiceConfig": {"voiceName": voice},
+                }
+            },
+        },
+    }
+    response = requests.post(
+        endpoint,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json=payload,
+        timeout=TTS_GENERATION_TIMEOUT_SECONDS,
+    )
+    if not response.ok:
+        return response
+    try:
+        response_payload = response.json()
+        part = response_payload["candidates"][0]["content"]["parts"][0]
+        inline_data = part.get("inlineData") or part.get("inline_data")
+        pcm = base64.b64decode(str(inline_data["data"]), validate=True)
+    except (KeyError, IndexError, TypeError, ValueError) as error:
+        raise RuntimeError("Vertex AI returned no decodable audio payload.") from error
+
+    audio_response = requests.Response()
+    audio_response.status_code = 200
+    audio_response._content = _pcm_to_wav_bytes(pcm)
+    audio_response.headers["Content-Type"] = "audio/wav"
+    audio_response.url = endpoint
+    return audio_response
 
 
 def _decode_audio_response(response: requests.Response) -> AudioSegment:
@@ -4344,6 +4502,8 @@ def text_to_audio(
                 LEGACY_OPENAI_COMPAT_SERVICE,
             }:
                 response = _request_openai_compatible_audio(text, tts_settings)
+            elif service == VERTEX_SERVICE:
+                response = _request_vertex_ai_audio(text, tts_settings)
             elif service == "Silero":
                 data = {
                     "model": str(

@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from pandrator.runtime import DataPaths
 
-from .credentials import DEFAULT_PROVIDER_ENVS, is_sensitive_field, resolve_secret_reference
+from .credentials import DEFAULT_PROVIDER_ENVS, is_sensitive_field, resolve_provider_credential
 from .database import Database
 from .models import Provider, ProviderModel
 
@@ -158,17 +158,21 @@ def build_llm_settings(
     selected_model = str(requested_model or "").strip()
     default_model = ""
     for provider in providers:
-        rows = models_by_provider.get(provider.id, [])
+        rows = [row for row in models_by_provider.get(provider.id, []) if row.is_active]
         if not rows:
             continue
         fallback_env = str((provider.options_json or {}).get("api_key_env") or "").strip()
         if not fallback_env:
             fallback_env = DEFAULT_PROVIDER_ENVS.get(str(provider.provider_key or "").strip().lower(), "")
-        credential = resolve_secret_reference(
+        profile_id = str((provider.options_json or {}).get("profile_id") or "").strip().lower()
+        share_credential = not bool((provider.options_json or {}).get("is_custom") or profile_id in {"custom-openai", "lm-studio", "ollama"})
+        credential = resolve_provider_credential(
             database,
             paths,
+            provider.provider_key,
             provider.secret_ref,
             fallback_environment_variable=fallback_env,
+            shared=share_credential,
         )
         is_custom = bool(
             (provider.options_json or {}).get("is_custom")

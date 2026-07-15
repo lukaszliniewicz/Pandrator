@@ -37,6 +37,7 @@ TTS_SERVICE_ENVS: dict[str, str] = {
     "kokoro": "KOKORO_API_KEY",
     "kobold_qwen": "KOBOLD_QWEN_API_KEY",
 }
+SHARED_PROVIDER_CREDENTIALS = {"openai", "gemini", "vertex_ai"}
 AUXILIARY_CREDENTIALS: tuple[dict[str, str], ...] = (
     {
         "id": "deepl",
@@ -86,6 +87,32 @@ def provider_credential_key(provider_id: object) -> str:
 
 def tts_credential_key(service_id: object) -> str:
     return f"tts:{normalize_credential_id(service_id).replace('-', '_')}"
+
+
+def shared_provider_credential_key(provider_id: object) -> str:
+    normalized = normalize_credential_id(provider_id).replace("-", "_")
+    return f"shared:{normalized}"
+
+
+def llm_provider_credential_key(
+    provider_key: object,
+    provider_id: object,
+    options: dict[str, Any] | None = None,
+) -> str:
+    normalized = normalize_credential_id(provider_key).replace("-", "_")
+    metadata = options or {}
+    profile_id = str(metadata.get("profile_id") or "").strip().lower()
+    is_custom = bool(metadata.get("is_custom") or profile_id in {"custom-openai", "lm-studio", "ollama"})
+    if normalized in SHARED_PROVIDER_CREDENTIALS and not is_custom:
+        return shared_provider_credential_key(normalized)
+    return provider_credential_key(provider_id)
+
+
+def tts_service_credential_key(service_id: object) -> str:
+    normalized = normalize_credential_id(service_id).replace("-", "_")
+    if normalized in SHARED_PROVIDER_CREDENTIALS:
+        return shared_provider_credential_key(normalized)
+    return tts_credential_key(normalized)
 
 
 def auxiliary_credential_key(credential_id: object) -> str:
@@ -197,6 +224,57 @@ def credential_status(
         return {"credential_configured": False, "credential_source": "unavailable"}
 
 
+def resolve_provider_credential(
+    database: Database,
+    paths: DataPaths,
+    provider_id: object,
+    reference: object,
+    *,
+    fallback_environment_variable: str = "",
+    shared: bool = True,
+) -> ResolvedCredential:
+    """Resolve a shared cloud credential before provider-specific fallbacks."""
+
+    normalized = normalize_credential_id(provider_id).replace("-", "_")
+    if shared and normalized in SHARED_PROVIDER_CREDENTIALS:
+        resolved = resolve_secret_reference(
+            database,
+            paths,
+            database_reference(shared_provider_credential_key(normalized)),
+        )
+        if resolved.configured:
+            return resolved
+    return resolve_secret_reference(
+        database,
+        paths,
+        reference,
+        fallback_environment_variable=fallback_environment_variable,
+    )
+
+
+def provider_credential_status(
+    database: Database,
+    paths: DataPaths,
+    provider_id: object,
+    reference: object,
+    *,
+    fallback_environment_variable: str = "",
+    shared: bool = True,
+) -> dict[str, Any]:
+    try:
+        resolved = resolve_provider_credential(
+            database,
+            paths,
+            provider_id,
+            reference,
+            fallback_environment_variable=fallback_environment_variable,
+            shared=shared,
+        )
+        return {"credential_configured": resolved.configured, "credential_source": resolved.source}
+    except (OSError, RuntimeError, ValueError, json.JSONDecodeError):
+        return {"credential_configured": False, "credential_source": "unavailable"}
+
+
 def is_sensitive_field(key: object) -> bool:
     normalized = re.sub(r"[-\s]+", "_", str(key or "").strip().lower())
     return bool(_SENSITIVE_FIELD.search(normalized)) or normalized.endswith(("_token", "_private_key", "_secret_key")) or normalized in {
@@ -298,14 +376,16 @@ def prepare_tts_settings_for_storage(
         clear_key = bool(record.pop("clear_api_key", False))
         existing_reference = str(record.get("secret_ref") or previous_record.get("secret_ref") or "").strip()
         if submitted_key:
-            key = tts_credential_key(normalized_id)
+            if normalized_id == "vertex_ai":
+                validate_vertex_service_account_json(submitted_key)
+            key = tts_service_credential_key(normalized_id)
             previous_key = reference_key(previous_record.get("secret_ref"))
-            if previous_key and previous_key != key:
+            if previous_key and previous_key != key and not previous_key.startswith("shared:"):
                 delete_credential(session, previous_key)
             upsert_credential(session, key, f"{record.get('name') or service_id} API key", submitted_key)
             record["secret_ref"] = database_reference(key)
         elif clear_key:
-            key = reference_key(existing_reference) or tts_credential_key(normalized_id)
+            key = reference_key(existing_reference) or tts_service_credential_key(normalized_id)
             delete_credential(session, key)
             record.pop("secret_ref", None)
         elif existing_reference:
@@ -313,13 +393,15 @@ def prepare_tts_settings_for_storage(
             previous_reference = str(previous_record.get("secret_ref") or "").strip()
             if previous_reference != existing_reference:
                 previous_key = reference_key(previous_reference)
-                if previous_key:
+                if previous_key and not previous_key.startswith("shared:"):
                     delete_credential(session, previous_key)
     for normalized_id, previous_record in previous_records.items():
         if normalized_id in current_ids:
             continue
         previous_reference = str(previous_record.get("secret_ref") or "").strip()
-        delete_credential(session, reference_key(previous_reference) or tts_credential_key(normalized_id))
+        key = reference_key(previous_reference) or tts_service_credential_key(normalized_id)
+        if not key.startswith("shared:"):
+            delete_credential(session, key)
     if contains_inline_secret(prepared):
         raise ValueError("TTS credentials must be saved in the API key field.")
     return prepared
@@ -339,9 +421,10 @@ def hydrate_tts_settings(database: Database, paths: DataPaths, settings: dict[st
         return hydrated
     service_id = str(selected.get("id") or selected_value).strip().lower().replace("-", "_")
     fallback_env = str(selected.get("api_key_env") or TTS_SERVICE_ENVS.get(service_id, ""))
-    resolved = resolve_secret_reference(
+    resolved = resolve_provider_credential(
         database,
         paths,
+        service_id,
         selected.get("secret_ref"),
         fallback_environment_variable=fallback_env,
     )

@@ -39,10 +39,14 @@ from .credentials import (
     delete_credential,
     prepare_tts_settings_for_storage,
     provider_credential_key,
+    llm_provider_credential_key,
+    provider_credential_status,
     redact_inline_secrets,
     reference_key,
     resolve_secret_reference,
+    resolve_provider_credential,
     tts_credential_key,
+    tts_service_credential_key,
     upsert_credential,
     validate_provider_options,
     validate_vertex_service_account_json,
@@ -94,12 +98,16 @@ def _provider_payload(provider: Provider, database: Database, paths: DataPaths) 
         ("id", "kind", "provider_key", "label", "enabled", "base_url", "secret_ref", "options_json", "revision"),
     )
     fallback_env = str((provider.options_json or {}).get("api_key_env") or DEFAULT_PROVIDER_ENVS.get(provider.provider_key.lower(), ""))
+    profile_id = str((provider.options_json or {}).get("profile_id") or "").strip().lower()
+    share_credential = not bool((provider.options_json or {}).get("is_custom") or profile_id in {"custom-openai", "lm-studio", "ollama"})
     payload.update(
-        credential_status(
+        provider_credential_status(
             database,
             paths,
+            provider.provider_key,
             provider.secret_ref,
             fallback_environment_variable=fallback_env,
+            shared=share_credential,
         )
     )
     payload["options_json"] = redact_inline_secrets(payload.get("options_json") or {})
@@ -403,10 +411,11 @@ def create_app(
             service_id = str(service.get("id") or service.get("name") or "").strip().lower().replace("-", "_")
             key_env = str(service.get("api_key_env") or TTS_SERVICE_ENVS.get(service_id, "")).strip()
             service.update(
-                credential_status(
+                provider_credential_status(
                     database,
                     paths,
-                    service.get("secret_ref") or database_reference(tts_credential_key(service_id)),
+                    service_id,
+                    service.get("secret_ref") or database_reference(tts_service_credential_key(service_id)),
                     fallback_environment_variable=key_env,
                 )
             )
@@ -565,10 +574,11 @@ def create_app(
             service = tts_handler.get_service_config({**default_value, **connection_value}, payload.service_id)
             if service is not None:
                 service_id = str(service.get("id") or payload.service_id).strip().lower().replace("-", "_")
-                resolved = resolve_secret_reference(
+                resolved = resolve_provider_credential(
                     database,
                     paths,
-                    service.get("secret_ref") or database_reference(tts_credential_key(service_id)),
+                    service_id,
+                    service.get("secret_ref") or database_reference(tts_service_credential_key(service_id)),
                     fallback_environment_variable=str(service.get("api_key_env") or TTS_SERVICE_ENVS.get(service_id, "")),
                 )
                 api_key = resolved.resolved_value()
@@ -1689,7 +1699,7 @@ def create_app(
             db_session.add(provider)
             db_session.flush()
             if str(payload.api_key or "").strip():
-                key = provider_credential_key(provider.id)
+                key = llm_provider_credential_key(provider.provider_key, provider.id, provider.options_json)
                 credential_kind = "credentials" if provider.provider_key.strip().lower() == "vertex_ai" else "API key"
                 upsert_credential(db_session, key, f"{provider.label} {credential_kind}", payload.api_key)
                 provider.secret_ref = database_reference(key)
@@ -1733,21 +1743,21 @@ def create_app(
             for key, value in changes.items():
                 setattr(provider, key, value)
             if submitted_key:
-                key = provider_credential_key(provider.id)
+                key = llm_provider_credential_key(provider.provider_key, provider.id, provider.options_json)
                 previous_key = reference_key(previous_secret_ref)
-                if previous_key and previous_key != key:
+                if previous_key and previous_key != key and not previous_key.startswith("shared:"):
                     delete_credential(db_session, previous_key)
                 credential_kind = "credentials" if provider.provider_key.strip().lower() == "vertex_ai" else "API key"
                 upsert_credential(db_session, key, f"{provider.label} {credential_kind}", submitted_key)
                 provider.secret_ref = database_reference(key)
             elif clear_key:
-                key = reference_key(provider.secret_ref) or provider_credential_key(provider.id)
+                key = reference_key(provider.secret_ref) or llm_provider_credential_key(provider.provider_key, provider.id, provider.options_json)
                 delete_credential(db_session, key)
                 if str(provider.secret_ref or "").startswith("db:"):
                     provider.secret_ref = None
             elif previous_secret_ref != str(provider.secret_ref or ""):
                 previous_key = reference_key(previous_secret_ref)
-                if previous_key:
+                if previous_key and not previous_key.startswith("shared:"):
                     delete_credential(db_session, previous_key)
             provider.revision += 1
             provider.updated_at = utcnow()
@@ -1770,8 +1780,11 @@ def create_app(
                 replacement = db_session.get(ProviderModel, replacement_id) if replacement_id else None
                 if replacement is None or replacement.provider_id == provider_id:
                     return error_response("replacement_required", "Select a default model from another provider before removing this provider.", 409)
+                replacement.is_active = True
                 replacement.is_default = True
-            delete_credential(db_session, reference_key(provider.secret_ref) or provider_credential_key(provider.id))
+            key = reference_key(provider.secret_ref) or provider_credential_key(provider.id)
+            if not key.startswith("shared:"):
+                delete_credential(db_session, key)
             db_session.delete(provider)
         return "", 204
 
@@ -1789,10 +1802,10 @@ def create_app(
             if payload.is_default:
                 for existing in db_session.scalars(select(ProviderModel)):
                     existing.is_default = False
-            model = ProviderModel(provider_id=provider_id, model_id=payload.model_id, is_default=payload.is_default, default_temperature=payload.default_temperature, default_reasoning_effort=payload.default_reasoning_effort, input_cost_per_million=payload.input_cost_per_million, cached_input_cost_per_million=payload.cached_input_cost_per_million, output_cost_per_million=payload.output_cost_per_million, options_json=payload.options)
+            model = ProviderModel(provider_id=provider_id, model_id=payload.model_id, is_active=payload.is_active or payload.is_default, is_default=payload.is_default, default_temperature=payload.default_temperature, default_reasoning_effort=payload.default_reasoning_effort, input_cost_per_million=payload.input_cost_per_million, cached_input_cost_per_million=payload.cached_input_cost_per_million, output_cost_per_million=payload.output_cost_per_million, options_json=payload.options)
             db_session.add(model)
             db_session.flush()
-            result = _model_dict(model, ("id", "provider_id", "model_id", "is_default", "default_temperature", "default_reasoning_effort", "input_cost_per_million", "cached_input_cost_per_million", "output_cost_per_million", "options_json", "revision"))
+            result = _model_dict(model, ("id", "provider_id", "model_id", "is_active", "is_default", "default_temperature", "default_reasoning_effort", "input_cost_per_million", "cached_input_cost_per_million", "output_cost_per_million", "options_json", "revision"))
         return jsonify(result), 201
 
     @app.post("/api/v1/providers/<provider_id>/test")
@@ -1806,7 +1819,11 @@ def create_app(
             provider = db_session.get(Provider, provider_id)
             if provider is None:
                 return error_response("not_found", "Provider not found.", 404)
-            selected = payload.model_id or db_session.scalar(select(ProviderModel.model_id).where(ProviderModel.provider_id == provider_id, ProviderModel.is_default.is_(True)))
+            selected = payload.model_id or db_session.scalar(select(ProviderModel.model_id).where(ProviderModel.provider_id == provider_id, ProviderModel.is_active.is_(True), ProviderModel.is_default.is_(True)))
+            if not selected:
+                selected = db_session.scalar(select(ProviderModel.model_id).where(ProviderModel.provider_id == provider_id, ProviderModel.is_active.is_(True)).order_by(ProviderModel.model_id))
+            if not selected:
+                return error_response("validation_error", "Activate at least one model before testing this provider.", 422)
         settings, model_name = build_llm_settings(database, paths, requested_model=selected)
         result = chat_completion_with_metadata(messages=[{"role": "user", "content": "Reply with exactly OK."}], model_name=model_name, llm_settings=settings, max_tokens=8)
         if not result.content:
@@ -1820,7 +1837,7 @@ def create_app(
             if db_session.get(Provider, provider_id) is None:
                 return error_response("not_found", "Provider not found.", 404)
             records = list(db_session.scalars(select(ProviderModel).where(ProviderModel.provider_id == provider_id).order_by(ProviderModel.model_id)).all())
-            return jsonify({"items": [_model_dict(item, ("id", "provider_id", "model_id", "is_default", "default_temperature", "default_reasoning_effort", "input_cost_per_million", "cached_input_cost_per_million", "output_cost_per_million", "options_json", "revision")) for item in records]})
+            return jsonify({"items": [_model_dict(item, ("id", "provider_id", "model_id", "is_active", "is_default", "default_temperature", "default_reasoning_effort", "input_cost_per_million", "cached_input_cost_per_million", "output_cost_per_million", "options_json", "revision")) for item in records]})
 
     @app.patch("/api/v1/providers/<provider_id>/models/<model_record_id>")
     @require_auth
@@ -1838,6 +1855,8 @@ def create_app(
             if model.revision != expected_revision:
                 return error_response("revision_conflict", "The model settings changed in another client.", 409)
             changes = payload.model_dump(exclude_unset=True)
+            if changes.get("is_active") is False and model.is_default:
+                return error_response("validation_error", "Choose another application default before deactivating this model.", 422)
             if "options" in changes:
                 try:
                     validate_provider_options(changes["options"])
@@ -1846,13 +1865,14 @@ def create_app(
             if changes.pop("is_default", False):
                 for existing in db_session.scalars(select(ProviderModel)):
                     existing.is_default = existing.id == model.id
+                changes["is_active"] = True
             if "options" in changes:
                 changes["options_json"] = changes.pop("options")
             for key, value in changes.items():
                 setattr(model, key, value)
             model.revision += 1
             db_session.flush()
-            result = _model_dict(model, ("id", "provider_id", "model_id", "is_default", "default_temperature", "default_reasoning_effort", "input_cost_per_million", "cached_input_cost_per_million", "output_cost_per_million", "options_json", "revision"))
+            result = _model_dict(model, ("id", "provider_id", "model_id", "is_active", "is_default", "default_temperature", "default_reasoning_effort", "input_cost_per_million", "cached_input_cost_per_million", "output_cost_per_million", "options_json", "revision"))
         response = jsonify(result)
         response.headers["ETag"] = f'"{result["revision"]}"'
         return response
@@ -1873,6 +1893,7 @@ def create_app(
                     replacement = db_session.scalar(select(ProviderModel).where(ProviderModel.provider_id == provider_id, ProviderModel.model_id == replacement_model_id))
                 if replacement is None or replacement.id == model.id:
                     return error_response("replacement_required", "Select a replacement before deleting the active default model.", 409)
+                replacement.is_active = True
                 replacement.is_default = True
             db_session.delete(model)
         return "", 204
@@ -1888,11 +1909,18 @@ def create_app(
                 return error_response("not_found", "Provider not found.", 404)
             existing = list(db_session.scalars(select(ProviderModel).where(ProviderModel.provider_id == provider_id)).all())
             fallback_env = str((provider.options_json or {}).get("api_key_env") or DEFAULT_PROVIDER_ENVS.get(provider.provider_key.lower(), ""))
-            credential = resolve_secret_reference(
+            profile_id = str((provider.options_json or {}).get("profile_id") or "").strip().lower()
+            share_credential = not bool(
+                (provider.options_json or {}).get("is_custom")
+                or profile_id in {"custom-openai", "lm-studio", "ollama"}
+            )
+            credential = resolve_provider_credential(
                 database,
                 paths,
+                provider.provider_key,
                 provider.secret_ref,
                 fallback_environment_variable=fallback_env,
+                shared=share_credential,
             )
             detected = _detect_models_for_builtin_provider({
                 "provider": provider.provider_key,
@@ -1906,7 +1934,8 @@ def create_app(
             for model_id in detected:
                 if model_id in known:
                     continue
-                model = ProviderModel(provider_id=provider_id, model_id=model_id, is_default=not existing and not added)
+                first_model = not existing and not added
+                model = ProviderModel(provider_id=provider_id, model_id=model_id, is_active=first_model, is_default=first_model)
                 db_session.add(model)
                 added.append(model_id)
             return jsonify({"detected": detected, "added": added, "preserved": sorted(known)})

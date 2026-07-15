@@ -302,7 +302,7 @@ class WebParityWorkspaceTests(unittest.TestCase):
     def test_web_defaults_match_the_supported_subtitle_and_vad_contract(self):
         self.assertEqual(48, BUILTIN_DEFAULTS["subtitles"]["max_chars_per_line"])
         self.assertEqual(833, BUILTIN_DEFAULTS["subtitles"]["min_duration_ms"])
-        self.assertEqual(100, BUILTIN_DEFAULTS["stt"]["crispasr_vad_min_silence_ms"])
+        self.assertEqual(800, BUILTIN_DEFAULTS["stt"]["crispasr_vad_min_silence_ms"])
         self.assertEqual(300, BUILTIN_DEFAULTS["stt"]["crispasr_vad_max_speech_seconds"])
         self.assertEqual("libx264", BUILTIN_DEFAULTS["output"]["burn_video_encoder"])
         self.assertEqual(18, BUILTIN_DEFAULTS["output"]["burn_video_quality"])

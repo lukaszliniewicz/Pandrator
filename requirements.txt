@@ -11,6 +11,7 @@ mutagen
 Pillow
 yt-dlp
 requests
+google-auth>=2,<3
 litellm>=1.60,<1.92
 deepl
 nemo_text_processing==1.2.0

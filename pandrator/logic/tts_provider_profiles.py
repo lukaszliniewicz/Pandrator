@@ -14,6 +14,11 @@ def _openai_profile(
     voices: list[str] | None = None,
     voices_path: str = "",
     notes: str = "",
+    auth_mode: str = "bearer",
+    direct_http: bool = False,
+    speech_path: str = "/v1/audio/speech",
+    supports_prebuilt_voices: bool = True,
+    models_are_manual: bool = False,
 ) -> dict:
     return {
         "id": profile_id,
@@ -23,7 +28,7 @@ def _openai_profile(
         "api_base": api_base,
         "provider": "openai",
         "adapter": OPENAI_ADAPTER,
-        "speech_path": "/v1/audio/speech",
+        "speech_path": speech_path,
         "models_path": "/v1/models",
         "voices_path": voices_path,
         "request_fields": {
@@ -36,7 +41,10 @@ def _openai_profile(
         "request_defaults": {},
         "models": models,
         "voices": voices or [],
-        "supports_prebuilt_voices": True,
+        "supports_prebuilt_voices": supports_prebuilt_voices,
+        "auth_mode": auth_mode,
+        "direct_http": direct_http,
+        "models_are_manual": models_are_manual,
         "notes": notes,
     }
 
@@ -102,6 +110,20 @@ _VOXTRAL_RUST_VOICES = [
 
 
 TTS_PROVIDER_PROFILES = [
+    _openai_profile(
+        "azure-openai-v1",
+        "Azure OpenAI (v1 TTS)",
+        "https://YOUR-RESOURCE.openai.azure.com",
+        "https://learn.microsoft.com/azure/foundry/openai/reference-preview-latest?view=foundry-classic",
+        [],
+        [],
+        notes="Enter your Azure resource URL and add each deployed TTS model/deployment name manually.",
+        auth_mode="api-key",
+        direct_http=True,
+        speech_path="/openai/v1/audio/speech?api-version=preview",
+        supports_prebuilt_voices=False,
+        models_are_manual=True,
+    ),
     _openai_profile(
         "pandrator-xtts2-api",
         "XTTS v2 - lukaszliniewicz/xtts2_api",
