@@ -318,6 +318,39 @@ class WebWorkflowHandlerTests(unittest.TestCase):
             final_path = self.paths.root / exported.relative_path
             self.assertIn("00:00:00,000 --> 00:00:01,000", final_path.read_text(encoding="utf-8"))
 
+    def test_subtitle_workspace_with_video_defaults_to_a_subtitle_file(self):
+        subtitle_session = self.sessions.create("Transcribed video", workflow_kind="subtitles")
+        subtitle_session_dir = self.paths.sessions / subtitle_session.storage_key
+        subtitle_session_dir.mkdir()
+        video_path = self.paths.uploads / "source.mp4"
+        video_path.write_bytes(b"not-needed-for-document-export")
+        uploaded = self.artifacts.register(
+            video_path,
+            kind="source",
+            role="upload",
+            session_id=subtitle_session.id,
+            metadata={"original_filename": "source.mp4"},
+        )
+        transcription_path = subtitle_session_dir / "transcription.srt"
+        transcription_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n", encoding="utf-8")
+        self.artifacts.register(
+            transcription_path,
+            kind="srt",
+            role="transcription",
+            session_id=subtitle_session.id,
+            parent_ids=[uploaded.id],
+        )
+
+        result = self.handlers.export(
+            {"session_id": subtitle_session.id, "settings": {"export_mode": "media"}},
+            self.progress,
+            threading.Event(),
+        )
+
+        exported, exported_path = self.artifacts.resolve(result["artifact_ids"][0])
+        self.assertEqual("export_subtitle_source", exported.role)
+        self.assertEqual(".srt", exported_path.suffix)
+
     def test_subtitle_exports_support_vtt_and_concatenated_text(self):
         subtitle_session = self.sessions.create("Portable subtitles", workflow_kind="subtitles")
         session_dir = self.paths.sessions / subtitle_session.storage_key

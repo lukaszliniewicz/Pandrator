@@ -422,15 +422,35 @@ class WorkspaceSettingsService:
                 session_context = {"stt_language": source_language}
             elif section == "translation":
                 session_context = {"source_language": source_language, **({"target_language": target_language} if target_language else {})}
-            elif section in {"tts", "output"} and speech_language:
+            elif section == "tts" and speech_language:
                 session_context = {"language": speech_language}
+            elif section == "output":
+                # A subtitle workspace should produce a portable subtitle file
+                # without requiring users to opt out of the application-wide
+                # media defaults. Session overrides still win when somebody
+                # deliberately configures a different target.
+                if session_record.workflow_kind == "subtitles":
+                    session_context = {
+                        "export_mode": "subtitles",
+                        "audio_mode": "preserve",
+                        "subtitle_mode": "none",
+                        "subtitle_selection": "source",
+                    }
+                if speech_language:
+                    session_context["language"] = speech_language
+            effective = _merge(BUILTIN_DEFAULTS[section], global_value, session_context, override_value)
+            if section == "output" and session_record.workflow_kind == "subtitles":
+                if str(effective.get("export_mode") or "").lower() not in {"subtitles", "text"}:
+                    effective["export_mode"] = "subtitles"
+                effective["audio_mode"] = "preserve"
+                effective["subtitle_mode"] = "none"
             return {
                 "section": section,
                 "builtin": deepcopy(BUILTIN_DEFAULTS[section]),
                 "global": deepcopy(global_value),
                 "override": deepcopy(override_value),
                 "session_context": session_context,
-                "effective": _merge(BUILTIN_DEFAULTS[section], global_value, session_context, override_value),
+                "effective": effective,
                 "revision": override.revision if override else 0,
                 "global_revision": global_record.revision if global_record else 0,
             }

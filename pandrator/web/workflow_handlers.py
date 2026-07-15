@@ -2320,7 +2320,9 @@ class WorkflowHandlers:
             upload_media = next((item for item in reversed(current) if item.role == "upload" and Path(item.relative_path).suffix.lower() in {".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v"}), None)
             translated = by_role.get("translation")
             source_subtitle = by_role.get("correction") or by_role.get("transcription") or next((item for item in current if item.role == "upload" and Path(item.relative_path).suffix.lower() == ".srt"), None)
-            export_mode = str(settings.get("export_mode") or "media").lower()
+            export_mode = str(settings.get("export_mode") or ("subtitles" if record.workflow_kind == "subtitles" else "media")).lower()
+            if record.workflow_kind == "subtitles" and export_mode not in {"subtitles", "text"}:
+                export_mode = "subtitles"
             if export_mode not in {"media", "subtitles", "text"}:
                 export_mode = "media"
             subtitle_format = str(settings.get("subtitle_format") or "srt").lower()

@@ -287,12 +287,8 @@ class SourceAwareWorkflowTests(unittest.TestCase):
                 stages = WorkflowService(database, JobQueue(database)).snapshot(record.id)["stages"]
                 self.assertEqual(stages[0]["key"], "correct")
                 self.assertEqual([item["number"] for item in stages], list(range(1, len(stages)+1)))
-                optimization = next(item for item in stages if item["key"] == "optimize_tts")
-                self.assertFalse(optimization["executable"])
-                self.assertTrue(optimization["toggle"])
-                self.assertTrue(optimization["toggle_only"])
-                self.assertEqual("generation", optimization["optimization_timing"])
-                self.assertNotIn("optimize_document", {item["key"] for item in stages})
+                self.assertEqual(["correct", "translate", "preview", "export"], [item["key"] for item in stages])
+                self.assertNotIn("generate_audio", {item["key"] for item in stages})
             finally:
                 database.dispose()
 

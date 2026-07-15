@@ -34,6 +34,14 @@ DUBBING_STAGES = (
     StageDefinition("export", "Export", "Package selected takes, assembled audio, subtitle tracks, or a rendered video.", prerequisite_roles=("assembled_audio", "dubbing_audio", "translation", "correction", "transcription", "upload"), output_role="export", job_kind="export.create"),
 )
 
+SUBTITLE_STAGES = (
+    StageDefinition("transcribe", "Transcribe", "Create timed source-language subtitles from media.", prerequisite_roles=("upload",), output_role="transcription", job_kind="dubbing.transcribe"),
+    StageDefinition("correct", "Correct", "Review punctuation, wording, merges, and splits without translating.", prerequisite_roles=("transcription", "upload"), output_role="correction", job_kind="dubbing.correct"),
+    StageDefinition("translate", "Translate", "Create a separate target-language subtitle artifact.", prerequisite_roles=("correction", "transcription", "upload"), output_role="translation", job_kind="dubbing.translate"),
+    StageDefinition("preview", "Preview", "Compare source, correction, and translation with recorded lineage.", executable=False, prerequisite_roles=("translation", "correction", "transcription", "upload")),
+    StageDefinition("export", "Export subtitles", "Save the selected cues as SRT or VTT, or concatenate them into a plain-text transcript.", prerequisite_roles=("translation", "correction", "transcription", "upload"), output_role="export", job_kind="export.create"),
+)
+
 AUDIOBOOK_STAGES = (
     StageDefinition("clean_source", "Clean source", "Review deterministic extraction and optional agentic cleanup.", prerequisite_roles=("upload",), output_role="clean_text", job_kind="source.clean"),
     StageDefinition("prepare_text", "Segment narration", "Create editable generation segments from the cleaned document. This controls text boundaries and pauses, not the TTS model.", prerequisite_roles=("clean_text",), output_role="prepared_text", job_kind="text.prepare"),
@@ -52,9 +60,13 @@ class WorkflowService:
     def definitions(self, record: SessionRecord, artifacts: list[Artifact] | None = None) -> tuple[StageDefinition, ...]:
         if record.workflow_kind == "audiobook":
             return AUDIOBOOK_STAGES
+        if record.workflow_kind == "subtitles":
+            definitions = SUBTITLE_STAGES
+        else:
+            definitions = DUBBING_STAGES
         upload = next((item for item in (artifacts or []) if item.role == "upload" and item.state == "current"), None)
         filename = str((upload.metadata_json or {}).get("original_filename") or upload.relative_path).lower() if upload else ""
-        return tuple(item for item in DUBBING_STAGES if not (filename.endswith(".srt") and item.key == "transcribe"))
+        return tuple(item for item in definitions if not (filename.endswith(".srt") and item.key == "transcribe"))
 
     @staticmethod
     def _usable_input(definition: StageDefinition, artifact: Artifact, workflow_kind: str) -> bool:

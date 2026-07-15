@@ -26,8 +26,8 @@ class WebParityWorkspaceTests(unittest.TestCase):
         self.app.extensions["pandrator"]["database"].dispose()
         self.temporary.cleanup()
 
-    def create_session(self, kind="voiceover"):
-        response = self.client.post("/api/v1/sessions", json={"name": "Parity", "workflow_kind": kind}, headers=self.headers)
+    def create_session(self, kind="voiceover", name="Parity"):
+        response = self.client.post("/api/v1/sessions", json={"name": name, "workflow_kind": kind}, headers=self.headers)
         self.assertEqual(201, response.status_code, response.get_json())
         return response.get_json()
 
@@ -73,6 +73,33 @@ class WebParityWorkspaceTests(unittest.TestCase):
         effective = self.client.get("/api/v1/defaults/subtitles").get_json()
         self.assertEqual(52, effective["effective"]["max_chars_per_line"])
         self.assertEqual(2, effective["effective"]["max_lines"])
+
+    def test_subtitle_workspace_inherits_document_export_defaults(self):
+        subtitle = self.create_session(kind="subtitles")
+        output = self.client.get(f"/api/v1/sessions/{subtitle['id']}/settings/output").get_json()
+        self.assertEqual("subtitles", output["effective"]["export_mode"])
+        self.assertEqual("source", output["effective"]["subtitle_selection"])
+        self.assertEqual("none", output["effective"]["subtitle_mode"])
+
+        saved = self.client.put(
+            f"/api/v1/sessions/{subtitle['id']}/settings/output",
+            json={"value": {"export_mode": "text"}},
+            headers={**self.headers, "If-Match": '"0"'},
+        )
+        self.assertEqual(200, saved.status_code, saved.get_json())
+        self.assertEqual("text", saved.get_json()["effective"]["export_mode"])
+        coerced = self.client.put(
+            f"/api/v1/sessions/{subtitle['id']}/settings/output",
+            json={"value": {"export_mode": "media", "audio_mode": "mixed", "subtitle_mode": "burned"}},
+            headers={**self.headers, "If-Match": '"1"'},
+        )
+        self.assertEqual("subtitles", coerced.get_json()["effective"]["export_mode"])
+        self.assertEqual("preserve", coerced.get_json()["effective"]["audio_mode"])
+        self.assertEqual("none", coerced.get_json()["effective"]["subtitle_mode"])
+
+        voiceover = self.create_session(kind="voiceover", name="Voiceover defaults")
+        voiceover_output = self.client.get(f"/api/v1/sessions/{voiceover['id']}/settings/output").get_json()
+        self.assertEqual("media", voiceover_output["effective"]["export_mode"])
 
     def test_tts_provider_defaults_fit_between_global_and_session_overrides(self):
         record = self.create_session()

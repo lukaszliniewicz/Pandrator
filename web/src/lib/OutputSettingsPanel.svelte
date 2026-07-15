@@ -17,6 +17,7 @@
 
   const coverId = $derived(String(Object.prototype.hasOwnProperty.call(draft,'cover_artifact_id') ? draft.cover_artifact_id ?? '' : settings?.effective?.cover_artifact_id ?? ''));
   const selectedCover = $derived(images.find((item)=>item.id===coverId));
+  const subtitleWorkspace = $derived(session?.workflow_kind==='subtitles');
   const burnVideoEncoders = $derived(Array.isArray(capabilities?.ffmpeg?.burn_video_encoders) && capabilities.ffmpeg.burn_video_encoders.length ? capabilities.ffmpeg.burn_video_encoders : [{id:'libx264',label:'H.264 software (most compatible)',hardware:false,codec:'h264'}]);
   const value = (key:string, fallback:unknown='') => Object.prototype.hasOwnProperty.call(draft,key) ? draft[key] : settings?.effective?.[key] ?? fallback;
   const set = (key:string, next:unknown) => draft={...draft,[key]:next};
@@ -29,6 +30,7 @@
       api<any>('/capabilities').catch(()=>({}))
     ]);
     draft={...settings.override};
+    if(session.workflow_kind==='subtitles'&&!['subtitles','text'].includes(String(draft.export_mode??settings.effective?.export_mode??'')))draft={...draft,export_mode:'subtitles'};
   }
 
   async function save(nextDraft=draft) {
@@ -56,9 +58,18 @@
 </script>
 
 <section class="surface rounded-2xl p-5">
-  <div class="flex flex-wrap items-start justify-between gap-4"><div><div class="eyebrow">Output profile</div><h2 class="mt-1 text-xl font-semibold">Container, metadata, artwork, and tracks</h2><p class="muted mt-2 text-sm">M4B preserves audiobook metadata, cover artwork, and chapter markers carried by the generation plan.</p></div><div class="flex gap-2"><button onclick={()=>{draft={};save({})}} disabled={busy||!Object.keys(draft).length} class="tool">Inherit defaults</button><button onclick={()=>save()} disabled={busy} class="tool primary"><Save size={15}/> {busy?'Saving…':'Save output profile'}</button></div></div>
+  <div class="flex flex-wrap items-start justify-between gap-4"><div><div class="eyebrow">Output profile</div><h2 class="mt-1 text-xl font-semibold">{subtitleWorkspace?'Subtitle files':'Container, metadata, artwork, and tracks'}</h2><p class="muted mt-2 text-sm">{subtitleWorkspace?'Choose SRT, WebVTT, or a plain-text transcript. Video rendering is available after converting the workspace to voiceover.':'M4B preserves audiobook metadata, cover artwork, and chapter markers carried by the generation plan.'}</p></div><div class="flex gap-2"><button onclick={()=>{draft={};save({})}} disabled={busy||!Object.keys(draft).length} class="tool">Inherit defaults</button><button onclick={()=>save()} disabled={busy} class="tool primary"><Save size={15}/> {busy?'Saving…':'Save output profile'}</button></div></div>
   {#if error}<p class="mt-4 rounded-xl bg-red-500/10 p-3 text-sm text-red-500">{error}</p>{/if}{#if message}<p class="mt-4 rounded-xl bg-[var(--accent-soft)] p-3 text-sm">{message}</p>{/if}
   {#if settings}
+    {#if subtitleWorkspace}
+      <div class="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <label>Export target<select value={String(value('export_mode','subtitles'))} onchange={(event)=>set('export_mode',event.currentTarget.value)} class="field"><option value="subtitles">Subtitle file</option><option value="text">Concatenated text</option></select></label>
+        {#if value('export_mode','subtitles')==='subtitles'}<label>Subtitle format<select value={String(value('subtitle_format','srt'))} onchange={(event)=>set('subtitle_format',event.currentTarget.value)} class="field"><option value="srt">SubRip (.srt)</option><option value="vtt">WebVTT (.vtt)</option></select></label>{/if}
+        <label>Subtitle document<select value={String(value('subtitle_selection','source'))} onchange={(event)=>set('subtitle_selection',event.currentTarget.value)} class="field"><option value="source">Source / corrected</option><option value="translation">Translation</option><option value="dual">Source and translation</option></select></label>
+        <label>Language identifier<input value={String(value('language',''))} oninput={(event)=>set('language',event.currentTarget.value)} placeholder="en" class="field"/></label>
+        {#if value('export_mode','subtitles')==='text'}<div class="rounded-xl bg-[var(--accent-soft)] p-3 text-xs leading-relaxed sm:col-span-2"><strong>Plain-text transcript</strong><p class="muted mt-1">Cue numbers and timestamps are removed, and the selected subtitle text is joined into one document.</p></div>{/if}
+      </div>
+    {:else}
     <div class="mt-6 grid gap-5 xl:grid-cols-[1fr_18rem]">
       <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <label>Format<select value={String(value('format','wav'))} onchange={(event)=>set('format',event.currentTarget.value)} class="field"><option value="m4b">M4B audiobook</option><option value="mp3">MP3</option><option value="opus">Opus</option><option value="flac">FLAC</option><option value="wav">PCM WAV</option></select></label>
@@ -96,6 +107,7 @@
       </div>
       <aside class="rounded-2xl border border-[var(--line)] p-4"><div class="text-sm font-semibold">Cover artwork</div>{#if selectedCover}<button onclick={()=>{preview=selectedCover}} class="mt-3 block aspect-square w-full overflow-hidden rounded-xl bg-[var(--paper)]"><img src={`/api/v1/artifacts/${selectedCover.id}/content`} alt={artifactFilename(selectedCover)} class="size-full object-cover"/></button><div class="muted mt-2 truncate text-xs">{artifactFilename(selectedCover)}</div>{:else}<div class="muted mt-3 grid aspect-square place-items-center rounded-xl border border-dashed border-[var(--line)] text-center text-xs">No cover selected</div>{/if}<select value={coverId} onchange={(event)=>set('cover_artifact_id',event.currentTarget.value)} class="field mt-3"><option value="">No cover</option>{#each images as image}<option value={image.id}>{artifactFilename(image)}</option>{/each}</select><div class="mt-3 flex gap-2"><label class="tool flex flex-1 cursor-pointer justify-center"><ImagePlus size={15}/> Upload<input type="file" accept="image/png,image/jpeg,image/webp" onchange={uploadCover} class="sr-only"/></label><button onclick={()=>set('cover_artifact_id','')} disabled={!coverId} class="tool" aria-label="Remove cover"><Trash2 size={15}/></button></div></aside>
     </div>
+    {/if}
   {/if}
 </section>
 {#if preview}<ArtifactPreview artifact={preview} onclose={()=>preview=null}/>{/if}
