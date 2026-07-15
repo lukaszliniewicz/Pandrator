@@ -299,6 +299,17 @@
     return String(activeTake(item)?.synthesized_text || item.optimized_text || item.text || '').replace(/\s+/g, ' ').trim();
   }
 
+  function activateReadingSegment(item: any) {
+    selectedRow = item.id;
+    if (activeTake(item) && !item.removed) void playOnly(item);
+  }
+
+  function activateReadingSegmentFromKeyboard(event: KeyboardEvent, item: any) {
+    if (!['Enter', ' '].includes(event.key)) return;
+    event.preventDefault();
+    activateReadingSegment(item);
+  }
+
   async function waitForSilence(milliseconds: number, token: number) {
     let remaining = Math.max(0, milliseconds);
     let previous = performance.now();
@@ -555,7 +566,14 @@
                   <p class="reading-paragraph">
                     {#each block.items as item, index}
                       <span class:now-playing={item.id===activePlayingId} class:selected-sentence={item.id===selectedRow} class:removed={item.removed} class="reading-segment">
-                        <button onclick={() => { selectedRow=item.id; if (activeTake(item) && !item.removed) playOnly(item); }} class="reading-sentence" title={activeTake(item)?`Play segment ${item.ordinal + 1}`:'Select segment actions'}>{readingSegmentText(item)}</button>
+                        <span
+                          role="button"
+                          tabindex="0"
+                          onclick={() => activateReadingSegment(item)}
+                          onkeydown={(event) => activateReadingSegmentFromKeyboard(event, item)}
+                          class="reading-sentence"
+                          title={activeTake(item)?`Play segment ${item.ordinal + 1}`:'Select segment actions'}
+                        >{readingSegmentText(item)}</span>
                         <span class="reading-actions" aria-label={`Actions for segment ${item.ordinal + 1}`}>
                           <button onclick={(event)=>{event.stopPropagation();playOnly(item)}} disabled={!activeTake(item)||item.removed} title="Play segment" aria-label={`Play segment ${item.ordinal + 1}`}><Play size={13}/></button>
                           <button onclick={(event)=>{event.stopPropagation();start('regenerate',[item.id])}} disabled={loading||item.removed} title="Regenerate segment" aria-label={`Regenerate segment ${item.ordinal + 1}`}><RefreshCw size={13}/></button>
@@ -598,6 +616,6 @@
   th,td{border-bottom:1px solid var(--line);padding:.55rem;text-align:center;vertical-align:middle}tr.removed{opacity:.42}tr.selected{background:var(--accent-soft)}
   .status{font-size:.68rem;text-transform:uppercase;color:var(--muted)}.mini{border:1px solid var(--line);border-radius:.45rem;background:var(--paper);padding:.3rem .45rem;font-size:.68rem}
   .reading-view{font-family:Georgia,'Times New Roman',serif}.reading-heading{margin:2rem 0 .75rem;font-size:1.32rem;font-weight:700;line-height:1.35}.reading-heading button{text-align:left}.reading-heading.now-playing button{color:var(--accent)}
-  .reading-paragraph{margin:0 0 1.2rem;font-size:1.02rem;line-height:1.9;white-space:normal}.reading-segment{position:relative;display:inline}.reading-sentence{display:inline;white-space:normal;border-radius:.28rem;padding:.03rem .06rem;text-align:left;transition:background .12s ease,color .12s ease}.reading-segment:hover .reading-sentence,.reading-segment:focus-within .reading-sentence,.reading-segment.selected-sentence .reading-sentence{background:var(--accent-soft)}.reading-segment.now-playing .reading-sentence{background:var(--action-bg);color:white;box-shadow:0 0 0 .16rem color-mix(in srgb,var(--accent) 18%,transparent)}.reading-segment.removed .reading-sentence{text-decoration:line-through;opacity:.42}.reading-actions{position:absolute;bottom:calc(100% + .32rem);left:50%;z-index:25;display:flex;gap:.18rem;border:1px solid var(--line);border-radius:.65rem;background:var(--paper-strong);padding:.22rem;box-shadow:var(--shadow);opacity:0;pointer-events:none;transform:translate(-50%,.25rem);transition:opacity .12s ease,transform .12s ease}.reading-segment:hover .reading-actions,.reading-segment:focus-within .reading-actions{opacity:1;pointer-events:auto;transform:translate(-50%,0)}.reading-actions button{display:grid;height:1.8rem;width:1.8rem;place-items:center;border-radius:.45rem;color:var(--muted)}.reading-actions button:hover:not(:disabled),.reading-actions button:focus-visible,.reading-actions button.active{background:var(--accent-soft);color:var(--accent)}.reading-actions button:disabled{opacity:.35}
+  .reading-paragraph{margin:0 0 1.2rem;font-size:1.02rem;line-height:1.9;white-space:normal}.reading-segment{position:relative;display:inline}.reading-sentence{display:inline;white-space:normal;border-radius:.28rem;cursor:pointer;text-align:left;transition:background .12s ease,color .12s ease}.reading-sentence:focus-visible{outline:3px solid color-mix(in srgb,var(--accent) 38%,transparent);outline-offset:2px}.reading-segment:hover .reading-sentence,.reading-segment:focus-within .reading-sentence,.reading-segment.selected-sentence .reading-sentence{background:var(--accent-soft)}.reading-segment.now-playing .reading-sentence{background:var(--action-bg);color:white;box-shadow:0 0 0 .16rem color-mix(in srgb,var(--accent) 18%,transparent)}.reading-segment.removed .reading-sentence{text-decoration:line-through;opacity:.42}.reading-actions{position:absolute;bottom:calc(100% + .32rem);left:50%;z-index:25;display:flex;gap:.18rem;border:1px solid var(--line);border-radius:.65rem;background:var(--paper-strong);padding:.22rem;box-shadow:var(--shadow);opacity:0;pointer-events:none;transform:translate(-50%,.25rem);transition:opacity .12s ease,transform .12s ease}.reading-segment:hover .reading-actions,.reading-segment:focus-within .reading-actions{opacity:1;pointer-events:auto;transform:translate(-50%,0)}.reading-actions button{display:grid;height:1.8rem;width:1.8rem;place-items:center;border-radius:.45rem;color:var(--muted)}.reading-actions button:hover:not(:disabled),.reading-actions button:focus-visible,.reading-actions button.active{background:var(--accent-soft);color:var(--accent)}.reading-actions button:disabled{opacity:.35}
   @media(prefers-reduced-motion:reduce){.generation-drawer{transition:none}}
 </style>
