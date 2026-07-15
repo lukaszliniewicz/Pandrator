@@ -236,6 +236,14 @@ On Windows this produces `dist/PandratorInstaller.exe`. On Linux it produces `di
 
 The build runs packaged self-checks. The Linux build additionally checks the GUI bundle and TLS trust store. See `scripts/build_linux_appimage.py --help` for AppImage-specific options.
 
+For a release-compatible AppImage from Windows, macOS, or Linux, use the container wrapper:
+
+```bash
+python scripts/build_appimage_container.py
+```
+
+The wrapper auto-detects Docker or Podman, builds inside the pinned Debian 11/Pixi environment, and writes only the final artifact to `dist/`. The checkout is mounted read-only, so host `.pixi`, `build`, and `dist` contents cannot leak into the Linux build. The locked release target is currently `linux/amd64`; the host may be Windows, macOS, x86_64 Linux, or an ARM machine with x86_64 container emulation. Run `python scripts/build_appimage_container.py --help` for runtime, output, rebuild, and smoke-test options.
+
 ## Contributing
 
 Bug reports, workflow descriptions, documentation corrections, and focused pull requests are welcome. Please include the operating system, relevant service/model, reproduction steps, and logs with secrets removed.
