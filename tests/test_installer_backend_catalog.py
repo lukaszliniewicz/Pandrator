@@ -1,5 +1,6 @@
 import os
 import unittest
+from unittest.mock import Mock
 
 from PyQt6.QtWidgets import QApplication, QCheckBox, QLabel, QPushButton
 
@@ -13,6 +14,7 @@ from pandrator_installer.backend_catalog import (
     formatted_crispasr_model_licences,
 )
 from pandrator_installer.gui.backend_card import BackendOptionCard
+from pandrator_installer.gui.actions import GuiActionsMixin
 
 
 class TestInstallerBackendCatalog(unittest.TestCase):
@@ -145,6 +147,54 @@ class TestInstallerBackendCatalog(unittest.TestCase):
         self.assertEqual(card.COLLAPSED_HEIGHT, 92)
         self.assertEqual(card.height(), 92)
         self.assertEqual(card.maximumHeight(), 92)
+
+    def test_card_shows_runtime_status_and_individual_stop_control(self):
+        card = BackendOptionCard(QCheckBox("Engine"), "Description")
+        requested = []
+        card.stop_requested.connect(lambda: requested.append(True))
+
+        card.set_runtime_state(True)
+        self.assertTrue(card.runtime_status_label.isVisibleTo(card))
+        self.assertTrue(card.runtime_stop_button.isVisibleTo(card))
+        self.assertEqual(card.runtime_status_label.text(), "Running")
+        card.runtime_stop_button.click()
+        self.assertEqual(requested, [True])
+
+        card.set_runtime_state(False)
+        self.assertFalse(card.runtime_status_label.isVisible())
+        self.assertFalse(card.runtime_stop_button.isVisible())
+
+    def test_runtime_refresh_marks_supervised_backend_running_and_disables_launch(self):
+        class RuntimeUi(GuiActionsMixin):
+            worker = None
+
+            def _collect_running_backends(self):
+                return []
+
+            def _collect_supervised_backends(self):
+                return [("kokoro", "Kokoro", Mock(pid=4321))]
+
+            def get_installed_components(self):
+                return {"kokoro": True}
+
+        ui = RuntimeUi()
+        control = QCheckBox("Launch Kokoro")
+        control.setChecked(True)
+        card = BackendOptionCard(control, "Description")
+        ui.active_backend_value_label = QLabel()
+        ui.stop_backend_button = QPushButton()
+        ui.refresh_backend_status_button = QPushButton()
+        ui.launch_backend_cards = {"kokoro": card}
+        ui.launch_backend_controls = {"kokoro": control}
+
+        ui.update_backend_runtime_controls()
+
+        self.assertIn("Kokoro (PID 4321, managed with Pandrator)", ui.active_backend_value_label.text())
+        self.assertFalse(control.isChecked())
+        self.assertFalse(control.isEnabled())
+        self.assertTrue(card.runtime_status_label.isVisibleTo(card))
+        self.assertTrue(card.runtime_stop_button.isEnabled())
+        self.assertTrue(ui.stop_backend_button.isEnabled())
 
 
 if __name__ == "__main__":

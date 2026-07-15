@@ -268,11 +268,11 @@ def _service_selection(component: str) -> LaunchSelection:
 
 
 def _owned_service_processes(installer) -> list[Any]:
-    processes = [process for _key, _label, process in installer._collect_running_backends() if process is not None]
-    rvc_process = installer._get_running_rvc_process()
-    if rvc_process is not None and rvc_process not in processes:
-        processes.append(rvc_process)
-    return processes
+    return [
+        process
+        for _key, _label, process in installer._collect_running_backends()
+        if process is not None
+    ]
 
 
 def command_service(args) -> int:

@@ -62,6 +62,46 @@ class InstallerArchitectureTests(unittest.TestCase):
         self.assertEqual({"xtts", "kokoro"}, {item[0] for item in running})
         self.assertTrue(all(item[2].pid == os.getpid() for item in running))
 
+    def test_runtime_requests_only_selected_supervisor_services_to_stop(self):
+        with tempfile.TemporaryDirectory() as directory:
+            installer = HeadlessInstaller(working_dir=directory)
+            install_root = Path(directory) / "Pandrator"
+            install_root.mkdir()
+            state_path = install_root / "runtime-processes.json"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "supervisor_pid": os.getpid(),
+                        "processes": {
+                            "service-kokoro_cpu": {"pid": os.getpid()},
+                            "service-xtts": {"pid": os.getpid()},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            process_keys = installer._supervised_process_keys_by_backend(["kokoro"])
+
+            def acknowledge_request(_delay):
+                state_path.write_text(
+                    json.dumps(
+                        {
+                            "supervisor_pid": os.getpid(),
+                            "processes": {"service-xtts": {"pid": os.getpid()}},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+            with patch("pandrator_installer.runtime.time.sleep", side_effect=acknowledge_request):
+                installer._request_supervised_process_stops(process_keys, timeout=1)
+
+            control = json.loads(
+                (install_root / "runtime-control.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(process_keys, ["service-kokoro_cpu"])
+            self.assertEqual(control["stop_processes"], ["service-kokoro_cpu"])
+
     def test_silero_install_downloads_the_complete_catalogue(self):
         installer = HeadlessInstaller(working_dir="workspace")
         with tempfile.TemporaryDirectory() as directory:

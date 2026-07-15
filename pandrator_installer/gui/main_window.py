@@ -918,6 +918,38 @@ class PandratorInstaller(
                 (self.magpie_cpu_launch_checkbox,),
             ),
         )
+        launch_card_keys = (
+            None,
+            "rvc",
+            "kokoro",
+            "kobold_qwen",
+            "xtts",
+            "voxcpm",
+            "fishs2",
+            "voxtral",
+            "silero",
+            "chatterbox",
+            "magpie",
+        )
+        self.launch_backend_cards = {
+            key: card for key, card in zip(launch_card_keys, launch_cards) if key
+        }
+        self.launch_backend_controls = {
+            "rvc": self.launch_rvc_checkbox,
+            "kokoro": self.launch_kokoro_checkbox,
+            "kobold_qwen": self.launch_kobold_qwen_checkbox,
+            "xtts": self.launch_xtts_checkbox,
+            "voxcpm": self.launch_voxcpm_checkbox,
+            "fishs2": self.launch_fishs2_checkbox,
+            "voxtral": self.launch_voxtral_checkbox,
+            "silero": self.launch_silero_checkbox,
+            "chatterbox": self.launch_chatterbox_checkbox,
+            "magpie": self.launch_magpie_checkbox,
+        }
+        for key, card in self.launch_backend_cards.items():
+            card.stop_requested.connect(
+                lambda backend_key=key: self.stop_running_backend(backend_key)
+            )
         self._add_option_cards(launch_grid, launch_cards)
         content_layout.addWidget(launch_group)
 
@@ -937,7 +969,7 @@ class PandratorInstaller(
         backend_runtime_layout.addWidget(backend_runtime_hint_label)
 
         backend_runtime_buttons_layout = QHBoxLayout()
-        self.stop_backend_button = QPushButton("Stop Running Backend")
+        self.stop_backend_button = QPushButton("Stop All Running Backends")
         self.stop_backend_button.clicked.connect(self.stop_running_backends)
         backend_runtime_buttons_layout.addWidget(self.stop_backend_button)
 

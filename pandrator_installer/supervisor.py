@@ -157,6 +157,7 @@ class ProcessSupervisor:
         self.ready_at: float | None = None
         self.logs_dir = self.data_root / "logs" / "supervisor"
         self.runtime_state = self.data_root / "runtime-processes.json"
+        self.runtime_control = self.data_root / "runtime-control.json"
 
     def _status(self, message: str) -> None:
         logging.info(message)
@@ -246,6 +247,10 @@ class ProcessSupervisor:
     def start_all(self) -> None:
         self.lock.acquire()
         try:
+            try:
+                self.runtime_control.unlink()
+            except FileNotFoundError:
+                pass
             for spec in self.specs:
                 try:
                     self._start_one(spec)
@@ -264,6 +269,7 @@ class ProcessSupervisor:
             raise
 
     def monitor_once(self) -> None:
+        self._apply_control_requests()
         for key, managed in list(self.processes.items()):
             return_code = managed.process.poll()
             if return_code is None:
@@ -280,6 +286,37 @@ class ProcessSupervisor:
                 raise RuntimeError(f"Required process {spec.label} exited with code {return_code}.")
             else:
                 self._status(f"Optional process {spec.label} exited with code {return_code}.")
+        self._write_state()
+
+    def _apply_control_requests(self) -> None:
+        try:
+            payload = json.loads(self.runtime_control.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            logging.exception("Could not read supervisor control request")
+            return
+
+        try:
+            self.runtime_control.unlink()
+        except FileNotFoundError:
+            pass
+
+        requested = {
+            str(key)
+            for key in payload.get("stop_processes", [])
+            if str(key).startswith("service-")
+        }
+        if not requested:
+            return
+
+        self.specs = [spec for spec in self.specs if spec.key not in requested]
+        for key in requested:
+            managed = self.processes.pop(key, None)
+            if managed is None:
+                continue
+            self._stop_one(managed)
+            self._status(f"{managed.spec.label} was stopped from the installer.")
         self._write_state()
 
     def run_foreground(self, interval: float = 1.0) -> None:
@@ -358,6 +395,10 @@ class ProcessSupervisor:
         self.processes.clear()
         try:
             self.runtime_state.unlink()
+        except FileNotFoundError:
+            pass
+        try:
+            self.runtime_control.unlink()
         except FileNotFoundError:
             pass
         self.lock.release()

@@ -199,6 +199,15 @@ def run_gui_app(args=None):
             font-size: 10px;
             padding: 3px 7px;
         }}
+        QLabel#backendRuntimeStatus {{
+            background-color: #264A3D;
+            border: 1px solid #3D8268;
+            border-radius: 8px;
+            color: #BDF2DA;
+            font-size: 10px;
+            font-weight: bold;
+            padding: 3px 8px;
+        }}
         QLabel#statusLabel {{
             background-color: #28282B;
             border: 1px solid #414147;

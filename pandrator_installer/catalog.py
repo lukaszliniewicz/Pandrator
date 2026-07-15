@@ -303,6 +303,7 @@ PACKAGING_COMPONENT_PATHS = {
 }
 
 BACKEND_COMPONENT_KEYS = (
+    "rvc",
     "xtts",
     "voxcpm",
     "fishs2",

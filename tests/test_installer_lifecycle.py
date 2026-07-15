@@ -134,11 +134,9 @@ class InstallerLifecycleTests(unittest.TestCase):
 
     def test_service_process_collection_uses_runtime_tuple_contract(self):
         first = object()
-        rvc = object()
         installer = mock.Mock()
         installer._collect_running_backends.return_value = [("kokoro", "Kokoro", first)]
-        installer._get_running_rvc_process.return_value = rvc
-        self.assertEqual([first, rvc], _owned_service_processes(installer))
+        self.assertEqual([first], _owned_service_processes(installer))
 
     def test_legacy_headless_install_alias_remains_parseable(self):
         parsed = parse_launcher_cli_args(["--headless-install", "--workspace", "example", "--components", "whisperx"])

@@ -207,6 +207,67 @@ class RuntimeMixin:
                 return label
         return str(backend_key or '').strip() or 'Backend'
 
+    def _runtime_state_path(self):
+        return os.path.join(self.initial_working_dir, "Pandrator", "runtime-processes.json")
+
+    def _runtime_control_path(self):
+        return os.path.join(self.initial_working_dir, "Pandrator", "runtime-control.json")
+
+    def _supervised_process_keys_by_backend(self, backend_keys):
+        requested = set(backend_keys)
+        try:
+            with open(self._runtime_state_path(), "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return []
+
+        process_keys = []
+        for process_key in dict(payload.get("processes") or {}):
+            if not str(process_key).startswith("service-"):
+                continue
+            component_key = str(process_key)[len("service-"):]
+            component = COMPONENTS.get(component_key)
+            if component and (component.variant_of or component.key) in requested:
+                process_keys.append(str(process_key))
+        return process_keys
+
+    def _request_supervised_process_stops(self, process_keys, timeout=20.0):
+        requested = {str(key) for key in process_keys if str(key).startswith("service-")}
+        if not requested:
+            return
+
+        control_path = self._runtime_control_path()
+        os.makedirs(os.path.dirname(control_path), exist_ok=True)
+        try:
+            with open(control_path, "r", encoding="utf-8") as handle:
+                existing = json.load(handle)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            existing = {}
+        pending = requested | {
+            str(key)
+            for key in existing.get("stop_processes", [])
+            if str(key).startswith("service-")
+        }
+        temporary = f"{control_path}.tmp-{os.getpid()}"
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump({"stop_processes": sorted(pending)}, handle, indent=2)
+        os.replace(temporary, control_path)
+
+        deadline = time.monotonic() + max(0.1, float(timeout))
+        while time.monotonic() < deadline:
+            try:
+                with open(self._runtime_state_path(), "r", encoding="utf-8") as handle:
+                    state = json.load(handle)
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                return
+            remaining = requested & set(dict(state.get("processes") or {}))
+            if not remaining:
+                return
+            time.sleep(0.1)
+        raise TimeoutError(
+            "The Pandrator supervisor did not stop: " + ", ".join(sorted(requested))
+        )
+
     def _stop_backends_by_keys(self, backend_keys, report_progress=False):
         requested_keys = [str(key).strip().lower() for key in backend_keys if str(key).strip()]
         if not requested_keys:
@@ -216,15 +277,19 @@ class RuntimeMixin:
             key: shutdown
             for key, _, _, shutdown in self._backend_runtime_specs()
         }
+        direct_keys = {key for key, _, _ in self._collect_running_backends()}
+        supervised_process_keys = self._supervised_process_keys_by_backend(requested_keys)
 
         total = len(requested_keys)
         for index, backend_key in enumerate(requested_keys, start=1):
             shutdown = shutdown_by_key.get(backend_key)
-            if shutdown:
+            if shutdown and backend_key in direct_keys:
                 shutdown()
 
             if report_progress:
                 self.reporter.progress(index / total)
+
+        self._request_supervised_process_stops(supervised_process_keys)
 
 
 

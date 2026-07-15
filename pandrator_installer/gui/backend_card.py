@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPushButton,
     QSizePolicy,
     QSpinBox,
     QToolButton,
@@ -31,6 +32,7 @@ class BackendOptionCard(QFrame):
     """A fixed-height summary that expands via its surface or chevron."""
 
     expanded_changed = pyqtSignal(bool)
+    stop_requested = pyqtSignal()
     COLLAPSED_HEIGHT = 92
 
     def __init__(
@@ -92,6 +94,22 @@ class BackendOptionCard(QFrame):
             )
             capability_layout.addStretch()
             summary_layout.addLayout(capability_layout)
+
+        runtime_layout = QVBoxLayout()
+        runtime_layout.setSpacing(4)
+        self.runtime_status_label = QLabel("Running")
+        self.runtime_status_label.setObjectName("backendRuntimeStatus")
+        self.runtime_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.runtime_status_label.setVisible(False)
+        runtime_layout.addWidget(self.runtime_status_label)
+        self.runtime_stop_button = QPushButton("Stop")
+        self.runtime_stop_button.setObjectName("secondaryButton")
+        self.runtime_stop_button.setToolTip("Stop this backend and leave other services running")
+        self.runtime_stop_button.setVisible(False)
+        self.runtime_stop_button.clicked.connect(self.stop_requested.emit)
+        runtime_layout.addWidget(self.runtime_stop_button)
+        runtime_layout.addStretch()
+        summary_layout.addLayout(runtime_layout)
 
         self.details_panel = QFrame(self)
         self.details_panel.setObjectName("optionCardDetails")
@@ -191,6 +209,12 @@ class BackendOptionCard(QFrame):
 
     def toggle_expanded(self):
         self.set_expanded(not self._expanded)
+
+    def set_runtime_state(self, running: bool, *, stoppable: bool = True):
+        running = bool(running)
+        self.runtime_status_label.setVisible(running)
+        self.runtime_stop_button.setVisible(running)
+        self.runtime_stop_button.setEnabled(running and stoppable)
 
     def _apply_expansion_geometry(self):
         if self._expanded:

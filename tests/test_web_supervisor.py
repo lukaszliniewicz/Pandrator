@@ -117,6 +117,42 @@ class SupervisorTests(unittest.TestCase):
             finally:
                 supervisor.stop_all()
 
+    def test_control_request_stops_only_the_requested_service_without_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            specs = [
+                ManagedProcessSpec(
+                    key=key,
+                    label=label,
+                    command=(sys.executable, "-c", "import time; time.sleep(30)"),
+                    startup_timeout_seconds=2,
+                    restart_limit=2,
+                )
+                for key, label in (("service-kokoro", "Kokoro"), ("service-xtts", "XTTS"))
+            ]
+            supervisor = ProcessSupervisor(data_root=directory, specs=specs)
+            supervisor.start_all()
+            try:
+                original_pid = supervisor.processes["service-kokoro"].process.pid
+                (Path(directory) / "runtime-control.json").write_text(
+                    json.dumps({"stop_processes": ["service-kokoro"]}),
+                    encoding="utf-8",
+                )
+
+                supervisor.monitor_once()
+
+                self.assertNotIn("service-kokoro", supervisor.processes)
+                self.assertFalse(any(spec.key == "service-kokoro" for spec in supervisor.specs))
+                self.assertIn("service-xtts", supervisor.processes)
+                self.assertFalse(Path(directory, "runtime-control.json").exists())
+                state = json.loads(
+                    Path(directory, "runtime-processes.json").read_text(encoding="utf-8")
+                )
+                self.assertFalse(
+                    any(record["pid"] == original_pid for record in state["processes"].values())
+                )
+            finally:
+                supervisor.stop_all()
+
 
 if __name__ == "__main__":
     unittest.main()

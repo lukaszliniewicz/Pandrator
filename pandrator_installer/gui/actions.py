@@ -148,20 +148,30 @@ class GuiActionsMixin:
         self.enable_buttons()
         QMessageBox.critical(self, "Update Error", f"Update failed:\n\n{error_message}\n\nCheck the log for more details.")
 
-    def update_backend_runtime_controls(self):
-        if not hasattr(self, 'active_backend_value_label'):
-            return
-
+    def _known_running_backends(self):
         running_backends = self._collect_running_backends()
         supervised_backends = self._collect_supervised_backends()
         known = []
         seen = set()
+        supervised_identities = {
+            (backend_key, process.pid)
+            for backend_key, _label, process in supervised_backends
+        }
         for backend_key, label, process in [*running_backends, *supervised_backends]:
             identity = (backend_key, process.pid)
             if identity in seen:
                 continue
             seen.add(identity)
-            known.append((backend_key, label, process, any(item[0] == backend_key and item[2].pid == process.pid for item in supervised_backends)))
+            known.append(
+                (backend_key, label, process, identity in supervised_identities)
+            )
+        return known
+
+    def update_backend_runtime_controls(self):
+        if not hasattr(self, 'active_backend_value_label'):
+            return
+
+        known = self._known_running_backends()
         if known:
             running_details = ", ".join(
                 f"{label} (PID {process.pid}{', managed with Pandrator' if supervised else ''})"
@@ -172,17 +182,41 @@ class GuiActionsMixin:
             self.active_backend_value_label.setText("No backend running")
 
         worker_busy = bool(self.worker and self.worker.isRunning())
-        if hasattr(self, 'stop_backend_button'):
-            self.stop_backend_button.setEnabled(bool(running_backends) and not worker_busy)
-            if len(running_backends) > 1:
-                self.stop_backend_button.setText("Stop Running Backends")
+        running_keys = {backend_key for backend_key, _label, _process, _supervised in known}
+        installed_components = self.get_installed_components()
+        for backend_key, card in getattr(self, 'launch_backend_cards', {}).items():
+            is_running = backend_key in running_keys
+            card.set_runtime_state(is_running, stoppable=not worker_busy)
+            control = self.launch_backend_controls[backend_key]
+            if is_running:
+                control.blockSignals(True)
+                control.setChecked(False)
+                control.blockSignals(False)
+                control.setEnabled(False)
+                control.setToolTip("Already running. Use Stop to shut down this backend.")
             else:
-                self.stop_backend_button.setText("Stop Running Backend")
+                control.setEnabled(bool(installed_components.get(backend_key)) and not worker_busy)
+                control.setToolTip("")
+
+        if hasattr(self, 'stop_backend_button'):
+            self.stop_backend_button.setEnabled(bool(known) and not worker_busy)
+            self.stop_backend_button.setText("Stop All Running Backends")
 
         if hasattr(self, 'refresh_backend_status_button'):
             self.refresh_backend_status_button.setEnabled(not worker_busy)
 
     def stop_running_backends(self):
+        self._stop_running_backend_records(self._known_running_backends())
+
+    def stop_running_backend(self, backend_key):
+        records = [
+            record
+            for record in self._known_running_backends()
+            if record[0] == backend_key
+        ]
+        self._stop_running_backend_records(records, requested_key=backend_key)
+
+    def _stop_running_backend_records(self, records, requested_key=None):
         if self.worker and self.worker.isRunning():
             QMessageBox.information(
                 self,
@@ -191,17 +225,21 @@ class GuiActionsMixin:
             )
             return
 
-        running_backends = self._collect_running_backends()
-        if not running_backends:
+        if not records:
             self.update_backend_runtime_controls()
-            QMessageBox.information(self, "No Backend Running", "There is no running backend to stop.")
+            label = self._backend_label_from_key(requested_key) if requested_key else "backend"
+            QMessageBox.information(
+                self,
+                "No Backend Running",
+                f"{label} is not running.",
+            )
             return
 
-        running_backend_names = ", ".join(label for _, label, _ in running_backends)
+        running_backend_names = ", ".join(dict.fromkeys(label for _, label, _, _ in records))
         confirm_stop = QMessageBox.question(
             self,
             "Stop Backend",
-            "Stop the running backend(s)?\n\n"
+            "Stop the selected backend(s)?\n\n"
             f"{running_backend_names}\n\n"
             "Pandrator will stay open and your active session will remain available.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -210,7 +248,8 @@ class GuiActionsMixin:
         if confirm_stop != QMessageBox.StandardButton.Yes:
             return
 
-        self.backend_stop_targets = [backend_key for backend_key, _, _ in running_backends]
+        self.backend_stop_targets = list(dict.fromkeys(backend_key for backend_key, _, _, _ in records))
+        self.backend_stop_labels = list(dict.fromkeys(label for _, label, _, _ in records))
         self.initialize_logging()
         self.progress_bar.setValue(0)
         self.update_status("Stopping running backend(s)...")
@@ -229,25 +268,16 @@ class GuiActionsMixin:
         self.worker.start()
 
     def on_stop_backends_finished(self):
+        stopped_names = ", ".join(getattr(self, 'backend_stop_labels', [])) or "Backend"
         self.backend_stop_targets = []
-        pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
-        pandrator_installed = os.path.exists(pandrator_path)
-
-        self.update_install_button_state()
-        self.update_button.setEnabled(pandrator_installed)
-        self.launch_button.setEnabled(pandrator_installed)
-        self.update_status("Backend stopped. You can launch another backend without closing Pandrator.")
-        self.update_backend_runtime_controls()
+        self.backend_stop_labels = []
+        self.enable_buttons()
+        self.update_status(f"Stopped {stopped_names}. You can launch another backend without closing Pandrator.")
 
     def on_stop_backends_error(self, error_message):
         self.backend_stop_targets = []
-        pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
-        pandrator_installed = os.path.exists(pandrator_path)
-
-        self.update_install_button_state()
-        self.update_button.setEnabled(pandrator_installed)
-        self.launch_button.setEnabled(pandrator_installed)
-        self.update_backend_runtime_controls()
+        self.backend_stop_labels = []
+        self.enable_buttons()
 
         self.update_status(f"Stopping backend failed: {error_message}")
         QMessageBox.critical(
