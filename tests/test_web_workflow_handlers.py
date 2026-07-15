@@ -604,16 +604,27 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         )
         for audio_mode, subtitle_mode, subtitle_selection, expected_subtitles in cases:
             with self.subTest(audio_mode=audio_mode, subtitle_mode=subtitle_mode):
+                export_settings = {
+                    "audio_mode": audio_mode,
+                    "subtitle_mode": subtitle_mode,
+                    "subtitle_selection": subtitle_selection,
+                    "original_language": "en",
+                    "target_language": "pl",
+                }
+                if subtitle_mode == "burned":
+                    export_settings.update(
+                        {
+                            "burn_video_encoder": "libx264",
+                            "burn_video_quality": 23,
+                            "burn_video_speed": "fast",
+                            "burn_audio_codec": "aac",
+                            "burn_audio_bitrate": "128k",
+                        }
+                    )
                 result = self.handlers.export(
                     {
                         "session_id": voiceover.id,
-                        "settings": {
-                            "audio_mode": audio_mode,
-                            "subtitle_mode": subtitle_mode,
-                            "subtitle_selection": subtitle_selection,
-                            "original_language": "en",
-                            "target_language": "pl",
-                        },
+                        "settings": export_settings,
                     },
                     self.progress,
                     threading.Event(),

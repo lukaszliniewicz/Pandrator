@@ -7,6 +7,7 @@
   let { sessionId }: { sessionId: string } = $props();
   let settings = $state<any>(null);
   let session = $state<any>(null);
+  let capabilities = $state<any>({});
   let draft = $state<Record<string, unknown>>({});
   let images = $state<any[]>([]);
   let preview = $state<any|null>(null);
@@ -16,14 +17,16 @@
 
   const coverId = $derived(String(Object.prototype.hasOwnProperty.call(draft,'cover_artifact_id') ? draft.cover_artifact_id ?? '' : settings?.effective?.cover_artifact_id ?? ''));
   const selectedCover = $derived(images.find((item)=>item.id===coverId));
+  const burnVideoEncoders = $derived(Array.isArray(capabilities?.ffmpeg?.burn_video_encoders) && capabilities.ffmpeg.burn_video_encoders.length ? capabilities.ffmpeg.burn_video_encoders : [{id:'libx264',label:'H.264 software (most compatible)',hardware:false,codec:'h264'}]);
   const value = (key:string, fallback:unknown='') => Object.prototype.hasOwnProperty.call(draft,key) ? draft[key] : settings?.effective?.[key] ?? fallback;
   const set = (key:string, next:unknown) => draft={...draft,[key]:next};
 
   async function load() {
-    [session, settings, {items:images}] = await Promise.all([
+    [session, settings, {items:images}, capabilities] = await Promise.all([
       api<any>(`/sessions/${sessionId}`),
       api<any>(`/sessions/${sessionId}/settings/output`),
-      api<any>(`/artifacts?session_id=${sessionId}&limit=500`).then((payload)=>({items:(payload.items??[]).filter((item:any)=>item.state==='current'&&(item.kind==='image'||String(item.mime_type??'').startsWith('image/')))}))
+      api<any>(`/artifacts?session_id=${sessionId}&limit=500`).then((payload)=>({items:(payload.items??[]).filter((item:any)=>item.state==='current'&&(item.kind==='image'||String(item.mime_type??'').startsWith('image/')))})),
+      api<any>('/capabilities').catch(()=>({}))
     ]);
     draft={...settings.override};
   }
@@ -70,6 +73,19 @@
           {#if value('export_mode','media')==='media'}
             <label>Audio<select value={String(value('audio_mode','preserve'))} onchange={(event)=>set('audio_mode',event.currentTarget.value)} class="field"><option value="preserve">Preserve source audio</option><option value="mixed">Mix source and generated audio</option><option value="dubbing_only">Generated audio only</option></select></label>
             <label>Subtitles<select value={String(value('subtitle_mode','none'))} onchange={(event)=>set('subtitle_mode',event.currentTarget.value)} class="field"><option value="none">No subtitles</option><option value="soft">Soft / selectable tracks</option><option value="burned">Burned into video</option></select></label>
+            {#if value('subtitle_mode','none')==='burned'}
+              <div class="rounded-xl border border-[var(--line)] p-4 sm:col-span-2 lg:col-span-3">
+                <div class="text-sm font-semibold">Burned-subtitle transcoding</div>
+                <div class="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  <label>Video encoder<select value={String(value('burn_video_encoder','libx264'))} onchange={(event)=>set('burn_video_encoder',event.currentTarget.value)} class="field">{#if !burnVideoEncoders.some((item:any)=>item.id===String(value('burn_video_encoder','libx264')))}<option value={String(value('burn_video_encoder','libx264'))}>{String(value('burn_video_encoder','libx264'))} (currently unavailable)</option>{/if}{#each burnVideoEncoders as encoder}<option value={encoder.id}>{encoder.label}</option>{/each}</select></label>
+                  <label>Quality<input value={Number(value('burn_video_quality',18))} oninput={(event)=>set('burn_video_quality',Number(event.currentTarget.value))} type="number" min="0" max="51" step="1" class="field"/><small class="muted mt-1 block font-normal">Lower is higher quality; 18 is visually transparent for most material.</small></label>
+                  <label>Encoding speed<select value={String(value('burn_video_speed','balanced'))} onchange={(event)=>set('burn_video_speed',event.currentTarget.value)} class="field"><option value="fast">Fast</option><option value="balanced">Balanced</option><option value="quality">Quality</option></select></label>
+                  <label>Audio<select value={String(value('burn_audio_codec','copy'))} onchange={(event)=>set('burn_audio_codec',event.currentTarget.value)} class="field"><option value="copy">Copy without transcoding</option><option value="aac">Transcode to AAC</option></select></label>
+                  {#if value('burn_audio_codec','copy')==='aac'}<label>AAC bitrate<input value={String(value('burn_audio_bitrate','192k'))} oninput={(event)=>set('burn_audio_bitrate',event.currentTarget.value)} placeholder="192k" class="field"/></label>{/if}
+                </div>
+                <p class="muted mt-3 text-xs">Hardware encoders appear only when both the GPU and this FFmpeg installation support them. H.264 has the broadest browser and device compatibility.</p>
+              </div>
+            {/if}
           {:else if value('export_mode','media')==='subtitles'}
             <label>Subtitle format<select value={String(value('subtitle_format','srt'))} onchange={(event)=>set('subtitle_format',event.currentTarget.value)} class="field"><option value="srt">SubRip (.srt)</option><option value="vtt">WebVTT (.vtt)</option></select></label>
           {/if}

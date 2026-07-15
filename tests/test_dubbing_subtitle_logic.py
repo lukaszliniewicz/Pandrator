@@ -283,6 +283,38 @@ Alice: hello
         self.assertIn(r"\[", filter_arg)
         self.assertIn(r"\]", filter_arg)
 
+    def test_build_burned_subtitle_command_supports_vaapi_quality_and_aac(self):
+        command = video_muxing.build_add_subtitles_command(
+            synced_video_path="video.mp4",
+            equalized_srt_path="subs.srt",
+            temp_output_path="out.mp4",
+            subtitle_mode="burned",
+            video_encoder="h264_vaapi",
+            video_quality=22,
+            video_speed="fast",
+            audio_codec="aac",
+            audio_bitrate="160k",
+            hardware_device="/dev/dri/renderD128",
+        )
+
+        self.assertEqual("/dev/dri/renderD128", command[command.index("-vaapi_device") + 1])
+        self.assertEqual("h264_vaapi", command[command.index("-c:v") + 1])
+        self.assertIn("format=nv12,hwupload", command[command.index("-vf") + 1])
+        self.assertEqual("22", command[command.index("-qp") + 1])
+        self.assertEqual("aac", command[command.index("-c:a") + 1])
+        self.assertEqual("160k", command[command.index("-b:a") + 1])
+        self.assertIn("+faststart", command)
+
+    def test_build_burned_subtitle_command_validates_transcode_controls(self):
+        with self.assertRaisesRegex(ValueError, "between 0 and 51"):
+            video_muxing.build_add_subtitles_command(
+                "video.mp4",
+                "subs.srt",
+                "out.mp4",
+                subtitle_mode="burned",
+                video_quality=60,
+            )
+
     def test_build_replace_video_audio_command_maps_video_and_audio_streams(self):
         command = video_muxing.build_replace_video_audio_command(
             video_path="video.mp4",

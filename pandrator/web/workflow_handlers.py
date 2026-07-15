@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 from copy import deepcopy
@@ -2272,6 +2273,7 @@ class WorkflowHandlers:
         from pandrator.logic.dubbing.subtitle_finalization import finalize_srt_file
         from pandrator.logic.dubbing.video_muxing import build_add_subtitles_command, build_multi_soft_subtitle_command, build_replace_video_audio_command
         from pandrator.logic.dubbing_handler import resolve_ffmpeg_for_burned_subtitles
+        from pandrator.web.capabilities import ffmpeg_video_encoder_ids
 
         session_id = str(payload.get("session_id") or "")
         settings = dict(payload.get("settings") or {})
@@ -2325,7 +2327,9 @@ class WorkflowHandlers:
             if subtitle_format not in {"srt", "vtt"}:
                 subtitle_format = "srt"
             subtitle_mode = str(settings.get("subtitle_mode") or "none").lower()
+            subtitle_mode = {"burn": "burned"}.get(subtitle_mode, subtitle_mode)
             subtitle_selection = str(settings.get("subtitle_selection") or ("dual" if translated and source_subtitle else "translation")).lower()
+            subtitle_selection = {"both": "dual"}.get(subtitle_selection, subtitle_selection)
             if subtitle_selection == "translation" and translated is None and source_subtitle is not None:
                 subtitle_selection = "source"
             elif subtitle_selection == "source" and source_subtitle is None and translated is not None:
@@ -2465,8 +2469,32 @@ class WorkflowHandlers:
                         burn_ffmpeg = resolve_ffmpeg_for_burned_subtitles()
                         if not burn_ffmpeg:
                             raise RuntimeError("Burned subtitles require an FFmpeg build with the subtitles/libass filter. Install or select Pandrator's bundled FFmpeg, or use soft subtitles.")
-                        command = build_add_subtitles_command(str(working_video), str(burn_path), str(render_destination), subtitle_mode="burned", subtitle_language=str(settings.get("target_language") or "und"), ffmpeg_executable=burn_ffmpeg)
-                        subprocess.run(command, check=True, capture_output=True, text=True)
+                        burn_video_encoder = str(settings.get("burn_video_encoder") or "libx264").strip().lower()
+                        if burn_video_encoder not in ffmpeg_video_encoder_ids(burn_ffmpeg):
+                            raise RuntimeError(f"The selected FFmpeg build does not provide the {burn_video_encoder} video encoder.")
+                        burn_audio_codec = str(settings.get("burn_audio_codec") or "copy").strip().lower()
+                        burn_audio_bitrate = str(settings.get("burn_audio_bitrate") or "192k").strip()
+                        if burn_audio_codec == "aac" and not re.fullmatch(r"[1-9][0-9]*(?:[kKmM])?", burn_audio_bitrate):
+                            raise ValueError("Burned-subtitle AAC bitrate must look like 192k or 2M.")
+                        command = build_add_subtitles_command(
+                            str(working_video),
+                            str(burn_path),
+                            str(render_destination),
+                            subtitle_mode="burned",
+                            subtitle_language=str(settings.get("target_language") or "und"),
+                            ffmpeg_executable=burn_ffmpeg,
+                            video_encoder=burn_video_encoder,
+                            video_quality=settings.get("burn_video_quality", 18),
+                            video_speed=str(settings.get("burn_video_speed") or "balanced"),
+                            audio_codec=burn_audio_codec,
+                            audio_bitrate=burn_audio_bitrate,
+                        )
+                        try:
+                            subprocess.run(command, check=True, capture_output=True, text=True)
+                        except subprocess.CalledProcessError as error:
+                            detail = str(error.stderr or error.stdout or "").strip().splitlines()
+                            reason = detail[-1] if detail else "FFmpeg returned a non-zero exit status."
+                            raise RuntimeError(f"Burned-subtitle transcoding with {burn_video_encoder} failed: {reason}") from error
                     else:
                         shutil.copy2(working_video, render_destination)
                     os.replace(render_destination, destination)
