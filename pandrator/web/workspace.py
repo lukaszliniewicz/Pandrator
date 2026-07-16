@@ -209,6 +209,7 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "chatterbox_norm_loudness": True,
         "openai_audio_endpoint": "",
         "openai_audio_instructions": "",
+        "generation_prompt": "",
         "speech_block_min_chars": 10,
         "speech_block_max_chars": 160,
         "speech_block_merge_threshold": 250,

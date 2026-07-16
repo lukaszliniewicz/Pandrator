@@ -75,12 +75,22 @@ class WebWorkflowHandlerTests(unittest.TestCase):
                 {
                     "session_id": self.session.id,
                     "source_artifact_id": prepared.id,
-                    "settings": {"service": "XTTS", "max_attempts": 1},
+                    "settings": {
+                        "service": "XTTS",
+                        "max_attempts": 1,
+                        "generation_prompt": "Read with quiet intensity.",
+                    },
                 },
                 self.progress,
                 threading.Event(),
             )
         self.assertEqual(generate.call_count, 2)
+        self.assertTrue(
+            all(
+                call.args[1]["generation_prompt"] == "Read with quiet intensity."
+                for call in generate.call_args_list
+            )
+        )
         artifact, output = self.artifacts.resolve(result["artifact_id"])
         self.assertEqual(artifact.role, "audiobook_audio")
         self.assertTrue(output.is_file())

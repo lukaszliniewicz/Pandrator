@@ -47,7 +47,7 @@ const CHOICES: Record<string, SettingOption[]> = {
 };
 
 const LANGUAGE_KEYS = new Set(['language', 'stt_language', 'source_language', 'target_language', 'pdf_ocr_language']);
-const MULTILINE_KEYS = new Set(['combined_prompt', 'first_prompt', 'second_prompt', 'third_prompt', 'whisper_prompt', 'instructions', 'glossary', 'stt_hotwords']);
+const MULTILINE_KEYS = new Set(['combined_prompt', 'first_prompt', 'second_prompt', 'third_prompt', 'whisper_prompt', 'instructions', 'generation_prompt', 'glossary', 'stt_hotwords']);
 const RANGE_KEYS = new Set(['crispasr_vad_threshold', 'index_rate', 'volume_envelope', 'protect', 'speed', 'top_p', 'fishs2_top_p', 'chatterbox_top_p', 'chatterbox_min_p', 'chatterbox_exaggeration', 'chatterbox_cfg_weight']);
 
 export const GLOBAL_TTS_KEYS = new Set(['service', 'language', 'speed', 'max_attempts']);
@@ -96,6 +96,7 @@ export function settingLabel(key: string): string {
     first_prompt: 'First optimization prompt',
     second_prompt: 'Second optimization prompt',
     third_prompt: 'Third optimization prompt',
+    generation_prompt: 'Speech direction',
     silero_stress_mode: 'Stress handling',
     silero_sample_rate: 'Sample rate'
   };

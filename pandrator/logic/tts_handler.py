@@ -306,11 +306,16 @@ OPENAI_TTS_MODELS = [
     "tts-1",
 ]
 
+OPENAI_GENERATION_PROMPT_MODELS = ["gpt-4o-mini-tts"]
+
 GEMINI_TTS_MODELS = [
     "gemini-3.1-flash-tts-preview",
     "gemini-2.5-flash-tts",
     "gemini-2.5-pro-tts",
 ]
+
+GENERATION_PROMPT_MODELS_FIELD = "generation_prompt_models"
+KOBOLD_QWEN_GENERATION_PROMPT_MODELS = ["Prebuilt Voices", "qwen3-tts-customvoice"]
 
 OPENAI_TTS_VOICES = [
     "alloy",
@@ -583,6 +588,9 @@ def _default_service_configs() -> list[dict[str, object]]:
                 KOBOLD_QWEN_DEFAULT_MODEL: KOBOLD_QWEN_DEFAULT_VOICE,
                 "Voice Cloning": KOBOLD_QWEN_SAMPLE_VOICE,
             }
+            record[GENERATION_PROMPT_MODELS_FIELD] = list(
+                KOBOLD_QWEN_GENERATION_PROMPT_MODELS
+            )
         configs.append(record)
     configs.extend(
         [
@@ -599,6 +607,7 @@ def _default_service_configs() -> list[dict[str, object]]:
                 "default_model": OPENAI_AUDIO_DEFAULT_MODEL,
                 "voices": list(OPENAI_TTS_VOICES),
                 "default_voice": OPENAI_AUDIO_DEFAULT_VOICE,
+                GENERATION_PROMPT_MODELS_FIELD: list(OPENAI_GENERATION_PROMPT_MODELS),
                 PREBUILT_VOICE_PROVIDER_FIELD: True,
             },
             {
@@ -614,6 +623,7 @@ def _default_service_configs() -> list[dict[str, object]]:
                 "default_model": GEMINI_AUDIO_DEFAULT_MODEL,
                 "voices": list(GEMINI_TTS_VOICES),
                 "default_voice": GEMINI_AUDIO_DEFAULT_VOICE,
+                GENERATION_PROMPT_MODELS_FIELD: list(GEMINI_TTS_MODELS),
                 PREBUILT_VOICE_PROVIDER_FIELD: True,
             },
             {
@@ -631,6 +641,7 @@ def _default_service_configs() -> list[dict[str, object]]:
                 "default_voice": GEMINI_AUDIO_DEFAULT_VOICE,
                 "vertex_project": "",
                 "vertex_location": VERTEX_AUDIO_DEFAULT_LOCATION,
+                GENERATION_PROMPT_MODELS_FIELD: list(GEMINI_TTS_MODELS),
                 PREBUILT_VOICE_PROVIDER_FIELD: True,
             },
         ]
@@ -3996,16 +4007,33 @@ def _build_openai_compatible_audio_payload(
         "speed": _coerce_float(tts_settings.get("speed"), 1.0),
     }
 
-    instructions = str(tts_settings.get("openai_audio_instructions") or "").strip()
+    legacy_instructions = str(tts_settings.get("openai_audio_instructions") or "").strip()
+    generation_prompt = str(tts_settings.get("generation_prompt") or "").strip()
     if _is_xtts_target(model_name, endpoint):
         payload["instructions"] = _build_xtts_instructions_payload(
             tts_settings,
-            instructions,
+            legacy_instructions,
         )
-    elif instructions and provider == OPENAI_PROVIDER:
-        payload["instructions"] = instructions
+    elif provider == OPENAI_PROVIDER and model_name in OPENAI_GENERATION_PROMPT_MODELS:
+        instructions = generation_prompt or legacy_instructions
+        if instructions:
+            payload["instructions"] = instructions
+    elif provider == GEMINI_PROVIDER:
+        instructions = generation_prompt or legacy_instructions
+        if instructions:
+            payload["input"] = _build_guided_speech_prompt(text, instructions)
 
     return payload
+
+
+def _build_guided_speech_prompt(text: str, generation_prompt: str) -> str:
+    """Combine Gemini performance direction and transcript without making it ambiguous."""
+    return (
+        "Perform the transcript below as speech. Follow the speaking directions, "
+        "but do not read or mention the directions or labels aloud.\n\n"
+        f"Speaking directions:\n{generation_prompt.strip()}\n\n"
+        f"Transcript:\n{text}"
+    )
 
 
 def _litellm_response_to_requests_response(litellm_response) -> requests.Response:
@@ -4242,8 +4270,10 @@ def _request_vertex_ai_audio(text: str, tts_settings: dict) -> requests.Response
         f"{quote(project_id, safe='')}/locations/{quote(location, safe='')}/"
         f"publishers/google/models/{quote(model, safe='')}:generateContent"
     )
+    generation_prompt = str(tts_settings.get("generation_prompt") or "").strip()
+    prompt_text = _build_guided_speech_prompt(text, generation_prompt) if generation_prompt else text
     payload = {
-        "contents": [{"role": "user", "parts": [{"text": text}]}],
+        "contents": [{"role": "user", "parts": [{"text": prompt_text}]}],
         "generationConfig": {
             "responseModalities": ["AUDIO"],
             "speechConfig": {
@@ -4433,6 +4463,11 @@ def _request_kobold_qwen_audio(text: str, tts_settings: dict, kobold_qwen_base_u
         "speed": _coerce_float(tts_settings.get("speed"), 1.0),
         "response_format": "wav",
     }
+    generation_prompt = str(tts_settings.get("generation_prompt") or "").strip()
+    if generation_prompt and normalized_model in {
+        item.lower() for item in KOBOLD_QWEN_GENERATION_PROMPT_MODELS
+    }:
+        payload["instructions"] = generation_prompt
 
     last_response = None
     for speech_url in _openai_audio_speech_urls(normalized_base_url):

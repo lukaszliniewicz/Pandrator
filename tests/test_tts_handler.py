@@ -53,6 +53,7 @@ class TTSHandlerTests(unittest.TestCase):
             "service": tts_handler.VERTEX_SERVICE,
             "model": "gemini-2.5-flash-tts",
             "voice": "Kore",
+            "generation_prompt": "Speak brightly, with a quick conversational rhythm.",
             "provider_configs": [{"id": "vertex_ai", "vertex_location": "us-central1"}],
         }
         with patch("pandrator.logic.tts_handler._vertex_access_token", return_value=("token", "project")), patch(
@@ -64,6 +65,74 @@ class TTSHandlerTests(unittest.TestCase):
         self.assertIn("/projects/project/locations/us-central1/", post.call_args.args[0])
         self.assertEqual("Bearer token", post.call_args.kwargs["headers"]["Authorization"])
         self.assertEqual("AUDIO", post.call_args.kwargs["json"]["generationConfig"]["responseModalities"][0])
+        prompt = post.call_args.kwargs["json"]["contents"][0]["parts"][0]["text"]
+        self.assertIn("Speaking directions:", prompt)
+        self.assertIn("Speak brightly", prompt)
+        self.assertIn("Transcript:\nHello", prompt)
+
+    def test_generation_prompt_capabilities_are_model_specific(self):
+        services = {item["id"]: item for item in tts_handler.get_service_configs({})}
+        self.assertEqual(
+            ["gpt-4o-mini-tts"],
+            services["openai"][tts_handler.GENERATION_PROMPT_MODELS_FIELD],
+        )
+        self.assertEqual(
+            tts_handler.GEMINI_TTS_MODELS,
+            services["gemini"][tts_handler.GENERATION_PROMPT_MODELS_FIELD],
+        )
+        self.assertEqual(
+            tts_handler.GEMINI_TTS_MODELS,
+            services["vertex_ai"][tts_handler.GENERATION_PROMPT_MODELS_FIELD],
+        )
+        self.assertIn(
+            "Prebuilt Voices",
+            services["kobold_qwen"][tts_handler.GENERATION_PROMPT_MODELS_FIELD],
+        )
+        self.assertNotIn(
+            "Voice Cloning",
+            services["kobold_qwen"][tts_handler.GENERATION_PROMPT_MODELS_FIELD],
+        )
+
+    def test_openai_generation_prompt_uses_instructions_only_on_capable_model(self):
+        endpoint = {
+            "name": "OpenAI",
+            "provider": "openai",
+            "default_voice": "alloy",
+        }
+        settings = {
+            "xtts_model": "gpt-4o-mini-tts",
+            "speaker": "alloy",
+            "generation_prompt": "Speak like a patient documentary narrator.",
+        }
+        payload = tts_handler._build_openai_compatible_audio_payload(
+            "A short transcript.", settings, endpoint
+        )
+        self.assertEqual(
+            "Speak like a patient documentary narrator.", payload["instructions"]
+        )
+        self.assertEqual("A short transcript.", payload["input"])
+
+        settings["xtts_model"] = "tts-1-hd"
+        classic_payload = tts_handler._build_openai_compatible_audio_payload(
+            "A short transcript.", settings, endpoint
+        )
+        self.assertNotIn("instructions", classic_payload)
+
+    def test_gemini_generation_prompt_is_combined_with_labeled_transcript(self):
+        payload = tts_handler._build_openai_compatible_audio_payload(
+            "The transcript must remain unchanged.",
+            {
+                "xtts_model": "gemini-2.5-flash-tts",
+                "speaker": "Kore",
+                "generation_prompt": "Warm and reassuring, with deliberate pauses.",
+            },
+            {"name": "Google Gemini", "provider": "gemini"},
+        )
+        self.assertNotIn("instructions", payload)
+        self.assertIn("Speaking directions:\nWarm and reassuring", payload["input"])
+        self.assertIn("Transcript:\nThe transcript must remain unchanged.", payload["input"])
+        self.assertNotEqual("The transcript must remain unchanged.", payload["input"])
+
     def test_json_speech_response_reports_provider_error_instead_of_audio_decode_noise(self):
         response = Mock()
         response.headers = {"Content-Type": "application/json"}
@@ -487,6 +556,36 @@ class TTSHandlerTests(unittest.TestCase):
             called_kwargs["timeout"],
             tts_handler.KOBOLD_QWEN_MODEL_PREPARATION_TIMEOUT_SECONDS,
         )
+
+    def test_kobold_qwen_forwards_generation_prompt_only_to_custom_voice(self):
+        with patch("requests.post") as mock_post:
+            mock_post.return_value.status_code = 200
+            tts_handler._request_kobold_qwen_audio(
+                "Hello world",
+                {
+                    "model": "Prebuilt Voices",
+                    "voice": "Ryan",
+                    "generation_prompt": "Sound excited but controlled.",
+                },
+                "http://localhost:8042",
+            )
+        self.assertEqual(
+            "Sound excited but controlled.",
+            mock_post.call_args.kwargs["json"]["instructions"],
+        )
+
+        with patch("requests.post") as mock_post:
+            mock_post.return_value.status_code = 200
+            tts_handler._request_kobold_qwen_audio(
+                "Hello world",
+                {
+                    "model": "Voice Cloning",
+                    "voice": "my-cloned-voice",
+                    "generation_prompt": "This model cannot use the prompt.",
+                },
+                "http://localhost:8042",
+            )
+        self.assertNotIn("instructions", mock_post.call_args.kwargs["json"])
 
     def test_kobold_qwen_rejects_a_voice_from_the_wrong_model_catalogue(self):
         with self.assertRaisesRegex(ValueError, "pre-built"):

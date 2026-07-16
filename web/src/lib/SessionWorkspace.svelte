@@ -144,6 +144,7 @@
   let ttsService = $state('XTTS');
   let ttsModel = $state('');
   let voiceName = $state('');
+  let generationPrompt = $state('');
   let speechBlockMinChars = $state(10);
   let speechBlockMaxChars = $state(160);
   let speechBlockMergeThreshold = $state(250);
@@ -317,6 +318,7 @@
     ttsService = String(activeService?.id ?? configuredServiceId);
     ttsModel = activeService?.id===configuredService?.id ? String(saved.model ?? saved.xtts_model ?? activeService?.default_model ?? '') : String(activeService?.default_model ?? activeService?.models?.[0] ?? '');
     voiceName = activeService?.id===configuredService?.id ? String(saved.voice ?? saved.voice_name ?? '') : String(activeService?.default_voice ?? '');
+    generationPrompt = String(saved.generation_prompt ?? '');
     speechBlockMinChars = Number(saved.speech_block_min_chars ?? 10);
     speechBlockMaxChars = Number(saved.speech_block_max_chars ?? 160);
     speechBlockMergeThreshold = Number(saved.speech_block_merge_threshold ?? 250);
@@ -467,6 +469,8 @@
   const ttsModels = $derived(selectedTtsService?.models??[]);
   const selectedTtsDefaultVoice = $derived(selectedTtsService?.default_voices_by_language?.[ttsModel]?.[targetLanguage] ?? selectedTtsService?.default_voices?.[ttsModel] ?? selectedTtsService?.default_voice ?? '');
   const selectedTtsServiceId = $derived(String(selectedTtsService?.id??ttsService).toLowerCase());
+  const generationPromptModels = $derived(Array.from(selectedTtsService?.generation_prompt_models??[]).map((model:any)=>String(model).toLowerCase()));
+  const supportsGenerationPrompt = $derived(generationPromptModels.includes(ttsModel.toLowerCase()));
   const qwenVoiceCloning = $derived(selectedTtsServiceId==='kobold_qwen' && ttsModel.toLowerCase()==='voice cloning');
   const supportsCloningVoices = $derived(Boolean(selectedTtsService?.supports_voice_cloning));
   const supportsPrebuiltVoices = $derived(Boolean(selectedTtsService?.supports_prebuilt_voices && !qwenVoiceCloning));
@@ -607,6 +611,7 @@
     else if (key === 'prepare_text') stageSettings[key] = { enable_sentence_splitting:splitSentences, enable_sentence_appending:appendSentences, max_sentence_length:maxSentenceLength, enable_nemo_normalization:nemoNormalization, normalize_all_caps:normalizeAllCaps, remove_diacritics:removeDiacritics, remove_quotation_marks:removeQuotationMarks };
     else if (key === 'generate_audio') stageSettings[key] = {
       tts_service: ttsService, service: ttsService, model: ttsModel, xtts_model: ttsModel, voice: voiceName,
+      generation_prompt: generationPrompt,
       language: targetLanguage, target_language: targetLanguage,
       speech_block_min_chars: speechBlockMinChars,
       speech_block_max_chars: speechBlockMaxChars,
@@ -750,6 +755,11 @@
           {#if supportsPrebuiltVoices || showClonedVoices}
             <label class="text-sm font-semibold">Voice<select bind:value={voiceName} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal">{#if !showClonedVoices}<option value="">Service default</option>{/if}{#if supportsPrebuiltVoices}<optgroup label={`${LANGUAGE_OPTIONS.find((item)=>item.value===targetLanguage)?.label??targetLanguage} · pre-built voices`}>{#each filteredPrebuiltVoices as voice}<option value={voice.id}>{voice.name}{voice.gender?` · ${voice.gender}`:''}</option>{/each}</optgroup>{/if}{#if showClonedVoices}<optgroup label="Voices ready in provider">{#each clonedVoiceDescriptors as voice}<option value={voice.id}>{voice.name}</option>{/each}</optgroup>{/if}</select></label>
             <div class="flex flex-wrap items-center justify-between gap-3"><p class="muted text-xs">{showClonedVoices?'Only voices returned by this provider or uploaded from the Library can be selected.':'Only voices supported by the selected model are shown.'}</p>{#if showClonedVoices}<button type="button" onclick={()=>openVoiceLibrary('references',selectedTtsServiceId)} class="flex items-center gap-1.5 text-xs font-semibold text-[var(--accent)]"><Library size={14}/> Create or upload cloned voice</button>{:else}<button type="button" onclick={()=>openVoiceLibrary('prebuilt')} class="flex items-center gap-1.5 text-xs font-semibold text-[var(--accent)]"><Library size={14}/> Browse pre-built voices</button>{/if}</div>
+          {/if}
+          {#if supportsGenerationPrompt}
+            <label class="text-sm font-semibold">Speech direction<textarea bind:value={generationPrompt} rows="4" placeholder="For example: Warm, intimate narration with measured pacing and subtle excitement." class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"></textarea><span class="muted mt-2 block text-xs">Sent with every segment as performance guidance. It does not rewrite the transcript and should not be spoken aloud.</span></label>
+          {:else if generationPromptModels.length}
+            <p class="muted rounded-xl bg-[var(--accent-soft)] p-3 text-xs">{ttsModel || 'This model'} does not accept speech-direction prompts. Choose an instruction-capable model to add one.</p>
           {/if}
           {#if session.workflow_kind !== 'audiobook'}<div class="rounded-xl border border-[var(--line)] p-4"><div class="text-sm font-semibold">Speech blocks for dubbing</div><p class="muted mt-1 text-xs">These TTS chunks are independent from the final subtitle layout.</p><div class="mt-3 grid grid-cols-2 gap-3"><label class="text-xs font-semibold">Minimum characters<input type="number" min="1" bind:value={speechBlockMinChars} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Maximum characters<input type="number" min="1" bind:value={speechBlockMaxChars} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label><label class="text-xs font-semibold">Merge gap (ms)<input type="number" min="0" bind:value={speechBlockMergeThreshold} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"/></label></div></div>{/if}
         {/if}

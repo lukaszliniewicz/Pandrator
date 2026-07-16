@@ -63,6 +63,11 @@ class SettingsApiTests(unittest.TestCase):
         self.assertIn("OCR artifacts", DEFAULT_SECOND_PROMPT)
         self.assertIn("FOREIGN, NON-ENGLISH", DEFAULT_THIRD_PROMPT)
 
+    def test_generation_prompt_has_an_empty_tts_default(self):
+        payload = self.client.get("/api/v1/defaults/tts").get_json()["builtin"]
+
+        self.assertEqual("", payload["generation_prompt"])
+
     def test_tts_api_key_is_extracted_from_settings_and_never_returned(self):
         secret = "speech-secret-value"
         response = self.client.put(

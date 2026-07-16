@@ -166,6 +166,8 @@ class WebParityWorkspaceTests(unittest.TestCase):
         )
         self.assertEqual(["kobo"], qwen["voice_catalogues"]["Voice Cloning"])
         self.assertEqual("kobo", qwen["default_voices"]["Voice Cloning"])
+        self.assertIn("Prebuilt Voices", qwen["generation_prompt_models"])
+        self.assertNotIn("Voice Cloning", qwen["generation_prompt_models"])
 
     def test_tts_catalogue_restores_managed_previews_and_marks_unavailable_services(self):
         extension = self.app.extensions["pandrator"]
