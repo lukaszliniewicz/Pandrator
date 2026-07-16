@@ -12,25 +12,26 @@ from typing import Any, Callable
 from pandrator.logic.llm_handler import ChatCompletionResult, chat_completion_with_metadata
 
 
-DEFAULT_PROMPT = """Rewrite the text so a speech synthesizer pronounces it naturally.
-Expand ambiguous numerals and abbreviations when necessary, use phonetic spelling only where it helps,
-and remove extraction artifacts. Preserve meaning, language, tone, names, and all factual content.
-Keep every input item separate and return the same item indexes.
+# Restored from the Qt application's LLM defaults. The legacy prompts' plain-text
+# response clauses are intentionally left to the structured JSON system prompt below.
+DEFAULT_PROMPT = """Your task is to preprocess and clean each supplied text item to optimize it for text-to-speech (TTS) synthesis.
+
+Please perform the following adjustments:
+1. Spell out abbreviations and titles (e.g., Prof. to Professor, Dr. to Doctor, et. al. to et alia, etc. to et cetera).
+2. Convert Roman numerals to English words (e.g., Section III to Section Three, Chapter V to Chapter Five).
+3. Correct any punctuation errors, misspelled words, or OCR artifacts (e.g., remove out-of-place page numbers).
+4. Spell difficult foreign, non-English words phonetically so that an English TTS voice can pronounce them naturally.
+
+Don't change anything else. Return each complete processed text item, leaving it unchanged if no adjustments are necessary.
 """
 
-DEFAULT_FIRST_PROMPT = """Normalize each item for spoken delivery.
-Expand ambiguous numbers, dates, measurements, symbols, and abbreviations only when context makes the
-intended reading clear. Preserve the original language, meaning, facts, names, tone, and item indexes.
+DEFAULT_FIRST_PROMPT = """Your task is to spell out abbreviations and titles and convert Roman numerals to English words in each supplied text item. For example: Prof. to Professor, Dr. to Doctor, et. al. to et alia, etc. to et cetera, Section III to Section Three, Chapter V to Chapter Five and so on. Don't change ANYTHING ELSE. If no adjustments are necessary, leave the text item unchanged.
 """
 
-DEFAULT_SECOND_PROMPT = """Improve pronunciation and listening flow for a speech synthesizer.
-Use phonetic spellings sparingly, remove extraction noise, and adjust punctuation where it improves
-prosody. Do not summarize, translate, merge, split, add, or remove factual content or item indexes.
+DEFAULT_SECOND_PROMPT = """Your task is to analyze each supplied text item carefully and correct punctuation. Also, correct any misspelled words and possible OCR artifacts based on context. If there is a number that looks out of place because it could have been a page number captured by OCR and doesn't fit in the context, remove it. Don't change ANYTHING ELSE, including when no changes are necessary.
 """
 
-DEFAULT_THIRD_PROMPT = """Perform a final fidelity check on every item.
-Correct only remaining speech-synthesis problems and revert any wording that changes meaning, facts,
-language, names, tone, or item identity. Return every original index exactly once.
+DEFAULT_THIRD_PROMPT = """Your task is to spell difficult FOREIGN, NON-ENGLISH words phonetically. Don't alter ANYTHING ELSE in each supplied text item: English words remain the same. Example: Jiyu means freedom in Japanese becomes jeeyou means freedom in Japanese; jiyu is spelled phonetically as a Japanese word, and the rest is not changed.
 """
 
 

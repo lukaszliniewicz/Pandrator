@@ -131,6 +131,10 @@ class TtsOptimizationHandlerTests(unittest.TestCase):
         self.assertEqual(["Room one oh one", "Doctor Jones"], [segment.text for segment in segments])
         self.assertEqual([(0, 1000), (1100, 2000)], [(segment.start_ms, segment.end_ms) for segment in segments])
         self.assertEqual("tts_optimized", optimized.role)
+        self.assertAlmostEqual(0.02, result["cost"])
+        self.assertEqual(13, result["usage"]["total_tokens"])
+        self.assertEqual(8, result["usage"]["input_tokens"])
+        self.assertEqual(5, result["usage"]["output_tokens"])
         with self.database.session() as session:
             self.assertIsNotNone(session.get(ArtifactEdge, (source.id, optimized.id)))
             document = session.scalar(select(Document).where(Document.session_id == self.session.id, Document.stage == "tts_optimization"))

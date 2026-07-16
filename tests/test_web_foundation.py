@@ -322,6 +322,40 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(created.get_json()["workflow_kind"], "subtitles")
         self.assertEqual(created.headers["ETag"], '"1"')
 
+    def test_duplicate_session_name_requires_an_explicit_recoverable_overwrite(self):
+        csrf = self.authenticate()
+        headers = {"X-CSRF-Token": csrf}
+        created = self.client.post(
+            "/api/v1/sessions",
+            json={"name": "Existing session"},
+            headers=headers,
+        )
+        self.assertEqual(201, created.status_code, created.get_json())
+        original = created.get_json()
+
+        duplicate = self.client.post(
+            "/api/v1/sessions",
+            json={"name": "  EXISTING SESSION  "},
+            headers=headers,
+        )
+        self.assertEqual(409, duplicate.status_code)
+        self.assertEqual("duplicate_session", duplicate.get_json()["error"]["code"])
+        self.assertEqual(original["id"], duplicate.get_json()["error"]["details"]["existing_session"]["id"])
+
+        replaced = self.client.post(
+            "/api/v1/sessions",
+            json={"name": "Existing session", "overwrite_session_id": original["id"]},
+            headers=headers,
+        )
+        self.assertEqual(201, replaced.status_code, replaced.get_json())
+        self.assertNotEqual(original["id"], replaced.get_json()["id"])
+
+        active = self.client.get("/api/v1/sessions").get_json()["items"]
+        self.assertEqual([replaced.get_json()["id"]], [item["id"] for item in active])
+        including_trash = self.client.get("/api/v1/sessions?include_trashed=true").get_json()["items"]
+        old = next(item for item in including_trash if item["id"] == original["id"])
+        self.assertEqual("trashed", old["status"])
+
     def test_revision_conflicts_do_not_overwrite(self):
         csrf = self.authenticate()
         created = self.client.post(

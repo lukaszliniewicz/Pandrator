@@ -808,7 +808,20 @@ class WorkflowHandlers:
             )
         self._record_usage(session_id, "tts_optimization", settings, usage)
         progress(1.0, "Speech optimization preview ready")
-        return {"artifact_id": artifact.id, "path": artifact.relative_path, "cost": usage.cost}
+        input_tokens = int(usage.usage.get("prompt_tokens") or 0)
+        output_tokens = int(usage.usage.get("completion_tokens") or 0)
+        return {
+            "artifact_id": artifact.id,
+            "path": artifact.relative_path,
+            "cost": usage.cost,
+            "usage": {
+                "input_tokens": input_tokens,
+                "cached_input_tokens": int(usage.usage.get("cached_prompt_tokens") or 0),
+                "output_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+                "response_count": usage.response_count,
+            },
+        }
 
     def transcribe_voice(self, payload, progress, cancel_event):
         from pandrator.logic.dubbing.transcription import transcribe_source_file_with_metadata

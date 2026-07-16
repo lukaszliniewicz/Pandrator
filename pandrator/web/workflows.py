@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from .database import Database
 from .jobs import JobQueue
-from .models import Artifact, GenerationPlan, GenerationRun, Job, OutcomePlan, SessionRecord
+from .models import Artifact, GenerationPlan, GenerationRun, Job, OutcomePlan, SessionRecord, UsageEvent
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +112,16 @@ class WorkflowService:
                 .where(GenerationRun.session_id == session_id)
                 .order_by(GenerationRun.created_at.desc())
             )
+            completed_generation_run = session.scalar(
+                select(GenerationRun)
+                .where(GenerationRun.session_id == session_id, GenerationRun.status == "completed")
+                .order_by(GenerationRun.sequence_number.desc(), GenerationRun.created_at.desc())
+            )
+            latest_optimization_usage = session.scalar(
+                select(UsageEvent)
+                .where(UsageEvent.session_id == session_id, UsageEvent.stage == "tts_optimization")
+                .order_by(UsageEvent.created_at.desc())
+            )
             transformations = (outcome.value_json or {}).get("transformations", {}) if outcome and isinstance(outcome.value_json, dict) else {}
             optimization_enabled = bool(transformations.get("llm_tts_optimization"))
             document_optimization_enabled = bool(transformations.get("llm_tts_document_optimization"))
@@ -184,7 +194,27 @@ class WorkflowService:
                         status = "ready"
                 if definition.key == "optimize_tts" and prerequisite is not None and not document_optimization_enabled:
                     status = "completed" if optimization_enabled else "ready"
+                if definition.key == "export" and status == "unavailable" and completed_generation_run is not None:
+                    # Reviewable generation deliberately stops at per-segment
+                    # takes. The Output step assembles the chosen completed run
+                    # before exporting, so a prior assembly is not required to
+                    # make this card available.
+                    status = "ready"
                 stage_enabled = (optimization_enabled or document_optimization_enabled) if definition.key == "optimize_tts" else None
+                usage = None
+                if definition.key == "optimize_tts" and stage_enabled and latest_optimization_usage is not None:
+                    input_tokens = int(latest_optimization_usage.input_tokens or 0)
+                    output_tokens = int(latest_optimization_usage.output_tokens or 0)
+                    usage = {
+                        "input_tokens": input_tokens,
+                        "cached_input_tokens": int(latest_optimization_usage.cached_input_tokens or 0),
+                        "output_tokens": output_tokens,
+                        "total_tokens": input_tokens + output_tokens,
+                        "cost_usd": float(latest_optimization_usage.cost_usd) if latest_optimization_usage.cost_usd is not None else None,
+                        "cost_source": latest_optimization_usage.cost_source,
+                        "model_id": latest_optimization_usage.model_id,
+                        "created_at": latest_optimization_usage.created_at.isoformat(),
+                    }
                 stages.append(
                     {
                         "number": index,
@@ -213,6 +243,7 @@ class WorkflowService:
                         "job_id": active.id if active else None,
                         "progress": active.progress if active and status in {"running", "failed"} else None,
                         "detail": active.error_message if active and status == "failed" else None,
+                        "usage": usage,
                     }
                 )
             return {

@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { ArrowLeft, ArrowRight, AudioLines, BookOpenText, Captions, FileText, Gauge, Link2, Upload, X } from '@lucide/svelte';
+  import { ArrowLeft, ArrowRight, AudioLines, BookOpenText, Captions, CircleAlert, FileText, FolderOpen, Gauge, Link2, Trash2, Upload, X } from '@lucide/svelte';
   import { untrack } from 'svelte';
-  import { api, uploadManagedFile, type SessionRecord } from './api';
+  import { api, ApiError, uploadManagedFile, type SessionRecord } from './api';
   import { appState } from './app-state.svelte';
   import { LANGUAGE_OPTIONS } from './settings-fields';
 
@@ -29,6 +29,12 @@
   let creating = $state(false);
   let progress = $state(0);
   let error = $state('');
+  let duplicateFromServer = $state<SessionRecord|null>(null);
+
+  const duplicateSession = $derived(
+    appState.sessions.find((item) => item.name.trim().toLocaleLowerCase() === name.trim().toLocaleLowerCase())
+      ?? (duplicateFromServer?.name.trim().toLocaleLowerCase() === name.trim().toLocaleLowerCase() ? duplicateFromServer : null)
+  );
 
   const isSrt = $derived((sourceFile?.name ?? reusableSources.find((item)=>item.id===sourceAssetId)?.display_name ?? '').toLowerCase().endsWith('.srt'));
   const needsTranscription = $derived(kind !== 'audiobook' && !isSrt && sourceMode !== 'later');
@@ -57,17 +63,22 @@
   }
   function nextFromSource() { inferName(); step = custom ? 4 : 3; }
 
-  async function create() {
+  async function create(overwrite = false) {
     if (!name.trim()) return;
+    const existing = duplicateSession;
+    if (existing && !overwrite) {
+      error = 'Choose whether to open the existing session or replace it.';
+      return;
+    }
     creating=true;error='';
     try {
-      const existing=new Set(appState.sessions.map((item)=>item.name.toLocaleLowerCase()));let unique=name.trim();let suffix=2;while(existing.has(unique.toLocaleLowerCase()))unique=`${name.trim()} ${suffix++}`;
+      const unique=name.trim();
       const included = custom ? [] : [
         ...(kind==='audiobook'?['clean_source','prepare_text']:[]),
         ...(needsTranscription?['transcribe']:[]), ...(correct?['correct']:[]), ...(translate?['translate']:[]),
         ...((kind==='voiceover'||kind==='audiobook')?['generate_audio']:[]), 'export'
       ];
-      const session=await api<SessionRecord>('/sessions',{method:'POST',body:JSON.stringify({name:unique,workflow_kind:kind,source_language:sourceLanguage,target_language:translate?targetLanguage:null,workflow_preset:'custom',included_stages:included})});
+      const session=await api<SessionRecord>('/sessions',{method:'POST',body:JSON.stringify({name:unique,workflow_kind:kind,source_language:sourceLanguage,target_language:translate?targetLanguage:null,workflow_preset:'custom',included_stages:included,...(overwrite&&existing?{overwrite_session_id:existing.id}:{})})});
       const current=await api<{value:any;revision:number}>(`/sessions/${session.id}/outcome-plan`);
       const value={
         ...current.value, workflow_kind:kind, focus:custom?'custom':'guided',
@@ -95,8 +106,13 @@
       if(file)await uploadManagedFile(file,session.id,(value)=>progress=value);
       else if(sourceMode==='url'&&sourceUrl.trim())await api(`/sessions/${session.id}/sources/url`,{method:'POST',body:JSON.stringify({url:sourceUrl.trim()})});
       else if(sourceMode==='reuse'&&sourceAssetId)await api(`/sessions/${session.id}/sources`,{method:'POST',body:JSON.stringify({source_asset_id:sourceAssetId,role:'primary'})});
-      appState.upsertSession(session);location.href=`/sessions/${session.id}`;
-    }catch(caught){error=caught instanceof Error?caught.message:String(caught)}finally{creating=false}
+      await appState.refresh();location.href=`/sessions/${session.id}`;
+    }catch(caught){
+      if(caught instanceof ApiError&&caught.code==='duplicate_session'){
+        duplicateFromServer=(caught.details as any)?.existing_session??null;
+        error='';
+      }else error=caught instanceof Error?caught.message:String(caught);
+    }finally{creating=false}
   }
 </script>
 
@@ -138,9 +154,15 @@
       {/if}
     {:else}
       <div class="mt-7 grid gap-6 md:grid-cols-[1fr_1.2fr]"><div><label class="text-sm font-semibold">Session name<input bind:value={name} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3"/></label><p class="muted mt-3 text-sm">This only controls the display name; storage uses a stable UUID.</p></div><div class="rounded-2xl border border-[var(--line)] bg-[var(--paper)] p-5"><div class="eyebrow">Prepared pipeline</div><div class="mt-4 flex flex-wrap items-center gap-2">{#each pipeline as stage,index}<span class="rounded-lg bg-[var(--accent-soft)] px-3 py-2 text-sm font-semibold">{stage}</span>{#if index<pipeline.length-1}<ArrowRight class="muted" size={15}/>{/if}{/each}</div><p class="muted mt-4 text-xs">You can customize this plan later without deleting completed artifacts.</p></div></div>
+      {#if duplicateSession}
+        <div role="alert" class="mt-5 rounded-2xl border border-amber-400/50 bg-amber-500/10 p-4">
+          <div class="flex items-start gap-3"><CircleAlert class="mt-0.5 shrink-0 text-amber-600" size={19}/><div><strong class="text-sm">A session named “{duplicateSession.name}” already exists.</strong><p class="muted mt-1 text-xs">It was last updated {new Date(duplicateSession.updated_at).toLocaleString()}. Replacing it moves the older session to recoverable Trash before creating this workspace.</p></div></div>
+          <div class="mt-4 flex flex-wrap gap-2"><a href={`/sessions/${duplicateSession.id}`} class="flex items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-2.5 text-sm font-semibold"><FolderOpen size={15}/> Open existing</a><button onclick={() => create(true)} disabled={creating} class="flex items-center gap-2 rounded-xl border border-red-400/50 px-4 py-2.5 text-sm font-semibold text-red-600"><Trash2 size={15}/> {creating?'Replacing...':'Replace older session'}</button></div>
+        </div>
+      {/if}
       {#if creating}<div class="mt-5 h-2 overflow-hidden rounded-full bg-[var(--line)]"><div class="h-full bg-[var(--accent)]" style={`width:${Math.max(3,progress*100)}%`}></div></div>{/if}
     {/if}
-    {#if step>1}<footer class="mt-8 flex items-center justify-between"><button onclick={()=>step-=1} disabled={creating} class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold"><ArrowLeft size={16}/> {step===2&&startAtSource?'Change task':'Back'}</button>{#if step===2}<button onclick={nextFromSource} class="primary">Continue <ArrowRight size={16}/></button>{:else if step===3}<button onclick={()=>{inferName();step=4}} class="primary">Review <ArrowRight size={16}/></button>{:else}<button onclick={create} disabled={creating||!name.trim()} class="primary disabled:opacity-40">{creating?'Creating…':'Create workspace'} <ArrowRight size={16}/></button>{/if}</footer>{/if}
+    {#if step>1}<footer class="mt-8 flex items-center justify-between"><button onclick={()=>step-=1} disabled={creating} class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold"><ArrowLeft size={16}/> {step===2&&startAtSource?'Change task':'Back'}</button>{#if step===2}<button onclick={nextFromSource} class="primary">Continue <ArrowRight size={16}/></button>{:else if step===3}<button onclick={()=>{inferName();step=4}} class="primary">Review <ArrowRight size={16}/></button>{:else}<button onclick={() => create()} disabled={creating||!name.trim()||Boolean(duplicateSession)} class="primary disabled:opacity-40">{creating?'Creating…':duplicateSession?'Choose an option above':'Create workspace'} <ArrowRight size={16}/></button>{/if}</footer>{/if}
   </section>
 </div>
 

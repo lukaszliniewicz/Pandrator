@@ -712,6 +712,35 @@ def create_app(
     @require_auth
     def session_create():
         payload = SessionCreate.model_validate(request.get_json(silent=True) or {})
+        existing = sessions.find_active_by_name(payload.name)
+        if existing is not None and payload.overwrite_session_id != existing.id:
+            return error_response(
+                "duplicate_session",
+                f'A session named "{existing.name}" already exists.',
+                409,
+                {"existing_session": _session_payload(existing)},
+            )
+        if payload.overwrite_session_id and (existing is None or existing.id != payload.overwrite_session_id):
+            return error_response(
+                "overwrite_conflict",
+                "The session selected for replacement no longer matches this name. Review the current session list and try again.",
+                409,
+            )
+        if existing is not None:
+            with database.session() as db_session:
+                active = db_session.scalar(
+                    select(Job).where(
+                        Job.session_id == existing.id,
+                        Job.status.in_(("queued", "running", "cancel_requested")),
+                    )
+                )
+                if active is not None:
+                    return error_response(
+                        "session_busy",
+                        "Stop or cancel active work before replacing this session.",
+                        409,
+                    )
+            sessions.trash(existing.id, existing.revision)
         record = sessions.create(
             payload.name,
             workflow_kind=payload.workflow_kind,

@@ -48,6 +48,15 @@
     job_id?: string | null;
     progress?: number | null;
     detail?: string | null;
+    usage?: {
+      input_tokens: number;
+      cached_input_tokens: number;
+      output_tokens: number;
+      total_tokens: number;
+      cost_usd: number | null;
+      model_id: string;
+      created_at: string;
+    } | null;
   };
 
   type Snapshot = {
@@ -80,6 +89,7 @@
   let workspaceMode = $state<'review' | 'automatic'>('review');
   let preview = $state<PreviewableArtifact | null>(null);
   const sectionDisplay = (section: string) => ({ stt: 'STT', tts: 'TTS', rvc: 'RVC' } as Record<string, string>)[section] ?? section.replaceAll('_', ' ');
+  const formatCost = (cost: number | null) => cost == null ? 'Cost not reported' : cost === 0 ? '$0.00' : cost < 0.01 ? `$${cost.toFixed(6)}` : `$${cost.toFixed(4)}`;
   let stageSettings = $state<Record<string, Record<string, unknown>>>({});
   let targetLanguage = $state('en');
   let originalLanguage = $state('auto');
@@ -193,6 +203,10 @@
   async function run(stage: Stage) {
     if (stage.key === 'preview') {
       reviewOpen = true;
+      return;
+    }
+    if (stage.key === 'export') {
+      location.href = `/sessions/${session.id}/output`;
       return;
     }
     error = '';
@@ -623,7 +637,10 @@
         const current=await api<any>(`/sessions/${session.id}/outcome-plan`);
         await api(`/sessions/${session.id}/outcome-plan`,{method:'PUT',headers:{'If-Match':`"${current.revision}"`},body:JSON.stringify({value:{...current.value,transformations:{...(current.value?.transformations??{}),llm_tts_document_optimization:documentOptimizationEnabled}}})});
       }
-      if(mode==='session') settingsStage = null;
+      if(mode==='session') {
+        await load();
+        settingsStage = null;
+      }
     } catch (caught) { error=caught instanceof Error?caught.message:String(caught); }
   }
 
@@ -678,16 +695,16 @@
           <div class="flex flex-col gap-5 lg:flex-row lg:items-center">
             <div class="flex min-w-0 flex-1 items-start gap-4">
               <div class="grid size-11 shrink-0 place-items-center rounded-2xl bg-[var(--accent-soft)] text-sm font-bold text-[var(--accent)]">{stage.number}</div>
-              <div class="min-w-0"><div class="flex flex-wrap items-center gap-2"><h2 class="text-lg font-semibold">{stage.title}</h2><span class:running={stage.status === 'running'} class:done={stage.status === 'completed'} class:warning={stage.status === 'stale' || stage.status === 'failed'} class="status-chip inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[.68rem] font-bold uppercase tracking-wider"><StatusIcon class={stage.status === 'running' ? 'animate-spin' : ''} size={12}/>{stage.toggle?(stage.enabled?'enabled':'disabled'):stage.status}</span></div><p class="muted mt-1.5 max-w-2xl text-sm leading-relaxed">{stage.explanation}</p>{#if stage.status==='running' && stage.progress!=null}<div class="mt-3 h-1.5 max-w-md overflow-hidden rounded-full bg-[var(--line)]"><div class="h-full bg-[var(--accent)]" style={`width:${Math.max(2,stage.progress*100)}%`}></div></div>{/if}{#if stage.detail}<p class="mt-2 text-xs text-red-500">{stage.detail}</p>{/if}{#if stage.artifact}<button onclick={() => previewArtifact(stage)} class="mt-2 flex items-center gap-1 text-xs font-semibold text-[var(--accent)]">Preview latest: {stage.artifact.role}<ChevronRight size={13}/></button>{/if}</div>
+              <div class="min-w-0"><div class="flex flex-wrap items-center gap-2"><h2 class="text-lg font-semibold">{stage.title}</h2><span class:running={stage.status === 'running'} class:done={stage.status === 'completed'} class:warning={stage.status === 'stale' || stage.status === 'failed'} class="status-chip inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[.68rem] font-bold uppercase tracking-wider"><StatusIcon class={stage.status === 'running' ? 'animate-spin' : ''} size={12}/>{stage.toggle?(stage.enabled?'enabled':'disabled'):stage.status}</span></div><p class="muted mt-1.5 max-w-2xl text-sm leading-relaxed">{stage.explanation}</p>{#if stage.status==='running' && stage.progress!=null}<div class="mt-3 h-1.5 max-w-md overflow-hidden rounded-full bg-[var(--line)]"><div class="h-full bg-[var(--accent)]" style={`width:${Math.max(2,stage.progress*100)}%`}></div></div>{/if}{#if stage.detail}<p class="mt-2 text-xs text-red-500">{stage.detail}</p>{/if}{#if stage.key==='optimize_tts' && stage.usage}<p class="muted mt-2 text-xs"><strong class="text-[var(--ink)]">Latest usage:</strong> {stage.usage.total_tokens.toLocaleString()} tokens ({stage.usage.input_tokens.toLocaleString()} input, {stage.usage.output_tokens.toLocaleString()} output{stage.usage.cached_input_tokens ? `, ${stage.usage.cached_input_tokens.toLocaleString()} cached` : ''}) · {formatCost(stage.usage.cost_usd)} · {stage.usage.model_id}</p>{/if}{#if stage.artifact}<button onclick={() => previewArtifact(stage)} class="mt-2 flex items-center gap-1 text-xs font-semibold text-[var(--accent)]">Preview latest: {stage.artifact.role}<ChevronRight size={13}/></button>{/if}</div>
             </div>
             <div class="flex flex-wrap items-center gap-2 lg:justify-end">
               {#if stage.toggle}
                 <button onclick={() => openSettings(stage)} class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3.5 py-2.5 text-sm font-semibold"><Settings2 size={16}/> Timing &amp; settings</button>
                 <label class="flex cursor-pointer items-center gap-3 rounded-xl border border-[var(--line)] px-3.5 py-2.5 text-sm font-semibold"><input type="checkbox" checked={Boolean(stage.enabled)} onchange={(event)=>toggleSpeechOptimization(event.currentTarget.checked)} class="size-4 accent-[var(--accent)]"/> {stage.enabled?'Enabled':'Disabled'}</label>
-                {#if !stage.toggle_only && workspaceMode==='review' && stage.enabled}{#if stage.status==='running'}<button onclick={() => cancel(stage)} class="rounded-xl border border-red-400/50 px-4 py-2.5 text-sm font-semibold text-red-500">Cancel</button>{:else}<button onclick={() => run(stage)} disabled={stage.status === 'unavailable'} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35"><Play size={16}/> Run now</button>{/if}{/if}
+                {#if !stage.toggle_only && stage.enabled}{#if stage.status==='running'}<button onclick={() => cancel(stage)} class="rounded-xl border border-red-400/50 px-4 py-2.5 text-sm font-semibold text-red-500">Cancel</button>{:else}<button onclick={() => run(stage)} disabled={stage.status === 'unavailable'} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35"><Play size={16}/> Run optimization</button>{/if}{/if}
               {:else if stage.executable}
                 <button onclick={() => openSettings(stage)} class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3.5 py-2.5 text-sm font-semibold"><Settings2 size={16}/> Settings</button>
-                {#if workspaceMode==='review' || stage.key==='export'}{#if stage.status==='running'}<button onclick={() => cancel(stage)} class="rounded-xl border border-red-400/50 px-4 py-2.5 text-sm font-semibold text-red-500">Cancel</button>{:else}<button onclick={() => run(stage)} disabled={stage.status === 'unavailable'} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35"><Play size={16}/> Run now</button>{/if}{/if}
+                {#if workspaceMode==='review' || stage.key==='export'}{#if stage.status==='running'}<button onclick={() => cancel(stage)} class="rounded-xl border border-red-400/50 px-4 py-2.5 text-sm font-semibold text-red-500">Cancel</button>{:else}<button onclick={() => run(stage)} disabled={stage.status === 'unavailable'} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35"><Play size={16}/> {stage.key==='export'?'Open export':'Run now'}</button>{/if}{/if}
               {:else}
                 <button onclick={() => run(stage)} disabled={stage.status === 'unavailable'} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35"><Sparkles size={16}/> Open comparison</button>
               {/if}

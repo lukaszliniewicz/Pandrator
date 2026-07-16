@@ -25,6 +25,7 @@ class SessionCreate(StrictModel):
     target_language: str | None = Field(default=None, min_length=2, max_length=40)
     workflow_preset: str = "custom"
     included_stages: list[str] = Field(default_factory=list)
+    overwrite_session_id: str | None = None
 
 
 class SessionUpdate(StrictModel):

@@ -58,6 +58,10 @@ class SettingsApiTests(unittest.TestCase):
         self.assertEqual(DEFAULT_FIRST_PROMPT, payload["first_prompt"])
         self.assertEqual(DEFAULT_SECOND_PROMPT, payload["second_prompt"])
         self.assertEqual(DEFAULT_THIRD_PROMPT, payload["third_prompt"])
+        self.assertIn("Spell out abbreviations and titles", DEFAULT_PROMPT)
+        self.assertIn("Convert Roman numerals to English words", DEFAULT_PROMPT)
+        self.assertIn("OCR artifacts", DEFAULT_SECOND_PROMPT)
+        self.assertIn("FOREIGN, NON-ENGLISH", DEFAULT_THIRD_PROMPT)
 
     def test_tts_api_key_is_extracted_from_settings_and_never_returned(self):
         secret = "speech-secret-value"

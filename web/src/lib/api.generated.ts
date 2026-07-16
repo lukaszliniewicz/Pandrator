@@ -1905,6 +1905,11 @@ export interface components {
             /** Name */
             name: string;
             /**
+             * Overwrite Session Id
+             * @default null
+             */
+            overwrite_session_id: string | null;
+            /**
              * Source Language
              * @default auto
              */

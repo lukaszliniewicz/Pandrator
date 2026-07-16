@@ -1411,6 +1411,18 @@
             "title": "Name",
             "type": "string"
           },
+          "overwrite_session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Overwrite Session Id"
+          },
           "source_language": {
             "default": "auto",
             "maxLength": 40,

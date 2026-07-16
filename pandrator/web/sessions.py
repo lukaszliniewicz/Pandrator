@@ -34,6 +34,24 @@ class SessionService:
             session.expunge(record)
             return record
 
+    def find_active_by_name(self, name: str) -> SessionRecord | None:
+        """Return the newest active session whose display name matches exactly."""
+        normalized = str(name or "").strip().casefold()
+        if not normalized:
+            return None
+        with self.database.session() as session:
+            records = list(
+                session.scalars(
+                    select(SessionRecord)
+                    .where(SessionRecord.trashed_at.is_(None))
+                    .order_by(SessionRecord.updated_at.desc())
+                ).all()
+            )
+            record = next((item for item in records if str(item.name or "").strip().casefold() == normalized), None)
+            if record is not None:
+                session.expunge(record)
+            return record
+
     def create(
         self,
         name: str,

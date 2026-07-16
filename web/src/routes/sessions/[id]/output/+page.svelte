@@ -31,7 +31,7 @@
       const selected=runs.find((item:any)=>item.id===selectedRunId);
       const outputSettings=await api<any>(`/sessions/${sessionId}/settings/output`);
       const effective=outputSettings.effective??{};
-      const usesGeneratedAudio=effective.export_mode==='media'&&effective.audio_mode!=='preserve';
+      const usesGeneratedAudio=session?.workflow_kind==='audiobook'||(effective.export_mode==='media'&&effective.audio_mode!=='preserve');
       if(usesGeneratedAudio&&!selectedRunId)throw new Error('Select a completed audio version for this media export.');
       const needsAssembly=usesGeneratedAudio&&Boolean(selectedRunId);
       if(needsAssembly&&selected?.assembly?.status!=='completed'){

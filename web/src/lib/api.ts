@@ -27,6 +27,20 @@ export type JobRecord = {
 
 let csrfToken = '';
 
+export class ApiError extends Error {
+  status: number;
+  code: string;
+  details: unknown;
+
+  constructor(status: number, code: string, message: string, details?: unknown) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
+    this.details = details;
+  }
+}
+
 export function setCsrfToken(value: string | null | undefined) {
   csrfToken = value ?? '';
 }
@@ -42,7 +56,12 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`/api/v1${path}`, { ...init, headers });
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
-    throw new Error(payload?.error?.message ?? `Request failed (${response.status})`);
+    throw new ApiError(
+      response.status,
+      String(payload?.error?.code ?? 'request_failed'),
+      String(payload?.error?.message ?? `Request failed (${response.status})`),
+      payload?.error?.details
+    );
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;

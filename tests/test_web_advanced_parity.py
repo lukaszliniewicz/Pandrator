@@ -14,7 +14,17 @@ from pandrator.web.api import create_app
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.database import Database, upgrade_database
-from pandrator.web.models import AppSetting, Artifact, Provider, ProviderModel, TrainingRun, UsageEvent
+from pandrator.web.models import (
+    AppSetting,
+    Artifact,
+    GenerationPlan,
+    GenerationPlanRevision,
+    GenerationRun,
+    Provider,
+    ProviderModel,
+    TrainingRun,
+    UsageEvent,
+)
 from pandrator.web.provider_settings import build_llm_settings
 from pandrator.web.sessions import SessionService
 from pandrator.web.workflow_handlers import WorkflowHandlers
@@ -305,6 +315,20 @@ class SourceAwareWorkflowTests(unittest.TestCase):
                 value["transformations"]["llm_tts_document_optimization"] = True
                 value["inputs"]["generation"] = "source"
                 outcomes.update(record.id, current["revision"], value)
+                with database.session() as session:
+                    session.add(
+                        UsageEvent(
+                            session_id=record.id,
+                            stage="tts_optimization",
+                            provider_key="local",
+                            model_id="local/test-model",
+                            input_tokens=8,
+                            cached_input_tokens=2,
+                            output_tokens=5,
+                            cost_usd=0.0,
+                            cost_source="local",
+                        )
+                    )
                 service = WorkflowService(database, JobQueue(database))
                 stages = service.snapshot(record.id)["stages"]
                 optimization = next(item for item in stages if item["key"] == "optimize_tts")
@@ -312,12 +336,47 @@ class SourceAwareWorkflowTests(unittest.TestCase):
                 self.assertTrue(optimization["executable"])
                 self.assertFalse(optimization["toggle_only"])
                 self.assertEqual("document", optimization["optimization_timing"])
+                self.assertEqual(13, optimization["usage"]["total_tokens"])
+                self.assertEqual(0.0, optimization["usage"]["cost_usd"])
                 self.assertEqual("unavailable", next(item for item in stages if item["key"] == "generate_audio")["status"])
                 optimized_path = paths.sessions / record.storage_key / "optimized.srt"
                 optimized_path.parent.mkdir(parents=True, exist_ok=True)
                 optimized_path.write_text(source_path.read_text(encoding="utf-8"), encoding="utf-8")
                 ArtifactService(database, paths).register(optimized_path, kind="srt", role="tts_optimized", session_id=record.id, parent_ids=[upload.id])
                 self.assertEqual("ready", next(item for item in service.snapshot(record.id)["stages"] if item["key"] == "generate_audio")["status"])
+            finally:
+                database.dispose()
+
+    def test_completed_generation_run_unlocks_export_before_audio_is_assembled(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = DataPaths.from_value(directory).ensure(); upgrade_database(paths.database); database = Database(paths.database)
+            try:
+                record = SessionService(database).create("Ready to export", workflow_kind="audiobook")
+                with database.session() as session:
+                    plan = GenerationPlan(session_id=record.id)
+                    session.add(plan)
+                    session.flush()
+                    revision = GenerationPlanRevision(
+                        plan_id=plan.id,
+                        revision_number=1,
+                        settings_json={},
+                        content_hash="completed-run",
+                    )
+                    session.add(revision)
+                    session.flush()
+                    plan.active_revision_id = revision.id
+                    session.add(
+                        GenerationRun(
+                            session_id=record.id,
+                            plan_revision_id=revision.id,
+                            sequence_number=1,
+                            status="completed",
+                        )
+                    )
+                stages = WorkflowService(database, JobQueue(database)).snapshot(record.id)["stages"]
+                export = next(item for item in stages if item["key"] == "export")
+                self.assertEqual("ready", export["status"])
+                self.assertTrue(export["executable"])
             finally:
                 database.dispose()
 
