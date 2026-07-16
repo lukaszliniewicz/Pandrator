@@ -1,6 +1,8 @@
 import contextlib
 import io
 import json
+import os
+import sys
 import tempfile
 import unittest
 import base64
@@ -33,6 +35,15 @@ class InstallerLifecycleTests(unittest.TestCase):
             self.assertTrue(payload["dry_run"])
             self.assertIn("crispasr", payload["components"])
             self.assertFalse(workspace.exists())
+
+    def test_console_entrypoint_uses_process_arguments_when_argv_is_omitted(self):
+        output = io.StringIO()
+        error = io.StringIO()
+        with mock.patch.object(sys, "argv", ["pandrator-installer", "list", "--json"]), \
+             contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
+            code = main()
+        self.assertEqual(code, 0, error.getvalue())
+        self.assertIsInstance(json.loads(output.getvalue()), list)
 
     def test_uninstall_defaults_to_preserving_data_and_requires_confirmation(self):
         with tempfile.TemporaryDirectory() as workspace:
@@ -247,6 +258,102 @@ class InstallerLifecycleTests(unittest.TestCase):
             install.assert_called_once()
             migrate.assert_called_once()
             health.assert_called_once()
+
+    def test_update_clears_maintenance_marker_when_runtime_state_is_malformed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            wheel = root / "pandrator-0.49.0-py3-none-any.whl"
+            wheel.write_bytes(b"wheel")
+            manifest, public = self._signed_release(root, wheel)
+            data_root = root / "Pandrator"
+            data_root.mkdir()
+            (data_root / "runtime-processes.json").write_text("{malformed", encoding="utf-8")
+            code, _output, error = self.invoke([
+                "update", "--workspace", str(root), "--wheel", str(wheel),
+                "--manifest", str(manifest), "--public-key", str(public),
+            ])
+            self.assertEqual(code, 2)
+            self.assertIn("Runtime state is unreadable", error)
+            self.assertFalse((data_root / "maintenance.json").exists())
+
+    def test_update_restarts_stopped_supervisor_when_snapshot_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            wheel = root / "pandrator-0.49.0-py3-none-any.whl"
+            wheel.write_bytes(b"wheel")
+            manifest, public = self._signed_release(root, wheel)
+            data_root = root / "Pandrator"
+            data_root.mkdir()
+            (data_root / "runtime-processes.json").write_text("{}", encoding="utf-8")
+            supervisor = mock.Mock(pid=4321)
+            supervisor.cmdline.return_value = ["PandratorInstaller", "launch", "--workspace", str(root)]
+            supervisor.cwd.return_value = str(root)
+            supervisor.is_running.return_value = False
+            with mock.patch(
+                "pandrator_installer.lifecycle._validated_supervisor_process", return_value=supervisor
+            ), mock.patch(
+                "pandrator_installer.lifecycle.snapshot_installed_package",
+                side_effect=RuntimeError("snapshot failed"),
+            ), mock.patch("pandrator_installer.lifecycle.subprocess.Popen") as restart:
+                code, _output, error = self.invoke([
+                    "update", "--workspace", str(root), "--wheel", str(wheel),
+                    "--manifest", str(manifest), "--public-key", str(public),
+                ])
+            self.assertEqual(code, 2)
+            self.assertIn("snapshot failed", error)
+            supervisor.terminate.assert_called_once()
+            supervisor.wait.assert_called_once_with(timeout=40)
+            restart.assert_called_once()
+            self.assertEqual(restart.call_args.args[0], supervisor.cmdline.return_value)
+            self.assertFalse((data_root / "maintenance.json").exists())
+
+    def test_stop_refuses_a_reused_supervisor_pid(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            data_root = Path(workspace) / "Pandrator"
+            data_root.mkdir()
+            state = {
+                "instance_id": "old-instance",
+                "supervisor_pid": 4321,
+                "supervisor_create_time": 100.0,
+                "supervisor_executable": sys.executable,
+            }
+            (data_root / "runtime-processes.json").write_text(json.dumps(state), encoding="utf-8")
+            reused_process = mock.Mock(pid=4321)
+            reused_process.create_time.return_value = 200.0
+            reused_process.exe.return_value = sys.executable
+            with mock.patch("pandrator_installer.lifecycle.psutil.Process", return_value=reused_process):
+                code, _output, error = self.invoke(["stop", "--workspace", workspace])
+            self.assertEqual(code, 2)
+            self.assertIn("different process", error)
+            reused_process.terminate.assert_not_called()
+
+    def test_stop_terminates_a_matching_supervisor_identity(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            data_root = Path(workspace) / "Pandrator"
+            data_root.mkdir()
+            state = {
+                "instance_id": "current-instance",
+                "supervisor_pid": 4321,
+                "supervisor_create_time": 100.0,
+                "supervisor_executable": sys.executable,
+            }
+            (data_root / "runtime-processes.json").write_text(json.dumps(state), encoding="utf-8")
+            (data_root / "pandrator.instance.lock").write_text(
+                json.dumps({
+                    "instance_id": "current-instance",
+                    "pid": 4321,
+                    "process_create_time": 100.0,
+                }),
+                encoding="utf-8",
+            )
+            supervisor = mock.Mock(pid=4321)
+            supervisor.create_time.return_value = 100.0
+            supervisor.exe.return_value = sys.executable
+            with mock.patch("pandrator_installer.lifecycle.psutil.Process", return_value=supervisor):
+                code, output, error = self.invoke(["stop", "--workspace", workspace, "--json"])
+            self.assertEqual(code, 0, error)
+            self.assertEqual(json.loads(output)["status"], "stop_requested")
+            supervisor.terminate.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -7,9 +7,9 @@ import os
 import re
 import shutil
 import subprocess
+import tarfile
 import tempfile
-
-import requests
+import zipfile
 
 try:
     from packaging.specifiers import SpecifierSet as PackagingSpecifierSet
@@ -30,7 +30,7 @@ from .constants import (
 from .platforms import (
     is_windows,
     pixi_binary_name,
-    pixi_download_url,
+    pixi_download_asset,
     pixi_manifest_platform,
     pixi_temp_suffix,
 )
@@ -165,6 +165,31 @@ class PixiEnvironmentMixin:
     def check_pixi(self, pandrator_path):
         return os.path.exists(self.get_pixi_executable(pandrator_path))
 
+    @staticmethod
+    def _extract_pixi_binary(archive_path, destination, asset):
+        archive_type = asset["archive_type"]
+        member_name = asset["member"]
+        if archive_type == "zip":
+            with zipfile.ZipFile(archive_path) as archive:
+                member = archive.getinfo(member_name)
+                if member.is_dir():
+                    raise RuntimeError("The verified Pixi archive does not contain an executable file.")
+                with archive.open(member) as source, open(destination, 'wb') as target:
+                    shutil.copyfileobj(source, target)
+            return
+        if archive_type == "tar.gz":
+            with tarfile.open(archive_path, mode="r:gz") as archive:
+                member = archive.getmember(member_name)
+                if not member.isfile():
+                    raise RuntimeError("The verified Pixi archive does not contain an executable file.")
+                source = archive.extractfile(member)
+                if source is None:
+                    raise RuntimeError("The verified Pixi archive member could not be read.")
+                with source, open(destination, 'wb') as target:
+                    shutil.copyfileobj(source, target)
+            return
+        raise RuntimeError(f"Unsupported Pixi archive type: {archive_type}")
+
     def install_pixi(self, pandrator_path):
         logging.info("Installing Pixi...")
         self.configure_tls_certificates()
@@ -176,36 +201,48 @@ class PixiEnvironmentMixin:
             logging.info("Pixi is already installed.")
             return
 
-        temp_fd, temp_pixi_path = tempfile.mkstemp(
-            prefix='pandrator_pixi_',
+        asset = pixi_download_asset()
+        archive_suffix = '.zip' if asset['archive_type'] == 'zip' else '.tar.gz'
+        archive_fd, temp_archive_path = tempfile.mkstemp(
+            prefix='pandrator_pixi_archive_',
+            suffix=archive_suffix,
+            dir=self.get_local_temp_dir(pandrator_path),
+        )
+        os.close(archive_fd)
+        binary_fd, temp_pixi_path = tempfile.mkstemp(
+            prefix='pandrator_pixi_binary_',
             suffix=pixi_temp_suffix(),
             dir=self.get_local_temp_dir(pandrator_path),
         )
-        os.close(temp_fd)
-        logging.info("Using temporary Pixi download path: %s", temp_pixi_path)
+        os.close(binary_fd)
+        logging.info("Using temporary Pixi archive path: %s", temp_archive_path)
 
+        promoted = False
         try:
-            response = requests.get(
-                pixi_download_url(),
-                stream=True,
-                timeout=60,
-                verify=self.ca_bundle_path if self.ca_bundle_path else True,
+            self.download_verified_file(
+                asset['url'],
+                temp_archive_path,
+                asset['sha256'],
+                timeout=(30, 300),
             )
-            response.raise_for_status()
-
-            with open(temp_pixi_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-
-            shutil.move(temp_pixi_path, pixi_executable)
+            self._extract_pixi_binary(temp_archive_path, temp_pixi_path, asset)
+            os.replace(temp_pixi_path, pixi_executable)
+            promoted = True
             if not is_windows():
                 os.chmod(pixi_executable, 0o755)
             self.run_pixi_command(pandrator_path, ['--version'])
             logging.info("Pixi installed successfully.")
+        except Exception:
+            if promoted:
+                try:
+                    os.remove(pixi_executable)
+                except FileNotFoundError:
+                    pass
+            raise
         finally:
-            if os.path.exists(temp_pixi_path):
-                os.remove(temp_pixi_path)
+            for temporary_path in (temp_archive_path, temp_pixi_path):
+                if os.path.exists(temporary_path):
+                    os.remove(temporary_path)
 
     def update_manifest_python_dependency(self, manifest_path, python_version):
         try:

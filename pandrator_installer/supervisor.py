@@ -50,6 +50,13 @@ class InstanceLock:
     def acquire(self) -> str:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"instance_id": self.instance_id, "pid": os.getpid(), "created_at": time.time()}
+        if psutil is not None:
+            try:
+                process = psutil.Process(os.getpid())
+                payload["process_create_time"] = process.create_time()
+                payload["executable"] = process.exe()
+            except (psutil.Error, OSError):
+                pass
         for _attempt in range(2):
             try:
                 descriptor = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -158,6 +165,15 @@ class ProcessSupervisor:
         self.logs_dir = self.data_root / "logs" / "supervisor"
         self.runtime_state = self.data_root / "runtime-processes.json"
         self.runtime_control = self.data_root / "runtime-control.json"
+        self.supervisor_create_time: float | None = None
+        self.supervisor_executable = str(Path(sys.executable).resolve())
+        if psutil is not None:
+            try:
+                current_process = psutil.Process(os.getpid())
+                self.supervisor_create_time = current_process.create_time()
+                self.supervisor_executable = current_process.exe()
+            except (psutil.Error, OSError):
+                pass
 
     def _status(self, message: str) -> None:
         logging.info(message)
@@ -175,6 +191,8 @@ class ProcessSupervisor:
         payload = {
             "instance_id": self.lock.instance_id,
             "supervisor_pid": os.getpid(),
+            "supervisor_create_time": self.supervisor_create_time,
+            "supervisor_executable": self.supervisor_executable,
             "ready": self.ready,
             "ready_at": self.ready_at,
             "processes": {

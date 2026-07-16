@@ -43,7 +43,12 @@ from ..models import (
 )
 from ..operations import OperationsMixin
 from ..pixi import PixiEnvironmentMixin
-from ..platforms import is_windows
+from ..platforms import (
+    is_appimage_environment,
+    is_linux,
+    is_windows,
+    remember_launcher_workspace,
+)
 from ..reporting import NullReporter
 from ..runtime import RuntimeMixin
 from ..storage import StorageMixin
@@ -639,6 +644,17 @@ class PandratorInstaller(
             return
 
         self.initial_working_dir = os.path.abspath(selected_dir)
+        if is_linux() and is_appimage_environment():
+            try:
+                remember_launcher_workspace(self.initial_working_dir)
+            except (OSError, ValueError) as error:
+                logging.warning("Could not remember the selected installer workspace: %s", error)
+                QMessageBox.warning(
+                    self,
+                    "Installation Location",
+                    "The selected location will be used for this session, but could not be "
+                    f"remembered for the next launch:\n\n{error}",
+                )
         self.update_install_location_label()
         self.refresh_ui_state()
         self.set_startup_tab()
@@ -1064,11 +1080,18 @@ class PandratorInstaller(
         self.pandrator_network_checkbox.setChecked(network_access)
         self.pandrator_network_checkbox.blockSignals(False)
         self._configure_password_scope_options(network_access, password_scope)
+        launch_controls_enabled = pandrator_installed and not pandrator_running
+        self.pandrator_network_checkbox.setEnabled(launch_controls_enabled)
+        self.pandrator_password_scope_combo.setEnabled(launch_controls_enabled)
+        self.pandrator_password_button.setEnabled(
+            launch_controls_enabled and password_scope != "none"
+        )
         try:
             configured_port = int(config.get("pandrator_port", 8097))
         except (TypeError, ValueError):
             configured_port = 8097
         self.pandrator_port_spin.setValue(max(1024, min(65535, configured_port)))
+        self.pandrator_port_spin.setEnabled(launch_controls_enabled)
         if hasattr(self, 'open_webui_button'):
             self.open_webui_button.setEnabled(pandrator_running)
             self.open_webui_button.setToolTip(
@@ -1353,6 +1376,12 @@ class PandratorInstaller(
 
         # Disable checkboxes in launch tab
         for child in self.launch_tab.findChildren(QCheckBox):
+            child.setEnabled(False)
+        for child in (
+            self.pandrator_password_scope_combo,
+            self.pandrator_password_button,
+            self.pandrator_port_spin,
+        ):
             child.setEnabled(False)
 
     def enable_buttons(self):

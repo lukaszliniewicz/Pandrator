@@ -299,7 +299,11 @@ class GuiActionsMixin:
         selection = self.snapshot_launch_selection()
         if not self.prepare_launch_security(selection):
             return
-        self.persist_launch_preferences(selection)
+        try:
+            self.persist_launch_preferences(selection)
+        except RuntimeError as error:
+            self.notify_error("Configuration Error", str(error))
+            return
         self.initialize_logging()
         self._apply_launch_selection_state(selection)
 

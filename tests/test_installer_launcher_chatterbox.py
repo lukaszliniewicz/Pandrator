@@ -95,6 +95,45 @@ class TestInstallerLauncherChatterbox(unittest.TestCase):
         self.assertNotIn("pandrator_owner_password", config)
         self.assertNotIn("a-secure-password", json.dumps(config))
 
+    def test_launch_security_controls_are_reenabled_immediately_after_install(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            installer = PandratorInstaller(headless=True, working_dir=workspace)
+            installer.disable_buttons()
+            self.assertFalse(installer.pandrator_network_checkbox.isEnabled())
+            self.assertFalse(installer.pandrator_password_scope_combo.isEnabled())
+            self.assertFalse(installer.pandrator_port_spin.isEnabled())
+
+            os.makedirs(os.path.join(workspace, "Pandrator"))
+            installer.enable_buttons()
+
+            self.assertTrue(installer.pandrator_network_checkbox.isEnabled())
+            self.assertTrue(installer.pandrator_password_scope_combo.isEnabled())
+            self.assertTrue(installer.pandrator_port_spin.isEnabled())
+
+    def test_appimage_workspace_choice_is_remembered(self):
+        with tempfile.TemporaryDirectory() as initial_workspace, tempfile.TemporaryDirectory() as selected_workspace:
+            installer = PandratorInstaller(headless=True, working_dir=initial_workspace)
+            with patch(
+                "pandrator_installer.gui.main_window.QFileDialog.getExistingDirectory",
+                return_value=selected_workspace,
+            ), patch(
+                "pandrator_installer.gui.main_window.is_linux",
+                return_value=True,
+            ), patch(
+                "pandrator_installer.gui.main_window.is_appimage_environment",
+                return_value=True,
+            ), patch(
+                "pandrator_installer.gui.main_window.remember_launcher_workspace"
+            ) as remember, patch.object(
+                installer, "refresh_ui_state"
+            ), patch.object(
+                installer, "set_startup_tab"
+            ):
+                installer.choose_install_workspace()
+
+            self.assertEqual(installer.initial_working_dir, os.path.abspath(selected_workspace))
+            remember.assert_called_once_with(os.path.abspath(selected_workspace))
+
     def test_qwen_dialog_offers_both_models_and_forces_1_7b(self):
         installer = PandratorInstaller(headless=True)
         dialog = QwenConfigDialog(installer)

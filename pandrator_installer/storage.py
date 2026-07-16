@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import shutil
+import tempfile
 import traceback
 from datetime import datetime
 
@@ -123,12 +124,26 @@ class StorageMixin:
         os.makedirs(pandrator_path, exist_ok=True)
 
         serializable_config = config if isinstance(config, dict) else {}
-
+        descriptor, temporary_path = tempfile.mkstemp(
+            prefix='.config-',
+            suffix='.tmp',
+            dir=pandrator_path,
+        )
         try:
-            with open(config_path, 'w', encoding='utf-8') as f:
+            with os.fdopen(descriptor, 'w', encoding='utf-8') as f:
+                descriptor = -1
                 json.dump(serializable_config, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temporary_path, config_path)
         except Exception as e:
-            logging.warning(f"Failed to save config to {config_path}: {str(e)}")
+            if descriptor >= 0:
+                os.close(descriptor)
+            try:
+                os.remove(temporary_path)
+            except FileNotFoundError:
+                pass
+            raise RuntimeError(f"Failed to save install config to {config_path}: {str(e)}") from e
 
     def backup_state_database(self, pandrator_repo_path):
         """Creates a timestamped backup of pandrator_state.sqlite3 before update."""

@@ -1,21 +1,36 @@
 """Small platform helpers for installer path and runtime decisions."""
 
+import json
 import os
 import platform
+import tempfile
 
 
-WINDOWS_PIXI_DOWNLOAD_URL = (
-    "https://github.com/prefix-dev/pixi/releases/latest/download/"
-    "pixi-x86_64-pc-windows-msvc.exe"
-)
-LINUX_X86_64_PIXI_DOWNLOAD_URL = (
-    "https://github.com/prefix-dev/pixi/releases/latest/download/"
-    "pixi-x86_64-unknown-linux-musl"
-)
-LINUX_AARCH64_PIXI_DOWNLOAD_URL = (
-    "https://github.com/prefix-dev/pixi/releases/latest/download/"
-    "pixi-aarch64-unknown-linux-musl"
-)
+PIXI_VERSION = "0.72.0"
+PIXI_RELEASE_BASE_URL = f"https://github.com/prefix-dev/pixi/releases/download/v{PIXI_VERSION}"
+PIXI_DOWNLOAD_ASSETS = {
+    ("windows", "x86_64"): {
+        "url": f"{PIXI_RELEASE_BASE_URL}/pixi-x86_64-pc-windows-msvc.zip",
+        "sha256": "dc3a55c204692ad38a52a8c745ff2a0d2e7a48fad2c0d2109f12a486cf8937c4",
+        "archive_type": "zip",
+        "member": "pixi.exe",
+    },
+    ("linux", "x86_64"): {
+        "url": f"{PIXI_RELEASE_BASE_URL}/pixi-x86_64-unknown-linux-musl.tar.gz",
+        "sha256": "2c086608809f7bdd9918323cf6f6278bb43b025f4d957ddfd55295cf151c6f21",
+        "archive_type": "tar.gz",
+        "member": "pixi",
+    },
+    ("linux", "aarch64"): {
+        "url": f"{PIXI_RELEASE_BASE_URL}/pixi-aarch64-unknown-linux-musl.tar.gz",
+        "sha256": "8b48fd8b315552ee48d340e89d654a177d1f001810ab741f51f7dcdd7e00e1c1",
+        "archive_type": "tar.gz",
+        "member": "pixi",
+    },
+}
+
+LAUNCHER_SETTINGS_DIRNAME = "pandrator"
+LAUNCHER_SETTINGS_FILENAME = "installer.json"
 
 
 def normalized_system(system=None):
@@ -47,6 +62,74 @@ def is_linux(system=None):
 def is_appimage_environment(environ=None):
     values = os.environ if environ is None else environ
     return bool(values.get("APPIMAGE"))
+
+
+def launcher_settings_path(system=None, environ=None, home=None):
+    """Return the per-user installer settings path without creating it."""
+    values = os.environ if environ is None else environ
+    resolved_home = os.path.abspath(os.path.expanduser(home or os.path.expanduser("~")))
+    if normalized_system(system) == "windows":
+        config_root = values.get("LOCALAPPDATA")
+        if not config_root:
+            config_root = os.path.join(resolved_home, "AppData", "Local")
+    else:
+        config_root = values.get("XDG_CONFIG_HOME")
+        if not config_root or not os.path.isabs(os.path.expanduser(config_root)):
+            config_root = os.path.join(resolved_home, ".config")
+    return os.path.join(
+        os.path.abspath(os.path.expanduser(config_root)),
+        LAUNCHER_SETTINGS_DIRNAME,
+        LAUNCHER_SETTINGS_FILENAME,
+    )
+
+
+def load_remembered_launcher_workspace(system=None, environ=None, home=None):
+    """Load a remembered workspace only while its parent directory still exists."""
+    settings_path = launcher_settings_path(system, environ, home)
+    try:
+        with open(settings_path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    workspace = payload.get("workspace")
+    if not isinstance(workspace, str) or not workspace.strip():
+        return None
+    resolved = os.path.abspath(os.path.expanduser(workspace.strip()))
+    return resolved if os.path.isdir(resolved) else None
+
+
+def remember_launcher_workspace(workspace, system=None, environ=None, home=None):
+    """Atomically remember the launcher's selected workspace for future runs."""
+    resolved = os.path.abspath(os.path.expanduser(os.fspath(workspace)))
+    if not os.path.isdir(resolved):
+        raise ValueError(f"Installer workspace does not exist: {resolved}")
+
+    settings_path = launcher_settings_path(system, environ, home)
+    settings_dir = os.path.dirname(settings_path)
+    os.makedirs(settings_dir, exist_ok=True)
+    descriptor, temporary_path = tempfile.mkstemp(
+        prefix=f".{LAUNCHER_SETTINGS_FILENAME}-",
+        suffix=".tmp",
+        dir=settings_dir,
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            descriptor = -1
+            json.dump({"workspace": resolved}, handle, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, settings_path)
+    except Exception:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            os.remove(temporary_path)
+        except FileNotFoundError:
+            pass
+        raise
+    return settings_path
 
 
 def _looks_like_install_root(path):
@@ -97,6 +180,13 @@ def resolve_launcher_workspace(value=None, system=None, environ=None, cwd=None, 
 
     resolved_system = normalized_system(system)
     if resolved_system == "linux" and is_appimage_environment(values):
+        remembered = load_remembered_launcher_workspace(
+            system=resolved_system,
+            environ=values,
+            home=home,
+        )
+        if remembered:
+            return remembered
         return os.path.abspath(os.path.expanduser(home or os.path.expanduser("~")))
 
     current_directory = os.path.abspath(cwd or os.getcwd())
@@ -116,17 +206,17 @@ def pixi_temp_suffix(system=None):
 
 
 def pixi_download_url(system=None, machine=None):
+    return pixi_download_asset(system, machine)["url"]
+
+
+def pixi_download_asset(system=None, machine=None):
     resolved_system = normalized_system(system)
     resolved_machine = normalized_machine(machine)
-
-    if resolved_system == "windows" and resolved_machine in {"x86_64", ""}:
-        return WINDOWS_PIXI_DOWNLOAD_URL
-
-    if resolved_system == "linux":
-        if resolved_machine in {"x86_64", ""}:
-            return LINUX_X86_64_PIXI_DOWNLOAD_URL
-        if resolved_machine == "aarch64":
-            return LINUX_AARCH64_PIXI_DOWNLOAD_URL
+    if not resolved_machine:
+        resolved_machine = "x86_64"
+    asset = PIXI_DOWNLOAD_ASSETS.get((resolved_system, resolved_machine))
+    if asset is not None:
+        return dict(asset)
 
     raise RuntimeError(
         f"Unsupported Pixi platform: system={resolved_system}, machine={resolved_machine}"

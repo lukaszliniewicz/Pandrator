@@ -1545,309 +1545,45 @@ class RuntimeMixin:
         self.shutdown_magpie()
         self.shutdown_rvc()
 
-    def shutdown_rvc(self):
-        """Shut down the RVC auxiliary service."""
-        if not self.rvc_process:
+    def _shutdown_owned_backend(self, process_attr, label):
+        """Stop only a backend process created and retained by this installer."""
+        process = getattr(self, process_attr, None)
+        if process is None:
             return
 
-        logging.info("Terminating RVC service process with PID: %s", self.rvc_process.pid)
-        self.terminate_process_tree(self.rvc_process)
-        self._close_process_log_handle(self.rvc_process)
-        self.rvc_process = None
+        logging.info("Terminating %s process with PID: %s", label, process.pid)
+        try:
+            self.terminate_process_tree(process)
+        finally:
+            self._close_process_log_handle(process)
+            setattr(self, process_attr, None)
+
+    def shutdown_rvc(self):
+        self._shutdown_owned_backend("rvc_process", "RVC")
 
     def shutdown_xtts(self):
-        """Shut down the XTTS server"""
-        if self.xtts_process:
-            logging.info(f"Terminating XTTS process with PID: {self.xtts_process.pid}")
-            try:
-                parent = psutil.Process(self.xtts_process.pid)
-                for child in parent.children(recursive=True):
-                    try:
-                        child.terminate()
-                    except psutil.AccessDenied:
-                        logging.warning(f"Access denied when terminating child process with PID: {child.pid}")
-                parent.terminate()
-                self.xtts_process.wait(timeout=10)
-            except psutil.NoSuchProcess:
-                logging.info("XTTS process already terminated.")
-            except psutil.TimeoutExpired:
-                logging.warning("XTTS process did not terminate, forcing kill")
-                parent = psutil.Process(self.xtts_process.pid)
-                for child in parent.children(recursive=True):
-                    try:
-                        child.kill()
-                    except psutil.AccessDenied:
-                        logging.warning(f"Access denied when killing child process with PID: {child.pid}")
-                parent.kill()
-            if hasattr(self.xtts_process, 'log_handle') and self.xtts_process.log_handle:
-                self.xtts_process.log_handle.close()
-            self.xtts_process = None
-
-        # Check if any process is using port 8020 and kill it
-        seen_pids = set()
-        for conn in psutil.net_connections():
-            if hasattr(conn, 'laddr') and hasattr(conn.laddr, 'port') and conn.laddr.port == 8020:
-                if conn.pid in seen_pids:
-                    continue
-                seen_pids.add(conn.pid)
-                try:
-                    if conn.pid in (None, 0):
-                        continue
-                    process = psutil.Process(conn.pid)
-                    if process.pid != 0:  # Skip System Idle Process
-                        process.terminate()
-                        logging.info(f"Terminated process using port 8020: PID {conn.pid}")
-                except psutil.NoSuchProcess:
-                    logging.info(f"Process using port 8020 (PID {conn.pid}) no longer exists")
-                except psutil.AccessDenied:
-                    logging.warning(f"Access denied when terminating process with PID: {conn.pid}")
+        self._shutdown_owned_backend("xtts_process", "XTTS")
 
     def shutdown_voxcpm(self):
-        """Shut down the VoxCPM server."""
-        if self.voxcpm_process:
-            logging.info(f"Terminating VoxCPM process with PID: {self.voxcpm_process.pid}")
-            try:
-                parent = psutil.Process(self.voxcpm_process.pid)
-                for child in parent.children(recursive=True):
-                    try:
-                        child.terminate()
-                    except psutil.AccessDenied:
-                        logging.warning(f"Access denied when terminating child process with PID: {child.pid}")
-                parent.terminate()
-                self.voxcpm_process.wait(timeout=10)
-            except psutil.NoSuchProcess:
-                logging.info("VoxCPM process already terminated.")
-            except psutil.TimeoutExpired:
-                logging.warning("VoxCPM process did not terminate, forcing kill")
-                parent = psutil.Process(self.voxcpm_process.pid)
-                for child in parent.children(recursive=True):
-                    try:
-                        child.kill()
-                    except psutil.AccessDenied:
-                        logging.warning(f"Access denied when killing child process with PID: {child.pid}")
-                parent.kill()
-
-            if hasattr(self.voxcpm_process, 'log_handle') and self.voxcpm_process.log_handle:
-                self.voxcpm_process.log_handle.close()
-            self.voxcpm_process = None
+        self._shutdown_owned_backend("voxcpm_process", "VoxCPM")
 
     def shutdown_fishs2(self):
-        """Shut down the FishS2 server."""
-        if self.fishs2_process:
-            logging.info(f"Terminating FishS2 process with PID: {self.fishs2_process.pid}")
-            try:
-                parent = psutil.Process(self.fishs2_process.pid)
-                for child in parent.children(recursive=True):
-                    try:
-                        child.terminate()
-                    except psutil.AccessDenied:
-                        logging.warning(f"Access denied when terminating child process with PID: {child.pid}")
-                parent.terminate()
-                self.fishs2_process.wait(timeout=10)
-            except psutil.NoSuchProcess:
-                logging.info("FishS2 process already terminated.")
-            except psutil.TimeoutExpired:
-                logging.warning("FishS2 process did not terminate, forcing kill")
-                parent = psutil.Process(self.fishs2_process.pid)
-                for child in parent.children(recursive=True):
-                    try:
-                        child.kill()
-                    except psutil.AccessDenied:
-                        logging.warning(f"Access denied when killing child process with PID: {child.pid}")
-                parent.kill()
-
-            if hasattr(self.fishs2_process, 'log_handle') and self.fishs2_process.log_handle:
-                self.fishs2_process.log_handle.close()
-            self.fishs2_process = None
+        self._shutdown_owned_backend("fishs2_process", "FishS2")
 
     def shutdown_chatterbox(self):
-        """Shut down the Chatterbox server."""
-        if self.chatterbox_process:
-            logging.info(f"Terminating Chatterbox process with PID: {self.chatterbox_process.pid}")
-            try:
-                parent = psutil.Process(self.chatterbox_process.pid)
-                for child in parent.children(recursive=True):
-                    try:
-                        child.terminate()
-                    except psutil.AccessDenied:
-                        logging.warning(f"Access denied when terminating child process with PID: {child.pid}")
-                parent.terminate()
-                self.chatterbox_process.wait(timeout=10)
-            except psutil.NoSuchProcess:
-                logging.info("Chatterbox process already terminated.")
-            except psutil.TimeoutExpired:
-                logging.warning("Chatterbox process did not terminate, forcing kill")
-                parent = psutil.Process(self.chatterbox_process.pid)
-                for child in parent.children(recursive=True):
-                    try:
-                        child.kill()
-                    except psutil.AccessDenied:
-                        logging.warning(f"Access denied when killing child process with PID: {child.pid}")
-                parent.kill()
-
-            if hasattr(self.chatterbox_process, 'log_handle') and self.chatterbox_process.log_handle:
-                self.chatterbox_process.log_handle.close()
-            self.chatterbox_process = None
+        self._shutdown_owned_backend("chatterbox_process", "Chatterbox")
 
     def shutdown_kobold_qwen(self):
-        """Shut down the Qwen3 TTS server."""
-        if not self.kobold_qwen_process:
-            return
-
-        logging.info(f"Terminating Qwen3 TTS process with PID: {self.kobold_qwen_process.pid}")
-        self.terminate_process_tree(self.kobold_qwen_process)
-        if hasattr(self.kobold_qwen_process, 'log_handle') and self.kobold_qwen_process.log_handle:
-            self.kobold_qwen_process.log_handle.close()
-        self.kobold_qwen_process = None
+        self._shutdown_owned_backend("kobold_qwen_process", "Qwen3 TTS")
 
     def shutdown_magpie(self):
-        """Shut down the Magpie server."""
-        if self.magpie_process:
-            logging.info(f"Terminating Magpie process with PID: {self.magpie_process.pid}")
-            try:
-                parent = psutil.Process(self.magpie_process.pid)
-                for child in parent.children(recursive=True):
-                    try:
-                        child.terminate()
-                    except psutil.AccessDenied:
-                        logging.warning(f"Access denied when terminating child process with PID: {child.pid}")
-                parent.terminate()
-                self.magpie_process.wait(timeout=10)
-            except psutil.NoSuchProcess:
-                logging.info("Magpie process already terminated.")
-            except psutil.TimeoutExpired:
-                logging.warning("Magpie process did not terminate, forcing kill")
-                parent = psutil.Process(self.magpie_process.pid)
-                for child in parent.children(recursive=True):
-                    try:
-                        child.kill()
-                    except psutil.AccessDenied:
-                        logging.warning(f"Access denied when killing child process with PID: {child.pid}")
-                parent.kill()
-
-            if hasattr(self.magpie_process, 'log_handle') and self.magpie_process.log_handle:
-                self.magpie_process.log_handle.close()
-            self.magpie_process = None
+        self._shutdown_owned_backend("magpie_process", "Magpie")
 
     def shutdown_voxtral(self):
-        """Shut down the Voxtral server"""
-        if self.voxtral_process:
-            logging.info(f"Terminating Voxtral process with PID: {self.voxtral_process.pid}")
-            try:
-                parent = psutil.Process(self.voxtral_process.pid)
-                for child in parent.children(recursive=True):
-                    try:
-                        child.terminate()
-                    except psutil.AccessDenied:
-                        logging.warning(f"Access denied when terminating child process with PID: {child.pid}")
-                parent.terminate()
-                self.voxtral_process.wait(timeout=10)
-            except psutil.NoSuchProcess:
-                logging.info("Voxtral process already terminated.")
-            except psutil.TimeoutExpired:
-                logging.warning("Voxtral process did not terminate, forcing kill")
-                parent = psutil.Process(self.voxtral_process.pid)
-                for child in parent.children(recursive=True):
-                    try:
-                        child.kill()
-                    except psutil.AccessDenied:
-                        logging.warning(f"Access denied when killing child process with PID: {child.pid}")
-                parent.kill()
-            if hasattr(self.voxtral_process, 'log_handle') and self.voxtral_process.log_handle:
-                self.voxtral_process.log_handle.close()
-            self.voxtral_process = None
-
-        # Check if any process is using port 8000 and kill it
-        for conn in psutil.net_connections():
-            if hasattr(conn, 'laddr') and hasattr(conn.laddr, 'port') and conn.laddr.port == 8000:
-                try:
-                    process = psutil.Process(conn.pid)
-                    if process.pid != 0:  # Skip System Idle Process
-                        process.terminate()
-                        logging.info(f"Terminated process using port 8000: PID {conn.pid}")
-                except psutil.NoSuchProcess:
-                    logging.info(f"Process using port 8000 (PID {conn.pid}) no longer exists")
-                except psutil.AccessDenied:
-                    logging.warning(f"Access denied when terminating process with PID: {conn.pid}")
+        self._shutdown_owned_backend("voxtral_process", "Voxtral")
 
     def shutdown_kokoro(self):
-        """Shut down the Kokoro server"""
-        if self.kokoro_process:
-            logging.info(f"Terminating Kokoro process with PID: {self.kokoro_process.pid}")
-            try:
-                parent = psutil.Process(self.kokoro_process.pid)
-                for child in parent.children(recursive=True):
-                    try:
-                        child.terminate()
-                    except psutil.AccessDenied:
-                        logging.warning(f"Access denied when terminating child process with PID: {child.pid}")
-                parent.terminate()
-                self.kokoro_process.wait(timeout=10)
-            except psutil.NoSuchProcess:
-                logging.info("Kokoro process already terminated.")
-            except psutil.TimeoutExpired:
-                logging.warning("Kokoro process did not terminate, forcing kill")
-                parent = psutil.Process(self.kokoro_process.pid)
-                for child in parent.children(recursive=True):
-                    try:
-                        child.kill()
-                    except psutil.AccessDenied:
-                        logging.warning(f"Access denied when killing child process with PID: {child.pid}")
-                parent.kill()
-            if hasattr(self.kokoro_process, 'log_handle') and self.kokoro_process.log_handle:
-                self.kokoro_process.log_handle.close()
-            self.kokoro_process = None
-
-        # Check if any process is using port 8880 and kill it
-        for conn in psutil.net_connections():
-            if hasattr(conn, 'laddr') and hasattr(conn.laddr, 'port') and conn.laddr.port == 8880:
-                try:
-                    process = psutil.Process(conn.pid)
-                    if process.pid != 0:  # Skip System Idle Process
-                        process.terminate()
-                        logging.info(f"Terminated process using port 8880: PID {conn.pid}")
-                except psutil.NoSuchProcess:
-                    logging.info(f"Process using port 8880 (PID {conn.pid}) no longer exists")
-                except psutil.AccessDenied:
-                    logging.warning(f"Access denied when terminating process with PID: {conn.pid}")
+        self._shutdown_owned_backend("kokoro_process", "Kokoro")
 
     def shutdown_silero(self):
-        """Shut down the Silero server"""
-        if self.silero_process:
-            logging.info(f"Terminating Silero process with PID: {self.silero_process.pid}")
-            try:
-                parent = psutil.Process(self.silero_process.pid)
-                for child in parent.children(recursive=True):
-                    try:
-                        child.terminate()
-                    except psutil.AccessDenied:
-                        logging.warning(f"Access denied when terminating child process with PID: {child.pid}")
-                parent.terminate()
-                self.silero_process.wait(timeout=10)
-            except psutil.NoSuchProcess:
-                logging.info("Silero process already terminated.")
-            except psutil.TimeoutExpired:
-                logging.warning("Silero process did not terminate, forcing kill")
-                parent = psutil.Process(self.silero_process.pid)
-                for child in parent.children(recursive=True):
-                    try:
-                        child.kill()
-                    except psutil.AccessDenied:
-                        logging.warning(f"Access denied when killing child process with PID: {child.pid}")
-                parent.kill()
-            if hasattr(self.silero_process, 'log_handle') and self.silero_process.log_handle:
-                self.silero_process.log_handle.close()
-            self.silero_process = None
-
-        # Check if any process is using port 8001 and kill it
-        for conn in psutil.net_connections():
-            if hasattr(conn, 'laddr') and hasattr(conn.laddr, 'port') and conn.laddr.port == 8001:
-                try:
-                    process = psutil.Process(conn.pid)
-                    if process.pid != 0:  # Skip System Idle Process
-                        process.terminate()
-                        logging.info(f"Terminated process using port 8001: PID {conn.pid}")
-                except psutil.NoSuchProcess:
-                    logging.info(f"Process using port 8001 (PID {conn.pid}) no longer exists")
-                except psutil.AccessDenied:
-                    logging.warning(f"Access denied when terminating process with PID: {conn.pid}")
+        self._shutdown_owned_backend("silero_process", "Silero")

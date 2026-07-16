@@ -1,4 +1,5 @@
 import unittest
+import hashlib
 import inspect
 import json
 import os
@@ -6,7 +7,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, Mock, patch
 
 from pandrator_installer.catalog import (
     COMPONENTS,
@@ -210,7 +211,7 @@ class InstallerArchitectureTests(unittest.TestCase):
             target = os.path.join(workspace, "checkout")
             with patch.object(installer, "configure_tls_certificates"), \
                  patch.object(installer, "run_git_command") as run_git, \
-                 patch.object(installer, "pull_repo"):
+                 patch.object(installer, "pull_repo") as pull_repo:
                 installer.clone_repo(
                     "https://example.invalid/Pandrator.git",
                     target,
@@ -228,6 +229,7 @@ class InstallerArchitectureTests(unittest.TestCase):
                 target,
             ],
         )
+        pull_repo.assert_not_called()
 
     def test_install_selection_resolves_dependencies(self):
         selection = InstallSelection.from_components(["xtts_finetuning"])
@@ -398,8 +400,86 @@ class InstallerArchitectureTests(unittest.TestCase):
         self.assertEqual(platforms.pixi_manifest_platform("Windows", "AMD64"), "win-64")
         self.assertEqual(platforms.pixi_manifest_platform("Linux", "x86_64"), "linux-64")
         self.assertEqual(platforms.pixi_manifest_platform("Linux", "aarch64"), "linux-aarch64")
-        self.assertIn("windows-msvc.exe", platforms.pixi_download_url("Windows", "AMD64"))
-        self.assertIn("linux-musl", platforms.pixi_download_url("Linux", "x86_64"))
+        windows_asset = platforms.pixi_download_asset("Windows", "AMD64")
+        linux_asset = platforms.pixi_download_asset("Linux", "x86_64")
+        self.assertIn(f"/v{platforms.PIXI_VERSION}/", windows_asset["url"])
+        self.assertTrue(windows_asset["url"].endswith("windows-msvc.zip"))
+        self.assertEqual(windows_asset["member"], "pixi.exe")
+        self.assertEqual(len(windows_asset["sha256"]), 64)
+        self.assertIn("linux-musl.tar.gz", linux_asset["url"])
+        self.assertEqual(linux_asset["member"], "pixi")
+
+    def test_shutdown_apps_never_scans_or_terminates_unowned_port_listeners(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        with patch("pandrator_installer.runtime.psutil.net_connections") as net_connections, patch(
+            "pandrator_installer.runtime.psutil.Process"
+        ) as process:
+            installer.shutdown_apps()
+        net_connections.assert_not_called()
+        process.assert_not_called()
+
+    def test_shutdown_backend_terminates_only_its_owned_process(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        owned = Mock(pid=4321, log_handle=None)
+        installer.xtts_process = owned
+        with patch.object(installer, "terminate_process_tree") as terminate:
+            installer.shutdown_xtts()
+        terminate.assert_called_once_with(owned)
+        self.assertIsNone(installer.xtts_process)
+
+    def test_missing_pixi_after_setup_is_an_install_failure(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            installer = HeadlessInstaller(working_dir=workspace)
+            with patch.object(installer, "execute_concurrently"), patch.object(
+                installer, "check_pixi", return_value=False
+            ):
+                with self.assertRaisesRegex(RuntimeError, "Pixi installation failed"):
+                    installer.run_headless_install(set(), install_pandrator=True)
+
+    def test_verified_download_rejects_mismatched_content_and_removes_partial_file(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.iter_content.return_value = [b"unexpected-content"]
+        with tempfile.TemporaryDirectory() as directory:
+            destination = os.path.join(directory, "artifact.bin")
+            with patch.object(installer, "configure_tls_certificates"), patch(
+                "pandrator_installer.operations.requests.get", return_value=response
+            ):
+                with self.assertRaisesRegex(RuntimeError, "checksum mismatch"):
+                    installer.download_verified_file(
+                        "https://example.invalid/artifact",
+                        destination,
+                        hashlib.sha256(b"expected-content").hexdigest(),
+                    )
+            self.assertFalse(os.path.exists(destination))
+
+    def test_install_config_write_is_atomic_and_propagates_failure(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        with tempfile.TemporaryDirectory() as install_root:
+            config_path = os.path.join(install_root, "config.json")
+            with open(config_path, "w", encoding="utf-8") as handle:
+                json.dump({"original": True}, handle)
+            with patch("pandrator_installer.storage.os.replace", side_effect=OSError("disk full")):
+                with self.assertRaisesRegex(RuntimeError, "Failed to save install config"):
+                    installer.save_install_config(install_root, {"replacement": True})
+            with open(config_path, "r", encoding="utf-8") as handle:
+                self.assertEqual(json.load(handle), {"original": True})
+            self.assertFalse(any(name.endswith(".tmp") for name in os.listdir(install_root)))
+
+    def test_run_command_streams_output_and_enforces_timeout(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        stdout, stderr = installer.run_command(
+            [sys.executable, "-c", "import sys; print('ready'); print('warning', file=sys.stderr)"],
+            timeout=5,
+        )
+        self.assertIn("ready", stdout)
+        self.assertIn("warning", stderr)
+        with self.assertRaises(subprocess.TimeoutExpired):
+            installer.run_command(
+                [sys.executable, "-c", "import time; time.sleep(60)"],
+                timeout=0.2,
+            )
 
     def test_appimage_launcher_defaults_to_home_workspace(self):
         workspace = platforms.resolve_launcher_workspace(
@@ -419,6 +499,57 @@ class InstallerArchitectureTests(unittest.TestCase):
             home="/home/tester",
         )
         self.assertEqual(workspace, os.path.abspath("/tmp/custom-pandrator"))
+
+    def test_appimage_launcher_remembers_an_existing_custom_workspace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = os.path.join(directory, "custom-workspace")
+            config_root = os.path.join(directory, "config")
+            os.makedirs(workspace)
+            environment = {
+                "APPIMAGE": "/tmp/PandratorInstaller-x86_64.AppImage",
+                "XDG_CONFIG_HOME": config_root,
+            }
+
+            settings_path = platforms.remember_launcher_workspace(
+                workspace,
+                system="Linux",
+                environ=environment,
+                home=directory,
+            )
+            resolved = platforms.resolve_launcher_workspace(
+                system="Linux",
+                environ=environment,
+                cwd="/tmp/desktop-launch-cwd",
+                home=directory,
+            )
+
+            self.assertEqual(resolved, os.path.abspath(workspace))
+            with open(settings_path, encoding="utf-8") as handle:
+                self.assertEqual(json.load(handle), {"workspace": os.path.abspath(workspace)})
+
+    def test_appimage_launcher_ignores_a_stale_remembered_workspace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_root = os.path.join(directory, "config")
+            settings_path = platforms.launcher_settings_path(
+                system="Linux",
+                environ={"XDG_CONFIG_HOME": config_root},
+                home=directory,
+            )
+            os.makedirs(os.path.dirname(settings_path))
+            with open(settings_path, "w", encoding="utf-8") as handle:
+                json.dump({"workspace": os.path.join(directory, "missing")}, handle)
+
+            resolved = platforms.resolve_launcher_workspace(
+                system="Linux",
+                environ={
+                    "APPIMAGE": "/tmp/PandratorInstaller-x86_64.AppImage",
+                    "XDG_CONFIG_HOME": config_root,
+                },
+                cwd="/tmp/desktop-launch-cwd",
+                home=directory,
+            )
+
+            self.assertEqual(resolved, os.path.abspath(directory))
 
     def test_launcher_workspace_infers_installed_repo_cwd(self):
         with tempfile.TemporaryDirectory() as workspace:

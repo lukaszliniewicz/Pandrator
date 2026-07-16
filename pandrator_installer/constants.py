@@ -19,8 +19,6 @@ from .catalog import (
     PACKAGING_SHARED_PATHS as PACKAGING_SHARED_PATHS,
 )
 
-PIXI_BINARY_NAME = 'pixi.exe'
-PIXI_DOWNLOAD_URL = 'https://github.com/prefix-dev/pixi/releases/latest/download/pixi-x86_64-pc-windows-msvc.exe'
 PIXI_HOME_DIRNAME = '.pixi-home'
 PIXI_CACHE_DIRNAME = '.pixi-cache'
 PIXI_PIP_CACHE_SUBDIRNAME = 'pip'
@@ -105,7 +103,14 @@ ESPEAK_NG_MSI_URL = 'https://github.com/espeak-ng/espeak-ng/releases/download/1.
 ESPEAK_NG_MSI_SHA256 = '7F673C709EA5DD579D3B5EBB98688CC575328A6AB7438D2BC405B88CEDAEAFB9'
 ESPEAK_NG_DLL_RELATIVE_PATH = os.path.join('eSpeak NG', 'libespeak-ng.dll')
 ESPEAK_NG_DATA_DIR_RELATIVE_PATH = os.path.join('eSpeak NG', 'espeak-ng-data')
-CALIBRE_WIN64_MSI_URL = 'https://calibre-ebook.com/dist/win64'
+CALIBRE_VERSION = '9.11.0'
+CALIBRE_WIN64_MSI_URL = (
+    f'https://download.calibre-ebook.com/{CALIBRE_VERSION}/calibre-64bit-{CALIBRE_VERSION}.msi'
+)
+CALIBRE_WIN64_MSI_SHA512 = (
+    '3fd18b34e6332ba6a6e908e4e569648d0f50b6b8b73afdf32bf2662f51b98e6a'
+    'e8fc869cb2aee0d973c55c02f30a6ef932e8c613980aed2c5ed14a2050ef27f0'
+)
 CALIBRE_BUNDLED_DIRNAME = 'Calibre Portable'
 CALIBRE_BUNDLED_CALIBRE_SUBDIR = 'Calibre'
 CALIBRE_BUNDLED_EBOOK_CONVERT_RELATIVE_PATH = os.path.join(
@@ -113,7 +118,13 @@ CALIBRE_BUNDLED_EBOOK_CONVERT_RELATIVE_PATH = os.path.join(
     CALIBRE_BUNDLED_CALIBRE_SUBDIR,
     'ebook-convert.exe',
 )
-FFMPEG_SUBTITLES_WINDOWS_ZIP_URL = 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip'
+FFMPEG_SUBTITLES_WINDOWS_ZIP_URL = (
+    'https://github.com/GyanD/codexffmpeg/releases/download/8.1.2/'
+    'ffmpeg-8.1.2-essentials_build.zip'
+)
+FFMPEG_SUBTITLES_WINDOWS_ZIP_SHA256 = (
+    'db580001caa24ac104c8cb856cd113a87b0a443f7bdf47d8c12b1d740584a2ec'
+)
 FFMPEG_BUNDLED_RELATIVE_PATH = os.path.join('bin', 'ffmpeg.exe')
 
 BUNDLED_WHEELS_RELATIVE_PATH = os.path.join('vendor', 'wheels')

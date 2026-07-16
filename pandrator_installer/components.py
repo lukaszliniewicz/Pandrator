@@ -1582,8 +1582,6 @@ class ComponentOperationsMixin:
                         clone_options = {'branch': branch.encode('utf-8')} if branch else {}
                         porcelain.clone(repo_url, target_dir, **clone_options)
                         logging.info("Repository cloned successfully with Dulwich after certificate refresh.")
-                        logging.info("Pulling latest changes...")
-                        self.pull_repo(target_dir)
                         return
                     except Exception as retry_error:
                         logging.error(f"Failed to clone repository after certificate refresh: {str(retry_error)}")
@@ -1593,9 +1591,6 @@ class ComponentOperationsMixin:
                         ) from retry_error
                 logging.error(f"Failed to clone repository: {str(dulwich_error)}")
                 raise
-
-        logging.info("Pulling latest changes...")
-        self.pull_repo(target_dir)
 
     def pull_repo(self, repo_path):
         logging.info(f"Pulling updates for repository at {repo_path}...")

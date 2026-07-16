@@ -5,12 +5,15 @@ import ctypes.util
 import hashlib
 import logging
 import os
+import secrets
 import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import traceback
+from collections import deque
 import zipfile
 from datetime import datetime
 
@@ -31,17 +34,23 @@ from .constants import (
     CALIBRE_BUNDLED_DIRNAME,
     CALIBRE_BUNDLED_EBOOK_CONVERT_RELATIVE_PATH,
     CALIBRE_WIN64_MSI_URL,
+    CALIBRE_WIN64_MSI_SHA512,
     ESPEAK_NG_DATA_DIR_RELATIVE_PATH,
     ESPEAK_NG_DLL_RELATIVE_PATH,
     ESPEAK_NG_MSI_SHA256,
     ESPEAK_NG_MSI_URL,
     FFMPEG_BUNDLED_RELATIVE_PATH,
     FFMPEG_SUBTITLES_WINDOWS_ZIP_URL,
+    FFMPEG_SUBTITLES_WINDOWS_ZIP_SHA256,
     PIXI_CACHE_DIRNAME,
     PIXI_TEMP_SUBDIRNAME,
     XTTS_FINETUNING_TORCH_INDEX_URL,
     XTTS_FINETUNING_TORCH_PACKAGE_SPECS,
 )
+DEFAULT_COMMAND_TIMEOUT_SECONDS = 2 * 60 * 60
+COMMAND_OUTPUT_TAIL_LINES = 4000
+
+
 class OperationsMixin:
     def initialize_logging(self):
         """Initialize robust file, console, and GUI logging."""
@@ -124,6 +133,55 @@ class OperationsMixin:
             or 'sslcertverificationerror' in error_text
             or 'unable to get local issuer certificate' in error_text
         )
+
+    def download_verified_file(
+        self,
+        url,
+        destination,
+        expected_digest,
+        *,
+        hash_name='sha256',
+        timeout=(30, 600),
+        chunk_size=1024 * 1024,
+    ):
+        """Stream a remote artifact to disk and fail closed on identity mismatch."""
+        self.configure_tls_certificates()
+        expected = str(expected_digest or '').strip().lower()
+        try:
+            digest = hashlib.new(hash_name)
+        except ValueError as error:
+            raise ValueError(f"Unsupported artifact hash algorithm: {hash_name}") from error
+        if not expected or len(expected) != digest.digest_size * 2:
+            raise ValueError(f"A valid {hash_name} digest is required for {url}.")
+
+        os.makedirs(os.path.dirname(os.path.abspath(destination)), exist_ok=True)
+        try:
+            with requests.get(
+                url,
+                stream=True,
+                timeout=timeout,
+                verify=self.ca_bundle_path if self.ca_bundle_path else True,
+            ) as response:
+                response.raise_for_status()
+                with open(destination, 'wb') as handle:
+                    for chunk in response.iter_content(chunk_size=chunk_size):
+                        if not chunk:
+                            continue
+                        handle.write(chunk)
+                        digest.update(chunk)
+            actual = digest.hexdigest().lower()
+            if not secrets.compare_digest(actual, expected):
+                raise RuntimeError(
+                    f"Downloaded artifact checksum mismatch for {url}. "
+                    f"Expected {expected}, got {actual}."
+                )
+            return actual
+        except Exception:
+            try:
+                os.remove(destination)
+            except FileNotFoundError:
+                pass
+            raise
 
     def shutdown_logging(self):
         logger = logging.getLogger()
@@ -233,13 +291,43 @@ class OperationsMixin:
 
         return kwargs
 
-    def run_command(self, command, use_shell=False, cwd=None, env=None, log_errors=True):
+    @staticmethod
+    def _stream_command_output(stream, label, output, state):
+        try:
+            for line in iter(stream.readline, ''):
+                output.append(line)
+                state['lines'] += 1
+                logging.debug("[%s] %s", label, line.rstrip())
+        finally:
+            stream.close()
+
+    @staticmethod
+    def _command_output_text(output, state):
+        text = ''.join(output)
+        omitted = max(0, state['lines'] - len(output))
+        if omitted:
+            return f"[... {omitted} earlier output line(s) omitted ...]\n{text}"
+        return text
+
+    def run_command(
+        self,
+        command,
+        use_shell=False,
+        cwd=None,
+        env=None,
+        log_errors=True,
+        timeout=DEFAULT_COMMAND_TIMEOUT_SECONDS,
+    ):
+        command_display = command if isinstance(command, str) else ' '.join(command)
         try:
             subprocess_kwargs = self.get_hidden_subprocess_kwargs()
             env = self.get_external_subprocess_env(env)
             if use_shell:
+                shell_command = command if isinstance(command, str) else (
+                    subprocess.list2cmdline(command) if os.name == 'nt' else shlex.join(command)
+                )
                 process = subprocess.Popen(
-                    command if isinstance(command, str) else " ".join(command),
+                    shell_command,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     shell=True,
@@ -247,6 +335,7 @@ class OperationsMixin:
                     env=env,
                     encoding='utf-8',
                     errors='replace',
+                    bufsize=1,
                     **subprocess_kwargs,
                 )
             else:
@@ -258,24 +347,63 @@ class OperationsMixin:
                     env=env,
                     encoding='utf-8',
                     errors='replace',
+                    bufsize=1,
                     **subprocess_kwargs,
                 )
 
-            stdout, stderr = process.communicate()
+            stdout_tail = deque(maxlen=COMMAND_OUTPUT_TAIL_LINES)
+            stderr_tail = deque(maxlen=COMMAND_OUTPUT_TAIL_LINES)
+            stdout_state = {'lines': 0}
+            stderr_state = {'lines': 0}
+            stdout_thread = threading.Thread(
+                target=self._stream_command_output,
+                args=(process.stdout, 'stdout', stdout_tail, stdout_state),
+                daemon=True,
+            )
+            stderr_thread = threading.Thread(
+                target=self._stream_command_output,
+                args=(process.stderr, 'stderr', stderr_tail, stderr_state),
+                daemon=True,
+            )
+            stdout_thread.start()
+            stderr_thread.start()
+            try:
+                process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                terminator = getattr(self, 'terminate_process_tree', None)
+                if callable(terminator):
+                    terminator(process)
+                elif process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=10)
+                stdout_thread.join(timeout=10)
+                stderr_thread.join(timeout=10)
+                stdout = self._command_output_text(stdout_tail, stdout_state)
+                stderr = self._command_output_text(stderr_tail, stderr_state)
+                raise subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr)
+
+            stdout_thread.join(timeout=10)
+            stderr_thread.join(timeout=10)
+            stdout = self._command_output_text(stdout_tail, stdout_state)
+            stderr = self._command_output_text(stderr_tail, stderr_state)
 
             if process.returncode != 0:
                 raise subprocess.CalledProcessError(process.returncode, command, stdout, stderr)
 
-            logging.info(f"Command executed: {command if isinstance(command, str) else ' '.join(command)}")
-            logging.debug(f"STDOUT: {stdout}")
-            logging.debug(f"STDERR: {stderr}")
+            logging.info(f"Command executed: {command_display}")
 
             return stdout, stderr
         except subprocess.CalledProcessError as e:
             log = logging.error if log_errors else logging.debug
-            log(f"Error executing command: {command if isinstance(command, str) else ' '.join(command)}")
+            log(f"Error executing command: {command_display}")
             log(f"Error message: {str(e)}")
             log(f"STDOUT: {e.stdout}")
+            log(f"STDERR: {e.stderr}")
+            raise
+        except subprocess.TimeoutExpired as e:
+            log = logging.error if log_errors else logging.debug
+            log(f"Command timed out after {timeout} seconds: {command_display}")
+            log(f"STDOUT: {e.output}")
             log(f"STDERR: {e.stderr}")
             raise
 
@@ -387,18 +515,12 @@ class OperationsMixin:
         os.makedirs(extracted_dir, exist_ok=True)
 
         try:
-            response = requests.get(
+            self.download_verified_file(
                 FFMPEG_SUBTITLES_WINDOWS_ZIP_URL,
-                stream=True,
-                timeout=180,
-                verify=self.ca_bundle_path if self.ca_bundle_path else True,
+                temp_archive_path,
+                FFMPEG_SUBTITLES_WINDOWS_ZIP_SHA256,
+                timeout=(30, 300),
             )
-            response.raise_for_status()
-
-            with open(temp_archive_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=1024 * 1024):
-                    if chunk:
-                        f.write(chunk)
 
             with zipfile.ZipFile(temp_archive_path, 'r') as archive:
                 archive.extractall(extracted_dir)
@@ -745,18 +867,13 @@ class OperationsMixin:
         extracted_calibre_dir = os.path.join(temp_extract_dir, 'PFiles64', 'Calibre2')
 
         try:
-            response = requests.get(
+            self.download_verified_file(
                 CALIBRE_WIN64_MSI_URL,
-                stream=True,
-                timeout=120,
-                verify=self.ca_bundle_path if self.ca_bundle_path else True,
+                temp_msi_path,
+                CALIBRE_WIN64_MSI_SHA512,
+                hash_name='sha512',
+                timeout=(30, 300),
             )
-            response.raise_for_status()
-
-            with open(temp_msi_path, 'wb') as handle:
-                for chunk in response.iter_content(chunk_size=1024 * 1024):
-                    if chunk:
-                        handle.write(chunk)
 
             os.makedirs(temp_extract_dir, exist_ok=True)
             process = subprocess.Popen(
@@ -1026,35 +1143,12 @@ class OperationsMixin:
         temp_msi_path = os.path.join(temp_root, 'espeak-ng.msi')
 
         try:
-            response = requests.get(
+            self.download_verified_file(
                 ESPEAK_NG_MSI_URL,
-                stream=True,
-                timeout=120,
-                verify=self.ca_bundle_path if self.ca_bundle_path else True,
+                temp_msi_path,
+                ESPEAK_NG_MSI_SHA256,
+                timeout=(30, 180),
             )
-            response.raise_for_status()
-
-            with open(temp_msi_path, 'wb') as handle:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        handle.write(chunk)
-
-            sha256 = hashlib.sha256()
-            with open(temp_msi_path, 'rb') as handle:
-                while True:
-                    chunk = handle.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    sha256.update(chunk)
-
-            downloaded_hash = sha256.hexdigest().upper()
-            expected_hash = ESPEAK_NG_MSI_SHA256.upper()
-            if downloaded_hash != expected_hash:
-                logging.warning(
-                    "Downloaded eSpeak NG MSI checksum mismatch. "
-                    f"Expected {expected_hash}, got {downloaded_hash}."
-                )
-                return False
 
             process = subprocess.Popen(
                 ['msiexec', '/i', temp_msi_path, '/qn', '/norestart', 'ALLUSERS=1'],

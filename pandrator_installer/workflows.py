@@ -305,7 +305,7 @@ class WorkflowMixin:
             if not self.check_pixi(pandrator_path):
                 self.reporter.status("Pixi installation failed")
                 logging.error("Pixi installation failed")
-                return
+                raise RuntimeError("Pixi installation failed: the downloaded executable is unavailable.")
 
             shared_pixi_path = self.get_pixi_executable(pandrator_path)
 
@@ -461,8 +461,6 @@ class WorkflowMixin:
                 self.create_pixi_env(pandrator_path, 'whisperx_installer', WHISPERX_PYTHON_VERSION)
                 self.install_whisperx(pandrator_path, 'whisperx_installer')
                 self.reporter.progress(0.85)
-                self.reporter.status("Cloning XTTS Fine-tuning repository...")
-                self.clone_repo(EASY_XTTS_TRAINER_REPO_URL, easy_xtts_trainer_path)
 
                 self.reporter.progress(0.90)
                 self.reporter.status("Creating XTTS Fine-tuning Pixi environment...")
@@ -922,9 +920,8 @@ class WorkflowMixin:
 
             # Update easy XTTS trainer (repo and requirements)
             if os.path.exists(easy_xtts_trainer_path):
-                self.reporter.status("Updating easy XTTS trainer...")
-                logging.info(f"Updating easy XTTS trainer in: {easy_xtts_trainer_path}")
-                self.pull_repo(easy_xtts_trainer_path)
+                self.reporter.status("Checking easy XTTS trainer dependencies...")
+                logging.info(f"Checking easy XTTS trainer in: {easy_xtts_trainer_path}")
 
                 xtts_requirements_file = os.path.join(easy_xtts_trainer_path, 'requirements.txt')
                 if os.path.exists(xtts_requirements_file):
