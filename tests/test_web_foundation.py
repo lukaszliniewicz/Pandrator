@@ -4,6 +4,8 @@ import sqlite3
 import tempfile
 import unittest
 import io
+import logging
+from datetime import timedelta
 from contextlib import closing
 from pathlib import Path
 
@@ -17,7 +19,7 @@ from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.database import SCHEMA_HEAD, Database, sqlite_url, upgrade_database
 from pandrator.web.jobs import JobQueue, Worker, noop_handler
 from pandrator.web.legacy_migration import import_legacy_data
-from pandrator.web.models import DocumentRevision, GenerationSegment, ProviderModel, Segment, SessionRecord
+from pandrator.web.models import DocumentRevision, GenerationSegment, Job, ProviderModel, Segment, SessionRecord, utcnow
 from pandrator.web.sessions import SessionService
 
 
@@ -249,6 +251,43 @@ class DurableJobTests(unittest.TestCase):
         self.assertEqual(canceled.status, "canceled")
         self.assertIsNone(self.queue.claim("worker"))
 
+    def test_canceling_running_job_is_immediately_terminal(self):
+        job = self.queue.enqueue("noop")
+        claimed = self.queue.claim("worker")
+        self.assertEqual(job.id, claimed.id)
+
+        canceled = self.queue.request_cancel(job.id)
+
+        self.assertEqual("canceled", canceled.status)
+        self.assertTrue(self.queue.should_cancel(job.id, "worker"))
+        with self.assertRaises(RuntimeError):
+            self.queue.complete(job.id, "worker", {"late": True})
+
+    def test_expired_exhausted_job_is_not_left_running(self):
+        job = self.queue.enqueue("noop", max_attempts=1)
+        self.queue.claim("worker", lease_seconds=5)
+        with self.database.session() as session:
+            record = session.get(Job, job.id)
+            record.lease_expires_at = utcnow() - timedelta(seconds=1)
+
+        reconciled = self.queue.get(job.id)
+
+        self.assertEqual("failed", reconciled.status)
+        self.assertEqual("worker_lease_expired", reconciled.error_code)
+
+    def test_worker_python_logs_are_available_in_job_timeline(self):
+        def logged(_payload, _progress, _cancel_event):
+            logging.getLogger("pandrator.test").info("provider retry detail")
+            return {"ok": True}
+
+        job = self.queue.enqueue("logged")
+        Worker(self.queue, "worker-one", {"logged": logged}).run_once()
+
+        captured = [event for event in self.queue.events_for(job.id) if event.event_type == "job.log"]
+        self.assertEqual(1, len(captured))
+        self.assertEqual("INFO", captured[0].payload_json["level"])
+        self.assertEqual("provider retry detail", captured[0].payload_json["message"])
+
 
 class WebApiTests(unittest.TestCase):
     def setUp(self):
@@ -310,6 +349,15 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"/_app/immutable/entry/", response.data)
         response.close()
+
+    def test_job_logs_endpoint_returns_the_durable_timeline(self):
+        self.authenticate()
+        job = self.app.extensions["pandrator"]["jobs"].enqueue("noop", {"echo": "logged"})
+
+        response = self.client.get(f"/api/v1/jobs/{job.id}/logs")
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("job.queued", response.get_json()["items"][0]["event_type"])
 
     def test_workflow_is_source_aware_and_stage_run_queues_durable_job(self):
         csrf = self.authenticate()

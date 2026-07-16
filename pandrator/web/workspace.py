@@ -14,6 +14,7 @@ from sqlalchemy import and_, func, or_, select
 
 from .database import Database
 from .jobs import JobQueue
+from .tts_optimization import DEFAULT_FIRST_PROMPT, DEFAULT_PROMPT, DEFAULT_SECOND_PROMPT, DEFAULT_THIRD_PROMPT
 from .models import (
     AppSetting,
     Artifact,
@@ -75,10 +76,10 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "tts_optimization_model": "",
         "llm_concurrent_calls": 1,
         "llm_multi_stage": False,
-        "combined_prompt": "",
-        "first_prompt": "",
-        "second_prompt": "",
-        "third_prompt": "",
+        "combined_prompt": DEFAULT_PROMPT,
+        "first_prompt": DEFAULT_FIRST_PROMPT,
+        "second_prompt": DEFAULT_SECOND_PROMPT,
+        "third_prompt": DEFAULT_THIRD_PROMPT,
     },
     "stt": {
         "stt_engine": "whisper",

@@ -18,6 +18,21 @@ and remove extraction artifacts. Preserve meaning, language, tone, names, and al
 Keep every input item separate and return the same item indexes.
 """
 
+DEFAULT_FIRST_PROMPT = """Normalize each item for spoken delivery.
+Expand ambiguous numbers, dates, measurements, symbols, and abbreviations only when context makes the
+intended reading clear. Preserve the original language, meaning, facts, names, tone, and item indexes.
+"""
+
+DEFAULT_SECOND_PROMPT = """Improve pronunciation and listening flow for a speech synthesizer.
+Use phonetic spellings sparingly, remove extraction noise, and adjust punctuation where it improves
+prosody. Do not summarize, translate, merge, split, add, or remove factual content or item indexes.
+"""
+
+DEFAULT_THIRD_PROMPT = """Perform a final fidelity check on every item.
+Correct only remaining speech-synthesis problems and revert any wording that changes meaning, facts,
+language, names, tone, or item identity. Return every original index exactly once.
+"""
+
 
 @dataclass(slots=True)
 class OptimizationUsage:

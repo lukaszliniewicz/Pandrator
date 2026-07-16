@@ -22,6 +22,7 @@
   import WaveformPeaks from './WaveformPeaks.svelte';
   import TtsServicesModal from './TtsServicesModal.svelte';
   import AudioPlayer from './AudioPlayer.svelte';
+  import TextDiff from './TextDiff.svelte';
 
   let { sessionId }: { sessionId: string } = $props();
   let mode = $state<'collapsed' | 'half' | 'full'>('collapsed');
@@ -55,6 +56,7 @@
   let comparisonItem = $state<any>(null);
   let comparisonText = $state('');
   let regenerateAfterReview = $state(true);
+  let comparisonDiff = $state(false);
   let initialized = false;
 
   const marked = $derived(payload.items.filter((item: any) => item.marked).map((item: any) => item.id));
@@ -149,6 +151,7 @@
   function openOptimizationReview(item: any) {
     comparisonItem = item;
     comparisonText = String(item.optimized_text ?? activeTake(item)?.synthesized_text ?? item.text ?? '');
+    comparisonDiff = false;
   }
 
   async function saveOptimizationReview() {
@@ -634,8 +637,8 @@
 {#if comparisonItem}
   <div class="fixed inset-0 z-[95] grid place-items-center bg-black/55 p-3 backdrop-blur-sm" role="presentation" onclick={(event)=>event.target===event.currentTarget&&(comparisonItem=null)}>
     <div class="comparison-modal flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-3xl" role="dialog" aria-modal="true" aria-labelledby="segment-optimization-title">
-      <header class="flex items-start gap-4 border-b border-[var(--line)] px-5 py-4"><div class="min-w-0 flex-1"><div class="eyebrow">Generation segment {comparisonItem.ordinal + 1}</div><h2 id="segment-optimization-title" class="mt-1 text-xl font-semibold">Review speech optimization</h2><p class="muted mt-1 text-xs">The source remains unchanged. Saving the optimized delivery marks existing takes stale.</p></div><button onclick={()=>comparisonItem=null} class="rounded-xl p-2" aria-label="Close"><X size={20}/></button></header>
-      <div class="grid min-h-0 flex-1 gap-4 overflow-auto p-5 md:grid-cols-2"><section><h3 class="mb-2 text-xs font-bold uppercase tracking-wider text-[var(--muted)]">Original generation text</h3><div class="h-full min-h-44 rounded-2xl border border-[var(--line)] bg-[var(--paper)] p-4 text-sm leading-7">{comparisonItem.text}</div></section><section><h3 class="mb-2 text-xs font-bold uppercase tracking-wider text-[var(--muted)]">Optimized delivery · editable</h3><textarea bind:value={comparisonText} class="h-full min-h-44 w-full resize-y rounded-2xl border border-[var(--line)] bg-[var(--paper)] p-4 text-sm leading-7"></textarea></section></div>
+      <header class="flex items-start gap-4 border-b border-[var(--line)] px-5 py-4"><div class="min-w-0 flex-1"><div class="eyebrow">Generation segment {comparisonItem.ordinal + 1}</div><h2 id="segment-optimization-title" class="mt-1 text-xl font-semibold">Review speech optimization</h2><p class="muted mt-1 text-xs">The source remains unchanged. Saving the optimized delivery marks existing takes stale.</p></div><button onclick={() => comparisonDiff = !comparisonDiff} class:active={comparisonDiff} class="action">{comparisonDiff ? 'Side by side' : 'Diff'}</button><button onclick={()=>comparisonItem=null} class="rounded-xl p-2" aria-label="Close"><X size={20}/></button></header>
+      <div class="min-h-0 flex-1 overflow-auto p-5">{#if comparisonDiff}<div class="grid gap-4"><TextDiff before={String(comparisonItem.text ?? '')} after={comparisonText}/><section><h3 class="mb-2 text-xs font-bold uppercase tracking-wider text-[var(--muted)]">Optimized delivery · editable</h3><textarea bind:value={comparisonText} class="min-h-44 w-full resize-y rounded-2xl border border-[var(--line)] bg-[var(--paper)] p-4 text-sm leading-7"></textarea></section></div>{:else}<div class="grid gap-4 md:grid-cols-2"><section><h3 class="mb-2 text-xs font-bold uppercase tracking-wider text-[var(--muted)]">Original generation text</h3><div class="h-full min-h-44 rounded-2xl border border-[var(--line)] bg-[var(--paper)] p-4 text-sm leading-7">{comparisonItem.text}</div></section><section><h3 class="mb-2 text-xs font-bold uppercase tracking-wider text-[var(--muted)]">Optimized delivery · editable</h3><textarea bind:value={comparisonText} class="h-full min-h-44 w-full resize-y rounded-2xl border border-[var(--line)] bg-[var(--paper)] p-4 text-sm leading-7"></textarea></section></div>{/if}</div>
       <footer class="flex flex-wrap items-center justify-end gap-3 border-t border-[var(--line)] px-5 py-4"><label class="mr-auto flex items-center gap-2 text-xs font-semibold"><input type="checkbox" bind:checked={regenerateAfterReview} class="accent-[var(--accent)]"/> Regenerate this segment after saving</label><button onclick={()=>comparisonItem=null} class="action">Cancel</button><button onclick={saveOptimizationReview} disabled={!comparisonText.trim()} class="action primary"><Save size={14}/> Save review</button></footer>
     </div>
   </div>

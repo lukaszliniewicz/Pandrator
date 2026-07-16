@@ -75,6 +75,7 @@ def build_openapi_document() -> dict:
             "/api/v1/training/{trainingId}/cancel": {"post": {"operationId": "cancelTrainingRun", "responses": {"202": {"description": "Cancellation requested"}}}},
             "/api/v1/training/{trainingId}/retry": {"post": {"operationId": "retryTrainingRun", "responses": {"202": {"description": "Retry queued"}}}},
             "/api/v1/jobs/{jobId}": {"get": {"operationId": "getJob", "responses": {"200": {"description": "Job"}}}},
+            "/api/v1/jobs/{jobId}/logs": {"get": {"operationId": "getJobLogs", "responses": {"200": {"description": "Durable job event and log timeline"}}}},
             "/api/v1/jobs/{jobId}/cancel": {"post": {"operationId": "cancelJob", "responses": {"200": {"description": "Cancellation requested"}}}},
         },
         "components": {

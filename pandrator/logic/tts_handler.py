@@ -4468,6 +4468,8 @@ def text_to_audio(
     kobold_qwen_base_url: str = KOBOLD_QWEN_API_BASE_URL,
     magpie_base_url: str = MAGPIE_API_BASE_URL,
     max_attempts: int = 5,
+    cancel_event=None,
+    retry_callback=None,
 ) -> AudioSegment | None:
     """
     Generates audio from text using the specified TTS service.
@@ -4476,7 +4478,11 @@ def text_to_audio(
     service = tts_settings.get("service", "XTTS")
     normalized_silero_base_url = _normalize_base_url(silero_base_url, SILERO_API_BASE_URL)
 
+    max_attempts = max(1, min(20, int(max_attempts or 1)))
     for attempt in range(max_attempts):
+        if cancel_event is not None and cancel_event.is_set():
+            logging.info("TTS generation canceled before attempt %d/%d", attempt + 1, max_attempts)
+            return None
         try:
             if service == "XTTS":
                 response = _request_xtts_audio(text, tts_settings, xtts_base_url)
@@ -4532,11 +4538,42 @@ def text_to_audio(
             return audio
 
         except requests.exceptions.RequestException as e:
+            status = int(e.response.status_code) if e.response is not None else 0
+            retryable = not status or status in {408, 409, 425, 429} or status >= 500
             logging.warning("TTS generation attempt %d/%d failed: %s", attempt + 1, max_attempts, e)
             if e.response is not None:
-                logging.warning("Server response: %s", e.response.text)
+                logging.warning("Server response: %s", e.response.text[:4000])
+            if not retryable:
+                logging.error("TTS request is not retryable (HTTP %d).", status)
+                break
+            retry_after = 0.0
+            if e.response is not None:
+                try:
+                    retry_after = float(e.response.headers.get("Retry-After") or 0)
+                except (TypeError, ValueError):
+                    retry_after = 0.0
+        except ValueError as e:
+            # Invalid service, model, voice, or configuration will not improve
+            # with another identical request.
+            logging.error("TTS configuration error: %s", e)
+            break
         except Exception as e:
-            logging.error("An unexpected error occurred during TTS generation: %s", e)
+            logging.warning("TTS generation attempt %d/%d failed unexpectedly: %s", attempt + 1, max_attempts, e)
+            retry_after = 0.0
+
+        if attempt + 1 >= max_attempts:
+            break
+        delay = max(retry_after, min(8.0, 0.5 * (2 ** attempt)))
+        if retry_callback is not None:
+            retry_callback(attempt + 2, max_attempts, delay)
+        logging.info("Retrying TTS generation in %.1f seconds (attempt %d/%d).", delay, attempt + 2, max_attempts)
+        if cancel_event is not None:
+            if cancel_event.wait(delay):
+                logging.info("TTS generation canceled while waiting to retry.")
+                return None
+        else:
+            import time
+            time.sleep(delay)
 
     logging.error("Failed to generate TTS audio after %d attempts: '%s...'", max_attempts, text[:50])
     return None

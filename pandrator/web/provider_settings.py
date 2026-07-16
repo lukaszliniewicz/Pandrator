@@ -158,7 +158,10 @@ def build_llm_settings(
     selected_model = str(requested_model or "").strip()
     default_model = ""
     for provider in providers:
-        rows = [row for row in models_by_provider.get(provider.id, []) if row.is_active]
+        # A default model is necessarily usable. Treat legacy/directly-created
+        # rows that predate the activation flag the same way the API does when
+        # it promotes a model to the application default.
+        rows = [row for row in models_by_provider.get(provider.id, []) if row.is_active or row.is_default]
         if not rows:
             continue
         fallback_env = str((provider.options_json or {}).get("api_key_env") or "").strip()

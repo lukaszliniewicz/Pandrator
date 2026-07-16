@@ -584,6 +584,48 @@ class TTSHandlerTests(unittest.TestCase):
             },
         )
 
+    def test_tts_generation_retries_transient_http_failures_with_backoff(self):
+        transient = Mock(status_code=503, headers={}, text="temporarily unavailable")
+        transient.raise_for_status.side_effect = tts_handler.requests.exceptions.HTTPError(
+            "503 unavailable", response=transient
+        )
+        success = Mock(status_code=200, headers={"Content-Type": "audio/wav"}, text="")
+        success.raise_for_status.return_value = None
+        cancel_event = Mock()
+        cancel_event.is_set.return_value = False
+        cancel_event.wait.return_value = False
+        decoded = object()
+
+        with patch("pandrator.logic.tts_handler.requests.post", side_effect=[transient, success]) as post, patch(
+            "pandrator.logic.tts_handler._decode_audio_response", return_value=decoded
+        ):
+            result = tts_handler.text_to_audio(
+                "Retry me",
+                {"service": "Silero", "speaker": "en_0", "language": "en"},
+                max_attempts=3,
+                cancel_event=cancel_event,
+            )
+
+        self.assertIs(decoded, result)
+        self.assertEqual(2, post.call_count)
+        cancel_event.wait.assert_called_once_with(0.5)
+
+    def test_tts_generation_does_not_retry_invalid_http_requests(self):
+        rejected = Mock(status_code=400, headers={}, text="invalid voice")
+        rejected.raise_for_status.side_effect = tts_handler.requests.exceptions.HTTPError(
+            "400 invalid", response=rejected
+        )
+
+        with patch("pandrator.logic.tts_handler.requests.post", return_value=rejected) as post:
+            result = tts_handler.text_to_audio(
+                "Do not retry",
+                {"service": "Silero", "speaker": "missing", "language": "en"},
+                max_attempts=5,
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(1, post.call_count)
+
 
 if __name__ == "__main__":
     unittest.main()

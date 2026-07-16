@@ -88,7 +88,7 @@ class ProviderModel(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     provider_id: Mapped[str] = mapped_column(ForeignKey("providers.id", ondelete="CASCADE"), nullable=False)
     model_id: Mapped[str] = mapped_column(String(255), nullable=False)
-    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     default_temperature: Mapped[float | None] = mapped_column(Float)
     default_reasoning_effort: Mapped[str | None] = mapped_column(String(80))

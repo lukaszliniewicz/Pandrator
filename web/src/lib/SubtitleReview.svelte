@@ -4,6 +4,7 @@
   import { onDestroy, onMount } from 'svelte';
   import GuidedTour from './GuidedTour.svelte';
   import AudioPlayer from './AudioPlayer.svelte';
+  import TextDiff from './TextDiff.svelte';
 
   type Segment = { id?: string; ordinal: number; start_ms: number; end_ms: number; text: string; speaker?: string | null };
   type Stage = { revision: number; segments: Segment[] };
@@ -15,6 +16,7 @@
   let error = $state('');
   let loading = $state(true);
   let changedOnly = $state(false);
+  let diffView = $state(false);
   type ReviewStage = 'transcription' | 'correction' | 'translation' | 'tts_optimization';
   let editStage = $state<ReviewStage>('translation');
   let saving = $state(false);
@@ -25,6 +27,19 @@
   const tourSteps = [{section:'Review',title:'Lineage keeps changes together',body:'Rows group transcription, correction, and translation through split/merge lineage, with temporal overlap for legacy artifacts.'},{section:'Review',title:'Edit the selected revision',body:'Change text and boundaries, split a segment, or merge it with the next while comparison columns remain visible.'},{section:'Review',title:'Saving creates history',body:'A save creates a reviewed immutable revision and invalidates only affected descendants.'}];
   const availableStages = $derived((['transcription', 'correction', 'translation', 'tts_optimization'] as const).filter((stage) => payload?.stages[stage]));
   const visibleRows = $derived((payload?.rows ?? []).filter((row) => !changedOnly || row.changed));
+
+  function stageText(row: Row, stage: ReviewStage) {
+    return (row[stage] ?? []).map((segment) => segment.text).join('\n');
+  }
+
+  function previousStageText(row: Row) {
+    const position = availableStages.indexOf(editStage);
+    for (let index = position - 1; index >= 0; index -= 1) {
+      const text = stageText(row, availableStages[index]);
+      if (text) return text;
+    }
+    return '';
+  }
 
   async function load() {
     loading = true;
@@ -112,6 +127,7 @@
       <div><div class="eyebrow">Subtitle review</div><h2 id="review-title" class="mt-1 flex items-center gap-2 text-xl font-semibold"><Columns3 size={20}/> Compare and refine</h2></div>
       <div class="flex flex-wrap items-center gap-2">
         <button onclick={() => changedOnly = !changedOnly} class:active={changedOnly} class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-sm font-semibold"><Filter size={16}/> Changed only</button>
+        <button onclick={() => diffView = !diffView} class:active={diffView} class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-sm font-semibold">Diff</button>
         <select bind:value={editStage} class="rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm" aria-label="Stage to edit">{#each availableStages as stage}<option value={stage}>{stage}</option>{/each}</select>
         <button onclick={save} disabled={saving || !payload?.stages[editStage]} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-40"><Save size={16}/> {saving ? 'Saving…' : 'Save reviewed revision'}</button>
         <button onclick={onclose} aria-label="Close subtitle review" class="rounded-xl border border-[var(--line)] p-2"><X size={18}/></button>
@@ -126,7 +142,7 @@
         <table class="w-full min-w-[66rem] border-collapse text-sm">
           <thead class="sticky top-0 z-10 bg-[var(--paper-strong)]"><tr><th class="w-32 border-b border-r border-[var(--line)] p-3 text-left">Timing</th>{#each availableStages as stage}<th class="border-b border-r border-[var(--line)] p-3 text-left capitalize last:border-r-0">{stage}</th>{/each}</tr></thead>
           <tbody>{#each visibleRows as row}<tr class:changed={row.changed} class="align-top"><td class="muted border-b border-r border-[var(--line)] p-3 font-mono text-xs">{(row.start_ms/1000).toFixed(2)}<br/>→ {(row.end_ms/1000).toFixed(2)}</td>
-            {#each availableStages as stage}<td class="border-b border-r border-[var(--line)] p-3 last:border-r-0"><div class="space-y-3">{#each row[stage] ?? [] as segment}<div class="rounded-xl border border-[var(--line)] bg-[var(--paper)] p-2.5">
+            {#each availableStages as stage}<td class="border-b border-r border-[var(--line)] p-3 last:border-r-0">{#if diffView && stage === editStage}<div class="mb-3"><TextDiff before={previousStageText(row)} after={stageText(row, editStage)}/></div>{/if}<div class="space-y-3">{#each row[stage] ?? [] as segment}<div class="rounded-xl border border-[var(--line)] bg-[var(--paper)] p-2.5">
               {#if stage === editStage}<div class="mb-2 grid grid-cols-2 gap-2"><label class="muted text-[.68rem]">Start ms<input type="number" bind:value={segment.start_ms} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent px-2 py-1"/></label><label class="muted text-[.68rem]">End ms<input type="number" bind:value={segment.end_ms} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent px-2 py-1"/></label></div><textarea bind:value={segment.text} rows="3" class="w-full resize-y rounded-lg border border-[var(--line)] bg-transparent p-2 leading-relaxed"></textarea><div class="mt-2 flex flex-wrap gap-2"><button onclick={() => previewSegment(segment)} class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2 py-1 text-xs"><Play size={13}/> Play</button><button onclick={() => split(segment)} class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2 py-1 text-xs"><Scissors size={13}/> Split</button><button onclick={() => mergeNext(segment)} class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2 py-1 text-xs"><Merge size={13}/> Merge next</button><button onclick={() => removeSegment(segment)} class="flex items-center gap-1 rounded-lg border border-red-400/40 px-2 py-1 text-xs text-red-500"><Trash2 size={13}/> Delete</button></div>{:else}<p class="whitespace-pre-wrap leading-relaxed">{segment.text}</p>{/if}
             </div>{/each}</div></td>{/each}
           </tr>{/each}</tbody>

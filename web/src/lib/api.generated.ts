@@ -436,6 +436,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/jobs/{jobId}/logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getJobLogs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/parity": {
         parameters: {
             query?: never;
@@ -1567,7 +1583,7 @@ export interface components {
             input_cost_per_million: number | null;
             /**
              * Is Active
-             * @default true
+             * @default false
              */
             is_active: boolean;
             /**
@@ -2654,6 +2670,24 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Cancellation requested */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getJobLogs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Durable job event and log timeline */
             200: {
                 headers: {
                     [name: string]: unknown;

@@ -41,6 +41,7 @@ class ProviderApiTests(unittest.TestCase):
             headers=self.headers,
         ).get_json()
         self.assertEqual(first["default_temperature"], 0)
+        self.assertFalse(second["is_active"])
         blocked = self.client.delete(
             f"/api/v1/providers/{provider['id']}/models/{first['id']}",
             json={},
@@ -54,7 +55,7 @@ class ProviderApiTests(unittest.TestCase):
         )
         self.assertEqual(removed.status_code, 204)
         records = self.client.get(f"/api/v1/providers/{provider['id']}/models").get_json()["items"]
-        self.assertEqual(records, [{**second, "is_default": True}])
+        self.assertEqual(records, [{**second, "is_active": True, "is_default": True}])
 
     def test_refresh_merges_discovery_without_overwriting_manual_model(self):
         provider = self.client.post(
@@ -95,6 +96,28 @@ class ProviderApiTests(unittest.TestCase):
             headers={**self.headers, "If-Match": f'"{manual["revision"]}"'},
         )
         self.assertEqual(422, blocked.status_code)
+
+    def test_new_and_discovered_models_remain_inactive_until_selected(self):
+        provider = self.client.post(
+            "/api/v1/providers",
+            json={"provider_key": "openai", "label": "Opt in", "base_url": "http://127.0.0.1:1234/v1"},
+            headers=self.headers,
+        ).get_json()
+        manual = self.client.post(
+            f"/api/v1/providers/{provider['id']}/models",
+            json={"model_id": "manual"},
+            headers=self.headers,
+        ).get_json()
+        with mock.patch("pandrator.logic.llm_handler._detect_models_for_builtin_provider", return_value=["manual", "discovered"]):
+            self.client.post(
+                f"/api/v1/providers/{provider['id']}/models/refresh",
+                json={},
+                headers=self.headers,
+            )
+
+        records = self.client.get(f"/api/v1/providers/{provider['id']}/models").get_json()["items"]
+        self.assertFalse(manual["is_active"])
+        self.assertTrue(all(not item["is_active"] and not item["is_default"] for item in records))
 
     def test_provider_profiles_update_and_global_default_selection(self):
         profiles = self.client.get("/api/v1/providers/profiles").get_json()["items"]

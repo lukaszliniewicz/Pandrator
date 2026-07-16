@@ -8,6 +8,7 @@ from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.credentials import hydrate_tts_settings, shared_provider_credential_key
 from pandrator.web.models import AppSetting, AppSettingHistory, StoredCredential
+from pandrator.web.tts_optimization import DEFAULT_FIRST_PROMPT, DEFAULT_PROMPT, DEFAULT_SECOND_PROMPT, DEFAULT_THIRD_PROMPT
 
 
 class SettingsApiTests(unittest.TestCase):
@@ -49,6 +50,14 @@ class SettingsApiTests(unittest.TestCase):
         database = self.app.extensions["pandrator"]["database"]
         with database.session() as session:
             self.assertEqual(session.scalar(select(func.count()).select_from(AppSettingHistory)), 1)
+
+    def test_tts_optimization_prompts_are_visible_in_builtin_settings(self):
+        payload = self.client.get("/api/v1/defaults/text").get_json()["builtin"]
+
+        self.assertEqual(DEFAULT_PROMPT, payload["combined_prompt"])
+        self.assertEqual(DEFAULT_FIRST_PROMPT, payload["first_prompt"])
+        self.assertEqual(DEFAULT_SECOND_PROMPT, payload["second_prompt"])
+        self.assertEqual(DEFAULT_THIRD_PROMPT, payload["third_prompt"])
 
     def test_tts_api_key_is_extracted_from_settings_and_never_returned(self):
         secret = "speech-secret-value"

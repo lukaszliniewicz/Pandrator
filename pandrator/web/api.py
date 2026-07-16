@@ -626,7 +626,12 @@ def create_app(
         }
         if service.get("is_custom"):
             settings["openai_audio_endpoint"] = str(service.get("id") or service_id)
-        job = jobs.enqueue("tts.preview", {"text": payload.text, "settings": settings}, resource_keys=[f"service:tts:{service_id}"])
+        job = jobs.enqueue(
+            "tts.preview",
+            {"text": payload.text, "settings": settings},
+            max_attempts=2,
+            resource_keys=[f"service:tts:{service_id}"],
+        )
         return jsonify(_job_payload(job)), 202
 
     @app.get("/api/v1/sessions")
@@ -1281,6 +1286,30 @@ def create_app(
         except KeyError:
             return error_response("not_found", "Job not found.", 404)
 
+    @app.get("/api/v1/jobs/<job_id>/logs")
+    @require_auth
+    def job_logs(job_id: str):
+        """Return the job's durable event and captured worker-log timeline."""
+        try:
+            events = jobs.events_for(job_id, request.args.get("limit", 1000, type=int))
+        except KeyError:
+            return error_response("not_found", "Job not found.", 404)
+        return jsonify(
+            {
+                "items": [
+                    redact_inline_secrets(
+                        {
+                            "id": event.id,
+                            "event_type": event.event_type,
+                            "payload_json": event.payload_json,
+                            "created_at": event.created_at.isoformat(),
+                        }
+                    )
+                    for event in events
+                ]
+            }
+        )
+
     @app.get("/api/v1/sessions/<session_id>/workflow")
     @require_auth
     def workflow_get(session_id: str):
@@ -1934,8 +1963,7 @@ def create_app(
             for model_id in detected:
                 if model_id in known:
                     continue
-                first_model = not existing and not added
-                model = ProviderModel(provider_id=provider_id, model_id=model_id, is_active=first_model, is_default=first_model)
+                model = ProviderModel(provider_id=provider_id, model_id=model_id, is_active=False, is_default=False)
                 db_session.add(model)
                 added.append(model_id)
             return jsonify({"detected": detected, "added": added, "preserved": sorted(known)})

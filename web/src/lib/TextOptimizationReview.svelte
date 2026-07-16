@@ -2,10 +2,12 @@
   import { Check, LoaderCircle, Save, X } from '@lucide/svelte';
   import { onMount } from 'svelte';
   import { api } from './api';
+  import TextDiff from './TextDiff.svelte';
 
   let { artifactId, onclose, onsaved }: { artifactId: string; onclose: () => void; onsaved: () => void } = $props();
   let rows = $state<{ index: number; source: string; optimized: string }[]>([]);
   let changedOnly = $state(false);
+  let diffView = $state(false);
   let loading = $state(true);
   let saving = $state(false);
   let error = $state('');
@@ -52,6 +54,7 @@
     <header class="flex flex-wrap items-center gap-3 border-b border-[var(--line)] px-5 py-4 sm:px-6">
       <div class="min-w-0 flex-1"><div class="eyebrow">Speech optimization review</div><h2 id="optimization-review-title" class="mt-1 text-xl font-semibold">Original and LLM-optimized narration</h2><p class="muted mt-1 text-xs">Edits create a new reviewed artifact; the original optimization remains in history.</p></div>
       <label class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-xs font-semibold"><input type="checkbox" bind:checked={changedOnly} class="accent-[var(--accent)]"/> Changed only</label>
+      <label class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-xs font-semibold"><input type="checkbox" bind:checked={diffView} class="accent-[var(--accent)]"/> Diff view</label>
       <button onclick={onclose} class="rounded-xl p-2" aria-label="Close review"><X size={20}/></button>
     </header>
     <div class="min-h-0 flex-1 overflow-auto p-4 sm:p-6">
@@ -63,7 +66,7 @@
           {#each visibleRows as row (row.index)}
             <article class:changed={row.source.trim() !== row.optimized.trim()} class="grid gap-3 rounded-2xl border border-[var(--line)] p-3 md:grid-cols-[4rem_1fr_1fr]">
               <div class="flex items-center gap-2 text-xs font-bold text-[var(--muted)]"><span>#{row.index + 1}</span>{#if row.source.trim() === row.optimized.trim()}<Check size={13}/>{/if}</div>
-              <div class="rounded-xl bg-[var(--paper)] p-3 text-sm leading-6">{row.source}</div>
+              {#if diffView}<TextDiff before={row.source} after={row.optimized}/>{:else}<div class="rounded-xl bg-[var(--paper)] p-3 text-sm leading-6">{row.source}</div>{/if}
               <textarea bind:value={row.optimized} rows="3" class="min-h-24 resize-y rounded-xl border border-[var(--line)] bg-[var(--paper)] p-3 text-sm leading-6"></textarea>
             </article>
           {/each}

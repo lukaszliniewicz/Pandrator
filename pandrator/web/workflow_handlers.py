@@ -120,7 +120,17 @@ class WorkflowHandlers:
         }.get(service_id)
         if url_key and api_base:
             urls[url_key] = api_base
-        audio = tts_handler.text_to_audio(text, settings, max_attempts=1, **urls)
+        audio = tts_handler.text_to_audio(
+            text,
+            settings,
+            max_attempts=int(settings.get("max_attempts") or 3),
+            cancel_event=cancel_event,
+            retry_callback=lambda attempt, total, delay: progress(
+                0.1,
+                f"Voice preview retry {attempt} of {total} in {delay:.1f}s",
+            ),
+            **urls,
+        )
         if audio is None:
             raise RuntimeError("The speech service did not return preview audio.")
         preview_identity = {
@@ -1583,7 +1593,17 @@ class WorkflowHandlers:
             synthesis_share = 1.0 - optimization_share
             progress(optimization_share + ((index - 1) / len(records)) * synthesis_share, f"Generating segment {index} of {len(records)}")
             synthesized_text = optimized_texts[index - 1]
-            audio = tts_handler.text_to_audio(synthesized_text, settings, max_attempts=int(settings.get("max_attempts") or 3), **self._tts_urls(settings))
+            audio = tts_handler.text_to_audio(
+                synthesized_text,
+                settings,
+                max_attempts=int(settings.get("max_attempts") or 3),
+                cancel_event=cancel_event,
+                retry_callback=lambda attempt, total, delay: progress(
+                    optimization_share + ((index - 1) / len(records)) * synthesis_share,
+                    f"Retrying segment {index} ({attempt}/{total}) in {delay:.1f}s",
+                ),
+                **self._tts_urls(settings),
+            )
             if audio is None:
                 raise RuntimeError(f"Speech generation failed at segment {index}.")
             take_dir = self._session_dir(session_id) / "generation" / revision_id / generation_segment_id
@@ -1949,7 +1969,17 @@ class WorkflowHandlers:
                     take_settings = rvc_settings
                 else:
                     synthesized_text = optimized_by_id.get(segment_id, text)
-                    audio = tts_handler.text_to_audio(synthesized_text, tts_settings, max_attempts=int(tts_settings.get("max_attempts") or 3), **self._tts_urls(tts_settings))
+                    audio = tts_handler.text_to_audio(
+                        synthesized_text,
+                        tts_settings,
+                        max_attempts=int(tts_settings.get("max_attempts") or 3),
+                        cancel_event=cancel_event,
+                        retry_callback=lambda attempt, total, delay: progress(
+                            optimization_share + (index / len(segment_ids)) * (1.0 - optimization_share),
+                            f"Retrying segment {index + 1} ({attempt}/{total}) in {delay:.1f}s",
+                        ),
+                        **self._tts_urls(tts_settings),
+                    )
                     if audio is None:
                         raise RuntimeError("The speech service returned no audio.")
                     take_kind = "tts"

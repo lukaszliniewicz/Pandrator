@@ -631,7 +631,7 @@
             "title": "Input Cost Per Million"
           },
           "is_active": {
-            "default": true,
+            "default": false,
             "title": "Is Active",
             "type": "boolean"
           },
@@ -2315,6 +2315,16 @@
         "responses": {
           "200": {
             "description": "Cancellation requested"
+          }
+        }
+      }
+    },
+    "/api/v1/jobs/{jobId}/logs": {
+      "get": {
+        "operationId": "getJobLogs",
+        "responses": {
+          "200": {
+            "description": "Durable job event and log timeline"
           }
         }
       }

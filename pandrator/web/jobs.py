@@ -28,6 +28,57 @@ class JobQueue:
         session.add(event)
         return event
 
+    def log(self, job_id: str, level: str, message: str, *, logger: str = "", trace: str = "") -> None:
+        """Persist a worker log record beside the durable job timeline."""
+        with self.database.session() as session:
+            if session.get(Job, job_id) is None:
+                return
+            self._event(
+                session,
+                job_id,
+                "job.log",
+                {
+                    "level": str(level or "INFO").upper(),
+                    "message": str(message or ""),
+                    "logger": str(logger or ""),
+                    **({"trace": str(trace)} if trace else {}),
+                },
+            )
+
+    def _reconcile_stale_locked(self, session) -> None:
+        """Close jobs whose worker lease vanished instead of leaving them running forever."""
+        now = utcnow()
+        records = list(
+            session.scalars(
+                select(Job).where(
+                    Job.status.in_(("running", "cancel_requested")),
+                    or_(Job.lease_expires_at.is_(None), Job.lease_expires_at <= now),
+                )
+            ).all()
+        )
+        for job in records:
+            if job.status == "cancel_requested":
+                job.status = "canceled"
+                job.finished_at = now
+                job.lease_owner = None
+                job.lease_expires_at = None
+                job.updated_at = now
+                self._event(session, job.id, "job.canceled", {"reason": "worker_lease_expired"})
+            elif job.attempts >= job.max_attempts or job.lease_expires_at is None:
+                job.status = "failed"
+                job.error_code = job.error_code or "worker_lease_expired"
+                job.error_message = job.error_message or "The worker stopped before this job completed."
+                job.finished_at = now
+                job.lease_owner = None
+                job.lease_expires_at = None
+                job.updated_at = now
+                self._event(
+                    session,
+                    job.id,
+                    "job.failed",
+                    {"code": job.error_code, "message": job.error_message},
+                )
+
     def enqueue(
         self,
         kind: str,
@@ -105,6 +156,8 @@ class JobQueue:
 
     def list(self, limit: int = 100) -> list[Job]:
         with self.database.session() as session:
+            self._reconcile_stale_locked(session)
+            session.flush()
             jobs = list(session.scalars(select(Job).order_by(Job.created_at.desc()).limit(max(1, min(limit, 500)))).all())
             for job in jobs:
                 session.expunge(job)
@@ -112,6 +165,8 @@ class JobQueue:
 
     def get(self, job_id: str) -> Job:
         with self.database.session() as session:
+            self._reconcile_stale_locked(session)
+            session.flush()
             job = session.get(Job, job_id)
             if job is None:
                 raise KeyError(job_id)
@@ -121,6 +176,8 @@ class JobQueue:
     def claim(self, worker_id: str, lease_seconds: int = 30) -> Job | None:
         now = utcnow()
         with self.database.session() as session:
+            self._reconcile_stale_locked(session)
+            session.flush()
             running_session_ids = select(Job.session_id).where(
                 Job.status == "running",
                 Job.session_id.is_not(None),
@@ -176,7 +233,11 @@ class JobQueue:
     def should_cancel(self, job_id: str, worker_id: str) -> bool:
         with self.database.session() as session:
             job = session.get(Job, job_id)
-            return bool(job and job.lease_owner == worker_id and job.status == "cancel_requested")
+            return bool(
+                job
+                and job.status in {"cancel_requested", "canceled"}
+                and (job.lease_owner in {None, worker_id})
+            )
 
     def request_cancel(self, job_id: str) -> Job:
         with self.database.session() as session:
@@ -187,9 +248,16 @@ class JobQueue:
                 job.status = "canceled"
                 job.finished_at = utcnow()
                 event_type = "job.canceled"
-            elif job.status == "running":
-                job.status = "cancel_requested"
-                event_type = "job.cancel_requested"
+            elif job.status in {"running", "cancel_requested"}:
+                # Cancellation is a terminal state immediately. The worker's
+                # monitor notices it independently of progress callbacks and
+                # prevents any later result from replacing this state.
+                self._event(session, job.id, "job.cancel_requested")
+                job.status = "canceled"
+                job.finished_at = utcnow()
+                job.lease_owner = None
+                job.lease_expires_at = None
+                event_type = "job.canceled"
             else:
                 event_type = "job.cancel_ignored"
             job.updated_at = utcnow()
@@ -201,7 +269,7 @@ class JobQueue:
     def complete(self, job_id: str, worker_id: str, result: dict[str, Any] | None = None) -> None:
         with self.database.session() as session:
             job = session.get(Job, job_id)
-            if job is None or job.lease_owner != worker_id:
+            if job is None or job.lease_owner != worker_id or job.status != "running":
                 raise RuntimeError("Job lease is no longer owned by this worker.")
             job.status = "succeeded"
             job.progress = 1.0
@@ -255,6 +323,46 @@ class JobQueue:
                 session.expunge(event)
             return events
 
+    def events_for(self, job_id: str, limit: int = 1000) -> list[JobEvent]:
+        with self.database.session() as session:
+            if session.get(Job, job_id) is None:
+                raise KeyError(job_id)
+            events = list(
+                session.scalars(
+                    select(JobEvent)
+                    .where(JobEvent.job_id == job_id)
+                    .order_by(JobEvent.id.desc())
+                    .limit(max(1, min(int(limit), 5000)))
+                ).all()
+            )
+            events.reverse()
+            for event in events:
+                session.expunge(event)
+            return events
+
+
+class _JobLogHandler(logging.Handler):
+    """Route Python logs emitted while a handler runs into its durable timeline."""
+
+    def __init__(self, queue: JobQueue, job_id: str):
+        super().__init__(level=logging.INFO)
+        self.queue = queue
+        self.job_id = job_id
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            trace = logging.Formatter().formatException(record.exc_info) if record.exc_info else ""
+            self.queue.log(
+                self.job_id,
+                record.levelname,
+                record.getMessage(),
+                logger=record.name,
+                trace=trace,
+            )
+        except Exception:
+            # Logging must never be allowed to fail the job it is observing.
+            self.handleError(record)
+
 
 class Worker:
     def __init__(self, queue: JobQueue, worker_id: str, handlers: dict[str, JobHandler] | None = None):
@@ -282,6 +390,36 @@ class Worker:
             return True
 
         cancel_event = threading.Event()
+        monitor_stop = threading.Event()
+        log_handler = _JobLogHandler(self.queue, job.id)
+        root_logger = logging.getLogger()
+        previous_log_level = root_logger.level
+        logging.basicConfig(level=logging.INFO)
+        if previous_log_level > logging.INFO:
+            root_logger.setLevel(logging.INFO)
+        root_logger.addHandler(log_handler)
+
+        def monitor() -> None:
+            """Keep leases alive and observe cancellation even during quiet handlers."""
+            heartbeat_at = 0.0
+            while not monitor_stop.wait(0.2):
+                if self.queue.should_cancel(job.id, self.worker_id):
+                    cancel_event.set()
+                    return
+                now = time.monotonic()
+                if now >= heartbeat_at:
+                    if not self.queue.heartbeat(job.id, self.worker_id):
+                        cancel_event.set()
+                        return
+                    self.queue.heartbeat_resources(job.id, self.worker_id)
+                    heartbeat_at = now + 5.0
+
+        monitor_thread = threading.Thread(
+            target=monitor,
+            name=f"job-monitor-{job.id[:8]}",
+            daemon=True,
+        )
+        monitor_thread.start()
 
         def progress(value: float, detail: str | None = None) -> None:
             if self.queue.should_cancel(job.id, self.worker_id):
@@ -311,7 +449,11 @@ class Worker:
             else:
                 self.queue.complete(job.id, self.worker_id, result)
         except Exception as error:
-            logging.exception("Worker job %s failed", job.id)
+            canceled = cancel_event.is_set() or self.queue.should_cancel(job.id, self.worker_id)
+            if canceled:
+                logging.warning("Worker job %s stopped after cancellation: %s", job.id, error)
+            else:
+                logging.exception("Worker job %s failed", job.id)
             agent_run_id = str(job.payload_json.get("agent_run_id") or "")
             if agent_run_id:
                 from .models import AgentRun
@@ -319,16 +461,23 @@ class Worker:
                 with self.queue.database.session() as session:
                     agent_run = session.get(AgentRun, agent_run_id)
                     if agent_run is not None:
-                        agent_run.status = "failed"
+                        agent_run.status = "canceled" if canceled else "failed"
                         agent_run.updated_at = utcnow()
-            self.queue.fail(
-                job.id,
-                self.worker_id,
-                type(error).__name__,
-                str(error),
-                trace=traceback.format_exc(),
-            )
+            if canceled:
+                self.queue.cancel_owned(job.id, self.worker_id)
+            else:
+                self.queue.fail(
+                    job.id,
+                    self.worker_id,
+                    type(error).__name__,
+                    str(error),
+                    trace=traceback.format_exc(),
+                )
         finally:
+            monitor_stop.set()
+            monitor_thread.join(timeout=1.0)
+            root_logger.removeHandler(log_handler)
+            root_logger.setLevel(previous_log_level)
             self.queue.release_resources(job.id, self.worker_id)
         return True
 

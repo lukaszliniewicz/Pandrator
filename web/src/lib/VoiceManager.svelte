@@ -71,7 +71,9 @@
   ];
   const canTranscribe = $derived(Boolean(capabilities?.stt?.crispasr));
   const canRecord = $derived(Boolean(capabilities?.ffmpeg?.available && capabilities?.recording?.browser_media_recorder !== false));
-  const providerTarget = $derived(ttsServices.find((service) => service.id === requestedService));
+  // Pre-built-only commercial services (Vertex, Gemini, OpenAI) must never
+  // offer the reference-upload flow: those APIs do not clone voices.
+  const providerTarget = $derived(ttsServices.find((service) => service.id === requestedService && service.supports_voice_cloning === true));
   const providerRegistration = $derived(selected?.metadata_json?.providers?.[providerTarget?.id ?? '']);
   const transcribingCount = $derived(Object.values(transcribing).filter(Boolean).length);
   const sttModelInfo = $derived(capabilities?.stt?.models?.[engine] ?? {});

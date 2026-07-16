@@ -17,6 +17,7 @@
   let notice = $state('');
   let loading = $state(false);
   let tourOpen = $state(false);
+  let expandedProviders = $state<Record<string, boolean>>({});
 
   let providerModal = $state(false);
   let editingProvider = $state<Provider | null>(null);
@@ -154,8 +155,9 @@
         await api(`/providers/${editingProvider.id}`, { method: 'PATCH', headers: { 'If-Match': `"${editingProvider.revision}"` }, body });
         notice = `Updated ${providerLabel.trim()}.`;
       } else {
-        await api('/providers', { method: 'POST', body });
-        notice = `Added ${providerLabel.trim()}. Add or discover at least one model next.`;
+        const created = await api<Provider>('/providers', { method: 'POST', body });
+        expandedProviders[created.id] = true;
+        notice = `Added ${providerLabel.trim()}. Models remain inactive until you activate one.`;
       }
       providerModal = false;
       await load();
@@ -202,10 +204,10 @@
   async function createModel(providerId: string) {
     if (!modelId.trim()) { error = 'A canonical model ID is required.'; return; }
     try {
-      await api(`/providers/${providerId}/models`, { method: 'POST', body: JSON.stringify({ model_id: modelId.trim(), is_active: true, is_default: !allModels.some((item) => item.is_default) }) });
+      await api(`/providers/${providerId}/models`, { method: 'POST', body: JSON.stringify({ model_id: modelId.trim(), is_active: false, is_default: false }) });
       modelId = '';
       addModelProvider = null;
-      notice = 'Model added.';
+      notice = 'Model added as inactive. Activate it when you are ready to use it.';
       await load();
     } catch (caught) { report(caught); }
   }
@@ -280,17 +282,17 @@
     {#each providers as provider}
       <section class:opacity-60={!provider.enabled} class="surface overflow-hidden rounded-[1.5rem]">
         <header class="flex flex-wrap items-center justify-between gap-4 border-b border-[var(--line)] p-5">
-          <div class="flex min-w-0 items-center gap-3"><div class="grid size-10 shrink-0 place-items-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]"><Bot size={19}/></div><div class="min-w-0"><div class="flex flex-wrap items-center gap-2"><h2 class="font-semibold">{provider.label}</h2><span class="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[.65rem] font-bold uppercase text-[var(--accent)]">{provider.enabled ? 'Enabled' : 'Disabled'}</span><span class="rounded-full border border-[var(--line)] px-2 py-0.5 text-[.65rem] font-bold uppercase">{provider.credential_configured ? `Key: ${provider.credential_source}` : 'No key'}</span></div><p class="muted mt-1 truncate text-xs">LiteLLM: {provider.provider_key}{provider.base_url ? ` · ${provider.base_url}` : ' · provider-managed endpoint'}</p></div></div>
+          <button onclick={() => expandedProviders[provider.id] = !expandedProviders[provider.id]} class="flex min-w-0 flex-1 items-center gap-3 text-left" aria-expanded={Boolean(expandedProviders[provider.id])}><ChevronDown class={`muted shrink-0 transition-transform ${expandedProviders[provider.id] ? 'rotate-180' : ''}`} size={18}/><div class="grid size-10 shrink-0 place-items-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]"><Bot size={19}/></div><div class="min-w-0"><div class="flex flex-wrap items-center gap-2"><h2 class="font-semibold">{provider.label}</h2><span class="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[.65rem] font-bold uppercase text-[var(--accent)]">{provider.enabled ? 'Enabled' : 'Disabled'}</span><span class="rounded-full border border-[var(--line)] px-2 py-0.5 text-[.65rem] font-bold uppercase">{provider.credential_configured ? `Key: ${provider.credential_source}` : 'No key'}</span><span class="muted text-[.68rem]">{models[provider.id]?.filter((item) => item.is_active).length ?? 0}/{models[provider.id]?.length ?? 0} models active</span></div><p class="muted mt-1 truncate text-xs">LiteLLM: {provider.provider_key}{provider.base_url ? ` · ${provider.base_url}` : ' · provider-managed endpoint'}</p></div></button>
           <div class="flex flex-wrap gap-2"><button onclick={() => testProvider(provider.id)} disabled={!provider.enabled || !(models[provider.id]?.some((item) => item.is_active))} class="btn btn-sm btn-secondary">Test</button><button onclick={() => refresh(provider.id)} disabled={!provider.enabled} class="btn btn-sm btn-secondary"><RefreshCw size={14}/> Discover</button><button onclick={() => openProvider(provider)} class="btn btn-sm btn-secondary"><Pencil size={14}/> Edit</button><button onclick={() => { addModelProvider = provider.id; modelId = ''; }} class="btn btn-sm btn-secondary"><Plus size={14}/> Add model</button><button onclick={() => requestProviderDelete(provider)} aria-label={`Delete ${provider.label}`} class="btn btn-sm btn-secondary text-red-500"><Trash2 size={15}/></button></div>
         </header>
-        <div>
+        {#if expandedProviders[provider.id]}<div>
           {#each models[provider.id] ?? [] as model}
             <div class="flex flex-wrap items-center gap-4 border-b border-[var(--line)] px-5 py-4 last:border-0">
               <div class="min-w-0 flex-1"><div class="flex flex-wrap items-center gap-2"><span class="truncate font-mono text-sm font-semibold">{model.model_id}</span><span class="rounded-full border border-[var(--line)] px-2 py-0.5 text-[.65rem] font-bold uppercase" class:bg-[var(--accent-soft)]={model.is_active} class:text-[var(--accent)]={model.is_active}>{model.is_active ? 'Active' : 'Inactive'}</span>{#if model.is_default}<span class="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[.65rem] font-bold uppercase text-[var(--accent)]">Application default</span>{/if}</div><p class="muted mt-1 text-xs">Temperature {model.default_temperature ?? 'omit'} · Reasoning {model.default_reasoning_effort || 'omit'} · Input ${model.input_cost_per_million ?? '—'} / cached ${model.cached_input_cost_per_million ?? model.input_cost_per_million ?? '—'} / output ${model.output_cost_per_million ?? '—'}</p></div>
               <div class="flex flex-wrap gap-2"><button onclick={() => setActive(model, !model.is_active)} disabled={model.is_default} class="btn btn-sm btn-secondary">{model.is_active ? 'Deactivate' : 'Activate'}</button>{#if !model.is_default}<button onclick={() => makeDefault(model)} class="btn btn-sm btn-secondary">Make default</button>{/if}<button onclick={() => openSettings(model)} aria-label={`Settings for ${model.model_id}`} class="btn btn-sm btn-icon btn-secondary"><Settings2 size={16}/></button><button onclick={() => requestModelDelete(model)} aria-label={`Delete ${model.model_id}`} class="btn btn-sm btn-icon btn-secondary text-red-500"><Trash2 size={16}/></button></div>
             </div>
           {:else}<div class="muted p-6 text-sm">No models yet. Add one manually or discover the endpoint catalogue.</div>{/each}
-        </div>
+        </div>{/if}
       </section>
     {:else}
       <div class="surface rounded-3xl p-10 text-center"><Bot class="mx-auto text-[var(--accent)]" size={28}/><h2 class="mt-3 font-semibold">Connect your first LLM provider</h2><p class="muted mx-auto mt-2 max-w-lg text-sm">Start from a cloud, local, or OpenAI-compatible LiteLLM profile. Nothing is contacted until you test or refresh it.</p><button onclick={openNewProvider} class="btn btn-primary mt-5"><Plus size={16}/> Add provider</button></div>

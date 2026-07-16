@@ -3,6 +3,7 @@
   import { onMount } from 'svelte';
   import { artifactFilename, artifactRoleLabel, formatBytes, type PreviewableArtifact } from './artifact-display';
   import AudioPlayer from './AudioPlayer.svelte';
+  import TextDiff from './TextDiff.svelte';
 
   let { artifact, onclose }: { artifact: PreviewableArtifact; onclose: () => void } = $props();
   let text = $state('');
@@ -11,7 +12,7 @@
   let comparisonText = $state('');
   let comparisonName = $state('');
   let comparisonId = $state('');
-  let comparisonMode = $state(false);
+  let comparisonMode = $state<'single' | 'side' | 'diff'>('single');
   type SubtitleTrack = { artifact_id: string; language: string; title: string; default: boolean };
   let subtitleTracks = $state<SubtitleTrack[]>([]);
   const url = $derived(`/api/v1/artifacts/${artifact.id}/content`);
@@ -93,7 +94,7 @@
   <div class="preview-panel flex max-h-[96vh] w-full max-w-6xl flex-col overflow-hidden rounded-3xl" role="dialog" aria-modal="true" aria-labelledby="artifact-preview-title">
     <header class="flex items-start gap-4 border-b border-[var(--line)] px-5 py-4 sm:px-6">
       <div class="min-w-0 flex-1"><div class="eyebrow">{artifactRoleLabel(artifact.role)}</div><h2 id="artifact-preview-title" class="mt-1 truncate text-xl font-semibold">{filename}</h2><div class="muted mt-1 flex flex-wrap gap-2 text-xs"><span>{artifact.mime_type || artifact.kind || 'Unknown file type'}</span>{#if artifact.size_bytes != null}<span>· {formatBytes(artifact.size_bytes)}</span>{/if}{#if artifact.state}<span>· {artifact.state}</span>{/if}</div></div>
-      {#if comparisonId}<button onclick={() => comparisonMode=!comparisonMode} class:active={comparisonMode} class="tool">{comparisonMode?'Single preview':'Compare with parent'}</button>{/if}
+      {#if comparisonId}<div class="flex gap-1"><button onclick={() => comparisonMode = comparisonMode === 'side' ? 'single' : 'side'} class:active={comparisonMode === 'side'} class="tool">Side by side</button><button onclick={() => comparisonMode = comparisonMode === 'diff' ? 'single' : 'diff'} class:active={comparisonMode === 'diff'} class="tool">Diff</button></div>{/if}
       <a href={url} download={filename} class="tool flex items-center gap-2"><Download size={16}/> Download</a>
       <button onclick={onclose} class="rounded-xl p-2" aria-label="Close preview"><X size={20}/></button>
     </header>
@@ -105,7 +106,8 @@
       {:else if isText}
         {#if loading}<div class="grid min-h-72 place-items-center"><LoaderCircle class="animate-spin" size={24}/></div>
         {:else if error}<p class="text-sm text-red-500">{error}</p>
-        {:else if comparisonMode && comparisonId}<div class="comparison-grid"><section><h3>Before · {comparisonName}</h3><pre>{comparisonText}</pre></section><section><h3>After · {filename}</h3><pre>{text}</pre></section></div>
+        {:else if comparisonMode === 'side' && comparisonId}<div class="comparison-grid"><section><h3>Before · {comparisonName}</h3><pre>{comparisonText}</pre></section><section><h3>After · {filename}</h3><pre>{text}</pre></section></div>
+        {:else if comparisonMode === 'diff' && comparisonId}<div><div class="muted mb-2 text-xs">Removed text is red and struck through; added text is green.</div><TextDiff before={comparisonText} after={text}/></div>
         {:else}<pre class="whitespace-pre-wrap break-words rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-5 font-mono text-sm leading-6">{text}</pre>{/if}
       {:else}<div class="grid min-h-72 place-items-center text-center"><div><FileQuestion class="muted mx-auto" size={38}/><h3 class="mt-4 font-semibold">Preview not available for this file type</h3><p class="muted mt-2 text-sm">Download the managed artifact to open it in a compatible application.</p></div></div>{/if}
     </div>

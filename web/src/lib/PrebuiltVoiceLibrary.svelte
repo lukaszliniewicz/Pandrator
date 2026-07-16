@@ -200,7 +200,10 @@
     if (!previewText.trim()) { error = 'Enter preview text first.'; return false; }
     if (!service || service.available === false) { error = service?.availability_reason || 'Start or configure this service first.'; return false; }
     const key = previewKey(service.id, model, language, voice.id);
-    previews = { ...previews, [key]: { status: 'generating' } };
+    // Keep the last successful sample playable while a replacement is being
+    // generated. A failed regeneration must not erase a known-good preview.
+    const previousArtifactId = previews[key]?.artifactId;
+    previews = { ...previews, [key]: { status: 'generating', ...(previousArtifactId ? { artifactId: previousArtifactId } : {}) } };
     if (!quiet) {
       error = '';
       notice = service.id === 'kobold_qwen'
@@ -210,11 +213,13 @@
     try {
       const queued = await api<JobRecord>(`/services/tts/${service.id}/preview`, { method: 'POST', body: JSON.stringify({ text: previewText.trim(), model: service.id === 'kobold_qwen' ? qwenPrebuiltModel : model, voice: voice.id, language }) });
       const complete = await waitJob(queued.id);
-      previews = { ...previews, [key]: { status: 'ready', artifactId: String(complete.result_json?.artifact_id ?? '') } };
+      const artifactId = String(complete.result_json?.artifact_id ?? '');
+      if (!artifactId) throw new Error('The preview completed without a playable audio artifact.');
+      previews = { ...previews, [key]: { status: 'ready', artifactId } };
       return true;
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
-      previews = { ...previews, [key]: { status: 'failed', error: message } };
+      previews = { ...previews, [key]: { status: 'failed', error: message, ...(previousArtifactId ? { artifactId: previousArtifactId } : {}) } };
       if (!quiet) error = message;
       return false;
     }
