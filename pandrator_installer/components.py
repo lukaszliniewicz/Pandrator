@@ -1981,6 +1981,7 @@ class ComponentOperationsMixin:
                 capture_output=True,
                 text=True,
                 timeout=30,
+                env=self.get_external_subprocess_env(),
                 **self.get_hidden_subprocess_kwargs(),
             )
             version_output = "\n".join((probe.stdout or "", probe.stderr or ""))

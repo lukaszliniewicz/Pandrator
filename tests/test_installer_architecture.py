@@ -1,11 +1,13 @@
 import unittest
 import hashlib
+import io
 import inspect
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
@@ -293,6 +295,55 @@ class InstallerArchitectureTests(unittest.TestCase):
 
         self.assertEqual(restored["LD_LIBRARY_PATH"], "/usr/local/lib")
         self.assertNotIn("LD_LIBRARY_PATH_ORIG", restored)
+
+    def test_crispasr_probe_uses_sanitized_external_environment(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        archive_buffer = io.BytesIO()
+        with zipfile.ZipFile(archive_buffer, "w") as archive:
+            archive.writestr("crispasr-release/crispasr", b"linux executable")
+            archive.writestr("crispasr-release/crispasr.exe", b"windows executable")
+        archive_bytes = archive_buffer.getvalue()
+        asset = Mock()
+        asset.name = "crispasr-test.zip"
+        asset.url = "https://example.invalid/crispasr-test.zip"
+        asset.sha256 = hashlib.sha256(archive_bytes).hexdigest()
+        asset.runtime_variant = "vulkan"
+        asset.compiled_backends = ("vulkan", "cpu")
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.iter_content.return_value = [archive_bytes]
+        sanitized_environment = {"PATH": "/usr/bin"}
+        probe = subprocess.CompletedProcess(
+            args=["crispasr", "--version"],
+            returncode=0,
+            stdout="version       : 0.8.9\n",
+            stderr="",
+        )
+
+        with tempfile.TemporaryDirectory() as install_root, patch(
+            "pandrator_installer.components.detect_compute_backends",
+            return_value=(),
+        ), patch(
+            "pandrator_installer.components.resolve_asset",
+            return_value=(asset, "vulkan"),
+        ), patch(
+            "pandrator_installer.components.requests.get",
+            return_value=response,
+        ), patch.object(
+            installer,
+            "configure_tls_certificates",
+        ), patch.object(
+            installer,
+            "get_external_subprocess_env",
+            return_value=sanitized_environment,
+        ) as get_external_subprocess_env, patch(
+            "pandrator_installer.components.subprocess.run",
+            return_value=probe,
+        ) as run:
+            installer.install_crispasr(install_root, requested_backend="vulkan")
+
+        get_external_subprocess_env.assert_called_once_with()
+        self.assertIs(run.call_args.kwargs["env"], sanitized_environment)
 
     def test_appimage_openssl_pair_supports_lib64_and_rejects_split_pairs(self):
         with tempfile.TemporaryDirectory() as temp_dir:
