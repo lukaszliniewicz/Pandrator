@@ -15,6 +15,7 @@ from .platforms import (
     resolve_launcher_workspace,
 )
 from .service import HeadlessInstaller
+from .subprocess_env import external_subprocess_environment
 
 def parse_headless_components(raw_components):
     parsed_components = set()
@@ -523,6 +524,28 @@ def run_self_check():
             f"Missing components: {missing_components}; "
             f"missing packaging paths: {missing_packaging_paths}"
         )
+
+    external_environment = external_subprocess_environment()
+    if sys.platform.startswith("linux"):
+        if "LD_LIBRARY_PATH_ORIG" in external_environment:
+            raise RuntimeError("Installer self-check failed: private library backup leaked to child processes.")
+        bundle_root = str(getattr(sys, "_MEIPASS", "") or "")
+        child_library_path = external_environment.get("LD_LIBRARY_PATH", "")
+        if bundle_root and child_library_path:
+            normalized_bundle_root = os.path.normcase(os.path.abspath(bundle_root))
+            leaked_entries = [
+                entry
+                for entry in child_library_path.split(os.pathsep)
+                if entry
+                and (
+                    os.path.normcase(os.path.abspath(entry)) == normalized_bundle_root
+                    or os.path.normcase(os.path.abspath(entry)).startswith(normalized_bundle_root + os.sep)
+                )
+            ]
+            if leaked_entries:
+                raise RuntimeError(
+                    "Installer self-check failed: private libraries would leak to child processes."
+                )
 
     print(
         "Pandrator installer self-check passed "

@@ -296,6 +296,22 @@ class InstallerArchitectureTests(unittest.TestCase):
         self.assertEqual(restored["LD_LIBRARY_PATH"], "/usr/local/lib")
         self.assertNotIn("LD_LIBRARY_PATH_ORIG", restored)
 
+    def test_external_subprocess_environment_removes_only_bundle_paths_without_orig(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        with tempfile.TemporaryDirectory() as directory:
+            bundle_root = os.path.join(directory, "appimage", "_internal")
+            user_library_path = os.path.join(directory, "studio", "lib")
+            bundle_environment = {
+                "LD_LIBRARY_PATH": os.pathsep.join((bundle_root, user_library_path)),
+            }
+
+            with patch("pandrator_installer.subprocess_env.sys.platform", "linux"), patch.object(
+                sys, "_MEIPASS", bundle_root, create=True
+            ):
+                restored = installer.get_external_subprocess_env(bundle_environment)
+
+        self.assertEqual(restored["LD_LIBRARY_PATH"], user_library_path)
+
     def test_crispasr_probe_uses_sanitized_external_environment(self):
         installer = HeadlessInstaller(working_dir="workspace")
         archive_buffer = io.BytesIO()
@@ -1130,6 +1146,17 @@ class InstallerArchitectureTests(unittest.TestCase):
         self.assertIn("pixi=", printed)
         self.assertIn("manifest=", printed)
         self.assertIn("openssl=", printed)
+
+    def test_self_check_rejects_private_bundle_paths_in_external_environment(self):
+        bundle_root = os.path.abspath(os.path.join("tmp", "appimage", "_internal"))
+        with patch("pandrator_installer.cli.sys.platform", "linux"), patch.object(
+            sys, "_MEIPASS", bundle_root, create=True
+        ), patch(
+            "pandrator_installer.cli.external_subprocess_environment",
+            return_value={"LD_LIBRARY_PATH": bundle_root},
+        ):
+            with self.assertRaisesRegex(RuntimeError, "private libraries would leak"):
+                run_self_check()
 
     def test_tls_self_check_uses_certifi_and_a_head_request(self):
         class Response:

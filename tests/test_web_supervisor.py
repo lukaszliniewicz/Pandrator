@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from pandrator_installer.supervisor import (
     InstanceAlreadyRunning,
@@ -38,6 +39,27 @@ class InstanceLockTests(unittest.TestCase):
 
 
 class SupervisorTests(unittest.TestCase):
+    def test_managed_processes_do_not_inherit_frozen_installer_libraries(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch(
+            "pandrator_installer.supervisor.external_subprocess_environment",
+            return_value={"PATH": "/usr/bin"},
+        ) as sanitized_environment:
+            spec = ManagedProcessSpec(
+                key="worker",
+                label="Worker",
+                command=(sys.executable, "-c", "pass"),
+                env={"PANDRATOR_BOOTSTRAP_TOKEN": "token"},
+            )
+            supervisor = ProcessSupervisor(data_root=directory, specs=[spec])
+
+            environment = supervisor._managed_process_environment(spec)
+
+        sanitized_environment.assert_called_once_with()
+        self.assertEqual(environment["PATH"], "/usr/bin")
+        self.assertEqual(environment["PANDRATOR_BOOTSTRAP_TOKEN"], "token")
+        self.assertEqual(environment["PANDRATOR_DATA_DIR"], str(Path(directory).resolve()))
+        self.assertEqual(environment["PANDRATOR_SUPERVISOR_INSTANCE"], supervisor.lock.instance_id)
+
     def test_manifest_requires_argument_arrays_and_unique_keys(self):
         with tempfile.TemporaryDirectory() as directory:
             manifest = Path(directory) / "runtime.json"

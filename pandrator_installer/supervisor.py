@@ -17,6 +17,8 @@ from typing import Any
 from urllib.error import URLError
 from urllib.request import urlopen
 
+from .subprocess_env import external_subprocess_environment
+
 try:
     import psutil
 except ImportError:  # pragma: no cover - installer dependencies include psutil
@@ -211,6 +213,15 @@ class ProcessSupervisor:
         temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         os.replace(temporary, self.runtime_state)
 
+    def _managed_process_environment(self, spec: ManagedProcessSpec) -> dict[str, str]:
+        # The frozen installer needs its private libraries, but the installed
+        # application and host tools (notably FFmpeg) must use their own ABI.
+        environment = external_subprocess_environment()
+        environment.update(spec.env)
+        environment["PANDRATOR_DATA_DIR"] = str(self.data_root)
+        environment["PANDRATOR_SUPERVISOR_INSTANCE"] = self.lock.instance_id
+        return environment
+
     def _healthy(self, spec: ManagedProcessSpec) -> bool:
         if not spec.health_url:
             return True
@@ -226,10 +237,7 @@ class ProcessSupervisor:
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         log_path = self.logs_dir / f"{spec.key}.log"
         log_handle = log_path.open("a", encoding="utf-8")
-        environment = os.environ.copy()
-        environment.update(spec.env)
-        environment["PANDRATOR_DATA_DIR"] = str(self.data_root)
-        environment["PANDRATOR_SUPERVISOR_INSTANCE"] = self.lock.instance_id
+        environment = self._managed_process_environment(spec)
         self._status(f"Starting {spec.label}...")
         process = subprocess.Popen(
             list(spec.command),
