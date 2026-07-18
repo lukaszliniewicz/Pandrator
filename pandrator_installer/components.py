@@ -1629,17 +1629,24 @@ class ComponentOperationsMixin:
 
     def is_rvc_runtime_ready(self, rvc_repo_path, use_cpu=False):
         run_script_path = os.path.join(rvc_repo_path, 'run.bat' if is_windows() else 'run.sh')
-        environment_name = 'cpu' if use_cpu else 'default'
-        env_root = os.path.join(rvc_repo_path, '.pixi', 'envs', environment_name)
-        env_python_path = pixi_env_python_path(env_root, system='windows' if is_windows() else 'linux')
-        return all(os.path.exists(path) for path in (run_script_path, env_python_path))
+        environment_names = ('cpu',) if use_cpu else ('default', 'cpu')
+        environment_ready = any(
+            os.path.exists(
+                pixi_env_python_path(
+                    os.path.join(rvc_repo_path, '.pixi', 'envs', environment_name),
+                    system='windows' if is_windows() else 'linux',
+                )
+            )
+            for environment_name in environment_names
+        )
+        return os.path.exists(run_script_path) and environment_ready
 
     def build_rvc_launcher_command(self, use_cpu=False, pixi_path=None, prepare_only=False, models_dir=None):
         if is_windows():
             command = ['cmd', '/c', 'run.bat']
         else:
             command = ['bash', 'run.sh']
-        command.extend(['--backend', 'cpu' if use_cpu else 'cuda'])
+        command.extend(['--backend', 'cpu' if use_cpu else 'auto'])
         if pixi_path:
             command.extend(['--pixi-path', pixi_path])
         if prepare_only:

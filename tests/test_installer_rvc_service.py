@@ -23,7 +23,7 @@ class InstallerRVCServiceTests(unittest.TestCase):
         self.assertIn("rvc-python", command)
         self.assertIn("fairseq", command)
 
-    def test_rvc_launcher_command_uses_shared_pixi_and_models_directory(self):
+    def test_rvc_launcher_command_uses_auto_backend_and_shared_paths(self):
         installer = HeadlessInstaller(working_dir="workspace")
 
         command = installer.build_rvc_launcher_command(
@@ -33,9 +33,23 @@ class InstallerRVCServiceTests(unittest.TestCase):
 
         self.assertEqual(command[:3], ["cmd", "/c", "run.bat"])
         self.assertIn("--backend", command)
-        self.assertIn("cuda", command)
+        self.assertIn("auto", command)
+        self.assertNotIn("cuda", command)
         self.assertIn("--pixi-path", command)
         self.assertIn("--models-dir", command)
+
+    @patch("pandrator_installer.components.is_windows", return_value=False)
+    def test_rvc_auto_runtime_accepts_prepared_cpu_environment(self, _is_windows):
+        with tempfile.TemporaryDirectory() as workspace:
+            repo = Path(workspace) / "rvc-python"
+            cpu_python = repo / ".pixi" / "envs" / "cpu" / "bin" / "python"
+            cpu_python.parent.mkdir(parents=True)
+            cpu_python.write_bytes(b"")
+            (repo / "run.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+
+            installer = HeadlessInstaller(working_dir=workspace)
+
+            self.assertTrue(installer.is_rvc_runtime_ready(str(repo)))
 
     def test_rvc_cpu_launcher_command_selects_cpu_backend(self):
         installer = HeadlessInstaller(working_dir="workspace")
@@ -70,6 +84,14 @@ class InstallerRVCServiceTests(unittest.TestCase):
             ],
         )
         self.assertNotIn("cmd", command)
+
+    @patch("pandrator_installer.components.is_windows", return_value=False)
+    def test_linux_rvc_launcher_uses_auto_backend_by_default(self, _is_windows):
+        installer = HeadlessInstaller(working_dir="workspace")
+
+        command = installer.build_rvc_launcher_command()
+
+        self.assertEqual(command[:4], ["bash", "run.sh", "--backend", "auto"])
 
     @patch("pandrator_installer.components.subprocess.run")
     @patch("pandrator_installer.components.is_windows", return_value=False)

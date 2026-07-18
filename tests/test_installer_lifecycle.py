@@ -120,7 +120,9 @@ class InstallerLifecycleTests(unittest.TestCase):
             specs = _runtime_specs(WorkspacePaths.from_value(workspace), args, "token")
             self.assertEqual([spec.key for spec in specs], ["service-rvc_cpu", "service-kokoro", "api", "worker"])
             self.assertEqual(specs[0].health_url, "http://127.0.0.1:8050/health")
+            self.assertEqual(specs[0].startup_timeout_seconds, 600)
             self.assertEqual(specs[1].health_url, "http://127.0.0.1:8880/health")
+            self.assertEqual(specs[1].startup_timeout_seconds, 180)
             self.assertIn("service", specs[0].command)
 
     def test_supervised_services_use_dedicated_readiness_endpoints(self):

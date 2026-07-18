@@ -51,6 +51,10 @@ SERVICE_HEALTH_URLS = {
     "rvc": "http://127.0.0.1:8050/health",
     "rvc_cpu": "http://127.0.0.1:8050/health",
 }
+SERVICE_STARTUP_TIMEOUT_SECONDS = {
+    "rvc": 600,
+    "rvc_cpu": 600,
+}
 
 
 def _emit(payload: Any, json_output: bool) -> None:
@@ -266,7 +270,7 @@ def _runtime_specs(paths: WorkspacePaths, args, bootstrap_token: str = "") -> li
             cwd=cwd,
             health_url=SERVICE_HEALTH_URLS[component],
             restart_limit=1,
-            startup_timeout_seconds=180,
+            startup_timeout_seconds=SERVICE_STARTUP_TIMEOUT_SECONDS.get(component, 180),
         )
         for component in raw_components
     ]
