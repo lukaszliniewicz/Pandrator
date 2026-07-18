@@ -307,8 +307,11 @@ def transcribe(
         detail = str(stderr or error).strip()
         raise CrispASRError(f"CrispASR transcription failed: {detail}") from error
 
-    srt_generated = temporary_base.with_suffix(".srt")
-    json_generated = temporary_base.with_suffix(".json")
+    # CrispASR appends output extensions to ``-of``.  ``Path.with_suffix()``
+    # cannot model that contract because source stems may legitimately contain
+    # dots (for example, ``meeting.v2_crispasr``), which it treats as a suffix.
+    srt_generated = Path(f"{temporary_base}.srt")
+    json_generated = Path(f"{temporary_base}.json")
     if not srt_generated.is_file() or not json_generated.is_file():
         stderr = getattr(completed, "stderr", b"")
         if isinstance(stderr, bytes):

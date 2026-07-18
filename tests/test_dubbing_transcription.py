@@ -186,12 +186,12 @@ class CrispASRTranscriptionTests(unittest.TestCase):
                 Path(command[-1]).write_bytes(b"wav")
                 return SimpleNamespace(stderr=b"")
             output_base = Path(command[command.index("-of") + 1])
-            output_base.with_suffix(".srt").write_text(SAMPLE_SRT, encoding="utf-8")
-            output_base.with_suffix(".json").write_text(json.dumps(_crisp_json()), encoding="utf-8")
+            Path(f"{output_base}.srt").write_text(SAMPLE_SRT, encoding="utf-8")
+            Path(f"{output_base}.json").write_text(json.dumps(_crisp_json()), encoding="utf-8")
             return SimpleNamespace(stdout=b"", stderr=b"")
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            source = Path(temp_dir) / "meeting.mp4"
+            source = Path(temp_dir) / "meeting.v2.final.mp4"
             source.write_bytes(b"video")
             result = transcription.transcribe_source_file_with_metadata(
                 temp_dir,
@@ -216,7 +216,7 @@ class CrispASRTranscriptionTests(unittest.TestCase):
     def test_missing_full_json_is_a_hard_failure(self):
         def fake_run(command, **_kwargs):
             output_base = Path(command[command.index("-of") + 1])
-            output_base.with_suffix(".srt").write_text(SAMPLE_SRT, encoding="utf-8")
+            Path(f"{output_base}.srt").write_text(SAMPLE_SRT, encoding="utf-8")
             return SimpleNamespace(stdout=b"", stderr=b"")
 
         with tempfile.TemporaryDirectory() as temp_dir:
