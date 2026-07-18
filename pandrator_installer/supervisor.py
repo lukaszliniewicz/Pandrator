@@ -211,7 +211,30 @@ class ProcessSupervisor:
         }
         temporary = self.runtime_state.with_suffix(".tmp")
         temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        os.replace(temporary, self.runtime_state)
+        attempts = 10
+        for attempt in range(1, attempts + 1):
+            try:
+                os.replace(temporary, self.runtime_state)
+                return
+            except OSError:
+                if attempt == attempts:
+                    # The state file is informational (GUI status display and
+                    # discovery of already-running services) and is rewritten on
+                    # the next monitor tick. On Windows, a concurrent reader
+                    # holds the destination open without FILE_SHARE_DELETE, so
+                    # os.replace() fails with WinError 5; that must not take
+                    # down the whole supervised process tree over a skipped
+                    # status update.
+                    logging.exception(
+                        "Could not update %s; keeping the previous state file.",
+                        self.runtime_state,
+                    )
+                    try:
+                        temporary.unlink()
+                    except OSError:
+                        pass
+                    return
+                time.sleep(0.1)
 
     def _managed_process_environment(self, spec: ManagedProcessSpec) -> dict[str, str]:
         # The frozen installer needs its private libraries, but the installed

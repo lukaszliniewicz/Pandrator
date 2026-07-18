@@ -139,6 +139,41 @@ class SupervisorTests(unittest.TestCase):
             finally:
                 supervisor.stop_all()
 
+    def test_write_state_retries_when_replace_is_briefly_blocked(self):
+        # On Windows a concurrent reader of runtime-processes.json (for example
+        # the installer GUI's status poll) holds the file open without
+        # FILE_SHARE_DELETE, so os.replace() fails with PermissionError.
+        with tempfile.TemporaryDirectory() as directory:
+            supervisor = ProcessSupervisor(data_root=directory, specs=[])
+            real_replace = os.replace
+            failures = iter([PermissionError(13, "Access is denied"), PermissionError(13, "Access is denied")])
+
+            def flaky_replace(source, destination):
+                try:
+                    raise next(failures)
+                except StopIteration:
+                    real_replace(source, destination)
+
+            with mock.patch("pandrator_installer.supervisor.os.replace", side_effect=flaky_replace), mock.patch(
+                "pandrator_installer.supervisor.time.sleep"
+            ):
+                supervisor._write_state()
+
+            state = json.loads((Path(directory) / "runtime-processes.json").read_text(encoding="utf-8"))
+            self.assertEqual(state["supervisor_pid"], os.getpid())
+
+    def test_write_state_survives_a_persistently_blocked_replace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            supervisor = ProcessSupervisor(data_root=directory, specs=[])
+            with mock.patch(
+                "pandrator_installer.supervisor.os.replace",
+                side_effect=PermissionError(13, "Access is denied"),
+            ), mock.patch("pandrator_installer.supervisor.time.sleep"):
+                supervisor._write_state()  # must not raise
+
+            self.assertFalse((Path(directory) / "runtime-processes.json").exists())
+            self.assertFalse((Path(directory) / "runtime-processes.tmp").exists())
+
     def test_control_request_stops_only_the_requested_service_without_restart(self):
         with tempfile.TemporaryDirectory() as directory:
             specs = [
