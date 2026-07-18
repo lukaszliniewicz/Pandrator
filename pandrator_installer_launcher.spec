@@ -1,10 +1,23 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import os
+
+from pandrator_installer.build_support import (
+    resolve_windows_runtime_libraries,
+    windows_ctypes_library_directories,
+)
+
+
+runtime_directories = windows_ctypes_library_directories()
+os.environ['PATH'] = os.pathsep.join(
+    [*(str(directory) for directory in runtime_directories), os.environ.get('PATH', '')]
+)
+runtime_libraries = resolve_windows_runtime_libraries(runtime_directories)
 
 a = Analysis(
     ['pandrator_installer_launcher.py'],
     pathex=[],
-    binaries=[],
+    binaries=[(str(library), '.') for library in runtime_libraries],
     datas=[],
     hiddenimports=[],
     hookspath=[],

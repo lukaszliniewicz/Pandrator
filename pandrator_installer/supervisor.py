@@ -210,8 +210,35 @@ class ProcessSupervisor:
             },
         }
         temporary = self.runtime_state.with_suffix(".tmp")
-        temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        os.replace(temporary, self.runtime_state)
+        try:
+            temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            attempts = 10
+            for attempt in range(1, attempts + 1):
+                try:
+                    os.replace(temporary, self.runtime_state)
+                    return
+                except PermissionError:
+                    if attempt == attempts:
+                        raise
+                    # A Windows reader opens runtime-processes.json without
+                    # FILE_SHARE_DELETE, briefly preventing an atomic replace.
+                    time.sleep(0.1)
+        except OSError as error:
+            # Runtime state is informational and rewritten on every monitor
+            # tick. A stale snapshot is safer than terminating the supervised
+            # process tree over a failed status-file update.
+            logging.warning(
+                "Could not update %s; keeping the previous state file: %s",
+                self.runtime_state,
+                error,
+            )
+        finally:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as error:
+                logging.warning("Could not remove temporary runtime state %s: %s", temporary, error)
 
     def _managed_process_environment(self, spec: ManagedProcessSpec) -> dict[str, str]:
         # The frozen installer needs its private libraries, but the installed

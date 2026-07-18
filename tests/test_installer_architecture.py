@@ -19,7 +19,11 @@ from pandrator_installer.catalog import (
 )
 from pandrator_installer.cli import parse_launcher_cli_args, run_self_check
 from pandrator_installer.cli import run_tls_self_check
-from pandrator_installer.build_support import resolve_openssl_runtime_pair
+from pandrator_installer.build_support import (
+    resolve_openssl_runtime_pair,
+    resolve_windows_ctypes_runtime_library,
+    resolve_windows_runtime_libraries,
+)
 from pandrator_installer.models import (
     InstallSelection,
     LaunchSelection,
@@ -380,6 +384,51 @@ class InstallerArchitectureTests(unittest.TestCase):
             (lib / "libcrypto.so.3").write_bytes(b"different-runtime")
             with self.assertRaisesRegex(RuntimeError, "matched libssl.so.3/libcrypto.so.3 pair"):
                 resolve_openssl_runtime_pair((lib, lib64))
+
+    def test_windows_ctypes_runtime_resolves_conda_and_cpython_libffi_names(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            conda_libffi = runtime / "ffi-8.dll"
+            conda_libffi.write_bytes(b"ffi")
+            self.assertEqual(
+                resolve_windows_ctypes_runtime_library((runtime,)),
+                conda_libffi,
+            )
+
+            conda_libffi.unlink()
+            cpython_libffi = runtime / "libffi-8.dll"
+            cpython_libffi.write_bytes(b"libffi")
+            self.assertEqual(
+                resolve_windows_ctypes_runtime_library((runtime,)),
+                cpython_libffi,
+            )
+
+    def test_windows_runtime_libraries_resolve_from_one_python_prefix(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            names = {
+                "ffi-8.dll",
+                "libssl-3-x64.dll",
+                "libcrypto-3-x64.dll",
+                "liblzma.dll",
+                "libbz2.dll",
+                "libexpat.dll",
+                "sqlite3.dll",
+            }
+            for name in names:
+                (runtime / name).write_bytes(name.encode("ascii"))
+
+            resolved = resolve_windows_runtime_libraries((runtime,))
+
+            self.assertEqual({path.name for path in resolved}, names)
+
+    def test_windows_runtime_libraries_report_every_missing_group(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            (runtime / "ffi-8.dll").write_bytes(b"ffi")
+
+            with self.assertRaisesRegex(RuntimeError, "libssl-.*sqlite3"):
+                resolve_windows_runtime_libraries((runtime,))
 
     def test_launch_selection_preserves_backend_priority(self):
         selection = LaunchSelection(voxcpm=True, chatterbox=True, rvc=True)

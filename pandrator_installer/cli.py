@@ -490,9 +490,25 @@ def run_gui_smoke_check(args=None):
 
 
 def run_self_check():
+    import bz2
+    import ctypes
+    import lzma
+    import sqlite3
     import ssl
+    from xml.parsers import expat
 
     import certifi
+
+    if ctypes.sizeof(ctypes.c_void_p) not in {4, 8}:
+        raise RuntimeError("Installer self-check failed: ctypes runtime is unavailable.")
+
+    if not bz2.compress(b"Pandrator") or not lzma.compress(b"Pandrator"):
+        raise RuntimeError("Installer self-check failed: compression runtimes are unavailable.")
+    if expat.ParserCreate() is None:
+        raise RuntimeError("Installer self-check failed: XML runtime is unavailable.")
+    with sqlite3.connect(":memory:") as database:
+        if database.execute("SELECT 1").fetchone() != (1,):
+            raise RuntimeError("Installer self-check failed: SQLite runtime is unavailable.")
 
     ssl_context = ssl.create_default_context(cafile=certifi.where())
     if not ssl_context.get_ca_certs():

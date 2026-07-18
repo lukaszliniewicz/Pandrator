@@ -11,7 +11,7 @@ from unittest import mock
 from pathlib import Path
 
 from pandrator_installer.cli import main as launcher_main, parse_launcher_cli_args, run_headless_install_from_cli
-from pandrator_installer.lifecycle import _owned_service_processes, _runtime_specs, main
+from pandrator_installer.lifecycle import SERVICE_HEALTH_URLS, _owned_service_processes, _runtime_specs, main
 from pandrator_installer.models import WorkspacePaths, normalize_password_scope
 from pandrator_installer.update import verify_release_manifest
 
@@ -120,7 +120,32 @@ class InstallerLifecycleTests(unittest.TestCase):
             specs = _runtime_specs(WorkspacePaths.from_value(workspace), args, "token")
             self.assertEqual([spec.key for spec in specs], ["service-rvc_cpu", "service-kokoro", "api", "worker"])
             self.assertEqual(specs[0].health_url, "http://127.0.0.1:8050/health")
+            self.assertEqual(specs[1].health_url, "http://127.0.0.1:8880/health")
             self.assertIn("service", specs[0].command)
+
+    def test_supervised_services_use_dedicated_readiness_endpoints(self):
+        self.assertEqual(
+            SERVICE_HEALTH_URLS,
+            {
+                "xtts": "http://127.0.0.1:8020/health",
+                "xtts_cpu": "http://127.0.0.1:8020/health",
+                "voxcpm": "http://127.0.0.1:8020/health",
+                "fishs2": "http://127.0.0.1:8020/health",
+                "fishs2_cpu": "http://127.0.0.1:8020/health",
+                "voxtral": "http://127.0.0.1:8000/health",
+                "silero": "http://127.0.0.1:8001/ready",
+                "kokoro": "http://127.0.0.1:8880/health",
+                "kokoro_cpu": "http://127.0.0.1:8880/health",
+                "chatterbox": "http://127.0.0.1:8040/health",
+                "chatterbox_cpu": "http://127.0.0.1:8040/health",
+                "kobold_qwen": "http://127.0.0.1:8042/health",
+                "kobold_qwen_cpu": "http://127.0.0.1:8042/health",
+                "magpie": "http://127.0.0.1:8030/health",
+                "magpie_cpu": "http://127.0.0.1:8030/health",
+                "rvc": "http://127.0.0.1:8050/health",
+                "rvc_cpu": "http://127.0.0.1:8050/health",
+            },
+        )
 
     def test_remote_runtime_passes_security_flags_and_trusted_hosts(self):
         with tempfile.TemporaryDirectory() as workspace:

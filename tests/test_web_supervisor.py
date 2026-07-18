@@ -139,6 +139,68 @@ class SupervisorTests(unittest.TestCase):
             finally:
                 supervisor.stop_all()
 
+    def test_write_state_retries_when_replace_is_briefly_blocked(self):
+        with tempfile.TemporaryDirectory() as directory:
+            supervisor = ProcessSupervisor(data_root=directory, specs=[])
+            real_replace = os.replace
+            failures = iter(
+                [
+                    PermissionError(13, "Access is denied"),
+                    PermissionError(13, "Access is denied"),
+                ]
+            )
+
+            def flaky_replace(source, destination):
+                try:
+                    error = next(failures)
+                except StopIteration:
+                    real_replace(source, destination)
+                else:
+                    raise error
+
+            with mock.patch(
+                "pandrator_installer.supervisor.os.replace",
+                side_effect=flaky_replace,
+            ) as replace, mock.patch("pandrator_installer.supervisor.time.sleep") as sleep:
+                supervisor._write_state()
+
+            state = json.loads(
+                (Path(directory) / "runtime-processes.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(state["supervisor_pid"], os.getpid())
+            self.assertEqual(replace.call_count, 3)
+            self.assertEqual(sleep.call_count, 2)
+
+    def test_write_state_keeps_previous_state_when_replace_stays_blocked(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "runtime-processes.json"
+            state_path.write_text('{"previous": true}', encoding="utf-8")
+            supervisor = ProcessSupervisor(data_root=directory, specs=[])
+
+            with mock.patch(
+                "pandrator_installer.supervisor.os.replace",
+                side_effect=PermissionError(13, "Access is denied"),
+            ) as replace, mock.patch("pandrator_installer.supervisor.time.sleep") as sleep:
+                supervisor._write_state()
+
+            self.assertEqual(json.loads(state_path.read_text(encoding="utf-8")), {"previous": True})
+            self.assertFalse((Path(directory) / "runtime-processes.tmp").exists())
+            self.assertEqual(replace.call_count, 10)
+            self.assertEqual(sleep.call_count, 9)
+
+    def test_write_state_does_not_retry_non_permission_errors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            supervisor = ProcessSupervisor(data_root=directory, specs=[])
+            with mock.patch(
+                "pandrator_installer.supervisor.os.replace",
+                side_effect=OSError(28, "No space left on device"),
+            ) as replace, mock.patch("pandrator_installer.supervisor.time.sleep") as sleep:
+                supervisor._write_state()
+
+            self.assertEqual(replace.call_count, 1)
+            sleep.assert_not_called()
+            self.assertFalse((Path(directory) / "runtime-processes.tmp").exists())
+
     def test_control_request_stops_only_the_requested_service_without_restart(self):
         with tempfile.TemporaryDirectory() as directory:
             specs = [

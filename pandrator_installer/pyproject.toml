@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pandrator-installer"
-version = "0.5.3"
+version = "0.5.4"
 description = "Headless lifecycle manager and optional Qt launcher for Pandrator"
 requires-python = ">=3.11,<3.13"
 dependencies = [
