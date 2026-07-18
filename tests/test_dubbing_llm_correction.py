@@ -70,12 +70,43 @@ class DubbingLLMCorrectionTests(unittest.TestCase):
         self.assertEqual(corrected[1]["start"], 2.1)
         self.assertEqual(corrected[2]["end"], 4.1)
 
-    def test_apply_correction_operations_can_prevent_deletion(self):
-        block = [{"index": 1, "start": 0.0, "end": 1.0, "text": "uh"}]
+    def test_apply_correction_operations_rejects_ambiguous_shapes_and_removes_visual_line_breaks(self):
+        block = [
+            {"index": 1, "start": 0.0, "end": 1.0, "text": "first"},
+            {"index": 2, "start": 1.0, "end": 2.0, "text": "second"},
+        ]
 
         corrected = llm_correction.apply_correction_operations(
             block,
-            [{"action": "delete", "ids": [1], "texts": []}],
+            [
+                {"action": "edit", "ids": [1, 2], "texts": ["invalid merge"]},
+                {"action": "edit", "ids": [1], "texts": ["First\ncorrected."]},
+            ],
+        )
+
+        self.assertEqual([subtitle["text"] for subtitle in corrected], ["First corrected.", "second"])
+
+    def test_correction_prompt_delegates_visual_layout_to_finalization(self):
+        prompt = llm_correction.build_correction_prompt(
+            [{"index": 1, "start": 0.0, "end": 1.0, "text": "hello\nthere"}],
+            max_line_length=18,
+        )
+
+        self.assertIn("visual wrapping, and line layout are handled by Pandrator", prompt)
+        self.assertIn("Do not insert line breaks", prompt)
+        self.assertNotIn("max 2 lines", prompt)
+        self.assertNotIn('"char_count"', prompt)
+        self.assertIn('"text": "hello there"', prompt)
+
+    def test_apply_correction_operations_can_prevent_deletion(self):
+        block = [
+            {"index": 1, "start": 0.0, "end": 1.0, "text": "uh"},
+            {"index": 2, "start": 1.0, "end": 2.0, "text": "um"},
+        ]
+
+        corrected = llm_correction.apply_correction_operations(
+            block,
+            [{"action": "delete", "ids": [1, 2], "texts": []}],
             no_remove_subtitles=True,
         )
 
@@ -130,6 +161,25 @@ class DubbingLLMCorrectionTests(unittest.TestCase):
         self.assertEqual(result.response_count, 2)
         self.assertEqual(result.cost, 0.03)
         self.assertEqual(srt_utils.parse_srt(result.srt_content)[0].text, "Hello.")
+
+    def test_next_batch_context_contains_corrected_cues_not_prior_operations(self):
+        settings = {**_settings(), "llm_char": 1}
+        prompts = []
+
+        def fake_completion(**kwargs):
+            prompts.append(kwargs["messages"][-1]["content"])
+            if len(prompts) == 1:
+                return llm_handler.ChatCompletionResult(
+                    content='{"operations":[{"action":"edit","ids":[1],"texts":["Hello."]}]}',
+                )
+            return llm_handler.ChatCompletionResult(content='{"operations":[]}')
+
+        llm_correction.correct_srt_content(SAMPLE_SRT, settings, completion_func=fake_completion)
+
+        self.assertGreater(len(prompts), 1)
+        context = prompts[1].split("Prior corrected cues", 1)[1].split("The subtitles:", 1)[0]
+        self.assertIn('["Hello."]', context)
+        self.assertNotIn('"action"', context)
 
     def test_dubbing_handler_correction_no_longer_runs_subdub_command(self):
         with tempfile.TemporaryDirectory() as temp_dir:

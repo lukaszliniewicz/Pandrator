@@ -1,6 +1,7 @@
 <script lang="ts">
   type DiffPart = { kind: 'same' | 'add' | 'remove'; text: string };
-  let { before = '', after = '' }: { before: string; after: string } = $props();
+  type DiffView = 'combined' | 'before' | 'after';
+  let { before = '', after = '', view = 'combined' }: { before: string; after: string; view?: DiffView } = $props();
 
   function coalesce(parts: DiffPart[]) {
     const result: DiffPart[] = [];
@@ -55,8 +56,8 @@
   const parts = $derived(buildDiff(before, after));
 </script>
 
-<div class="diff" aria-label="Text differences">
-  {#each parts as part}<span class:add={part.kind === 'add'} class:remove={part.kind === 'remove'}>{part.text}</span>{/each}
+<div class="diff" aria-label={view === 'before' ? 'Original text with removals highlighted' : view === 'after' ? 'Corrected text with additions highlighted' : 'Text differences'}>
+  {#each parts.filter((part) => view === 'combined' || part.kind === 'same' || (view === 'before' && part.kind === 'remove') || (view === 'after' && part.kind === 'add')) as part}<span class:add={part.kind === 'add'} class:remove={part.kind === 'remove'}>{part.text}</span>{/each}
 </div>
 
 <style>

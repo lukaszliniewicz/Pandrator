@@ -64,6 +64,17 @@ def _hash_segments(segments) -> str:
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
 
+def _next_available_path(path: Path) -> Path:
+    """Return a sibling path without overwriting an existing managed output."""
+    if not path.exists():
+        return path
+    for version in range(2, 100_000):
+        candidate = path.with_name(f"{path.stem}-{version}{path.suffix}")
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError(f"Could not allocate a new output filename for {path.name}.")
+
+
 class WorkflowHandlers:
     def __init__(self, database: Database, paths: DataPaths):
         self.database = database
@@ -2358,7 +2369,7 @@ class WorkflowHandlers:
             if audio is None:
                 raise ValueError("Audiobook export requires generated audio.")
             _audio_record, audio_path = self._resolve_input(audio.id)
-            destination = output_dir / f"{export_name}{audio_path.suffix.lower()}"
+            destination = _next_available_path(output_dir / f"{export_name}{audio_path.suffix.lower()}")
             shutil.copy2(audio_path, destination)
             produced.append(self.artifacts.register(destination, kind="export", role="export", session_id=session_id, parent_ids=[audio.id], settings=settings))
         else:
@@ -2389,7 +2400,7 @@ class WorkflowHandlers:
             for item in selected_subtitles:
                 _subtitle_record, subtitle_path = self._resolve_input(item.id)
                 track_name = "translation" if item.role == "translation" else "source"
-                finalized_path = output_dir / f"{record.storage_key}_{track_name}_final.srt"
+                finalized_path = _next_available_path(output_dir / f"{record.storage_key}_{track_name}_final.srt")
                 finalize_srt_file(subtitle_path, finalized_path, settings)
                 finalized = self.artifacts.register(
                     finalized_path,
@@ -2428,7 +2439,7 @@ class WorkflowHandlers:
                     _artifact, subtitle_path = self._resolve_input(item.id)
                     track_name, language, title, _default = track_details(item)
                     if export_mode == "text":
-                        destination = output_dir / f"{export_name}_{track_name}.txt"
+                        destination = _next_available_path(output_dir / f"{export_name}_{track_name}.txt")
                         destination.write_text(
                             concatenate_subtitle_text(subtitle_path.read_text(encoding="utf-8-sig")),
                             encoding="utf-8",
@@ -2436,7 +2447,7 @@ class WorkflowHandlers:
                         kind = "text"
                         role = f"export_text_{track_name}"
                     else:
-                        destination = output_dir / f"{export_name}_{track_name}.{subtitle_format}"
+                        destination = _next_available_path(output_dir / f"{export_name}_{track_name}.{subtitle_format}")
                         if subtitle_format == "vtt":
                             destination.write_text(
                                 srt_to_vtt(subtitle_path.read_text(encoding="utf-8-sig")),
@@ -2475,7 +2486,7 @@ class WorkflowHandlers:
                     temporary_video = audio_video
                     audio_parent_ids.append(dubbing_audio.id)
                 variant = f"_{subtitle_mode}" if subtitle_mode in {"soft", "burned"} and selected_subtitles else ""
-                destination = output_dir / f"{export_name}{variant}.mp4"
+                destination = _next_available_path(output_dir / f"{export_name}{variant}.mp4")
                 render_destination = output_dir / f".{record.storage_key}-render-{new_id()}.mp4"
                 video_track_artifacts: list[Artifact] = []
                 try:
@@ -2485,7 +2496,7 @@ class WorkflowHandlers:
                             _subtitle, subtitle_path = self._resolve_input(item.id)
                             track_name, language, title, is_default = track_details(item)
                             tracks.append({"path": str(subtitle_path), "language": language, "title": title, "default": is_default})
-                            vtt_path = output_dir / f"{record.storage_key}_{track_name}_player.vtt"
+                            vtt_path = _next_available_path(output_dir / f"{record.storage_key}_{track_name}_player.vtt")
                             vtt_path.write_text(srt_to_vtt(subtitle_path.read_text(encoding="utf-8-sig")), encoding="utf-8")
                             video_track_artifacts.append(
                                 self.artifacts.register(
@@ -2504,7 +2515,13 @@ class WorkflowHandlers:
                         subtitle_paths = [self._resolve_input(item.id)[1] for item in selected_subtitles]
                         burn_path = subtitle_paths[-1]
                         if len(subtitle_paths) == 2:
-                            burn_path = Path(write_bilingual_ass(str(subtitle_paths[0]), str(subtitle_paths[1]), str(output_dir / "bilingual_subtitles.ass")))
+                            burn_path = Path(
+                                write_bilingual_ass(
+                                    str(subtitle_paths[0]),
+                                    str(subtitle_paths[1]),
+                                    str(_next_available_path(output_dir / "bilingual_subtitles.ass")),
+                                )
+                            )
                             self.artifacts.register(
                                 burn_path,
                                 kind="ass",
@@ -2576,7 +2593,7 @@ class WorkflowHandlers:
                 for item in selected_subtitles:
                     _artifact, item_path = self._resolve_input(item.id)
                     track_name, language, title, _default = track_details(item)
-                    destination = output_dir / f"{export_name}_{track_name}.srt"
+                    destination = _next_available_path(output_dir / f"{export_name}_{track_name}.srt")
                     shutil.copy2(item_path, destination)
                     produced.append(
                         self.artifacts.register(
@@ -2593,9 +2610,7 @@ class WorkflowHandlers:
                     if item is None:
                         continue
                     _artifact, item_path = self._resolve_input(item.id)
-                    destination = output_dir / f"{export_name}{item_path.suffix.lower()}"
-                    if item_path.resolve() == destination.resolve():
-                        continue
+                    destination = _next_available_path(output_dir / f"{export_name}{item_path.suffix.lower()}")
                     shutil.copy2(item_path, destination)
                     produced.append(self.artifacts.register(destination, kind="export", role=f"export_{item.role}", session_id=session_id, parent_ids=[item.id], settings=settings))
                 if not produced:

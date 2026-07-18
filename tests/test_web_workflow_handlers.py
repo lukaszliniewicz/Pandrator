@@ -429,6 +429,33 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         self.assertEqual("export_subtitle_source", exported.role)
         self.assertIn("Only source", exported_path.read_text(encoding="utf-8"))
 
+    def test_repeated_subtitle_exports_create_immutable_output_versions(self):
+        subtitle_session = self.sessions.create("Repeatable subtitles", workflow_kind="subtitles")
+        source_path = self.paths.uploads / "repeatable.srt"
+        source_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nFirst version\n", encoding="utf-8")
+        self.artifacts.register(
+            source_path,
+            kind="source",
+            role="upload",
+            session_id=subtitle_session.id,
+            metadata={"original_filename": "repeatable.srt"},
+        )
+        payload = {
+            "session_id": subtitle_session.id,
+            "settings": {"export_mode": "subtitles", "subtitle_format": "srt", "subtitle_selection": "source"},
+        }
+
+        first = self.handlers.export(payload, self.progress, threading.Event())
+        second = self.handlers.export(payload, self.progress, threading.Event())
+
+        first_artifact, first_path = self.artifacts.resolve(first["artifact_ids"][0])
+        second_artifact, second_path = self.artifacts.resolve(second["artifact_ids"][0])
+        self.assertNotEqual(first_artifact.id, second_artifact.id)
+        self.assertNotEqual(first_path, second_path)
+        self.assertTrue(first_path.is_file())
+        self.assertTrue(second_path.is_file())
+        self.assertTrue(second_path.stem.endswith("-2"))
+
     def test_audiobook_export_prefers_assembled_audio_and_preserves_container(self):
         audiobook = self.sessions.create("Finished Book", workflow_kind="audiobook")
         session_dir = self.paths.sessions / audiobook.storage_key

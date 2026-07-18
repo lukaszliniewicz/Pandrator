@@ -73,7 +73,7 @@
     <button onclick={() => mobileOpen=true} class="fixed left-4 top-4 z-40 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-2.5 shadow md:hidden" aria-label="Open navigation"><Menu size={20}/></button>
     {#if mobileOpen}<button class="fixed inset-0 z-40 bg-black/35 md:hidden" onclick={() => mobileOpen=false} aria-label="Close navigation"></button>{/if}
     <aside class:collapsed={appState.sidebarCollapsed} class:mobile-open={mobileOpen} class="app-sidebar fixed inset-y-0 left-0 z-50 flex w-[17rem] flex-col border-r border-[var(--line)] bg-[var(--paper-strong)] px-3 py-4 md:z-20 md:h-[100svh] md:w-auto">
-      <div class="mb-5 flex items-center gap-3 px-2"><img src="/pandrator-logo.png" alt="Pandrator" class="size-11 shrink-0 rounded-2xl border border-[var(--line)] object-cover"/>{#if !appState.sidebarCollapsed}<div class="min-w-0 flex-1"><div class="font-semibold">Pandrator</div><a href="https://github.com/lukaszliniewicz/Pandrator" target="_blank" rel="noreferrer" class="muted mt-0.5 inline-flex items-center gap-1 text-xs hover:text-[var(--accent)]">View on GitHub <ExternalLink size={11}/></a></div><button onclick={() => mobileOpen=false} class="md:hidden"><X size={19}/></button>{/if}</div>
+      <div class="sidebar-brand mb-5 flex items-center gap-3 px-2"><img src="/pandrator-logo.png" alt="Pandrator" class="size-11 shrink-0 rounded-2xl border border-[var(--line)] object-cover"/>{#if !appState.sidebarCollapsed}<div class="min-w-0 flex-1"><div class="font-semibold">Pandrator</div><a href="https://github.com/lukaszliniewicz/Pandrator" target="_blank" rel="noreferrer" class="muted mt-0.5 inline-flex items-center gap-1 text-xs hover:text-[var(--accent)]">View on GitHub <ExternalLink size={11}/></a></div><button onclick={() => mobileOpen=false} class="md:hidden"><X size={19}/></button>{/if}</div>
       <nav class="min-h-0 flex-1 space-y-1 overflow-y-auto">
         {#each navigation as item}{@const Icon = item.icon}<a href={item.href} onclick={() => mobileOpen=false} class:active={active(item.href)} title={appState.sidebarCollapsed ? item.label : undefined} class="nav-item flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold"><Icon size={19}/>{#if !appState.sidebarCollapsed}<span>{item.label}</span>{/if}</a>{/each}
       </nav>
@@ -98,6 +98,6 @@
   .app-sidebar.mobile-open { transform:translateX(0); }
   .nav-item { color:var(--muted); }
   .nav-item:hover,.nav-item.active { color:var(--ink);background:var(--accent-soft); }
-  @media(min-width:768px){.app-sidebar{transform:none}.app-sidebar.collapsed{width:5rem}.content-column{min-height:100svh}.app-footer{margin-left:2.5rem;margin-right:2.5rem}}
+  @media(min-width:768px){.app-sidebar{transform:none}.app-sidebar.collapsed{width:5rem}.app-sidebar.collapsed .sidebar-brand,.app-sidebar.collapsed .nav-item{justify-content:center;gap:0;padding-left:0;padding-right:0}.content-column{min-height:100svh}.app-footer{margin-left:2.5rem;margin-right:2.5rem}}
   @media(prefers-reduced-motion:reduce){.app-sidebar{transition:none}}
 </style>

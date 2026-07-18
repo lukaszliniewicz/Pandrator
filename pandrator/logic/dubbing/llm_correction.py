@@ -22,38 +22,37 @@ logger = logging.getLogger(__name__)
 DEFAULT_LLM_CHAR_LIMIT = 6000
 DEFAULT_MAX_LINE_LENGTH = 42
 MAX_CORRECTION_ATTEMPTS = 3
+CORRECTION_CONTEXT_CUES = 8
 CORRECTION_SYSTEM_PROMPT = (
-    "You are an excellent text and subtitle editor. You pay great attention to detail, "
-    "including punctuation and logic in text, and analyse the instructions you are given "
-    "very carefully. You return only the requested correction operations in the requested "
-    "format, without comments, acknowledgments, remarks, or questions."
+    "You are an expert subtitle transcript editor. Correct the supplied source-language "
+    "cues accurately and conservatively. Return only valid JSON in the requested operation "
+    "format, without comments, acknowledgments, markdown, or questions."
 )
 
 CORRECTION_PROMPT_TEMPLATE = """
-Your task is to review an array of {subtitle_count} subtitles and output a list of operations to fix them.
-You are an expert subtitle editor.
+Review the array of {subtitle_count} subtitle cues below and return this JSON shape:
+{{"operations":[{{"action":"edit|delete|merge|split","ids":[1],"texts":["corrected text"]}}]}}
 
 Instructions:
-1. ONLY output operations for subtitles that require changes. If a subtitle is perfectly fine, do not include it in your response.
-2. Fix punctuation and capitalization such that they are coherent and logical.
-3. Correct spelling and obvious transcription errors.
-4. Remove filler words (e.g., "um", "uh") and obvious repetitions.
-5. You can perform the following actions:
-   - "edit": Fix text in a single subtitle. Provide its ID in `ids` and the new text in `texts`.
-   - "delete": Remove a subtitle (e.g., if it's only filler words). Provide the ID in `ids` and an empty array for `texts`.
-   - "merge": Combine multiple sequential subtitles. Provide their IDs in `ids`. If you want a single combined subtitle, provide EXACTLY ONE string in `texts`. If you want to redistribute the combined text into new subtitle chunks (e.g., merge and then split differently), provide multiple strings in `texts`.
-   - "split": Split a single subtitle into multiple parts (e.g., if it contains two distinct sentences or is too long). Provide the ID in `ids` and the new split strings in `texts`.
-6. Ensure that any text you provide in `texts` (for edit, merge, or split) is fully corrected for spelling, punctuation, and grammar.
-7. Subtitle formatting: Ensure subtitles are not too long (max {max_line_length} characters per line, max 2 lines per subtitle). Use a newline character `\n` to explicitly split lines within a single subtitle string.
-8. If previous conversational context is provided, DO NOT include it in your output. ONLY operate on the JSON array of subtitles provided below (IDs 1 to {subtitle_count}).
+1. Use your editorial judgment to fix punctuation, capitalization, spelling, and clear transcription errors. Remove isolated filler and accidental repetition when appropriate.
+2. Preserve the speaker's meaning, register, names, terminology, and speaker labels. Do not paraphrase text that is already correct.
+3. Return operations only for cues that need a change; return an empty `operations` array when no changes are needed.
+4. Available actions:
+   - "edit": one cue ID and exactly one corrected text.
+   - "delete": one or more sequential cue IDs that contain no meaningful speech, with an empty `texts` array.
+   - "merge": two or more sequential cue IDs whose boundary breaks one thought, with one or more corrected replacement texts.
+   - "split": one cue ID and two or more replacement texts, only when semantic correction genuinely requires separate cues.
+5. Cue timing, reading speed, visual wrapping, and line layout are handled by Pandrator after editing. Do not insert line breaks or split/merge merely to change visual layout.
+6. Every replacement must be complete, corrected plain text. Do not include IDs that are only context.
+7. If prior corrected context is provided, use it only for continuity. Operate only on the current array (IDs 1 to {subtitle_count}).
 
 Additional context and instructions specific to your particular batch, if any:
 {correction_instructions}
 """.strip()
 
 CONTEXT_PROMPT_TEMPLATE = """
-For additional context, this is the final version of the previous subtitle block processed by you before:
-{context_previous_response}
+Prior corrected cues for continuity (context only; do not output operations for them):
+{context_previous_cues}
 """.strip()
 
 _FENCED_JSON_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
@@ -169,6 +168,11 @@ def _split_timing(start: float, end: float, texts: list[str]) -> list[dict[str, 
     return subtitles
 
 
+def _normalize_replacement_text(value: Any) -> str:
+    """Keep editorial output as cue text; visual layout is finalized later."""
+    return " ".join(str(value or "").split()).strip()
+
+
 def apply_correction_operations(
     block: list[dict[str, Any]],
     operations: list[dict[str, Any]],
@@ -182,19 +186,31 @@ def apply_correction_operations(
 
     for operation in operations:
         action = operation.get("action")
-        ids = [item for item in operation.get("ids", []) if item in block_by_local_id]
-        texts = [str(text).strip() for text in operation.get("texts", []) if str(text).strip()]
+        ids = list(dict.fromkeys(item for item in operation.get("ids", []) if item in block_by_local_id))
+        texts = [text for value in operation.get("texts", []) if (text := _normalize_replacement_text(value))]
         if not ids or any(item in processed_ids for item in ids):
+            continue
+
+        sequential = ids == sorted(ids) and all(right == left + 1 for left, right in zip(ids, ids[1:]))
+        valid_shape = (
+            (action == "edit" and len(ids) == 1 and len(texts) == 1)
+            or (action == "delete" and sequential and not texts)
+            or (action == "merge" and len(ids) >= 2 and sequential and bool(texts))
+            or (action == "split" and len(ids) == 1 and len(texts) >= 2)
+        )
+        if not valid_shape:
             continue
 
         valid_subtitles = [block_by_local_id[item] for item in ids]
         if not valid_subtitles:
             continue
+        if action == "delete" and no_remove_subtitles:
+            continue
 
         processed_ids.update(ids)
         primary_id = ids[0]
         if action == "delete":
-            new_subtitles_by_primary_id[primary_id] = [valid_subtitles[0]] if no_remove_subtitles else []
+            new_subtitles_by_primary_id[primary_id] = []
             continue
 
         new_start = min(float(subtitle["start"]) for subtitle in valid_subtitles)
@@ -226,21 +242,22 @@ def build_correction_prompt(
     prompt_template = CORRECTION_PROMPT_TEMPLATE
     if no_remove_subtitles:
         prompt_template = prompt_template.replace(
-            '- "delete": Remove a subtitle (e.g., if it\'s only filler words). Provide its ID in `ids` and an empty array for `texts`.',
-            '- "delete": DO NOT USE THIS ACTION. You MUST NOT remove any subtitles.',
+            '   - "delete": one or more sequential cue IDs that contain no meaningful speech, with an empty `texts` array.',
+            '   - "delete": do not use this action; every input cue must be preserved.',
         )
 
     base_prompt = prompt_template.format(
         correction_instructions=correction_instructions or "No additional instructions provided.",
         subtitle_count=len(block),
-        max_line_length=max_line_length,
     )
+    # Retained in the signature for callers using the old helper contract.
+    # Layout limits intentionally do not belong in the LLM task.
+    _ = max_line_length
     subtitles = json.dumps(
         [
             {
                 "id": index + 1,
-                "char_count": len(str(subtitle.get("text") or "")),
-                "text": subtitle.get("text") or "",
+                "text": _normalize_replacement_text(subtitle.get("text")),
             }
             for index, subtitle in enumerate(block)
         ],
@@ -248,7 +265,7 @@ def build_correction_prompt(
     )
 
     if previous_response:
-        context_prompt = CONTEXT_PROMPT_TEMPLATE.format(context_previous_response=previous_response)
+        context_prompt = CONTEXT_PROMPT_TEMPLATE.format(context_previous_cues=previous_response)
         return f"{base_prompt}\n{context_prompt}\n\nThe subtitles:\n{subtitles}"
     return f"{base_prompt}\n\nThe subtitles:\n{subtitles}"
 
@@ -299,7 +316,7 @@ def correct_srt_content(
 
     resolved = resolve_dubbing_llm_settings(settings, stage="correction")
     completion = completion_func or llm_handler.chat_completion_with_metadata
-    previous_response = ""
+    previous_context = ""
     corrected_subtitles: list[dict[str, Any]] = []
     total_cost = 0.0
     response_count = 0
@@ -310,7 +327,7 @@ def correct_srt_content(
         prompt = build_correction_prompt(
             block,
             correction_instructions=correction_instructions,
-            previous_response=previous_response if use_context else "",
+            previous_response=previous_context if use_context else "",
             max_line_length=max_line_length,
             no_remove_subtitles=no_remove_subtitles,
         )
@@ -334,14 +351,16 @@ def correct_srt_content(
                     raise ValueError("LLM correction returned an empty response.")
 
                 operations = parse_correction_operations(content)
-                corrected_subtitles.extend(
-                    apply_correction_operations(
-                        block,
-                        operations,
-                        no_remove_subtitles=no_remove_subtitles,
-                    )
+                corrected_block = apply_correction_operations(
+                    block,
+                    operations,
+                    no_remove_subtitles=no_remove_subtitles,
                 )
-                previous_response = content
+                corrected_subtitles.extend(corrected_block)
+                previous_context = json.dumps(
+                    [_normalize_replacement_text(item.get("text")) for item in corrected_block[-CORRECTION_CONTEXT_CUES:]],
+                    ensure_ascii=False,
+                )
                 break
             except Exception as error:
                 if attempt == MAX_CORRECTION_ATTEMPTS:
