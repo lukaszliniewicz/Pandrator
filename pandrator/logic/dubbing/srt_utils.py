@@ -228,11 +228,16 @@ def create_translation_blocks(
     srt_content: str,
     char_limit: int,
     source_language: str,
+    *,
+    max_subtitles_per_block: int | None = None,
 ) -> list[list[dict[str, Any]]]:
-    """Group subtitle segments into translation blocks by approximate size."""
+    """Group subtitle segments by character and subtitle-count limits."""
     normalized_language = str(source_language or "").strip().lower()
     if normalized_language in {"chinese", "japanese", "ja", "zh", "zh-cn", "zh-tw"}:
         char_limit = max(1, char_limit // 2)
+
+    if max_subtitles_per_block is not None:
+        max_subtitles_per_block = max(1, int(max_subtitles_per_block))
 
     if normalized_language in {"japanese", "ja"}:
         endings = ("\u3002", "\uff01", "\uff1f", "\u304b", "\u306d", "\u3088", "\u308f")
@@ -250,6 +255,15 @@ def create_translation_blocks(
 
     for segment in parse_srt(srt_content):
         segment_text = segment.text
+        if (
+            current_block
+            and max_subtitles_per_block is not None
+            and len(current_block) >= max_subtitles_per_block
+        ):
+            blocks.append(current_block)
+            current_block = []
+            current_char_count = 0
+
         if current_block and current_char_count + len(segment_text) > char_limit:
             if is_sentence_ending(current_block[-1]["text"]):
                 blocks.append(current_block)

@@ -405,12 +405,18 @@ def translate_srt_content(
     )
     target_language = str(settings.get("target_language") or "en")
     char_limit = int(settings.get("llm_char") or DEFAULT_LLM_CHAR_LIMIT)
+    max_subtitles_per_call = max(1, int(settings.get("max_subtitles_per_call") or 40))
     use_context = bool(settings.get("context", True))
     no_remove_subtitles = bool(settings.get("no_remove_subtitles", False))
     use_glossary = bool(settings.get("glossary_enabled", False))
     active_glossary = dict(glossary or {}) if use_glossary else {}
 
-    blocks = create_translation_blocks(srt_content, char_limit, source_language)
+    blocks = create_translation_blocks(
+        srt_content,
+        char_limit,
+        source_language,
+        max_subtitles_per_block=max_subtitles_per_call,
+    )
     if not blocks:
         return TranslationResult("", [], active_glossary, cost=0.0, response_count=0)
 
@@ -437,7 +443,6 @@ def translate_srt_content(
             messages=[{"role": "user", "content": prompt}],
             model_name=resolved.model_name,
             llm_settings=resolved.llm_settings,
-            max_tokens=3000,
         )
         content, cost, cost_source = _coerce_completion_content_and_cost(result)
         _merge_completion_usage(usage, result)
@@ -552,7 +557,13 @@ def translate_srt_content_deepl(
     )
     target_language = str(settings.get("target_language") or "en")
     char_limit = int(settings.get("llm_char") or DEFAULT_LLM_CHAR_LIMIT)
-    translation_blocks = create_translation_blocks(srt_content, char_limit, source_language)
+    max_subtitles_per_call = max(1, int(settings.get("max_subtitles_per_call") or 40))
+    translation_blocks = create_translation_blocks(
+        srt_content,
+        char_limit,
+        source_language,
+        max_subtitles_per_block=max_subtitles_per_call,
+    )
     translated_responses = translate_blocks_deepl(
         translation_blocks,
         source_language,

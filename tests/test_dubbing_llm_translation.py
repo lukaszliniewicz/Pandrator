@@ -29,6 +29,7 @@ def _settings(glossary_enabled=False):
         "request_timeout_seconds": 30,
         "reasoning_effort": "",
         "llm_char": 6000,
+        "max_subtitles_per_call": 40,
         "context": True,
         "glossary_enabled": glossary_enabled,
     }
@@ -123,6 +124,42 @@ hello = czesc
         self.assertEqual(calls[0]["model_name"], "anthropic/claude-sonnet-4-6")
         self.assertIn("Use informal language.", calls[0]["messages"][0]["content"])
         self.assertIn("provider_configs", calls[0]["llm_settings"])
+        self.assertNotIn("max_tokens", calls[0])
+
+    def test_translate_srt_content_honors_max_subtitles_per_call(self):
+        srt_content = "\n\n".join(
+            f"{index}\n00:00:{index - 1:02d},000 --> 00:00:{index:02d},000\nSubtitle {index}."
+            for index in range(1, 6)
+        )
+        prompt_batch_sizes = []
+
+        def fake_completion(**kwargs):
+            prompt = kwargs["messages"][0]["content"]
+            subtitles = json.loads(prompt.rsplit("\nThe subtitles:\n", 1)[1])
+            prompt_batch_sizes.append(len(subtitles))
+            return llm_handler.ChatCompletionResult(
+                content=json.dumps(
+                    [
+                        {"number": item["number"], "text": f"Translated {item['text']}"}
+                        for item in subtitles
+                    ]
+                )
+            )
+
+        settings = {
+            **_settings(),
+            "llm_char": 100_000,
+            "max_subtitles_per_call": 2,
+        }
+        result = llm_translation.translate_srt_content(
+            srt_content,
+            settings,
+            completion_func=fake_completion,
+        )
+
+        self.assertEqual(prompt_batch_sizes, [2, 2, 1])
+        self.assertEqual(result.response_count, 3)
+        self.assertEqual(len(srt_utils.parse_srt(result.srt_content)), 5)
 
     def test_dubbing_handler_translation_no_longer_runs_subdub_command_for_llm(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -107,6 +107,25 @@ with more words.
         self.assertEqual([item["index"] for item in blocks[0]], [1])
         self.assertEqual([item["index"] for item in blocks[1]], [2, 3])
 
+    def test_create_translation_blocks_enforces_subtitle_count_limit(self):
+        srt_content = "\n\n".join(
+            f"{index}\n00:00:{index - 1:02d},000 --> 00:00:{index:02d},000\nSubtitle {index}."
+            for index in range(1, 6)
+        )
+
+        blocks = srt_utils.create_translation_blocks(
+            srt_content,
+            char_limit=100_000,
+            source_language="English",
+            max_subtitles_per_block=2,
+        )
+
+        self.assertEqual([len(block) for block in blocks], [2, 2, 1])
+        self.assertEqual(
+            [[item["index"] for item in block] for block in blocks],
+            [[1, 2], [3, 4], [5]],
+        )
+
     def test_zoom_vtt_parse_group_and_chunk(self):
         vtt = io.StringIO(
             """WEBVTT

@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -29,6 +30,7 @@ def _settings():
         "request_timeout_seconds": 30,
         "reasoning_effort": "",
         "llm_char": 6000,
+        "max_subtitles_per_call": 40,
         "max_line_length": 42,
         "context": True,
     }
@@ -140,6 +142,34 @@ class DubbingLLMCorrectionTests(unittest.TestCase):
         self.assertEqual(calls[0]["llm_settings"]["request_timeout_seconds"], 600)
         self.assertNotIn("max_tokens", calls[0])
         self.assertNotIn("temperature", calls[0])
+
+    def test_correct_srt_content_honors_max_subtitles_per_call(self):
+        srt_content = "\n\n".join(
+            f"{index}\n00:00:{index - 1:02d},000 --> 00:00:{index:02d},000\nSubtitle {index}."
+            for index in range(1, 6)
+        )
+        prompt_batch_sizes = []
+
+        def fake_completion(**kwargs):
+            prompt = kwargs["messages"][-1]["content"]
+            subtitles = json.loads(prompt.rsplit("\nThe subtitles:\n", 1)[1])
+            prompt_batch_sizes.append(len(subtitles))
+            return llm_handler.ChatCompletionResult(content='{"operations":[]}')
+
+        settings = {
+            **_settings(),
+            "llm_char": 100_000,
+            "max_subtitles_per_call": 2,
+        }
+        result = llm_correction.correct_srt_content(
+            srt_content,
+            settings,
+            completion_func=fake_completion,
+        )
+
+        self.assertEqual(prompt_batch_sizes, [2, 2, 1])
+        self.assertEqual(result.response_count, 3)
+        self.assertEqual(len(srt_utils.parse_srt(result.srt_content)), 5)
 
     def test_correct_srt_content_retries_invalid_response(self):
         responses = iter(

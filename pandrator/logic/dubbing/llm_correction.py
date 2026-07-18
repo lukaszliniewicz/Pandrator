@@ -300,6 +300,10 @@ def correct_srt_content(
 ) -> CorrectionResult:
     """Correct SRT content with Pandrator's LLM provider layer."""
     char_limit = _coerce_int(settings.get("llm_char"), DEFAULT_LLM_CHAR_LIMIT)
+    max_subtitles_per_call = max(
+        1,
+        _coerce_int(settings.get("max_subtitles_per_call"), 40),
+    )
     max_line_length = _coerce_int(settings.get("max_line_length"), DEFAULT_MAX_LINE_LENGTH)
     source_language = str(
         settings.get("original_language")
@@ -310,7 +314,12 @@ def correct_srt_content(
     use_context = bool(settings.get("context", True))
     no_remove_subtitles = bool(settings.get("no_remove_subtitles", False))
 
-    blocks = create_translation_blocks(srt_content, char_limit, source_language)
+    blocks = create_translation_blocks(
+        srt_content,
+        char_limit,
+        source_language,
+        max_subtitles_per_block=max_subtitles_per_call,
+    )
     if not blocks:
         return CorrectionResult(srt_content="", cost=0.0, response_count=0)
 
