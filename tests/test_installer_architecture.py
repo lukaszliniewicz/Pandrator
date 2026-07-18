@@ -20,6 +20,7 @@ from pandrator_installer.catalog import (
 from pandrator_installer.cli import parse_launcher_cli_args, run_self_check
 from pandrator_installer.cli import run_tls_self_check
 from pandrator_installer.build_support import (
+    resolve_linux_expat_runtime_library,
     resolve_openssl_runtime_pair,
     resolve_windows_ctypes_runtime_library,
     resolve_windows_runtime_libraries,
@@ -384,6 +385,19 @@ class InstallerArchitectureTests(unittest.TestCase):
             (lib / "libcrypto.so.3").write_bytes(b"different-runtime")
             with self.assertRaisesRegex(RuntimeError, "matched libssl.so.3/libcrypto.so.3 pair"):
                 resolve_openssl_runtime_pair((lib, lib64))
+
+    def test_appimage_expat_runtime_prefers_the_versioned_soname(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime = Path(temp_dir)
+            unversioned = runtime / "libexpat.so"
+            versioned = runtime / "libexpat.so.1"
+            unversioned.write_bytes(b"unversioned")
+            versioned.write_bytes(b"versioned")
+
+            self.assertEqual(
+                resolve_linux_expat_runtime_library((runtime,)),
+                versioned,
+            )
 
     def test_windows_ctypes_runtime_resolves_conda_and_cpython_libffi_names(self):
         with tempfile.TemporaryDirectory() as directory:

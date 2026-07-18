@@ -9,6 +9,7 @@ from pathlib import Path
 
 
 OPENSSL_LIBRARY_NAMES = ("libssl.so.3", "libcrypto.so.3")
+LINUX_EXPAT_LIBRARY_NAMES = ("libexpat.so.1", "libexpat.so")
 WINDOWS_CTYPES_LIBRARY_PATTERNS = ("ffi-*.dll", "libffi-*.dll")
 WINDOWS_RUNTIME_LIBRARY_GROUPS = (
     WINDOWS_CTYPES_LIBRARY_PATTERNS,
@@ -77,6 +78,33 @@ def resolve_openssl_runtime_pair(
         f"build Python runtime. Searched: {searched}. Use the project's "
         "'installer-build' Pixi environment, or a Python runtime that ships "
         "both OpenSSL 3 libraries in lib, lib64, or its configured LIBDIR."
+    )
+
+
+def resolve_linux_expat_runtime_library(
+    search_directories: Iterable[str | Path] | None = None,
+) -> Path:
+    """Find the libexpat ABI used by the active Linux ``pyexpat`` module."""
+
+    directories = tuple(
+        Path(directory).expanduser().resolve(strict=False)
+        for directory in (
+            openssl_library_directories()
+            if search_directories is None
+            else search_directories
+        )
+    )
+    for directory in directories:
+        for name in LINUX_EXPAT_LIBRARY_NAMES:
+            library = directory / name
+            if library.is_file():
+                return library
+
+    searched = ", ".join(str(directory) for directory in directories) or "<none>"
+    raise RuntimeError(
+        "Could not locate libexpat.so.1 for the build Python runtime. "
+        f"Searched: {searched}. Use the project's 'installer-build' Pixi "
+        "environment or a Linux Python runtime that ships its matching Expat library."
     )
 
 

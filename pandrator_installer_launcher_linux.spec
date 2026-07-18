@@ -1,19 +1,24 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-from pandrator_installer.build_support import resolve_openssl_runtime_pair
+from pandrator_installer.build_support import (
+    resolve_linux_expat_runtime_library,
+    resolve_openssl_runtime_pair,
+)
 
 
 ssl_library, crypto_library = resolve_openssl_runtime_pair()
-openssl_binaries = [
+expat_library = resolve_linux_expat_runtime_library()
+runtime_binaries = [
     (str(ssl_library), '.'),
     (str(crypto_library), '.'),
+    (str(expat_library), '.'),
 ]
 
 
 a = Analysis(
     ['pandrator_installer_launcher.py'],
     pathex=[],
-    binaries=openssl_binaries,
+    binaries=runtime_binaries,
     datas=[
         ('pandrator.png', '.'),
     ],
