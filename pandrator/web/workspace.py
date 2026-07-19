@@ -12,6 +12,7 @@ from typing import Any
 
 from sqlalchemy import and_, func, or_, select
 
+from .artifact_selection import select_source_path
 from .database import Database
 from .jobs import JobQueue
 from .tts_optimization import DEFAULT_FIRST_PROMPT, DEFAULT_PROMPT, DEFAULT_SECOND_PROMPT, DEFAULT_THIRD_PROMPT
@@ -220,8 +221,9 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "fade_enabled": False,
         "fade_in_ms": 0,
         "fade_out_ms": 0,
-        "synchronization_delay_ms": 0,
-        "synchronization_speed": 1.0,
+        "synchronization_delay_ms": 2000,
+        "synchronization_speed": 1.15,
+        "synchronization_sentence_gap_ms": 100,
     },
     "rvc": {"enabled": False, "model": "", "pitch": 0, "filter_radius": 3, "index_rate": 0.3, "volume_envelope": 1.0, "protect": 0.3, "f0_method": "rmvpe"},
     "source_cleaning": {
@@ -241,7 +243,7 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "format": "wav",
         "bitrate": "192k",
         "export_mode": "media",
-        "audio_mode": "preserve",
+        "audio_mode": "mixed",
         "subtitle_mode": "none",
         "subtitle_selection": "translation",
         "subtitle_format": "srt",
@@ -250,6 +252,13 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "burn_video_speed": "balanced",
         "burn_audio_codec": "copy",
         "burn_audio_bitrate": "192k",
+        "mix_source_gain_db": 0.0,
+        "mix_voice_gain_db": 0.0,
+        "mix_voice_lufs": -16.0,
+        "mix_ducking": "balanced",
+        "mix_attack_ms": 25,
+        "mix_release_ms": 350,
+        "mix_audio_bitrate": "192k",
         "title": "",
         "artist": "",
         "album": "",
@@ -412,6 +421,62 @@ class WorkspaceSettingsService:
             raise ValueError(f"Unknown settings section: {section}")
         return normalized
 
+    @staticmethod
+    def _output_context(session, session_record: SessionRecord) -> dict[str, Any]:
+        row = session.execute(
+            select(SessionSource, SourceAsset)
+            .join(SourceAsset, SourceAsset.id == SessionSource.source_asset_id)
+            .where(
+                SessionSource.session_id == session_record.id,
+                SessionSource.role == "primary",
+                SessionSource.is_current.is_(True),
+            )
+            .order_by(SessionSource.updated_at.desc())
+        ).first()
+        asset = row[1] if row else None
+        source_name = str(asset.display_name if asset else "")
+        extension = Path(source_name).suffix.lower()
+        mime_type = str(asset.mime_type if asset and asset.mime_type else "").lower()
+        kind = str(asset.kind if asset else "").lower().lstrip(".")
+        video_extensions = {".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".mpeg", ".mpg"}
+        audio_extensions = {".wav", ".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wma"}
+        subtitle_extensions = {".srt", ".vtt", ".ass", ".ssa"}
+        if mime_type.startswith("video/") or extension in video_extensions or f".{kind}" in video_extensions:
+            source_profile = "video"
+        elif mime_type.startswith("audio/") or extension in audio_extensions or f".{kind}" in audio_extensions:
+            source_profile = "audio"
+        elif extension in subtitle_extensions or f".{kind}" in subtitle_extensions:
+            source_profile = "subtitles"
+        elif source_name:
+            source_profile = "document"
+        else:
+            source_profile = "none"
+        has_source_video = source_profile == "video"
+        has_source_audio = source_profile in {"video", "audio"}
+        workflow_kind = session_record.workflow_kind
+        if workflow_kind == "audiobook":
+            applicable_groups = ["audiobook_audio", "audiobook_metadata", "cover"]
+        elif workflow_kind == "subtitles":
+            applicable_groups = ["export_target", "subtitle_document"]
+        else:
+            applicable_groups = ["export_target", "subtitle_document"]
+            if has_source_video:
+                applicable_groups.extend(["video_audio", "video_subtitles", "mix"])
+            elif has_source_audio:
+                applicable_groups.extend(["standalone_audio", "mix"])
+            else:
+                applicable_groups.append("standalone_audio")
+        return {
+            "workflow_kind": workflow_kind,
+            "source_profile": source_profile,
+            "source_name": source_name,
+            "source_kind": kind,
+            "source_mime_type": mime_type,
+            "has_source_video": has_source_video,
+            "has_source_audio": has_source_audio,
+            "applicable_groups": applicable_groups,
+        }
+
     def get(self, session_id: str, section: str) -> dict[str, Any]:
         section = self._validate_section(section)
         with self.database.session() as session:
@@ -450,6 +515,7 @@ class WorkspaceSettingsService:
             elif section == "tts" and speech_language:
                 session_context = {"language": speech_language}
             elif section == "output":
+                output_context = self._output_context(session, session_record)
                 # A subtitle workspace should produce a portable subtitle file
                 # without requiring users to opt out of the application-wide
                 # media defaults. Session overrides still win when somebody
@@ -461,6 +527,12 @@ class WorkspaceSettingsService:
                         "subtitle_mode": "none",
                         "subtitle_selection": "source",
                     }
+                elif session_record.workflow_kind == "voiceover":
+                    session_context = {
+                        "export_mode": "media",
+                        "audio_mode": "mixed" if output_context["has_source_audio"] else "dubbing_only",
+                        "format": "wav",
+                    }
                 if speech_language:
                     session_context["language"] = speech_language
             effective = _merge(BUILTIN_DEFAULTS[section], global_value, session_context, override_value)
@@ -469,6 +541,19 @@ class WorkspaceSettingsService:
                     effective["export_mode"] = "subtitles"
                 effective["audio_mode"] = "preserve"
                 effective["subtitle_mode"] = "none"
+            elif section == "output" and session_record.workflow_kind == "voiceover":
+                if str(effective.get("export_mode") or "").lower() not in {"media", "subtitles", "text"}:
+                    effective["export_mode"] = "media"
+                if not output_context["has_source_audio"]:
+                    effective["audio_mode"] = "dubbing_only"
+                elif str(effective.get("audio_mode") or "").lower() not in {"preserve", "mixed", "dubbing_only"}:
+                    effective["audio_mode"] = "mixed"
+                if output_context["has_source_video"]:
+                    # Video exports use a lossless WAV assembly as their
+                    # intermediate. The final container controls its own codec.
+                    effective["format"] = "wav"
+                elif str(effective.get("format") or "").lower() not in {"wav", "mp3", "opus", "flac"}:
+                    effective["format"] = "wav"
             return {
                 "section": section,
                 "builtin": deepcopy(BUILTIN_DEFAULTS[section]),
@@ -476,6 +561,7 @@ class WorkspaceSettingsService:
                 "override": deepcopy(override_value),
                 "session_context": session_context,
                 "effective": effective,
+                "context": output_context if section == "output" else {},
                 "revision": override.revision if override else 0,
                 "global_revision": global_record.revision if global_record else 0,
             }
@@ -483,8 +569,34 @@ class WorkspaceSettingsService:
     def update(self, session_id: str, section: str, expected_revision: int, value: dict[str, Any]) -> dict[str, Any]:
         section = self._validate_section(section)
         with self.database.session() as session:
-            if session.get(SessionRecord, session_id) is None:
+            session_record = session.get(SessionRecord, session_id)
+            if session_record is None:
                 raise KeyError(session_id)
+            value = dict(value)
+            if section == "output" and session_record.workflow_kind != "audiobook":
+                for key in ("title", "artist", "album", "genre", "cover_artifact_id"):
+                    value.pop(key, None)
+                output_context = self._output_context(session, session_record)
+                if session_record.workflow_kind == "subtitles":
+                    allowed = {"export_mode", "subtitle_selection", "subtitle_format", "language"}
+                    value = {key: item for key, item in value.items() if key in allowed}
+                else:
+                    if output_context["has_source_video"]:
+                        value.pop("format", None)
+                        value.pop("bitrate", None)
+                    else:
+                        for key in (
+                            "subtitle_mode", "burn_video_encoder", "burn_video_quality",
+                            "burn_video_speed", "burn_audio_codec", "burn_audio_bitrate",
+                        ):
+                            value.pop(key, None)
+                    if not output_context["has_source_audio"]:
+                        value.pop("audio_mode", None)
+                        for key in (
+                            "mix_source_gain_db", "mix_voice_gain_db", "mix_voice_lufs",
+                            "mix_ducking", "mix_attack_ms", "mix_release_ms", "mix_audio_bitrate",
+                        ):
+                            value.pop(key, None)
             record = session.get(SessionSetting, (session_id, section))
             if record is None:
                 if expected_revision != 0:
@@ -704,6 +816,9 @@ class SourceLibraryService:
                 attachment.is_current = True
                 attachment.revision += 1
                 attachment.updated_at = utcnow()
+            asset = session.get(SourceAsset, source_asset_id)
+            if role == "primary":
+                select_source_path(session, session_id, asset.artifact_id if asset else None)
             session.flush()
             return {"id": attachment.id, "session_id": session_id, "source_asset_id": source_asset_id, "role": role, "is_current": True, "revision": attachment.revision}
 
@@ -714,6 +829,8 @@ class SourceLibraryService:
                 raise KeyError(attachment_id)
             if attachment.revision != expected_revision:
                 raise RevisionConflict("The source attachment changed in another client.")
+            if attachment.role == "primary" and attachment.is_current:
+                select_source_path(session, session_id, None)
             session.delete(attachment)
 
     def rename(self, source_asset_id: str, expected_revision: int, display_name: str) -> dict[str, Any]:

@@ -301,6 +301,27 @@ class ArtifactEdge(Base):
     relation: Mapped[str] = mapped_column(String(80), nullable=False, default="derived_from")
 
 
+class SessionStageSelection(Base):
+    """The artifact currently chosen for a transformation stage.
+
+    Artifact ``state`` describes the historical default path retained for
+    compatibility with older clients.  This table is the explicit user-facing
+    selection and may intentionally point at a historical (``stale``) artifact.
+    """
+
+    __tablename__ = "session_stage_selections"
+
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("sessions.id", ondelete="CASCADE"), primary_key=True
+    )
+    stage_key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    artifact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
 class Document(Base):
     __tablename__ = "documents"
 

@@ -6,10 +6,11 @@
     CircleAlert,
     Clock3,
     Crop,
-    FileUp,
+    History,
     LoaderCircle,
     Library,
     Play,
+    Plus,
     RefreshCw,
     RotateCcw,
     Save,
@@ -26,6 +27,7 @@
   import TtsServicesModal from './TtsServicesModal.svelte';
   import VoiceLibraryModal from './VoiceLibraryModal.svelte';
   import TextOptimizationReview from './TextOptimizationReview.svelte';
+  import AddSourceDialog from './AddSourceDialog.svelte';
   import { artifactRoleLabel, type PreviewableArtifact } from './artifact-display';
   import { LANGUAGE_OPTIONS } from './settings-fields';
   import { describeVoice, languagesForService } from './voice-catalog';
@@ -45,6 +47,9 @@
     included: boolean;
     required?: boolean;
     artifact?: PreviewableArtifact & { id: string; role: string; raw_role?: string; path: string } | null;
+    artifacts?: Array<PreviewableArtifact & { id: string; role: string; version: number; created_at: string; is_selected: boolean; parent_ids: string[]; settings_hash?: string | null }>;
+    selected_artifact_id?: string | null;
+    selection_revision?: number;
     job_id?: string | null;
     progress?: number | null;
     detail?: string | null;
@@ -77,7 +82,9 @@
   let llmModels = $state<{value:string;label:string;isDefault:boolean}[]>([]);
   let loading = $state(true);
   let error = $state('');
-  let uploading = $state(false);
+  let sourceDialog = $state(false);
+  let sourceMessage = $state('');
+  let pendingRun = $state<{stage: Stage; impact: any} | null>(null);
   let settingsStage = $state<Stage | null>(null);
   let stageMessage = $state('');
   let fullSettingsSection = $state('');
@@ -150,7 +157,7 @@
   let speechBlockMergeThreshold = $state(250);
   let subtitleMode = $state('soft');
   let subtitleSelection = $state('dual');
-  let audioMode = $state('preserve');
+  let audioMode = $state('mixed');
   let exportMode = $state('media');
   let subtitleFormat = $state('srt');
   let pdfSource = $state<{ id: string; filename: string } | null>(null);
@@ -201,13 +208,22 @@
     return `${label} · ${timing} · ${readiness}`;
   };
 
-  async function run(stage: Stage) {
+  async function run(stage: Stage, confirmed = false) {
     if (stage.key === 'preview') {
       reviewOpen = true;
       return;
     }
     if (stage.key === 'export') {
       location.href = `/sessions/${session.id}/output`;
+      return;
+    }
+    if (!confirmed && stage.artifact && (stage.artifacts?.length ?? 0) > 0) {
+      try {
+        const impact = await api<any>(`/sessions/${session.id}/stages/${stage.key}/impact`);
+        pendingRun = { stage, impact };
+      } catch (caught) {
+        error = caught instanceof Error ? caught.message : String(caught);
+      }
       return;
     }
     error = '';
@@ -223,24 +239,39 @@
     }
   }
 
-  async function upload(event: Event) {
-    const input = event.currentTarget as HTMLInputElement;
-    const file = input.files?.[0];
-    if (!file) return;
-    uploading = true;
+  async function sourceAdded(message: string) { sourceMessage = message; await load({ initial: false }); }
+
+  function artifactOptionLabel(artifact: NonNullable<Stage['artifacts']>[number]) {
+    const details = artifact.metadata_json ?? {};
+    const model = String(details.model ?? details.engine ?? '').trim();
+    const created = new Date(artifact.created_at).toLocaleString();
+    return `v${artifact.version} · ${model ? `${model} · ` : ''}${created}`;
+  }
+
+  async function chooseStageArtifact(stage: Stage, artifactId: string) {
+    if (!artifactId || artifactId === stage.selected_artifact_id) return;
     error = '';
-    const body = new FormData();
-    body.set('session_id', session.id);
-    body.set('file', file);
     try {
-      await api('/uploads', { method: 'POST', body });
-      await load();
-    } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
-    } finally {
-      uploading = false;
-      input.value = '';
-    }
+      await api(`/sessions/${session.id}/stages/${stage.key}/selection`, {
+        method: 'PUT',
+        headers: { 'If-Match': `"${stage.selection_revision ?? 0}"` },
+        body: JSON.stringify({ artifact_id: artifactId })
+      });
+      await load({ initial: false });
+    } catch (caught) { error = caught instanceof Error ? caught.message : String(caught); }
+  }
+
+  async function clearStageArtifact(stage: Stage) {
+    if (!stage.selected_artifact_id || !confirm(`Clear the selected ${stage.title.toLowerCase()} result? Dependent stage selections will also be cleared, but every artifact remains in history.`)) return;
+    error = '';
+    try {
+      await api(`/sessions/${session.id}/stages/${stage.key}/selection`, {
+        method: 'PUT',
+        headers: { 'If-Match': `"${stage.selection_revision ?? 0}"` },
+        body: JSON.stringify({ artifact_id: null })
+      });
+      await load({ initial: false });
+    } catch (caught) { error = caught instanceof Error ? caught.message : String(caught); }
   }
 
   const stageSection = (key: string) => ({transcribe:'stt',correct:'correction',translate:'translation',optimize_document:'text',optimize_tts:'text',clean_source:'source_cleaning',prepare_text:'text',generate_audio:'tts',export:'output'}[key] ?? 'text');
@@ -324,7 +355,7 @@
     speechBlockMergeThreshold = Number(saved.speech_block_merge_threshold ?? 250);
     subtitleMode = String(saved.subtitle_mode ?? 'soft');
     subtitleSelection = String(saved.subtitle_selection ?? 'dual');
-    audioMode = String(saved.audio_mode ?? 'preserve');
+    audioMode = String(saved.audio_mode ?? (session.workflow_kind === 'voiceover' ? 'mixed' : 'preserve'));
     exportMode = String(saved.export_mode ?? (session.workflow_kind === 'subtitles' ? 'subtitles' : 'media'));
     if (session.workflow_kind === 'subtitles' && !['subtitles','text'].includes(exportMode)) exportMode = 'subtitles';
     subtitleFormat = String(saved.subtitle_format ?? 'srt');
@@ -665,6 +696,11 @@
     workspaceMode = localStorage.getItem(`pandrator:workspace-mode:${session.id}`) === 'automatic' ? 'automatic' : 'review';
     await Promise.all([load({ initial: true }), loadCapabilities(), loadSpeechCatalogues(), loadLlmModels()]);
   });
+  onMount(() => {
+    const refresh = () => load({ initial: false });
+    window.addEventListener('pandrator:generation-changed', refresh);
+    return () => window.removeEventListener('pandrator:generation-changed', refresh);
+  });
   $effect(() => { if (typeof localStorage !== 'undefined') localStorage.setItem(`pandrator:workspace-mode:${session.id}`, workspaceMode); });
   $effect(() => {
     if (refreshTimer) window.clearTimeout(refreshTimer);
@@ -675,12 +711,9 @@
 <div class="mx-auto max-w-6xl">
   <header class="mb-6 flex flex-wrap items-end justify-between gap-6">
     <div><div class="eyebrow mb-2">Resolved outcome</div><p class="muted max-w-2xl">{session.workflow_kind==='subtitles'?'Transcribe, refine, translate, and export subtitle documents. Voice generation and rendered video remain available by converting this workspace to voiceover.':'Choose how much control you want while keeping the same settings, artifacts, and review history.'}</p>{#if session.workflow_kind!=='subtitles'}<div class="mt-4 inline-flex rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-1" aria-label="Workspace mode"><button onclick={()=>workspaceMode='review'} class:mode-active={workspaceMode==='review'} class="mode-choice">Review each stage</button><button onclick={()=>workspaceMode='automatic'} class:mode-active={workspaceMode==='automatic'} class="mode-choice">Generate automatically</button></div>{/if}</div>
-    <div class="flex flex-wrap gap-2"><button onclick={() => workflowTour=true} class="lift flex items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm font-semibold"><Sparkles size={17}/> Tour</button>{#if snapshot?.sources.find((item) => item.filename.toLowerCase().endsWith('.pdf'))}{@const availablePdf = snapshot.sources.find((item) => item.filename.toLowerCase().endsWith('.pdf'))!}<button onclick={() => pdfSource=availablePdf} class="lift flex items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm font-semibold"><Crop size={18}/> Edit PDF</button>{/if}<label class="lift flex cursor-pointer items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm font-semibold">
-      {#if uploading}<LoaderCircle class="animate-spin" size={18}/>{:else}<FileUp size={18}/>{/if}
-      {uploading ? 'Importing…' : 'Add source'}
-      <input type="file" class="sr-only" onchange={upload} disabled={uploading}/>
-    </label></div>
+    <div class="flex flex-wrap gap-2"><button onclick={() => workflowTour=true} class="lift flex items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm font-semibold"><Sparkles size={17}/> Tour</button>{#if snapshot?.sources.find((item) => item.filename.toLowerCase().endsWith('.pdf'))}{@const availablePdf = snapshot.sources.find((item) => item.filename.toLowerCase().endsWith('.pdf'))!}<button onclick={() => pdfSource=availablePdf} class="lift flex items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm font-semibold"><Crop size={18}/> Edit PDF</button>{/if}<button onclick={()=>sourceDialog=true} class="lift flex items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm font-semibold"><Plus size={18}/> Add source</button></div>
   </header>
+  {#if sourceMessage}<div class="mb-5 rounded-xl bg-[var(--accent-soft)] px-4 py-3 text-sm">{sourceMessage}</div>{/if}
   {#if session.workflow_kind !== 'subtitles' && workspaceMode === 'automatic'}
     <section class="surface mb-6 flex flex-col gap-4 rounded-3xl border border-[var(--accent)]/25 p-5 sm:flex-row sm:items-center sm:p-6"><div class="grid size-11 shrink-0 place-items-center rounded-2xl bg-[var(--accent-soft)] text-[var(--accent)]"><Sparkles size={21}/></div><div class="min-w-0 flex-1"><h2 class="font-semibold">Generate reviewable audio segments</h2><p class="muted mt-1 text-sm leading-relaxed">Pandrator runs the enabled missing or stale prerequisites in order, then generates segment takes. It stops there: reviewing takes, RVC conversion, assembly, export, and video synchronization remain manual.</p></div><button onclick={generateAutomatically} disabled={!snapshot?.sources.length || snapshot?.stages.find((item)=>item.key==='generate_audio')?.status==='running'} class="flex shrink-0 items-center gap-2 rounded-xl bg-[var(--accent)] px-5 py-3 text-sm font-semibold text-white disabled:opacity-40"><Play size={17}/> Generate audio segments</button></section>
   {:else}
@@ -700,7 +733,8 @@
           <div class="flex flex-col gap-5 lg:flex-row lg:items-center">
             <div class="flex min-w-0 flex-1 items-start gap-4">
               <div class="grid size-11 shrink-0 place-items-center rounded-2xl bg-[var(--accent-soft)] text-sm font-bold text-[var(--accent)]">{stage.number}</div>
-              <div class="min-w-0"><div class="flex flex-wrap items-center gap-2"><h2 class="text-lg font-semibold">{stage.title}</h2><span class:running={stage.status === 'running'} class:done={stage.status === 'completed'} class:warning={stage.status === 'stale' || stage.status === 'failed'} class="status-chip inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[.68rem] font-bold uppercase tracking-wider"><StatusIcon class={stage.status === 'running' ? 'animate-spin' : ''} size={12}/>{stage.toggle?(stage.enabled?'enabled':'disabled'):stage.status}</span></div><p class="muted mt-1.5 max-w-2xl text-sm leading-relaxed">{stage.explanation}</p>{#if stage.status==='running' && stage.progress!=null}<div class="mt-3 h-1.5 max-w-md overflow-hidden rounded-full bg-[var(--line)]"><div class="h-full bg-[var(--accent)]" style={`width:${Math.max(2,stage.progress*100)}%`}></div></div>{/if}{#if stage.detail}<p class="mt-2 text-xs text-red-500">{stage.detail}</p>{/if}{#if stage.key==='optimize_tts' && stage.usage}<p class="muted mt-2 text-xs"><strong class="text-[var(--ink)]">Latest usage:</strong> {stage.usage.total_tokens.toLocaleString()} tokens ({stage.usage.input_tokens.toLocaleString()} input, {stage.usage.output_tokens.toLocaleString()} output{stage.usage.cached_input_tokens ? `, ${stage.usage.cached_input_tokens.toLocaleString()} cached` : ''}) · {formatCost(stage.usage.cost_usd)} · {stage.usage.model_id}</p>{/if}{#if stage.artifact}<button onclick={() => previewArtifact(stage)} class="mt-2 flex items-center gap-1 text-xs font-semibold text-[var(--accent)]">Preview latest: {stage.artifact.role}<ChevronRight size={13}/></button>{/if}</div>
+              <div class="min-w-0"><div class="flex flex-wrap items-center gap-2"><h2 class="text-lg font-semibold">{stage.title}</h2><span class:running={stage.status === 'running'} class:done={stage.status === 'completed'} class:warning={stage.status === 'stale' || stage.status === 'failed'} class="status-chip inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[.68rem] font-bold uppercase tracking-wider"><StatusIcon class={stage.status === 'running' ? 'animate-spin' : ''} size={12}/>{stage.toggle?(stage.enabled?'enabled':'disabled'):stage.status}</span></div><p class="muted mt-1.5 max-w-2xl text-sm leading-relaxed">{stage.explanation}</p>{#if stage.status==='running' && stage.progress!=null}<div class="mt-3 h-1.5 max-w-md overflow-hidden rounded-full bg-[var(--line)]"><div class="h-full bg-[var(--accent)]" style={`width:${Math.max(2,stage.progress*100)}%`}></div></div>{/if}{#if stage.detail}<p class="mt-2 text-xs text-red-500">{stage.detail}</p>{/if}{#if stage.key==='optimize_tts' && stage.usage}<p class="muted mt-2 text-xs"><strong class="text-[var(--ink)]">Latest usage:</strong> {stage.usage.total_tokens.toLocaleString()} tokens ({stage.usage.input_tokens.toLocaleString()} input, {stage.usage.output_tokens.toLocaleString()} output{stage.usage.cached_input_tokens ? `, ${stage.usage.cached_input_tokens.toLocaleString()} cached` : ''}) · {formatCost(stage.usage.cost_usd)} · {stage.usage.model_id}</p>{/if}
+              {#if (stage.artifacts?.length??0)>0}<div class="mt-3 flex flex-wrap items-center gap-2"><History class="muted" size={14}/><label class="text-xs font-semibold">Selected version <select value={stage.selected_artifact_id??''} onchange={(event)=>chooseStageArtifact(stage,event.currentTarget.value)} class="ml-1 max-w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-2 py-1.5 font-normal">{#if !stage.selected_artifact_id}<option value="">No result selected</option>{/if}{#each stage.artifacts??[] as artifact}<option value={artifact.id}>{artifactOptionLabel(artifact)}</option>{/each}</select></label>{#if stage.artifact}<button onclick={() => previewArtifact(stage)} class="flex items-center gap-1 text-xs font-semibold text-[var(--accent)]">Preview selected<ChevronRight size={13}/></button><button onclick={()=>clearStageArtifact(stage)} class="muted text-xs font-semibold hover:text-red-500">Clear selection</button>{:else}<span class="muted text-xs">Choose an earlier version or run this stage for the selected input.</span>{/if}</div>{:else if stage.artifact}<button onclick={() => previewArtifact(stage)} class="mt-2 flex items-center gap-1 text-xs font-semibold text-[var(--accent)]">Preview latest: {stage.artifact.role}<ChevronRight size={13}/></button>{/if}</div>
             </div>
             <div class="flex flex-wrap items-center gap-2 lg:justify-end">
               {#if stage.toggle}
@@ -709,7 +743,7 @@
                 {#if !stage.toggle_only && stage.enabled}{#if stage.status==='running'}<button onclick={() => cancel(stage)} class="rounded-xl border border-red-400/50 px-4 py-2.5 text-sm font-semibold text-red-500">Cancel</button>{:else}<button onclick={() => run(stage)} disabled={stage.status === 'unavailable'} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35"><Play size={16}/> Run optimization</button>{/if}{/if}
               {:else if stage.executable}
                 <button onclick={() => openSettings(stage)} class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3.5 py-2.5 text-sm font-semibold"><Settings2 size={16}/> Settings</button>
-                {#if workspaceMode==='review' || stage.key==='export'}{#if stage.status==='running'}<button onclick={() => cancel(stage)} class="rounded-xl border border-red-400/50 px-4 py-2.5 text-sm font-semibold text-red-500">Cancel</button>{:else}<button onclick={() => run(stage)} disabled={stage.status === 'unavailable'} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35"><Play size={16}/> {stage.key==='export'?'Open export':'Run now'}</button>{/if}{/if}
+                {#if workspaceMode==='review' || stage.key==='export'}{#if stage.status==='running'}<button onclick={() => cancel(stage)} class="rounded-xl border border-red-400/50 px-4 py-2.5 text-sm font-semibold text-red-500">Cancel</button>{:else}<button onclick={() => run(stage)} disabled={stage.status === 'unavailable'} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35"><Play size={16}/> {stage.key==='export'?'Open export':stage.artifact?'Run again':'Run now'}</button>{/if}{/if}
               {:else}
                 <button onclick={() => run(stage)} disabled={stage.status === 'unavailable'} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35"><Sparkles size={16}/> Open comparison</button>
               {/if}
@@ -720,6 +754,21 @@
     </div>
   {/if}
 </div>
+
+{#if sourceDialog}<AddSourceDialog sessionId={session.id} onclose={()=>sourceDialog=false} onadded={sourceAdded}/>{/if}
+
+{#if pendingRun}
+  <div class="fixed inset-0 z-[75] grid place-items-center bg-black/40 p-5 backdrop-blur-sm" role="presentation" onclick={(event)=>event.target===event.currentTarget&&(pendingRun=null)}>
+    <!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
+    <section class="surface w-full max-w-lg rounded-[1.7rem] p-7" role="dialog" aria-modal="true" aria-labelledby="rerun-title">
+      <div class="flex items-start justify-between gap-4"><div><div class="eyebrow">Create another version</div><h2 id="rerun-title" class="mt-1 text-2xl font-semibold">Run {pendingRun.stage.title.toLowerCase()} again?</h2></div><button onclick={()=>pendingRun=null} aria-label="Close rerun confirmation" class="rounded-lg p-2"><X size={19}/></button></div>
+      <p class="muted mt-4 text-sm leading-relaxed">A new immutable result will be created and selected only after the run succeeds. The current version and all work based on it remain saved in history.</p>
+      {#if pendingRun.impact.dependent_selections?.length}<div class="mt-4 rounded-xl border border-amber-400/40 bg-amber-500/10 p-4 text-sm"><strong>Selections that will need a compatible new version</strong><div class="mt-2 flex flex-wrap gap-2">{#each pendingRun.impact.dependent_selections as dependent}<span class="rounded-full bg-[var(--paper-strong)] px-2.5 py-1 text-xs font-semibold">{artifactRoleLabel(dependent.role)}</span>{/each}</div></div>{/if}
+      {#if pendingRun.impact.descendant_total}<p class="muted mt-4 text-xs">{pendingRun.impact.descendant_total} dependent artifact{pendingRun.impact.descendant_total===1?'':'s'}, including audio takes and exports where applicable, will remain available on the earlier path.</p>{/if}
+      <div class="mt-6 flex justify-end gap-2"><button onclick={()=>pendingRun=null} class="rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold">Cancel</button><button onclick={async()=>{const stage=pendingRun!.stage;pendingRun=null;await run(stage,true)}} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white"><Play size={16}/> Run and switch when ready</button></div>
+    </section>
+  </div>
+{/if}
 
 {#if settingsStage}
   <div class="fixed inset-0 z-50 grid place-items-center bg-black/35 p-5 backdrop-blur-sm" role="presentation" onclick={(event) => event.target === event.currentTarget && (settingsStage=null)}>
@@ -766,7 +815,7 @@
         {#if settingsStage.key === 'export'}
           <label class="text-sm font-semibold">Export target<select bind:value={exportMode} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal">{#if session.workflow_kind!=='subtitles'}<option value="media">Rendered video / media</option>{/if}<option value="subtitles">Subtitle file</option><option value="text">Concatenated plain text</option></select></label>
           {#if exportMode==='media'}
-            <label class="text-sm font-semibold">Audio<select bind:value={audioMode} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="preserve">Preserve source audio</option><option value="mixed">Mix source and dubbing</option><option value="dubbing_only">Dubbing only</option></select></label><label class="text-sm font-semibold">Subtitles<select bind:value={subtitleMode} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="none">None</option><option value="soft">Injected soft tracks</option><option value="burned">Burned subtitles</option></select></label>
+            <label class="text-sm font-semibold">Audio<select bind:value={audioMode} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="mixed">Mix source and dubbing (recommended)</option><option value="preserve">Preserve source audio</option><option value="dubbing_only">Dubbing only</option></select></label><label class="text-sm font-semibold">Subtitles<select bind:value={subtitleMode} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="none">None</option><option value="soft">Injected soft tracks</option><option value="burned">Burned subtitles</option></select></label>
           {:else if exportMode==='subtitles'}
             <label class="text-sm font-semibold">Subtitle format<select bind:value={subtitleFormat} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="srt">SubRip (.srt)</option><option value="vtt">WebVTT (.vtt)</option></select></label>
           {:else}<p class="muted rounded-xl bg-[var(--accent-soft)] p-3 text-xs">Cue timestamps and numbering are removed and the selected subtitle text is joined into one plain-text document.</p>{/if}

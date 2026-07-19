@@ -1,10 +1,14 @@
 import json
 import os
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+
+from pydub import AudioSegment
 
 from pandrator.logic import dubbing_handler
 from pandrator.logic.dubbing import audio_sync
@@ -80,6 +84,23 @@ Wrong.
             self.assertEqual(0, blocks[0].start_ms)
             self.assertEqual(2000, blocks[0].end_ms)
 
+    def test_create_alignment_blocks_sorts_out_of_order_speech_blocks(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            srt_path, speech_blocks_path, wavs_dir = self._write_sync_fixture(temp_dir)
+            Path(speech_blocks_path).write_text(
+                json.dumps(
+                    [
+                        {"number": "0002", "text": "Friend.", "subtitles": [2]},
+                        {"number": "0001", "text": "Hello.", "subtitles": [1]},
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            blocks = audio_sync.create_alignment_blocks(srt_path, speech_blocks_path, wavs_dir)
+
+            self.assertEqual(["0001", "0002"], [block.number for block in blocks])
+
     def test_create_alignment_blocks_rejects_missing_generated_audio(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             srt_path, speech_blocks_path, wavs_dir = self._write_sync_fixture(temp_dir)
@@ -125,7 +146,31 @@ Wrong.
             ffmpeg_executable="ffmpeg-bin",
         )
         self.assertIn(audio_sync.MIX_FILTER_COMPLEX, mix)
-        self.assertEqual(mix[-2:], ["[mixed]", "mixed.wav"])
+        self.assertEqual("[mixed]", mix[mix.index("-map") + 1])
+        self.assertEqual("mixed.wav", mix[-1])
+        self.assertIn("sidechaincompress", audio_sync.MIX_FILTER_COMPLEX)
+        self.assertIn("loudnorm", audio_sync.MIX_FILTER_COMPLEX)
+        self.assertIn("alimiter", audio_sync.MIX_FILTER_COMPLEX)
+
+        normalize = audio_sync.build_normalize_dubbed_audio_command(
+            "dub.wav",
+            "normalized.wav",
+            voice_lufs=-17,
+            ffmpeg_executable="ffmpeg-bin",
+        )
+        self.assertTrue(any("loudnorm=I=-17.0" in str(item) for item in normalize))
+        self.assertEqual("normalized.wav", normalize[-1])
+
+        direct_mix = audio_sync.build_mix_video_audio_command(
+            "video.mp4",
+            "dub.wav",
+            "mixed-video.mp4",
+            ffmpeg_executable="ffmpeg-bin",
+        )
+        self.assertIn("-shortest", direct_mix)
+        self.assertIn("+faststart", direct_mix)
+        self.assertTrue(any("apad[source]" in str(item) for item in direct_mix))
+        self.assertEqual("mixed-video.mp4", direct_mix[-1])
 
         mux = audio_sync.build_mux_mixed_audio_command(
             "video.mp4",
@@ -133,9 +178,105 @@ Wrong.
             "final.mp4",
             ffmpeg_executable="ffmpeg-bin",
         )
-        self.assertIn("0:v", mux)
-        self.assertIn("1:a", mux)
+        self.assertIn("0:v:0", mux)
+        self.assertIn("1:a:0", mux)
+        self.assertIn("-shortest", mux)
         self.assertEqual(mux[-1], "final.mp4")
+
+        self.assertTrue(
+            audio_sync.media_has_audio_stream(
+                "video.mp4",
+                run_func=lambda *_args, **_kwargs: SimpleNamespace(stdout="0\n"),
+            )
+        )
+        self.assertFalse(
+            audio_sync.media_has_audio_stream(
+                "silent.mp4",
+                run_func=lambda *_args, **_kwargs: SimpleNamespace(stdout=""),
+            )
+        )
+
+    def test_alignment_adjustment_accounts_for_existing_drift_and_current_overrun(self):
+        decision = audio_sync.alignment_adjustment(
+            1200,
+            1000,
+            400,
+            delay_start_ms=2000,
+            max_speed_factor=1.5,
+        )
+
+        self.assertEqual(600, decision.available_ms)
+        self.assertEqual(400, decision.drift_ms)
+        self.assertEqual(0, decision.start_delay_ms)
+        self.assertEqual(1.5, decision.speed_factor)
+
+        relaxed = audio_sync.alignment_adjustment(
+            400,
+            1000,
+            0,
+            delay_start_ms=2000,
+            max_speed_factor=1.15,
+        )
+        self.assertEqual(1.0, relaxed.speed_factor)
+        self.assertEqual(420, relaxed.start_delay_ms)
+
+    def test_alignment_pads_to_timeline_and_recovers_without_accumulating_shift(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            first = Path(temp_dir, "first.wav")
+            second = Path(temp_dir, "second.wav")
+            AudioSegment.silent(duration=450).export(first, format="wav").close()
+            AudioSegment.silent(duration=300).export(second, format="wav").close()
+            blocks = [
+                audio_sync.AudioAlignmentBlock("2", "Second", 1100, 2000, [second], [2]),
+                audio_sync.AudioAlignmentBlock("1", "First", 0, 1000, [first], [1]),
+            ]
+
+            output = audio_sync.align_audio_blocks(
+                blocks,
+                temp_dir,
+                delay_start_ms=0,
+                speed_up_percent=100,
+                output_path=Path(temp_dir, "aligned.wav"),
+            )
+
+            self.assertEqual(2000, len(AudioSegment.from_wav(output)))
+
+    def test_mix_filter_can_disable_ducking_without_disabling_peak_protection(self):
+        filter_graph = audio_sync.build_mix_filter_complex(ducking="off")
+
+        self.assertNotIn("sidechaincompress", filter_graph)
+        self.assertIn("duration=first", filter_graph)
+        self.assertIn("alimiter", filter_graph)
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg qualification requires ffmpeg")
+    def test_real_mix_is_source_duration_bounded_and_peak_limited(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            original_path = Path(temp_dir, "original.wav")
+            voice_path = Path(temp_dir, "voice.wav")
+            mixed_path = Path(temp_dir, "mixed.wav")
+            # Non-silent material exercises loudness normalization and the
+            # limiter; the voice track is intentionally longer than source.
+            from pydub.generators import Sine
+
+            Sine(220).to_audio_segment(duration=1000).apply_gain(-4).export(original_path, format="wav").close()
+            voice = AudioSegment.silent(duration=250) + Sine(660).to_audio_segment(duration=700).apply_gain(-8) + AudioSegment.silent(duration=550)
+            voice.export(voice_path, format="wav").close()
+            subprocess.run(
+                audio_sync.build_mix_audio_command(
+                    original_path,
+                    voice_path,
+                    mixed_path,
+                    source_gain_db=-2,
+                    voice_gain_db=0,
+                    ducking="balanced",
+                ),
+                check=True,
+                capture_output=True,
+            )
+
+            mixed = AudioSegment.from_wav(mixed_path)
+            self.assertLessEqual(abs(len(mixed) - 1000), 20)
+            self.assertLessEqual(mixed.max_dBFS, -0.8)
 
     def test_mix_audio_tracks_uses_command_builders_in_order(self):
         commands = []
@@ -159,15 +300,14 @@ Wrong.
         self.assertTrue(result.original_audio_path.endswith("original_audio.wav"))
         self.assertTrue(result.amplified_dubbed_audio_path.endswith("amplified_dubbed_audio.wav"))
         self.assertTrue(result.mixed_audio_path.endswith("mixed_audio.wav"))
-        self.assertEqual(len(commands), 5)
+        self.assertEqual(len(commands), 4)
         self.assertEqual(commands[0][:4], ["ffmpeg-bin", "-y", "-i", "video.mp4"])
-        self.assertIn("volumedetect", commands[1])
-        self.assertIn("volume=4.0dB", commands[2])
-        self.assertIn(audio_sync.MIX_FILTER_COMPLEX, commands[3])
-        self.assertIn("mixed_audio.wav", commands[3][-1])
-        self.assertEqual(commands[4][:4], ["ffmpeg-bin", "-y", "-i", "video.mp4"])
-        self.assertTrue(any(str(item).endswith("mixed_audio.wav") for item in commands[4]))
-        self.assertTrue(str(commands[4][-1]).endswith("final_output.mp4"))
+        self.assertTrue(any("loudnorm=I=-16.0" in str(item) for item in commands[1]))
+        self.assertTrue(any("sidechaincompress" in str(item) for item in commands[2]))
+        self.assertIn("mixed_audio.wav", commands[2][-1])
+        self.assertEqual(commands[3][:4], ["ffmpeg-bin", "-y", "-i", "video.mp4"])
+        self.assertTrue(any(str(item).endswith("mixed_audio.wav") for item in commands[3]))
+        self.assertTrue(str(commands[3][-1]).endswith("final_output.mp4"))
 
     def test_synchronize_audio_video_uses_injected_align_and_mix(self):
         calls = {}

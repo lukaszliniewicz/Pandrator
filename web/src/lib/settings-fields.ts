@@ -29,11 +29,12 @@ const CHOICES: Record<string, SettingOption[]> = {
   backend: [option('llm', 'LLM provider'), option('deepl', 'DeepL')],
   f0_method: [option('rmvpe', 'RMVPE'), option('harvest', 'Harvest'), option('crepe', 'CREPE'), option('pm', 'PM')],
   pdf_ocr_mode: [option('auto', 'Automatic'), option('always', 'Always OCR'), option('never', 'Never OCR')],
-  format: [option('wav', 'WAV'), option('mp3', 'MP3'), option('m4b', 'M4B audiobook'), option('flac', 'FLAC'), option('ogg', 'Ogg Vorbis')],
+  format: [option('wav', 'WAV'), option('mp3', 'MP3'), option('m4b', 'M4B audiobook'), option('flac', 'FLAC'), option('opus', 'Opus')],
   bitrate: [option('96k', '96 kbps'), option('128k', '128 kbps'), option('160k', '160 kbps'), option('192k', '192 kbps'), option('256k', '256 kbps'), option('320k', '320 kbps')],
   burn_audio_bitrate: [option('96k', '96 kbps'), option('128k', '128 kbps'), option('160k', '160 kbps'), option('192k', '192 kbps'), option('256k', '256 kbps'), option('320k', '320 kbps')],
   export_mode: [option('media', 'Video / media'), option('subtitles', 'Subtitles only'), option('text', 'Concatenated text only')],
   audio_mode: [option('preserve', 'Preserve source audio'), option('mixed', 'Mix source and generated audio'), option('dubbing_only', 'Generated audio only')],
+  mix_ducking: [option('off', 'Off'), option('gentle', 'Gentle'), option('balanced', 'Balanced'), option('strong', 'Strong')],
   subtitle_mode: [option('none', 'No subtitles'), option('soft', 'Inject soft subtitle tracks'), option('burned', 'Burn subtitles into video')],
   subtitle_selection: [option('translation', 'Translation only'), option('source', 'Source or corrected only'), option('dual', 'Source and translation')],
   subtitle_format: [option('srt', 'SubRip (.srt)'), option('vtt', 'WebVTT (.vtt)')],
@@ -75,6 +76,8 @@ export function numberPresentation(key: string): NumberPresentation {
     pitch: { min: -24, max: 24, step: 1 }, max_attempts: { min: 1, max: 20, step: 1 }, burn_video_quality: { min: 0, max: 51, step: 1 },
     stt_compute_device: { min: 0, step: 1 }, stt_threads: { min: 0, step: 1 }, stt_beam_size: { min: 1, step: 1 },
     max_lines: { min: 1, max: 3, step: 1 }, max_cps: { min: 1, step: 0.5 },
+    synchronization_delay_ms: { min: 0, max: 10000, step: 50 }, synchronization_speed: { min: 1, max: 4, step: 0.01 }, synchronization_sentence_gap_ms: { min: 0, max: 5000, step: 10 },
+    mix_source_gain_db: { min: -60, max: 12, step: 0.5 }, mix_voice_gain_db: { min: -30, max: 12, step: 0.5 }, mix_voice_lufs: { min: -30, max: -8, step: 0.5 }, mix_attack_ms: { min: 1, max: 2000, step: 1 }, mix_release_ms: { min: 10, max: 5000, step: 10 },
     temperature: { min: 0, max: 2, step: 0.05 }, fishs2_temperature: { min: 0, max: 2, step: 0.05 }, chatterbox_temperature: { min: 0, max: 2, step: 0.05 }
   };
   return meta[key] ?? { min: 0, step: 'any', range: RANGE_KEYS.has(key) };
@@ -98,7 +101,16 @@ export function settingLabel(key: string): string {
     third_prompt: 'Third optimization prompt',
     generation_prompt: 'Speech direction',
     silero_stress_mode: 'Stress handling',
-    silero_sample_rate: 'Sample rate'
+    silero_sample_rate: 'Sample rate',
+    synchronization_delay_ms: 'Maximum voiceover start delay',
+    synchronization_speed: 'Maximum synchronization speed-up',
+    synchronization_sentence_gap_ms: 'Generated sentence gap',
+    mix_source_gain_db: 'Source soundtrack level (dB)',
+    mix_voice_gain_db: 'Voiceover level (dB)',
+    mix_voice_lufs: 'Voiceover loudness target (LUFS)',
+    mix_ducking: 'Source ducking under voiceover',
+    mix_attack_ms: 'Ducking attack (ms)',
+    mix_release_ms: 'Ducking release (ms)'
   };
   if (labels[key]) return labels[key];
   return key.split('_').map((word) => ACRONYMS[word.toLowerCase()] ?? word.charAt(0).toUpperCase() + word.slice(1)).join(' ')

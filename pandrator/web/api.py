@@ -24,6 +24,7 @@ from werkzeug.utils import secure_filename
 
 from pandrator.runtime import DataPaths
 
+from .artifact_selection import choose_artifact, clear_selection, rerun_impact, stage_history
 from .artifacts import ArtifactService, sha256_file
 from .auth import AuthService, BootstrapTokenStore
 from .capabilities import crispasr_install_preferences, probe_capabilities
@@ -58,7 +59,7 @@ from .maintenance import apply_retention
 from .models import AgentRun, AgentStep, AppSetting, AppSettingHistory, Artifact, ArtifactEdge, Document, DocumentRevision, Job, Provider, ProviderModel, Segment, SessionRecord, SourceRecord, TimedWord, TrainingRun, Voice, VoiceSample, new_id, utcnow
 from .openapi import build_openapi_document
 from .parity_registry import build_registry
-from .schemas import AgentRunCreateRequest, BootstrapRequest, BundleExportRequest, BundleImportRequest, ChunkUploadInitialize, CredentialUpdate, GenerationPlanCreate, GenerationSegmentUpdate, GenerationStartRequest, JobCreate, LoginRequest, ModelCreate, ModelUpdate, OptimizationReviewRequest, OutcomePlanUpdate, OutputAssemblyCreateRequest, PdfEditRequest, ProviderCreate, ProviderTestRequest, ProviderUpdate, RvcConvertRequest, RvcModelUploadRequest, SessionCreate, SessionSettingsUpdate, SessionUpdate, SettingUpdate, SourceAttachRequest, SourceReuseRequest, SourceUpdateRequest, SourceUrlRequest, SubtitleReviewRequest, TokenCreateRequest, TrainingCreateRequest, TtsEndpointDiscoveryRequest, TtsVoicePreviewRequest, VoiceCreate, VoiceTranscriptReview
+from .schemas import AgentRunCreateRequest, BootstrapRequest, BundleExportRequest, BundleImportRequest, ChunkUploadInitialize, CredentialUpdate, GenerationPlanCreate, GenerationSegmentUpdate, GenerationStartRequest, JobCreate, LoginRequest, ModelCreate, ModelUpdate, OptimizationReviewRequest, OutcomePlanUpdate, OutputAssemblyCreateRequest, PdfEditRequest, ProviderCreate, ProviderTestRequest, ProviderUpdate, RvcConvertRequest, RvcModelUploadRequest, SessionCreate, SessionSettingsUpdate, SessionUpdate, SettingUpdate, SourceAttachRequest, SourceReuseRequest, SourceUpdateRequest, SourceUrlRequest, StageSelectionUpdate, SubtitleReviewRequest, TokenCreateRequest, TrainingCreateRequest, TtsEndpointDiscoveryRequest, TtsVoicePreviewRequest, VoiceCreate, VoiceTranscriptReview
 from .sessions import RevisionConflict, SessionService
 from .subtitle_review import SubtitleReviewService
 from .workflows import WorkflowService
@@ -1346,6 +1347,54 @@ def create_app(
             return jsonify(workflows.snapshot(session_id))
         except KeyError:
             return error_response("not_found", "Session not found.", 404)
+
+    @app.get("/api/v1/sessions/<session_id>/stages/<stage_key>/artifacts")
+    @require_auth
+    def workflow_stage_artifacts(session_id: str, stage_key: str):
+        try:
+            sessions.get(session_id)
+            with database.session() as db_session:
+                return jsonify(stage_history(db_session, session_id, stage_key))
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
+        except ValueError as error:
+            return error_response("stage_unavailable", str(error), 409)
+
+    @app.get("/api/v1/sessions/<session_id>/stages/<stage_key>/impact")
+    @require_auth
+    def workflow_stage_impact(session_id: str, stage_key: str):
+        try:
+            sessions.get(session_id)
+            with database.session() as db_session:
+                return jsonify(rerun_impact(db_session, session_id, stage_key))
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
+        except ValueError as error:
+            return error_response("stage_unavailable", str(error), 409)
+
+    @app.put("/api/v1/sessions/<session_id>/stages/<stage_key>/selection")
+    @require_auth
+    def workflow_stage_selection(session_id: str, stage_key: str):
+        payload = StageSelectionUpdate.model_validate(request.get_json(silent=True) or {})
+        raw_etag = request.headers.get("If-Match", "").strip('W/" ')
+        try:
+            expected = int(raw_etag)
+        except ValueError:
+            return error_response("precondition_required", "If-Match must contain the current selection revision.", 428)
+        try:
+            with database.session() as db_session:
+                history = stage_history(db_session, session_id, stage_key)
+                if int(history["revision"]) != expected:
+                    return error_response("revision_conflict", "The selected stage artifact changed in another client.", 409)
+                if payload.artifact_id:
+                    result = choose_artifact(db_session, session_id, stage_key, payload.artifact_id)
+                else:
+                    result = clear_selection(db_session, session_id, stage_key)
+            return jsonify(result)
+        except KeyError:
+            return error_response("not_found", "Session or artifact not found.", 404)
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
 
     @app.post("/api/v1/sessions/<session_id>/stages/<stage_key>/run")
     @require_auth

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -16,6 +17,7 @@ from sqlalchemy import func, select
 
 from pandrator.runtime import DataPaths
 
+from .artifact_selection import canonical_stage_key, selected_artifacts
 from .artifacts import ArtifactService
 from .credentials import (
     TTS_SERVICE_ENVS,
@@ -45,6 +47,8 @@ from .models import (
     Segment,
     SegmentLineage,
     SessionRecord,
+    SessionSource,
+    SourceAsset,
     SourceRecord,
     TrainingRun,
     TimedWord,
@@ -54,6 +58,9 @@ from .models import (
     new_id,
     utcnow,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 def _hash_segments(segments) -> str:
@@ -257,12 +264,33 @@ class WorkflowHandlers:
                 session.scalars(
                     select(Artifact).where(
                         Artifact.session_id == session_id,
-                        Artifact.state == "current",
                         Artifact.role.in_(prerequisite_roles),
                     ).order_by(Artifact.created_at.desc())
                 ).all()
             )
-            by_role = {item.role: item for item in candidates}
+            selected = selected_artifacts(session, session_id, candidates)
+            by_role: dict[str, Artifact] = {}
+            for item in selected.values():
+                if item.role in prerequisite_roles:
+                    by_role.setdefault(item.role, item)
+            attached = list(
+                session.scalars(
+                    select(Artifact)
+                    .join(SourceAsset, SourceAsset.artifact_id == Artifact.id)
+                    .join(SessionSource, SessionSource.source_asset_id == SourceAsset.id)
+                    .where(
+                        SessionSource.session_id == session_id,
+                        SessionSource.is_current.is_(True),
+                        Artifact.role.in_(prerequisite_roles),
+                    )
+                    .order_by(SessionSource.updated_at.desc())
+                ).all()
+            )
+            for item in attached:
+                by_role.setdefault(item.role, item)
+            for item in candidates:
+                if item.state == "current":
+                    by_role.setdefault(item.role, item)
             result = next((by_role[role] for role in prerequisite_roles if role in by_role), None)
             if result is not None:
                 session.expunge(result)
@@ -278,8 +306,7 @@ class WorkflowHandlers:
         definitions = AUDIOBOOK_STAGES if record.workflow_kind == "audiobook" else DUBBING_STAGES
         is_srt_source = False
         if record.workflow_kind != "audiobook":
-            with self.database.session() as session:
-                upload = session.scalar(select(Artifact).where(Artifact.session_id == session_id, Artifact.role == "upload", Artifact.state == "current").order_by(Artifact.created_at.desc()))
+            upload = self._latest_stage_input(session_id, ("upload",))
             filename = str((upload.metadata_json or {}).get("original_filename") or upload.relative_path).lower() if upload else ""
             is_srt_source = filename.endswith(".srt")
             if is_srt_source:
@@ -342,12 +369,8 @@ class WorkflowHandlers:
                 json.dumps(settings, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
             ).hexdigest()
             with self.database.session() as session:
-                existing = session.scalar(
-                    select(Artifact).where(
-                        Artifact.session_id == session_id,
-                        Artifact.role == definition.output_role,
-                        Artifact.state == "current",
-                    ).order_by(Artifact.created_at.desc())
+                existing = selected_artifacts(session, session_id).get(
+                    canonical_stage_key(definition.key)
                 ) if definition.output_role else None
             if (
                 existing is not None
@@ -415,6 +438,12 @@ class WorkflowHandlers:
                 raise ValueError(f"Session not found: {session_id}")
             path = self.paths.sessions / record.storage_key
         path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _operation_dir(self, session_id: str, stage_key: str) -> Path:
+        """Allocate a unique directory so reruns never overwrite prior files."""
+        path = self._session_dir(session_id) / "stage-runs" / f"{stage_key}-{new_id()}"
+        path.mkdir(parents=True, exist_ok=False)
         return path
 
     def _session_record(self, session_id: str) -> SessionRecord:
@@ -635,7 +664,7 @@ class WorkflowHandlers:
 
         session_id = str(payload.get("session_id") or "")
         source_artifact, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
-        session_dir = self._session_dir(session_id)
+        session_dir = self._operation_dir(session_id, "transcribe")
         progress(0.05, "Preparing transcription")
         if cancel_event.is_set():
             return {}
@@ -690,7 +719,7 @@ class WorkflowHandlers:
 
         session_id = str(payload.get("session_id") or "")
         source_artifact, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
-        session_dir = self._session_dir(session_id)
+        session_dir = self._operation_dir(session_id, "correct")
         settings = self._with_database_llm_settings(dict(payload.get("settings") or {}), "correction")
         progress(0.05, "Correcting subtitles")
         result = correct_srt_file_with_result(
@@ -728,7 +757,7 @@ class WorkflowHandlers:
 
         session_id = str(payload.get("session_id") or "")
         source_artifact, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
-        session_dir = self._session_dir(session_id)
+        session_dir = self._operation_dir(session_id, "translate")
         settings = dict(payload.get("settings") or {})
         progress(0.05, "Translating subtitles")
         if str(settings.get("translation_backend") or "llm").lower() == "deepl":
@@ -1338,7 +1367,7 @@ class WorkflowHandlers:
             parent_ids=[source_artifact.id],
             metadata={"comparison_source": True, "source_filename": source_path.name},
         )
-        destination = self._session_dir(session_id) / f"{source_path.stem}_cleaned.txt"
+        destination = self._operation_dir(session_id, "clean-source") / f"{source_path.stem}_cleaned.txt"
         destination.write_text(cleaned_text, encoding="utf-8", newline="\n")
         artifact = self.artifacts.register(
             destination,
@@ -1416,7 +1445,7 @@ class WorkflowHandlers:
         )
         if cancel_event.is_set():
             return {}
-        destination = self._session_dir(session_id) / "prepared_narration.json"
+        destination = self._operation_dir(session_id, "prepare-text") / "prepared_narration.json"
         destination.write_text(json.dumps(prepared, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         artifact = self.artifacts.register(
             destination,
@@ -1723,7 +1752,7 @@ class WorkflowHandlers:
         from .audio_assembly import compose_audio
 
         combined = compose_audio(audio_parts, settings)
-        destination = self._session_dir(session_id) / ("dubbing_audio.wav" if role == "dubbing_audio" else "audiobook_audio.wav")
+        destination = self._operation_dir(session_id, "generate-audio") / ("dubbing_audio.wav" if role == "dubbing_audio" else "audiobook_audio.wav")
         exported = combined.export(destination, format="wav")
         exported.close()
         artifact = self.artifacts.register(
@@ -1750,7 +1779,7 @@ class WorkflowHandlers:
         settings = {**settings, "language": language, "target_language": language}
         blocks_path = Path(
             generate_speech_blocks_file(
-                str(self._session_dir(session_id)),
+                str(self._operation_dir(session_id, "speech-blocks")),
                 str(source_path),
                 target_language=language,
                 min_chars=int(settings.get("speech_block_min_chars") or 10),
@@ -1811,7 +1840,7 @@ class WorkflowHandlers:
         if source_path.suffix.lower() == ".srt":
             blocks_path = Path(
                 generate_speech_blocks_file(
-                    str(self._session_dir(session_id)),
+                    str(self._operation_dir(session_id, "speech-blocks")),
                     str(source_path),
                     target_language=language,
                     min_chars=int(settings.get("speech_block_min_chars") or 10),
@@ -1874,6 +1903,7 @@ class WorkflowHandlers:
             **dict(snapshot.get("text") or {}),
             "llm_tts_optimization": bool(settings.get("llm_tts_optimization")),
         }
+        snapshot["source_artifact_id"] = source_artifact.id
         frozen_hash = hashlib.sha256(
             json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
         ).hexdigest()
@@ -2340,6 +2370,7 @@ class WorkflowHandlers:
                         temporary_path,
                         delay_start_ms=max(0, int(audio_settings.get("synchronization_delay_ms") or 0)),
                         speed_up_percent=max(100, speed_up_percent),
+                        sentence_gap_ms=max(0, int(audio_settings.get("synchronization_sentence_gap_ms") or 100)),
                         output_path=temporary_path / "aligned.wav",
                     )
                     combined = AudioSegment.from_wav(aligned_path)
@@ -2365,42 +2396,33 @@ class WorkflowHandlers:
                     if index < len(loaded) - 1:
                         timeline_ms += max(0, int(segment.silence_after_ms or 0))
                 combined = compose_audio(parts, audio_settings)
+            session_record = self._session_record(session_id)
             output_format = str(output_settings.get("format") or "wav").lower()
+            if session_record.workflow_kind != "audiobook" and output_format == "m4b":
+                output_format = "wav"
             bitrate = str(output_settings.get("bitrate") or "192k")
             destination = self._session_dir(session_id) / "assemblies" / f"assembly-{assembly_id}.{output_format}"
             export_audio(combined, destination, output_format, bitrate)
-            session_record = self._session_record(session_id)
-            metadata = {
-                "title": str(output_settings.get("title") or session_record.name),
-                "artist": str(output_settings.get("artist") or ""),
-                "album": str(output_settings.get("album") or ""),
-                "genre": str(output_settings.get("genre") or ""),
-                "language": str(output_settings.get("language") or ""),
-            }
-            cover_artifact_id = str(output_settings.get("cover_artifact_id") or "").strip()
+            metadata: dict[str, str] = {}
+            cover_artifact_id = ""
             cover_path = None
-            if cover_artifact_id:
-                cover_artifact, candidate = self._resolve_input(cover_artifact_id)
-                if cover_artifact.state != "current" or not candidate.is_file() or not str(cover_artifact.mime_type or "").startswith("image/"):
-                    raise ValueError("The selected cover artifact is not an available image.")
-                cover_path = candidate
-                parent_ids.append(cover_artifact.id)
-            from pandrator.logic.audio_processor import _add_chapters_to_m4b, _save_metadata_and_cover
+            if session_record.workflow_kind == "audiobook":
+                metadata = {
+                    "title": str(output_settings.get("title") or session_record.name),
+                    "artist": str(output_settings.get("artist") or ""),
+                    "album": str(output_settings.get("album") or ""),
+                    "genre": str(output_settings.get("genre") or ""),
+                    "language": str(output_settings.get("language") or ""),
+                }
+                cover_artifact_id = str(output_settings.get("cover_artifact_id") or "").strip()
+                if cover_artifact_id:
+                    cover_artifact, candidate = self._resolve_input(cover_artifact_id)
+                    if cover_artifact.state != "current" or not candidate.is_file() or not str(cover_artifact.mime_type or "").startswith("image/"):
+                        raise ValueError("The selected cover artifact is not an available image.")
+                    cover_path = candidate
+                    parent_ids.append(cover_artifact.id)
+                from pandrator.logic.audio_processor import _add_chapters_to_m4b, _save_metadata_and_cover
 
-            _save_metadata_and_cover(
-                str(destination),
-                output_format,
-                metadata,
-                str(cover_path) if cover_path else None,
-                raise_on_error=True,
-            )
-            if output_format == "m4b" and chapter_markers:
-                _add_chapters_to_m4b(
-                    str(destination),
-                    chapter_markers,
-                    total_duration_sec=len(combined) / 1000,
-                    raise_on_error=True,
-                )
                 _save_metadata_and_cover(
                     str(destination),
                     output_format,
@@ -2408,6 +2430,20 @@ class WorkflowHandlers:
                     str(cover_path) if cover_path else None,
                     raise_on_error=True,
                 )
+                if output_format == "m4b" and chapter_markers:
+                    _add_chapters_to_m4b(
+                        str(destination),
+                        chapter_markers,
+                        total_duration_sec=len(combined) / 1000,
+                        raise_on_error=True,
+                    )
+                    _save_metadata_and_cover(
+                        str(destination),
+                        output_format,
+                        metadata,
+                        str(cover_path) if cover_path else None,
+                        raise_on_error=True,
+                    )
             artifact = self.artifacts.register(
                 destination,
                 kind="audio",
@@ -2497,6 +2533,7 @@ class WorkflowHandlers:
         from werkzeug.utils import secure_filename
 
         from pandrator.logic.dubbing.bilingual_ass import write_bilingual_ass
+        from pandrator.logic.dubbing.audio_sync import build_mix_audio_command, build_mix_video_audio_command, media_has_audio_stream
         from pandrator.logic.dubbing.srt_utils import concatenate_subtitle_text, srt_to_vtt
         from pandrator.logic.dubbing.subtitle_finalization import finalize_srt_file
         from pandrator.logic.dubbing.video_muxing import build_add_subtitles_command, build_multi_soft_subtitle_command, build_replace_video_audio_command
@@ -2508,8 +2545,18 @@ class WorkflowHandlers:
         record = self._session_record(session_id)
         with self.database.session() as session:
             current = list(session.scalars(select(Artifact).where(Artifact.session_id == session_id, Artifact.state == "current")).all())
-            for item in current:
-                session.expunge(item)
+            selected_text = selected_artifacts(session, session_id)
+            attached_sources = list(
+                session.scalars(
+                    select(Artifact)
+                    .join(SourceAsset, SourceAsset.artifact_id == Artifact.id)
+                    .join(SessionSource, SessionSource.source_asset_id == SourceAsset.id)
+                    .where(SessionSource.session_id == session_id, SessionSource.is_current.is_(True))
+                    .order_by(SessionSource.updated_at.desc())
+                ).all()
+            )
+            known_ids = {item.id for item in current}
+            current.extend(item for item in attached_sources if item.id not in known_ids)
             selected_assembly = None
             selected_run_id = str(settings.get("generation_run_id") or "").strip()
             if selected_run_id:
@@ -2528,8 +2575,11 @@ class WorkflowHandlers:
                 selected_audio = session.get(Artifact, selected_assembly.artifact_id)
                 if selected_audio is None:
                     raise ValueError("The selected generation run assembly is unavailable.")
-                session.expunge(selected_audio)
-        by_role = {item.role: item for item in current}
+        by_role: dict[str, Artifact] = {}
+        for item in current:
+            by_role.setdefault(item.role, item)
+        for item in selected_text.values():
+            by_role[item.role] = item
         output_dir = self._session_dir(session_id) / "exports"
         output_dir.mkdir(parents=True, exist_ok=True)
         export_name = secure_filename(record.name) or record.storage_key
@@ -2545,9 +2595,10 @@ class WorkflowHandlers:
             shutil.copy2(audio_path, destination)
             produced.append(self.artifacts.register(destination, kind="export", role="export", session_id=session_id, parent_ids=[audio.id], settings=settings))
         else:
-            upload_media = next((item for item in reversed(current) if item.role == "upload" and Path(item.relative_path).suffix.lower() in {".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v"}), None)
+            upload_media = next((item for item in attached_sources if Path(item.relative_path).suffix.lower() in {".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v"}), None) or next((item for item in reversed(current) if item.role == "upload" and Path(item.relative_path).suffix.lower() in {".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v"}), None)
+            upload_audio = next((item for item in attached_sources if Path(item.relative_path).suffix.lower() in {".wav", ".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wma"}), None) or next((item for item in reversed(current) if item.role == "upload" and Path(item.relative_path).suffix.lower() in {".wav", ".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wma"}), None)
             translated = by_role.get("translation")
-            source_subtitle = by_role.get("correction") or by_role.get("transcription") or next((item for item in current if item.role == "upload" and Path(item.relative_path).suffix.lower() == ".srt"), None)
+            source_subtitle = by_role.get("correction") or by_role.get("transcription") or next((item for item in attached_sources if Path(item.relative_path).suffix.lower() == ".srt"), None) or next((item for item in current if item.role == "upload" and Path(item.relative_path).suffix.lower() == ".srt"), None)
             export_mode = str(settings.get("export_mode") or ("subtitles" if record.workflow_kind == "subtitles" else "media")).lower()
             if record.workflow_kind == "subtitles" and export_mode not in {"subtitles", "text"}:
                 export_mode = "subtitles"
@@ -2589,8 +2640,8 @@ class WorkflowHandlers:
                 finalized_subtitles.append(finalized)
             selected_subtitles = finalized_subtitles
             dubbing_audio = selected_audio if selected_assembly is not None else by_role.get("assembled_audio") or by_role.get("dubbing_audio")
-            audio_mode = str(settings.get("audio_mode") or "source").lower()
-            audio_mode = {"preserve": "source", "dubbing_only": "dubbed"}.get(audio_mode, audio_mode)
+            default_audio_mode = "mixed" if record.workflow_kind == "voiceover" and (upload_media or upload_audio) else "dubbed" if record.workflow_kind == "voiceover" else "source"
+            audio_mode = str(settings.get("audio_mode") or default_audio_mode).lower()
             audio_mode = {"preserve": "source", "dubbing_only": "dubbed"}.get(audio_mode, audio_mode)
 
             def is_translation_track(item: Artifact) -> bool:
@@ -2649,10 +2700,27 @@ class WorkflowHandlers:
                 if dubbing_audio and audio_mode in {"dubbed", "mixed"}:
                     _audio_record, audio_path = self._resolve_input(dubbing_audio.id)
                     audio_video = output_dir / f".{record.storage_key}-audio-{new_id()}.mp4"
+                    if audio_mode == "mixed":
+                        ffprobe_executable = str(os.environ.get("PANDRATOR_FFPROBE_EXE") or shutil.which("ffprobe") or "")
+                        if ffprobe_executable and not media_has_audio_stream(media_path, ffprobe_executable=ffprobe_executable):
+                            logger.warning("Source media has no audio stream; exporting voiceover-only audio for %s", media_path)
+                            audio_mode = "dubbed"
                     if audio_mode == "dubbed":
                         command = build_replace_video_audio_command(str(media_path), str(audio_path), str(audio_video), ffmpeg_executable=ffmpeg_executable)
                     else:
-                        command = [ffmpeg_executable, "-y", "-i", str(media_path), "-i", str(audio_path), "-filter_complex", "[0:a][1:a]amix=inputs=2:duration=longest:dropout_transition=2[a]", "-map", "0:v:0", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", str(audio_video)]
+                        command = build_mix_video_audio_command(
+                            str(media_path),
+                            str(audio_path),
+                            str(audio_video),
+                            source_gain_db=settings.get("mix_source_gain_db", 0.0),
+                            voice_gain_db=settings.get("mix_voice_gain_db", 0.0),
+                            voice_lufs=settings.get("mix_voice_lufs", -16.0),
+                            ducking=str(settings.get("mix_ducking") or "balanced"),
+                            attack_ms=settings.get("mix_attack_ms", 25),
+                            release_ms=settings.get("mix_release_ms", 350),
+                            audio_bitrate=str(settings.get("mix_audio_bitrate") or "192k"),
+                            ffmpeg_executable=ffmpeg_executable,
+                        )
                     subprocess.run(command, check=True, capture_output=True, text=True)
                     working_video = audio_video
                     temporary_video = audio_video
@@ -2756,7 +2824,19 @@ class WorkflowHandlers:
                         session_id=session_id,
                         parent_ids=audio_parent_ids + [item.id for item in selected_subtitles] + [item.id for item in video_track_artifacts],
                         settings=settings,
-                        metadata={"subtitle_mode": subtitle_mode, "subtitle_tracks": subtitle_track_metadata},
+                        metadata={
+                            "audio_mode": audio_mode,
+                            "subtitle_mode": subtitle_mode,
+                            "subtitle_tracks": subtitle_track_metadata,
+                            "mix": {
+                                "source_gain_db": settings.get("mix_source_gain_db", 0.0),
+                                "voice_gain_db": settings.get("mix_voice_gain_db", 0.0),
+                                "voice_lufs": settings.get("mix_voice_lufs", -16.0),
+                                "ducking": settings.get("mix_ducking", "balanced"),
+                                "attack_ms": settings.get("mix_attack_ms", 25),
+                                "release_ms": settings.get("mix_release_ms", 350),
+                            } if audio_mode == "mixed" else None,
+                        },
                     )
                 )
             else:
@@ -2778,13 +2858,41 @@ class WorkflowHandlers:
                             metadata={"language": language, "title": title, "source_role": (item.metadata_json or {}).get("source_role")},
                         )
                     )
-                for item in [dubbing_audio] if dubbing_audio and audio_mode != "source" else []:
-                    if item is None:
-                        continue
-                    _artifact, item_path = self._resolve_input(item.id)
-                    destination = _next_available_path(output_dir / f"{export_name}{item_path.suffix.lower()}")
-                    shutil.copy2(item_path, destination)
-                    produced.append(self.artifacts.register(destination, kind="export", role=f"export_{item.role}", session_id=session_id, parent_ids=[item.id], settings=settings))
+                if upload_audio and audio_mode == "source":
+                    _source_record, source_audio_path = self._resolve_input(upload_audio.id)
+                    destination = _next_available_path(output_dir / f"{export_name}{source_audio_path.suffix.lower()}")
+                    shutil.copy2(source_audio_path, destination)
+                    produced.append(self.artifacts.register(destination, kind="export", role="export_source_audio", session_id=session_id, parent_ids=[upload_audio.id], settings=settings))
+                elif dubbing_audio and audio_mode != "source":
+                    _artifact, item_path = self._resolve_input(dubbing_audio.id)
+                    if upload_audio and audio_mode == "mixed":
+                        _source_record, source_audio_path = self._resolve_input(upload_audio.id)
+                        output_format = str(settings.get("format") or "wav").lower()
+                        if output_format not in {"wav", "mp3", "opus", "flac"}:
+                            output_format = "wav"
+                        destination = _next_available_path(output_dir / f"{export_name}_mixed.{output_format}")
+                        ffmpeg_executable = str(os.environ.get("PANDRATOR_FFMPEG_EXE") or shutil.which("ffmpeg") or "ffmpeg")
+                        command = build_mix_audio_command(
+                            str(source_audio_path),
+                            str(item_path),
+                            str(destination),
+                            source_gain_db=settings.get("mix_source_gain_db", 0.0),
+                            voice_gain_db=settings.get("mix_voice_gain_db", 0.0),
+                            voice_lufs=settings.get("mix_voice_lufs", -16.0),
+                            ducking=str(settings.get("mix_ducking") or "balanced"),
+                            attack_ms=settings.get("mix_attack_ms", 25),
+                            release_ms=settings.get("mix_release_ms", 350),
+                            ffmpeg_executable=ffmpeg_executable,
+                        )
+                        subprocess.run(command, check=True, capture_output=True, text=True)
+                        parents = [upload_audio.id, dubbing_audio.id]
+                        role = "export_mixed_audio"
+                    else:
+                        destination = _next_available_path(output_dir / f"{export_name}{item_path.suffix.lower()}")
+                        shutil.copy2(item_path, destination)
+                        parents = [dubbing_audio.id]
+                        role = f"export_{dubbing_audio.role}"
+                    produced.append(self.artifacts.register(destination, kind="export", role=role, session_id=session_id, parent_ids=parents, settings=settings))
                 if not produced:
                     raise ValueError("No subtitle or audio artifact is available to export.")
         progress(1.0, "Export ready")

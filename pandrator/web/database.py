@@ -13,7 +13,7 @@ from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
 
-SCHEMA_HEAD = "0012_inactive_provider_models"
+SCHEMA_HEAD = "0013_stage_artifact_selections"
 
 
 def sqlite_url(path: Path) -> str:

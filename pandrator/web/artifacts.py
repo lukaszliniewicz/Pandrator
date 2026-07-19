@@ -14,6 +14,7 @@ from pandrator.runtime import DataPaths
 
 from .database import Database
 from .models import Artifact, ArtifactEdge, utcnow
+from .artifact_selection import activate_registered_artifact
 
 
 SINGLETON_SESSION_ROLES = {
@@ -30,7 +31,6 @@ SINGLETON_SESSION_ROLES = {
     "dubbing_audio",
     "audiobook_audio",
     "bilingual_subtitle_overlay",
-    "export",
 }
 
 
@@ -128,6 +128,8 @@ class ArtifactService:
                 edge = session.get(ArtifactEdge, (parent_id, artifact.id))
                 if edge is None:
                     session.add(ArtifactEdge(parent_artifact_id=parent_id, child_artifact_id=artifact.id))
+            session.flush()
+            activate_registered_artifact(session, artifact)
             session.flush()
             session.expunge(artifact)
             return artifact

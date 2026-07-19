@@ -64,6 +64,73 @@ test('theme and setup dock remain available after navigation', async ({ page }) 
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
 });
 
+test('sessions page launches creation and workspace source picker exposes every source mode', async ({ page }) => {
+  await signIn(page);
+  await page.getByRole('link', { name: 'Sessions' }).click();
+  await page.getByRole('button', { name: 'Add session' }).click();
+  await expect(page.getByRole('heading', { name: 'What would you like to make?' })).toBeVisible();
+  await page.getByRole('button', { name: 'Close', exact: true }).click();
+
+  const authStatus = await page.request.get('/api/v1/auth/status');
+  const csrfToken = (await authStatus.json()).csrf_token;
+  const created = await page.request.post('/api/v1/sessions', {
+    headers: { 'X-CSRF-Token': csrfToken },
+    data: { name: 'Source picker regression', workflow_kind: 'audiobook' }
+  });
+  expect(created.ok()).toBeTruthy();
+  const session = await created.json();
+  await page.goto(`/sessions/${session.id}`);
+
+  await page.getByRole('button', { name: 'Add source' }).click();
+  await expect(page.getByRole('button', { name: 'Upload' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Paste text' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Public URL' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Source library' })).toBeVisible();
+  await page.getByRole('button', { name: 'Paste text' }).click();
+  await page.getByLabel('Source name').fill('Pasted source');
+  await page.getByLabel('Text').fill('This source was pasted directly into an existing session.');
+  await page.getByRole('button', { name: 'Add and select' }).click();
+  await expect(page.getByText('Source added and selected as the current input.')).toBeVisible();
+  const attached = await page.request.get(`/api/v1/sessions/${session.id}/sources`);
+  expect((await attached.json()).items).toHaveLength(1);
+});
+
+test('voiceover output settings follow the video source and default to a controlled mix', async ({ page }) => {
+  await signIn(page);
+  const authStatus = await page.request.get('/api/v1/auth/status');
+  const csrfToken = (await authStatus.json()).csrf_token;
+  const headers = { 'X-CSRF-Token': csrfToken };
+  const created = await page.request.post('/api/v1/sessions', {
+    headers,
+    data: { name: 'Video output profile', workflow_kind: 'voiceover' }
+  });
+  expect(created.ok()).toBeTruthy();
+  const session = await created.json();
+  const uploaded = await page.request.post('/api/v1/uploads', {
+    headers,
+    multipart: {
+      session_id: session.id,
+      purpose: 'source',
+      file: {
+        name: 'source-video.mp4',
+        mimeType: 'video/mp4',
+        buffer: (globalThis as any).Buffer.from('media fixture')
+      }
+    }
+  });
+  expect(uploaded.ok()).toBeTruthy();
+
+  await page.goto(`/sessions/${session.id}/output`);
+  await expect(page.getByRole('heading', { name: 'Video output', exact: true })).toBeVisible();
+  await expect(page.getByLabel('Audio result')).toHaveValue('mixed');
+  await expect(page.getByText('Soundtrack mix')).toBeVisible();
+  await expect(page.getByLabel('Source level (dB)')).toHaveValue('0');
+  await expect(page.getByLabel('Maximum start delay (ms)')).toHaveValue('2000');
+  await expect(page.getByLabel('Album / series')).toHaveCount(0);
+  await expect(page.getByLabel('Genre')).toHaveCount(0);
+  await expect(page.getByText('Cover artwork')).toHaveCount(0);
+});
+
 test('reading mode flows segments together and separates only saved paragraphs', async ({ page }) => {
   await signIn(page);
   const first = 'The first segment fills most of this test line.';

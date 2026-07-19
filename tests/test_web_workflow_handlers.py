@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from pydub import AudioSegment
+from pydub.generators import Sine
 from sqlalchemy import select
 
 from pandrator.runtime import DataPaths
@@ -560,6 +561,36 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         decoded = AudioSegment.from_file(self.paths.root / exported.relative_path)
         self.assertGreater(len(decoded), 0)
 
+    @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg qualification requires ffmpeg")
+    def test_audio_source_voiceover_defaults_to_a_duration_bounded_controlled_mix(self):
+        voiceover = self.sessions.create("Audio source mix", workflow_kind="voiceover")
+        session_dir = self.paths.sessions / voiceover.storage_key
+        session_dir.mkdir()
+        source_path = session_dir / "source.wav"
+        Sine(220).to_audio_segment(duration=1000).apply_gain(-6).export(source_path, format="wav").close()
+        source = self.artifacts.register(source_path, kind="source", role="upload", session_id=voiceover.id)
+        dubbed_path = session_dir / "dubbed.wav"
+        (AudioSegment.silent(duration=200) + Sine(660).to_audio_segment(duration=900).apply_gain(-9) + AudioSegment.silent(duration=300)).export(dubbed_path, format="wav").close()
+        dubbed = self.artifacts.register(dubbed_path, kind="audio", role="assembled_audio", session_id=voiceover.id)
+
+        result = self.handlers.export(
+            {"session_id": voiceover.id, "settings": {"export_mode": "media", "format": "wav"}},
+            self.progress,
+            threading.Event(),
+        )
+        exported, exported_path = self.artifacts.resolve(result["artifact_ids"][-1])
+
+        self.assertEqual("export_mixed_audio", exported.role)
+        self.assertLessEqual(abs(len(AudioSegment.from_wav(exported_path)) - 1000), 20)
+        with self.database.session() as session:
+            parents = {
+                edge.parent_artifact_id
+                for edge in session.scalars(
+                    select(ArtifactEdge).where(ArtifactEdge.child_artifact_id == exported.id)
+                ).all()
+            }
+        self.assertEqual({source.id, dubbed.id}, parents)
+
     def test_dubbing_audio_forwards_speech_block_settings_separately(self):
         voiceover = self.sessions.create("Speech block fixture", workflow_kind="voiceover")
         session_dir = self.paths.sessions / voiceover.storage_key
@@ -783,6 +814,47 @@ class WebWorkflowHandlerTests(unittest.TestCase):
                         self.assertIn("Style: Translation", content)
                         self.assertIn("Dialogue: 0", content)
                         self.assertIn("Dialogue: 1", content)
+                if audio_mode == "mixed":
+                    self.assertEqual("mixed", exported.metadata_json.get("audio_mode"))
+                    self.assertEqual("balanced", exported.metadata_json.get("mix", {}).get("ducking"))
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg qualification requires ffmpeg and ffprobe")
+    def test_mixed_video_without_source_soundtrack_falls_back_to_voiceover_only(self):
+        voiceover = self.sessions.create("Silent video", workflow_kind="voiceover")
+        session_dir = self.paths.sessions / voiceover.storage_key
+        session_dir.mkdir()
+        media_path = session_dir / "silent-source.mp4"
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=320x180:d=0.8",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", str(media_path),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        self.artifacts.register(media_path, kind="source", role="upload", session_id=voiceover.id)
+        dubbing_path = session_dir / "voiceover.wav"
+        Sine(660).to_audio_segment(duration=800).apply_gain(-12).export(dubbing_path, format="wav").close()
+        self.artifacts.register(dubbing_path, kind="audio", role="assembled_audio", session_id=voiceover.id)
+
+        result = self.handlers.export(
+            {"session_id": voiceover.id, "settings": {"export_mode": "media", "audio_mode": "mixed"}},
+            self.progress,
+            threading.Event(),
+        )
+        exported, output = self.artifacts.resolve(result["artifact_ids"][-1])
+
+        self.assertEqual("dubbed", exported.metadata_json.get("audio_mode"))
+        probe = json.loads(
+            subprocess.run(
+                ["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(output)],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+        )
+        self.assertEqual(1, sum(stream["codec_type"] == "video" for stream in probe["streams"]))
+        self.assertEqual(1, sum(stream["codec_type"] == "audio" for stream in probe["streams"]))
 
 
 if __name__ == "__main__":

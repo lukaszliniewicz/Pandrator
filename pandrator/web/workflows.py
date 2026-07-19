@@ -7,9 +7,23 @@ from typing import Any
 
 from sqlalchemy import select
 
+from .artifact_selection import canonical_stage_key, selected_artifacts, stage_history
 from .database import Database
 from .jobs import JobQueue
-from .models import Artifact, GenerationPlan, GenerationRun, Job, OutcomePlan, SessionRecord, UsageEvent
+from .models import Artifact, GenerationPlan, GenerationRun, Job, OutcomePlan, SessionRecord, SessionSource, SourceAsset, UsageEvent
+
+
+def _attached_source_artifacts(db_session, session_id: str, *, current_only: bool = True) -> list[Artifact]:
+    statement = (
+        select(Artifact)
+        .join(SourceAsset, SourceAsset.artifact_id == Artifact.id)
+        .join(SessionSource, SessionSource.source_asset_id == SourceAsset.id)
+        .where(SessionSource.session_id == session_id)
+        .order_by(SessionSource.is_current.desc(), SessionSource.updated_at.desc(), Artifact.created_at.desc())
+    )
+    if current_only:
+        statement = statement.where(SessionSource.is_current.is_(True))
+    return list(db_session.scalars(statement).all())
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,12 +113,26 @@ class WorkflowService:
                     select(Artifact).where(Artifact.session_id == session_id).order_by(Artifact.created_at.desc())
                 ).all()
             )
+            attached_sources = _attached_source_artifacts(session, session_id)
+            attached_ids = {artifact.id for artifact in attached_sources}
+            artifacts = [
+                *attached_sources,
+                *(artifact for artifact in artifacts if artifact.id not in attached_ids),
+            ]
             latest_jobs = list(
                 session.scalars(
                     select(Job).where(Job.session_id == session_id).order_by(Job.created_at.desc())
                 ).all()
             )
-            roles = {artifact.role: artifact for artifact in artifacts if artifact.state == "current"}
+            selections = selected_artifacts(session, session_id, artifacts)
+            roles: dict[str, Artifact] = {}
+            for artifact in selections.values():
+                roles.setdefault(artifact.role, artifact)
+            for artifact in attached_sources:
+                roles.setdefault("upload", artifact)
+            for artifact in artifacts:
+                if artifact.state == "current":
+                    roles.setdefault(artifact.role, artifact)
             outcome = session.scalar(select(OutcomePlan).where(OutcomePlan.session_id == session_id))
             generation_plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
             generation_run = session.scalar(
@@ -141,7 +169,11 @@ class WorkflowService:
             visible_definitions = tuple(item for item in definitions if item.key != "optimize_document")
             for index, definition in enumerate(visible_definitions, start=1):
                 effective_definition = document_definition if definition.key == "optimize_tts" and document_optimization_enabled and document_definition else definition
-                artifact = latest_roles.get(effective_definition.output_role or "")
+                selection_key = canonical_stage_key(definition.key)
+                artifact = selections.get(selection_key) if effective_definition.output_role else latest_roles.get(effective_definition.output_role or "")
+                history = None
+                if effective_definition.output_role and selection_key in {"transcribe", "correct", "translate", "clean_source", "prepare_text", "optimize_tts"}:
+                    history = stage_history(session, session_id, selection_key)
                 active = job_by_kind.get(effective_definition.job_kind or "")
                 prerequisite_roles = effective_definition.prerequisite_roles
                 if definition.key == "translate" and str(input_choices.get("translation") or "correction") != "correction":
@@ -170,7 +202,9 @@ class WorkflowService:
                 elif active and active.status in {"failed", "interrupted"} and (artifact is None or active.created_at >= artifact.updated_at):
                     status = "failed"
                 elif artifact:
-                    status = "stale" if artifact.state == "stale" else "completed"
+                    status = "completed"
+                elif history and history["items"] and prerequisite is not None:
+                    status = "stale"
                 elif prerequisite_roles and prerequisite is None:
                     status = "unavailable"
                 else:
@@ -185,7 +219,8 @@ class WorkflowService:
                     elif generation_run.status in {"queued", "running", "pausing"}:
                         status = "running"
                     elif generation_run.status == "completed":
-                        status = "completed"
+                        run_source_id = str((generation_run.settings_snapshot_json or {}).get("source_artifact_id") or "")
+                        status = "stale" if prerequisite is not None and run_source_id and run_source_id != prerequisite.id else "completed"
                     elif generation_run.status == "failed":
                         status = "failed"
                     elif generation_run.status == "paused":
@@ -240,6 +275,9 @@ class WorkflowService:
                             "state": artifact.state,
                             "metadata_json": artifact.metadata_json or {},
                         } if artifact else None,
+                        "artifacts": history["items"] if history else [],
+                        "selected_artifact_id": history["selected_artifact_id"] if history else (artifact.id if artifact else None),
+                        "selection_revision": history["revision"] if history else 0,
                         "job_id": active.id if active else None,
                         "progress": active.progress if active and status in {"running", "failed"} else None,
                         "detail": active.error_message if active and status == "failed" else None,
@@ -259,8 +297,9 @@ class WorkflowService:
                         "kind": artifact.kind,
                         "role": artifact.role,
                     }
-                    for artifact in artifacts
-                    if artifact.role == "upload" and artifact.state == "current"
+                    for artifact in attached_sources or [
+                        item for item in artifacts if item.role == "upload" and item.state == "current"
+                    ]
                 ],
             }
 
@@ -288,6 +327,7 @@ class WorkflowService:
         }
         requested_sections = sorted(pipeline_sections) if stage_key == "generate_audio" else list(section_map.get(stage_key, ()))
         run_values = dict(settings or {})
+        requested_source_artifact_id = str(run_values.pop("source_artifact_id", "") or "")
         provided_stage_settings = run_values.pop("stage_settings", {})
         structured_override = {
             section: dict(run_values.get(section) or {})
@@ -325,6 +365,12 @@ class WorkflowService:
             if record is None:
                 raise KeyError(session_id)
             all_artifacts = list(session.scalars(select(Artifact).where(Artifact.session_id == session_id).order_by(Artifact.created_at.desc())).all())
+            attached_sources = _attached_source_artifacts(session, session_id)
+            attached_ids = {artifact.id for artifact in attached_sources}
+            all_artifacts = [
+                *attached_sources,
+                *(artifact for artifact in all_artifacts if artifact.id not in attached_ids),
+            ]
             definition = next((item for item in self.definitions(record, all_artifacts) if item.key == stage_key), None)
             if definition is None or not definition.executable or not definition.job_kind:
                 raise ValueError(f"Stage '{stage_key}' cannot be run directly.")
@@ -345,35 +391,40 @@ class WorkflowService:
                         "correction": ("correction",),
                         "source": ("transcription", "upload"),
                     }.get(str(inputs.get("generation") or "translation"), prerequisite_roles)
-            artifacts = list(
-                session.scalars(
-                    select(Artifact).where(
-                        Artifact.session_id == session_id,
-                        Artifact.state == "current",
-                        Artifact.role.in_(prerequisite_roles),
-                    ).order_by(Artifact.created_at.desc())
-                ).all()
-            )
-            by_role = {artifact.role: artifact for artifact in artifacts}
-            source = next(
-                (
-                    by_role[role]
-                    for role in prerequisite_roles
-                    if role in by_role and self._usable_input(definition, by_role[role], record.workflow_kind)
-                ),
-                None,
-            )
+            selections = selected_artifacts(session, session_id, all_artifacts)
+            by_role: dict[str, Artifact] = {}
+            for selected in selections.values():
+                by_role.setdefault(selected.role, selected)
+            for attached in attached_sources:
+                by_role.setdefault("upload", attached)
+            for candidate in all_artifacts:
+                if candidate.state == "current":
+                    by_role.setdefault(candidate.role, candidate)
+            source = None
+            if requested_source_artifact_id:
+                requested = session.get(Artifact, requested_source_artifact_id)
+                attached_ids = {artifact.id for artifact in attached_sources}
+                if requested is None or (requested.session_id != session_id and requested.id not in attached_ids):
+                    raise ValueError("The selected input artifact does not belong to this session.")
+                if requested.role not in prerequisite_roles or not self._usable_input(definition, requested, record.workflow_kind):
+                    raise ValueError(f"The selected artifact cannot be used by stage '{stage_key}'.")
+                source = requested
+            if source is None:
+                source = next(
+                    (
+                        by_role[role]
+                        for role in prerequisite_roles
+                        if role in by_role and self._usable_input(definition, by_role[role], record.workflow_kind)
+                    ),
+                    None,
+                )
             # The primary automatic-generation action is allowed to enqueue
             # before its exact derived input exists: workflow.continue creates
             # those missing prerequisites in order. Individual stage controls
             # remain locked by snapshot.status == unavailable.
             if source is None and stage_key == "generate_audio":
                 source = next(
-                    (
-                        artifact
-                        for artifact in all_artifacts
-                        if artifact.state == "current" and artifact.role == "upload"
-                    ),
+                    (artifact for artifact in attached_sources),
                     None,
                 )
             if prerequisite_roles and source is None:
@@ -391,7 +442,7 @@ class WorkflowService:
             transformations = (outcome.value_json or {}).get("transformations", {}) if outcome and isinstance(outcome.value_json, dict) else {}
             if any(bool(transformations.get(key)) for key in ("correction", "translation", "llm_tts_optimization", "llm_tts_document_optimization")):
                 resource_keys.append("service:llm")
-            upload = next((artifact for artifact in all_artifacts if artifact.state == "current" and artifact.role == "upload"), None)
+            upload = next(iter(attached_sources), None) or next((artifact for artifact in all_artifacts if artifact.state == "current" and artifact.role == "upload"), None)
             if upload is not None and record.workflow_kind != "audiobook":
                 filename = str((upload.metadata_json or {}).get("original_filename") or upload.relative_path).lower()
                 if not filename.endswith(".srt") and not any(artifact.state == "current" and artifact.role == "transcription" for artifact in all_artifacts):

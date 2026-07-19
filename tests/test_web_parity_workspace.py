@@ -101,6 +101,53 @@ class WebParityWorkspaceTests(unittest.TestCase):
         voiceover_output = self.client.get(f"/api/v1/sessions/{voiceover['id']}/settings/output").get_json()
         self.assertEqual("media", voiceover_output["effective"]["export_mode"])
 
+    def test_voiceover_output_profile_tracks_source_capabilities_and_excludes_audiobook_groups(self):
+        voiceover = self.create_session(kind="voiceover", name="Source-aware voiceover")
+        empty_output = self.client.get(f"/api/v1/sessions/{voiceover['id']}/settings/output").get_json()
+        self.assertEqual("none", empty_output["context"]["source_profile"])
+        self.assertEqual("dubbing_only", empty_output["effective"]["audio_mode"])
+        self.assertNotIn("audiobook_metadata", empty_output["context"]["applicable_groups"])
+        self.assertNotIn("cover", empty_output["context"]["applicable_groups"])
+
+        extension = self.app.extensions["pandrator"]
+        source_path = Path(self.temporary.name) / "voiceover-source.mp4"
+        source_path.write_bytes(b"source fixture")
+        artifact = ArtifactService(extension["database"], extension["paths"]).register(
+            source_path,
+            kind="source",
+            role="upload",
+            session_id=voiceover["id"],
+            metadata={"original_filename": source_path.name},
+        )
+        asset = extension["source_library"].ensure_for_artifact(
+            artifact.id,
+            display_name=source_path.name,
+            kind="mp4",
+        )
+        extension["source_library"].attach(voiceover["id"], asset.id)
+
+        video_output = self.client.get(f"/api/v1/sessions/{voiceover['id']}/settings/output").get_json()
+        self.assertEqual("video", video_output["context"]["source_profile"])
+        self.assertTrue(video_output["context"]["has_source_video"])
+        self.assertEqual("mixed", video_output["effective"]["audio_mode"])
+        self.assertEqual("wav", video_output["effective"]["format"])
+        self.assertIn("mix", video_output["context"]["applicable_groups"])
+        self.assertNotIn("audiobook_metadata", video_output["context"]["applicable_groups"])
+
+        coerced = self.client.put(
+            f"/api/v1/sessions/{voiceover['id']}/settings/output",
+            json={"value": {"format": "m4b", "album": "Not applicable", "genre": "Audiobook"}},
+            headers={**self.headers, "If-Match": '"0"'},
+        ).get_json()
+        self.assertEqual("wav", coerced["effective"]["format"])
+        self.assertNotIn("album", coerced["override"])
+        self.assertNotIn("genre", coerced["override"])
+        self.assertNotIn("format", coerced["override"])
+
+        audio = self.client.get(f"/api/v1/sessions/{voiceover['id']}/settings/audio").get_json()
+        self.assertEqual(2000, audio["effective"]["synchronization_delay_ms"])
+        self.assertEqual(1.15, audio["effective"]["synchronization_speed"])
+
     def test_tts_provider_defaults_fit_between_global_and_session_overrides(self):
         record = self.create_session()
         database = self.app.extensions["pandrator"]["database"]

@@ -216,6 +216,10 @@ class SourceUpdateRequest(StrictModel):
     display_name: str = Field(min_length=1, max_length=255)
 
 
+class StageSelectionUpdate(StrictModel):
+    artifact_id: str | None = None
+
+
 class ChunkUploadInitialize(StrictModel):
     filename: str = Field(min_length=1, max_length=255)
     size_bytes: int = Field(gt=0)
@@ -328,6 +332,7 @@ SCHEMA_MODELS = {
         OutcomePlanUpdate,
         SourceAttachRequest,
         SourceUpdateRequest,
+        StageSelectionUpdate,
         ChunkUploadInitialize,
         GenerationSegmentCreate,
         GenerationPlanCreate,

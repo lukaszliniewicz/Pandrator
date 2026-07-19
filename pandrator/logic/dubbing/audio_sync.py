@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import subprocess
@@ -37,6 +38,16 @@ class AudioSyncResult:
     original_audio_path: str = ""
     amplified_dubbed_audio_path: str = ""
     mixed_audio_path: str = ""
+
+
+@dataclass(frozen=True)
+class AudioAlignmentAdjustment:
+    """Timing decision for one generated speech block."""
+
+    available_ms: int
+    drift_ms: int
+    start_delay_ms: int
+    speed_factor: float
 
 
 def _coerce_int(value: Any, default: int = 0) -> int:
@@ -133,24 +144,28 @@ def create_alignment_blocks(
             subtitles=[segment.index for segment in block_subtitles],
         )
 
-        if alignment_blocks and alignment_blocks[-1].subtitles[-1:] == new_block.subtitles[:1]:
-            previous = alignment_blocks[-1]
-            alignment_blocks[-1] = AudioAlignmentBlock(
-                number=f"{previous.number}-{new_block.number}",
-                text=f"{previous.text} {new_block.text}".strip(),
-                start_ms=previous.start_ms,
-                end_ms=new_block.end_ms,
-                audio_files=[*previous.audio_files, *new_block.audio_files],
-                subtitles=sorted(set([*previous.subtitles, *new_block.subtitles])),
-            )
-        else:
-            alignment_blocks.append(new_block)
+        alignment_blocks.append(new_block)
 
     if invalid_blocks:
         raise AudioSyncError("Cannot synchronize incomplete speech blocks: " + ", ".join(invalid_blocks))
     if not alignment_blocks:
         raise ValueError("No alignment blocks could be created from the selected subtitles and speech blocks.")
-    return alignment_blocks
+    alignment_blocks.sort(key=lambda item: (item.start_ms, item.end_ms, item.number))
+    merged: list[AudioAlignmentBlock] = []
+    for block in alignment_blocks:
+        if merged and merged[-1].subtitles[-1:] == block.subtitles[:1]:
+            previous = merged[-1]
+            merged[-1] = AudioAlignmentBlock(
+                number=f"{previous.number}-{block.number}",
+                text=f"{previous.text} {block.text}".strip(),
+                start_ms=previous.start_ms,
+                end_ms=max(previous.end_ms, block.end_ms),
+                audio_files=[*previous.audio_files, *block.audio_files],
+                subtitles=sorted(set([*previous.subtitles, *block.subtitles])),
+            )
+        else:
+            merged.append(block)
+    return merged
 
 
 def _atempo_filter_chain(factor: float) -> str:
@@ -208,12 +223,47 @@ def _speed_up_audio_segment(
                     pass
 
 
+def alignment_adjustment(
+    audio_duration_ms: int,
+    window_duration_ms: int,
+    drift_ms: int,
+    *,
+    delay_start_ms: int,
+    max_speed_factor: float,
+) -> AudioAlignmentAdjustment:
+    """Plan speed and placement against the *remaining* timing window.
+
+    Subdub calculated catch-up speed from the current clip length alone. That
+    could let accumulated drift grow when a later clip was also longer than its
+    subtitle window. This calculation accounts for both conditions together.
+    """
+    duration = max(0, int(audio_duration_ms))
+    window = max(1, int(window_duration_ms))
+    drift = max(0, int(drift_ms))
+    available = max(1, window - drift)
+    maximum = min(4.0, max(1.0, float(max_speed_factor)))
+    needed = (duration / available) if duration > available else 1.0
+    speed_factor = min(maximum, max(1.0, needed))
+    estimated_duration = int(math.ceil(duration / speed_factor)) if duration else 0
+    slack = max(0, available - estimated_duration)
+    start_delay = 0
+    if drift == 0 and slack:
+        start_delay = min(max(0, int(delay_start_ms)), int(slack * 0.7))
+    return AudioAlignmentAdjustment(
+        available_ms=available,
+        drift_ms=drift,
+        start_delay_ms=start_delay,
+        speed_factor=speed_factor,
+    )
+
+
 def align_audio_blocks(
     alignment_blocks: list[AudioAlignmentBlock],
     session_dir: str | os.PathLike[str],
     *,
     delay_start_ms: int = 2000,
     speed_up_percent: int = 115,
+    sentence_gap_ms: int = 100,
     ffmpeg_executable: str = "ffmpeg",
     run_func: Callable[..., Any] = subprocess.run,
     output_path: str | os.PathLike[str] | None = None,
@@ -222,79 +272,71 @@ def align_audio_blocks(
 
     session_path = Path(session_dir)
     session_path.mkdir(parents=True, exist_ok=True)
+    if not alignment_blocks:
+        raise AudioSyncError("No generated speech blocks were supplied for synchronization.")
+    ordered_blocks = sorted(alignment_blocks, key=lambda item: (item.start_ms, item.end_ms, item.number))
     final_audio = AudioSegment.silent(duration=0)
     current_time = 0
-    total_shift = 0
+    maximum_speed = min(4.0, max(1.0, float(speed_up_percent) / 100.0))
+    sentence_gap = max(0, min(5000, int(sentence_gap_ms)))
 
-    for index, block in enumerate(alignment_blocks):
-        block_start_ms = block.start_ms
-        if index < len(alignment_blocks) - 1:
-            block_duration = max(1, alignment_blocks[index + 1].start_ms - block_start_ms)
+    for index, block in enumerate(ordered_blocks):
+        block_start_ms = max(0, int(block.start_ms))
+        if index < len(ordered_blocks) - 1:
+            slot_end_ms = max(block_start_ms + 1, int(ordered_blocks[index + 1].start_ms))
         else:
-            block_duration = max(1, block.end_ms - block.start_ms)
+            slot_end_ms = max(block_start_ms + 1, int(block.end_ms))
+        window_duration = slot_end_ms - block_start_ms
 
-        adjusted_block_start = block_start_ms + total_shift
-        if adjusted_block_start > current_time:
-            final_audio += AudioSegment.silent(duration=adjusted_block_start - current_time)
-            current_time = adjusted_block_start
-
+        if current_time < block_start_ms:
+            final_audio += AudioSegment.silent(duration=block_start_ms - current_time)
+            current_time = block_start_ms
+        drift_at_start = max(0, current_time - block_start_ms)
         block_audio = AudioSegment.silent(duration=0)
         for wav_path in block.audio_files:
             if not wav_path.exists():
-                logger.warning("Skipping missing sentence WAV: %s", wav_path)
-                continue
+                raise AudioSyncError(f"Speech block {block.number} is missing generated audio: {wav_path.name}")
             if len(block_audio) > 0:
-                block_audio += AudioSegment.silent(duration=100)
+                block_audio += AudioSegment.silent(duration=sentence_gap)
             block_audio += AudioSegment.from_wav(wav_path)
-
         original_audio_duration = len(block_audio)
+        if original_audio_duration <= 0:
+            raise AudioSyncError(f"Speech block {block.number} contains no audible generated audio.")
+        adjustment = alignment_adjustment(
+            original_audio_duration,
+            window_duration,
+            drift_at_start,
+            delay_start_ms=delay_start_ms,
+            max_speed_factor=maximum_speed,
+        )
         processed_audio = block_audio
-        audio_delay = 0
-
-        if original_audio_duration < block_duration and total_shift <= 0:
-            available_time = block_duration - original_audio_duration
-            audio_delay = min(max(0, int(delay_start_ms)), int(available_time * 0.7))
-
-        should_speed_up = False
-        actual_speedup_factor = 1.0
-        if total_shift > 0 and speed_up_percent > 100 and original_audio_duration > 0:
-            should_speed_up = True
-            needed = (original_audio_duration + total_shift) / original_audio_duration
-            actual_speedup_factor = min(needed, speed_up_percent / 100.0)
-        elif total_shift <= 0 and original_audio_duration > block_duration and speed_up_percent > 100:
-            should_speed_up = True
-            needed = original_audio_duration / block_duration
-            actual_speedup_factor = min(needed, speed_up_percent / 100.0)
-
-        if should_speed_up and actual_speedup_factor > 1.01:
+        if adjustment.speed_factor > 1.01:
             with tempfile.TemporaryDirectory(prefix=".sync-", dir=session_path) as temporary:
                 processed_audio = _speed_up_audio_segment(
                     block_audio,
-                    actual_speedup_factor,
+                    adjustment.speed_factor,
                     Path(temporary),
                     ffmpeg_executable=ffmpeg_executable,
                     run_func=run_func,
                 )
-
-        if audio_delay > 0:
-            final_audio += AudioSegment.silent(duration=audio_delay)
-            current_time += audio_delay
-
+        if adjustment.start_delay_ms > 0:
+            final_audio += AudioSegment.silent(duration=adjustment.start_delay_ms)
+            current_time += adjustment.start_delay_ms
         final_audio += processed_audio
         current_time += len(processed_audio)
-        actual_audio_duration = len(processed_audio) + audio_delay
-
-        if actual_audio_duration > block_duration:
-            total_shift += actual_audio_duration - block_duration
-        else:
-            silence_needed = block_duration - actual_audio_duration
-            if silence_needed >= total_shift:
-                silence_to_add = silence_needed - total_shift
-                final_audio += AudioSegment.silent(duration=silence_to_add)
-                current_time += silence_to_add
-                total_shift = 0
-            else:
-                total_shift -= silence_needed
+        if current_time < slot_end_ms:
+            final_audio += AudioSegment.silent(duration=slot_end_ms - current_time)
+            current_time = slot_end_ms
+        logger.info(
+            "Aligned block %s: window=%dms audio=%dms speed=%.3fx delay=%dms drift=%dms -> %dms",
+            block.number,
+            window_duration,
+            original_audio_duration,
+            adjustment.speed_factor,
+            adjustment.start_delay_ms,
+            drift_at_start,
+            max(0, current_time - slot_end_ms),
+        )
 
     destination = Path(output_path) if output_path else session_path / "aligned_audio.wav"
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -309,15 +351,75 @@ def parse_ffmpeg_max_volume(stderr_text: str) -> float:
     return float(match.group(1))
 
 
-MIX_FILTER_COMPLEX = (
-    "[1]silencedetect=n=-30dB:d=2[silence];"
-    "[silence]aformat=sample_fmts=u8:sample_rates=44100:channel_layouts=mono,"
-    "aresample=async=1000,pan=1c|c0=c0,"
-    "aformat=sample_fmts=s16:sample_rates=44100:channel_layouts=mono[silence_mono];"
-    "[0][silence_mono]sidechaincompress=threshold=0.01:ratio=20:attack=100:release=500:makeup=1[gated];"
-    "[1]volume=2[subtitles];"
-    "[gated][subtitles]amix=inputs=2[mixed]"
-)
+DUCKING_RATIOS = {
+    "off": 1.0,
+    "gentle": 3.0,
+    "balanced": 8.0,
+    "strong": 20.0,
+}
+
+
+def _bounded_float(value: Any, default: float, minimum: float, maximum: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(parsed):
+        return default
+    return min(maximum, max(minimum, parsed))
+
+
+def build_mix_filter_complex(
+    *,
+    source_gain_db: float = 0.0,
+    voice_gain_db: float = 0.0,
+    voice_lufs: float = -16.0,
+    ducking: str = "balanced",
+    attack_ms: int = 25,
+    release_ms: int = 350,
+    normalize_voice: bool = True,
+    pad_source: bool = False,
+) -> str:
+    """Build a clipping-safe voiceover mix with optional source ducking."""
+    source_gain = _bounded_float(source_gain_db, 0.0, -60.0, 12.0)
+    voice_gain = _bounded_float(voice_gain_db, 0.0, -30.0, 12.0)
+    target_lufs = _bounded_float(voice_lufs, -16.0, -30.0, -8.0)
+    attack = int(_bounded_float(attack_ms, 25.0, 1.0, 2000.0))
+    release = int(_bounded_float(release_ms, 350.0, 10.0, 5000.0))
+    preset = str(ducking or "balanced").strip().lower()
+    ratio = DUCKING_RATIOS.get(preset, DUCKING_RATIOS["balanced"])
+    source_filters = ["aresample=48000:async=1000:first_pts=0", f"volume={source_gain:.2f}dB"]
+    if pad_source:
+        source_filters.append("apad")
+    source = f"[0:a]{','.join(source_filters)}[source]"
+    voice_filters = []
+    if normalize_voice:
+        voice_filters.append(f"loudnorm=I={target_lufs:.1f}:LRA=11:TP=-1.5")
+    voice_filters.extend(
+        [
+            "aresample=48000:async=1000:first_pts=0",
+            f"volume={voice_gain:.2f}dB",
+            "apad",
+        ]
+    )
+    voice = f"[1:a]{','.join(voice_filters)}[voice]"
+    if ratio <= 1.0:
+        mix = (
+            "[source][voice]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,"
+            "alimiter=limit=0.891251:attack=5:release=100:latency=1[mixed]"
+        )
+    else:
+        mix = (
+            "[voice]asplit=2[voice_sidechain][voice_mix];"
+            f"[source][voice_sidechain]sidechaincompress=threshold=0.031623:ratio={ratio:.1f}:"
+            f"attack={attack}:release={release}:makeup=1[ducked];"
+            "[ducked][voice_mix]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,"
+            "alimiter=limit=0.891251:attack=5:release=100:latency=1[mixed]"
+        )
+    return f"{source};{voice};{mix}"
+
+
+MIX_FILTER_COMPLEX = build_mix_filter_complex()
 
 
 def build_extract_original_audio_command(
@@ -381,13 +483,54 @@ def build_amplify_audio_command(
     ]
 
 
+def build_normalize_dubbed_audio_command(
+    audio_path: str | os.PathLike[str],
+    output_audio_path: str | os.PathLike[str],
+    *,
+    voice_lufs: float = -16.0,
+    voice_gain_db: float = 0.0,
+    ffmpeg_executable: str = "ffmpeg",
+) -> list[str]:
+    target_lufs = _bounded_float(voice_lufs, -16.0, -30.0, -8.0)
+    voice_gain = _bounded_float(voice_gain_db, 0.0, -30.0, 12.0)
+    return [
+        ffmpeg_executable,
+        "-y",
+        "-i",
+        str(audio_path),
+        "-af",
+        f"loudnorm=I={target_lufs:.1f}:LRA=11:TP=-1.5,volume={voice_gain:.2f}dB,aresample=48000",
+        "-ar",
+        "48000",
+        "-ac",
+        "2",
+        str(output_audio_path),
+    ]
+
+
 def build_mix_audio_command(
     original_audio_path: str | os.PathLike[str],
     amplified_dubbed_audio_path: str | os.PathLike[str],
     mixed_audio_path: str | os.PathLike[str],
     *,
+    source_gain_db: float = 0.0,
+    voice_gain_db: float = 0.0,
+    voice_lufs: float = -16.0,
+    ducking: str = "balanced",
+    attack_ms: int = 25,
+    release_ms: int = 350,
+    normalize_voice: bool = True,
     ffmpeg_executable: str = "ffmpeg",
 ) -> list[str]:
+    mix_filter = build_mix_filter_complex(
+        source_gain_db=source_gain_db,
+        voice_gain_db=voice_gain_db,
+        voice_lufs=voice_lufs,
+        ducking=ducking,
+        attack_ms=attack_ms,
+        release_ms=release_ms,
+        normalize_voice=normalize_voice,
+    )
     return [
         ffmpeg_executable,
         "-y",
@@ -396,10 +539,65 @@ def build_mix_audio_command(
         "-i",
         str(amplified_dubbed_audio_path),
         "-filter_complex",
-        MIX_FILTER_COMPLEX,
+        mix_filter,
         "-map",
         "[mixed]",
+        "-ar",
+        "48000",
+        "-ac",
+        "2",
         str(mixed_audio_path),
+    ]
+
+
+def build_mix_video_audio_command(
+    video_path: str | os.PathLike[str],
+    dubbed_audio_path: str | os.PathLike[str],
+    output_video_path: str | os.PathLike[str],
+    *,
+    source_gain_db: float = 0.0,
+    voice_gain_db: float = 0.0,
+    voice_lufs: float = -16.0,
+    ducking: str = "balanced",
+    attack_ms: int = 25,
+    release_ms: int = 350,
+    audio_bitrate: str = "192k",
+    ffmpeg_executable: str = "ffmpeg",
+) -> list[str]:
+    mix_filter = build_mix_filter_complex(
+        source_gain_db=source_gain_db,
+        voice_gain_db=voice_gain_db,
+        voice_lufs=voice_lufs,
+        ducking=ducking,
+        attack_ms=attack_ms,
+        release_ms=release_ms,
+        pad_source=True,
+    )
+    return [
+        ffmpeg_executable,
+        "-y",
+        "-i",
+        str(video_path),
+        "-i",
+        str(dubbed_audio_path),
+        "-filter_complex",
+        mix_filter,
+        "-map",
+        "0:v:0",
+        "-map",
+        "[mixed]",
+        "-map_metadata",
+        "0",
+        "-c:v",
+        "copy",
+        "-c:a",
+        "aac",
+        "-b:a",
+        str(audio_bitrate or "192k"),
+        "-movflags",
+        "+faststart",
+        "-shortest",
+        str(output_video_path),
     ]
 
 
@@ -422,11 +620,43 @@ def build_mux_mixed_audio_command(
         "-c:a",
         "aac",
         "-map",
-        "0:v",
+        "0:v:0",
         "-map",
-        "1:a",
+        "1:a:0",
+        "-map_metadata",
+        "0",
+        "-movflags",
+        "+faststart",
+        "-shortest",
         str(output_video_path),
     ]
+
+
+def media_has_audio_stream(
+    media_path: str | os.PathLike[str],
+    *,
+    ffprobe_executable: str = "ffprobe",
+    run_func: Callable[..., Any] = subprocess.run,
+) -> bool:
+    """Return whether the selected media exposes a usable first audio stream."""
+    result = run_func(
+        [
+            ffprobe_executable,
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=index",
+            "-of",
+            "csv=p=0",
+            str(media_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return bool(str(getattr(result, "stdout", "") or "").strip())
 
 
 def _run_ffmpeg(command: list[str], *, run_func: Callable[..., Any]) -> Any:
@@ -439,6 +669,12 @@ def mix_audio_tracks_with_result(
     synced_audio_path: str | os.PathLike[str],
     session_dir: str | os.PathLike[str],
     *,
+    source_gain_db: float = 0.0,
+    voice_gain_db: float = 0.0,
+    voice_lufs: float = -16.0,
+    ducking: str = "balanced",
+    attack_ms: int = 25,
+    release_ms: int = 350,
     ffmpeg_executable: str = "ffmpeg",
     run_func: Callable[..., Any] = subprocess.run,
 ) -> AudioMixResult:
@@ -456,19 +692,12 @@ def mix_audio_tracks_with_result(
         ),
         run_func=run_func,
     )
-    analysis = _run_ffmpeg(
-        build_volume_analysis_command(
-            synced_audio_path,
-            ffmpeg_executable=ffmpeg_executable,
-        ),
-        run_func=run_func,
-    )
-    amplification = -parse_ffmpeg_max_volume(str(getattr(analysis, "stderr", "") or ""))
     _run_ffmpeg(
-        build_amplify_audio_command(
+        build_normalize_dubbed_audio_command(
             synced_audio_path,
             amplified_dubbed_audio_path,
-            amplification,
+            voice_lufs=voice_lufs,
+            voice_gain_db=voice_gain_db,
             ffmpeg_executable=ffmpeg_executable,
         ),
         run_func=run_func,
@@ -478,6 +707,13 @@ def mix_audio_tracks_with_result(
             original_audio_path,
             amplified_dubbed_audio_path,
             mixed_audio_path,
+            source_gain_db=source_gain_db,
+            voice_gain_db=0.0,
+            voice_lufs=voice_lufs,
+            ducking=ducking,
+            attack_ms=attack_ms,
+            release_ms=release_ms,
+            normalize_voice=False,
             ffmpeg_executable=ffmpeg_executable,
         ),
         run_func=run_func,
@@ -504,6 +740,12 @@ def mix_audio_tracks(
     synced_audio_path: str | os.PathLike[str],
     session_dir: str | os.PathLike[str],
     *,
+    source_gain_db: float = 0.0,
+    voice_gain_db: float = 0.0,
+    voice_lufs: float = -16.0,
+    ducking: str = "balanced",
+    attack_ms: int = 25,
+    release_ms: int = 350,
     ffmpeg_executable: str = "ffmpeg",
     run_func: Callable[..., Any] = subprocess.run,
 ) -> str:
@@ -511,6 +753,12 @@ def mix_audio_tracks(
         video_path,
         synced_audio_path,
         session_dir,
+        source_gain_db=source_gain_db,
+        voice_gain_db=voice_gain_db,
+        voice_lufs=voice_lufs,
+        ducking=ducking,
+        attack_ms=attack_ms,
+        release_ms=release_ms,
         ffmpeg_executable=ffmpeg_executable,
         run_func=run_func,
     ).output_video_path
@@ -525,6 +773,13 @@ def synchronize_audio_video_with_result(
     sentence_wavs_dir: str | os.PathLike[str] = "",
     delay_start_ms: int = 2000,
     speed_up_percent: int = 115,
+    sentence_gap_ms: int = 100,
+    source_gain_db: float = 0.0,
+    voice_gain_db: float = 0.0,
+    voice_lufs: float = -16.0,
+    ducking: str = "balanced",
+    attack_ms: int = 25,
+    release_ms: int = 350,
     ffmpeg_executable: str = "ffmpeg",
     align_func: Callable[..., str] = align_audio_blocks,
     mix_func: Callable[..., str | AudioMixResult] = mix_audio_tracks_with_result,
@@ -540,12 +795,19 @@ def synchronize_audio_video_with_result(
         session_dir,
         delay_start_ms=delay_start_ms,
         speed_up_percent=speed_up_percent,
+        sentence_gap_ms=sentence_gap_ms,
         ffmpeg_executable=ffmpeg_executable,
     )
     mix_result = mix_func(
         video_file,
         aligned_audio_path,
         session_dir,
+        source_gain_db=source_gain_db,
+        voice_gain_db=voice_gain_db,
+        voice_lufs=voice_lufs,
+        ducking=ducking,
+        attack_ms=attack_ms,
+        release_ms=release_ms,
         ffmpeg_executable=ffmpeg_executable,
     )
     if isinstance(mix_result, AudioMixResult):
@@ -571,6 +833,13 @@ def synchronize_audio_video(
     sentence_wavs_dir: str | os.PathLike[str] = "",
     delay_start_ms: int = 2000,
     speed_up_percent: int = 115,
+    sentence_gap_ms: int = 100,
+    source_gain_db: float = 0.0,
+    voice_gain_db: float = 0.0,
+    voice_lufs: float = -16.0,
+    ducking: str = "balanced",
+    attack_ms: int = 25,
+    release_ms: int = 350,
     ffmpeg_executable: str = "ffmpeg",
     align_func: Callable[..., str] = align_audio_blocks,
     mix_func: Callable[..., str | AudioMixResult] = mix_audio_tracks_with_result,
@@ -583,6 +852,13 @@ def synchronize_audio_video(
         sentence_wavs_dir=sentence_wavs_dir,
         delay_start_ms=delay_start_ms,
         speed_up_percent=speed_up_percent,
+        sentence_gap_ms=sentence_gap_ms,
+        source_gain_db=source_gain_db,
+        voice_gain_db=voice_gain_db,
+        voice_lufs=voice_lufs,
+        ducking=ducking,
+        attack_ms=attack_ms,
+        release_ms=release_ms,
         ffmpeg_executable=ffmpeg_executable,
         align_func=align_func,
         mix_func=mix_func,

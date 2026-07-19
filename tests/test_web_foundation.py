@@ -73,6 +73,7 @@ class SchemaUpgradeTests(unittest.TestCase):
                 self.assertIn("source_language", [row[1] for row in connection.execute("PRAGMA table_info(sessions)")])
                 self.assertIn("target_language", [row[1] for row in connection.execute("PRAGMA table_info(sessions)")])
                 self.assertIn("is_active", [row[1] for row in connection.execute("PRAGMA table_info(provider_models)")])
+                self.assertIn("session_stage_selections", [row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")])
 
     def test_inline_tts_key_is_migrated_to_write_only_credential_table(self):
         with tempfile.TemporaryDirectory() as directory:

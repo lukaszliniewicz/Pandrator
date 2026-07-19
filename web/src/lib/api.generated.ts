@@ -996,6 +996,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/stages/{stageKey}/artifacts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listStageArtifacts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/stages/{stageKey}/impact": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getStageRerunImpact"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/stages/{stageKey}/run": {
         parameters: {
             query?: never;
@@ -1006,6 +1038,22 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["runWorkflowStage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/stages/{stageKey}/selection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["selectStageArtifact"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2005,6 +2053,14 @@ export interface components {
         SourceUrlRequest: {
             /** Url */
             url: string;
+        };
+        /** StageSelectionUpdate */
+        StageSelectionUpdate: {
+            /**
+             * Artifact Id
+             * @default null
+             */
+            artifact_id: string | null;
         };
         /** SubtitleReviewRequest */
         SubtitleReviewRequest: {
@@ -3669,6 +3725,42 @@ export interface operations {
             };
         };
     };
+    listStageArtifacts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Stage artifact history */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getStageRerunImpact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Rerun lineage impact */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     runWorkflowStage: {
         parameters: {
             query?: never;
@@ -3680,6 +3772,35 @@ export interface operations {
         responses: {
             /** @description Queued */
             202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    selectStageArtifact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StageSelectionUpdate"];
+            };
+        };
+        responses: {
+            /** @description Stage selection updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

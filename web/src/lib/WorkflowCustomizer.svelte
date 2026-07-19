@@ -78,7 +78,7 @@
         const output=await api<any>(`/sessions/${sessionId}/settings/output`);
         const nextOutput=selectedWorkflowKind==='subtitles'
           ? {...output.override,export_mode:'subtitles',audio_mode:'preserve',subtitle_mode:'none',subtitle_selection:'source'}
-          : {...output.override,export_mode:'media',audio_mode:'dubbing_only',subtitle_mode:output.override?.subtitle_mode==='burned'?'burned':'soft'};
+          : {...output.override,export_mode:'media',audio_mode:'mixed',subtitle_mode:output.override?.subtitle_mode==='burned'?'burned':'soft'};
         await api(`/sessions/${sessionId}/settings/output`,{method:'PUT',headers:{'If-Match':`"${output.revision}"`},body:JSON.stringify({value:nextOutput})});
       }
       await api(`/sessions/${sessionId}/outcome-plan`,{method:'PUT',headers:{'If-Match':`"${payload.revision}"`},body:JSON.stringify({value:{...payload.value,export:{...(payload.value.export??{}),target_language:targetLanguage}}})});

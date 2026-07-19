@@ -20,7 +20,7 @@ from pandrator.web.artifacts import ArtifactService
 from pandrator.web.audio_assembly import compose_audio, export_audio
 from pandrator.web.database import Database, upgrade_database
 from pandrator.web.jobs import JobQueue
-from pandrator.web.models import Artifact, ArtifactEdge, AudioTake, Document, DocumentRevision, GenerationRun, GenerationSegment, OutputAssembly, Segment
+from pandrator.web.models import Artifact, ArtifactEdge, AudioTake, Document, DocumentRevision, GenerationRun, GenerationSegment, OutputAssembly, Segment, SessionRecord
 from pandrator.web.sessions import SessionService
 from pandrator.web.workflow_handlers import WorkflowHandlers
 from pandrator.web.workspace import GenerationService, WorkspaceSettingsService
@@ -384,6 +384,46 @@ class DurableOutputAssemblyTests(unittest.TestCase):
         with self.database.session() as session:
             edge = session.get(ArtifactEdge, (cover.id, artifact.id))
             self.assertIsNotNone(edge)
+
+    def test_voiceover_assembly_ignores_audiobook_metadata_and_cover_overrides(self):
+        self._plan_with_takes()
+        with self.database.session() as session:
+            session.get(SessionRecord, self.record.id).workflow_kind = "voiceover"
+        cover_path = self.session_dir / "irrelevant-cover.png"
+        Image.new("RGB", (64, 64), color=(92, 52, 35)).save(cover_path)
+        cover = ArtifactService(self.database, self.paths).register(
+            cover_path,
+            kind="image",
+            role="cover",
+            session_id=self.record.id,
+        )
+        current = self.settings.get(self.record.id, "output")
+        self.settings.update(
+            self.record.id,
+            "output",
+            current["revision"],
+            {
+                "format": "mp3",
+                "title": "Must not be embedded",
+                "album": "Not an audiobook",
+                "genre": "Audiobook",
+                "cover_artifact_id": cover.id,
+            },
+        )
+
+        queued = self.generation.create_assembly(self.record.id)
+        result = WorkflowHandlers(self.database, self.paths).assemble_generation_output(
+            {"output_assembly_id": queued["id"]},
+            lambda *_args: None,
+            threading.Event(),
+        )
+        artifact, output_path = ArtifactService(self.database, self.paths).resolve(result["artifact_id"])
+
+        self.assertEqual({}, artifact.metadata_json["metadata"])
+        self.assertIsNone(artifact.metadata_json["cover_artifact_id"])
+        self.assertNotIn("TIT2", ID3(output_path))
+        with self.database.session() as session:
+            self.assertIsNone(session.get(ArtifactEdge, (cover.id, artifact.id)))
 
     def test_cancellation_is_persisted_on_the_assembly(self):
         self._plan_with_takes()

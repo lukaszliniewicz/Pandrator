@@ -1,10 +1,11 @@
 <script lang="ts">
-  import { ArchiveRestore, ChevronDown, FileAudio, FileText, RefreshCw, Search, Trash2 } from '@lucide/svelte';
+  import { ArchiveRestore, ChevronDown, CirclePlus, FileAudio, FileText, RefreshCw, Search, Trash2 } from '@lucide/svelte';
   import { api, type SessionRecord } from '$lib/api';
   import { appState } from '$lib/app-state.svelte';
   import ArtifactPreview from '$lib/ArtifactPreview.svelte';
+  import NewSessionWizard from '$lib/NewSessionWizard.svelte';
   import { artifactRoleLabel } from '$lib/artifact-display';
-  let items=$state<SessionRecord[]>([]); let search=$state(''); let showTrash=$state(false); let expanded=$state(''); let artifacts=$state<Record<string,any[]>>({}); let error=$state(''); let preview=$state<any|null>(null);
+  let items=$state<SessionRecord[]>([]); let search=$state(''); let showTrash=$state(false); let expanded=$state(''); let artifacts=$state<Record<string,any[]>>({}); let error=$state(''); let preview=$state<any|null>(null); let wizard=$state(false);
   const visible=$derived(items.filter((item)=>item.name.toLowerCase().includes(search.toLowerCase())));
   async function load(){try{items=(await api<{items:SessionRecord[]}>(`/sessions?include_trashed=${showTrash}`)).items}catch(caught){error=caught instanceof Error?caught.message:String(caught)}}
   async function expand(id:string){expanded=expanded===id?'':id;if(expanded&&!artifacts[id])artifacts[id]=(await api<{items:any[]}>(`/artifacts?session_id=${id}&limit=200`)).items}
@@ -17,7 +18,7 @@
 <div class="mx-auto max-w-7xl">
   <header class="flex flex-wrap items-end justify-between gap-5">
     <div><div class="eyebrow">Sessions</div><h1 class="mt-2 text-4xl font-semibold">Your workspaces</h1><p class="muted mt-3">Inspect sources, generated artifacts, revisions, and recoverable trash.</p></div>
-    <label class="flex items-center gap-2 text-sm font-semibold"><input type="checkbox" bind:checked={showTrash} class="accent-[var(--accent)]"/> Show trash</label>
+    <div class="flex flex-wrap items-center gap-3"><label class="flex items-center gap-2 text-sm font-semibold"><input type="checkbox" bind:checked={showTrash} class="accent-[var(--accent)]"/> Show trash</label><button onclick={()=>wizard=true} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white"><CirclePlus size={17}/> Add session</button></div>
   </header>
   {#if error}<div class="mt-5 rounded-xl border border-[var(--line)] bg-[var(--accent-soft)] p-3 text-sm">{error}</div>{/if}
   <div class="mt-7 flex items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4"><Search class="muted" size={17}/><input bind:value={search} placeholder="Search sessions" class="w-full bg-transparent py-3 outline-none"/></div>
@@ -37,4 +38,5 @@
   </div>
 </div>
 {#if preview}<ArtifactPreview artifact={preview} onclose={()=>preview=null}/>{/if}
+{#if wizard}<NewSessionWizard onclose={()=>wizard=false}/>{/if}
 <style>.tool{display:flex;align-items:center;gap:.4rem;border:1px solid var(--line);border-radius:.7rem;padding:.55rem .7rem;font-size:.75rem;font-weight:650}</style>

@@ -1663,6 +1663,25 @@
         "title": "SourceUrlRequest",
         "type": "object"
       },
+      "StageSelectionUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Artifact Id"
+          }
+        },
+        "title": "StageSelectionUpdate",
+        "type": "object"
+      },
       "SubtitleReviewRequest": {
         "$defs": {
           "SubtitleSegmentInput": {
@@ -3055,12 +3074,55 @@
         }
       }
     },
+    "/api/v1/sessions/{sessionId}/stages/{stageKey}/artifacts": {
+      "get": {
+        "operationId": "listStageArtifacts",
+        "responses": {
+          "200": {
+            "description": "Stage artifact history"
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{sessionId}/stages/{stageKey}/impact": {
+      "get": {
+        "operationId": "getStageRerunImpact",
+        "responses": {
+          "200": {
+            "description": "Rerun lineage impact"
+          }
+        }
+      }
+    },
     "/api/v1/sessions/{sessionId}/stages/{stageKey}/run": {
       "post": {
         "operationId": "runWorkflowStage",
         "responses": {
           "202": {
             "description": "Queued"
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{sessionId}/stages/{stageKey}/selection": {
+      "put": {
+        "operationId": "selectStageArtifact",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StageSelectionUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Stage selection updated"
+          },
+          "409": {
+            "description": "Revision conflict"
           }
         }
       }
