@@ -7,7 +7,7 @@ import os
 import shutil
 import tempfile
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 try:
@@ -75,7 +75,7 @@ class StorageMixin:
     def get_packaging_layout(self):
         return {
             'layout_version': 1,
-            'generated_at_utc': datetime.utcnow().isoformat(timespec='seconds') + 'Z',
+            'generated_at_utc': datetime.now(timezone.utc).isoformat(timespec='seconds') + 'Z',
             'config_flags': list(PACKAGING_CONFIG_FLAGS),
             'shared_paths': list(PACKAGING_SHARED_PATHS),
             'excluded_file_prefixes': list(PACKAGING_EXCLUDED_FILE_PREFIXES),
@@ -159,7 +159,7 @@ class StorageMixin:
 
             backup_root = os.path.join(pandrator_repo_path, 'db_backups')
             os.makedirs(backup_root, exist_ok=True)
-            timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+            timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
             backup_dir = os.path.join(backup_root, timestamp)
             os.makedirs(backup_dir, exist_ok=True)
 
