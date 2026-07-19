@@ -21,6 +21,7 @@ from pandrator.web.jobs import JobQueue, Worker, noop_handler
 from pandrator.web.legacy_migration import import_legacy_data
 from pandrator.web.models import DocumentRevision, GenerationSegment, Job, ProviderModel, Segment, SessionRecord, utcnow
 from pandrator.web.sessions import SessionService
+from tests.web_test_support import prepare_web_test_data_root
 
 
 class DataPathsTests(unittest.TestCase):
@@ -214,8 +215,7 @@ class LegacyMigrationTests(unittest.TestCase):
 class DurableJobTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
-        self.database_path = Path(self.temporary.name) / "web.sqlite3"
-        upgrade_database(self.database_path)
+        self.database_path = prepare_web_test_data_root(self.temporary.name).database
         self.database = Database(self.database_path)
         self.sessions = SessionService(self.database)
         self.queue = JobQueue(self.database)
@@ -293,6 +293,7 @@ class DurableJobTests(unittest.TestCase):
 class WebApiTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
+        prepare_web_test_data_root(self.temporary.name)
         self.bootstrap = BootstrapTokenStore()
         self.token = self.bootstrap.issue()
         self.app = create_app(data_root=self.temporary.name, testing=True, bootstrap_tokens=self.bootstrap)
@@ -393,6 +394,70 @@ class WebApiTests(unittest.TestCase):
 
         self.assertEqual(200, response.status_code)
         self.assertEqual("job.queued", response.get_json()["items"][0]["event_type"])
+
+    def test_finalized_export_can_be_removed_without_deleting_source_artifacts(self):
+        csrf = self.authenticate()
+        headers = {"X-CSRF-Token": csrf}
+        record = self.client.post(
+            "/api/v1/sessions",
+            json={"name": "Removable output", "workflow_kind": "voiceover"},
+            headers=headers,
+        ).get_json()
+        extension = self.app.extensions["pandrator"]
+        output_path = extension["paths"].sessions / record["storage_key"] / "exports" / "finished.wav"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"finished export")
+        exported = extension["artifacts"].register(
+            output_path,
+            kind="export",
+            role="export_mixed_audio",
+            session_id=record["id"],
+        )
+        assembly_path = output_path.parent / "assembly.wav"
+        assembly_path.write_bytes(b"reusable assembly")
+        assembly = extension["artifacts"].register(
+            assembly_path,
+            kind="audio",
+            role="assembled_audio",
+            session_id=record["id"],
+        )
+
+        rejected = self.client.delete(
+            f"/api/v1/sessions/{record['id']}/outputs/{assembly.id}",
+            headers=headers,
+        )
+        self.assertEqual(409, rejected.status_code)
+        self.assertTrue(assembly_path.is_file())
+
+        removed = self.client.delete(
+            f"/api/v1/sessions/{record['id']}/outputs/{exported.id}",
+            headers=headers,
+        )
+        self.assertEqual(200, removed.status_code, removed.get_json())
+        self.assertEqual("deleted", removed.get_json()["state"])
+        self.assertFalse(output_path.exists())
+        visible_ids = {
+            item["id"]
+            for item in self.client.get(f"/api/v1/artifacts?session_id={record['id']}").get_json()["items"]
+        }
+        self.assertNotIn(exported.id, visible_ids)
+        deleted = self.client.get(
+            f"/api/v1/artifacts?session_id={record['id']}&include_deleted=true"
+        ).get_json()["items"]
+        self.assertEqual("deleted", next(item for item in deleted if item["id"] == exported.id)["state"])
+        self.assertEqual(404, self.client.get(f"/api/v1/artifacts/{exported.id}/content").status_code)
+        self.assertEqual([], extension["artifacts"].reconcile(record["id"]))
+
+        output_path.write_bytes(b"replacement export")
+        restored = extension["artifacts"].register(
+            output_path,
+            kind="export",
+            role="export_mixed_audio",
+            session_id=record["id"],
+        )
+        self.assertEqual(exported.id, restored.id)
+        self.assertEqual("current", restored.state)
+        self.assertNotIn("deleted_at", restored.metadata_json)
 
     def test_workflow_is_source_aware_and_stage_run_queues_durable_job(self):
         csrf = self.authenticate()

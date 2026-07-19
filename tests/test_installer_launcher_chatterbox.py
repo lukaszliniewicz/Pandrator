@@ -286,8 +286,6 @@ class TestInstallerLauncherChatterbox(unittest.TestCase):
                 "Update Chatterbox" in tasks or "Clone Chatterbox" in tasks,
                 "Chatterbox update/clone task was not registered in update_tasks"
             )
-            self.assertFalse(any("Subdub" in task_name for task_name in tasks))
-
             # Verify that bootstrapping was called because runtime is not ready
             mock_install_chatterbox.assert_called_once()
             called_args, called_kwargs = mock_install_chatterbox.call_args

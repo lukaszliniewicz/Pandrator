@@ -1634,6 +1634,8 @@ def create_app(
     def artifact_list():
         with database.session() as db_session:
             statement = select(Artifact).order_by(Artifact.created_at.desc())
+            if request.args.get("include_deleted") != "true":
+                statement = statement.where(Artifact.state != "deleted")
             requested_session = str(request.args.get("session_id") or "")
             if requested_session:
                 statement = statement.where(Artifact.session_id == requested_session)
@@ -1643,6 +1645,19 @@ def create_app(
                 limit = 500
             records = list(db_session.scalars(statement.limit(limit)).all())
             return jsonify({"items": [_model_dict(item, ("id", "session_id", "kind", "role", "relative_path", "mime_type", "size_bytes", "content_hash", "state", "metadata_json", "created_at")) for item in records]})
+
+    @app.delete("/api/v1/sessions/<session_id>/outputs/<artifact_id>")
+    @require_auth
+    def output_artifact_delete(session_id: str, artifact_id: str):
+        try:
+            result = artifacts.remove_output(session_id, artifact_id)
+        except KeyError:
+            return error_response("not_found", "Export not found.", 404)
+        except ValueError as error:
+            return error_response("invalid_artifact", str(error), 409)
+        except OSError as error:
+            return error_response("artifact_delete_failed", f"The export file could not be removed: {error}", 409)
+        return jsonify(result)
 
     @app.post("/api/v1/artifacts/<artifact_id>/optimization-review")
     @require_auth

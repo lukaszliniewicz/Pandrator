@@ -177,8 +177,11 @@ def _atempo_filter_chain(factor: float) -> str:
     while remaining < 0.5:
         filters.append("atempo=0.5")
         remaining /= 0.5
-    if abs(remaining - 1.0) > 0.01:
-        filters.append(f"atempo={remaining:.3f}")
+    # Even a sub-percent overrun matters when it repeats over hundreds of
+    # subtitle cues.  The previous 1% dead zone silently skipped those small
+    # corrections and allowed drift to accumulate.
+    if abs(remaining - 1.0) > 0.0001:
+        filters.append(f"atempo={remaining:.6f}")
     return ",".join(filters)
 
 
@@ -242,7 +245,10 @@ def alignment_adjustment(
     drift = max(0, int(drift_ms))
     available = max(1, window - drift)
     maximum = min(4.0, max(1.0, float(max_speed_factor)))
-    needed = (duration / available) if duration > available else 1.0
+    # Aim one millisecond inside the slot so codec/filter frame rounding does
+    # not turn an exact calculation back into a small overrun.
+    target_duration = max(1, available - 1)
+    needed = (duration / target_duration) if duration > available else 1.0
     speed_factor = min(maximum, max(1.0, needed))
     estimated_duration = int(math.ceil(duration / speed_factor)) if duration else 0
     slack = max(0, available - estimated_duration)
@@ -267,6 +273,7 @@ def align_audio_blocks(
     ffmpeg_executable: str = "ffmpeg",
     run_func: Callable[..., Any] = subprocess.run,
     output_path: str | os.PathLike[str] | None = None,
+    diagnostics: dict[str, Any] | None = None,
 ) -> str:
     from pydub import AudioSegment
 
@@ -279,6 +286,7 @@ def align_audio_blocks(
     current_time = 0
     maximum_speed = min(4.0, max(1.0, float(speed_up_percent) / 100.0))
     sentence_gap = max(0, min(5000, int(sentence_gap_ms)))
+    alignment_details: list[dict[str, Any]] = []
 
     for index, block in enumerate(ordered_blocks):
         block_start_ms = max(0, int(block.start_ms))
@@ -310,15 +318,27 @@ def align_audio_blocks(
             max_speed_factor=maximum_speed,
         )
         processed_audio = block_audio
-        if adjustment.speed_factor > 1.01:
+        applied_speed = adjustment.speed_factor
+        if original_audio_duration > adjustment.available_ms and applied_speed > 1.0001:
             with tempfile.TemporaryDirectory(prefix=".sync-", dir=session_path) as temporary:
-                processed_audio = _speed_up_audio_segment(
-                    block_audio,
-                    adjustment.speed_factor,
-                    Path(temporary),
-                    ffmpeg_executable=ffmpeg_executable,
-                    run_func=run_func,
-                )
+                temporary_path = Path(temporary)
+                for _attempt in range(2):
+                    processed_audio = _speed_up_audio_segment(
+                        block_audio,
+                        applied_speed,
+                        temporary_path,
+                        ffmpeg_executable=ffmpeg_executable,
+                        run_func=run_func,
+                    )
+                    if len(processed_audio) <= adjustment.available_ms or applied_speed >= maximum_speed - 0.0001:
+                        break
+                    # FFmpeg works in audio frames, so a theoretically exact
+                    # ratio can still leave a few milliseconds of overrun.
+                    # Recalculate once from the measured output duration.
+                    applied_speed = min(
+                        maximum_speed,
+                        applied_speed * (len(processed_audio) / max(1, adjustment.available_ms - 1)),
+                    )
         if adjustment.start_delay_ms > 0:
             final_audio += AudioSegment.silent(duration=adjustment.start_delay_ms)
             current_time += adjustment.start_delay_ms
@@ -327,20 +347,58 @@ def align_audio_blocks(
         if current_time < slot_end_ms:
             final_audio += AudioSegment.silent(duration=slot_end_ms - current_time)
             current_time = slot_end_ms
+        drift_after_ms = max(0, current_time - slot_end_ms)
+        effective_speed = original_audio_duration / max(1, len(processed_audio))
+        alignment_details.append(
+            {
+                "block": block.number,
+                "window_ms": window_duration,
+                "available_ms": adjustment.available_ms,
+                "original_audio_ms": original_audio_duration,
+                "processed_audio_ms": len(processed_audio),
+                "requested_speed_factor": round(applied_speed, 6),
+                "effective_speed_factor": round(effective_speed, 6),
+                "speed_adjusted": effective_speed > 1.0001,
+                "start_delay_ms": adjustment.start_delay_ms,
+                "drift_before_ms": drift_at_start,
+                "drift_after_ms": drift_after_ms,
+            }
+        )
         logger.info(
             "Aligned block %s: window=%dms audio=%dms speed=%.3fx delay=%dms drift=%dms -> %dms",
             block.number,
             window_duration,
             original_audio_duration,
-            adjustment.speed_factor,
+            applied_speed,
             adjustment.start_delay_ms,
             drift_at_start,
-            max(0, current_time - slot_end_ms),
+            drift_after_ms,
         )
 
     destination = Path(output_path) if output_path else session_path / "aligned_audio.wav"
     destination.parent.mkdir(parents=True, exist_ok=True)
     final_audio.export(destination, format="wav")
+    if diagnostics is not None:
+        adjusted = [item for item in alignment_details if item["speed_adjusted"]]
+        diagnostics.clear()
+        diagnostics.update(
+            {
+                "mode": "subtitle_timed",
+                "configured_max_speed_factor": maximum_speed,
+                "configured_max_start_delay_ms": max(0, int(delay_start_ms)),
+                "configured_sentence_gap_ms": sentence_gap,
+                "block_count": len(alignment_details),
+                "speed_adjusted_block_count": len(adjusted),
+                "max_effective_speed_factor": max(
+                    (float(item["effective_speed_factor"]) for item in alignment_details),
+                    default=1.0,
+                ),
+                "total_original_audio_ms": sum(int(item["original_audio_ms"]) for item in alignment_details),
+                "total_processed_audio_ms": sum(int(item["processed_audio_ms"]) for item in alignment_details),
+                "final_drift_ms": int(alignment_details[-1]["drift_after_ms"]) if alignment_details else 0,
+                "blocks": alignment_details,
+            }
+        )
     return str(destination)
 
 
@@ -374,7 +432,7 @@ def build_mix_filter_complex(
     source_gain_db: float = 0.0,
     voice_gain_db: float = 0.0,
     voice_lufs: float = -16.0,
-    ducking: str = "balanced",
+    ducking: str = "strong",
     attack_ms: int = 25,
     release_ms: int = 350,
     normalize_voice: bool = True,
@@ -386,8 +444,8 @@ def build_mix_filter_complex(
     target_lufs = _bounded_float(voice_lufs, -16.0, -30.0, -8.0)
     attack = int(_bounded_float(attack_ms, 25.0, 1.0, 2000.0))
     release = int(_bounded_float(release_ms, 350.0, 10.0, 5000.0))
-    preset = str(ducking or "balanced").strip().lower()
-    ratio = DUCKING_RATIOS.get(preset, DUCKING_RATIOS["balanced"])
+    preset = str(ducking or "strong").strip().lower()
+    ratio = DUCKING_RATIOS.get(preset, DUCKING_RATIOS["strong"])
     source_filters = ["aresample=48000:async=1000:first_pts=0", f"volume={source_gain:.2f}dB"]
     if pad_source:
         source_filters.append("apad")
@@ -516,7 +574,7 @@ def build_mix_audio_command(
     source_gain_db: float = 0.0,
     voice_gain_db: float = 0.0,
     voice_lufs: float = -16.0,
-    ducking: str = "balanced",
+    ducking: str = "strong",
     attack_ms: int = 25,
     release_ms: int = 350,
     normalize_voice: bool = True,
@@ -558,7 +616,7 @@ def build_mix_video_audio_command(
     source_gain_db: float = 0.0,
     voice_gain_db: float = 0.0,
     voice_lufs: float = -16.0,
-    ducking: str = "balanced",
+    ducking: str = "strong",
     attack_ms: int = 25,
     release_ms: int = 350,
     audio_bitrate: str = "192k",
@@ -672,7 +730,7 @@ def mix_audio_tracks_with_result(
     source_gain_db: float = 0.0,
     voice_gain_db: float = 0.0,
     voice_lufs: float = -16.0,
-    ducking: str = "balanced",
+    ducking: str = "strong",
     attack_ms: int = 25,
     release_ms: int = 350,
     ffmpeg_executable: str = "ffmpeg",
@@ -743,7 +801,7 @@ def mix_audio_tracks(
     source_gain_db: float = 0.0,
     voice_gain_db: float = 0.0,
     voice_lufs: float = -16.0,
-    ducking: str = "balanced",
+    ducking: str = "strong",
     attack_ms: int = 25,
     release_ms: int = 350,
     ffmpeg_executable: str = "ffmpeg",
@@ -777,7 +835,7 @@ def synchronize_audio_video_with_result(
     source_gain_db: float = 0.0,
     voice_gain_db: float = 0.0,
     voice_lufs: float = -16.0,
-    ducking: str = "balanced",
+    ducking: str = "strong",
     attack_ms: int = 25,
     release_ms: int = 350,
     ffmpeg_executable: str = "ffmpeg",
@@ -837,7 +895,7 @@ def synchronize_audio_video(
     source_gain_db: float = 0.0,
     voice_gain_db: float = 0.0,
     voice_lufs: float = -16.0,
-    ducking: str = "balanced",
+    ducking: str = "strong",
     attack_ms: int = 25,
     release_ms: int = 350,
     ffmpeg_executable: str = "ffmpeg",

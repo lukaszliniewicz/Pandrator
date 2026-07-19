@@ -2296,6 +2296,11 @@ class WorkflowHandlers:
             subtitle_timed = bool(source_timing_by_ref) and any(
                 segment.node_kind == "subtitle_cue" for segment, *_rest in loaded
             )
+            alignment_diagnostics: dict[str, Any] = {
+                "mode": "sequential",
+                "block_count": len(loaded),
+                "speed_adjusted_block_count": 0,
+            }
 
             if subtitle_timed:
                 alignment_blocks: list[AudioAlignmentBlock] = []
@@ -2365,6 +2370,14 @@ class WorkflowHandlers:
                         )
                     raw_speed = float(audio_settings.get("synchronization_speed") or 1.0)
                     speed_up_percent = int(round(raw_speed * 100 if raw_speed <= 10 else raw_speed))
+                    logger.info(
+                        "Assembling %s with subtitle timing: blocks=%d max_speed=%.3fx max_delay=%dms sentence_gap=%dms",
+                        assembly_id,
+                        len(alignment_blocks),
+                        max(1.0, speed_up_percent / 100.0),
+                        max(0, int(audio_settings.get("synchronization_delay_ms") or 0)),
+                        max(0, int(audio_settings.get("synchronization_sentence_gap_ms") or 100)),
+                    )
                     aligned_path = align_audio_blocks(
                         alignment_blocks,
                         temporary_path,
@@ -2372,8 +2385,17 @@ class WorkflowHandlers:
                         speed_up_percent=max(100, speed_up_percent),
                         sentence_gap_ms=max(0, int(audio_settings.get("synchronization_sentence_gap_ms") or 100)),
                         output_path=temporary_path / "aligned.wav",
+                        diagnostics=alignment_diagnostics,
                     )
                     combined = AudioSegment.from_wav(aligned_path)
+                    logger.info(
+                        "Assembly %s synchronization applied speed-up to %d/%d blocks (max effective %.3fx, final drift %dms)",
+                        assembly_id,
+                        int(alignment_diagnostics.get("speed_adjusted_block_count") or 0),
+                        int(alignment_diagnostics.get("block_count") or 0),
+                        float(alignment_diagnostics.get("max_effective_speed_factor") or 1.0),
+                        int(alignment_diagnostics.get("final_drift_ms") or 0),
+                    )
             else:
                 for index, (segment, take, artifact, _path, audio) in enumerate(loaded):
                     if segment.node_kind == "chapter_marker":
@@ -2461,6 +2483,7 @@ class WorkflowHandlers:
                     "cover_artifact_id": cover_artifact_id or None,
                     "chapters": [{"start_ms": int(start * 1000), "title": title} for start, title in chapter_markers],
                     "takes": manifest,
+                    "synchronization": alignment_diagnostics,
                 },
             )
             with self.database.session() as session:
@@ -2468,7 +2491,12 @@ class WorkflowHandlers:
                 assembly.artifact_id = artifact.id
                 assembly.status = "completed"
                 assembly.error_message = None
-                assembly.settings_json = {**dict(assembly.settings_json or {}), "takes": manifest, "duration_ms": len(combined)}
+                assembly.settings_json = {
+                    **dict(assembly.settings_json or {}),
+                    "takes": manifest,
+                    "duration_ms": len(combined),
+                    "synchronization": alignment_diagnostics,
+                }
                 assembly.updated_at = utcnow()
             progress(1.0, "Output assembly ready")
             return {
@@ -2477,6 +2505,11 @@ class WorkflowHandlers:
                 "duration_ms": len(combined),
                 "segment_count": len(selected),
                 "format": output_format,
+                "synchronization": {
+                    key: value
+                    for key, value in alignment_diagnostics.items()
+                    if key != "blocks"
+                },
             }
         except Exception as error:
             with self.database.session() as session:
@@ -2542,6 +2575,17 @@ class WorkflowHandlers:
 
         session_id = str(payload.get("session_id") or "")
         settings = dict(payload.get("settings") or {})
+        resolved_settings_snapshot = payload.get("resolved_settings_snapshot")
+        expected_assembly_settings_hash = None
+        if isinstance(resolved_settings_snapshot, dict):
+            from .workspace import stable_hash
+
+            expected_assembly_settings_hash = stable_hash(
+                {
+                    "audio": dict(resolved_settings_snapshot.get("audio") or {}),
+                    "output": dict(resolved_settings_snapshot.get("output") or {}),
+                }
+            )
         record = self._session_record(session_id)
         with self.database.session() as session:
             current = list(session.scalars(select(Artifact).where(Artifact.session_id == session_id, Artifact.state == "current")).all())
@@ -2560,17 +2604,33 @@ class WorkflowHandlers:
             selected_assembly = None
             selected_run_id = str(settings.get("generation_run_id") or "").strip()
             if selected_run_id:
-                selected_assembly = session.scalar(
-                    select(OutputAssembly)
-                    .where(
-                        OutputAssembly.session_id == session_id,
-                        OutputAssembly.generation_run_id == selected_run_id,
-                        OutputAssembly.status == "completed",
-                        OutputAssembly.artifact_id.is_not(None),
+                assembly_query = select(OutputAssembly).where(
+                    OutputAssembly.session_id == session_id,
+                    OutputAssembly.generation_run_id == selected_run_id,
+                    OutputAssembly.status == "completed",
+                    OutputAssembly.artifact_id.is_not(None),
+                )
+                if expected_assembly_settings_hash:
+                    assembly_query = assembly_query.where(
+                        OutputAssembly.settings_hash == expected_assembly_settings_hash
                     )
-                    .order_by(OutputAssembly.created_at.desc())
+                selected_assembly = session.scalar(
+                    assembly_query.order_by(OutputAssembly.created_at.desc())
                 )
                 if selected_assembly is None:
+                    if expected_assembly_settings_hash:
+                        stale_assembly = session.scalar(
+                            select(OutputAssembly.id).where(
+                                OutputAssembly.session_id == session_id,
+                                OutputAssembly.generation_run_id == selected_run_id,
+                                OutputAssembly.status == "completed",
+                                OutputAssembly.artifact_id.is_not(None),
+                            )
+                        )
+                        if stale_assembly is not None:
+                            raise ValueError(
+                                "Synchronization or output settings changed after this audio version was assembled. Reassemble it before exporting."
+                            )
                     raise ValueError("Assemble the selected generation run before exporting it.")
                 selected_audio = session.get(Artifact, selected_assembly.artifact_id)
                 if selected_audio is None:
@@ -2715,7 +2775,7 @@ class WorkflowHandlers:
                             source_gain_db=settings.get("mix_source_gain_db", 0.0),
                             voice_gain_db=settings.get("mix_voice_gain_db", 0.0),
                             voice_lufs=settings.get("mix_voice_lufs", -16.0),
-                            ducking=str(settings.get("mix_ducking") or "balanced"),
+                            ducking=str(settings.get("mix_ducking") or "strong"),
                             attack_ms=settings.get("mix_attack_ms", 25),
                             release_ms=settings.get("mix_release_ms", 350),
                             audio_bitrate=str(settings.get("mix_audio_bitrate") or "192k"),
@@ -2832,7 +2892,7 @@ class WorkflowHandlers:
                                 "source_gain_db": settings.get("mix_source_gain_db", 0.0),
                                 "voice_gain_db": settings.get("mix_voice_gain_db", 0.0),
                                 "voice_lufs": settings.get("mix_voice_lufs", -16.0),
-                                "ducking": settings.get("mix_ducking", "balanced"),
+                                "ducking": settings.get("mix_ducking", "strong"),
                                 "attack_ms": settings.get("mix_attack_ms", 25),
                                 "release_ms": settings.get("mix_release_ms", 350),
                             } if audio_mode == "mixed" else None,
@@ -2879,7 +2939,7 @@ class WorkflowHandlers:
                             source_gain_db=settings.get("mix_source_gain_db", 0.0),
                             voice_gain_db=settings.get("mix_voice_gain_db", 0.0),
                             voice_lufs=settings.get("mix_voice_lufs", -16.0),
-                            ducking=str(settings.get("mix_ducking") or "balanced"),
+                            ducking=str(settings.get("mix_ducking") or "strong"),
                             attack_ms=settings.get("mix_attack_ms", 25),
                             release_ms=settings.get("mix_release_ms", 350),
                             ffmpeg_executable=ffmpeg_executable,

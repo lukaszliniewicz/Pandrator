@@ -3,11 +3,13 @@ import unittest
 
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
+from tests.web_test_support import prepare_web_test_data_root
 
 
 class WebArtifactSelectionTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
+        prepare_web_test_data_root(self.temporary.name)
         bootstrap = BootstrapTokenStore()
         token = bootstrap.issue()
         self.app = create_app(data_root=self.temporary.name, testing=True, bootstrap_tokens=bootstrap)

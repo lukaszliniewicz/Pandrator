@@ -13,7 +13,7 @@ from sqlalchemy import select
 from pandrator.runtime import DataPaths
 
 from .database import Database
-from .models import Artifact, ArtifactEdge, utcnow
+from .models import Artifact, ArtifactEdge, ExportRecord, utcnow
 from .artifact_selection import activate_registered_artifact
 
 
@@ -113,6 +113,7 @@ class ArtifactService:
                 session.add(artifact)
                 session.flush()
             else:
+                was_deleted = artifact.state == "deleted"
                 artifact.session_id = session_id or artifact.session_id
                 artifact.kind = kind
                 artifact.role = role
@@ -121,7 +122,10 @@ class ArtifactService:
                 artifact.content_hash = content_hash or artifact.content_hash
                 artifact.settings_hash = settings_hash or artifact.settings_hash
                 artifact.state = "current"
-                artifact.metadata_json = metadata or artifact.metadata_json
+                restored_metadata = dict(metadata if metadata is not None else artifact.metadata_json or {})
+                if was_deleted:
+                    restored_metadata.pop("deleted_at", None)
+                artifact.metadata_json = restored_metadata
                 artifact.updated_at = utcnow()
 
             for parent_id in parent_ids or []:
@@ -164,16 +168,44 @@ class ArtifactService:
     def resolve(self, artifact_id: str) -> tuple[Artifact, Path]:
         with self.database.session() as session:
             artifact = session.get(Artifact, artifact_id)
-            if artifact is None:
+            if artifact is None or artifact.state == "deleted":
                 raise KeyError(artifact_id)
             path = self.paths.managed_path(artifact.relative_path)
             session.expunge(artifact)
         return artifact, path
 
+    def remove_output(self, session_id: str, artifact_id: str) -> dict[str, str]:
+        """Remove a finalized export without exposing arbitrary artifact deletion."""
+        with self.database.session() as session:
+            artifact = session.get(Artifact, artifact_id)
+            if artifact is None or artifact.state == "deleted" or artifact.session_id != session_id:
+                raise KeyError(artifact_id)
+            if not (
+                artifact.kind == "export"
+                or artifact.role == "export"
+                or artifact.role.startswith("export_")
+            ):
+                raise ValueError("Only finalized exports can be removed from the Output tab.")
+            path = self.paths.managed_path(artifact.relative_path)
+            if path.exists():
+                path.unlink()
+            removed_at = utcnow()
+            artifact.state = "deleted"
+            artifact.metadata_json = {
+                **dict(artifact.metadata_json or {}),
+                "deleted_at": removed_at.isoformat(),
+            }
+            artifact.updated_at = removed_at
+            for export in session.scalars(
+                select(ExportRecord).where(ExportRecord.artifact_id == artifact.id)
+            ).all():
+                export.status = "deleted"
+        return {"artifact_id": artifact_id, "state": "deleted"}
+
     def reconcile(self, session_id: str | None = None) -> list[dict]:
         reports: list[dict] = []
         with self.database.session() as session:
-            statement = select(Artifact)
+            statement = select(Artifact).where(Artifact.state != "deleted")
             if session_id:
                 statement = statement.where(Artifact.session_id == session_id)
             artifacts = list(session.scalars(statement).all())

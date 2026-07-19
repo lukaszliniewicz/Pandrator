@@ -38,6 +38,7 @@
   const videoKeys = ['audio_mode','subtitle_mode','burn_video_encoder','burn_video_quality','burn_video_speed','burn_audio_codec','burn_audio_bitrate'];
   const mixKeys = ['mix_source_gain_db','mix_voice_gain_db','mix_voice_lufs','mix_ducking','mix_attack_ms','mix_release_ms','mix_audio_bitrate'];
   const audioSyncKeys = ['synchronization_delay_ms','synchronization_speed','synchronization_sentence_gap_ms'];
+  type SavedOutputProfile = {output:Record<string,unknown>;audio:Record<string,unknown>};
 
   function applicableOutputKeys() {
     if (audiobookWorkspace) return new Set(['format','bitrate','language','title','artist','album','genre','cover_artifact_id']);
@@ -71,7 +72,7 @@
     if(session.workflow_kind==='subtitles'&&!['subtitles','text'].includes(String(value('export_mode','subtitles'))))draft={...draft,export_mode:'subtitles'};
   }
 
-  async function save(nextDraft=draft, nextAudioDraft=audioDraft) {
+  async function save(nextDraft=draft, nextAudioDraft=audioDraft, rethrow=false):Promise<SavedOutputProfile|null> {
     busy=true;error='';message='';
     try {
       const cleanedOutput=sanitizeOutput(nextDraft);
@@ -83,7 +84,19 @@
       draft=sanitizeOutput({...settings.override});
       audioDraft=sanitizeAudio({...audioSettings.override});
       message='Output settings saved for this session.';
-    } catch(caught){error=caught instanceof Error?caught.message:String(caught)} finally{busy=false}
+      return {output:{...(settings.effective??{})},audio:{...(audioSettings.effective??{})}};
+    } catch(caught){
+      error=caught instanceof Error?caught.message:String(caught);
+      if(rethrow)throw caught;
+      return null;
+    } finally{busy=false}
+  }
+
+  export async function saveForExport():Promise<SavedOutputProfile> {
+    if(!settings||!audioSettings)throw new Error('Output settings are still loading. Please try again.');
+    const saved=await save(draft,audioDraft,true);
+    if(!saved)throw new Error('Output settings could not be saved.');
+    return saved;
   }
 
   async function saveAsDefaults() {
@@ -160,7 +173,7 @@
           <fieldset class="rounded-2xl border border-[var(--line)] p-5"><legend class="px-2 text-sm font-semibold">Soundtrack mix</legend><p class="muted text-xs">Voiceover is normalized first, the source ducks only while speech is present, and a true-peak limiter prevents clipping.</p><div class="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <label>Source level (dB)<input type="number" min="-60" max="12" step="0.5" value={Number(value('mix_source_gain_db',0))} oninput={(event)=>set('mix_source_gain_db',Number(event.currentTarget.value))} class="field"/></label>
             <label>Voiceover level (dB)<input type="number" min="-30" max="12" step="0.5" value={Number(value('mix_voice_gain_db',0))} oninput={(event)=>set('mix_voice_gain_db',Number(event.currentTarget.value))} class="field"/></label>
-            <label>Ducking<select value={String(value('mix_ducking','balanced'))} onchange={(event)=>set('mix_ducking',event.currentTarget.value)} class="field"><option value="off">Off</option><option value="gentle">Gentle</option><option value="balanced">Balanced</option><option value="strong">Strong</option></select></label>
+            <label>Ducking<select value={String(value('mix_ducking','strong'))} onchange={(event)=>set('mix_ducking',event.currentTarget.value)} class="field"><option value="strong">Strong (recommended)</option><option value="balanced">Balanced</option><option value="gentle">Gentle</option><option value="off">Off</option></select></label>
             <label>Voice loudness target (LUFS)<input type="number" min="-30" max="-8" step="0.5" value={Number(value('mix_voice_lufs',-16))} oninput={(event)=>set('mix_voice_lufs',Number(event.currentTarget.value))} class="field"/></label>
             <label>Ducking attack (ms)<input type="number" min="1" max="2000" value={Number(value('mix_attack_ms',25))} oninput={(event)=>set('mix_attack_ms',Number(event.currentTarget.value))} class="field"/></label>
             <label>Ducking release (ms)<input type="number" min="10" max="5000" value={Number(value('mix_release_ms',350))} oninput={(event)=>set('mix_release_ms',Number(event.currentTarget.value))} class="field"/></label>

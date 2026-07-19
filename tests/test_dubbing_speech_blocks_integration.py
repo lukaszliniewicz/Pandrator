@@ -188,35 +188,31 @@ but spoken continuously.
             self.assertEqual(payload[0]["text"], "Hello there friend")
             self.assertEqual(payload[0]["subtitles"], [1, 2])
 
-    def test_dubbing_handler_speech_blocks_no_longer_runs_subdub_command(self):
+    def test_dubbing_handler_speech_blocks_write_native_result(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             srt_path = os.path.join(temp_dir, "native.srt")
             with open(srt_path, "w", encoding="utf-8") as handle:
                 handle.write(MERGE_SRT)
 
-            with patch(
-                "pandrator.logic.dubbing_handler.subprocess.Popen",
-                side_effect=AssertionError("Subdub subprocess should not run"),
-            ):
-                self.assertEqual(
-                    dubbing_handler.generate_speech_blocks_with_result(
-                        temp_dir,
-                        srt_path,
-                        target_language="en",
-                    ),
-                    os.path.join(temp_dir, "native_speech_blocks.json"),
+            self.assertEqual(
+                dubbing_handler.generate_speech_blocks_with_result(
+                    temp_dir,
+                    srt_path,
+                    target_language="en",
+                ),
+                os.path.join(temp_dir, "native_speech_blocks.json"),
+            )
+            self.assertTrue(
+                dubbing_handler.generate_speech_blocks(
+                    temp_dir,
+                    srt_path,
+                    target_language="en",
                 )
-                self.assertTrue(
-                    dubbing_handler.generate_speech_blocks(
-                        temp_dir,
-                        srt_path,
-                        target_language="en",
-                    )
-                )
+            )
 
             self.assertTrue(os.path.exists(os.path.join(temp_dir, "native_speech_blocks.json")))
 
-    def test_dubbing_handler_equalization_no_longer_runs_subdub_command(self):
+    def test_dubbing_handler_equalization_writes_native_result(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             srt_path = os.path.join(temp_dir, "native.srt")
             with open(srt_path, "w", encoding="utf-8") as handle:
@@ -227,15 +223,11 @@ This subtitle line is long enough to be wrapped by the native equalizer.
 """
                 )
 
-            with patch(
-                "pandrator.logic.dubbing_handler.subprocess.Popen",
-                side_effect=AssertionError("Subdub subprocess should not run"),
-            ):
-                self.assertEqual(
-                    dubbing_handler.equalize_subtitles_with_result(srt_path),
-                    os.path.join(temp_dir, "native_equalized.srt"),
-                )
-                self.assertTrue(dubbing_handler.equalize_subtitles(srt_path))
+            self.assertEqual(
+                dubbing_handler.equalize_subtitles_with_result(srt_path),
+                os.path.join(temp_dir, "native_equalized.srt"),
+            )
+            self.assertTrue(dubbing_handler.equalize_subtitles(srt_path))
 
             equalized_path = os.path.join(temp_dir, "native_equalized.srt")
             self.assertTrue(os.path.exists(equalized_path))

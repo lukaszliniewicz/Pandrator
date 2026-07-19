@@ -2,6 +2,7 @@ import hashlib
 import io
 import tempfile
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,11 +11,13 @@ from pandrator.web.artifacts import ArtifactService
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.models import AppSetting, Artifact, AudioTake, GenerationRun, GenerationSegment, Job
 from pandrator.web.workspace import BUILTIN_DEFAULTS, adapt_runtime_settings
+from tests.web_test_support import prepare_web_test_data_root
 
 
 class WebParityWorkspaceTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
+        prepare_web_test_data_root(self.temporary.name)
         bootstrap = BootstrapTokenStore()
         token = bootstrap.issue()
         self.app = create_app(data_root=self.temporary.name, testing=True, bootstrap_tokens=bootstrap)
@@ -130,6 +133,7 @@ class WebParityWorkspaceTests(unittest.TestCase):
         self.assertEqual("video", video_output["context"]["source_profile"])
         self.assertTrue(video_output["context"]["has_source_video"])
         self.assertEqual("mixed", video_output["effective"]["audio_mode"])
+        self.assertEqual("strong", video_output["effective"]["mix_ducking"])
         self.assertEqual("wav", video_output["effective"]["format"])
         self.assertIn("mix", video_output["context"]["applicable_groups"])
         self.assertNotIn("audiobook_metadata", video_output["context"]["applicable_groups"])
@@ -270,7 +274,13 @@ class WebParityWorkspaceTests(unittest.TestCase):
                 "available": True,
             }
         ]
-        with patch("socket.create_connection"), patch(
+
+        def connect_only_to_silero(address, **_kwargs):
+            if address == ("127.0.0.1", 8001):
+                return nullcontext()
+            raise OSError("service is offline in this test")
+
+        with patch("socket.create_connection", side_effect=connect_only_to_silero), patch(
             "pandrator.logic.tts_handler.get_silero_model_catalog",
             return_value=model_catalog,
         ), patch(

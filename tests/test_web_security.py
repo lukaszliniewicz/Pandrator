@@ -10,6 +10,7 @@ from pandrator.web.auth import BootstrapTokenStore
 
 from pandrator.web.api import create_app
 from pandrator.web.models import Artifact, SourceAsset
+from tests.web_test_support import prepare_web_test_data_root
 
 
 class WebSecurityBoundaryTests(unittest.TestCase):
@@ -17,6 +18,7 @@ class WebSecurityBoundaryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             bootstrap = BootstrapTokenStore()
             token = bootstrap.issue()
+            prepare_web_test_data_root(directory)
             app = create_app(data_root=directory, testing=True, bootstrap_tokens=bootstrap)
             try:
                 client = app.test_client()
@@ -71,6 +73,7 @@ class WebSecurityBoundaryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             bootstrap = BootstrapTokenStore()
             token = bootstrap.issue()
+            prepare_web_test_data_root(directory)
             app = create_app(data_root=directory, testing=True, bootstrap_tokens=bootstrap)
             try:
                 client = app.test_client()
@@ -100,6 +103,7 @@ class WebSecurityBoundaryTests(unittest.TestCase):
 
     def test_security_headers_allow_only_same_origin_artifact_frames(self):
         with tempfile.TemporaryDirectory() as directory:
+            prepare_web_test_data_root(directory)
             app = create_app(data_root=directory, testing=True)
             try:
                 response = app.test_client().get("/api/v1/health")
@@ -110,6 +114,7 @@ class WebSecurityBoundaryTests(unittest.TestCase):
 
     def test_untrusted_host_is_rejected_before_route_handling(self):
         with tempfile.TemporaryDirectory() as directory:
+            prepare_web_test_data_root(directory)
             app = create_app(data_root=directory, testing=True, trusted_hosts=["trusted.example"])
             try:
                 client = app.test_client()
@@ -122,6 +127,7 @@ class WebSecurityBoundaryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             bootstrap = BootstrapTokenStore()
             token = bootstrap.issue()
+            prepare_web_test_data_root(directory)
             app = create_app(data_root=directory, testing=True, bootstrap_tokens=bootstrap)
             try:
                 client = app.test_client()
@@ -144,6 +150,7 @@ class WebSecurityBoundaryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             bootstrap = BootstrapTokenStore()
             token = bootstrap.issue()
+            prepare_web_test_data_root(directory)
             app = create_app(data_root=directory, testing=True, bootstrap_tokens=bootstrap)
             try:
                 client = app.test_client()
@@ -162,6 +169,7 @@ class WebSecurityBoundaryTests(unittest.TestCase):
 
     def test_secure_cookie_mode_marks_session_cookie_secure(self):
         with tempfile.TemporaryDirectory() as directory:
+            prepare_web_test_data_root(directory)
             app = create_app(data_root=directory, testing=True, secure_cookies=True)
             try:
                 self.assertTrue(app.config["SESSION_COOKIE_SECURE"])

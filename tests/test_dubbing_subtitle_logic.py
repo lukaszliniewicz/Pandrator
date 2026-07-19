@@ -3,8 +3,10 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
-from pandrator.logic import llm_handler
+from pandrator.logic import dubbing_handler, llm_handler
 from pandrator.logic.dubbing import equalization, languages, srt_utils, video_muxing, zoom
 
 
@@ -23,6 +25,15 @@ SAMPLE_SRT = """7
 
 
 class DubbingSubtitleLogicTests(unittest.TestCase):
+    def test_broken_ffmpeg_probe_is_not_mistaken_for_libass_support(self):
+        dubbing_handler._FFMPEG_SUBTITLES_SUPPORT_CACHE.clear()
+        with mock.patch.object(
+            dubbing_handler.subprocess,
+            "run",
+            return_value=SimpleNamespace(returncode=1, stdout="dynamic loader failure"),
+        ):
+            self.assertFalse(dubbing_handler._ffmpeg_supports_subtitles_filter("broken-ffmpeg"))
+
     def test_parse_and_renumber_srt(self):
         segments = srt_utils.parse_srt(SAMPLE_SRT)
 

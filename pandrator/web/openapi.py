@@ -51,6 +51,7 @@ def build_openapi_document() -> dict:
             "/api/v1/sessions/{sessionId}/sources/url": {"post": {"operationId": "downloadSourceUrl", "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SourceUrlRequest"}}}}, "responses": {"202": {"description": "Queued"}}}},
             "/api/v1/sessions/{sessionId}/sources/reuse": {"post": {"operationId": "reuseSource", "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SourceReuseRequest"}}}}, "responses": {"202": {"description": "Queued"}}}},
             "/api/v1/artifacts": {"get": {"operationId": "listArtifacts", "responses": {"200": {"description": "Artifacts"}}}},
+            "/api/v1/sessions/{sessionId}/outputs/{artifactId}": {"delete": {"operationId": "deleteOutputArtifact", "responses": {"200": {"description": "Export removed"}, "409": {"description": "Artifact is not a removable export"}}}},
             "/api/v1/artifacts/{artifactId}/content": {"get": {"operationId": "getArtifactContent", "responses": {"200": {"description": "Range-capable artifact content"}}}},
             "/api/v1/artifacts/{artifactId}/pdf": {"get": {"operationId": "inspectPdf", "responses": {"200": {"description": "PDF geometry"}}}},
             "/api/v1/sessions/{sessionId}/workflow": {"get": {"operationId": "getWorkflow", "responses": {"200": {"description": "Workflow snapshot"}}}},

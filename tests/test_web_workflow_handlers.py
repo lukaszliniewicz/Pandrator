@@ -12,9 +12,8 @@ from pydub import AudioSegment
 from pydub.generators import Sine
 from sqlalchemy import select
 
-from pandrator.runtime import DataPaths
 from pandrator.web.artifacts import ArtifactService
-from pandrator.web.database import Database, upgrade_database
+from pandrator.web.database import Database
 from pandrator.web.credentials import auxiliary_credential_key, upsert_credential
 from pandrator.web.jobs import JobQueue
 from pandrator.web.models import Artifact, ArtifactEdge, AudioTake, GenerationRun, GenerationSegment, OutputAssembly
@@ -22,13 +21,13 @@ from pandrator.web.sessions import SessionService
 from pandrator.web.workflow_handlers import WorkflowHandlers
 from pandrator.web.tts_optimization import OptimizationUsage
 from pandrator.web.workspace import GenerationService, OutcomePlanService, WorkspaceSettingsService
+from tests.web_test_support import prepare_web_test_data_root
 
 
 class WebWorkflowHandlerTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
-        self.paths = DataPaths.from_value(self.temporary.name).ensure()
-        upgrade_database(self.paths.database)
+        self.paths = prepare_web_test_data_root(self.temporary.name)
         self.database = Database(self.paths.database)
         self.sessions = SessionService(self.database)
         self.artifacts = ArtifactService(self.database, self.paths)
@@ -561,6 +560,21 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         decoded = AudioSegment.from_file(self.paths.root / exported.relative_path)
         self.assertGreater(len(decoded), 0)
 
+        with self.assertRaisesRegex(ValueError, "settings changed.*Reassemble"):
+            self.handlers.export(
+                {
+                    "session_id": voiceover.id,
+                    "settings": {"generation_run_id": run_id, "audio_mode": "dubbing_only"},
+                    "resolved_settings_snapshot": {
+                        "audio": {"synchronization_speed": 1.25},
+                        "output": {"format": "wav", "audio_mode": "dubbing_only"},
+                        "subtitles": {},
+                    },
+                },
+                self.progress,
+                threading.Event(),
+            )
+
     @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg qualification requires ffmpeg")
     def test_audio_source_voiceover_defaults_to_a_duration_bounded_controlled_mix(self):
         voiceover = self.sessions.create("Audio source mix", workflow_kind="voiceover")
@@ -800,6 +814,20 @@ class WebWorkflowHandlerTests(unittest.TestCase):
                     self.assertTrue(all(item.get("artifact_id") for item in exported.metadata_json["subtitle_tracks"]))
                 if subtitle_mode == "burned":
                     self.assertTrue(output.name.endswith("_burned.mp4"))
+                    source_frame = subprocess.run(
+                        ["ffmpeg", "-v", "error", "-ss", "0.2", "-i", str(media_path), "-frames:v", "1", "-f", "md5", "-"],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    ).stdout
+                    burned_frame = subprocess.run(
+                        ["ffmpeg", "-v", "error", "-ss", "0.2", "-i", str(output), "-frames:v", "1", "-f", "md5", "-"],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    ).stdout
+                    self.assertNotEqual(source_frame, burned_frame)
+                    self.assertEqual("burned", exported.metadata_json.get("subtitle_mode"))
                     with self.database.session() as session:
                         overlay = session.scalar(
                             select(Artifact).where(
@@ -816,7 +844,7 @@ class WebWorkflowHandlerTests(unittest.TestCase):
                         self.assertIn("Dialogue: 1", content)
                 if audio_mode == "mixed":
                     self.assertEqual("mixed", exported.metadata_json.get("audio_mode"))
-                    self.assertEqual("balanced", exported.metadata_json.get("mix", {}).get("ducking"))
+                    self.assertEqual("strong", exported.metadata_json.get("mix", {}).get("ducking"))
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg qualification requires ffmpeg and ffprobe")
     def test_mixed_video_without_source_soundtrack_falls_back_to_voiceover_only(self):

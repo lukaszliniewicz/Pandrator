@@ -551,7 +551,8 @@ def _ffmpeg_supports_subtitles_filter(ffmpeg_executable: str) -> bool:
         probe_output = str(probe.stdout or "")
         lowered_output = probe_output.lower()
         supported = (
-            "unknown filter 'subtitles'" not in lowered_output
+            probe.returncode == 0
+            and "unknown filter 'subtitles'" not in lowered_output
             and "no such filter" not in lowered_output
         )
     except (FileNotFoundError, OSError):

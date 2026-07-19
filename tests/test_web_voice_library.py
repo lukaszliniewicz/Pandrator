@@ -10,13 +10,13 @@ from unittest import mock
 
 from sqlalchemy import select
 
-from pandrator.runtime import DataPaths
 from pandrator.web.api import create_app
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.auth import BootstrapTokenStore
-from pandrator.web.database import Database, upgrade_database
+from pandrator.web.database import Database
 from pandrator.web.models import AppSetting, Voice, VoiceSample
 from pandrator.web.workflow_handlers import WorkflowHandlers
+from tests.web_test_support import prepare_web_test_data_root
 
 
 def silent_wav() -> bytes:
@@ -32,6 +32,7 @@ def silent_wav() -> bytes:
 class VoiceLibraryApiTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
+        prepare_web_test_data_root(self.temporary.name)
         bootstrap = BootstrapTokenStore()
         token = bootstrap.issue()
         self.app = create_app(data_root=self.temporary.name, testing=True, bootstrap_tokens=bootstrap)
@@ -99,8 +100,7 @@ class VoiceLibraryApiTests(unittest.TestCase):
 class VoiceNormalizationTests(unittest.TestCase):
     def test_ffmpeg_normalization_registers_a_new_pcm_sample(self):
         with tempfile.TemporaryDirectory() as directory:
-            paths = DataPaths.from_value(directory).ensure()
-            upgrade_database(paths.database)
+            paths = prepare_web_test_data_root(directory)
             database = Database(paths.database)
             try:
                 with database.session() as session:
@@ -140,6 +140,7 @@ class InstallerAsrPreferenceTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            prepare_web_test_data_root(directory)
             bootstrap = BootstrapTokenStore()
             token = bootstrap.issue()
             app = create_app(data_root=directory, testing=True, bootstrap_tokens=bootstrap)
@@ -171,8 +172,7 @@ class InstallerAsrPreferenceTests(unittest.TestCase):
 class VoiceProviderPublishTests(unittest.TestCase):
     def test_provider_publish_persists_returned_voice_id(self):
         with tempfile.TemporaryDirectory() as directory:
-            paths = DataPaths.from_value(directory).ensure()
-            upgrade_database(paths.database)
+            paths = prepare_web_test_data_root(directory)
             database = Database(paths.database)
             try:
                 with database.session() as session:

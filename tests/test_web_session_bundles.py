@@ -6,19 +6,18 @@ from pathlib import Path
 
 from sqlalchemy import func, select
 
-from pandrator.runtime import DataPaths
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.bundles import SessionBundleService
-from pandrator.web.database import Database, upgrade_database
+from pandrator.web.database import Database
 from pandrator.web.models import Artifact, ArtifactEdge, SessionRecord
 from pandrator.web.sessions import SessionService
+from tests.web_test_support import prepare_web_test_data_root
 
 
 class SessionBundleTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
-        self.paths = DataPaths.from_value(self.temporary.name).ensure()
-        upgrade_database(self.paths.database)
+        self.paths = prepare_web_test_data_root(self.temporary.name)
         self.database = Database(self.paths.database)
         self.sessions = SessionService(self.database)
         self.artifacts = ArtifactService(self.database, self.paths)

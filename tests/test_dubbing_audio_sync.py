@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from pydub import AudioSegment
+from pydub.generators import Sine
 
 from pandrator.logic import dubbing_handler
 from pandrator.logic.dubbing import audio_sync
@@ -220,6 +221,39 @@ Wrong.
         self.assertEqual(1.0, relaxed.speed_factor)
         self.assertEqual(420, relaxed.start_delay_ms)
 
+    def test_tiny_overrun_is_not_ignored_by_tempo_filter(self):
+        decision = audio_sync.alignment_adjustment(
+            1005,
+            1000,
+            0,
+            delay_start_ms=0,
+            max_speed_factor=1.15,
+        )
+
+        self.assertGreater(decision.speed_factor, 1.0)
+        self.assertIn("atempo=1.006", audio_sync._atempo_filter_chain(decision.speed_factor))
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg qualification requires ffmpeg")
+    def test_real_alignment_applies_sub_percent_speedup_to_avoid_drift(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir, "slightly-long.wav")
+            Sine(440).to_audio_segment(duration=1005).export(source, format="wav").close()
+            diagnostics = {}
+            output = audio_sync.align_audio_blocks(
+                [audio_sync.AudioAlignmentBlock("1", "Slight overrun", 0, 1000, [source], [1])],
+                temp_dir,
+                delay_start_ms=0,
+                speed_up_percent=115,
+                output_path=Path(temp_dir, "aligned-speed.wav"),
+                diagnostics=diagnostics,
+            )
+
+            self.assertLessEqual(len(AudioSegment.from_wav(output)), 1000)
+            self.assertEqual("subtitle_timed", diagnostics["mode"])
+            self.assertEqual(1, diagnostics["speed_adjusted_block_count"])
+            self.assertGreater(diagnostics["max_effective_speed_factor"], 1.0)
+            self.assertEqual(0, diagnostics["final_drift_ms"])
+
     def test_alignment_pads_to_timeline_and_recovers_without_accumulating_shift(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             first = Path(temp_dir, "first.wav")
@@ -247,6 +281,9 @@ Wrong.
         self.assertNotIn("sidechaincompress", filter_graph)
         self.assertIn("duration=first", filter_graph)
         self.assertIn("alimiter", filter_graph)
+
+    def test_strong_ducking_is_the_default_mix_profile(self):
+        self.assertIn("ratio=20.0", audio_sync.build_mix_filter_complex())
 
     @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg qualification requires ffmpeg")
     def test_real_mix_is_source_duration_bounded_and_peak_limited(self):
@@ -390,7 +427,7 @@ Wrong.
             self.assertEqual(result.mixed_audio_path, os.path.join(temp_dir, "mixed_audio.wav"))
             self.assertEqual(calls["mix"][1], result.aligned_audio_path)
 
-    def test_dubbing_handler_sync_no_longer_runs_subdub_command(self):
+    def test_dubbing_handler_sync_delegates_to_native_sync(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             srt_path, speech_blocks_path, _wavs_dir = self._write_sync_fixture(temp_dir)
             video_path = os.path.join(temp_dir, "clip.mp4")
@@ -399,9 +436,6 @@ Wrong.
             amplified_path = os.path.join(temp_dir, "amplified_dubbed_audio.wav")
 
             with patch(
-                "pandrator.logic.dubbing_handler.subprocess.Popen",
-                side_effect=AssertionError("Subdub subprocess should not run"),
-            ), patch(
                 "pandrator.logic.dubbing_handler.synchronize_audio_video_with_result",
                 return_value=audio_sync.AudioSyncResult(
                     output_video_path=output_path,

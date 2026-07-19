@@ -64,8 +64,8 @@ jobs:
         run: |
           npm --prefix web run check
           npm --prefix web run build
-      - name: Run web and installer tests
-        run: python -m pytest -q tests -k "web or installer_lifecycle"
+      - name: Run Python tests
+        run: python -m pytest -q tests
       - name: Install Playwright browsers
         run: npx --prefix web playwright install chromium firefox
       - name: Run Chromium and Firefox workflows

@@ -2918,6 +2918,19 @@
         }
       }
     },
+    "/api/v1/sessions/{sessionId}/outputs/{artifactId}": {
+      "delete": {
+        "operationId": "deleteOutputArtifact",
+        "responses": {
+          "200": {
+            "description": "Export removed"
+          },
+          "409": {
+            "description": "Artifact is not a removable export"
+          }
+        }
+      }
+    },
     "/api/v1/sessions/{sessionId}/pdf/apply": {
       "post": {
         "operationId": "applyPdfEdits",

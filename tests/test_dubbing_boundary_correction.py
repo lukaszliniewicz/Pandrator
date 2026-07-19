@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from pandrator.logic.dubbing import boundary_correction, srt_utils, transcription
+from pandrator.logic.dubbing import boundary_correction, srt_utils
 
 
 def _synthetic_boundary_audio(sample_rate: int = 1000) -> np.ndarray:
@@ -72,14 +72,6 @@ class DubbingBoundaryCorrectionTests(unittest.TestCase):
             self.assertEqual(segments[0].end_ms, 875)
             payload = json.loads(Path(result.corrections_path).read_text(encoding="utf-8"))
             self.assertEqual(payload["corrections"][0]["type"], "energy_boundary")
-
-    def test_legacy_automatic_boundary_correction_is_retired_for_crispasr(self):
-        self.assertFalse(
-            transcription.automatic_boundary_correction_enabled(
-                {"boundary_correction_enabled": True, "stt_engine": "whisper"}
-            )
-        )
-
 
 if __name__ == "__main__":
     unittest.main()

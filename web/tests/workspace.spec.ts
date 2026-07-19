@@ -1,5 +1,9 @@
 import { expect, test, type Page } from '@playwright/test';
 
+function uniqueName(prefix: string) {
+  return `${prefix} ${crypto.randomUUID()}`;
+}
+
 async function signIn(page: Page) {
   await page.goto('/');
   await page.getByLabel('Owner password').fill('pandrator-e2e');
@@ -17,7 +21,7 @@ async function createGenerationPlan(page: Page, segments: Array<{ text: string; 
   const headers = { 'X-CSRF-Token': csrfToken };
   const sessionResponse = await page.request.post('/api/v1/sessions', {
     headers,
-    data: { name: 'Reading mode regression', workflow_kind: 'audiobook' }
+    data: { name: uniqueName('Reading mode regression'), workflow_kind: 'audiobook' }
   });
   expect(sessionResponse.ok()).toBeTruthy();
   const session = await sessionResponse.json();
@@ -30,15 +34,16 @@ async function createGenerationPlan(page: Page, segments: Array<{ text: string; 
 }
 
 test('wizard creates a guided subtitle workspace and preserves setup return', async ({ page }) => {
+  const sessionName = uniqueName('Playwright subtitles');
   await signIn(page);
   await expect(page.getByRole('heading', { name: 'What shall we make?' })).toBeVisible();
   await page.getByRole('button', { name: /Create subtitles/ }).first().click();
   await page.getByRole('button', { name: 'Add later' }).click();
   await page.getByRole('button', { name: 'Continue' }).click();
   await page.getByRole('button', { name: 'Review', exact: true }).click();
-  await page.getByLabel('Session name').fill('Playwright subtitles');
+  await page.getByLabel('Session name').fill(sessionName);
   await page.getByRole('button', { name: 'Create workspace' }).click();
-  await expect(page.getByRole('heading', { name: 'Playwright subtitles' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: sessionName })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Transcribe' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Tour' })).toBeVisible();
 });
@@ -75,7 +80,7 @@ test('sessions page launches creation and workspace source picker exposes every 
   const csrfToken = (await authStatus.json()).csrf_token;
   const created = await page.request.post('/api/v1/sessions', {
     headers: { 'X-CSRF-Token': csrfToken },
-    data: { name: 'Source picker regression', workflow_kind: 'audiobook' }
+    data: { name: uniqueName('Source picker regression'), workflow_kind: 'audiobook' }
   });
   expect(created.ok()).toBeTruthy();
   const session = await created.json();
@@ -102,7 +107,7 @@ test('voiceover output settings follow the video source and default to a control
   const headers = { 'X-CSRF-Token': csrfToken };
   const created = await page.request.post('/api/v1/sessions', {
     headers,
-    data: { name: 'Video output profile', workflow_kind: 'voiceover' }
+    data: { name: uniqueName('Video output profile'), workflow_kind: 'voiceover' }
   });
   expect(created.ok()).toBeTruthy();
   const session = await created.json();
@@ -206,7 +211,7 @@ test('generation segments support Ctrl and Shift multi-selection in both review 
   await expect(page.getByRole('button', { name: 'RVC selected (2)' })).toBeVisible();
 });
 
-test('editorial workspace visual baseline', async ({ page }) => {
+test('editorial workspace visual smoke', async ({ page }) => {
   const isWindows = await page.evaluate(() => navigator.userAgent.includes('Windows'));
   test.skip(isWindows, 'The visual baseline is captured on Linux to avoid platform font-metric differences.');
   await signIn(page);
@@ -219,11 +224,12 @@ test('editorial workspace visual baseline', async ({ page }) => {
 
 test('voice recording can be previewed, normalized, saved, and played', async ({ page, browserName }) => {
   test.skip(browserName !== 'chromium', 'Chromium provides a deterministic fake microphone for this media integration test.');
+  const voiceName = uniqueName('Browser recorder');
   await signIn(page);
   await page.getByRole('link', { name: 'Voices' }).click();
-  await page.getByLabel('New voice name').fill('Browser recorder');
+  await page.getByLabel('New voice name').fill(voiceName);
   await page.getByRole('button', { name: 'Add voice' }).click();
-  await expect(page.getByRole('heading', { name: 'Browser recorder' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: voiceName })).toBeVisible();
 
   await page.getByRole('button', { name: 'Enable microphone' }).click();
   await expect(page.getByRole('button', { name: 'Record', exact: true })).toBeEnabled();

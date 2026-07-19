@@ -14,16 +14,16 @@ from pydub import AudioSegment
 from pydub.generators import Sine
 from sqlalchemy import select
 
-from pandrator.runtime import DataPaths
 from pandrator.logic.audio_processor import _save_metadata_and_cover
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.audio_assembly import compose_audio, export_audio
-from pandrator.web.database import Database, upgrade_database
+from pandrator.web.database import Database
 from pandrator.web.jobs import JobQueue
 from pandrator.web.models import Artifact, ArtifactEdge, AudioTake, Document, DocumentRevision, GenerationRun, GenerationSegment, OutputAssembly, Segment, SessionRecord
 from pandrator.web.sessions import SessionService
 from pandrator.web.workflow_handlers import WorkflowHandlers
 from pandrator.web.workspace import GenerationService, WorkspaceSettingsService
+from tests.web_test_support import prepare_web_test_data_root
 
 
 class AudioCompositionTests(unittest.TestCase):
@@ -89,8 +89,7 @@ class AudioCompositionTests(unittest.TestCase):
 class DurableOutputAssemblyTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
-        self.paths = DataPaths.from_value(self.temporary.name).ensure()
-        upgrade_database(self.paths.database)
+        self.paths = prepare_web_test_data_root(self.temporary.name)
         self.database = Database(self.paths.database)
         self.jobs = JobQueue(self.database)
         self.settings = WorkspaceSettingsService(self.database)

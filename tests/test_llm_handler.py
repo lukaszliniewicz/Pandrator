@@ -178,6 +178,7 @@ class LlmHandlerTests(unittest.TestCase):
             return {
                 "model": kwargs["model"],
                 "choices": [{"message": {"content": "ok"}}],
+                "_hidden_params": {"response_cost": 0.0},
             }
 
         with patch.dict(os.environ, {}, clear=True), patch(

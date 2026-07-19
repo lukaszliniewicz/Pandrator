@@ -1780,6 +1780,7 @@ class SourceCleaningTests(unittest.TestCase):
         mock_book = MagicMock()
         mock_book.get_items.return_value = [mock_item]
         mock_book.spine = [("chap1", "yes")]
+        mock_book.toc = []
         mock_read_epub.return_value = mock_book
         
         # Setup mock unpacked EPUB structure

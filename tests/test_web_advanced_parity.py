@@ -9,11 +9,10 @@ from unittest import mock
 
 from sqlalchemy import select
 
-from pandrator.runtime import DataPaths
 from pandrator.web.api import create_app
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.auth import BootstrapTokenStore
-from pandrator.web.database import Database, upgrade_database
+from pandrator.web.database import Database
 from pandrator.web.models import (
     AppSetting,
     Artifact,
@@ -31,13 +30,13 @@ from pandrator.web.workflow_handlers import WorkflowHandlers
 from pandrator.web.workflows import WorkflowService
 from pandrator.web.jobs import JobQueue
 from pandrator.web.workspace import OutcomePlanService
+from tests.web_test_support import prepare_web_test_data_root
 
 
 class ProviderSettingsTests(unittest.TestCase):
     def test_database_models_preserve_zero_temperature_reasoning_and_secret_reference(self):
         with tempfile.TemporaryDirectory() as directory:
-            paths = DataPaths.from_value(directory).ensure()
-            upgrade_database(paths.database)
+            paths = prepare_web_test_data_root(directory)
             database = Database(paths.database)
             os.environ["PANDRATOR_TEST_KEY"] = "secret-value"
             try:
@@ -63,6 +62,7 @@ class ProviderSettingsTests(unittest.TestCase):
 class AdvancedApiTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
+        prepare_web_test_data_root(self.temporary.name)
         bootstrap = BootstrapTokenStore()
         token = bootstrap.issue()
         self.app = create_app(data_root=self.temporary.name, testing=True, bootstrap_tokens=bootstrap)
@@ -169,8 +169,7 @@ class AdvancedApiTests(unittest.TestCase):
 class TrainingHandlerTests(unittest.TestCase):
     def test_successful_training_registers_model_and_activates_xtts_catalogue(self):
         with tempfile.TemporaryDirectory() as directory:
-            paths = DataPaths.from_value(directory).ensure()
-            upgrade_database(paths.database)
+            paths = prepare_web_test_data_root(directory)
             database = Database(paths.database)
             try:
                 source_path = paths.uploads / "voice.wav"
@@ -210,8 +209,7 @@ class AgenticCleaningTests(unittest.TestCase):
         import fitz
 
         with tempfile.TemporaryDirectory() as directory:
-            paths = DataPaths.from_value(directory).ensure()
-            upgrade_database(paths.database)
+            paths = prepare_web_test_data_root(directory)
             database = Database(paths.database)
             try:
                 session_record = SessionService(database).create("PDF OCR settings")
@@ -255,8 +253,7 @@ class AgenticCleaningTests(unittest.TestCase):
 
     def test_agentic_cleaning_writes_report_and_usage(self):
         with tempfile.TemporaryDirectory() as directory:
-            paths = DataPaths.from_value(directory).ensure()
-            upgrade_database(paths.database)
+            paths = prepare_web_test_data_root(directory)
             database = Database(paths.database)
             try:
                 session_record = SessionService(database).create("Agentic")
@@ -289,7 +286,7 @@ class AgenticCleaningTests(unittest.TestCase):
 class SourceAwareWorkflowTests(unittest.TestCase):
     def test_srt_workflow_omits_transcription_and_renumbers_cards(self):
         with tempfile.TemporaryDirectory() as directory:
-            paths = DataPaths.from_value(directory).ensure(); upgrade_database(paths.database); database = Database(paths.database)
+            paths = prepare_web_test_data_root(directory); database = Database(paths.database)
             try:
                 record = SessionService(database).create("SRT", workflow_kind="subtitles")
                 source_path = paths.uploads / "captions.srt"; source_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n", encoding="utf-8")
@@ -304,7 +301,7 @@ class SourceAwareWorkflowTests(unittest.TestCase):
 
     def test_enabled_document_optimization_locks_generation_until_its_artifact_exists(self):
         with tempfile.TemporaryDirectory() as directory:
-            paths = DataPaths.from_value(directory).ensure(); upgrade_database(paths.database); database = Database(paths.database)
+            paths = prepare_web_test_data_root(directory); database = Database(paths.database)
             try:
                 record = SessionService(database).create("Review first", workflow_kind="voiceover")
                 source_path = paths.uploads / "captions.srt"; source_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n", encoding="utf-8")
@@ -349,7 +346,7 @@ class SourceAwareWorkflowTests(unittest.TestCase):
 
     def test_completed_generation_run_unlocks_export_before_audio_is_assembled(self):
         with tempfile.TemporaryDirectory() as directory:
-            paths = DataPaths.from_value(directory).ensure(); upgrade_database(paths.database); database = Database(paths.database)
+            paths = prepare_web_test_data_root(directory); database = Database(paths.database)
             try:
                 record = SessionService(database).create("Ready to export", workflow_kind="audiobook")
                 with database.session() as session:
@@ -382,7 +379,7 @@ class SourceAwareWorkflowTests(unittest.TestCase):
 
     def test_reusable_source_is_copied_as_a_managed_dependency(self):
         with tempfile.TemporaryDirectory() as directory:
-            paths = DataPaths.from_value(directory).ensure(); upgrade_database(paths.database); database = Database(paths.database)
+            paths = prepare_web_test_data_root(directory); database = Database(paths.database)
             try:
                 first = SessionService(database).create("First"); second = SessionService(database).create("Second")
                 (paths.sessions / second.storage_key).mkdir()

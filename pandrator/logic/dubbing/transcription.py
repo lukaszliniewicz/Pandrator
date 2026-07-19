@@ -26,11 +26,6 @@ def safe_decode(output: bytes | str | None) -> str:
     return output if isinstance(output, str) else output.decode("utf-8", errors="replace")
 
 
-def automatic_boundary_correction_enabled(settings: dict[str, Any], stt_backend: str | None = None) -> bool:
-    """CrispASR supplies word timing directly; legacy energy correction is retired."""
-    return False
-
-
 def extract_audio(
     source_path: str | os.PathLike[str],
     session_dir: str | os.PathLike[str],

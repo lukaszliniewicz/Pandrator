@@ -34,7 +34,7 @@ const CHOICES: Record<string, SettingOption[]> = {
   burn_audio_bitrate: [option('96k', '96 kbps'), option('128k', '128 kbps'), option('160k', '160 kbps'), option('192k', '192 kbps'), option('256k', '256 kbps'), option('320k', '320 kbps')],
   export_mode: [option('media', 'Video / media'), option('subtitles', 'Subtitles only'), option('text', 'Concatenated text only')],
   audio_mode: [option('preserve', 'Preserve source audio'), option('mixed', 'Mix source and generated audio'), option('dubbing_only', 'Generated audio only')],
-  mix_ducking: [option('off', 'Off'), option('gentle', 'Gentle'), option('balanced', 'Balanced'), option('strong', 'Strong')],
+  mix_ducking: [option('strong', 'Strong (recommended)'), option('balanced', 'Balanced'), option('gentle', 'Gentle'), option('off', 'Off')],
   subtitle_mode: [option('none', 'No subtitles'), option('soft', 'Inject soft subtitle tracks'), option('burned', 'Burn subtitles into video')],
   subtitle_selection: [option('translation', 'Translation only'), option('source', 'Source or corrected only'), option('dual', 'Source and translation')],
   subtitle_format: [option('srt', 'SubRip (.srt)'), option('vtt', 'WebVTT (.vtt)')],

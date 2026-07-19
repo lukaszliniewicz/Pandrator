@@ -211,16 +211,13 @@ class DubbingLLMCorrectionTests(unittest.TestCase):
         self.assertIn('["Hello."]', context)
         self.assertNotIn('"action"', context)
 
-    def test_dubbing_handler_correction_no_longer_runs_subdub_command(self):
+    def test_dubbing_handler_correction_writes_native_result(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             srt_path = os.path.join(temp_dir, "native.srt")
             with open(srt_path, "w", encoding="utf-8") as handle:
                 handle.write(SAMPLE_SRT)
 
             with patch(
-                "pandrator.logic.dubbing_handler.subprocess.Popen",
-                side_effect=AssertionError("Subdub subprocess should not run"),
-            ), patch(
                 "pandrator.logic.dubbing.llm_correction.llm_handler.chat_completion_with_metadata",
                 return_value=llm_handler.ChatCompletionResult(
                     content='{"operations":[{"action":"edit","ids":[1],"texts":["Hello."]}]}',

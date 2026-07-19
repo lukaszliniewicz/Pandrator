@@ -9,11 +9,13 @@ from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.credentials import hydrate_tts_settings, shared_provider_credential_key
 from pandrator.web.models import AppSetting, AppSettingHistory, StoredCredential
 from pandrator.web.tts_optimization import DEFAULT_FIRST_PROMPT, DEFAULT_PROMPT, DEFAULT_SECOND_PROMPT, DEFAULT_THIRD_PROMPT
+from tests.web_test_support import prepare_web_test_data_root
 
 
 class SettingsApiTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
+        prepare_web_test_data_root(self.temporary.name)
         bootstrap = BootstrapTokenStore()
         token = bootstrap.issue()
         self.app = create_app(data_root=self.temporary.name, testing=True, bootstrap_tokens=bootstrap)

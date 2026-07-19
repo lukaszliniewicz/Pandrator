@@ -3,20 +3,19 @@ import unittest
 
 from sqlalchemy import delete, select
 
-from pandrator.runtime import DataPaths
 from pandrator.web.artifacts import ArtifactService
-from pandrator.web.database import Database, upgrade_database
+from pandrator.web.database import Database
 from pandrator.web.models import Artifact, SegmentLineage
 from pandrator.web.sessions import SessionService
 from pandrator.web.subtitle_review import SubtitleReviewService
 from pandrator.web.workflow_handlers import WorkflowHandlers
+from tests.web_test_support import prepare_web_test_data_root
 
 
 class SubtitleReviewTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
-        self.paths = DataPaths.from_value(self.temporary.name).ensure()
-        upgrade_database(self.paths.database)
+        self.paths = prepare_web_test_data_root(self.temporary.name)
         self.database = Database(self.paths.database)
         self.sessions = SessionService(self.database)
         self.artifacts = ArtifactService(self.database, self.paths)

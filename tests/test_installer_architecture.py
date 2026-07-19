@@ -1,7 +1,6 @@
 import unittest
 import hashlib
 import io
-import inspect
 import json
 import os
 import subprocess
@@ -36,7 +35,6 @@ from pandrator_installer import platforms
 from pandrator_installer.crispasr import detect_compute_backends, resolve_asset
 from pandrator_installer.reporting import HeadlessReporter
 from pandrator_installer.service import HeadlessInstaller
-from pandrator_installer.workflows import WorkflowMixin
 from pandrator_installer.constants import (
     NEMO_PYNINI_CONDA_SPEC,
     ONNX_ASR_INSTALL_SPEC,
@@ -143,13 +141,10 @@ class InstallerArchitectureTests(unittest.TestCase):
             installer.get_optional_requirement_exclusions("pandrator_installer"),
         )
 
-    def test_installer_does_not_manage_legacy_pycroppdf(self):
-        install_source = inspect.getsource(WorkflowMixin.install_process)
-        update_source = inspect.getsource(WorkflowMixin.update_process)
-
-        self.assertNotIn("PyCropPDF", install_source)
-        self.assertNotIn("PyCropPDF", update_source)
-        self.assertFalse(hasattr(HeadlessInstaller, "install_pycroppdf_requirements"))
+    def test_legacy_pycroppdf_is_not_an_installer_component(self):
+        self.assertNotIn("pycroppdf", COMPONENTS)
+        self.assertNotIn("pycroppdf", PACKAGING_COMPONENT_PATHS)
+        self.assertNotIn("pycroppdf_support", PACKAGING_CONFIG_FLAGS)
 
     def test_crispasr_auto_prefers_cuda_then_vulkan(self):
         cuda_asset, cuda_backend = resolve_asset(
@@ -784,89 +779,32 @@ class InstallerArchitectureTests(unittest.TestCase):
 
         install_calibre.assert_not_called()
 
-    def test_non_windows_first_party_silero_install_is_allowed(self):
+    def test_non_windows_supported_install_and_update_selections_are_allowed(self):
         installer = HeadlessInstaller(working_dir="workspace")
-        selection = InstallSelection.from_components(["silero"])
+        selections = [
+            InstallSelection.from_components(["silero"]),
+            InstallSelection.from_components(["magpie_cpu"]),
+            InstallSelection.from_components(["chatterbox_cpu"]),
+            InstallSelection.from_components(["kokoro_cpu"]),
+            InstallSelection.from_components(["kobold_qwen_cpu"]),
+            InstallSelection.from_components([], install_pandrator=True),
+        ]
+        update_configs = [
+            {"silero_support": True},
+            {"magpie_support": True},
+            {"chatterbox_support": True},
+            {"kokoro_support": True},
+            {"kobold_qwen_support": True},
+            {"kokoro_support": False, "whisperx_support": True},
+        ]
 
         with patch("pandrator_installer.workflows.is_windows", return_value=False):
-            installer.validate_platform_install_selection(selection)
-
-    def test_non_windows_magpie_install_selection_is_allowed(self):
-        installer = HeadlessInstaller(working_dir="workspace")
-        selection = InstallSelection.from_components(["magpie_cpu"])
-
-        with patch("pandrator_installer.workflows.is_windows", return_value=False):
-            installer.validate_platform_install_selection(selection)
-
-    def test_non_windows_chatterbox_install_selection_is_allowed(self):
-        installer = HeadlessInstaller(working_dir="workspace")
-        selection = InstallSelection.from_components(["chatterbox_cpu"])
-
-        with patch("pandrator_installer.workflows.is_windows", return_value=False):
-            installer.validate_platform_install_selection(selection)
-
-    def test_non_windows_kokoro_install_selection_is_allowed(self):
-        installer = HeadlessInstaller(working_dir="workspace")
-        selection = InstallSelection.from_components(["kokoro_cpu"])
-
-        with patch("pandrator_installer.workflows.is_windows", return_value=False):
-            installer.validate_platform_install_selection(selection)
-
-    def test_non_windows_kobold_qwen_install_selection_is_allowed(self):
-        installer = HeadlessInstaller(working_dir="workspace")
-        selection = InstallSelection.from_components(["kobold_qwen_cpu"])
-
-        with patch("pandrator_installer.workflows.is_windows", return_value=False):
-            installer.validate_platform_install_selection(selection)
-
-    def test_non_windows_core_install_selection_is_allowed(self):
-        installer = HeadlessInstaller(working_dir="workspace")
-        selection = InstallSelection.from_components([], install_pandrator=True)
-
-        with patch("pandrator_installer.workflows.is_windows", return_value=False):
-            installer.validate_platform_install_selection(selection)
-
-    def test_non_windows_update_with_first_party_silero_is_allowed(self):
-        installer = HeadlessInstaller(working_dir="workspace")
-        config = {"silero_support": True}
-
-        with patch("pandrator_installer.workflows.is_windows", return_value=False):
-            installer.validate_platform_update_config(config)
-
-    def test_non_windows_update_with_magpie_config_is_allowed(self):
-        installer = HeadlessInstaller(working_dir="workspace")
-        config = {"magpie_support": True}
-
-        with patch("pandrator_installer.workflows.is_windows", return_value=False):
-            installer.validate_platform_update_config(config)
-
-    def test_non_windows_update_with_chatterbox_config_is_allowed(self):
-        installer = HeadlessInstaller(working_dir="workspace")
-        config = {"chatterbox_support": True}
-
-        with patch("pandrator_installer.workflows.is_windows", return_value=False):
-            installer.validate_platform_update_config(config)
-
-    def test_non_windows_update_with_kokoro_config_is_allowed(self):
-        installer = HeadlessInstaller(working_dir="workspace")
-        config = {"kokoro_support": True}
-
-        with patch("pandrator_installer.workflows.is_windows", return_value=False):
-            installer.validate_platform_update_config(config)
-
-    def test_non_windows_update_with_kobold_qwen_config_is_allowed(self):
-        installer = HeadlessInstaller(working_dir="workspace")
-        config = {"kobold_qwen_support": True}
-
-        with patch("pandrator_installer.workflows.is_windows", return_value=False):
-            installer.validate_platform_update_config(config)
-
-    def test_non_windows_update_with_core_config_is_allowed(self):
-        installer = HeadlessInstaller(working_dir="workspace")
-        config = {"kokoro_support": False, "whisperx_support": True}
-
-        with patch("pandrator_installer.workflows.is_windows", return_value=False):
-            installer.validate_platform_update_config(config)
+            for selection in selections:
+                with self.subTest(components=selection.selected_components()):
+                    installer.validate_platform_install_selection(selection)
+            for config in update_configs:
+                with self.subTest(config=config):
+                    installer.validate_platform_update_config(config)
 
     def test_kokoro_pythonpath_uses_os_pathsep(self):
         installer = HeadlessInstaller(working_dir="workspace")

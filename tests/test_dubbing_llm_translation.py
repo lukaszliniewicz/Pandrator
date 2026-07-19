@@ -161,16 +161,13 @@ hello = czesc
         self.assertEqual(result.response_count, 3)
         self.assertEqual(len(srt_utils.parse_srt(result.srt_content)), 5)
 
-    def test_dubbing_handler_translation_no_longer_runs_subdub_command_for_llm(self):
+    def test_dubbing_handler_translation_writes_native_llm_result(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             srt_path = os.path.join(temp_dir, "native.srt")
             with open(srt_path, "w", encoding="utf-8") as handle:
                 handle.write(SAMPLE_SRT)
 
             with patch(
-                "pandrator.logic.dubbing_handler.subprocess.Popen",
-                side_effect=AssertionError("Subdub subprocess should not run"),
-            ), patch(
                 "pandrator.logic.dubbing.llm_translation.llm_handler.chat_completion_with_metadata",
                 return_value=llm_handler.ChatCompletionResult(
                     content='[{"number":1,"text":"Czesc."},{"number":2,"text":"[REMOVE]"}]',
@@ -214,7 +211,7 @@ hello = czesc
             self.assertEqual(result.cost, 0.04)
             self.assertEqual(result.response_count, 1)
 
-    def test_dubbing_handler_translation_no_longer_runs_subdub_command_for_deepl(self):
+    def test_dubbing_handler_translation_writes_native_deepl_result(self):
         class FakeTranslator:
             def translate_text(self, text, target_lang):
                 self.target_lang = target_lang
@@ -229,10 +226,7 @@ hello = czesc
             deepl_settings = _settings()
             deepl_settings["translation_backend"] = "deepl"
 
-            with patch(
-                "pandrator.logic.dubbing_handler.subprocess.Popen",
-                side_effect=AssertionError("Subdub subprocess should not run"),
-            ), patch.dict(os.environ, {"DEEPL_API_KEY": "test-deepl-key"}), patch(
+            with patch.dict(os.environ, {"DEEPL_API_KEY": "test-deepl-key"}), patch(
                 "pandrator.logic.dubbing.llm_translation._build_deepl_translator",
                 return_value=fake_translator,
             ):

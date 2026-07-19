@@ -8,11 +8,13 @@ from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.credentials import shared_provider_credential_key
 from pandrator.web.models import StoredCredential
 from pandrator.web.provider_settings import build_llm_settings
+from tests.web_test_support import prepare_web_test_data_root
 
 
 class ProviderApiTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
+        prepare_web_test_data_root(self.temporary.name)
         bootstrap = BootstrapTokenStore()
         token = bootstrap.issue()
         self.app = create_app(data_root=self.temporary.name, testing=True, bootstrap_tokens=bootstrap)
