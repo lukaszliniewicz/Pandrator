@@ -144,6 +144,7 @@ def optimize_texts(
                 ],
                 model_name=model_name,
                 llm_settings=llm_settings,
+                cancel_event=cancel_event,
             )
             current = _parse_batch_response(result.content, indexes)
             responses.append(result)

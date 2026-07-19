@@ -39,6 +39,7 @@ from .models import (
     SourceAsset,
     SourceRecord,
     TimedWord,
+    UsageEvent,
     new_id,
     utcnow,
 )
@@ -144,7 +145,7 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "language": "en",
         "voice": "",
         "speed": 1.0,
-        "max_attempts": 3,
+        "max_attempts": 5,
         "temperature": 0.75,
         "length_penalty": 1.0,
         "repetition_penalty": 5.0,
@@ -1124,32 +1125,58 @@ class GenerationService:
             return {"id": segment.id, "active_take_id": take.id, "revision": segment.revision}
 
     def start(self, session_id: str, *, run_override: dict[str, Any] | None = None, segment_ids: list[str] | None = None, operation: str = "generate") -> dict[str, Any]:
-        snapshot, settings_hash = self.settings.resolve(session_id, run_override=run_override)
+        requested_segment_ids = [str(value) for value in (segment_ids or []) if str(value)]
+        reused_run = False
         with self.database.session() as session:
             plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
             if plan is None or not plan.active_revision_id:
                 raise ValueError("Create generation segments before starting audio generation.")
-            sequence_number = int(session.scalar(select(func.max(GenerationRun.sequence_number)).where(GenerationRun.session_id == session_id)) or 0) + 1
-            run = GenerationRun(
-                session_id=session_id,
-                plan_revision_id=plan.active_revision_id,
-                sequence_number=sequence_number,
-                operation=operation,
-                status="queued",
-                settings_snapshot_json=snapshot,
-                settings_hash=settings_hash,
-            )
-            session.add(run)
-            session.flush()
-            run_id = run.id
+            reusable = None
+            if requested_segment_ids and operation != "rvc":
+                reusable = session.scalar(
+                    select(GenerationRun)
+                    .where(
+                        GenerationRun.session_id == session_id,
+                        GenerationRun.plan_revision_id == plan.active_revision_id,
+                        GenerationRun.operation != "rvc",
+                    )
+                    .order_by(GenerationRun.sequence_number.desc(), GenerationRun.created_at.desc())
+                )
+            if reusable is not None:
+                if reusable.status in {"queued", "running", "pausing", "pause_requested", "cancel_requested", "paused"}:
+                    raise ValueError("The current generation run is still active; stop or resume it before regenerating segments.")
+                reusable.status = "queued"
+                reusable.pause_requested = False
+                reusable.cancel_requested = False
+                reusable.updated_at = utcnow()
+                run_id = reusable.id
+                snapshot = dict(reusable.settings_snapshot_json or {})
+                reused_run = True
+            else:
+                snapshot, settings_hash = self.settings.resolve(session_id, run_override=run_override)
+                sequence_number = int(session.scalar(select(func.max(GenerationRun.sequence_number)).where(GenerationRun.session_id == session_id)) or 0) + 1
+                run = GenerationRun(
+                    session_id=session_id,
+                    plan_revision_id=plan.active_revision_id,
+                    sequence_number=sequence_number,
+                    operation=operation,
+                    status="queued",
+                    settings_snapshot_json=snapshot,
+                    settings_hash=settings_hash,
+                )
+                session.add(run)
+                session.flush()
+                run_id = run.id
         resource_keys = self._resource_keys(session_id, snapshot)
-        job = self.jobs.enqueue("generation.run", {"generation_run_id": run_id, "segment_ids": segment_ids or [], "operation": operation}, session_id=session_id, resource_keys=resource_keys)
+        job = self.jobs.enqueue("generation.run", {"generation_run_id": run_id, "segment_ids": requested_segment_ids, "operation": operation}, session_id=session_id, resource_keys=resource_keys)
         with self.database.session() as session:
             run = session.get(GenerationRun, run_id)
             run.job_id = job.id
             run.updated_at = utcnow()
         with self.database.session() as session:
-            return self._run_payload(session, session.get(GenerationRun, run_id))
+            result = self._run_payload(session, session.get(GenerationRun, run_id))
+            result["reused_run"] = reused_run
+            return result
 
     @staticmethod
     def _resource_keys(session_id: str, snapshot: dict[str, Any]) -> list[str]:
@@ -1241,6 +1268,9 @@ class GenerationService:
         take_count = int(
             session.scalar(select(func.count()).select_from(AudioTake).where(AudioTake.generation_run_id == run.id)) or 0
         )
+        from .usage import usage_summary
+
+        usage = list(session.scalars(select(UsageEvent).where(UsageEvent.generation_run_id == run.id)).all())
         return {
             "id": run.id,
             "session_id": run.session_id,
@@ -1256,6 +1286,7 @@ class GenerationService:
             "settings_hash": run.settings_hash,
             "error_message": job.error_message if job else None,
             "take_count": take_count,
+            "usage": usage_summary(usage),
             "assembly": self._assembly_payload(assembly) if assembly else None,
             "created_at": run.created_at.isoformat(),
             "updated_at": run.updated_at.isoformat(),

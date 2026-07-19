@@ -56,7 +56,7 @@ from .database import Database
 from .jobs import JobQueue
 from .legacy_migration import import_legacy_data
 from .maintenance import apply_retention
-from .models import AgentRun, AgentStep, AppSetting, AppSettingHistory, Artifact, ArtifactEdge, Document, DocumentRevision, Job, Provider, ProviderModel, Segment, SessionRecord, SourceRecord, TimedWord, TrainingRun, Voice, VoiceSample, new_id, utcnow
+from .models import AgentRun, AgentStep, AppSetting, AppSettingHistory, Artifact, ArtifactEdge, Document, DocumentRevision, Job, OutputAssembly, Provider, ProviderModel, Segment, SessionRecord, SourceRecord, TimedWord, TrainingRun, UsageEvent, Voice, VoiceSample, new_id, utcnow
 from .openapi import build_openapi_document
 from .parity_registry import build_registry
 from .schemas import AgentRunCreateRequest, BootstrapRequest, BundleExportRequest, BundleImportRequest, ChunkUploadInitialize, CredentialUpdate, GenerationPlanCreate, GenerationSegmentUpdate, GenerationStartRequest, JobCreate, LoginRequest, ModelCreate, ModelUpdate, OptimizationReviewRequest, OutcomePlanUpdate, OutputAssemblyCreateRequest, PdfEditRequest, ProviderCreate, ProviderTestRequest, ProviderUpdate, RvcConvertRequest, RvcModelUploadRequest, SessionCreate, SessionSettingsUpdate, SessionUpdate, SettingUpdate, SourceAttachRequest, SourceReuseRequest, SourceUpdateRequest, SourceUrlRequest, StageSelectionUpdate, SubtitleReviewRequest, TokenCreateRequest, TrainingCreateRequest, TtsEndpointDiscoveryRequest, TtsVoicePreviewRequest, VoiceCreate, VoiceTranscriptReview
@@ -1025,15 +1025,38 @@ def create_app(
             if db_session.get(SessionRecord, session_id) is None:
                 return error_response("not_found", "Session not found.", 404)
             documents = list(db_session.scalars(select(Document).where(Document.session_id == session_id).order_by(Document.created_at)).all())
+            revision_artifacts = {
+                str((item.metadata_json or {}).get("revision_id") or ""): item
+                for item in db_session.scalars(select(Artifact).where(Artifact.session_id == session_id)).all()
+                if (item.metadata_json or {}).get("revision_id")
+            }
             items = []
             for document in documents:
                 revisions = list(db_session.scalars(select(DocumentRevision).where(DocumentRevision.document_id == document.id).order_by(DocumentRevision.revision_number.desc())).all())
+                revision_items = []
+                for revision in revisions:
+                    segment_count, duration_ms = db_session.execute(
+                        select(func.count(Segment.id), func.max(Segment.end_ms)).where(Segment.revision_id == revision.id)
+                    ).one()
+                    artifact = revision_artifacts.get(revision.id)
+                    revision_items.append({
+                        "id": revision.id,
+                        "revision_number": revision.revision_number,
+                        "parent_revision_id": revision.parent_revision_id,
+                        "reviewed": revision.reviewed,
+                        "content_hash": revision.content_hash,
+                        "created_at": revision.created_at.isoformat(),
+                        "segment_count": int(segment_count or 0),
+                        "duration_ms": int(duration_ms or 0),
+                        "artifact": _model_dict(artifact, ("id", "kind", "role", "relative_path", "mime_type", "size_bytes", "state", "metadata_json", "created_at")) if artifact else None,
+                    })
                 items.append({
                     "id": document.id,
                     "stage": document.stage,
                     "language": document.language,
                     "active_revision_id": document.active_revision_id,
-                    "revisions": [{"id": revision.id, "revision_number": revision.revision_number, "parent_revision_id": revision.parent_revision_id, "reviewed": revision.reviewed, "content_hash": revision.content_hash, "created_at": revision.created_at.isoformat()} for revision in revisions],
+                    "created_at": document.created_at.isoformat(),
+                    "revisions": revision_items,
                 })
             return jsonify({"items": items})
 
@@ -1710,7 +1733,22 @@ def create_app(
             parent_ids = list(db_session.scalars(select(ArtifactEdge.parent_artifact_id).where(ArtifactEdge.child_artifact_id == artifact_id)).all())
             parents = list(db_session.scalars(select(Artifact).where(Artifact.id.in_(parent_ids))).all()) if parent_ids else []
             parents.sort(key=lambda item: (item.role != "extracted_text", item.created_at))
-            return jsonify({"artifact": _model_dict(artifact, fields), "parents": [_model_dict(item, fields) for item in parents]})
+            usage_artifact_ids = {artifact.id, *parent_ids}
+            events = list(db_session.scalars(select(UsageEvent).where(UsageEvent.artifact_id.in_(usage_artifact_ids))).all())
+            generation_run_id = str((artifact.metadata_json or {}).get("generation_run_id") or "")
+            output_assembly_id = str((artifact.metadata_json or {}).get("output_assembly_id") or "")
+            if output_assembly_id:
+                assembly = db_session.get(OutputAssembly, output_assembly_id)
+                generation_run_id = str(assembly.generation_run_id or "") if assembly is not None else generation_run_id
+            if generation_run_id:
+                events.extend(db_session.scalars(select(UsageEvent).where(UsageEvent.generation_run_id == generation_run_id)).all())
+            from .usage import usage_summary
+
+            return jsonify({
+                "artifact": _model_dict(artifact, fields),
+                "parents": [_model_dict(item, fields) for item in parents],
+                "usage": usage_summary(events),
+            })
 
     @app.get("/api/v1/artifacts/<artifact_id>/content")
     @require_auth

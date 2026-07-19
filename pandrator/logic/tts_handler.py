@@ -12,6 +12,14 @@ from urllib.parse import quote, urljoin, urlparse, urlunparse
 import requests
 from pydub import AudioSegment
 
+from .retry_utils import (
+    retry_after_seconds,
+    retry_delay_seconds,
+    retryable_error,
+    status_code_from_error,
+    wait_for_retry,
+)
+
 from ..constants import (
     KOKORO_NAMED_VOICE_META,
     KOKORO_OPENAI_ALIAS_VOICES,
@@ -384,6 +392,34 @@ GEMINI_MODEL_ALIASES = {
     "gemini-2.5-pro-preview-tts": "gemini-2.5-pro-tts",
 }
 
+# Speech APIs do not expose billing metadata in their audio responses. These
+# official public list prices therefore produce an explicit estimate; custom
+# service configurations can override them through a ``pricing`` mapping.
+DEFAULT_TTS_PRICING = {
+    "gpt-4o-mini-tts": {
+        "input_cost_per_million_tokens": 0.60,
+        "output_cost_per_million_audio_tokens": 12.0,
+        "audio_tokens_per_second": 20.833333,
+    },
+    "tts-1": {"input_cost_per_million_characters": 15.0},
+    "tts-1-hd": {"input_cost_per_million_characters": 30.0},
+    "gemini-3.1-flash-tts-preview": {
+        "input_cost_per_million_tokens": 1.0,
+        "output_cost_per_million_audio_tokens": 20.0,
+        "audio_tokens_per_second": 25.0,
+    },
+    "gemini-2.5-flash-tts": {
+        "input_cost_per_million_tokens": 0.50,
+        "output_cost_per_million_audio_tokens": 10.0,
+        "audio_tokens_per_second": 25.0,
+    },
+    "gemini-2.5-pro-tts": {
+        "input_cost_per_million_tokens": 1.0,
+        "output_cost_per_million_audio_tokens": 20.0,
+        "audio_tokens_per_second": 25.0,
+    },
+}
+
 FIRST_CLASS_SERVICE_ORDER = [
     "xtts",
     "voxcpm",
@@ -609,6 +645,7 @@ def _default_service_configs() -> list[dict[str, object]]:
                 "default_voice": OPENAI_AUDIO_DEFAULT_VOICE,
                 GENERATION_PROMPT_MODELS_FIELD: list(OPENAI_GENERATION_PROMPT_MODELS),
                 PREBUILT_VOICE_PROVIDER_FIELD: True,
+                "pricing": copy.deepcopy(DEFAULT_TTS_PRICING),
             },
             {
                 "id": GEMINI_PROVIDER,
@@ -625,6 +662,7 @@ def _default_service_configs() -> list[dict[str, object]]:
                 "default_voice": GEMINI_AUDIO_DEFAULT_VOICE,
                 GENERATION_PROMPT_MODELS_FIELD: list(GEMINI_TTS_MODELS),
                 PREBUILT_VOICE_PROVIDER_FIELD: True,
+                "pricing": copy.deepcopy(DEFAULT_TTS_PRICING),
             },
             {
                 "id": VERTEX_PROVIDER,
@@ -643,6 +681,7 @@ def _default_service_configs() -> list[dict[str, object]]:
                 "vertex_location": VERTEX_AUDIO_DEFAULT_LOCATION,
                 GENERATION_PROMPT_MODELS_FIELD: list(GEMINI_TTS_MODELS),
                 PREBUILT_VOICE_PROVIDER_FIELD: True,
+                "pricing": copy.deepcopy(DEFAULT_TTS_PRICING),
             },
         ]
     )
@@ -699,7 +738,7 @@ def _merge_service_config(
     for key in ("request_fields", "request_defaults"):
         if isinstance(raw_record.get(key), dict):
             record[key] = copy.deepcopy(raw_record[key])
-    for key in ("settings", "voice_catalogues", "default_voices", "default_voices_by_language"):
+    for key in ("settings", "voice_catalogues", "default_voices", "default_voices_by_language", "pricing"):
         if isinstance(raw_record.get(key), dict):
             record[key] = copy.deepcopy(raw_record[key])
     if PREBUILT_VOICE_PROVIDER_FIELD in raw_record:
@@ -789,6 +828,63 @@ def get_service_config(tts_settings, service_name_or_id: str) -> dict[str, objec
         if str(service.get("id") or "") == service_id:
             return service
     return None
+
+
+def estimate_tts_usage(text: str, duration_ms: int, tts_settings) -> dict[str, object] | None:
+    """Estimate billable TTS usage for a configured commercial service.
+
+    Speech endpoints return audio bytes without token or price metadata.  The
+    result is therefore intentionally marked estimated and retains the usage
+    units used in the calculation for auditing in the UI.
+    """
+    service_name = str(_read_setting(tts_settings, "service", "") or "")
+    service = get_service_config(tts_settings, service_name)
+    if service is None:
+        return None
+    configured_pricing = _read_setting(tts_settings, "pricing", None)
+    pricing = configured_pricing if isinstance(configured_pricing, dict) else service.get("pricing")
+    if not isinstance(pricing, dict):
+        pricing = {}
+    model = str(
+        _read_setting(tts_settings, "model", "")
+        or service.get("default_model")
+        or ""
+    ).strip()
+    model_pricing = pricing.get(model)
+    if not isinstance(model_pricing, dict):
+        model_pricing = {}
+    commercial = str(service.get("kind") or "").lower() == "commercial" or bool(model_pricing)
+    if not commercial:
+        return None
+
+    characters = len(str(text or ""))
+    input_tokens = max(0, round(characters / 4))
+    audio_seconds = max(0.0, float(duration_ms or 0) / 1000.0)
+    audio_tokens_per_second = max(0.0, float(model_pricing.get("audio_tokens_per_second") or 0))
+    output_audio_tokens = round(audio_seconds * audio_tokens_per_second)
+    cost = 0.0
+    priced = False
+    if model_pricing.get("input_cost_per_million_characters") is not None:
+        cost += characters * float(model_pricing["input_cost_per_million_characters"]) / 1_000_000
+        priced = True
+    if model_pricing.get("input_cost_per_million_tokens") is not None:
+        cost += input_tokens * float(model_pricing["input_cost_per_million_tokens"]) / 1_000_000
+        priced = True
+    if model_pricing.get("output_cost_per_million_audio_tokens") is not None:
+        cost += output_audio_tokens * float(model_pricing["output_cost_per_million_audio_tokens"]) / 1_000_000
+        priced = True
+    return {
+        "provider": str(service.get("provider") or service.get("id") or service_name),
+        "model": model,
+        "commercial": True,
+        "estimated": True,
+        "cost_usd": cost if priced else None,
+        "cost_source": "configured_tts_pricing" if configured_pricing else "public_list_price",
+        "input_characters": characters,
+        "input_tokens": input_tokens,
+        "output_audio_tokens": output_audio_tokens,
+        "duration_ms": max(0, int(duration_ms or 0)),
+    }
 
 
 def get_service_base_url(tts_settings, service_name_or_id: str) -> str:
@@ -1036,7 +1132,7 @@ def get_provider_configs(tts_settings) -> list[dict[str, object]]:
                 raw_supports_prebuilt,
                 bool(record["voices"]),
             )
-            for key in ("settings", "voice_catalogues", "default_voices", "default_voices_by_language"):
+            for key in ("settings", "voice_catalogues", "default_voices", "default_voices_by_language", "pricing"):
                 if isinstance(raw_provider.get(key), dict):
                     record[key] = copy.deepcopy(raw_provider[key])
 
@@ -4575,43 +4671,46 @@ def text_to_audio(
             audio = _decode_audio_response(response)
             return audio
 
-        except requests.exceptions.RequestException as e:
-            status = int(e.response.status_code) if e.response is not None else 0
-            retryable = not status or status in {408, 409, 425, 429} or status >= 500
-            logging.warning("TTS generation attempt %d/%d failed: %s", attempt + 1, max_attempts, e)
-            if e.response is not None:
-                logging.warning("Server response: %s", e.response.text[:4000])
-            if not retryable:
-                logging.error("TTS request is not retryable (HTTP %d).", status)
-                break
-            retry_after = 0.0
-            if e.response is not None:
-                try:
-                    retry_after = float(e.response.headers.get("Retry-After") or 0)
-                except (TypeError, ValueError):
-                    retry_after = 0.0
         except ValueError as e:
             # Invalid service, model, voice, or configuration will not improve
             # with another identical request.
             logging.error("TTS configuration error: %s", e)
             break
         except Exception as e:
-            logging.warning("TTS generation attempt %d/%d failed unexpectedly: %s", attempt + 1, max_attempts, e)
-            retry_after = 0.0
+            status = status_code_from_error(e)
+            logging.warning(
+                "TTS generation attempt %d/%d failed%s: %s",
+                attempt + 1,
+                max_attempts,
+                f" (HTTP {status})" if status else "",
+                e,
+            )
+            response = getattr(e, "response", None)
+            if response is not None:
+                logging.warning("Server response: %s", str(getattr(response, "text", ""))[:4000])
+            if not retryable_error(e):
+                logging.error("TTS request is not retryable%s.", f" (HTTP {status})" if status else "")
+                break
+            retry_after = retry_after_seconds(e)
 
         if attempt + 1 >= max_attempts:
             break
-        delay = max(retry_after, min(8.0, 0.5 * (2 ** attempt)))
+        try:
+            maximum_retry_delay = max(1.0, min(300.0, float(tts_settings.get("retry_max_delay_seconds") or 90)))
+        except (TypeError, ValueError):
+            maximum_retry_delay = 90.0
+        delay = retry_delay_seconds(
+            attempt + 1,
+            retry_after=retry_after,
+            base_delay=0.5,
+            maximum_delay=maximum_retry_delay,
+        )
         if retry_callback is not None:
             retry_callback(attempt + 2, max_attempts, delay)
         logging.info("Retrying TTS generation in %.1f seconds (attempt %d/%d).", delay, attempt + 2, max_attempts)
-        if cancel_event is not None:
-            if cancel_event.wait(delay):
-                logging.info("TTS generation canceled while waiting to retry.")
-                return None
-        else:
-            import time
-            time.sleep(delay)
+        if not wait_for_retry(delay, cancel_event):
+            logging.info("TTS generation canceled while waiting to retry.")
+            return None
 
     logging.error("Failed to generate TTS audio after %d attempts: '%s...'", max_attempts, text[:50])
     return None

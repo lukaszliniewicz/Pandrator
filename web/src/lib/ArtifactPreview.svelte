@@ -13,6 +13,7 @@
   let comparisonName = $state('');
   let comparisonId = $state('');
   let comparisonMode = $state<'single' | 'side' | 'diff'>('single');
+  let usageSummary = $state<any>(null);
   type SubtitleTrack = { artifact_id: string; language: string; title: string; default: boolean };
   let subtitleTracks = $state<SubtitleTrack[]>([]);
   const url = $derived(`/api/v1/artifacts/${artifact.id}/content`);
@@ -24,6 +25,11 @@
   const isImage = $derived(mime.startsWith('image/') || ['png','jpg','jpeg','gif','webp','svg'].includes(extension));
   const isPdf = $derived(mime === 'application/pdf' || extension === 'pdf');
   const isText = $derived(mime.startsWith('text/') || ['txt','srt','vtt','ass','ssa','json','xml','csv','md','log','yaml','yml'].includes(extension));
+  const formattedCost = $derived.by(() => {
+    const value = usageSummary?.total_cost_usd;
+    if (value == null) return 'Cost unavailable';
+    return `$${Number(value).toFixed(Number(value) < 0.01 ? 6 : 4)}`;
+  });
 
   function parsedSubtitleTracks(value: unknown): SubtitleTrack[] {
     if (!Array.isArray(value)) return [];
@@ -59,6 +65,7 @@
       const contextResponse = await fetch(`/api/v1/artifacts/${artifact.id}/context`, { credentials: 'same-origin' });
       if (contextResponse.ok) {
         const context = await contextResponse.json();
+        usageSummary = context.usage ?? null;
         if (isVideo) {
           subtitleTracks = parsedSubtitleTracks(context.artifact?.metadata_json?.subtitle_tracks ?? artifact.metadata_json?.subtitle_tracks);
           if (!subtitleTracks.length) {
@@ -94,6 +101,7 @@
   <div class="preview-panel flex max-h-[96vh] w-full max-w-6xl flex-col overflow-hidden rounded-3xl" role="dialog" aria-modal="true" aria-labelledby="artifact-preview-title">
     <header class="flex items-start gap-4 border-b border-[var(--line)] px-5 py-4 sm:px-6">
       <div class="min-w-0 flex-1"><div class="eyebrow">{artifactRoleLabel(artifact.role)}</div><h2 id="artifact-preview-title" class="mt-1 truncate text-xl font-semibold">{filename}</h2><div class="muted mt-1 flex flex-wrap gap-2 text-xs"><span>{artifact.mime_type || artifact.kind || 'Unknown file type'}</span>{#if artifact.size_bytes != null}<span>· {formatBytes(artifact.size_bytes)}</span>{/if}{#if artifact.state}<span>· {artifact.state}</span>{/if}</div></div>
+      {#if usageSummary?.commercial}<div class="cost-badge"><span>{usageSummary.estimated ? 'Estimated cost' : 'Cost'}</span><strong>{formattedCost}</strong>{#if usageSummary.has_unpriced_usage}<small>partial</small>{/if}</div>{/if}
       {#if comparisonId}<div class="flex gap-1"><button onclick={() => comparisonMode = comparisonMode === 'side' ? 'single' : 'side'} class:active={comparisonMode === 'side'} class="tool">Side by side</button><button onclick={() => comparisonMode = comparisonMode === 'diff' ? 'single' : 'diff'} class:active={comparisonMode === 'diff'} class="tool">Diff</button></div>{/if}
       <a href={url} download={filename} class="tool flex items-center gap-2"><Download size={16}/> Download</a>
       <button onclick={onclose} class="rounded-xl p-2" aria-label="Close preview"><X size={20}/></button>
@@ -117,6 +125,7 @@
 <style>
   .preview-panel{border:1px solid var(--line);background:var(--paper-strong);box-shadow:0 22px 70px rgba(0,0,0,.25)}
   .tool{border:1px solid var(--line);border-radius:.7rem;padding:.55rem .75rem;font-size:.75rem;font-weight:650}.tool.active{background:var(--accent-soft);color:var(--accent)}
+  .cost-badge{display:flex;flex-direction:column;align-items:flex-end;border:1px solid var(--line);border-radius:.7rem;padding:.4rem .65rem;font-size:.65rem;color:var(--muted)}.cost-badge strong{font-size:.8rem;color:var(--ink)}.cost-badge small{font-size:.58rem;color:#b45309}
   .comparison-grid{display:grid;gap:1rem}@media(min-width:768px){.comparison-grid{grid-template-columns:1fr 1fr}}
   .comparison-grid section{min-width:0}.comparison-grid h3{position:sticky;top:-1rem;z-index:2;margin-bottom:.5rem;border:1px solid var(--line);border-radius:.7rem;background:var(--paper-strong);padding:.65rem .8rem;font-size:.7rem;font-weight:750;color:var(--muted)}
   .comparison-grid pre{min-height:18rem;white-space:pre-wrap;overflow-wrap:anywhere;border:1px solid var(--line);border-radius:.8rem;background:var(--paper-strong);padding:1rem;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.75rem;line-height:1.55}

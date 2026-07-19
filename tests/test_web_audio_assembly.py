@@ -244,6 +244,53 @@ class DurableOutputAssemblyTests(unittest.TestCase):
         self.assertEqual([500, 2000], [item["target_start_ms"] for item in artifact.metadata_json["takes"]])
         self.assertTrue(all(item["silence_after_ms"] == 0 for item in artifact.metadata_json["takes"]))
 
+    def test_second_generation_run_still_applies_configured_drift_speedup(self):
+        with self.database.session() as session:
+            document = Document(session_id=self.record.id, stage="translation", language="pl")
+            session.add(document)
+            session.flush()
+            revision = DocumentRevision(document_id=document.id, revision_number=1, content_hash="drift")
+            session.add(revision)
+            session.flush()
+            session.add(Segment(revision_id=revision.id, ordinal=0, start_ms=0, end_ms=400, text="Długi tekst."))
+            document.active_revision_id = revision.id
+            revision_id = revision.id
+        plan = self.generation.create_plan(
+            self.record.id,
+            source_revision_id=revision_id,
+            segments=[{"text": "Długi tekst.", "node_kind": "subtitle_cue", "source_segment_ids": [1]}],
+        )
+        with self.database.session() as session:
+            segment = session.scalar(select(GenerationSegment).where(GenerationSegment.plan_revision_id == plan["active_revision_id"]))
+            first_run = GenerationRun(session_id=self.record.id, plan_revision_id=plan["active_revision_id"], sequence_number=1, status="completed")
+            second_run = GenerationRun(session_id=self.record.id, plan_revision_id=plan["active_revision_id"], sequence_number=2, status="completed")
+            session.add_all([first_run, second_run])
+            session.flush()
+            second_run_id = second_run.id
+            segment_id = segment.id
+            segment.status = "completed"
+        take_path = self.session_dir / "second-run-drifting-take.wav"
+        Sine(440).to_audio_segment(duration=900).export(take_path, format="wav").close()
+        take_artifact = ArtifactService(self.database, self.paths).register(take_path, kind="audio", role="generation_take", session_id=self.record.id)
+        with self.database.session() as session:
+            session.add(AudioTake(generation_segment_id=segment_id, generation_run_id=second_run_id, artifact_id=take_artifact.id, kind="tts", status="completed", duration_ms=900, is_active=True))
+        audio_profile = self.settings.get(self.record.id, "audio")
+        self.settings.update(
+            self.record.id,
+            "audio",
+            audio_profile["revision"],
+            {**audio_profile["override"], "synchronization_speed": 3.0, "synchronization_delay_ms": 0},
+        )
+
+        queued = self.generation.create_assembly(self.record.id, generation_run_id=second_run_id)
+        result = WorkflowHandlers(self.database, self.paths).assemble_generation_output(
+            {"output_assembly_id": queued["id"]}, lambda *_args: None, threading.Event()
+        )
+
+        self.assertEqual("subtitle_timed", result["synchronization"]["mode"])
+        self.assertEqual(3.0, result["synchronization"]["configured_max_speed_factor"])
+        self.assertEqual(1, result["synchronization"]["speed_adjusted_block_count"])
+
     def test_selected_run_assembles_its_cumulative_take_snapshot(self):
         segment_ids = self._plan_with_takes()
         with self.database.session() as session:

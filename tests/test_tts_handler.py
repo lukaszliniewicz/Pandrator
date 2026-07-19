@@ -6,6 +6,28 @@ from pandrator.logic import tts_handler
 
 
 class TTSHandlerTests(unittest.TestCase):
+    def test_commercial_tts_cost_estimate_uses_model_units_and_actual_duration(self):
+        usage = tts_handler.estimate_tts_usage(
+            "A" * 400,
+            2_000,
+            {"service": "OpenAI", "model": "gpt-4o-mini-tts"},
+        )
+
+        self.assertTrue(usage["commercial"])
+        self.assertTrue(usage["estimated"])
+        self.assertEqual(100, usage["input_tokens"])
+        self.assertEqual(42, usage["output_audio_tokens"])
+        self.assertAlmostEqual(0.000564, usage["cost_usd"])
+
+    def test_local_tts_does_not_create_a_commercial_cost_estimate(self):
+        self.assertIsNone(
+            tts_handler.estimate_tts_usage(
+                "Local speech",
+                1_000,
+                {"service": "Kokoro", "model": "gpt-4o-mini-tts"},
+            )
+        )
+
     def test_azure_openai_profile_uses_api_key_header_and_manual_deployment_directly(self):
         settings = {
             "service": tts_handler.OPENAI_COMPAT_SERVICE,
@@ -726,7 +748,9 @@ class TTSHandlerTests(unittest.TestCase):
 
         self.assertIs(decoded, result)
         self.assertEqual(2, post.call_count)
-        cancel_event.wait.assert_called_once_with(0.5)
+        retry_delay = cancel_event.wait.call_args.args[0]
+        self.assertGreaterEqual(retry_delay, 0.4)
+        self.assertLessEqual(retry_delay, 0.6)
 
     def test_tts_generation_does_not_retry_invalid_http_requests(self):
         rejected = Mock(status_code=400, headers={}, text="invalid voice")

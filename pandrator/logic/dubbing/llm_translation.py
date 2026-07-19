@@ -396,6 +396,7 @@ def translate_srt_content(
     *,
     glossary: dict[str, str] | None = None,
     completion_func: Callable[..., Any] | None = None,
+    cancel_event: Any | None = None,
 ) -> TranslationResult:
     source_language = str(
         settings.get("original_language")
@@ -429,6 +430,8 @@ def translate_srt_content(
     usage: dict[str, Any] = {}
 
     for index, block in enumerate(blocks):
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("LLM translation was canceled.")
         prompt = build_translation_prompt(
             block,
             source_language=source_language,
@@ -439,11 +442,14 @@ def translate_srt_content(
             next_block=blocks[index + 1] if use_context and index < len(blocks) - 1 else None,
             no_remove_subtitles=no_remove_subtitles,
         )
-        result = completion(
-            messages=[{"role": "user", "content": prompt}],
-            model_name=resolved.model_name,
-            llm_settings=resolved.llm_settings,
-        )
+        completion_kwargs = {
+            "messages": [{"role": "user", "content": prompt}],
+            "model_name": resolved.model_name,
+            "llm_settings": resolved.llm_settings,
+        }
+        if completion_func is None:
+            completion_kwargs["cancel_event"] = cancel_event
+        result = completion(**completion_kwargs)
         content, cost, cost_source = _coerce_completion_content_and_cost(result)
         _merge_completion_usage(usage, result)
         if not content:
@@ -483,6 +489,7 @@ def translate_srt_file_with_result(
     translation_instructions: str = "",
     *,
     completion_func: Callable[..., Any] | None = None,
+    cancel_event: Any | None = None,
 ) -> TranslationResult:
     session_path = Path(session_dir)
     srt_path = Path(srt_file)
@@ -496,6 +503,7 @@ def translate_srt_file_with_result(
         translation_instructions=translation_instructions,
         glossary=glossary,
         completion_func=completion_func,
+        cancel_event=cancel_event,
     )
 
     target_language = str(settings.get("target_language") or "en")

@@ -9,7 +9,7 @@ from unittest.mock import patch
 from pandrator.web.api import create_app
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.auth import BootstrapTokenStore
-from pandrator.web.models import AppSetting, Artifact, AudioTake, GenerationRun, GenerationSegment, Job
+from pandrator.web.models import AppSetting, Artifact, AudioTake, GenerationRun, GenerationSegment, Job, UsageEvent
 from pandrator.web.workspace import BUILTIN_DEFAULTS, adapt_runtime_settings
 from tests.web_test_support import prepare_web_test_data_root
 
@@ -63,7 +63,7 @@ class WebParityWorkspaceTests(unittest.TestCase):
     def test_global_defaults_endpoint_exposes_builtins_and_revisioned_values(self):
         services = self.client.get("/api/v1/services/tts").get_json()
         self.assertEqual("XTTS", services["default_service"])
-        self.assertEqual(3, services["builtin_defaults"]["max_attempts"])
+        self.assertEqual(5, services["builtin_defaults"]["max_attempts"])
         defaults = self.client.get("/api/v1/defaults/subtitles")
         self.assertEqual(200, defaults.status_code, defaults.get_json())
         self.assertEqual(2, defaults.get_json()["builtin"]["max_lines"])
@@ -472,12 +472,16 @@ class WebParityWorkspaceTests(unittest.TestCase):
         cleaned_path = paths.sessions / "cleaned-preview.txt"
         cleaned_path.write_text("Cleaned source text", encoding="utf-8")
         cleaned = artifacts.register(cleaned_path, kind="text", role="clean_text", session_id=record["id"], parent_ids=[source.id])
+        with extension["database"].session() as session:
+            session.add(UsageEvent(session_id=record["id"], artifact_id=cleaned.id, stage="correction", provider_key="openai", model_id="demo", input_tokens=10, output_tokens=5, cost_usd=0.0012, cost_source="fixture", raw_usage_json={"commercial": True}))
 
         response = self.client.get(f"/api/v1/artifacts/{cleaned.id}/context")
 
         self.assertEqual(200, response.status_code, response.get_json())
         self.assertEqual(cleaned.id, response.get_json()["artifact"]["id"])
         self.assertEqual(source.id, response.get_json()["parents"][0]["id"])
+        self.assertEqual(0.0012, response.get_json()["usage"]["total_cost_usd"])
+        self.assertTrue(response.get_json()["usage"]["commercial"])
 
     def test_latest_generation_run_includes_its_worker_error(self):
         record = self.create_session("audiobook")
@@ -499,6 +503,32 @@ class WebParityWorkspaceTests(unittest.TestCase):
         self.assertEqual("failed", latest["status"])
         self.assertEqual(0.42, latest["progress"])
         self.assertEqual("The speech endpoint rejected the request.", latest["error_message"])
+
+    def test_segment_regeneration_reuses_the_latest_failed_run(self):
+        record = self.create_session("audiobook")
+        self.client.post(
+            f"/api/v1/sessions/{record['id']}/generation-plan",
+            json={"segments": [{"text": "First."}, {"text": "Second."}]},
+            headers=self.headers,
+        )
+        segments = self.client.get(f"/api/v1/sessions/{record['id']}/generation-segments").get_json()["items"]
+        first = self.client.post(f"/api/v1/sessions/{record['id']}/generation-runs", json={}, headers=self.headers).get_json()
+        database = self.app.extensions["pandrator"]["database"]
+        with database.session() as session:
+            session.get(GenerationRun, first["id"]).status = "failed"
+            session.get(Job, first["job_id"]).status = "failed"
+
+        retry = self.client.post(
+            f"/api/v1/sessions/{record['id']}/generation-runs",
+            json={"operation": "regenerate", "segment_ids": [segments[1]["id"]]},
+            headers=self.headers,
+        )
+
+        self.assertEqual(202, retry.status_code, retry.get_json())
+        self.assertEqual(first["id"], retry.get_json()["id"])
+        self.assertTrue(retry.get_json()["reused_run"])
+        self.assertNotEqual(first["job_id"], retry.get_json()["job_id"])
+        self.assertEqual(1, len(self.client.get(f"/api/v1/sessions/{record['id']}/generation-runs").get_json()["items"]))
 
     def test_generation_runs_have_readable_labels_and_can_be_deleted_with_their_takes(self):
         record = self.create_session("audiobook")

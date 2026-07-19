@@ -6,6 +6,14 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from .retry_utils import (
+    retry_after_seconds,
+    retry_delay_seconds,
+    retryable_error,
+    status_code_from_error,
+    wait_for_retry,
+)
+
 DEFAULT_LITELLM_MODEL = "openai/gpt-5.4-mini"
 PLACEHOLDER_API_KEY = "sk-placeholder"
 
@@ -1377,6 +1385,8 @@ def chat_completion_with_metadata(
     model_name: str | None = None,
     llm_settings: Any | None = None,
     max_tokens: int | None = None,
+    cancel_event: Any | None = None,
+    retry_callback: Any | None = None,
 ) -> ChatCompletionResult:
     """Runs a LiteLLM chat completion and preserves usage/cost metadata."""
     completion, _ = _get_litellm_clients()
@@ -1422,20 +1432,104 @@ def chat_completion_with_metadata(
     if reasoning_effort:
         request_payload["reasoning_effort"] = reasoning_effort
 
-    logging.info("LiteLLM chat request model=%s", resolved_model)
     try:
-        response = completion(**request_payload)
-        result = _extract_chat_completion_result(
-            response,
-            requested_model=resolved_model,
-            model_record=model_record if isinstance(model_record, dict) else None,
+        max_attempts = max(1, min(20, int(_read_setting(llm_settings, "llm_max_attempts", 5) or 5)))
+    except (TypeError, ValueError):
+        max_attempts = 5
+    try:
+        maximum_retry_delay = max(
+            1.0,
+            min(300.0, float(_read_setting(llm_settings, "llm_retry_max_delay_seconds", 90) or 90)),
         )
-        if not result.content:
-            logging.warning("LiteLLM returned an empty chat response body.")
-        return result
-    except Exception as e:
-        logging.error("LiteLLM chat request failed: %s", e)
-        return ChatCompletionResult(model=resolved_model)
+    except (TypeError, ValueError):
+        maximum_retry_delay = 90.0
+    try:
+        base_retry_delay = max(
+            0.1,
+            min(30.0, float(_read_setting(llm_settings, "llm_retry_base_delay_seconds", 1) or 1)),
+        )
+    except (TypeError, ValueError):
+        base_retry_delay = 1.0
+
+    accumulated_cost = 0.0
+    accumulated_cost_sources: list[str] = []
+    accumulated_usage: dict[str, Any] = {}
+    provider_response_count = 0
+    logging.info("LiteLLM chat request model=%s max_attempts=%d", resolved_model, max_attempts)
+    for attempt in range(1, max_attempts + 1):
+        if cancel_event is not None and cancel_event.is_set():
+            logging.info("LiteLLM chat request canceled before attempt %d/%d", attempt, max_attempts)
+            return ChatCompletionResult(
+                model=resolved_model,
+                usage={**accumulated_usage, "provider_response_count": provider_response_count},
+                cost=accumulated_cost if accumulated_cost_sources else None,
+                cost_source=",".join(accumulated_cost_sources),
+            )
+        error: BaseException | None = None
+        try:
+            response = completion(**request_payload)
+            result = _extract_chat_completion_result(
+                response,
+                requested_model=resolved_model,
+                model_record=model_record if isinstance(model_record, dict) else None,
+            )
+            provider_response_count += 1
+            for key, value in (result.usage or {}).items():
+                if isinstance(value, (int, float)):
+                    accumulated_usage[key] = accumulated_usage.get(key, 0) + value
+            if result.cost is not None:
+                accumulated_cost += float(result.cost)
+                if result.cost_source and result.cost_source not in accumulated_cost_sources:
+                    accumulated_cost_sources.append(result.cost_source)
+            if result.content:
+                result.usage = {
+                    **accumulated_usage,
+                    "provider_response_count": provider_response_count,
+                }
+                result.cost = accumulated_cost if accumulated_cost_sources else result.cost
+                result.cost_source = ",".join(accumulated_cost_sources) or result.cost_source
+                return result
+            error = RuntimeError("LiteLLM returned an empty chat response body.")
+        except Exception as caught:
+            error = caught
+
+        assert error is not None
+        status = status_code_from_error(error)
+        retryable = retryable_error(error)
+        logging.warning(
+            "LiteLLM chat attempt %d/%d failed%s: %s",
+            attempt,
+            max_attempts,
+            f" (HTTP {status})" if status else "",
+            error,
+        )
+        if not retryable or attempt >= max_attempts:
+            logging.error("LiteLLM chat request failed after %d attempt(s): %s", attempt, error)
+            break
+        delay = retry_delay_seconds(
+            attempt,
+            retry_after=retry_after_seconds(error),
+            base_delay=base_retry_delay,
+            maximum_delay=maximum_retry_delay,
+        )
+        if retry_callback is not None:
+            retry_callback(attempt + 1, max_attempts, delay)
+        logging.info(
+            "Retrying LiteLLM chat request in %.1f seconds (attempt %d/%d)",
+            delay,
+            attempt + 1,
+            max_attempts,
+        )
+        if not wait_for_retry(delay, cancel_event):
+            logging.info("LiteLLM chat retry wait was canceled.")
+            break
+
+    return ChatCompletionResult(
+        model=resolved_model,
+        usage={**accumulated_usage, "provider_response_count": provider_response_count},
+        cost=accumulated_cost if accumulated_cost_sources else None,
+        cost_source=",".join(accumulated_cost_sources),
+    )
 
 
 def chat_completion(

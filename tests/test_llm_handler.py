@@ -1,11 +1,58 @@
 import unittest
 import os
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from pandrator.logic import llm_handler
 
 
 class LlmHandlerTests(unittest.TestCase):
+    def test_chat_completion_retries_rate_limits_and_honors_retry_after(self):
+        class RateLimited(RuntimeError):
+            status_code = 429
+
+            def __init__(self):
+                super().__init__("rate limited")
+                self.response = type("Response", (), {"status_code": 429, "headers": {"Retry-After": "2"}})()
+
+        calls = 0
+
+        def fake_completion(**_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RateLimited()
+            return {"choices": [{"message": {"content": "recovered"}}]}
+
+        with patch("pandrator.logic.llm_handler._get_litellm_clients", return_value=(fake_completion, None)), patch(
+            "pandrator.logic.llm_handler.wait_for_retry", return_value=True
+        ) as wait:
+            result = llm_handler.chat_completion_with_metadata(
+                messages=[{"role": "user", "content": "retry"}],
+                model_name="openai/gpt-5.4-mini",
+                llm_settings={"llm_max_attempts": 3},
+            )
+
+        self.assertEqual("recovered", result.content)
+        self.assertEqual(2, calls)
+        self.assertGreaterEqual(wait.call_args.args[0], 2.0)
+
+    def test_chat_completion_does_not_retry_authentication_failures(self):
+        class Unauthorized(RuntimeError):
+            status_code = 401
+
+        completion = Mock(side_effect=Unauthorized("invalid key"))
+        with patch("pandrator.logic.llm_handler._get_litellm_clients", return_value=(completion, None)), patch(
+            "pandrator.logic.llm_handler.wait_for_retry"
+        ) as wait:
+            result = llm_handler.chat_completion_with_metadata(
+                messages=[{"role": "user", "content": "do not retry"}],
+                model_name="openai/gpt-5.4-mini",
+            )
+
+        self.assertEqual("", result.content)
+        self.assertEqual(1, completion.call_count)
+        wait.assert_not_called()
+
     def test_legacy_models_migrate_and_refresh_merge_preserves_settings(self):
         migrated = llm_handler.normalize_model_records(["manual-model"], "openai")
         self.assertEqual(migrated, [llm_handler.default_model_record("manual-model")])

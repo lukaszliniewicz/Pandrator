@@ -1,3 +1,4 @@
+import hashlib
 import json
 import shutil
 import subprocess
@@ -16,7 +17,7 @@ from pandrator.web.artifacts import ArtifactService
 from pandrator.web.database import Database
 from pandrator.web.credentials import auxiliary_credential_key, upsert_credential
 from pandrator.web.jobs import JobQueue
-from pandrator.web.models import Artifact, ArtifactEdge, AudioTake, GenerationRun, GenerationSegment, OutputAssembly
+from pandrator.web.models import Artifact, ArtifactEdge, AudioTake, GenerationRun, GenerationSegment, OutputAssembly, SessionRecord
 from pandrator.web.sessions import SessionService
 from pandrator.web.workflow_handlers import WorkflowHandlers
 from pandrator.web.tts_optimization import OptimizationUsage
@@ -117,6 +118,54 @@ class WebWorkflowHandlerTests(unittest.TestCase):
                 threading.Event(),
             )
         self.assertEqual("database-deepl-key", translate.call_args.kwargs["auth_key"])
+
+    def test_workflow_reuses_translation_when_settings_and_source_are_unchanged(self):
+        with self.database.session() as session:
+            session.get(SessionRecord, self.session.id).workflow_kind = "voiceover"
+        source_path = self.paths.uploads / "reuse-source.srt"
+        source_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n", encoding="utf-8")
+        source = self.artifacts.register(
+            source_path,
+            kind="srt",
+            role="upload",
+            session_id=self.session.id,
+            metadata={"original_filename": source_path.name},
+        )
+        requested_settings = {"target_language": "pl"}
+        requested_hash = hashlib.sha256(
+            json.dumps(requested_settings, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        translated_path = self.session_dir / "reused-translation.srt"
+        translated_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nCześć\n", encoding="utf-8")
+        self.artifacts.register(
+            translated_path,
+            kind="srt",
+            role="translation",
+            session_id=self.session.id,
+            parent_ids=[source.id],
+            settings={**requested_settings, "llm_default_model": "normalized/provider-model"},
+            metadata={"source_artifact_id": source.id, "source_content_hash": source.content_hash, "requested_settings_hash": requested_hash},
+        )
+        outcome = OutcomePlanService(self.database)
+        current = outcome.get(self.session.id)
+        value = current["value"]
+        value["transformations"] = {**value.get("transformations", {}), "translation": True, "generate_audio": True}
+        value["inputs"] = {**value.get("inputs", {}), "translation": "source", "generation": "translation"}
+        outcome.update(self.session.id, current["revision"], value)
+
+        with mock.patch.object(self.handlers, "translate") as translate, mock.patch.object(
+            self.handlers,
+            "_run_reviewable_generation",
+            return_value={"generation_run_id": "fixture", "status": "completed"},
+        ):
+            result = self.handlers.continue_workflow(
+                {"session_id": self.session.id, "target_stage": "generate_audio", "stage_settings": {"translate": requested_settings}},
+                self.progress,
+                threading.Event(),
+            )
+
+        translate.assert_not_called()
+        self.assertEqual("generate_audio", result["target_stage"])
 
     def test_url_download_uses_ytdlp_and_records_provenance(self):
         captured = {}
@@ -293,6 +342,49 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         self.assertEqual(0.0, next(value for value, detail in updates if detail == "Generating segment 1 of 2"))
         self.assertEqual(0.5, next(value for value, detail in updates if detail == "Generated segment 1 of 2"))
         self.assertEqual(1.0, next(value for value, detail in updates if detail == "Generated segment 2 of 2"))
+
+    def test_individual_regeneration_overwrites_the_take_within_the_same_run(self):
+        revision_id, segment_ids = self.handlers._store_generation_plan(
+            self.session.id,
+            [{"text": "Regenerate this sentence."}],
+            settings={},
+        )
+        with self.database.session() as session:
+            run = GenerationRun(
+                session_id=self.session.id,
+                plan_revision_id=revision_id,
+                status="queued",
+                settings_snapshot_json={"text": {"llm_tts_optimization": False}, "tts": {"service": "XTTS"}},
+            )
+            session.add(run)
+            session.flush()
+            run_id = run.id
+        with mock.patch("pandrator.logic.tts_handler.text_to_audio", return_value=AudioSegment.silent(duration=25)):
+            self.handlers.run_generation(
+                {"generation_run_id": run_id, "operation": "generate"},
+                self.progress,
+                threading.Event(),
+            )
+        with self.database.session() as session:
+            original = session.scalar(select(AudioTake).where(AudioTake.generation_run_id == run_id))
+            take_id = original.id
+            original_artifact_id = original.artifact_id
+
+        with mock.patch("pandrator.logic.tts_handler.text_to_audio", return_value=AudioSegment.silent(duration=40)):
+            result = self.handlers.run_generation(
+                {"generation_run_id": run_id, "segment_ids": segment_ids, "operation": "regenerate"},
+                self.progress,
+                threading.Event(),
+            )
+
+        self.assertEqual("completed", result["status"])
+        with self.database.session() as session:
+            takes = list(session.scalars(select(AudioTake).where(AudioTake.generation_run_id == run_id)).all())
+            self.assertEqual(1, len(takes))
+            self.assertEqual(take_id, takes[0].id)
+            self.assertEqual(40, takes[0].duration_ms)
+            self.assertNotEqual(original_artifact_id, takes[0].artifact_id)
+            self.assertEqual("stale", session.get(Artifact, original_artifact_id).state)
 
     def test_subtitle_only_export_does_not_require_tts(self):
         subtitle_session = self.sessions.create("Subtitle fixture", workflow_kind="subtitles")

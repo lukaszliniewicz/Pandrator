@@ -67,6 +67,11 @@
   );
   const selectedRun = $derived(runs.find((item: any) => item.id === selectedRunId) ?? null);
   const selectedAssembly = $derived(selectedRun?.assembly ?? (!selectedRun ? assembly : null));
+  const selectedRunCost = $derived.by(() => {
+    const value = selectedRun?.usage?.total_cost_usd;
+    if (value == null) return 'Cost unavailable';
+    return `$${Number(value).toFixed(Number(value) < 0.01 ? 6 : 4)}`;
+  });
   const readingBlocks = $derived.by(() => {
     const blocks: { key: string; kind: string; items: any[]; closed?: boolean }[] = [];
     for (const item of payload.items) {
@@ -447,6 +452,7 @@
         Generation
       </button>
       <span class="muted text-xs">{payload.total} segments · {selectedRun?.label ?? 'No run selected'}{#if selectedAssembly} · output {selectedAssembly.status}{/if}</span>
+      {#if selectedRun?.usage?.commercial}<span class="cost-pill">{selectedRun.usage.estimated ? 'Est.' : ''} {selectedRunCost}{selectedRun.usage.has_unpriced_usage ? ' + unpriced usage' : ''}</span>{/if}
       {#if run && ['queued', 'running', 'pausing', 'cancel_requested'].includes(run.status)}
         <div class="run-progress" aria-label={`Generation progress ${Math.round((run.progress ?? 0) * 100)} percent`}>
           <span style={`width:${Math.max(1, (run.progress ?? 0) * 100)}%`}></span>
@@ -469,7 +475,7 @@
         {/if}
       </div>
       <div class="ml-auto flex flex-wrap gap-2">
-        {#if !run || ['completed', 'failed', 'canceled'].includes(run.status)}
+        {#if !run || ['completed', 'partial', 'failed', 'canceled'].includes(run.status)}
           <button onclick={() => start()} class="action primary"><Play size={14} /> Start</button>
         {:else if run.status === 'paused'}
           <button onclick={() => action('resume')} class="action primary"><Play size={14} /> Resume</button>
@@ -504,7 +510,7 @@
           </div>
           <button onkeydown={keyboard} class="action" title="Focus, then use arrows, Shift+arrows to select a range, Space to mark, and Delete to remove">Keyboard navigation</button>
           <button onclick={() => start('regenerate', marked)} disabled={!marked.length} class="action"><RefreshCw size={14} /> Regenerate marked</button>
-          <button onclick={assemble} disabled={loading || selectedAssembly?.status === 'queued' || selectedAssembly?.status === 'running'} class="action primary">
+          <button onclick={assemble} disabled={loading || selectedRun?.status !== 'completed' || selectedAssembly?.status === 'queued' || selectedAssembly?.status === 'running'} class="action primary" title={selectedRun?.status !== 'completed' ? 'Generate every remaining segment before assembly' : 'Assemble this version'}>
             <Sparkles size={14} /> {selectedAssembly?.status === 'stale' ? 'Reassemble output' : 'Assemble output'}
           </button>
           <a href={`/sessions/${sessionId}/output`} class="action">Output settings</a>
@@ -645,6 +651,7 @@
 <style>
   .generation-drawer{height:3.9rem;border:1px solid var(--line);background:var(--paper-strong);box-shadow:0 18px 55px color-mix(in srgb,var(--ink) 18%,transparent);transition:height .18s ease}.generation-drawer.half{height:min(52vh,38rem)}.generation-drawer.full{height:calc(100vh - 1.5rem)}
   .run-progress{height:.34rem;width:min(9rem,18vw);overflow:hidden;border-radius:999px;background:var(--line)}.run-progress span{display:block;height:100%;border-radius:inherit;background:var(--accent);transition:width .2s ease}
+  .cost-pill{border:1px solid var(--line);border-radius:999px;background:var(--accent-soft);padding:.28rem .55rem;font-size:.65rem;font-weight:700;color:var(--ink)}
   .comparison-modal{border:1px solid var(--line);background:var(--paper-strong);box-shadow:0 22px 70px rgba(0,0,0,.25)}
   .action{display:flex;align-items:center;gap:.35rem;border:1px solid var(--line);border-radius:.55rem;padding:.4rem .6rem;font-size:.7rem;font-weight:700}.action.primary{background:var(--action-bg);color:white}.action.primary:hover{background:var(--action-hover)}.action:disabled{opacity:.35}
   .icon-action{padding:.42rem}

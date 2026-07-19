@@ -297,6 +297,7 @@ def correct_srt_content(
     correction_instructions: str = "",
     *,
     completion_func: Callable[..., Any] | None = None,
+    cancel_event: Any | None = None,
 ) -> CorrectionResult:
     """Correct SRT content with Pandrator's LLM provider layer."""
     char_limit = _coerce_int(settings.get("llm_char"), DEFAULT_LLM_CHAR_LIMIT)
@@ -333,6 +334,8 @@ def correct_srt_content(
     usage: dict[str, Any] = {}
 
     for block_number, block in enumerate(blocks, start=1):
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("LLM correction was canceled.")
         prompt = build_correction_prompt(
             block,
             correction_instructions=correction_instructions,
@@ -342,14 +345,17 @@ def correct_srt_content(
         )
         for attempt in range(1, MAX_CORRECTION_ATTEMPTS + 1):
             try:
-                result = completion(
-                    messages=[
+                completion_kwargs = {
+                    "messages": [
                         {"role": "system", "content": CORRECTION_SYSTEM_PROMPT},
                         {"role": "user", "content": prompt},
                     ],
-                    model_name=resolved.model_name,
-                    llm_settings=resolved.llm_settings,
-                )
+                    "model_name": resolved.model_name,
+                    "llm_settings": resolved.llm_settings,
+                }
+                if completion_func is None:
+                    completion_kwargs["cancel_event"] = cancel_event
+                result = completion(**completion_kwargs)
                 content, cost, cost_source = _coerce_completion_content_and_cost(result)
                 _merge_completion_usage(usage, result)
                 total_cost += cost
@@ -426,6 +432,7 @@ def correct_srt_file_with_result(
     correction_instructions: str = "",
     *,
     completion_func: Callable[..., Any] | None = None,
+    cancel_event: Any | None = None,
 ) -> CorrectionResult:
     """Correct an SRT file and return the corrected content plus file path."""
     srt_path = Path(srt_file)
@@ -437,6 +444,7 @@ def correct_srt_file_with_result(
         settings,
         correction_instructions=correction_instructions,
         completion_func=completion_func,
+        cancel_event=cancel_event,
     )
     output_path = Path(session_dir) / f"{srt_path.stem}_corrected.srt"
     _write_text_atomic(output_path, result.srt_content)
