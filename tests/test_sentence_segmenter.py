@@ -44,6 +44,34 @@ class SentenceSegmenterTests(unittest.TestCase):
         self.assertIsNone(sentence_segmenter.split_text("One. Two."))
         self.assertFalse(sentence_segmenter.is_available())
 
+    @patch("pandrator.logic.sentence_segmenter._create_segmenter")
+    def test_predict_boundaries_preserves_probabilities_and_character_indices(self, create_segmenter):
+        segmenter = MagicMock()
+        segmenter.predict_proba.return_value = [0.01, 0.8, 0.2, 0.9]
+        create_segmenter.return_value = segmenter
+
+        result = sentence_segmenter.predict_boundaries("A. B", threshold=0.25)
+
+        self.assertEqual(result["probabilities"], [0.01, 0.8, 0.2, 0.9])
+        self.assertEqual(
+            result["boundaries"],
+            [{"index": 1, "probability": 0.8}, {"index": 3, "probability": 0.9}],
+        )
+        segmenter.predict_proba.assert_called_once_with(
+            "A. B",
+            stride=128,
+            block_size=256,
+            weighting="hat",
+        )
+
+    @patch("pandrator.logic.sentence_segmenter._create_segmenter")
+    def test_predict_boundaries_returns_none_when_prediction_fails(self, create_segmenter):
+        segmenter = MagicMock()
+        segmenter.predict_proba.side_effect = RuntimeError("bad model")
+        create_segmenter.return_value = segmenter
+
+        self.assertIsNone(sentence_segmenter.predict_boundaries("A. B"))
+
 
 if __name__ == "__main__":
     unittest.main()

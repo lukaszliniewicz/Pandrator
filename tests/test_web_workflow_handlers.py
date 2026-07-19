@@ -614,6 +614,52 @@ class WebWorkflowHandlerTests(unittest.TestCase):
             },
         )
 
+    def test_subtitle_speech_blocks_store_timing_references_without_narration_silence(self):
+        revision_id, _ = self.handlers._store_generation_plan(
+            self.session.id,
+            [{"number": "0001", "text": "Subtitle speech.", "subtitles": [3, 4]}],
+            settings={"language": "en", "sentence_silence_ms": 900, "paragraph_silence_ms": 1400},
+        )
+
+        with self.database.session() as session:
+            segment = session.scalar(
+                select(GenerationSegment).where(GenerationSegment.plan_revision_id == revision_id)
+            )
+            self.assertEqual("subtitle_cue", segment.node_kind)
+            self.assertEqual([3, 4], segment.source_segment_ids_json)
+            self.assertFalse(segment.paragraph_break_after)
+            self.assertEqual(0, segment.silence_after_ms)
+
+    def test_generation_language_follows_selected_artifact(self):
+        updated = self.sessions.update(
+            self.session.id,
+            self.session.revision,
+            {"source_language": "de", "target_language": "pl"},
+        )
+        source_path = self.session_dir / "source-language.srt"
+        source_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHallo.\n", encoding="utf-8")
+        source = self.artifacts.register(source_path, kind="srt", role="correction", session_id=updated.id)
+        translation_path = self.session_dir / "translation-language.srt"
+        translation_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nCześć.\n", encoding="utf-8")
+        translation = self.artifacts.register(translation_path, kind="srt", role="translation", session_id=updated.id)
+
+        self.assertEqual("de", self.handlers._generation_language(updated.id, source, {"language": "pl"}))
+        self.assertEqual("pl", self.handlers._generation_language(updated.id, translation, {"language": "de"}))
+
+    def test_tts_settings_default_to_translation_language_when_translation_exists(self):
+        updated = self.sessions.update(
+            self.session.id,
+            self.session.revision,
+            {"source_language": "de", "target_language": "pl"},
+        )
+        translation_path = self.session_dir / "current-translation.srt"
+        translation_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nCześć.\n", encoding="utf-8")
+        self.artifacts.register(translation_path, kind="srt", role="translation", session_id=updated.id)
+
+        resolved = WorkspaceSettingsService(self.database).get(updated.id, "tts")
+
+        self.assertEqual("pl", resolved["effective"]["language"])
+
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg qualification requires ffmpeg and ffprobe")
     def test_video_export_matrix_preserves_or_replaces_audio_and_handles_dual_subtitles(self):
         voiceover = self.sessions.create("Export Matrix", workflow_kind="voiceover")

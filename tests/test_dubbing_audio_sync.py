@@ -66,6 +66,28 @@ Wrong.
             self.assertEqual(blocks[1].start_ms, 1100)
             self.assertEqual([path.name for path in blocks[1].audio_files], ["Session_sentence_0002.wav"])
 
+    def test_create_alignment_blocks_sorts_subtitle_references_chronologically(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            srt_path, speech_blocks_path, wavs_dir = self._write_sync_fixture(temp_dir)
+            Path(speech_blocks_path).write_text(
+                json.dumps([{"number": "0001", "text": "Hello friend.", "subtitles": [2, 1, 2]}]),
+                encoding="utf-8",
+            )
+
+            blocks = audio_sync.create_alignment_blocks(srt_path, speech_blocks_path, wavs_dir)
+
+            self.assertEqual([1, 2], blocks[0].subtitles)
+            self.assertEqual(0, blocks[0].start_ms)
+            self.assertEqual(2000, blocks[0].end_ms)
+
+    def test_create_alignment_blocks_rejects_missing_generated_audio(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            srt_path, speech_blocks_path, wavs_dir = self._write_sync_fixture(temp_dir)
+            Path(wavs_dir, "Session_sentence_0002.wav").unlink()
+
+            with self.assertRaisesRegex(audio_sync.AudioSyncError, "0002.*no generated audio"):
+                audio_sync.create_alignment_blocks(srt_path, speech_blocks_path, wavs_dir)
+
     def test_parse_ffmpeg_max_volume(self):
         self.assertEqual(
             audio_sync.parse_ffmpeg_max_volume("[Parsed_volumedetect_0] max_volume: -3.5 dB"),

@@ -65,6 +65,61 @@ This following block is already long enough
             ["Hi", "This following block is already long enough"],
         )
 
+    def test_capacity_cut_inside_sentence_is_rejoined_for_tts(self):
+        content = """1
+00:00:00,000 --> 00:00:02,000
+This is the first half of one thought,
+
+2
+00:00:02,080 --> 00:00:04,000
+and this is its natural continuation.
+
+3
+00:00:04,080 --> 00:00:06,000
+This is a separate sentence.
+"""
+
+        blocks = speech_blocks.create_speech_blocks(
+            content,
+            target_language="en",
+            min_chars=10,
+            max_chars=100,
+            merge_threshold=250,
+        )
+
+        self.assertEqual(
+            [block["text"] for block in blocks],
+            [
+                "This is the first half of one thought, and this is its natural continuation.",
+                "This is a separate sentence.",
+            ],
+        )
+        self.assertEqual(blocks[0]["subtitles"], [1, 2])
+
+    def test_speaker_labels_are_not_spoken_or_merged_across_speakers(self):
+        content = """1
+00:00:00,000 --> 00:00:01,500
+[SPEAKER_0]: An unfinished thought,
+
+2
+00:00:01,580 --> 00:00:03,000
+[SPEAKER_1]: answered by somebody else.
+"""
+
+        blocks = speech_blocks.create_speech_blocks(
+            content,
+            target_language="en",
+            min_chars=10,
+            max_chars=100,
+            merge_threshold=250,
+        )
+
+        self.assertEqual(
+            [block["text"] for block in blocks],
+            ["An unfinished thought,", "answered by somebody else."],
+        )
+        self.assertTrue(all("SPEAKER" not in block["text"] for block in blocks))
+
     def test_speech_block_conjunction_map_preserves_non_ascii_languages(self):
         self.assertIn("ponieważ", speech_blocks.CONJUNCTIONS["pl"])
         self.assertIn("потому что", speech_blocks.CONJUNCTIONS["ru"])
@@ -90,6 +145,26 @@ This is a long sentence, and it should split into smaller pieces because the dub
             [block["number"] for block in blocks],
             [str(index).zfill(4) for index in range(1, len(blocks) + 1)],
         )
+
+    def test_display_line_breaks_are_removed_from_speech_text(self):
+        srt_content = """1
+00:00:00,000 --> 00:00:03,000
+This is visually wrapped
+but spoken continuously.
+"""
+
+        blocks = speech_blocks.create_speech_blocks(
+            srt_content,
+            target_language="en",
+            min_chars=10,
+            max_chars=100,
+        )
+
+        self.assertEqual(
+            [block["text"] for block in blocks],
+            ["This is visually wrapped but spoken continuously."],
+        )
+        self.assertNotIn("\n", blocks[0]["text"])
 
     def test_generate_speech_blocks_file_writes_subdub_compatible_json(self):
         with tempfile.TemporaryDirectory() as temp_dir:

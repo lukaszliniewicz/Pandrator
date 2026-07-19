@@ -8,11 +8,14 @@ reading and export.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from statistics import median
 from typing import Any
 
+from .. import sentence_segmenter
 from .models import SubtitleSegment
 from .srt_utils import compose_srt, parse_srt
 
@@ -23,6 +26,24 @@ _PREFERRED_BEFORE = {
     "and", "but", "or", "because", "although", "while", "if", "when", "that",
     "for", "from", "with", "without", "into", "onto", "before", "after", "of",
 }
+_SENTENCE_END_CHARS = set(".!?\u2026\u3002\uff01\uff1f")
+_CLAUSE_PUNCTUATION = set(",;:\u2013\u2014\u3001\uff0c\uff1b\uff1a")
+_TRAILING_MARKS = set("\"')]}\u201d\u2019\u00bb\u203a\u300d\u300f\uff09\u3011\uff5d\uff3d\u3009\u300b")
+_CLAUSE_STARTERS = {
+    "and", "but", "or", "because", "although", "though", "while", "if",
+    "when", "so", "then", "which", "who", "that", "whereas", "unless",
+    "ale", "oraz", "lub", "poniewaz", "poniewa\u017c", "chociaz", "chocia\u017c",
+    "gdy", "kiedy", "ktory", "kt\u00f3ry", "ktora", "kt\u00f3ra", "ktore", "kt\u00f3re",
+}
+_WEAK_CUE_STARTS = {
+    "a", "an", "the", "of", "to", "from", "with", "without", "into", "onto",
+}
+_WEAK_CUE_ENDS = {
+    "a", "an", "the", "of", "to", "for", "from", "with", "without", "and",
+    "or", "but", "because", "although", "though", "if", "when", "that",
+}
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -57,6 +78,30 @@ class SubtitleFinalizationConfig:
         by_layout = self.max_chars_per_line * self.max_lines
         by_reading = int(self.max_chars_per_second * (self.max_duration_ms / 1000.0))
         return max(self.max_chars_per_line, min(by_layout, by_reading))
+
+
+@dataclass(frozen=True)
+class _TimedWord:
+    index: int
+    text: str
+    start_ms: int
+    end_ms: int
+    speaker: str = ""
+    char_start: int = 0
+    char_end: int = 0
+
+
+@dataclass(frozen=True)
+class _BoundaryEvidence:
+    probability: float
+    gap_ms: int
+    sentence_end: bool
+    punctuation: bool
+    clause_start: bool
+    speaker_change: bool
+    hard_silence: bool
+    weak_start: bool
+    weak_end: bool
 
 
 def _clean_text(text: str) -> str:
@@ -185,15 +230,23 @@ def _adjust_durations(
         visible_chars = len(_clean_text(cue.text))
         reading_duration = round((visible_chars / config.max_chars_per_second) * 1000)
         desired_duration = max(config.min_duration_ms, reading_duration)
-        desired_end = max(cue.end_ms, cue.start_ms + desired_duration)
-        desired_end = min(desired_end, cue.start_ms + config.max_duration_ms)
+        maximum_end = cue.start_ms + config.max_duration_ms
+        base_end = min(max(cue.start_ms + 100, cue.end_ms), maximum_end)
+        desired_end = min(max(base_end, cue.start_ms + desired_duration), maximum_end)
         if next_start is not None:
-            desired_end = min(desired_end, max(cue.end_ms, next_start - config.min_gap_ms))
+            gap_limited_end = next_start - config.min_gap_ms
+            if gap_limited_end >= base_end:
+                desired_end = min(desired_end, gap_limited_end)
+            else:
+                # Preserve word timing when the source does not leave room for
+                # the requested presentation gap, while still preventing an
+                # overlap with the next cue.
+                desired_end = min(base_end, next_start)
         adjusted.append(
             SubtitleSegment(
                 index=index + 1,
                 start_ms=cue.start_ms,
-                end_ms=max(cue.end_ms, desired_end),
+                end_ms=max(cue.start_ms + 100, desired_end),
                 text=cue.text,
             )
         )
@@ -228,7 +281,43 @@ def finalize_srt_file(
     return str(destination_path)
 
 
-def _timed_words(payload: dict[str, Any]) -> list[tuple[str, int, int, str]]:
+def _sanitize_timed_words(words: list[_TimedWord]) -> list[_TimedWord]:
+    """Repair implausible word spans without discarding the transcript.
+
+    Some ASR backends attach the whole following silence to the preceding word.
+    Keeping such a span (we have observed 16-second single words) defeats both
+    maximum cue duration and silence detection.  The median-based cap is
+    deliberately conservative and the next word's start remains authoritative.
+    """
+
+    if not words:
+        return []
+    plausible = [word.end_ms - word.start_ms for word in words if 20 <= word.end_ms - word.start_ms <= 2000]
+    typical_duration = int(median(plausible)) if plausible else 160
+    word_duration_cap = max(800, min(1600, typical_duration * 8))
+    output: list[_TimedWord] = []
+    previous_start = -1
+    for index, word in enumerate(words):
+        start = max(word.start_ms, previous_start)
+        next_start = words[index + 1].start_ms if index + 1 < len(words) else None
+        end = min(word.end_ms, start + word_duration_cap)
+        if next_start is not None and next_start > start:
+            end = min(end, next_start)
+        end = max(start + 20, end)
+        output.append(
+            _TimedWord(
+                index=index,
+                text=word.text,
+                start_ms=start,
+                end_ms=end,
+                speaker=word.speaker,
+            )
+        )
+        previous_start = start
+    return output
+
+
+def _timed_words(payload: dict[str, Any]) -> list[_TimedWord]:
     def speaker_value(item: dict[str, Any], fallback: str = "") -> str:
         for key in ("speaker", "speaker_id"):
             value = item.get(key)
@@ -236,7 +325,7 @@ def _timed_words(payload: dict[str, Any]) -> list[tuple[str, int, int, str]]:
                 return str(value).strip()
         return fallback
 
-    result: list[tuple[str, int, int, str]] = []
+    result: list[_TimedWord] = []
     for segment in payload.get("transcription") or []:
         if not isinstance(segment, dict):
             continue
@@ -252,21 +341,289 @@ def _timed_words(payload: dict[str, Any]) -> list[tuple[str, int, int, str]]:
             text = str(word.get("text") or "").strip()
             if text and end > start:
                 speaker = speaker_value(word, segment_speaker)
-                result.append((text, start, end, speaker))
-    return result
+                result.append(
+                    _TimedWord(
+                        index=len(result),
+                        text=text,
+                        start_ms=start,
+                        end_ms=end,
+                        speaker=speaker,
+                    )
+                )
+    return _sanitize_timed_words(result)
 
 
-def _cue_plain_text(words: list[tuple[str, int, int, str]]) -> str:
-    text = _join_tokens([item[0] for item in words])
-    speaker = words[0][3] if words else ""
+def _source_text_and_spans(words: list[_TimedWord]) -> tuple[str, list[_TimedWord]]:
+    text = ""
+    output: list[_TimedWord] = []
+    for word in words:
+        token = _clean_text(word.text)
+        if not token:
+            continue
+        separator = ""
+        if (
+            text
+            and token[0] not in _NO_SPACE_BEFORE
+            and text[-1] not in _NO_SPACE_AFTER
+            and not token.startswith(("'", "\u2019"))
+        ):
+            separator = " "
+        text += separator
+        start = len(text)
+        text += token
+        output.append(
+            _TimedWord(
+                index=len(output),
+                text=token,
+                start_ms=word.start_ms,
+                end_ms=word.end_ms,
+                speaker=word.speaker,
+                char_start=start,
+                char_end=len(text),
+            )
+        )
+    return text, output
+
+
+def _cue_plain_text(words: list[_TimedWord]) -> str:
+    text = _join_tokens([item.text for item in words])
+    speaker = words[0].speaker if words else ""
     if speaker:
         label = speaker if speaker.upper().startswith("SPEAKER") else f"SPEAKER_{speaker}"
         text = f"[{label}]: {text}"
     return text
 
 
-def _cue_text(words: list[tuple[str, int, int, str]], config: SubtitleFinalizationConfig) -> str:
+def _cue_text(words: list[_TimedWord], config: SubtitleFinalizationConfig) -> str:
     return wrap_subtitle_text(_cue_plain_text(words), config)
+
+
+def _last_syntactic_char(text: str) -> str:
+    cleaned = _clean_text(text).rstrip()
+    while cleaned and cleaned[-1] in _TRAILING_MARKS:
+        cleaned = cleaned[:-1].rstrip()
+    return cleaned[-1] if cleaned else ""
+
+
+def _normalized_lexeme(text: str) -> str:
+    return _clean_text(text).strip(".,!?;:\"'()[]{}\u2018\u2019\u201c\u201d").casefold()
+
+
+def _sat_boundary_probabilities(source_text: str, words: list[_TimedWord]) -> list[float]:
+    if len(words) < 2 or not source_text:
+        return []
+    try:
+        prediction = sentence_segmenter.predict_boundaries(source_text)
+    except Exception as exc:  # pragma: no cover - defensive around optional model runtimes
+        logger.warning("SaT boundary prediction failed; using deterministic boundary evidence: %s", exc)
+        prediction = None
+    if not prediction:
+        return [0.0] * (len(words) - 1)
+
+    raw_probabilities = prediction.get("probabilities")
+    probabilities = list(raw_probabilities) if isinstance(raw_probabilities, (list, tuple)) else []
+    raw_boundaries = prediction.get("boundaries")
+    explicit: set[int] = set()
+    for value in raw_boundaries or []:
+        boundary_index = value.get("index") if isinstance(value, dict) else value
+        if isinstance(boundary_index, (int, float)):
+            explicit.add(int(boundary_index))
+    threshold = float(prediction.get("threshold") or 0.25)
+    output: list[float] = []
+    for current, following in zip(words, words[1:]):
+        left = max(0, current.char_end - 1)
+        right = min(len(probabilities), max(left + 1, following.char_start + 1))
+        probability = max((float(value) for value in probabilities[left:right]), default=0.0)
+        if any(left <= boundary < right for boundary in explicit):
+            probability = max(probability, threshold)
+        output.append(max(0.0, min(1.0, probability)))
+    return output
+
+
+def _boundary_evidence(
+    words: list[_TimedWord],
+    probabilities: list[float],
+    config: SubtitleFinalizationConfig,
+) -> list[_BoundaryEvidence]:
+    hard_silence_ms = max(1000, min(1500, config.phrase_gap_ms * 2))
+    output: list[_BoundaryEvidence] = []
+    for index, (current, following) in enumerate(zip(words, words[1:])):
+        last_char = _last_syntactic_char(current.text)
+        following_lexeme = _normalized_lexeme(following.text)
+        current_lexeme = _normalized_lexeme(current.text)
+        gap_ms = max(0, following.start_ms - current.end_ms)
+        output.append(
+            _BoundaryEvidence(
+                probability=probabilities[index] if index < len(probabilities) else 0.0,
+                gap_ms=gap_ms,
+                sentence_end=last_char in _SENTENCE_END_CHARS,
+                punctuation=last_char in _CLAUSE_PUNCTUATION,
+                clause_start=following_lexeme in _CLAUSE_STARTERS,
+                speaker_change=current.speaker != following.speaker,
+                hard_silence=gap_ms >= hard_silence_ms,
+                weak_start=following_lexeme in _WEAK_CUE_STARTS,
+                weak_end=current_lexeme in _WEAK_CUE_ENDS,
+            )
+        )
+    return output
+
+
+def _boundary_reward(evidence: _BoundaryEvidence, config: SubtitleFinalizationConfig) -> float:
+    reward = 0.0
+    if evidence.speaker_change:
+        reward -= 120.0
+    if evidence.hard_silence:
+        reward -= 90.0
+    if evidence.sentence_end:
+        reward -= 74.0
+    reward -= 50.0 * evidence.probability
+    if evidence.punctuation:
+        reward -= 20.0
+    if evidence.clause_start:
+        reward -= 9.0
+    if evidence.gap_ms >= config.phrase_gap_ms:
+        reward -= 34.0
+    elif evidence.gap_ms >= 350:
+        reward -= 15.0
+    elif evidence.gap_ms >= 200:
+        reward -= 6.0
+    if evidence.weak_start:
+        reward += 18.0
+    if evidence.weak_end:
+        reward += 20.0
+    if not (
+        evidence.speaker_change
+        or evidence.hard_silence
+        or evidence.sentence_end
+        or evidence.punctuation
+        or evidence.clause_start
+        or evidence.probability >= 0.15
+        or evidence.gap_ms >= 200
+    ):
+        reward += 14.0
+    return reward
+
+
+def _cue_cost(
+    words: list[_TimedWord],
+    start: int,
+    end: int,
+    text: str,
+    evidence: list[_BoundaryEvidence],
+    config: SubtitleFinalizationConfig,
+) -> float:
+    visible_chars = len(_clean_text(text))
+    raw_duration = max(100, words[end - 1].end_ms - words[start].start_ms)
+    if end < len(words):
+        available_duration = max(
+            raw_duration,
+            words[end].start_ms - config.min_gap_ms - words[start].start_ms,
+        )
+    else:
+        available_duration = raw_duration
+    readable_duration = min(config.max_duration_ms, max(config.min_duration_ms, available_duration))
+    cps = visible_chars / max(0.1, readable_duration / 1000.0)
+
+    # A fixed cue cost avoids excessive fragmentation.  Short-cue penalties are
+    # intentionally steep because the most visible failure mode is a dangling
+    # article or sentence tail that could have remained with its neighbours.
+    cost = 30.0
+    if visible_chars < 10:
+        cost += 130.0 + (10 - visible_chars) * 5.0
+    elif visible_chars < 20:
+        cost += 20.0 + (20 - visible_chars) * 1.5
+    elif visible_chars < 28:
+        cost += (28 - visible_chars) * 1.2
+
+    target_chars = min(68, max(36, round(config.max_event_chars * 0.72)))
+    if visible_chars > target_chars:
+        cost += (visible_chars - target_chars) * 0.35
+    if raw_duration < config.min_duration_ms:
+        cost += (config.min_duration_ms - raw_duration) / 80.0
+    if cps > config.max_chars_per_second:
+        # Reading speed is a presentation warning, not a reason to chop one
+        # fast-spoken phrase into several even less readable fragments.
+        cost += ((cps - config.max_chars_per_second) ** 2) * 0.5
+
+    first_lexeme = _normalized_lexeme(words[start].text)
+    last_lexeme = _normalized_lexeme(words[end - 1].text)
+    if start > 0 and first_lexeme in _WEAK_CUE_STARTS:
+        cost += 16.0
+    if end < len(words) and last_lexeme in _WEAK_CUE_ENDS:
+        cost += 18.0
+
+    if end < len(words):
+        cost += _boundary_reward(evidence[end - 1], config)
+    elif _last_syntactic_char(words[end - 1].text) in _SENTENCE_END_CHARS:
+        cost -= 18.0
+    return cost
+
+
+def _compose_semantic_cues(
+    words: list[_TimedWord],
+    source_text: str,
+    config: SubtitleFinalizationConfig,
+) -> list[SubtitleSegment]:
+    if not words:
+        return []
+    probabilities = _sat_boundary_probabilities(source_text, words)
+    evidence = _boundary_evidence(words, probabilities, config)
+    word_count = len(words)
+    costs = [float("inf")] * (word_count + 1)
+    previous: list[int | None] = [None] * (word_count + 1)
+    costs[0] = 0.0
+
+    for start in range(word_count):
+        if costs[start] == float("inf"):
+            continue
+        for end in range(start + 1, word_count + 1):
+            # Do not permit a cue to cross a speaker change or an unambiguous
+            # long silence.  It may, of course, end immediately before either.
+            crossed_boundary = end - 2
+            if crossed_boundary >= start:
+                crossed = evidence[crossed_boundary]
+                if crossed.speaker_change or crossed.hard_silence:
+                    break
+
+            duration = words[end - 1].end_ms - words[start].start_ms
+            text = _cue_plain_text(words[start:end])
+            pathological_single_word = end == start + 1
+            if duration > config.max_duration_ms and not pathological_single_word:
+                break
+            if (
+                not pathological_single_word
+                and (len(text) > config.max_event_chars or not _fits_layout(text, config))
+            ):
+                break
+
+            candidate_cost = costs[start] + _cue_cost(words, start, end, text, evidence, config)
+            if candidate_cost < costs[end]:
+                costs[end] = candidate_cost
+                previous[end] = start
+
+    if previous[word_count] is None:
+        logger.warning("Global subtitle composition found no valid path; using capacity finalization")
+        fallback = SubtitleSegment(0, words[0].start_ms, words[-1].end_ms, _cue_plain_text(words))
+        return finalize_segments([fallback], config)
+
+    ranges: list[tuple[int, int]] = []
+    cursor = word_count
+    while cursor > 0:
+        start = previous[cursor]
+        if start is None:  # pragma: no cover - guarded by the valid final path above
+            break
+        ranges.append((start, cursor))
+        cursor = start
+    ranges.reverse()
+    return [
+        SubtitleSegment(
+            index=index,
+            start_ms=words[start].start_ms,
+            end_ms=min(words[end - 1].end_ms, words[start].start_ms + config.max_duration_ms),
+            text=_cue_plain_text(words[start:end]),
+        )
+        for index, (start, end) in enumerate(ranges, start=1)
+    ]
 
 
 def compose_from_crispasr_json(
@@ -287,27 +644,15 @@ def compose_from_crispasr_json(
             fallback.append(SubtitleSegment(index, start, end, str(segment.get("text") or "")))
         return compose_srt(finalize_segments(fallback, config))
 
-    cues: list[SubtitleSegment] = []
-    current: list[tuple[str, int, int, str]] = []
-    for word in words:
-        if current:
-            candidate_text = _cue_plain_text([*current, word])
-            duration = word[2] - current[0][1]
-            gap = word[1] - current[-1][2]
-            previous_text = current[-1][0].rstrip()
-            should_break = (
-                word[3] != current[-1][3]
-                or len(candidate_text) > config.max_event_chars
-                or not _fits_layout(candidate_text, config)
-                or duration > config.max_duration_ms
-                or (gap >= config.phrase_gap_ms and current[-1][2] - current[0][1] >= config.min_duration_ms)
-                or (previous_text.endswith(tuple(".!?…")) and len(_join_tokens([item[0] for item in current])) >= 8)
-            )
-            if should_break:
-                cues.append(SubtitleSegment(0, current[0][1], current[-1][2], _cue_text(current, config)))
-                current = []
-        current.append(word)
-    if current:
-        cues.append(SubtitleSegment(0, current[0][1], current[-1][2], _cue_text(current, config)))
-
-    return compose_srt(_adjust_durations(cues, config))
+    source_text, words = _source_text_and_spans(words)
+    cues = _adjust_durations(_compose_semantic_cues(words, source_text, config), config)
+    display_cues = [
+        SubtitleSegment(
+            index=index,
+            start_ms=cue.start_ms,
+            end_ms=cue.end_ms,
+            text=wrap_subtitle_text(cue.text, config),
+        )
+        for index, cue in enumerate(cues, start=1)
+    ]
+    return compose_srt(display_cues)

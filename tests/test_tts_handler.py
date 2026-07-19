@@ -683,6 +683,25 @@ class TTSHandlerTests(unittest.TestCase):
             },
         )
 
+    def test_tts_payload_collapses_visual_line_breaks_and_whitespace(self):
+        response = Mock()
+        response.raise_for_status.return_value = None
+        with patch("pandrator.logic.tts_handler.requests.post", return_value=response) as post, patch(
+            "pandrator.logic.tts_handler._decode_audio_response",
+            return_value=object(),
+        ):
+            tts_handler.text_to_audio(
+                "Visually wrapped\n  but spoken\tcontinuously.",
+                {"service": "Silero", "speaker": "en_0", "language": "en"},
+                silero_base_url="http://silero",
+                max_attempts=1,
+            )
+
+        self.assertEqual(
+            post.call_args.kwargs["json"]["input"],
+            "Visually wrapped but spoken continuously.",
+        )
+
     def test_tts_generation_retries_transient_http_failures_with_backoff(self):
         transient = Mock(status_code=503, headers={}, text="temporarily unavailable")
         transient.raise_for_status.side_effect = tts_handler.requests.exceptions.HTTPError(

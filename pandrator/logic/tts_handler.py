@@ -4510,6 +4510,9 @@ def text_to_audio(
     Generates audio from text using the specified TTS service.
     `tts_settings` is a dictionary-like object (e.g., a dataclass).
     """
+    # Visual subtitle wrapping must never leak into provider payloads.  This
+    # also makes direct callers consistent with dubbing speech blocks.
+    text = re.sub(r"\s+", " ", str(text or "")).strip()
     service = tts_settings.get("service", "XTTS")
     normalized_silero_base_url = _normalize_base_url(silero_base_url, SILERO_API_BASE_URL)
 

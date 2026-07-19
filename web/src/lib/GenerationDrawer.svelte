@@ -574,8 +574,6 @@
                       </select>
                       <input value={item.voice_id ?? ''} onblur={(event) => patchSegment(item, { voice_id: (event.currentTarget as HTMLInputElement).value || null })} placeholder="Voice" class="mini" />
                       <input value={item.language ?? ''} onblur={(event) => patchSegment(item, { language: (event.currentTarget as HTMLInputElement).value || null })} placeholder="Language" class="mini" />
-                      <label class="mini flex items-center gap-1">Pause <input type="number" min="0" value={item.silence_after_ms} onblur={(event) => patchSegment(item, { silence_after_ms: Number((event.currentTarget as HTMLInputElement).value) })} aria-label="Silence after in milliseconds" class="w-20 bg-transparent" /> ms</label>
-                      <label class="mini flex items-center gap-1"><input type="checkbox" checked={item.paragraph_break_after} onchange={(event) => patchSegment(item, { paragraph_break_after: (event.currentTarget as HTMLInputElement).checked })}/> Paragraph end</label>
                     </div>
                   </td>
                   <td>

@@ -431,6 +431,47 @@ class WorkflowHandlers:
             raise FileNotFoundError(path)
         return artifact, path
 
+    @staticmethod
+    def _is_subtitle_generation_record(record: dict[str, Any]) -> bool:
+        """Identify generation units whose timing comes from subtitle cues."""
+        return str(record.get("node_kind") or "") == "subtitle_cue" or bool(record.get("subtitles"))
+
+    @staticmethod
+    def _usable_language(value: Any) -> str:
+        normalized = str(value or "").strip()
+        return "" if normalized.lower() in {"", "auto", "und", "unknown"} else normalized
+
+    def _generation_language(
+        self,
+        session_id: str,
+        source_artifact: Artifact,
+        settings: dict[str, Any],
+    ) -> str:
+        """Resolve TTS language from the artifact actually selected for generation."""
+        language = self._usable_language((source_artifact.metadata_json or {}).get("language"))
+        role = str(source_artifact.role or "")
+
+        # Whole-document speech optimization preserves the language and role of
+        # its source. Older JSON optimization artifacts did not copy language,
+        # so follow their explicit source link once for compatibility.
+        if not language and role == "tts_optimized":
+            parent_id = str((source_artifact.metadata_json or {}).get("source_artifact_id") or "")
+            if parent_id:
+                with self.database.session() as session:
+                    parent = session.get(Artifact, parent_id)
+                    if parent is not None:
+                        language = self._usable_language((parent.metadata_json or {}).get("language"))
+                        role = str(parent.role or role)
+
+        record = self._session_record(session_id)
+        if not language and role == "translation":
+            language = self._usable_language(record.target_language)
+        if not language and role in {"transcription", "correction", "upload", "prepared_text", "source"}:
+            language = self._usable_language(record.source_language)
+        if not language:
+            language = self._usable_language(settings.get("language") or settings.get("target_language"))
+        return language or "en"
+
     def _store_srt_document(
         self,
         session_id: str,
@@ -1417,20 +1458,24 @@ class WorkflowHandlers:
             session.flush()
             segment_ids = []
             for ordinal, record in enumerate(clean):
+                is_subtitle = self._is_subtitle_generation_record(record)
                 explicit_silence = record.get("silence_after_ms")
                 if explicit_silence is None:
-                    is_paragraph = str(record.get("paragraph") or "").lower() == "yes"
-                    explicit_silence = (
-                        settings.get("paragraph_silence_ms", settings.get("silence_for_paragraphs", 700))
-                        if is_paragraph
-                        else settings.get("sentence_silence_ms", settings.get("silence_between_sentences", 250))
-                    )
+                    if is_subtitle:
+                        explicit_silence = 0
+                    else:
+                        is_paragraph = str(record.get("paragraph") or "").lower() == "yes"
+                        explicit_silence = (
+                            settings.get("paragraph_silence_ms", settings.get("silence_for_paragraphs", 700))
+                            if is_paragraph
+                            else settings.get("sentence_silence_ms", settings.get("silence_between_sentences", 250))
+                        )
                 segment = GenerationSegment(
                     plan_revision_id=revision.id,
                     ordinal=ordinal,
-                    source_segment_ids_json=list(record.get("source_segment_ids") or []),
-                    node_kind=str(record.get("node_kind") or ("chapter_marker" if str(record.get("chapter") or "").lower() == "yes" else "paragraph")),
-                    paragraph_break_after=bool(record.get("paragraph_break_after", str(record.get("paragraph") or "").lower() == "yes")),
+                    source_segment_ids_json=list(record.get("source_segment_ids") or record.get("subtitles") or []),
+                    node_kind=str(record.get("node_kind") or ("subtitle_cue" if is_subtitle else "chapter_marker" if str(record.get("chapter") or "").lower() == "yes" else "paragraph")),
+                    paragraph_break_after=False if is_subtitle else bool(record.get("paragraph_break_after", str(record.get("paragraph") or "").lower() == "yes")),
                     text=str(record.get("text") or record.get("original_sentence") or "").strip(),
                     language=str(record.get("language") or settings.get("language") or settings.get("target_language") or "") or None,
                     silence_after_ms=max(0, int(explicit_silence or 0)),
@@ -1617,16 +1662,22 @@ class WorkflowHandlers:
             synthesis_share = 1.0 - optimization_share
             progress(optimization_share + ((index - 1) / len(records)) * synthesis_share, f"Generating segment {index} of {len(records)}")
             synthesized_text = optimized_texts[index - 1]
+            segment_language = self._usable_language(record.get("language"))
+            segment_tts_settings = (
+                {**settings, "language": segment_language, "target_language": segment_language}
+                if segment_language
+                else settings
+            )
             audio = tts_handler.text_to_audio(
                 synthesized_text,
-                settings,
-                max_attempts=int(settings.get("max_attempts") or 3),
+                segment_tts_settings,
+                max_attempts=int(segment_tts_settings.get("max_attempts") or 3),
                 cancel_event=cancel_event,
                 retry_callback=lambda attempt, total, delay: progress(
                     optimization_share + ((index - 1) / len(records)) * synthesis_share,
                     f"Retrying segment {index} ({attempt}/{total}) in {delay:.1f}s",
                 ),
-                **self._tts_urls(settings),
+                **self._tts_urls(segment_tts_settings),
             )
             if audio is None:
                 raise RuntimeError(f"Speech generation failed at segment {index}.")
@@ -1641,7 +1692,7 @@ class WorkflowHandlers:
                 role="generation_take",
                 session_id=session_id,
                 parent_ids=[source_artifact.id],
-                settings=settings,
+                settings=segment_tts_settings,
                 metadata={
                     "generation_segment_id": generation_segment_id,
                     "kind": "tts",
@@ -1657,11 +1708,14 @@ class WorkflowHandlers:
                 session.add(AudioTake(generation_segment_id=generation_segment_id, artifact_id=take_artifact.id, kind="tts", status="completed", settings_hash=take_artifact.settings_hash, duration_ms=len(audio), is_active=True))
             silence_after = record.get("silence_after_ms")
             if silence_after is None:
-                silence_after = (
-                    settings.get("paragraph_silence_ms", settings.get("silence_for_paragraphs", 700))
-                    if str(record.get("paragraph") or "").lower() == "yes"
-                    else settings.get("sentence_silence_ms", settings.get("silence_between_sentences", 250))
-                )
+                if source_artifact.role == "speech_blocks" or self._is_subtitle_generation_record(record):
+                    silence_after = 0
+                else:
+                    silence_after = (
+                        settings.get("paragraph_silence_ms", settings.get("silence_for_paragraphs", 700))
+                        if str(record.get("paragraph") or "").lower() == "yes"
+                        else settings.get("sentence_silence_ms", settings.get("silence_between_sentences", 250))
+                    )
             audio_parts.append((audio, max(0, int(silence_after or 0))))
             progress(optimization_share + (index / len(records)) * synthesis_share, f"Generated segment {index} of {len(records)}")
         if not audio_parts:
@@ -1692,13 +1746,15 @@ class WorkflowHandlers:
         settings = dict(payload.get("settings") or {})
         if source_path.suffix.lower() != ".srt":
             raise ValueError("Dubbing audio requires a transcription, correction, or translation SRT artifact.")
+        language = self._generation_language(session_id, source_artifact, settings)
+        settings = {**settings, "language": language, "target_language": language}
         blocks_path = Path(
             generate_speech_blocks_file(
                 str(self._session_dir(session_id)),
                 str(source_path),
-                target_language=str(settings.get("target_language") or "en"),
+                target_language=language,
                 min_chars=int(settings.get("speech_block_min_chars") or 10),
-                max_chars=int(settings.get("speech_block_max_chars") or 160),
+                max_chars=int(settings.get("speech_block_max_chars") or 220),
                 merge_threshold=int(
                     settings.get("speech_block_merge_threshold")
                     if settings.get("speech_block_merge_threshold") is not None
@@ -1747,6 +1803,8 @@ class WorkflowHandlers:
         session_id = str(payload.get("session_id") or "")
         source_artifact, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
         settings = dict(payload.get("settings") or {})
+        language = self._generation_language(session_id, source_artifact, settings)
+        settings = {**settings, "language": language, "target_language": language}
         progress(0.0, "Preparing generation segments")
 
         plan_revision_id: str | None = None
@@ -1755,9 +1813,9 @@ class WorkflowHandlers:
                 generate_speech_blocks_file(
                     str(self._session_dir(session_id)),
                     str(source_path),
-                    target_language=str(settings.get("target_language") or settings.get("language") or "en"),
+                    target_language=language,
                     min_chars=int(settings.get("speech_block_min_chars") or 10),
-                    max_chars=int(settings.get("speech_block_max_chars") or 160),
+                    max_chars=int(settings.get("speech_block_max_chars") or 220),
                     merge_threshold=int(
                         settings.get("speech_block_merge_threshold")
                         if settings.get("speech_block_merge_threshold") is not None
@@ -1950,6 +2008,7 @@ class WorkflowHandlers:
                 segment.status = "running"
                 segment.updated_at = utcnow()
                 text = segment.text
+                segment_language = self._usable_language(segment.language)
             progress(
                 optimization_share + (index / len(segment_ids)) * (1.0 - optimization_share),
                 f"Generating segment {index + 1} of {len(segment_ids)}",
@@ -1993,22 +2052,27 @@ class WorkflowHandlers:
                     take_settings = rvc_settings
                 else:
                     synthesized_text = optimized_by_id.get(segment_id, text)
+                    segment_tts_settings = (
+                        {**tts_settings, "language": segment_language, "target_language": segment_language}
+                        if segment_language
+                        else tts_settings
+                    )
                     audio = tts_handler.text_to_audio(
                         synthesized_text,
-                        tts_settings,
-                        max_attempts=int(tts_settings.get("max_attempts") or 3),
+                        segment_tts_settings,
+                        max_attempts=int(segment_tts_settings.get("max_attempts") or 3),
                         cancel_event=cancel_event,
                         retry_callback=lambda attempt, total, delay: progress(
                             optimization_share + (index / len(segment_ids)) * (1.0 - optimization_share),
                             f"Retrying segment {index + 1} ({attempt}/{total}) in {delay:.1f}s",
                         ),
-                        **self._tts_urls(tts_settings),
+                        **self._tts_urls(segment_tts_settings),
                     )
                     if audio is None:
                         raise RuntimeError("The speech service returned no audio.")
                     take_kind = "tts"
                     parent_take_id = None
-                    take_settings = tts_settings
+                    take_settings = segment_tts_settings
                 take_dir = self._session_dir(session_id) / "generation" / plan_revision_id / segment_id
                 take_dir.mkdir(parents=True, exist_ok=True)
                 take_path = take_dir / f"{take_kind}-{new_id()}.wav"
@@ -2078,9 +2142,13 @@ class WorkflowHandlers:
 
     def assemble_generation_output(self, payload, progress, cancel_event):
         """Assemble the current selected takes in plan order into an immutable artifact."""
+        import tempfile
+
         from pydub import AudioSegment
 
         from .audio_assembly import compose_audio, export_audio
+        from pandrator.logic.dubbing.audio_sync import align_audio_blocks
+        from pandrator.logic.dubbing.models import AudioAlignmentBlock
 
         assembly_id = str(payload.get("output_assembly_id") or "")
         with self.database.session() as session:
@@ -2101,6 +2169,18 @@ class WorkflowHandlers:
 
         try:
             with self.database.session() as session:
+                plan_revision = session.get(GenerationPlanRevision, plan_revision_id)
+                source_revision_id = plan_revision.source_revision_id if plan_revision is not None else None
+                source_timings = []
+                if source_revision_id:
+                    source_timings = [
+                        (item.id, item.ordinal, item.start_ms, item.end_ms)
+                        for item in session.scalars(
+                            select(Segment)
+                            .where(Segment.revision_id == source_revision_id)
+                            .order_by(Segment.ordinal)
+                        ).all()
+                    ]
                 segments = list(
                     session.scalars(
                         select(GenerationSegment)
@@ -2154,6 +2234,7 @@ class WorkflowHandlers:
                 raise ValueError("No active generation segments are available for assembly.")
 
             parts: list[tuple[AudioSegment, int]] = []
+            loaded: list[tuple[GenerationSegment, AudioTake, Artifact, Path, AudioSegment]] = []
             manifest: list[dict[str, Any]] = []
             chapter_markers: list[tuple[float, str]] = []
             timeline_ms = 0
@@ -2172,27 +2253,118 @@ class WorkflowHandlers:
                 if not path.is_file():
                     raise ValueError(f"Audio take file is missing for segment {segment.ordinal + 1}.")
                 audio = AudioSegment.from_file(path)
-                if segment.node_kind == "chapter_marker":
-                    chapter_markers.append((timeline_ms / 1000, segment.text))
-                parts.append((audio, segment.silence_after_ms))
+                loaded.append((segment, take, artifact, path, audio))
                 parent_ids.append(artifact.id)
-                manifest.append(
-                    {
-                        "segment_id": segment.id,
-                        "segment_revision": segment.revision,
-                        "node_kind": segment.node_kind,
-                        "take_id": take.id,
-                        "take_revision": take.revision,
-                        "artifact_id": artifact.id,
-                        "kind": take.kind,
-                        "duration_ms": len(audio),
-                        "silence_after_ms": segment.silence_after_ms if index < len(selected) - 1 else 0,
-                    }
-                )
-                timeline_ms += len(audio)
-                if index < len(selected) - 1:
-                    timeline_ms += max(0, int(segment.silence_after_ms or 0))
-            combined = compose_audio(parts, audio_settings)
+
+            source_timing_by_ref: dict[str, tuple[int, int, int]] = {}
+            for source_id, ordinal, start_ms, end_ms in source_timings:
+                if start_ms is None or end_ms is None:
+                    continue
+                timing = (int(start_ms), int(end_ms), int(ordinal) + 1)
+                source_timing_by_ref[str(source_id)] = timing
+                source_timing_by_ref[str(int(ordinal) + 1)] = timing
+            subtitle_timed = bool(source_timing_by_ref) and any(
+                segment.node_kind == "subtitle_cue" for segment, *_rest in loaded
+            )
+
+            if subtitle_timed:
+                alignment_blocks: list[AudioAlignmentBlock] = []
+                assemblies_dir = self._session_dir(session_id) / "assemblies"
+                assemblies_dir.mkdir(parents=True, exist_ok=True)
+                with tempfile.TemporaryDirectory(prefix=f".assembly-{assembly_id}-", dir=assemblies_dir) as temporary:
+                    temporary_path = Path(temporary)
+                    for index, (segment, take, artifact, _path, audio) in enumerate(loaded):
+                        timings = sorted(
+                            {
+                                source_timing_by_ref[str(reference)]
+                                for reference in segment.source_segment_ids_json
+                                if str(reference) in source_timing_by_ref
+                            },
+                            key=lambda value: (value[0], value[1], value[2]),
+                        )
+                        if not timings:
+                            raise ValueError(
+                                f"Subtitle generation segment {segment.ordinal + 1} has no source timing references. Regenerate its speech-block plan."
+                            )
+                        processed = audio
+                        if bool(audio_settings.get("fade_enabled", audio_settings.get("enable_fade", False))):
+                            fade_in = max(0, int(audio_settings.get("fade_in_ms", audio_settings.get("fade_in_duration", 0)) or 0))
+                            fade_out = max(0, int(audio_settings.get("fade_out_ms", audio_settings.get("fade_out_duration", 0)) or 0))
+                            if fade_in:
+                                processed = processed.fade_in(min(fade_in, len(processed)))
+                            if fade_out:
+                                processed = processed.fade_out(min(fade_out, len(processed)))
+                        input_path = temporary_path / f"segment-{index + 1:04d}.wav"
+                        exported = processed.export(input_path, format="wav")
+                        exported.close()
+                        block = AudioAlignmentBlock(
+                            number=str(index + 1).zfill(4),
+                            text=segment.text,
+                            start_ms=timings[0][0],
+                            end_ms=timings[-1][1],
+                            audio_files=[input_path],
+                            subtitles=[value[2] for value in timings],
+                        )
+                        if alignment_blocks and alignment_blocks[-1].subtitles[-1:] == block.subtitles[:1]:
+                            previous = alignment_blocks[-1]
+                            alignment_blocks[-1] = AudioAlignmentBlock(
+                                number=f"{previous.number}-{block.number}",
+                                text=f"{previous.text} {block.text}".strip(),
+                                start_ms=previous.start_ms,
+                                end_ms=max(previous.end_ms, block.end_ms),
+                                audio_files=[*previous.audio_files, *block.audio_files],
+                                subtitles=sorted(set([*previous.subtitles, *block.subtitles])),
+                            )
+                        else:
+                            alignment_blocks.append(block)
+                        manifest.append(
+                            {
+                                "segment_id": segment.id,
+                                "segment_revision": segment.revision,
+                                "node_kind": segment.node_kind,
+                                "take_id": take.id,
+                                "take_revision": take.revision,
+                                "artifact_id": artifact.id,
+                                "kind": take.kind,
+                                "duration_ms": len(audio),
+                                "silence_after_ms": 0,
+                                "target_start_ms": timings[0][0],
+                                "target_end_ms": timings[-1][1],
+                                "source_subtitles": [value[2] for value in timings],
+                            }
+                        )
+                    raw_speed = float(audio_settings.get("synchronization_speed") or 1.0)
+                    speed_up_percent = int(round(raw_speed * 100 if raw_speed <= 10 else raw_speed))
+                    aligned_path = align_audio_blocks(
+                        alignment_blocks,
+                        temporary_path,
+                        delay_start_ms=max(0, int(audio_settings.get("synchronization_delay_ms") or 0)),
+                        speed_up_percent=max(100, speed_up_percent),
+                        output_path=temporary_path / "aligned.wav",
+                    )
+                    combined = AudioSegment.from_wav(aligned_path)
+            else:
+                for index, (segment, take, artifact, _path, audio) in enumerate(loaded):
+                    if segment.node_kind == "chapter_marker":
+                        chapter_markers.append((timeline_ms / 1000, segment.text))
+                    parts.append((audio, segment.silence_after_ms))
+                    manifest.append(
+                        {
+                            "segment_id": segment.id,
+                            "segment_revision": segment.revision,
+                            "node_kind": segment.node_kind,
+                            "take_id": take.id,
+                            "take_revision": take.revision,
+                            "artifact_id": artifact.id,
+                            "kind": take.kind,
+                            "duration_ms": len(audio),
+                            "silence_after_ms": segment.silence_after_ms if index < len(loaded) - 1 else 0,
+                        }
+                    )
+                    timeline_ms += len(audio)
+                    if index < len(loaded) - 1:
+                        timeline_ms += max(0, int(segment.silence_after_ms or 0))
+                combined = compose_audio(parts, audio_settings)
             output_format = str(output_settings.get("format") or "wav").lower()
             bitrate = str(output_settings.get("bitrate") or "192k")
             destination = self._session_dir(session_id) / "assemblies" / f"assembly-{assembly_id}.{output_format}"

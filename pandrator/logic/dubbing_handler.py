@@ -210,7 +210,7 @@ def generate_speech_blocks_with_result(
     target_language: str = "en",
     *,
     min_chars: int = 10,
-    max_chars: int = 160,
+    max_chars: int = 220,
     merge_threshold: int = 250,
 ) -> str:
     """Generates speech blocks from an SRT file and returns the JSON path."""

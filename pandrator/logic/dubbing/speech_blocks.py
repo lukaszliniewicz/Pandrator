@@ -69,6 +69,8 @@ CONJUNCTIONS = {
 }
 
 _FALLBACK_SENTENCE_RE = re.compile(r"(?<=[.!?\u3002\uff01\uff1f])\s+")
+_SPEAKER_PREFIX_RE = re.compile(r"^\[(?P<speaker>SPEAKER[^\]]*)\]:\s*", re.IGNORECASE)
+_SENTENCE_END_RE = re.compile(r"[.!?\u2026\u3002\uff01\uff1f][\"'\u2019\u201d\u00bb\)\]]*$")
 
 
 @dataclass
@@ -77,6 +79,7 @@ class _SpeechPart:
     subtitles: list[int]
     start_ms: int
     end_ms: int
+    speaker: str = ""
 
 
 def _check_split_validity(text: str, split_index: int, max_chars: int, min_chars: int) -> bool:
@@ -178,7 +181,9 @@ def _split_further(text: str, language_code: str, max_chars: int, min_chars: int
 
 
 def _split_subtitle_text(text: str, language_code: str, min_chars: int, max_chars: int) -> list[str]:
-    text = str(text or "").strip()
+    # SRT line breaks are presentation metadata, not pauses or literal input
+    # for a speech engine.  Keep speech-block text canonical and single-line.
+    text = re.sub(r"\s+", " ", str(text or "")).strip()
     if not text:
         return []
     if len(text) <= max_chars:
@@ -214,13 +219,19 @@ def _subtitle_to_parts(
     min_chars: int,
     max_chars: int,
 ) -> list[_SpeechPart]:
-    parts = _split_subtitle_text(subtitle.text, language_code, min_chars, max_chars)
+    canonical_text = re.sub(r"\s+", " ", str(subtitle.text or "")).strip()
+    speaker_match = _SPEAKER_PREFIX_RE.match(canonical_text)
+    speaker = speaker_match.group("speaker").casefold() if speaker_match else ""
+    if speaker_match:
+        canonical_text = canonical_text[speaker_match.end():].strip()
+    parts = _split_subtitle_text(canonical_text, language_code, min_chars, max_chars)
     return [
         _SpeechPart(
             text=part,
             subtitles=[subtitle.index],
             start_ms=subtitle.start_ms,
             end_ms=subtitle.end_ms,
+            speaker=speaker,
         )
         for part in parts
     ]
@@ -237,14 +248,21 @@ def _should_merge_parts(
     if combined_length > max_chars:
         return False
 
+    if previous.speaker != current.speaker:
+        return False
+
     gap_ms = max(0, current.start_ms - previous.end_ms)
     if gap_ms > merge_threshold:
         return False
 
-    # Preserve Subdub's behavior: a short *following* fragment may join the
-    # previous block.  Do not pull a full sentence backward merely because the
-    # preceding fragment was short.
-    return len(current.text) < min_chars
+    # A short following fragment belongs with its predecessor.  Additionally,
+    # rejoin capacity-driven subtitle cuts when the preceding cue is clearly
+    # not sentence-final; subtitle layout should not become TTS prosody.
+    if len(current.text) < min_chars:
+        return True
+    if len(previous.text) < min_chars:
+        return False
+    return _SENTENCE_END_RE.search(previous.text.strip()) is None
 
 
 def _parts_to_blocks(parts: list[_SpeechPart]) -> list[SpeechBlock]:
@@ -253,7 +271,7 @@ def _parts_to_blocks(parts: list[_SpeechPart]) -> list[SpeechBlock]:
         blocks.append(
             SpeechBlock(
                 number=str(index).zfill(4),
-                text=part.text.strip(),
+                text=re.sub(r"\s+", " ", part.text).strip(),
                 subtitles=sorted(set(part.subtitles)),
             )
         )
@@ -264,7 +282,7 @@ def create_speech_blocks(
     srt_content: str,
     target_language: str = "en",
     min_chars: int = 10,
-    max_chars: int = 160,
+    max_chars: int = 220,
     merge_threshold: int = 250,
 ) -> list[dict[str, object]]:
     """Create Pandrator/Subdub-compatible speech blocks from SRT content."""
@@ -294,6 +312,7 @@ def create_speech_blocks(
                 subtitles=sorted(set(previous.subtitles + part.subtitles)),
                 start_ms=previous.start_ms,
                 end_ms=part.end_ms,
+                speaker=previous.speaker,
             )
         else:
             merged_parts.append(part)
@@ -322,7 +341,7 @@ def generate_speech_blocks_file(
     srt_file: str | os.PathLike[str],
     target_language: str = "en",
     min_chars: int = 10,
-    max_chars: int = 160,
+    max_chars: int = 220,
     merge_threshold: int = 250,
 ) -> str:
     """Generate a speech-block JSON file next to a dubbing run/session."""

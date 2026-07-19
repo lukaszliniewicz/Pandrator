@@ -146,7 +146,7 @@
   let voiceName = $state('');
   let generationPrompt = $state('');
   let speechBlockMinChars = $state(10);
-  let speechBlockMaxChars = $state(160);
+  let speechBlockMaxChars = $state(220);
   let speechBlockMergeThreshold = $state(250);
   let subtitleMode = $state('soft');
   let subtitleSelection = $state('dual');
@@ -260,7 +260,7 @@
       saved = {...stored.effective, ...saved};
       stageSettings[stage.key] = saved;
     } catch { /* use stage-local values */ }
-    targetLanguage = String(saved.target_language ?? session.target_language ?? (session.source_language === 'auto' ? 'en' : session.source_language) ?? 'en');
+    targetLanguage = String((stage.key === 'generate_audio' ? saved.language : saved.target_language) ?? session.target_language ?? (session.source_language === 'auto' ? 'en' : session.source_language) ?? 'en');
     originalLanguage = String(saved.original_language ?? session.source_language ?? 'auto');
     model = String(saved.model_name ?? saved.tts_optimization_model ?? saved[`${stage.key}_model`] ?? 'default');
     backend = String(saved.backend ?? saved.translation_backend ?? 'llm');
@@ -320,7 +320,7 @@
     voiceName = activeService?.id===configuredService?.id ? String(saved.voice ?? saved.voice_name ?? '') : String(activeService?.default_voice ?? '');
     generationPrompt = String(saved.generation_prompt ?? '');
     speechBlockMinChars = Number(saved.speech_block_min_chars ?? 10);
-    speechBlockMaxChars = Number(saved.speech_block_max_chars ?? 160);
+    speechBlockMaxChars = Number(saved.speech_block_max_chars ?? 220);
     speechBlockMergeThreshold = Number(saved.speech_block_merge_threshold ?? 250);
     subtitleMode = String(saved.subtitle_mode ?? 'soft');
     subtitleSelection = String(saved.subtitle_selection ?? 'dual');

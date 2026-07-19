@@ -169,7 +169,7 @@ def migrate_dubbing_payload(
     if "speech_block_merge_threshold" not in migrated:
         migrated["speech_block_merge_threshold"] = migrated.get("subtitle_merge_threshold", 250)
     migrated.setdefault("speech_block_min_chars", 10)
-    migrated.setdefault("speech_block_max_chars", 160)
+    migrated.setdefault("speech_block_max_chars", 220)
 
     legacy_provider = str(migrated.get("translation_provider") or "").strip()
     legacy_model = str(migrated.get("translation_model") or "").strip()

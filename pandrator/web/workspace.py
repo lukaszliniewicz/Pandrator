@@ -211,7 +211,7 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "openai_audio_instructions": "",
         "generation_prompt": "",
         "speech_block_min_chars": 10,
-        "speech_block_max_chars": 160,
+        "speech_block_max_chars": 220,
         "speech_block_merge_threshold": 250,
     },
     "audio": {
@@ -424,7 +424,24 @@ class WorkspaceSettingsService:
             override_value = override.value_json if override else {}
             source_language = str(session_record.source_language or "auto")
             target_language = str(session_record.target_language or "")
-            speech_language = target_language or (source_language if source_language != "auto" else "")
+            outcome = session.get(OutcomePlan, session_id)
+            outcome_value = outcome.value_json if outcome and isinstance(outcome.value_json, dict) else {}
+            inputs = outcome_value.get("inputs") if isinstance(outcome_value.get("inputs"), dict) else {}
+            generation_input = str(inputs.get("generation") or "").strip().lower()
+            if not generation_input:
+                has_translation = session.scalar(
+                    select(Artifact.id).where(
+                        Artifact.session_id == session_id,
+                        Artifact.role == "translation",
+                        Artifact.state == "current",
+                    ).limit(1)
+                ) is not None
+                generation_input = "translation" if has_translation else "source"
+            speech_language = (
+                target_language
+                if generation_input == "translation" and target_language
+                else source_language if source_language != "auto" else ""
+            )
             session_context: dict[str, Any] = {}
             if section == "stt":
                 session_context = {"stt_language": source_language}

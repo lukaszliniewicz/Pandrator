@@ -84,7 +84,7 @@ class DubbingSettingsTests(unittest.TestCase):
 
         self.assertEqual(migrated["speech_block_merge_threshold"], 475)
         self.assertEqual(migrated["speech_block_min_chars"], 10)
-        self.assertEqual(migrated["speech_block_max_chars"], 160)
+        self.assertEqual(migrated["speech_block_max_chars"], 220)
 
     def test_legacy_parakeet_int8_migrates_to_crispasr_q8(self):
         migrated = settings.migrate_dubbing_payload(

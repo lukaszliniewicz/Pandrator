@@ -20,7 +20,7 @@ from pandrator.web.artifacts import ArtifactService
 from pandrator.web.audio_assembly import compose_audio, export_audio
 from pandrator.web.database import Database, upgrade_database
 from pandrator.web.jobs import JobQueue
-from pandrator.web.models import Artifact, ArtifactEdge, AudioTake, GenerationRun, GenerationSegment, OutputAssembly
+from pandrator.web.models import Artifact, ArtifactEdge, AudioTake, Document, DocumentRevision, GenerationRun, GenerationSegment, OutputAssembly, Segment
 from pandrator.web.sessions import SessionService
 from pandrator.web.workflow_handlers import WorkflowHandlers
 from pandrator.web.workspace import GenerationService, WorkspaceSettingsService
@@ -190,6 +190,60 @@ class DurableOutputAssemblyTests(unittest.TestCase):
         self.assertEqual("stale", self.generation.latest_assembly(self.record.id)["status"])
         with self.database.session() as session:
             self.assertEqual("stale", session.get(Artifact, artifact.id).state)
+
+    def test_subtitle_generation_assembly_uses_source_timestamps_without_added_pauses(self):
+        with self.database.session() as session:
+            document = Document(session_id=self.record.id, stage="translation", language="pl")
+            session.add(document)
+            session.flush()
+            revision = DocumentRevision(document_id=document.id, revision_number=1, content_hash="timed")
+            session.add(revision)
+            session.flush()
+            session.add_all(
+                [
+                    Segment(revision_id=revision.id, ordinal=0, start_ms=500, end_ms=1000, text="Pierwszy."),
+                    Segment(revision_id=revision.id, ordinal=1, start_ms=2000, end_ms=2500, text="Drugi."),
+                ]
+            )
+            document.active_revision_id = revision.id
+            revision_id = revision.id
+        plan = self.generation.create_plan(
+            self.record.id,
+            source_revision_id=revision_id,
+            segments=[
+                {"text": "Pierwszy.", "node_kind": "subtitle_cue", "source_segment_ids": [1], "silence_after_ms": 0},
+                {"text": "Drugi.", "node_kind": "subtitle_cue", "source_segment_ids": [2], "silence_after_ms": 0},
+            ],
+        )
+        artifacts = ArtifactService(self.database, self.paths)
+        with self.database.session() as session:
+            segments = list(
+                session.scalars(
+                    select(GenerationSegment)
+                    .where(GenerationSegment.plan_revision_id == plan["active_revision_id"])
+                    .order_by(GenerationSegment.ordinal)
+                ).all()
+            )
+            segment_ids = [segment.id for segment in segments]
+        for index, (segment_id, duration) in enumerate(zip(segment_ids, (100, 150))):
+            path = self.session_dir / f"subtitle-take-{index}.wav"
+            Sine(440 + index * 110).to_audio_segment(duration=duration).export(path, format="wav").close()
+            artifact = artifacts.register(path, kind="audio", role="generation_take", session_id=self.record.id)
+            with self.database.session() as session:
+                segment = session.get(GenerationSegment, segment_id)
+                segment.status = "completed"
+                session.add(AudioTake(generation_segment_id=segment_id, artifact_id=artifact.id, kind="tts", status="completed", duration_ms=duration, is_active=True))
+
+        queued = self.generation.create_assembly(self.record.id)
+        result = WorkflowHandlers(self.database, self.paths).assemble_generation_output(
+            {"output_assembly_id": queued["id"]}, lambda *_args: None, threading.Event()
+        )
+
+        self.assertEqual(2500, result["duration_ms"])
+        artifact, output_path = artifacts.resolve(result["artifact_id"])
+        self.assertEqual(2500, len(AudioSegment.from_file(output_path)))
+        self.assertEqual([500, 2000], [item["target_start_ms"] for item in artifact.metadata_json["takes"]])
+        self.assertTrue(all(item["silence_after_ms"] == 0 for item in artifact.metadata_json["takes"]))
 
     def test_selected_run_assembles_its_cumulative_take_snapshot(self):
         segment_ids = self._plan_with_takes()

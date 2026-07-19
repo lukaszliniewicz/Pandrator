@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -102,20 +103,27 @@ def create_alignment_blocks(
     subtitles_by_index = {segment.index: segment for segment in subtitles}
     speech_blocks = _load_speech_blocks(speech_blocks_file)
     alignment_blocks: list[AudioAlignmentBlock] = []
+    invalid_blocks: list[str] = []
 
     for block in speech_blocks:
         subtitle_ids = [_coerce_int(value, -1) for value in list(block.get("subtitles") or [])]
-        block_subtitles = [
-            subtitles_by_index[subtitle_id]
-            for subtitle_id in subtitle_ids
-            if subtitle_id in subtitles_by_index
-        ]
+        block_subtitles = sorted(
+            {
+                subtitle_id: subtitles_by_index[subtitle_id]
+                for subtitle_id in subtitle_ids
+                if subtitle_id in subtitles_by_index
+            }.values(),
+            key=lambda item: (item.start_ms, item.end_ms, item.index),
+        )
         if not block_subtitles:
-            logger.warning("Skipping speech block without matching subtitles: %s", block.get("number"))
+            invalid_blocks.append(f"{block.get('number') or '?'} (no matching subtitle cues)")
             continue
 
         block_number = str(block.get("number") or "").strip()
         wav_files = match_sentence_wav_files(sentence_wavs_dir, block_number)
+        if not wav_files:
+            invalid_blocks.append(f"{block_number or '?'} (no generated audio)")
+            continue
         new_block = AudioAlignmentBlock(
             number=block_number,
             text=str(block.get("text") or ""),
@@ -138,6 +146,8 @@ def create_alignment_blocks(
         else:
             alignment_blocks.append(new_block)
 
+    if invalid_blocks:
+        raise AudioSyncError("Cannot synchronize incomplete speech blocks: " + ", ".join(invalid_blocks))
     if not alignment_blocks:
         raise ValueError("No alignment blocks could be created from the selected subtitles and speech blocks.")
     return alignment_blocks
@@ -206,10 +216,12 @@ def align_audio_blocks(
     speed_up_percent: int = 115,
     ffmpeg_executable: str = "ffmpeg",
     run_func: Callable[..., Any] = subprocess.run,
+    output_path: str | os.PathLike[str] | None = None,
 ) -> str:
     from pydub import AudioSegment
 
     session_path = Path(session_dir)
+    session_path.mkdir(parents=True, exist_ok=True)
     final_audio = AudioSegment.silent(duration=0)
     current_time = 0
     total_shift = 0
@@ -255,13 +267,14 @@ def align_audio_blocks(
             actual_speedup_factor = min(needed, speed_up_percent / 100.0)
 
         if should_speed_up and actual_speedup_factor > 1.01:
-            processed_audio = _speed_up_audio_segment(
-                block_audio,
-                actual_speedup_factor,
-                session_path,
-                ffmpeg_executable=ffmpeg_executable,
-                run_func=run_func,
-            )
+            with tempfile.TemporaryDirectory(prefix=".sync-", dir=session_path) as temporary:
+                processed_audio = _speed_up_audio_segment(
+                    block_audio,
+                    actual_speedup_factor,
+                    Path(temporary),
+                    ffmpeg_executable=ffmpeg_executable,
+                    run_func=run_func,
+                )
 
         if audio_delay > 0:
             final_audio += AudioSegment.silent(duration=audio_delay)
@@ -283,9 +296,10 @@ def align_audio_blocks(
             else:
                 total_shift -= silence_needed
 
-    output_path = session_path / "aligned_audio.wav"
-    final_audio.export(output_path, format="wav")
-    return str(output_path)
+    destination = Path(output_path) if output_path else session_path / "aligned_audio.wav"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    final_audio.export(destination, format="wav")
+    return str(destination)
 
 
 def parse_ffmpeg_max_volume(stderr_text: str) -> float:
