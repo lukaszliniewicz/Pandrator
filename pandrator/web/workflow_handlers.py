@@ -83,6 +83,60 @@ def _next_available_path(path: Path) -> Path:
     raise RuntimeError(f"Could not allocate a new output filename for {path.name}.")
 
 
+def _stage_settings_fingerprint(stage_key: str, settings: dict[str, Any]) -> dict[str, Any]:
+    """Semantic identity of a stage's settings, independent of submission shape.
+
+    Only values that can change the produced artifact are included.  Raw hashes
+    of whole settings dictionaries were unstable: the same configuration could
+    arrive flat from a stage dialog or section-shaped from resolved settings,
+    and hydrated dictionaries carry volatile provider data (keys, costs).  Both
+    caused prerequisite stages such as translation to rerun spuriously.
+    """
+
+    def _text(*keys: str) -> str:
+        for key in keys:
+            value = settings.get(key)
+            if value is not None and str(value).strip():
+                return str(value).strip()
+        return ""
+
+    def _model(*keys: str) -> str:
+        value = _text(*keys)
+        return "" if value.lower() == "default" else value
+
+    if stage_key == "translate":
+        backend = _text("translation_backend", "backend").lower() or "llm"
+        model = _model("translation_model", "translate_model", "model_name")
+        if not model and backend == "llm":
+            model = _text("llm_default_model")
+        return {
+            "backend": backend,
+            "target_language": _text("target_language").lower(),
+            "model": model,
+            "instructions": _text("translate_prompt", "instructions"),
+        }
+    if stage_key == "correct":
+        model = _model("correction_model", "correct_model", "model_name") or _text("llm_default_model")
+        return {
+            "model": model,
+            "instructions": _text("custom_correction_prompt", "instructions"),
+        }
+    return {}
+
+
+def _generation_segmentation_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    """Subset of generation settings that can change stored plan segments.
+
+    Voice, service, and model choices must not invalidate a segment plan, so
+    they are deliberately excluded from the plan revision content hash.
+    """
+    return {
+        "language": str(settings.get("language") or settings.get("target_language") or ""),
+        "paragraph_silence_ms": settings.get("paragraph_silence_ms", settings.get("silence_for_paragraphs", 700)),
+        "sentence_silence_ms": settings.get("sentence_silence_ms", settings.get("silence_between_sentences", 250)),
+    }
+
+
 class WorkflowHandlers:
     def __init__(self, database: Database, paths: DataPaths):
         self.database = database
@@ -331,21 +385,14 @@ class WorkflowHandlers:
         transformations = outcome_value.get("transformations") if isinstance(outcome_value.get("transformations"), dict) else {}
         stage_settings = payload.get("stage_settings") if isinstance(payload.get("stage_settings"), dict) else {}
         direct_settings = payload.get("settings") if isinstance(payload.get("settings"), dict) else {}
-        required = {target_key}
-        if record.workflow_kind == "audiobook" and target_key in {"generate_audio", "export"}:
-            required.update({"clean_source", "prepare_text"})
-        elif target_key in {"generate_audio", "export"}:
-            if not is_srt_source:
-                required.add("transcribe")
-            translation_parent = str(input_choices.get("translation") or "correction")
-            generation_parent = str(input_choices.get("generation") or "translation")
-            translation_required = bool(transformations.get("translation")) or generation_parent == "translation"
-            if bool(transformations.get("correction")) or generation_parent == "correction" or (translation_required and translation_parent == "correction"):
-                required.add("correct")
-            if translation_required:
-                required.add("translate")
-        if bool(transformations.get("llm_tts_document_optimization")) and target_key in {"generate_audio", "export"}:
-            required.add("optimize_document")
+        reuse_stages = {str(value) for value in (payload.get("reuse_stages") or []) if str(value)}
+        required = self._continuation_required_stages(
+            record.workflow_kind,
+            target_key,
+            is_srt_source,
+            input_choices,
+            transformations,
+        )
         runnable = [
             item for index, item in enumerate(definitions)
             if index <= target_index and item.executable and item.job_kind and (item.key in included or item.key in required)
@@ -426,10 +473,23 @@ class WorkflowHandlers:
                     )
             if existing is not None and definition.key != target_key:
                 metadata = existing_metadata
-                settings_match = (
-                    existing.settings_hash in expected_hashes
-                    or str(metadata.get("requested_settings_hash") or "") == expected_settings_hash
-                )
+                if definition.key in reuse_stages:
+                    # The caller explicitly chose to keep the current artifact
+                    # even though its settings changed. Source freshness is
+                    # still enforced below.
+                    settings_match = True
+                else:
+                    settings_match = (
+                        existing.settings_hash in expected_hashes
+                        or str(metadata.get("requested_settings_hash") or "") == expected_settings_hash
+                    )
+                    if definition.key in {"correct", "translate"}:
+                        settings_match = self._fingerprint_settings_match(
+                            definition.key,
+                            settings,
+                            metadata,
+                            fallback=settings_match,
+                        )
                 source_match = source is None
                 if source is not None:
                     source_match = (
@@ -475,6 +535,122 @@ class WorkflowHandlers:
                 return {"artifacts": produced, "target_stage": target_key}
         progress(1.0, "Workflow continuation finished")
         return {"artifacts": produced, "target_stage": target_key}
+
+    @staticmethod
+    def _continuation_required_stages(
+        workflow_kind: str,
+        target_key: str,
+        is_srt_source: bool,
+        input_choices: dict[str, Any],
+        transformations: dict[str, Any],
+    ) -> set[str]:
+        required = {target_key}
+        if workflow_kind == "audiobook" and target_key in {"generate_audio", "export"}:
+            required.update({"clean_source", "prepare_text"})
+        elif target_key in {"generate_audio", "export"}:
+            if not is_srt_source:
+                required.add("transcribe")
+            translation_parent = str(input_choices.get("translation") or "correction")
+            generation_parent = str(input_choices.get("generation") or "translation")
+            translation_required = bool(transformations.get("translation")) or generation_parent == "translation"
+            if bool(transformations.get("correction")) or generation_parent == "correction" or (translation_required and translation_parent == "correction"):
+                required.add("correct")
+            if translation_required:
+                required.add("translate")
+        if bool(transformations.get("llm_tts_document_optimization")) and target_key in {"generate_audio", "export"}:
+            required.add("optimize_document")
+        return required
+
+    def _current_stage_fingerprint(self, stage_key: str, settings: dict[str, Any]) -> dict[str, Any] | None:
+        """Fingerprint of the settings a stage would run with right now.
+
+        LLM-backed stages are hydrated first so the effective (default) model
+        is compared instead of the raw request shape.  ``None`` means the
+        fingerprint cannot be computed (for example the provider is no longer
+        configured), in which case the artifact must simply be reused.
+        """
+        backend = str(settings.get("translation_backend") or settings.get("backend") or "llm").strip().lower()
+        if stage_key == "translate" and backend == "deepl":
+            return _stage_settings_fingerprint(stage_key, settings)
+        stage_alias = "correction" if stage_key == "correct" else "translation"
+        try:
+            hydrated = self._with_database_llm_settings(dict(settings), stage_alias)
+        except ValueError:
+            return None
+        return _stage_settings_fingerprint(stage_key, hydrated)
+
+    def _fingerprint_settings_match(
+        self,
+        stage_key: str,
+        settings: dict[str, Any],
+        metadata: dict[str, Any],
+        *,
+        fallback: bool,
+    ) -> bool:
+        """Compare semantic fingerprints when one was stored; else keep legacy hashes."""
+        stored = metadata.get("settings_fingerprint")
+        if not isinstance(stored, dict) or not stored:
+            return fallback
+        current = self._current_stage_fingerprint(stage_key, settings)
+        if current is None:
+            # Cannot prove a change; reuse rather than spend on a rerun.
+            return True
+        return stored == current
+
+    def settings_mismatches(self, session_id: str, target_stage: str = "generate_audio") -> list[dict[str, Any]]:
+        """Report included prerequisites whose stored settings fingerprint no
+        longer matches the settings they would run with today.  Used to ask
+        the user before an automatic rerun instead of rerunning silently."""
+        from .workspace import WorkspaceSettingsService, adapt_runtime_settings
+
+        record = self._session_record(session_id)
+        if record.workflow_kind == "audiobook":
+            return []
+        upload = self._latest_stage_input(session_id, ("upload",))
+        filename = str((upload.metadata_json or {}).get("original_filename") or upload.relative_path).lower() if upload else ""
+        with self.database.session() as session:
+            outcome = session.scalar(select(OutcomePlan).where(OutcomePlan.session_id == session_id))
+            outcome_value = dict(outcome.value_json or {}) if outcome else {}
+            fingerprints = {
+                stage_key: dict(artifact.metadata_json or {}).get("settings_fingerprint")
+                for stage_key, artifact in selected_artifacts(session, session_id).items()
+            }
+        input_choices = outcome_value.get("inputs") if isinstance(outcome_value.get("inputs"), dict) else {}
+        transformations = outcome_value.get("transformations") if isinstance(outcome_value.get("transformations"), dict) else {}
+        required = self._continuation_required_stages(
+            record.workflow_kind,
+            target_stage,
+            filename.endswith(".srt"),
+            input_choices,
+            transformations,
+        )
+        included = set(record.included_stages_json or [])
+        section_map = {"correct": ("correction", "subtitles"), "translate": ("translation", "subtitles")}
+        settings_service = WorkspaceSettingsService(self.database)
+        mismatches: list[dict[str, Any]] = []
+        for stage_key, sections in section_map.items():
+            if stage_key not in required and stage_key not in included:
+                continue
+            stored = fingerprints.get(canonical_stage_key(stage_key))
+            if not isinstance(stored, dict) or not stored:
+                continue
+            resolved, _ = settings_service.resolve(session_id, list(sections))
+            current_raw: dict[str, Any] = {}
+            for section in sections:
+                current_raw.update(adapt_runtime_settings(section, resolved.get(section, {})))
+            current = self._current_stage_fingerprint(stage_key, current_raw)
+            if current is None or current == stored:
+                continue
+            changed = sorted(key for key in set(stored) | set(current) if stored.get(key) != current.get(key))
+            mismatches.append(
+                {
+                    "stage": stage_key,
+                    "changed_fields": changed,
+                    "stored": stored,
+                    "current": current,
+                }
+            )
+        return mismatches
 
     def _session_dir(self, session_id: str) -> Path:
         with self.database.session() as session:
@@ -862,7 +1038,12 @@ class WorkflowHandlers:
             session_id=session_id,
             parent_ids=[source_artifact.id],
             settings=settings,
-            metadata={"source_artifact_id": source_artifact.id, "source_content_hash": source_artifact.content_hash, "requested_settings_hash": requested_settings_hash},
+            metadata={
+                "source_artifact_id": source_artifact.id,
+                "source_content_hash": source_artifact.content_hash,
+                "requested_settings_hash": requested_settings_hash,
+                "settings_fingerprint": _stage_settings_fingerprint("correct", settings),
+            },
         )
         self._store_srt_document(
             session_id,
@@ -920,7 +1101,12 @@ class WorkflowHandlers:
             session_id=session_id,
             parent_ids=[source_artifact.id],
             settings=settings,
-            metadata={"source_artifact_id": source_artifact.id, "source_content_hash": source_artifact.content_hash, "requested_settings_hash": requested_settings_hash},
+            metadata={
+                "source_artifact_id": source_artifact.id,
+                "source_content_hash": source_artifact.content_hash,
+                "requested_settings_hash": requested_settings_hash,
+                "settings_fingerprint": _stage_settings_fingerprint("translate", settings),
+            },
         )
         self._store_srt_document(
             session_id,
@@ -1612,9 +1798,30 @@ class WorkflowHandlers:
         source_revision_id: str | None = None,
     ) -> tuple[str, list[str]]:
         clean = [item for item in records if str(item.get("text") or item.get("original_sentence") or "").strip()]
-        digest = hashlib.sha256(json.dumps({"records": clean, "settings": settings}, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+        digest = hashlib.sha256(
+            json.dumps(
+                {"records": clean, "settings": _generation_segmentation_settings(settings)},
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest()
         with self.database.session() as session:
             plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
+            if plan is not None and plan.active_revision_id:
+                active = session.get(GenerationPlanRevision, plan.active_revision_id)
+                if active is not None and active.content_hash == digest:
+                    # Identical source content and segmentation settings: keep
+                    # the existing segments so takes, edits, and run history
+                    # stay attached instead of being orphaned by a new revision.
+                    segment_ids = list(
+                        session.scalars(
+                            select(GenerationSegment.id)
+                            .where(GenerationSegment.plan_revision_id == active.id)
+                            .order_by(GenerationSegment.ordinal)
+                        ).all()
+                    )
+                    return active.id, [str(segment_id) for segment_id in segment_ids]
             if plan is None:
                 plan = GenerationPlan(session_id=session_id)
                 session.add(plan)
@@ -2347,7 +2554,7 @@ class WorkflowHandlers:
                         existing_take.created_at = utcnow()
                     segment.status = "completed"
                     segment.updated_at = utcnow()
-                    mark_output_assemblies_stale(session, session_id)
+                    mark_output_assemblies_stale(session, session_id, generation_run_id=run_id)
                 generated += 1
                 progress(
                     optimization_share + ((index + 1) / len(segment_ids)) * (1.0 - optimization_share),

@@ -329,6 +329,7 @@ class WorkflowService:
         run_values = dict(settings or {})
         requested_source_artifact_id = str(run_values.pop("source_artifact_id", "") or "")
         provided_stage_settings = run_values.pop("stage_settings", {})
+        reuse_stages = [str(value) for value in (run_values.pop("reuse_stages", []) or []) if str(value)]
         structured_override = {
             section: dict(run_values.get(section) or {})
             for section in requested_sections
@@ -438,6 +439,8 @@ class WorkflowService:
             }
         if stage_key == "generate_audio":
             payload.update({"target_stage": stage_key, "stage_settings": resolved_stage_settings})
+            if reuse_stages:
+                payload["reuse_stages"] = reuse_stages
             resource_keys = self._resource_keys(session_id, stage_key, flattened)
             transformations = (outcome.value_json or {}).get("transformations", {}) if outcome and isinstance(outcome.value_json, dict) else {}
             if any(bool(transformations.get(key)) for key in ("correction", "translation", "llm_tts_optimization", "llm_tts_document_optimization")):

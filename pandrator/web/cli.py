@@ -426,9 +426,22 @@ def command_workflow_show(args) -> int:
 
 
 def command_workflow_run(args) -> int:
-    _, database = _database(args)
+    paths, database = _database(args)
     try:
         settings = json.loads(args.settings)
+        if not isinstance(settings, dict):
+            raise ValueError("--settings must be a JSON object.")
+        if args.stage == "generate_audio" and not args.rerun_changed_prerequisites:
+            mismatches = WorkflowHandlers(database, paths).settings_mismatches(args.session_id, args.stage)
+            if mismatches:
+                settings["reuse_stages"] = [item["stage"] for item in mismatches]
+                for item in mismatches:
+                    changed = ", ".join(item["changed_fields"]) or "settings"
+                    print(
+                        f"Reusing the existing {item['stage']} output even though {changed} changed; "
+                        "pass --rerun-changed-prerequisites to recreate it.",
+                        file=sys.stderr,
+                    )
         job = WorkflowService(database, JobQueue(database)).run_stage(args.session_id, args.stage, settings)
         _emit(_job_dict(job), args.json)
         return 0
@@ -720,6 +733,11 @@ def build_parser() -> argparse.ArgumentParser:
     workflow_run.add_argument("session_id")
     workflow_run.add_argument("stage")
     workflow_run.add_argument("--settings", default="{}")
+    workflow_run.add_argument(
+        "--rerun-changed-prerequisites",
+        action="store_true",
+        help="Recreate prerequisite outputs (correction, translation) whose settings changed instead of reusing them.",
+    )
     workflow_run.set_defaults(handler=command_workflow_run)
 
     artifact = commands.add_parser("artifact", help="Inspect managed artifacts.")

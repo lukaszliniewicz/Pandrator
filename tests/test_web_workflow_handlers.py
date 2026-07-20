@@ -17,11 +17,11 @@ from pandrator.web.artifacts import ArtifactService
 from pandrator.web.database import Database
 from pandrator.web.credentials import auxiliary_credential_key, upsert_credential
 from pandrator.web.jobs import JobQueue
-from pandrator.web.models import Artifact, ArtifactEdge, AudioTake, GenerationRun, GenerationSegment, OutputAssembly, SessionRecord
+from pandrator.web.models import Artifact, ArtifactEdge, AudioTake, GenerationPlan, GenerationPlanRevision, GenerationRun, GenerationSegment, OutputAssembly, SessionRecord
 from pandrator.web.sessions import SessionService
 from pandrator.web.workflow_handlers import WorkflowHandlers
 from pandrator.web.tts_optimization import OptimizationUsage
-from pandrator.web.workspace import GenerationService, OutcomePlanService, WorkspaceSettingsService
+from pandrator.web.workspace import GenerationService, OutcomePlanService, WorkspaceSettingsService, mark_output_assemblies_stale
 from tests.web_test_support import prepare_web_test_data_root
 
 
@@ -166,6 +166,200 @@ class WebWorkflowHandlerTests(unittest.TestCase):
 
         translate.assert_not_called()
         self.assertEqual("generate_audio", result["target_stage"])
+
+    @staticmethod
+    def _fake_llm_hydration(settings, stage):
+        alias = "correction_model" if stage == "correction" else "translation_model"
+        requested = str(settings.get("model_name") or "").strip()
+        for key in (alias, "correct_model" if stage == "correction" else "translate_model"):
+            requested = requested or str(settings.get(key) or "").strip()
+        if requested == "default":
+            requested = ""
+        return {
+            **settings,
+            "llm_provider_configs": [],
+            "llm_default_model": "mock/default-model",
+            "request_timeout_seconds": 600,
+            alias: requested or "mock/default-model",
+        }
+
+    def _voiceover_session_with_translation(self, fingerprint):
+        with self.database.session() as session:
+            session.get(SessionRecord, self.session.id).workflow_kind = "voiceover"
+        source_path = self.paths.uploads / "fingerprint-source.srt"
+        source_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n", encoding="utf-8")
+        source = self.artifacts.register(
+            source_path,
+            kind="srt",
+            role="upload",
+            session_id=self.session.id,
+            metadata={"original_filename": source_path.name},
+        )
+        translated_path = self.session_dir / "fingerprint-translation.srt"
+        translated_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nCześć\n", encoding="utf-8")
+        translation_metadata = {
+            "source_artifact_id": source.id,
+            "source_content_hash": source.content_hash,
+        }
+        if fingerprint is not None:
+            translation_metadata["settings_fingerprint"] = fingerprint
+        translation = self.artifacts.register(
+            translated_path,
+            kind="srt",
+            role="translation",
+            session_id=self.session.id,
+            parent_ids=[source.id],
+            metadata=translation_metadata,
+        )
+        outcome = OutcomePlanService(self.database)
+        current = outcome.get(self.session.id)
+        value = current["value"]
+        value["transformations"] = {**value.get("transformations", {}), "translation": True, "generate_audio": True}
+        value["inputs"] = {**value.get("inputs", {}), "translation": "source", "generation": "translation"}
+        outcome.update(self.session.id, current["revision"], value)
+        return source, translation
+
+    def _continue_generation(self, translate_settings, *, reuse_stages=()):
+        with mock.patch.object(self.handlers, "translate") as translate, mock.patch.object(
+            self.handlers,
+            "_run_reviewable_generation",
+            return_value={"generation_run_id": "fixture", "status": "completed"},
+        ), mock.patch.object(self.handlers, "_with_database_llm_settings", side_effect=self._fake_llm_hydration):
+            result = self.handlers.continue_workflow(
+                {
+                    "session_id": self.session.id,
+                    "target_stage": "generate_audio",
+                    "stage_settings": {"translate": translate_settings},
+                    "reuse_stages": list(reuse_stages),
+                },
+                self.progress,
+                threading.Event(),
+            )
+        self.assertEqual("generate_audio", result["target_stage"])
+        return translate
+
+    def test_translation_fingerprint_reuse_ignores_submission_shape(self):
+        self._voiceover_session_with_translation(
+            {"backend": "llm", "target_language": "pl", "model": "mock/default-model", "instructions": ""}
+        )
+        # Same semantics as the stored run, but in the flat stage-dialog shape
+        # that previously produced a different whole-dict hash and a rerun.
+        translate = self._continue_generation(
+            {"translation_backend": "llm", "target_language": "pl", "translate_model": "default", "instructions": ""}
+        )
+        translate.assert_not_called()
+
+    def test_translation_reruns_only_when_fingerprint_changes(self):
+        self._voiceover_session_with_translation(
+            {"backend": "llm", "target_language": "pl", "model": "mock/default-model", "instructions": ""}
+        )
+        translate = self._continue_generation({"target_language": "de"})
+        translate.assert_called_once()
+
+    def test_reuse_stages_choice_keeps_translation_despite_change(self):
+        self._voiceover_session_with_translation(
+            {"backend": "llm", "target_language": "pl", "model": "mock/default-model", "instructions": ""}
+        )
+        translate = self._continue_generation({"target_language": "de"}, reuse_stages=("translate",))
+        translate.assert_not_called()
+
+    def test_settings_mismatches_detects_translation_target_language_change(self):
+        self._voiceover_session_with_translation(
+            {"backend": "llm", "target_language": "pl", "model": "mock/default-model", "instructions": ""}
+        )
+        with self.database.session() as session:
+            session.get(SessionRecord, self.session.id).target_language = "de"
+        with mock.patch.object(self.handlers, "_with_database_llm_settings", side_effect=self._fake_llm_hydration):
+            mismatches = self.handlers.settings_mismatches(self.session.id, "generate_audio")
+        self.assertEqual(1, len(mismatches))
+        self.assertEqual("translate", mismatches[0]["stage"])
+        self.assertIn("target_language", mismatches[0]["changed_fields"])
+
+    def test_settings_mismatches_ignores_matching_or_legacy_artifacts(self):
+        # A legacy artifact without a stored fingerprint cannot be compared and
+        # must not produce a prompt.
+        self._voiceover_session_with_translation(None)
+        with mock.patch.object(self.handlers, "_with_database_llm_settings", side_effect=self._fake_llm_hydration):
+            self.assertEqual([], self.handlers.settings_mismatches(self.session.id, "generate_audio"))
+        # A fingerprint that still matches the resolved settings is quiet too.
+        self._voiceover_session_with_translation(
+            {"backend": "llm", "target_language": "pl", "model": "mock/default-model", "instructions": ""}
+        )
+        with self.database.session() as session:
+            session.get(SessionRecord, self.session.id).target_language = "pl"
+        with mock.patch.object(self.handlers, "_with_database_llm_settings", side_effect=self._fake_llm_hydration):
+            self.assertEqual([], self.handlers.settings_mismatches(self.session.id, "generate_audio"))
+
+    def test_generation_plan_reuses_revision_for_identical_content(self):
+        records = [{"text": "First sentence.", "paragraph": "yes"}, {"text": "Second sentence."}]
+        settings = {"language": "en", "paragraph_silence_ms": 700, "sentence_silence_ms": 250, "voice": "alice"}
+        first_id, first_segments = self.handlers._store_generation_plan(self.session.id, records, settings=settings)
+        # Voice, service, and model choices do not alter segmentation, so the
+        # plan revision (and with it takes, edits, and run history) is kept.
+        second_id, second_segments = self.handlers._store_generation_plan(
+            self.session.id,
+            records,
+            settings={**settings, "voice": "bob", "service": "Kokoro", "model": "other"},
+        )
+        self.assertEqual(first_id, second_id)
+        self.assertEqual(first_segments, second_segments)
+        changed_silence_id, _ = self.handlers._store_generation_plan(
+            self.session.id,
+            records,
+            settings={**settings, "sentence_silence_ms": 500},
+        )
+        self.assertNotEqual(first_id, changed_silence_id)
+        with self.database.session() as session:
+            plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == self.session.id))
+            self.assertEqual(changed_silence_id, plan.active_revision_id)
+        third_id, _ = self.handlers._store_generation_plan(
+            self.session.id,
+            [{"text": "Changed sentence."}],
+            settings=settings,
+        )
+        self.assertNotEqual(changed_silence_id, third_id)
+
+    def test_mark_output_assemblies_stale_preserves_other_runs(self):
+        plan_revision_id, _ = self.handlers._store_generation_plan(
+            self.session.id,
+            [{"text": "One."}],
+            settings={"language": "en"},
+        )
+        with self.database.session() as session:
+            first_run = GenerationRun(
+                session_id=self.session.id,
+                plan_revision_id=plan_revision_id,
+                sequence_number=1,
+                operation="generate",
+                status="completed",
+            )
+            second_run = GenerationRun(
+                session_id=self.session.id,
+                plan_revision_id=plan_revision_id,
+                sequence_number=2,
+                operation="generate",
+                status="completed",
+            )
+            session.add_all([first_run, second_run])
+            session.flush()
+            first_assembly = OutputAssembly(session_id=self.session.id, generation_run_id=first_run.id, status="completed")
+            second_assembly = OutputAssembly(session_id=self.session.id, generation_run_id=second_run.id, status="completed")
+            selection_assembly = OutputAssembly(session_id=self.session.id, generation_run_id=None, status="completed")
+            session.add_all([first_assembly, second_assembly, selection_assembly])
+            session.flush()
+            ids = (first_run.id, first_assembly.id, second_assembly.id, selection_assembly.id)
+
+            mark_output_assemblies_stale(session, self.session.id, generation_run_id=second_run.id)
+            self.assertEqual("completed", session.get(OutputAssembly, ids[1]).status)
+            self.assertEqual("stale", session.get(OutputAssembly, ids[2]).status)
+            self.assertEqual("stale", session.get(OutputAssembly, ids[3]).status)
+
+            for assembly_id in ids[1:]:
+                session.get(OutputAssembly, assembly_id).status = "completed"
+            mark_output_assemblies_stale(session, self.session.id)
+            self.assertEqual("completed", session.get(OutputAssembly, ids[1]).status)
+            self.assertEqual("completed", session.get(OutputAssembly, ids[2]).status)
+            self.assertEqual("stale", session.get(OutputAssembly, ids[3]).status)
 
     def test_url_download_uses_ytdlp_and_records_provenance(self):
         captured = {}

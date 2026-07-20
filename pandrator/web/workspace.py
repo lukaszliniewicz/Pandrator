@@ -385,18 +385,29 @@ def stable_hash(value: Any) -> str:
     ).hexdigest()
 
 
-def mark_output_assemblies_stale(session, session_id: str) -> None:
-    """Invalidate completed assemblies and their exports after audio-plan changes."""
+def mark_output_assemblies_stale(session, session_id: str, *, generation_run_id: str | None = None) -> None:
+    """Invalidate completed assemblies and their exports after audio-plan changes.
+
+    Assemblies are scoped to the run whose takes were produced or replaced:
+    historical assemblies of other completed runs remain previewable.  When no
+    run is given (segment edits, take selection), only current-selection
+    assemblies without a run are affected, because run-scoped assemblies keep
+    reproducing the immutable takes of their own run.
+    """
     from .artifacts import ArtifactService
 
-    records = list(
-        session.scalars(
-            select(OutputAssembly).where(
-                OutputAssembly.session_id == session_id,
-                OutputAssembly.status == "completed",
-            )
-        ).all()
-    )
+    filters = [
+        OutputAssembly.session_id == session_id,
+        OutputAssembly.status == "completed",
+    ]
+    if generation_run_id is None:
+        filters.append(OutputAssembly.generation_run_id.is_(None))
+    else:
+        filters.append(
+            (OutputAssembly.generation_run_id.is_(None))
+            | (OutputAssembly.generation_run_id == generation_run_id)
+        )
+    records = list(session.scalars(select(OutputAssembly).where(*filters)).all())
     for record in records:
         record.status = "stale"
         record.updated_at = utcnow()

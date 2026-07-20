@@ -62,6 +62,7 @@ from .parity_registry import build_registry
 from .schemas import AgentRunCreateRequest, BootstrapRequest, BundleExportRequest, BundleImportRequest, ChunkUploadInitialize, CredentialUpdate, GenerationPlanCreate, GenerationSegmentUpdate, GenerationStartRequest, JobCreate, LoginRequest, ModelCreate, ModelUpdate, OptimizationReviewRequest, OutcomePlanUpdate, OutputAssemblyCreateRequest, PdfEditRequest, ProviderCreate, ProviderTestRequest, ProviderUpdate, RvcConvertRequest, RvcModelUploadRequest, SessionCreate, SessionSettingsUpdate, SessionUpdate, SettingUpdate, SourceAttachRequest, SourceReuseRequest, SourceUpdateRequest, SourceUrlRequest, StageSelectionUpdate, SubtitleReviewRequest, TokenCreateRequest, TrainingCreateRequest, TtsEndpointDiscoveryRequest, TtsVoicePreviewRequest, VoiceCreate, VoiceTranscriptReview
 from .sessions import RevisionConflict, SessionService
 from .subtitle_review import SubtitleReviewService
+from .workflow_handlers import WorkflowHandlers
 from .workflows import WorkflowService
 from .uploads import ChunkUploadService
 from .voice_library import ensure_bundled_voice
@@ -176,6 +177,7 @@ def create_app(
     sessions = SessionService(database)
     artifacts = ArtifactService(database, paths)
     workflows = WorkflowService(database, jobs)
+    workflow_handlers = WorkflowHandlers(database, paths)
     workspace_settings = WorkspaceSettingsService(database)
     outcome_plans = OutcomePlanService(database)
     source_library = SourceLibraryService(database)
@@ -1394,6 +1396,15 @@ def create_app(
             return error_response("not_found", "Session not found.", 404)
         except ValueError as error:
             return error_response("stage_unavailable", str(error), 409)
+
+    @app.get("/api/v1/sessions/<session_id>/stages/<stage_key>/settings-mismatches")
+    @require_auth
+    def workflow_stage_settings_mismatches(session_id: str, stage_key: str):
+        try:
+            sessions.get(session_id)
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
+        return jsonify({"mismatches": workflow_handlers.settings_mismatches(session_id, stage_key)})
 
     @app.put("/api/v1/sessions/<session_id>/stages/<stage_key>/selection")
     @require_auth

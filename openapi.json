@@ -3140,6 +3140,16 @@
         }
       }
     },
+    "/api/v1/sessions/{sessionId}/stages/{stageKey}/settings-mismatches": {
+      "get": {
+        "operationId": "getStageSettingsMismatches",
+        "responses": {
+          "200": {
+            "description": "Prerequisite settings changed since the stored artifacts were created"
+          }
+        }
+      }
+    },
     "/api/v1/sessions/{sessionId}/subtitles": {
       "get": {
         "operationId": "getSubtitleComparison",

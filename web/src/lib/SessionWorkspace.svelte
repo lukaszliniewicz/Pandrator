@@ -85,6 +85,9 @@
   let sourceDialog = $state(false);
   let sourceMessage = $state('');
   let pendingRun = $state<{stage: Stage; impact: any} | null>(null);
+  let pendingSettingsMismatch = $state<{stage: Stage; mismatches: {stage: string; changed_fields: string[]}[]} | null>(null);
+  const mismatchFieldLabel = (field: string) => ({backend: 'backend', target_language: 'target language', model: 'model', instructions: 'guidance'}[field] ?? field);
+  const mismatchStageLabel = (key: string) => (key === 'translate' ? 'Translation' : 'Correction');
   let settingsStage = $state<Stage | null>(null);
   let stageMessage = $state('');
   let fullSettingsSection = $state('');
@@ -208,7 +211,7 @@
     return `${label} · ${timing} · ${readiness}`;
   };
 
-  async function run(stage: Stage, confirmed = false) {
+  async function run(stage: Stage, confirmed = false, reuseStages: string[] = []) {
     if (stage.key === 'preview') {
       reviewOpen = true;
       return;
@@ -226,12 +229,24 @@
       }
       return;
     }
+    if (!confirmed && stage.key === 'generate_audio') {
+      try {
+        const preflight = await api<any>(`/sessions/${session.id}/stages/${stage.key}/settings-mismatches`);
+        if ((preflight?.mismatches ?? []).length) {
+          pendingSettingsMismatch = { stage, mismatches: preflight.mismatches };
+          return;
+        }
+      } catch { /* the settings check is advisory; continue with the run */ }
+    }
     error = '';
     try {
       const routeKey = stage.key === 'optimize_tts' && documentOptimizationEnabled ? 'optimize_document' : stage.key;
+      const body = stage.key === 'generate_audio'
+        ? { ...(stageSettings[stage.key] ?? {}), stage_settings: stageSettings, ...(reuseStages.length ? { reuse_stages: reuseStages } : {}) }
+        : (stageSettings[stage.key] ?? {});
       await api<JobRecord>(`/sessions/${session.id}/stages/${routeKey}/run`, {
         method: 'POST',
-        body: JSON.stringify(stage.key === 'generate_audio' ? { ...(stageSettings[stage.key] ?? {}), stage_settings: stageSettings } : (stageSettings[stage.key] ?? {}))
+        body: JSON.stringify(body)
       });
       await load();
     } catch (caught) {
@@ -689,7 +704,18 @@
 
   async function generateAutomatically() {
     const stage = snapshot?.stages.find((item) => item.key === 'generate_audio');
-    if (stage) await run(stage);
+    if (!stage) return;
+    try {
+      const preflight = await api<any>(`/sessions/${session.id}/stages/generate_audio/settings-mismatches`);
+      const mismatches = preflight?.mismatches ?? [];
+      if (mismatches.length) {
+        const names = mismatches.map((item: any) => (item.stage === 'translate' ? 'translation' : 'correction')).join(' and ');
+        sourceMessage = `Reusing the existing ${names} even though its settings changed; run the stage manually to update it.`;
+        await run(stage, true, mismatches.map((item: any) => String(item.stage)));
+        return;
+      }
+    } catch { /* the settings check is advisory; continue with the run */ }
+    await run(stage);
   }
 
   onMount(async () => {
@@ -766,6 +792,26 @@
       {#if pendingRun.impact.dependent_selections?.length}<div class="mt-4 rounded-xl border border-amber-400/40 bg-amber-500/10 p-4 text-sm"><strong>Selections that will need a compatible new version</strong><div class="mt-2 flex flex-wrap gap-2">{#each pendingRun.impact.dependent_selections as dependent}<span class="rounded-full bg-[var(--paper-strong)] px-2.5 py-1 text-xs font-semibold">{artifactRoleLabel(dependent.role)}</span>{/each}</div></div>{/if}
       {#if pendingRun.impact.descendant_total}<p class="muted mt-4 text-xs">{pendingRun.impact.descendant_total} dependent artifact{pendingRun.impact.descendant_total===1?'':'s'}, including audio takes and exports where applicable, will remain available on the earlier path.</p>{/if}
       <div class="mt-6 flex justify-end gap-2"><button onclick={()=>pendingRun=null} class="rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold">Cancel</button><button onclick={async()=>{const stage=pendingRun!.stage;pendingRun=null;await run(stage,true)}} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white"><Play size={16}/> Run and switch when ready</button></div>
+    </section>
+  </div>
+{/if}
+
+{#if pendingSettingsMismatch}
+  <div class="fixed inset-0 z-[75] grid place-items-center bg-black/40 p-5 backdrop-blur-sm" role="presentation" onclick={(event)=>event.target===event.currentTarget&&(pendingSettingsMismatch=null)}>
+    <!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
+    <section class="surface w-full max-w-lg rounded-[1.7rem] p-7" role="dialog" aria-modal="true" aria-labelledby="mismatch-title">
+      <div class="flex items-start justify-between gap-4"><div><div class="eyebrow">Before generation</div><h2 id="mismatch-title" class="mt-1 text-2xl font-semibold">Prerequisite settings changed</h2></div><button onclick={()=>pendingSettingsMismatch=null} aria-label="Close settings change prompt" class="rounded-lg p-2"><X size={19}/></button></div>
+      <p class="muted mt-4 text-sm leading-relaxed">These stages already produced output with different settings. Recreating it spends LLM usage; reusing it keeps the current text, takes, and assembled output intact.</p>
+      <div class="mt-4 space-y-2">
+        {#each pendingSettingsMismatch.mismatches as mismatch}
+          <div class="rounded-xl border border-amber-400/40 bg-amber-500/10 p-4 text-sm"><strong>{mismatchStageLabel(mismatch.stage)}</strong><span class="muted"> — changed: {(mismatch.changed_fields?.length ? mismatch.changed_fields : ['settings']).map(mismatchFieldLabel).join(', ')}</span></div>
+        {/each}
+      </div>
+      <div class="mt-6 flex flex-wrap justify-end gap-2">
+        <button onclick={()=>pendingSettingsMismatch=null} class="rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold">Cancel</button>
+        <button onclick={async()=>{const pending=pendingSettingsMismatch!;pendingSettingsMismatch=null;await run(pending.stage,true,pending.mismatches.map((item)=>item.stage))}} class="rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold">Use current output</button>
+        <button onclick={async()=>{const pending=pendingSettingsMismatch!;pendingSettingsMismatch=null;await run(pending.stage,true)}} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white"><RefreshCw size={16}/> Rerun</button>
+      </div>
     </section>
   </div>
 {/if}
