@@ -93,7 +93,11 @@ test('sessions page launches creation and workspace source picker exposes every 
   await expect(page.getByRole('button', { name: 'Source library' })).toBeVisible();
   await page.getByRole('button', { name: 'Paste text' }).click();
   await page.getByLabel('Source name').fill('Pasted source');
-  await page.getByLabel('Text').fill('This source was pasted directly into an existing session.');
+  await page.getByLabel('Text').fill('This source source was pasted directly into an existing session.');
+  await page.getByLabel('Find in pasted source').fill('source');
+  await page.getByLabel('Replace in pasted source').fill('asset');
+  await page.getByRole('button', { name: 'Replace all' }).click();
+  await expect(page.getByLabel('Text')).toHaveValue('This asset asset was pasted directly into an existing session.');
   await page.getByRole('button', { name: 'Add and select' }).click();
   await expect(page.getByText('Source added and selected as the current input.')).toBeVisible();
   const attached = await page.request.get(`/api/v1/sessions/${session.id}/sources`);
@@ -209,6 +213,28 @@ test('generation segments support Ctrl and Shift multi-selection in both review 
   await sentences.nth(0).click({ modifiers: ['Control'] });
   await expect(page.locator('.reading-segment.selected-sentence')).toHaveCount(2);
   await expect(page.getByRole('button', { name: 'RVC selected (2)' })).toBeVisible();
+});
+
+test('generation segment search and replace preserves partial words and saves every edit', async ({ page }) => {
+  await signIn(page);
+  const sessionId = await createGenerationPlan(page, [
+    { text: 'A cat waits.' },
+    { text: 'A catfish and cat.' }
+  ]);
+
+  await page.goto(`/sessions/${sessionId}`);
+  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByLabel('Find in generation segments').fill('cat');
+  await page.getByLabel('Replace in generation segments').fill('dog');
+  await page.getByRole('button', { name: 'Match whole word' }).click();
+  await expect(page.getByText('1 / 2', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Replace all' }).click();
+
+  const fields = page.locator('textarea[data-generation-search-index]');
+  await expect(fields.nth(0)).toHaveValue('A dog waits.');
+  await expect(fields.nth(1)).toHaveValue('A catfish and dog.');
+  const saved = await page.request.get(`/api/v1/sessions/${sessionId}/generation-segments`);
+  expect((await saved.json()).items.map((item: any) => item.text)).toEqual(['A dog waits.', 'A catfish and dog.']);
 });
 
 test('editorial workspace visual smoke', async ({ page }) => {

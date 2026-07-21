@@ -1,10 +1,12 @@
 <script lang="ts">
   import { Columns3, Filter, Merge, Play, Save, Scissors, Trash2, X } from '@lucide/svelte';
   import { api } from './api';
-  import { onDestroy, onMount } from 'svelte';
+  import { onDestroy, onMount, tick } from 'svelte';
   import GuidedTour from './GuidedTour.svelte';
   import AudioPlayer from './AudioPlayer.svelte';
   import TextDiff from './TextDiff.svelte';
+  import SearchReplaceBar from './SearchReplaceBar.svelte';
+  import type { TextReplacement, TextSearchMatch } from './search-replace';
 
   type Segment = { id?: string; ordinal: number; start_ms: number; end_ms: number; text: string; speaker?: string | null };
   type Stage = { revision: number; segments: Segment[] };
@@ -27,6 +29,7 @@
   const tourSteps = [{section:'Review',title:'Lineage keeps changes together',body:'Rows group transcription, correction, and translation through split/merge lineage, with temporal overlap for legacy artifacts.'},{section:'Review',title:'Edit the selected revision',body:'Change text and boundaries, split a segment, or merge it with the next while comparison columns remain visible.'},{section:'Review',title:'Saving creates history',body:'A save creates a reviewed immutable revision and invalidates only affected descendants.'}];
   const availableStages = $derived((['transcription', 'correction', 'translation', 'tts_optimization'] as const).filter((stage) => payload?.stages[stage]));
   const visibleRows = $derived((payload?.rows ?? []).filter((row) => !changedOnly || row.changed));
+  const editableTexts = $derived(payload?.stages[editStage]?.segments.map((segment) => segment.text) ?? []);
 
   function stageText(row: Row, stage: ReviewStage) {
     return (row[stage] ?? []).map((segment) => segment.text).join('\n');
@@ -77,6 +80,25 @@
   }
 
   function removeSegment(segment: Segment) { const records=payload?.stages[editStage]?.segments; if(records) records.splice(records.indexOf(segment),1); }
+  function searchIndex(segment: Segment) { return payload?.stages[editStage]?.segments.indexOf(segment) ?? -1; }
+
+  function applySearchReplacements(updates: TextReplacement[]) {
+    const records = payload?.stages[editStage]?.segments;
+    if (!records) return;
+    for (const update of updates) {
+      if (records[update.index]) records[update.index].text = update.text;
+    }
+  }
+
+  async function navigateSearchMatch(match: TextSearchMatch) {
+    if (diffView) diffView = false;
+    if (changedOnly) changedOnly = false;
+    await tick();
+    const field = document.querySelector<HTMLTextAreaElement>(`[data-subtitle-search-index="${match.itemIndex}"]`);
+    field?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    field?.focus({ preventScroll: true });
+    field?.setSelectionRange(match.start, match.end);
+  }
   function stopCuePreview(pause = false) {
     if (cuePreviewFrame !== null) window.cancelAnimationFrame(cuePreviewFrame);
     cuePreviewFrame = null;
@@ -139,6 +161,7 @@
       </div>
     </header>
     {#if sourceArtifactId}<div class="border-b border-[var(--line)] px-5 py-3 sm:px-7"><AudioPlayer bind:element={audioPreview} src={`/api/v1/artifacts/${sourceArtifactId}/content`} label="Source audio preview"/></div>{/if}
+    {#if payload?.stages[editStage]}<div class="border-b border-[var(--line)] px-5 py-2 sm:px-7"><SearchReplaceBar texts={editableTexts} onreplace={applySearchReplacements} onnavigate={navigateSearchMatch} label={`${editStage.replaceAll('_', ' ')} segments`}/></div>{/if}
     {#if error}<div class="mx-5 mt-4 rounded-xl border border-red-400/40 bg-red-500/10 px-4 py-3 text-sm sm:mx-7">{error}</div>{/if}
     {#if diffView}<div class="border-b border-[var(--line)] bg-[var(--accent-soft)] px-5 py-2 text-xs sm:px-7">Side-by-side diff is read-only. Turn off <strong>Diff view</strong> to edit cue text or timing.</div>{/if}
     <div class="min-h-0 flex-1 overflow-auto">
@@ -149,7 +172,7 @@
           <thead class="sticky top-0 z-10 bg-[var(--paper-strong)]"><tr><th class="w-32 border-b border-r border-[var(--line)] p-3 text-left">Timing</th>{#each availableStages as stage}<th class="border-b border-r border-[var(--line)] p-3 text-left capitalize last:border-r-0">{stage}</th>{/each}</tr></thead>
           <tbody>{#each visibleRows as row}<tr class:changed={row.changed} class="align-top"><td class="muted border-b border-r border-[var(--line)] p-3 font-mono text-xs">{(row.start_ms/1000).toFixed(2)}<br/>→ {(row.end_ms/1000).toFixed(2)}</td>
             {#each availableStages as stage}<td class="border-b border-r border-[var(--line)] p-3 last:border-r-0">{#if diffView && stage === previousStage(row)}<TextDiff before={previousStageText(row)} after={stageText(row, editStage)} view="before"/>{:else if diffView && stage === editStage}<TextDiff before={previousStageText(row)} after={stageText(row, editStage)} view="after"/>{:else}<div class="space-y-3">{#each row[stage] ?? [] as segment}<div class="rounded-xl border border-[var(--line)] bg-[var(--paper)] p-2.5">
-              {#if stage === editStage}<div class="mb-2 grid grid-cols-2 gap-2"><label class="muted text-[.68rem]">Start ms<input type="number" bind:value={segment.start_ms} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent px-2 py-1"/></label><label class="muted text-[.68rem]">End ms<input type="number" bind:value={segment.end_ms} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent px-2 py-1"/></label></div><textarea bind:value={segment.text} rows="3" class="w-full resize-y rounded-lg border border-[var(--line)] bg-transparent p-2 leading-relaxed"></textarea><div class="mt-2 flex flex-wrap gap-2"><button onclick={() => previewSegment(segment)} class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2 py-1 text-xs"><Play size={13}/> Play</button><button onclick={() => split(segment)} class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2 py-1 text-xs"><Scissors size={13}/> Split</button><button onclick={() => mergeNext(segment)} class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2 py-1 text-xs"><Merge size={13}/> Merge next</button><button onclick={() => removeSegment(segment)} class="flex items-center gap-1 rounded-lg border border-red-400/40 px-2 py-1 text-xs text-red-500"><Trash2 size={13}/> Delete</button></div>{:else}<p class="whitespace-pre-wrap leading-relaxed">{segment.text}</p>{/if}
+              {#if stage === editStage}<div class="mb-2 grid grid-cols-2 gap-2"><label class="muted text-[.68rem]">Start ms<input type="number" bind:value={segment.start_ms} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent px-2 py-1"/></label><label class="muted text-[.68rem]">End ms<input type="number" bind:value={segment.end_ms} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent px-2 py-1"/></label></div><textarea bind:value={segment.text} data-subtitle-search-index={searchIndex(segment)} rows="3" class="w-full resize-y rounded-lg border border-[var(--line)] bg-transparent p-2 leading-relaxed"></textarea><div class="mt-2 flex flex-wrap gap-2"><button onclick={() => previewSegment(segment)} class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2 py-1 text-xs"><Play size={13}/> Play</button><button onclick={() => split(segment)} class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2 py-1 text-xs"><Scissors size={13}/> Split</button><button onclick={() => mergeNext(segment)} class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2 py-1 text-xs"><Merge size={13}/> Merge next</button><button onclick={() => removeSegment(segment)} class="flex items-center gap-1 rounded-lg border border-red-400/40 px-2 py-1 text-xs text-red-500"><Trash2 size={13}/> Delete</button></div>{:else}<p class="whitespace-pre-wrap leading-relaxed">{segment.text}</p>{/if}
             </div>{/each}</div>{/if}</td>{/each}
           </tr>{/each}</tbody>
         </table>

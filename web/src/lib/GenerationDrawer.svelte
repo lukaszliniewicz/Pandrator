@@ -17,12 +17,14 @@
     WandSparkles,
     X
   } from '@lucide/svelte';
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { api } from './api';
   import WaveformPeaks from './WaveformPeaks.svelte';
   import TtsServicesModal from './TtsServicesModal.svelte';
   import AudioPlayer from './AudioPlayer.svelte';
   import TextDiff from './TextDiff.svelte';
+  import SearchReplaceBar from './SearchReplaceBar.svelte';
+  import type { TextReplacement, TextSearchMatch } from './search-replace';
 
   let { sessionId }: { sessionId: string } = $props();
   let mode = $state<'collapsed' | 'half' | 'full'>('collapsed');
@@ -58,6 +60,7 @@
   let regenerateAfterReview = $state(true);
   let comparisonDiff = $state(false);
   let initialized = false;
+  let searchLoading = $state(false);
 
   const marked = $derived(payload.items.filter((item: any) => item.marked).map((item: any) => item.id));
   const selectedSegmentIds = $derived(
@@ -65,6 +68,7 @@
       .filter((item: any) => selectedRows.includes(item.id))
       .map((item: any) => item.id)
   );
+  const editableTexts = $derived(payload.items.map((item: any) => String(item.text ?? '')));
   const selectedRun = $derived(runs.find((item: any) => item.id === selectedRunId) ?? null);
   const selectedAssembly = $derived(selectedRun?.assembly ?? (!selectedRun ? assembly : null));
   const selectedRunCost = $derived.by(() => {
@@ -314,6 +318,56 @@
     return String(activeTake(item)?.synthesized_text || item.optimized_text || item.text || '').replace(/\s+/g, ' ').trim();
   }
 
+  async function loadAllSegments() {
+    if (searchLoading || payload.next_cursor == null) return;
+    searchLoading = true;
+    try {
+      while (payload.next_cursor != null) {
+        const previousLength = payload.items.length;
+        await load(false);
+        if (payload.items.length <= previousLength) break;
+      }
+    } finally {
+      searchLoading = false;
+    }
+  }
+
+  async function applySearchReplacements(updates: TextReplacement[]) {
+    let completed = 0;
+    error = '';
+    try {
+      for (const update of updates) {
+        const item = payload.items[update.index];
+        if (!item || update.text === item.text) continue;
+        if (!update.text.trim()) throw new Error('Replacement would leave a generation segment blank. Remove that segment instead.');
+        const changedText = update.text.trim();
+        const updated = await api<any>(`/generation-segments/${item.id}`, {
+          method: 'PATCH',
+          headers: { 'If-Match': `"${item.revision}"` },
+          body: JSON.stringify({ text: changedText })
+        });
+        Object.assign(item, updated);
+        completed += 1;
+      }
+      payload = { ...payload, items: [...payload.items] };
+      if (completed) await refreshAssembly();
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
+      error = completed ? `${completed} segment(s) were updated before search and replace stopped. ${message}` : message;
+      await load(true, true);
+      throw new Error(error);
+    }
+  }
+
+  async function navigateSearchMatch(match: TextSearchMatch) {
+    if (viewMode !== 'segments') viewMode = 'segments';
+    await tick();
+    const field = document.querySelector<HTMLTextAreaElement>(`[data-generation-search-index="${match.itemIndex}"]`);
+    field?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    field?.focus({ preventScroll: true });
+    field?.setSelectionRange(match.start, match.end);
+  }
+
   function selectSegment(item: any, event?: MouseEvent | KeyboardEvent) {
     const toggle = Boolean(event && (event.ctrlKey || event.metaKey));
     const extend = Boolean(event?.shiftKey && selectionAnchor);
@@ -516,6 +570,7 @@
           <a href={`/sessions/${sessionId}/output`} class="action">Output settings</a>
           <button onclick={() => ttsServicesOpen = true} class="action">Speech services</button>
         </div>
+        <div class="border-b border-[var(--line)] px-3 py-2"><SearchReplaceBar texts={editableTexts} onreplace={applySearchReplacements} onnavigate={navigateSearchMatch} onactivate={loadAllSegments} disabled={searchLoading || loading} label={filter === 'all' ? 'generation segments' : `${filter} generation segments`}/>{#if searchLoading}<p class="muted mt-1 px-1 text-[.65rem]">Loading all {filter === 'all' ? '' : `${filter} `}segments for search…</p>{/if}</div>
 
         {#if selectedAssembly?.status === 'completed' && selectedAssembly.artifact_id}
           <div class="flex flex-wrap items-center gap-3 border-b border-[var(--line)] bg-[var(--accent-soft)] px-4 py-2">
@@ -567,7 +622,7 @@
                   <td><input type="checkbox" checked={item.marked} onchange={(event) => patchSegment(item, { marked: (event.currentTarget as HTMLInputElement).checked })} /></td>
                   <td class="muted font-mono text-xs">{item.ordinal + 1}</td>
                   <td>
-                    <textarea value={item.text} onblur={(event) => { const text = (event.currentTarget as HTMLTextAreaElement).value; if (text !== item.text) patchSegment(item, { text }); }} rows="2" class="w-full resize-y rounded-lg border border-transparent bg-transparent p-2 focus:border-[var(--line)]"></textarea>
+                    <textarea value={item.text} data-generation-search-index={payload.items.indexOf(item)} onblur={(event) => { const text = (event.currentTarget as HTMLTextAreaElement).value; if (text !== item.text) patchSegment(item, { text }); }} rows="2" class="w-full resize-y rounded-lg border border-transparent bg-transparent p-2 focus:border-[var(--line)]"></textarea>
                     {#if item.optimized_text || activeTake(item)?.llm_optimized}
                       <button onclick={(event) => { event.stopPropagation(); openOptimizationReview(item); }} class="mb-2 flex max-w-full items-center gap-1.5 rounded-lg bg-[var(--accent-soft)] px-2.5 py-1.5 text-left text-[.68rem] font-semibold text-[var(--accent)]"><WandSparkles size={12}/><span class="truncate">Compare speech optimization</span><span class="rounded-full bg-[var(--paper)] px-1.5 py-0.5 text-[.58rem] uppercase">{item.optimization_status ?? 'generated'}</span></button>
                     {/if}

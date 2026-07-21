@@ -1,6 +1,8 @@
 <script lang="ts">
   import { BookOpenText, FileText, Link2, LoaderCircle, Upload, X } from '@lucide/svelte';
   import { api, uploadManagedFile } from './api';
+  import SearchReplaceBar from './SearchReplaceBar.svelte';
+  import type { TextSearchMatch } from './search-replace';
 
   let {
     sessionId,
@@ -23,6 +25,12 @@
   let busy = $state(false);
   let progress = $state(0);
   let error = $state('');
+  let pastedTextArea = $state<HTMLTextAreaElement>();
+
+  function navigatePastedText(match: TextSearchMatch) {
+    pastedTextArea?.focus();
+    pastedTextArea?.setSelectionRange(match.start, match.end);
+  }
 
   const choices = [
     { id: 'upload', label: 'Upload', description: 'Choose a file from this device.', icon: Upload },
@@ -97,7 +105,8 @@
         <label class="text-sm font-semibold">Source file<input type="file" onchange={(event)=>file=(event.currentTarget as HTMLInputElement).files?.[0]??null} class="mt-2 block w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] p-3 font-normal"/></label>
       {:else if mode==='paste'}
         <label class="text-sm font-semibold">Source name<input bind:value={pastedName} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/></label>
-        <label class="mt-4 block text-sm font-semibold">Text<textarea bind:value={pastedText} rows="8" placeholder="Paste text here…" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] p-4 font-normal"></textarea></label>
+        <label class="mt-4 block text-sm font-semibold">Text<textarea bind:this={pastedTextArea} bind:value={pastedText} rows="8" placeholder="Paste text here…" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] p-4 font-normal"></textarea></label>
+        <div class="mt-2"><SearchReplaceBar texts={[pastedText]} onreplace={(updates) => { if (updates[0]) pastedText = updates[0].text; }} onnavigate={navigatePastedText} label="pasted source"/></div>
       {:else if mode==='url'}
         <label class="text-sm font-semibold">Public media URL<input bind:value={sourceUrl} type="url" placeholder="https://www.youtube.com/watch?v=…" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/></label><p class="muted mt-3 text-xs leading-relaxed">Pandrator uses yt-dlp for supported public video and audio sites. Playlists are not downloaded automatically.</p>
       {:else}

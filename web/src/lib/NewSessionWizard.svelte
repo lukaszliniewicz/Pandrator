@@ -4,6 +4,8 @@
   import { api, ApiError, uploadManagedFile, type SessionRecord } from './api';
   import { appState } from './app-state.svelte';
   import { LANGUAGE_OPTIONS } from './settings-fields';
+  import SearchReplaceBar from './SearchReplaceBar.svelte';
+  import type { TextSearchMatch } from './search-replace';
 
   let { initialKind = 'audiobook', startAtSource = false, onclose }: { initialKind?: 'audiobook'|'subtitles'|'voiceover'; startAtSource?: boolean; onclose: () => void } = $props();
   let step = $state(untrack(() => startAtSource ? 2 : 1));
@@ -30,6 +32,12 @@
   let progress = $state(0);
   let error = $state('');
   let duplicateFromServer = $state<SessionRecord|null>(null);
+  let pastedTextArea = $state<HTMLTextAreaElement>();
+
+  function navigatePastedText(match: TextSearchMatch) {
+    pastedTextArea?.focus();
+    pastedTextArea?.setSelectionRange(match.start, match.end);
+  }
 
   const duplicateSession = $derived(
     appState.sessions.find((item) => item.name.trim().toLocaleLowerCase() === name.trim().toLocaleLowerCase())
@@ -130,7 +138,7 @@
         {#if sourceMode==='upload'}
           <label class="text-sm font-semibold">Source file<input type="file" onchange={(event)=>{sourceFile=(event.currentTarget as HTMLInputElement).files?.[0]??null;inferName()}} class="mt-2 block w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] p-3"/></label>
         {:else if sourceMode==='paste'}
-          <textarea bind:value={pastedText} rows="8" placeholder="Paste text here…" class="w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] p-4"></textarea>
+          <textarea bind:this={pastedTextArea} bind:value={pastedText} rows="8" placeholder="Paste text here…" class="w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] p-4"></textarea><div class="mt-2"><SearchReplaceBar texts={[pastedText]} onreplace={(updates) => { if (updates[0]) pastedText = updates[0].text; }} onnavigate={navigatePastedText} label="pasted source"/></div>
         {:else if sourceMode==='url'}
           <label class="text-sm font-semibold">Public media URL<input bind:value={sourceUrl} type="url" placeholder="https://www.youtube.com/watch?v=…" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3"/></label>
           <p class="muted mt-3 text-xs leading-relaxed">Pandrator uses yt-dlp for supported public video and audio sites. Playlists are not downloaded automatically.</p>
