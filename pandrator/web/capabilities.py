@@ -445,7 +445,7 @@ def crispasr_install_preferences(paths: DataPaths) -> dict[str, Any]:
     raw_engine = str(config.get("crispasr_engine") or "whisper-large-v3")
     engine = normalize_engine(raw_engine)
     quantization = normalize_model_quantization(
-        str(config.get("crispasr_model_quantization") or "f16"),
+        config.get("crispasr_model_quantization"),
         engine,
     )
     return {
@@ -488,9 +488,14 @@ def probe_capabilities(paths: DataPaths, *, local_mode: bool) -> dict[str, Any]:
             "installed": cached,
             "download_on_demand": crispasr.installed and not cached,
             "default": engine == default_engine,
-            "model": "large-v3" if engine == "whisper" else "tdt-0.6b-v3",
+            "model": {
+                "whisper": "large-v3",
+                "parakeet": "tdt-0.6b-v3",
+                "moss": "transcribe-diarize-0.9b",
+            }.get(engine, engine),
             "precision": preferred_quantization,
             "word_timing": model.word_timing,
+            "diarization": "native" if engine == "moss" else "optional-external",
         }
     stt = {
         "crispasr": crispasr.installed,

@@ -245,6 +245,15 @@ class InstallerArchitectureTests(unittest.TestCase):
 
         self.assertEqual(selection.selected_components(), ("crispasr",))
 
+    def test_install_selection_defaults_moss_to_q8(self):
+        selection = InstallSelection.from_components(
+            ["crispasr"],
+            crispasr_engine="moss-transcribe-diarize-0.9b",
+        )
+
+        self.assertEqual(selection.crispasr_engine, "moss-transcribe-diarize-0.9b")
+        self.assertEqual(selection.crispasr_model_quantization, "q8_0")
+
     def test_install_selection_rejects_mutually_exclusive_variants(self):
         with self.assertRaisesRegex(ValueError, "Select either 'kokoro' or 'kokoro_cpu'"):
             InstallSelection.from_components(["kokoro", "kokoro_cpu"])
@@ -332,7 +341,7 @@ class InstallerArchitectureTests(unittest.TestCase):
         probe = subprocess.CompletedProcess(
             args=["crispasr", "--version"],
             returncode=0,
-            stdout="version       : 0.8.9\n",
+            stdout="version       : 0.8.20\n",
             stderr="",
         )
 

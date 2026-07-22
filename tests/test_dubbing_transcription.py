@@ -3,6 +3,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+import wave
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -39,6 +40,40 @@ class CrispASRTranscriptionTests(unittest.TestCase):
         self.assertEqual(stt_backends.normalize_stt_backend("whisperx"), "whisper")
         self.assertEqual(stt_backends.normalize_stt_backend("parakeet_onnx"), "parakeet")
         self.assertEqual(crispasr.normalize_engine("parakeet-tdt-0.6b-v3"), "parakeet")
+        self.assertEqual(crispasr.normalize_engine("moss-transcribe-diarize-0.9b"), "moss")
+
+    def test_moss_command_uses_native_diarization_long_energy_chunks_and_q8(self):
+        command = crispasr.build_command(
+            "audio.wav",
+            "output",
+            {
+                "stt_engine": "moss",
+                "stt_compute_backend": "vulkan",
+                "crispasr_vad_enabled": True,
+                "diarization_enabled": True,
+            },
+            executable="crispasr-test",
+        )
+
+        self.assertEqual(command[command.index("--backend") + 1], "moss-diarize")
+        self.assertIn("moss-transcribe-diarize-0.9b-q8_0.gguf", command)
+        self.assertEqual(command[command.index("--chunk-seconds") + 1], "120")
+        self.assertEqual(command[command.index("--chunk-overlap") + 1], "3")
+        self.assertNotIn("--vad", command)
+        self.assertNotIn("--diarize", command)
+        self.assertNotIn("-am", command)
+
+        align = crispasr.build_moss_alignment_command(
+            "turn.wav",
+            "turn.txt",
+            "turn.json",
+            {"stt_engine": "moss", "stt_compute_backend": "vulkan"},
+            executable="crispasr-test",
+        )
+        self.assertIn("--align-only", align)
+        self.assertEqual(align[align.index("-am") + 1], "auto")
+        self.assertEqual(align[align.index("--align-granularity") + 1], "word")
+        self.assertEqual(align[align.index("--gpu-backend") + 1], "vulkan")
 
     def test_whisper_command_pins_f16_large_v3_and_dtw(self):
         command = crispasr.build_command(
@@ -161,10 +196,91 @@ class CrispASRTranscriptionTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(crispasr.CrispASRError, "did not return word timestamps"):
                 crispasr._validate_word_timestamps(metadata)
+            crispasr._validate_word_timestamps(metadata, require_words=False)
+
+    def test_moss_validation_rejects_a_partially_aligned_transcript(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            metadata = Path(temp_dir) / "output.json"
+            metadata.write_text(
+                json.dumps(
+                    {
+                        "transcription": [
+                            {
+                                "text": "Aligned.",
+                                "words": [
+                                    {"text": "Aligned.", "offsets": {"from": 0, "to": 500}}
+                                ],
+                            },
+                            {"text": "This must not disappear."},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(crispasr.CrispASRError, "segment 2"):
+                crispasr._validate_word_timestamps(
+                    metadata,
+                    require_words_per_segment=True,
+                )
+
+    def test_moss_ctc_alignment_crops_with_padding_and_preserves_speaker(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            audio = root / "audio.wav"
+            with wave.open(str(audio), "wb") as target:
+                target.setnchannels(1)
+                target.setsampwidth(2)
+                target.setframerate(16000)
+                target.writeframes(b"\0\0" * (16000 * 3))
+            metadata = root / "moss.json"
+            metadata.write_text(
+                json.dumps(
+                    {
+                        "crispasr": {"backend": "moss-diarize"},
+                        "transcription": [
+                            {
+                                "text": "Hello there.",
+                                "speaker": "(Speaker 2) ",
+                                "offsets": {"from": 1000, "to": 2000},
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            def fake_align(command, **_kwargs):
+                self.assertIn("--align-only", command)
+                Path(command[command.index("--align-output") + 1]).write_text(
+                    json.dumps(
+                        [
+                            {"word": "Hello", "start": 0.6, "end": 0.9},
+                            {"word": "there.", "start": 1.0, "end": 1.4},
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+                return SimpleNamespace(stdout=b"", stderr=b"")
+
+            crispasr._align_moss_segments(
+                audio,
+                metadata,
+                {"moss_ctc_padding_seconds": 0.5, "stt_compute_backend": "cpu"},
+                executable="crispasr-test",
+                run_func=fake_align,
+            )
+            result = json.loads(metadata.read_text(encoding="utf-8"))["transcription"][0]
+
+        self.assertEqual(result["id"], "moss-1")
+        self.assertEqual([word["text"] for word in result["words"]], ["Hello", "there."])
+        self.assertEqual(result["words"][0]["offsets"], {"from": 1100, "to": 1400})
+        self.assertEqual(result["words"][1]["offsets"], {"from": 1500, "to": 1900})
+        self.assertTrue(all(word["speaker"] == "(Speaker 2)" for word in result["words"]))
 
     def test_runtime_probe_reports_compiled_compute_backends(self):
         version_output = """=== build info ===
-  version       : 0.8.9
+  version       : 0.8.20
   ggml backends : vulkan cpu
 """
         result = stt_backends.probe_crispasr_runtime(
@@ -174,7 +290,7 @@ class CrispASRTranscriptionTests(unittest.TestCase):
         )
 
         self.assertTrue(result.installed)
-        self.assertEqual(result.version, "0.8.9")
+        self.assertEqual(result.version, "0.8.20")
         self.assertEqual(result.compute_backends, ("vulkan", "cpu"))
 
     def test_transcribe_source_writes_srt_and_word_metadata(self):

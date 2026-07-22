@@ -15,6 +15,7 @@ from typing import Any
 
 from sqlalchemy import func, select
 
+from pandrator.logic.dubbing.transcript_normalization import load_transcript
 from pandrator.runtime import DataPaths
 
 from .artifact_selection import canonical_stage_key, selected_artifacts
@@ -800,25 +801,18 @@ class WorkflowHandlers:
             return document.id, revision.id
 
     def _store_timed_words(self, revision_id: str, metadata_path: Path) -> int:
-        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
-        transcription = payload.get("transcription") if isinstance(payload, dict) else []
-        words: list[dict[str, Any]] = []
-        for group in transcription if isinstance(transcription, list) else []:
-            if not isinstance(group, dict):
-                continue
-            speaker = str(group.get("speaker") or "") or None
-            for word in group.get("words") if isinstance(group.get("words"), list) else []:
-                if not isinstance(word, dict) or not isinstance(word.get("offsets"), dict):
-                    continue
-                offsets = word["offsets"]
-                try:
-                    start_ms = int(offsets["from"])
-                    end_ms = int(offsets["to"])
-                except (KeyError, TypeError, ValueError):
-                    continue
-                text = str(word.get("text") or word.get("word") or "").strip()
-                if text and end_ms > start_ms >= 0:
-                    words.append({"text": text, "start_ms": start_ms, "end_ms": end_ms, "speaker": str(word.get("speaker") or "") or speaker, "confidence": word.get("confidence") or word.get("probability"), "metadata": {key: value for key, value in word.items() if key not in {"text", "word", "offsets", "speaker", "confidence", "probability"}}})
+        transcript = load_transcript(metadata_path)
+        words = [
+            {
+                "text": word.text,
+                "start_ms": word.start_ms,
+                "end_ms": word.end_ms,
+                "speaker": word.speaker or None,
+                "confidence": word.confidence,
+                "metadata": dict(word.metadata),
+            }
+            for word in transcript.words
+        ]
         with self.database.session() as session:
             segments = list(session.scalars(select(Segment).where(Segment.revision_id == revision_id).order_by(Segment.ordinal)).all())
             for ordinal, word in enumerate(words):
@@ -1244,7 +1238,6 @@ class WorkflowHandlers:
 
     def transcribe_voice(self, payload, progress, cancel_event):
         from pandrator.logic.dubbing.transcription import transcribe_source_file_with_metadata
-        from pandrator.logic.dubbing.srt_utils import parse_srt
 
         sample_artifact, sample_path = self._resolve_input(str(payload.get("sample_artifact_id") or ""))
         operation_dir = self.paths.voices / str(payload.get("voice_id") or "transcription")
@@ -1274,7 +1267,13 @@ class WorkflowHandlers:
             parent_ids=[sample_artifact.id, artifact.id],
             settings=dict(payload.get("settings") or {}),
         )
-        transcript = " ".join(segment.text.replace("\n", " ").strip() for segment in parse_srt(output_path.read_text(encoding="utf-8-sig")))
+        # Subtitle cues may intentionally carry visible speaker labels.  Voice
+        # reference text must remain plain, so read the canonical transcript
+        # rather than round-tripping through the display SRT.
+        transcript = " ".join(
+            segment.text.replace("\n", " ").strip()
+            for segment in load_transcript(transcription_result.word_timestamps_path).segments
+        )
         progress(1.0, "Reference transcription ready for review")
         return {
             "artifact_id": artifact.id,

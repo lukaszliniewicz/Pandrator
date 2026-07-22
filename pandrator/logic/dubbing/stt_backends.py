@@ -12,6 +12,7 @@ from typing import Any, Callable
 from ...constants import LANGUAGE_DISPLAY_NAMES, WHISPER_LANGUAGES
 from .crispasr import (
     MODELS,
+    STT_ENGINE_MOSS,
     STT_ENGINE_PARAKEET,
     STT_ENGINE_WHISPER,
     candidate_executables,
@@ -98,7 +99,7 @@ def detect_stt_backend_statuses(**kwargs) -> dict[str, STTBackendStatus]:
     runtime = probe_crispasr_runtime(**kwargs)
     return {
         engine: STTBackendStatus(engine, STT_BACKEND_LABELS[engine], runtime.installed, runtime.reason)
-        for engine in (STT_ENGINE_WHISPER, STT_ENGINE_PARAKEET)
+        for engine in MODELS
     }
 
 
@@ -115,12 +116,17 @@ def select_available_stt_backend(preferred_backend: str, statuses=None) -> str:
     active = statuses or detect_stt_backend_statuses()
     if active.get(normalized) and active[normalized].installed:
         return normalized
-    return next((engine for engine in (STT_ENGINE_WHISPER, STT_ENGINE_PARAKEET) if active.get(engine) and active[engine].installed), normalized)
+    return next((engine for engine in MODELS if active.get(engine) and active[engine].installed), normalized)
 
 
 def language_options_for_backend(backend: str) -> tuple[STTLanguageOption, ...]:
-    if normalize_stt_backend(backend) == STT_ENGINE_PARAKEET:
+    normalized = normalize_stt_backend(backend)
+    if normalized == STT_ENGINE_PARAKEET:
         return tuple(STTLanguageOption(LANGUAGE_DISPLAY_NAMES.get(code, code.upper()), code) for code in PARAKEET_V3_LANGUAGE_CODES)
+    if normalized == STT_ENGINE_MOSS:
+        # Crisp's MOSS pipeline owns automatic language selection, so there is
+        # no useful forced-language choice to expose here.
+        return (STTLanguageOption("Automatic", "auto"),)
     return tuple(STTLanguageOption(language, normalize_language_code(language, default="")) for language in WHISPER_LANGUAGES)
 
 
@@ -130,5 +136,5 @@ def normalize_stt_language_for_backend(backend: str, language: str) -> STTLangua
     requested_code = normalize_language_code(requested_name, default="").lower()
     return next(
         (option for option in options if option.code.lower() == requested_code or option.name.lower() == requested_name),
-        next((option for option in options if option.code == "en"), options[0]),
+        next((option for option in options if option.code in {"auto", "en"}), options[0]),
     )

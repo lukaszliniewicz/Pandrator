@@ -11,7 +11,7 @@ from typing import Any, Callable
 from ..source_media import is_audio_source
 from .crispasr import CrispASRTranscriptionResult, transcribe
 from .srt_utils import renumber_subtitles
-from .subtitle_finalization import compose_from_crispasr_json
+from .subtitle_finalization import compose_from_transcript_json
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +81,7 @@ def transcribe_source_file_with_metadata(
         run_func=run_func,
     )
     Path(result.srt_path).write_text(
-        compose_from_crispasr_json(result.word_timestamps_path, settings),
+        compose_from_transcript_json(result.word_timestamps_path, settings),
         encoding="utf-8",
     )
     processed = postprocess_transcribed_srt(result.srt_path)

@@ -67,7 +67,7 @@
   const tourSteps = [
     { section: 'Voices', title: 'References stay reviewable', body: 'Each voice can contain multiple playable samples and an editable, explicitly reviewed transcript.' },
     { section: 'Recording', title: 'Record in the browser', body: 'Microphone access is requested only when you enable recording. Preview locally, then save; FFmpeg normalizes the sample to mono PCM WAV.' },
-    { section: 'Transcription', title: 'Local STT is optional', body: 'CrispASR runs full-precision Whisper or Parakeet and retains word timing metadata. Nothing is saved until you review it.' }
+    { section: 'Transcription', title: 'Local STT is optional', body: 'CrispASR runs Whisper, Parakeet, or native-speaker MOSS and retains word timing metadata. Nothing is saved until you review it.' }
   ];
   const canTranscribe = $derived(Boolean(capabilities?.stt?.crispasr));
   const canRecord = $derived(Boolean(capabilities?.ffmpeg?.available && capabilities?.recording?.browser_media_recorder !== false));
@@ -78,11 +78,18 @@
   const transcribingCount = $derived(Object.values(transcribing).filter(Boolean).length);
   const sttModelInfo = $derived(capabilities?.stt?.models?.[engine] ?? {});
 
-  const sttModelLabel = (modelId: 'whisper' | 'parakeet', label: string) => {
+  const sttModelLabel = (modelId: 'whisper' | 'parakeet' | 'moss', label: string) => {
     const info = capabilities?.stt?.models?.[modelId] ?? {};
     if (info.default) return `${label} · default${info.installed ? '' : ' · downloads on first use'}`;
     return `${label}${info.installed ? ' · ready' : ' · downloads on first use'}`;
   };
+
+  const sttEngineName = () => engine === 'moss' ? 'MOSS' : engine === 'parakeet' ? 'Parakeet' : 'Whisper';
+
+  function chooseSttEngine() {
+    modelQuantization = String(capabilities?.stt?.models?.[engine]?.precision ?? (engine === 'moss' ? 'q8_0' : 'f16'));
+    if (engine === 'moss') vadEnabled = false;
+  }
 
   function report(caught: unknown, prefix = '') {
     error = `${prefix}${caught instanceof Error ? caught.message : String(caught)}`;
@@ -281,7 +288,7 @@
     if (!selected || transcribing[sample.id]) return;
     error = '';
     transcribing = { ...transcribing, [sample.id]: true };
-    notice = `Transcribing sample with ${engine === 'parakeet' ? 'Parakeet' : 'Whisper'}${sttModelInfo.download_on_demand ? ' (the model will download first)' : ''}…`;
+    notice = `Transcribing sample with ${sttEngineName()}${sttModelInfo.download_on_demand ? ' (the model will download first)' : ''}…`;
     try {
       const job = await api<JobRecord>(`/voices/${selected.id}/samples/${sample.id}/transcribe`, {
         method: 'POST',
@@ -291,6 +298,10 @@
           stt_compute_backend: computeBackend,
           stt_model_quantization: modelQuantization,
           stt_language: language,
+          moss_max_chunk_seconds: 120,
+          moss_vad_enabled: engine === 'moss' ? vadEnabled : false,
+          moss_ctc_alignment_enabled: true,
+          moss_ctc_padding_seconds: 0.5,
           crispasr_vad_enabled: vadEnabled,
           crispasr_vad_threshold: vadThreshold
         })
@@ -389,6 +400,7 @@
       ttsServices = servicesPayload.services ?? [];
       engine = String(capabilities?.stt?.default_engine ?? 'whisper');
       modelQuantization = String(capabilities?.stt?.default_model_quantization ?? 'f16');
+      if (engine === 'moss') vadEnabled = false;
       await refreshMicrophones(false);
     } catch (caught) {
       report(caught);
@@ -427,7 +439,7 @@
       {#if selected}
         <div class="mb-6 flex flex-wrap items-center justify-between gap-4">
           <div><h2 class="text-2xl font-semibold">{selected.name}</h2><p class="muted text-sm">Review playback, transcripts, and recordings in one place.</p></div>
-          <div class="stt-toolbar"><select bind:value={engine} onchange={() => modelQuantization = String(capabilities?.stt?.models?.[engine]?.precision ?? 'f16')} disabled={!canTranscribe || transcribingCount > 0} aria-label="Transcription model"><option value="whisper">{sttModelLabel('whisper', 'Whisper large-v3')}</option><option value="parakeet">{sttModelLabel('parakeet', 'Parakeet 0.6B v3')}</option></select><select bind:value={modelQuantization} disabled={!canTranscribe || transcribingCount > 0} aria-label="Transcription model precision"><option value="f16">FP16</option>{#if engine === 'whisper'}<option value="q5_0">Q5_0</option>{:else}<option value="q8_0">Q8_0</option><option value="q5_0">Q5_0</option><option value="q4_k">Q4_K</option>{/if}</select><select bind:value={computeBackend} disabled={!canTranscribe || transcribingCount > 0} aria-label="Transcription compute backend"><option value="auto">Automatic compute</option><option value="cpu">CPU</option><option value="cuda">CUDA</option><option value="vulkan">Vulkan</option><option value="metal">Metal</option></select><label class="stt-control"><input bind:checked={vadEnabled} disabled={transcribingCount > 0} type="checkbox" class="accent-[var(--accent)]"/><span>VAD</span></label><label class:opacity-45={!vadEnabled} class="stt-control vad-threshold"><span>VAD threshold</span><input bind:value={vadThreshold} aria-label="VAD threshold" type="range" min="0" max="1" step="0.05" disabled={!vadEnabled || transcribingCount > 0}/><output>{Number(vadThreshold).toFixed(2)}</output></label><button onclick={transcribeMissing} disabled={!canTranscribe || transcribingMissing || transcribingCount > 0 || !samples.some((item) => !item.transcript_reviewed)} class="stt-control font-semibold disabled:opacity-40">{#if transcribingMissing}<LoaderCircle class="animate-spin" size={16}/>{:else}<WandSparkles size={16}/>{/if} {transcribingMissing ? 'Transcribing…' : 'Transcribe missing'}</button></div>
+          <div class="stt-toolbar"><select bind:value={engine} onchange={chooseSttEngine} disabled={!canTranscribe || transcribingCount > 0} aria-label="Transcription model"><option value="whisper">{sttModelLabel('whisper', 'Whisper large-v3')}</option><option value="parakeet">{sttModelLabel('parakeet', 'Parakeet 0.6B v3')}</option><option value="moss">{sttModelLabel('moss', 'MOSS Diarize 0.9B')}</option></select><select bind:value={modelQuantization} disabled={!canTranscribe || transcribingCount > 0} aria-label="Transcription model precision"><option value="f16">FP16</option>{#if engine === 'whisper'}<option value="q5_0">Q5_0</option>{:else if engine === 'parakeet'}<option value="q8_0">Q8_0</option><option value="q5_0">Q5_0</option><option value="q4_k">Q4_K</option>{:else}<option value="q8_0">Q8_0 · recommended</option><option value="q4_k">Q4_K</option>{/if}</select><select bind:value={computeBackend} disabled={!canTranscribe || transcribingCount > 0} aria-label="Transcription compute backend"><option value="auto">Automatic compute</option><option value="cpu">CPU</option><option value="cuda">CUDA</option><option value="vulkan">Vulkan</option><option value="metal">Metal</option></select><label class="stt-control"><input bind:checked={vadEnabled} disabled={transcribingCount > 0} type="checkbox" class="accent-[var(--accent)]"/><span>VAD</span></label><label class:opacity-45={!vadEnabled} class="stt-control vad-threshold"><span>VAD threshold</span><input bind:value={vadThreshold} aria-label="VAD threshold" type="range" min="0" max="1" step="0.05" disabled={!vadEnabled || transcribingCount > 0}/><output>{Number(vadThreshold).toFixed(2)}</output></label><button onclick={transcribeMissing} disabled={!canTranscribe || transcribingMissing || transcribingCount > 0 || !samples.some((item) => !item.transcript_reviewed)} class="stt-control font-semibold disabled:opacity-40">{#if transcribingMissing}<LoaderCircle class="animate-spin" size={16}/>{:else}<WandSparkles size={16}/>{/if} {transcribingMissing ? 'Transcribing…' : 'Transcribe missing'}</button></div>
         </div>
 
         <div class="mb-4 flex justify-end"><button onclick={()=>sttSettingsOpen=true} class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-xs font-semibold"><Settings2 size={15}/> All speech recognition and VAD defaults</button></div>

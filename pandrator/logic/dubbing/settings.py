@@ -132,14 +132,24 @@ def migrate_dubbing_payload(
         migrated["stt_language"] = str(migrated.get("whisper_language") or "English")
 
     legacy_stt = str(migrated.get("stt_engine") or migrated.get("stt_backend") or "whisper").strip().lower()
-    stt_engine = "parakeet" if legacy_stt in {
+    if legacy_stt in {
+        "moss", "moss-diarize", "moss_diarize", "moss-transcribe-diarize",
+        "moss_transcribe_diarize", "moss-diarize-0.9b", "moss-transcribe-diarize-0.9b",
+    }:
+        stt_engine = "moss"
+    elif legacy_stt in {
         "parakeet", "parakeet_onnx", "parakeet-onnx", "onnx_parakeet", "onnx-parakeet"
-    } else "whisper"
+    }:
+        stt_engine = "parakeet"
+    else:
+        stt_engine = "whisper"
     migrated["stt_engine"] = stt_engine
     migrated["stt_backend"] = stt_engine
     legacy_quantization = migrated.get("stt_model_quantization")
     if legacy_quantization in (None, ""):
-        legacy_quantization = migrated.get("parakeet_quantization") or "f16"
+        legacy_quantization = migrated.get("parakeet_quantization") or (
+            "q8_0" if stt_engine == "moss" else "f16"
+        )
     normalized_quantization = str(legacy_quantization).strip().lower().replace("-", "_")
     migrated["stt_model_quantization"] = {
         "": "f16", "fp16": "f16", "float16": "f16", "int8": "q8_0",
@@ -153,6 +163,11 @@ def migrate_dubbing_payload(
     migrated.setdefault("stt_lid_backend", "whisper")
     migrated.setdefault("stt_beam_size", 1)
     migrated.setdefault("parakeet_decoder", "tdt")
+    migrated.setdefault("moss_max_chunk_seconds", 120.0)
+    migrated.setdefault("moss_vad_enabled", False)
+    migrated.setdefault("moss_ctc_alignment_enabled", True)
+    migrated.setdefault("moss_ctc_aligner_model", "auto")
+    migrated.setdefault("moss_ctc_padding_seconds", 0.5)
     migrated.setdefault("crispasr_vad_model", "silero")
     if "crispasr_vad_enabled" not in migrated:
         migrated["crispasr_vad_enabled"] = bool(migrated.get("parakeet_vad_enabled", True))
@@ -240,6 +255,11 @@ def normalize_dubbing_state(
         "stt_lid_backend",
         "stt_beam_size",
         "parakeet_decoder",
+        "moss_max_chunk_seconds",
+        "moss_vad_enabled",
+        "moss_ctc_alignment_enabled",
+        "moss_ctc_aligner_model",
+        "moss_ctc_padding_seconds",
         "crispasr_vad_enabled",
         "crispasr_vad_model",
         "crispasr_vad_threshold",

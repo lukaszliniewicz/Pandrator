@@ -173,7 +173,7 @@ def _selection(args) -> InstallSelection:
         install_pandrator=not args.skip_pandrator,
         crispasr_backend=str(getattr(args, "crispasr_backend", "auto") or "auto"),
         crispasr_engine=str(getattr(args, "crispasr_engine", "whisper-large-v3") or "whisper-large-v3"),
-        crispasr_model_quantization=str(getattr(args, "crispasr_model_quantization", "f16") or "f16"),
+        crispasr_model_quantization=getattr(args, "crispasr_model_quantization", None),
         kobold_qwen_backend=str(getattr(args, "qwen_backend", "auto") or "auto"),
         kobold_qwen_model_size=str(getattr(args, "qwen_model_size", "0.6b") or "0.6b"),
         kobold_qwen_quantization=str(getattr(args, "qwen_quantization", "f16") or "f16"),
@@ -724,8 +724,12 @@ def build_parser() -> argparse.ArgumentParser:
             choices=("auto", "cpu", "cuda", "vulkan", "metal"),
             default="auto",
         )
-        command.add_argument("--crispasr-engine", choices=("whisper-large-v3", "parakeet-tdt-0.6b-v3"), default="whisper-large-v3")
-        command.add_argument("--crispasr-model-quantization", choices=("f16", "q8_0", "q5_0", "q4_k"), default="f16")
+        command.add_argument(
+            "--crispasr-engine",
+            choices=("whisper-large-v3", "parakeet-tdt-0.6b-v3", "moss-transcribe-diarize-0.9b"),
+            default="whisper-large-v3",
+        )
+        command.add_argument("--crispasr-model-quantization", choices=("f16", "q8_0", "q5_0", "q4_k"))
         command.add_argument("--qwen-backend", choices=("auto", "cpu", "cuda", "vulkan", "metal"), default="auto")
         command.add_argument("--qwen-model-size", choices=("0.6b", "1.7b"), default="0.6b")
         command.add_argument("--qwen-quantization", choices=("f16", "q8_0"), default="f16")

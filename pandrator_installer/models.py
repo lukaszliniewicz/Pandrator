@@ -88,7 +88,7 @@ class InstallSelection:
         fishs2_model_quant: str = "q6_k",
         crispasr_backend: str = "auto",
         crispasr_engine: str = "whisper-large-v3",
-        crispasr_model_quantization: str = "f16",
+        crispasr_model_quantization: str | None = None,
         kobold_qwen_backend: str = "auto",
         kobold_qwen_model_size: str = "0.6b",
         kobold_qwen_quantization: str = "f16",
@@ -114,13 +114,18 @@ class InstallSelection:
         if include_dependencies:
             selected = set(resolve_dependencies(selected))
 
+        selected_crispasr_engine = str(crispasr_engine or "whisper-large-v3").lower()
+        selected_crispasr_quantization = str(
+            crispasr_model_quantization
+            or ("q8_0" if selected_crispasr_engine == "moss-transcribe-diarize-0.9b" else "f16")
+        ).lower()
         selection = cls(
             pandrator=bool(install_pandrator),
             fishs2_backend=fishs2_backend,
             fishs2_model_quant=fishs2_model_quant,
             crispasr_backend=str(crispasr_backend or "auto").lower(),
-            crispasr_engine=str(crispasr_engine or "whisper-large-v3").lower(),
-            crispasr_model_quantization=str(crispasr_model_quantization or "f16").lower(),
+            crispasr_engine=selected_crispasr_engine,
+            crispasr_model_quantization=selected_crispasr_quantization,
             kobold_qwen_backend=str(kobold_qwen_backend or "auto").lower(),
             kobold_qwen_model_size=str(kobold_qwen_model_size or "0.6b").lower(),
             kobold_qwen_quantization=str(kobold_qwen_quantization or "f16").lower(),
@@ -137,11 +142,17 @@ class InstallSelection:
     def validate(self) -> None:
         if self.crispasr_backend not in {"auto", "cpu", "cuda", "vulkan", "metal"}:
             raise ValueError("CrispASR backend must be auto, cpu, cuda, vulkan, or metal.")
-        if self.crispasr_engine not in {"whisper-large-v3", "parakeet-tdt-0.6b-v3"}:
-            raise ValueError("CrispASR engine must be whisper-large-v3 or parakeet-tdt-0.6b-v3.")
+        if self.crispasr_engine not in {
+            "whisper-large-v3", "parakeet-tdt-0.6b-v3", "moss-transcribe-diarize-0.9b"
+        }:
+            raise ValueError(
+                "CrispASR engine must be whisper-large-v3, parakeet-tdt-0.6b-v3, "
+                "or moss-transcribe-diarize-0.9b."
+            )
         crisp_quantizations = {
             "whisper-large-v3": {"f16", "q5_0"},
             "parakeet-tdt-0.6b-v3": {"f16", "q8_0", "q5_0", "q4_k"},
+            "moss-transcribe-diarize-0.9b": {"f16", "q8_0", "q4_k"},
         }
         if self.crispasr_model_quantization not in crisp_quantizations[self.crispasr_engine]:
             raise ValueError("Unsupported CrispASR model quantization for the selected engine.")

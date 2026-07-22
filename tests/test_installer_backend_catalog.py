@@ -89,16 +89,18 @@ class TestInstallerBackendCatalog(unittest.TestCase):
             expected_sizes,
         )
 
-    def test_crispasr_catalogues_both_installed_models(self):
+    def test_crispasr_catalogues_transcription_and_alignment_models(self):
         self.assertEqual(len(WHISPER_LARGE_V3_LANGUAGES), 100)
         self.assertEqual(len(PARAKEET_06B_V3_LANGUAGES), 25)
         formatted = formatted_crispasr_languages()
         self.assertIn("Whisper large-v3 (100)", formatted)
         self.assertIn("Parakeet TDT 0.6B v3 (25)", formatted)
-        self.assertEqual(len(CRISPASR_MODELS), 2)
+        self.assertIn("MOSS Transcribe-Diarize 0.9B", formatted)
+        self.assertEqual(len(CRISPASR_MODELS), 4)
         licences = formatted_crispasr_model_licences()
         self.assertIn("Apache-2.0", licences)
         self.assertIn("CC BY 4.0", licences)
+        self.assertIn("Canary CTC forced aligner", licences)
 
     def test_card_expands_without_a_large_details_button(self):
         card = BackendOptionCard(

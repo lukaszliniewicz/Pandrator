@@ -23,6 +23,7 @@ __all__ = [
     "srt_utils",
     "stt_backends",
     "transcription",
+    "transcript_normalization",
     "video_muxing",
     "zoom",
 ]

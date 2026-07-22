@@ -31,7 +31,6 @@ FEATURES = (
 # Entries here are intentionally candid.  The control is rendered and saved,
 # but the complete Qt behavior has not yet been proven at the runtime boundary.
 SETTING_GAPS = {
-    "stt.diarization_enabled": "The setting is persisted, but CrispASR diarization capability detection and speaker-output qualification are incomplete.",
     "rvc.enabled": "Per-run and post-generation RVC are exposed; automatic apply-during-generation behavior still needs qualification.",
     "translation.backend": "The common control is rendered, but each advertised backend must be hidden unless its adapter and credentials are available.",
 }

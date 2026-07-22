@@ -1747,6 +1747,10 @@ class CrispASRConfigDialog(QDialog):
         self.engine_combo = QComboBox()
         self.engine_combo.addItem("Whisper large-v3 — multilingual, DTW word timestamps", "whisper-large-v3")
         self.engine_combo.addItem("Parakeet TDT 0.6B v3 — English, word timestamps", "parakeet-tdt-0.6b-v3")
+        self.engine_combo.addItem(
+            "MOSS Transcribe-Diarize 0.9B — multilingual speakers + CTC words",
+            "moss-transcribe-diarize-0.9b",
+        )
         engine_index = self.engine_combo.findData(self.selected_engine)
         self.engine_combo.setCurrentIndex(max(0, engine_index))
         self.quantization_combo = QComboBox()
@@ -1759,7 +1763,9 @@ class CrispASRConfigDialog(QDialog):
         note = QLabel(
             "FP16 preserves full model precision. Quantized variants reduce RAM/VRAM use and may trade a little accuracy. "
             "The selected model downloads into Pandrator's cache on first use; other variants remain available later. "
-            "VAD, beam/decoder, chunks, hotwords, and language identification are configured per session in the web app."
+            "MOSS defaults to Q8_0, silence-seeking 120-second chunks, native speaker turns, and a separate "
+            "per-turn Canary CTC alignment pass. VAD, beam/decoder, chunks, hotwords, and language identification "
+            "are configured per session in the web app."
         )
         note.setWordWrap(True)
         layout.addWidget(note)
@@ -1781,22 +1787,38 @@ class CrispASRConfigDialog(QDialog):
 
     def _refresh_quantizations(self):
         selected = str(self.engine_combo.currentData() or "whisper-large-v3")
-        options = (
-            (("FP16 — full precision", "f16"), ("Q5_0 — lower memory", "q5_0"))
-            if selected == "whisper-large-v3"
-            else (
+        if selected == "whisper-large-v3":
+            options = (("FP16 — full precision", "f16"), ("Q5_0 — lower memory", "q5_0"))
+            default_quantization = "f16"
+        elif selected == "moss-transcribe-diarize-0.9b":
+            options = (
+                ("Q8_0 — recommended; matched FP16 in testing", "q8_0"),
+                ("FP16 — larger and slower", "f16"),
+                ("Q4_K — lowest memory", "q4_k"),
+            )
+            default_quantization = "q8_0"
+        else:
+            options = (
                 ("FP16 — full precision", "f16"),
                 ("Q8_0 — near-full precision", "q8_0"),
                 ("Q5_0 — lower memory", "q5_0"),
                 ("Q4_K — lowest memory", "q4_k"),
             )
+            default_quantization = "f16"
+        previous_engine = getattr(self, "_quantization_engine", "")
+        previous = (
+            self.selected_quantization
+            if not previous_engine and selected == self.selected_engine
+            else str(self.quantization_combo.currentData() or default_quantization)
+            if previous_engine == selected
+            else default_quantization
         )
-        previous = self.selected_quantization or str(self.quantization_combo.currentData() or "f16")
         self.quantization_combo.clear()
         for label, value in options:
             self.quantization_combo.addItem(label, value)
         index = self.quantization_combo.findData(previous)
         self.quantization_combo.setCurrentIndex(max(0, index))
+        self._quantization_engine = selected
 
     def get_selected_engine(self):
         return str(self.engine_combo.currentData() or "whisper-large-v3")

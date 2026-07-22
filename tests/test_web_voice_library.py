@@ -168,6 +168,40 @@ class InstallerAsrPreferenceTests(unittest.TestCase):
             finally:
                 database.dispose()
 
+    def test_moss_installer_preference_defaults_to_q8_and_is_exposed_to_web(self):
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "config.json").write_text(
+                json.dumps({"crispasr_engine": "moss-transcribe-diarize-0.9b"}),
+                encoding="utf-8",
+            )
+            prepare_web_test_data_root(directory)
+            bootstrap = BootstrapTokenStore()
+            token = bootstrap.issue()
+            app = create_app(data_root=directory, testing=True, bootstrap_tokens=bootstrap)
+            database = app.extensions["pandrator"]["database"]
+            try:
+                with database.session() as session:
+                    defaults = session.get(AppSetting, "defaults.stt")
+                    self.assertEqual(defaults.value_json["stt_engine"], "moss")
+                    self.assertEqual(defaults.value_json["stt_model_quantization"], "q8_0")
+
+                client = app.test_client()
+                client.post("/api/v1/auth/bootstrap", json={"token": token})
+                runtime = SimpleNamespace(
+                    installed=True,
+                    version="test",
+                    executable="crispasr",
+                    compute_backends=("vulkan", "cpu"),
+                )
+                with mock.patch("pandrator.web.capabilities.probe_crispasr_runtime", return_value=runtime):
+                    capabilities = client.get("/api/v1/capabilities").get_json()["stt"]
+                self.assertEqual(capabilities["default_engine"], "moss")
+                self.assertEqual(capabilities["default_model_quantization"], "q8_0")
+                self.assertEqual(capabilities["models"]["moss"]["diarization"], "native")
+                self.assertEqual(capabilities["models"]["moss"]["word_timing"], "ctc")
+            finally:
+                database.dispose()
+
 
 class VoiceProviderPublishTests(unittest.TestCase):
     def test_provider_publish_persists_returned_voice_id(self):

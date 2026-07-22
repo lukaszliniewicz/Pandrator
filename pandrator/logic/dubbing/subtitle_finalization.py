@@ -7,7 +7,6 @@ reading and export.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from dataclasses import dataclass
@@ -18,6 +17,12 @@ from typing import Any
 from .. import sentence_segmenter
 from .models import SubtitleSegment
 from .srt_utils import compose_srt, parse_srt
+from .transcript_normalization import (
+    NormalizedTranscript,
+    format_speaker_label,
+    load_transcript,
+    normalize_transcript,
+)
 
 _SPACE_RE = re.compile(r"\s+")
 _NO_SPACE_BEFORE = set(",.!?:;%)]}…")
@@ -317,39 +322,18 @@ def _sanitize_timed_words(words: list[_TimedWord]) -> list[_TimedWord]:
     return output
 
 
-def _timed_words(payload: dict[str, Any]) -> list[_TimedWord]:
-    def speaker_value(item: dict[str, Any], fallback: str = "") -> str:
-        for key in ("speaker", "speaker_id"):
-            value = item.get(key)
-            if value is not None and str(value).strip():
-                return str(value).strip()
-        return fallback
-
-    result: list[_TimedWord] = []
-    for segment in payload.get("transcription") or []:
-        if not isinstance(segment, dict):
-            continue
-        segment_speaker = speaker_value(segment)
-        for word in segment.get("words") or []:
-            if not isinstance(word, dict):
-                continue
-            offsets = word.get("offsets") if isinstance(word.get("offsets"), dict) else {}
-            try:
-                start, end = int(offsets.get("from")), int(offsets.get("to"))
-            except (TypeError, ValueError):
-                continue
-            text = str(word.get("text") or "").strip()
-            if text and end > start:
-                speaker = speaker_value(word, segment_speaker)
-                result.append(
-                    _TimedWord(
-                        index=len(result),
-                        text=text,
-                        start_ms=start,
-                        end_ms=end,
-                        speaker=speaker,
-                    )
-                )
+def _timed_words(payload: NormalizedTranscript | Any) -> list[_TimedWord]:
+    transcript = normalize_transcript(payload)
+    result = [
+        _TimedWord(
+            index=index,
+            text=word.text,
+            start_ms=word.start_ms,
+            end_ms=word.end_ms,
+            speaker=word.speaker,
+        )
+        for index, word in enumerate(transcript.words)
+    ]
     return _sanitize_timed_words(result)
 
 
@@ -389,8 +373,7 @@ def _cue_plain_text(words: list[_TimedWord]) -> str:
     text = _join_tokens([item.text for item in words])
     speaker = words[0].speaker if words else ""
     if speaker:
-        label = speaker if speaker.upper().startswith("SPEAKER") else f"SPEAKER_{speaker}"
-        text = f"[{label}]: {text}"
+        text = f"[{format_speaker_label(speaker)}]: {text}"
     return text
 
 
@@ -626,22 +609,27 @@ def _compose_semantic_cues(
     ]
 
 
-def compose_from_crispasr_json(
+def compose_from_transcript_json(
     metadata_path: str | Path,
     settings: dict[str, Any] | None = None,
 ) -> str:
-    payload = json.loads(Path(metadata_path).read_text(encoding="utf-8"))
+    transcript = load_transcript(metadata_path)
     config = SubtitleFinalizationConfig.from_settings(settings)
-    words = _timed_words(payload)
+    words = _timed_words(transcript)
     if not words:
-        fallback = []
-        for index, segment in enumerate(payload.get("transcription") or [], start=1):
-            offsets = segment.get("offsets") if isinstance(segment, dict) else {}
-            try:
-                start, end = int(offsets.get("from")), int(offsets.get("to"))
-            except (TypeError, ValueError):
-                continue
-            fallback.append(SubtitleSegment(index, start, end, str(segment.get("text") or "")))
+        fallback = [
+            SubtitleSegment(
+                index,
+                segment.start_ms,
+                segment.end_ms,
+                (
+                    f"[{format_speaker_label(segment.speaker)}]: {segment.text}"
+                    if segment.speaker
+                    else segment.text
+                ),
+            )
+            for index, segment in enumerate(transcript.segments, start=1)
+        ]
         return compose_srt(finalize_segments(fallback, config))
 
     source_text, words = _source_text_and_spans(words)
@@ -656,3 +644,12 @@ def compose_from_crispasr_json(
         for index, cue in enumerate(cues, start=1)
     ]
     return compose_srt(display_cues)
+
+
+def compose_from_crispasr_json(
+    metadata_path: str | Path,
+    settings: dict[str, Any] | None = None,
+) -> str:
+    """Backward-compatible name for the engine-neutral transcript composer."""
+
+    return compose_from_transcript_json(metadata_path, settings)

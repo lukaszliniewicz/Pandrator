@@ -19,7 +19,7 @@ export const LANGUAGE_OPTIONS: SettingOption[] = [
 ];
 
 const CHOICES: Record<string, SettingOption[]> = {
-  stt_engine: [option('whisper', 'Whisper large-v3'), option('parakeet', 'Parakeet 0.6B v3')],
+  stt_engine: [option('whisper', 'Whisper large-v3'), option('parakeet', 'Parakeet 0.6B v3'), option('moss', 'MOSS Transcribe-Diarize 0.9B')],
   stt_model_quantization: [option('f16', 'FP16 (full precision)'), option('q8_0', 'Q8_0'), option('q5_0', 'Q5_0'), option('q4_k', 'Q4_K')],
   stt_compute_backend: [option('auto', 'Automatic'), option('cpu', 'CPU'), option('cuda', 'CUDA'), option('vulkan', 'Vulkan'), option('metal', 'Apple Metal')],
   stt_lid_backend: [option('whisper', 'Whisper language detection'), option('parakeet', 'Parakeet language detection')],
@@ -75,6 +75,7 @@ export function numberPresentation(key: string): NumberPresentation {
     chatterbox_exaggeration: { min: 0, max: 1, step: 0.05, range: true }, chatterbox_cfg_weight: { min: 0, max: 1, step: 0.05, range: true },
     pitch: { min: -24, max: 24, step: 1 }, max_attempts: { min: 1, max: 20, step: 1 }, burn_video_quality: { min: 0, max: 51, step: 1 },
     stt_compute_device: { min: 0, step: 1 }, stt_threads: { min: 0, step: 1 }, stt_beam_size: { min: 1, step: 1 },
+    moss_max_chunk_seconds: { min: 30, max: 120, step: 1 }, moss_ctc_padding_seconds: { min: 0, max: 2, step: 0.1 },
     max_lines: { min: 1, max: 3, step: 1 }, max_cps: { min: 1, step: 0.5 },
     synchronization_delay_ms: { min: 0, max: 10000, step: 50 }, synchronization_speed: { min: 1, max: 4, step: 0.01 }, synchronization_sentence_gap_ms: { min: 0, max: 5000, step: 10 },
     mix_source_gain_db: { min: -60, max: 12, step: 0.5 }, mix_voice_gain_db: { min: -30, max: 12, step: 0.5 }, mix_voice_lufs: { min: -30, max: -8, step: 0.5 }, mix_attack_ms: { min: 1, max: 2000, step: 1 }, mix_release_ms: { min: 10, max: 5000, step: 10 },
@@ -110,7 +111,11 @@ export function settingLabel(key: string): string {
     mix_voice_lufs: 'Voiceover loudness target (LUFS)',
     mix_ducking: 'Source ducking under voiceover',
     mix_attack_ms: 'Ducking attack (ms)',
-    mix_release_ms: 'Ducking release (ms)'
+    mix_release_ms: 'Ducking release (ms)',
+    moss_max_chunk_seconds: 'Maximum MOSS context (seconds)',
+    moss_vad_enabled: 'Use VAD before MOSS diarization',
+    moss_ctc_alignment_enabled: 'Align each MOSS turn to words with CTC',
+    moss_ctc_padding_seconds: 'MOSS turn CTC padding (seconds)'
   };
   if (labels[key]) return labels[key];
   return key.split('_').map((word) => ACRONYMS[word.toLowerCase()] ?? word.charAt(0).toUpperCase() + word.slice(1)).join(' ')

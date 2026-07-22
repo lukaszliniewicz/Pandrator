@@ -554,6 +554,18 @@ CRISPASR_MODELS = (
         "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3",
         "Commercial use permitted with the licence's attribution requirements.",
     ),
+    ModelLicence(
+        "MOSS Transcribe-Diarize 0.9B (FP16, Q8_0, or Q4_K)",
+        "Apache-2.0",
+        "https://huggingface.co/OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        APACHE_COMMERCIAL,
+    ),
+    ModelLicence(
+        "Canary CTC forced aligner (Q4_K)",
+        "CC BY 4.0",
+        "https://huggingface.co/nvidia/canary-1b-v2",
+        "Commercial use permitted with the licence's attribution requirements.",
+    ),
 )
 
 
@@ -562,7 +574,8 @@ def formatted_crispasr_languages() -> str:
     parakeet = ", ".join(PARAKEET_06B_V3_LANGUAGES)
     return (
         f"Whisper large-v3 (100): {whisper}.\n\n"
-        f"Parakeet TDT 0.6B v3 (25): {parakeet}."
+        f"Parakeet TDT 0.6B v3 (25): {parakeet}.\n\n"
+        "MOSS Transcribe-Diarize 0.9B: multilingual automatic language detection."
     )
 
 

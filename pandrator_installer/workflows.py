@@ -131,7 +131,7 @@ class WorkflowMixin:
         install_pandrator=True,
         crispasr_backend="auto",
         crispasr_engine="whisper-large-v3",
-        crispasr_model_quantization="f16",
+        crispasr_model_quantization=None,
         kobold_qwen_backend="auto",
         kobold_qwen_model_size="0.6b",
         kobold_qwen_quantization="f16",

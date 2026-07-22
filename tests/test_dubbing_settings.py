@@ -96,6 +96,24 @@ class DubbingSettingsTests(unittest.TestCase):
         self.assertEqual(migrated["stt_model_quantization"], "q8_0")
         self.assertNotIn("parakeet_quantization", migrated)
 
+    def test_moss_defaults_to_long_chunks_native_turns_and_padded_ctc(self):
+        migrated = settings.migrate_dubbing_payload(
+            {"stt_engine": "moss-diarize"},
+            self.providers,
+        )
+
+        self.assertEqual(migrated["stt_engine"], "moss")
+        self.assertEqual(migrated["stt_model_quantization"], "q8_0")
+        self.assertEqual(migrated["moss_max_chunk_seconds"], 120.0)
+        self.assertFalse(migrated["moss_vad_enabled"])
+        self.assertTrue(migrated["moss_ctc_alignment_enabled"])
+        self.assertEqual(migrated["moss_ctc_padding_seconds"], 0.5)
+
+        installer_style = settings.migrate_dubbing_payload(
+            {"stt_engine": "moss-transcribe-diarize-0.9b"},
+        )
+        self.assertEqual(installer_style["stt_engine"], "moss")
+
     def test_stage_resolver_uses_independent_native_models_and_global_default(self):
         base = {
             "correction_model": "default",
