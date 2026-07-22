@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import platform
 import shutil
 import subprocess
 import tempfile
@@ -11,12 +13,17 @@ import wave
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
+from urllib.error import URLError
+from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 from .languages import normalize_language_code
 
 CRISPASR_VERSION = "0.8.20"
 CRISPASR_EXECUTABLE_ENV = "CRISPASR_EXECUTABLE"
 CRISPASR_CACHE_DIR_ENV = "CRISPASR_CACHE_DIR"
+
+logger = logging.getLogger(__name__)
 
 STT_ENGINE_WHISPER = "whisper"
 STT_ENGINE_PARAKEET = "parakeet"
@@ -151,6 +158,81 @@ def _cache_dir(settings: dict[str, Any]) -> str:
         or os.environ.get(CRISPASR_CACHE_DIR_ENV)
         or ""
     ).strip()
+
+
+def _model_download_url(model: CrispASRModel, filename: str) -> str:
+    return f"https://huggingface.co/{model.repository}/resolve/main/{quote(filename)}"
+
+
+def _prefetch_windows_model(
+    settings: dict[str, Any],
+    *,
+    opener: Callable[..., Any] = urlopen,
+) -> Path | None:
+    """Cache the selected model before CrispASR reaches its broken cmd.exe fallback."""
+    if platform.system() != "Windows":
+        return None
+
+    engine = normalize_engine(settings.get("stt_engine") or settings.get("stt_backend"))
+    model = MODELS[engine]
+    quantization = normalize_model_quantization(
+        settings.get("stt_model_quantization")
+        or settings.get("crispasr_model_quantization")
+        or settings.get("parakeet_quantization"),
+        engine,
+    )
+    filename = model.filename_for(quantization)
+    configured_cache = _cache_dir(settings)
+    cache_dir = Path(configured_cache) if configured_cache else Path.home() / ".cache" / "crispasr"
+    destination = cache_dir / filename
+    if destination.is_file() and destination.stat().st_size > 0:
+        return destination
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    url = _model_download_url(model, filename)
+    headers = {
+        "Accept": "application/octet-stream",
+        "User-Agent": f"Pandrator/{CRISPASR_VERSION}",
+    }
+    token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    temporary_path: Path | None = None
+    try:
+        request = Request(url, headers=headers)
+        with opener(request, timeout=60) as response, tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix=f"{filename}.part-",
+            dir=cache_dir,
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            downloaded = 0
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                temporary.write(chunk)
+                downloaded += len(chunk)
+
+            content_length = str(response.headers.get("Content-Length") or "").strip()
+            expected_size = int(content_length) if content_length.isdigit() else 0
+            if downloaded <= 0 or (expected_size and downloaded != expected_size):
+                raise OSError(
+                    f"Incomplete CrispASR model download for {filename}: "
+                    f"received {downloaded} of {expected_size or 'unknown'} bytes."
+                )
+            temporary.flush()
+            os.fsync(temporary.fileno())
+
+        os.replace(temporary_path, destination)
+        temporary_path = None
+        logger.info("Cached CrispASR model at %s", destination)
+        return destination
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 def _append_runtime_options(command: list[str], settings: dict[str, Any]) -> None:
@@ -519,6 +601,12 @@ def transcribe(
     session_path.mkdir(parents=True, exist_ok=True)
     temporary_base = session_path / f"{output_name}_crispasr"
     engine = normalize_engine(settings.get("stt_engine") or settings.get("stt_backend"))
+    try:
+        _prefetch_windows_model(settings)
+    except (OSError, URLError, ValueError) as error:
+        # Keep the native downloader as a fallback for proxies and managed
+        # networks where Python and WinHTTP may have different access.
+        logger.warning("Could not prefetch the CrispASR model: %s", error)
     command = build_command(audio_path, temporary_base, settings, executable=executable)
     try:
         completed = run_func(command, check=True, capture_output=True)

@@ -1230,14 +1230,24 @@ class PandratorInstaller(
         # RVC
         rvc_support = config.get('rvc_support', False)
         rvc_gpu_support = config.get(RVC_GPU_SUPPORT_CONFIG_FLAG, False)
+        rvc_cuda_available = bool(detect_compute_backends()["cuda"]["available"])
         set_widget_state(self.rvc_checkbox, not rvc_support, False)
         set_widget_state(self.rvc_cpu_checkbox, not rvc_support, False)
         set_widget_state(self.launch_rvc_checkbox, rvc_support, False)
         if rvc_support:
-            if rvc_gpu_support:
-                set_widget_state(self.rvc_cpu_launch_checkbox, True, False)
+            set_widget_state(
+                self.rvc_cpu_launch_checkbox,
+                rvc_cuda_available,
+                not rvc_gpu_support or not rvc_cuda_available,
+            )
+            if rvc_cuda_available:
+                self.rvc_cpu_launch_checkbox.setToolTip(
+                    "Switching this option prepares and remembers the selected RVC runtime on launch."
+                )
             else:
-                set_widget_state(self.rvc_cpu_launch_checkbox, False, True)
+                self.rvc_cpu_launch_checkbox.setToolTip(
+                    "CPU is required because RVC supports CUDA acceleration, but no NVIDIA CUDA runtime was detected."
+                )
         else:
             set_widget_state(self.rvc_cpu_launch_checkbox, False, False)
 

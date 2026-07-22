@@ -485,7 +485,7 @@ class TTSHandlerTests(unittest.TestCase):
                     "xtts_model": "turbo",
                     "speaker": "test-voice",
                     "speed": 1.2,
-                    "language": "en",
+                    "language": "pt-BR",
                     "chatterbox_temperature": 0.9,
                     "chatterbox_repetition_penalty": 1.5,
                     "chatterbox_min_p": 0.08,
@@ -505,7 +505,7 @@ class TTSHandlerTests(unittest.TestCase):
             self.assertEqual(payload["input"], "Hello world")
             self.assertEqual(payload["voice"], "test-voice")
             self.assertEqual(payload["speed"], 1.2)
-            self.assertEqual(payload["language"], "en")
+            self.assertEqual(payload["language"], "pt")
             self.assertEqual(payload["temperature"], 0.9)
             self.assertEqual(payload["repetition_penalty"], 1.5)
             self.assertEqual(payload["min_p"], 0.08)
@@ -541,6 +541,12 @@ class TTSHandlerTests(unittest.TestCase):
             self.assertEqual(payload["top_p"], 0.95)
             self.assertEqual(payload["top_k"], 1000)
             self.assertTrue(payload["norm_loudness"])
+
+    def test_chatterbox_language_normalization_preserves_only_supported_base_codes(self):
+        self.assertEqual(tts_handler.normalize_chatterbox_language_code("pt_br"), "pt")
+        self.assertEqual(tts_handler.normalize_chatterbox_language_code("en-US"), "en")
+        self.assertEqual(tts_handler.normalize_chatterbox_language_code("zh-CN"), "zh")
+        self.assertEqual(tts_handler.normalize_chatterbox_language_code("vi-VN"), "vi-vn")
 
     def test_kobold_qwen_payload_construction(self):
         with patch("requests.post") as mock_post:

@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import subprocess
@@ -6,7 +7,7 @@ import unittest
 import wave
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from pandrator.logic import dubbing_handler
 from pandrator.logic.dubbing import crispasr, srt_utils, stt_backends, transcription
@@ -36,6 +37,65 @@ def _crisp_json(words=None):
 
 
 class CrispASRTranscriptionTests(unittest.TestCase):
+    def test_windows_prefetch_downloads_selected_model_atomically(self):
+        requested = {}
+
+        class Download(io.BytesIO):
+            headers = {"Content-Length": "11"}
+
+        def opener(request, timeout):
+            requested["url"] = request.full_url
+            requested["accept"] = request.headers["Accept"]
+            requested["timeout"] = timeout
+            return Download(b"model-bytes")
+
+        with tempfile.TemporaryDirectory() as cache_dir, patch.object(
+            crispasr.platform,
+            "system",
+            return_value="Windows",
+        ):
+            path = crispasr._prefetch_windows_model(
+                {
+                    "stt_engine": "whisper",
+                    "stt_model_quantization": "f16",
+                    "crispasr_cache_dir": cache_dir,
+                },
+                opener=opener,
+            )
+
+            self.assertEqual(path, Path(cache_dir) / "ggml-large-v3.bin")
+            self.assertEqual(path.read_bytes(), b"model-bytes")
+            self.assertFalse(list(Path(cache_dir).glob("*.part-*")))
+
+        self.assertEqual(
+            requested["url"],
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin",
+        )
+        self.assertEqual(requested["accept"], "application/octet-stream")
+        self.assertEqual(requested["timeout"], 60)
+
+    def test_windows_prefetch_reuses_existing_nonempty_model(self):
+        with tempfile.TemporaryDirectory() as cache_dir, patch.object(
+            crispasr.platform,
+            "system",
+            return_value="Windows",
+        ):
+            existing = Path(cache_dir) / "parakeet-tdt-0.6b-v3-q4_k.gguf"
+            existing.write_bytes(b"cached")
+            opener = Mock(side_effect=AssertionError("download should not run"))
+
+            path = crispasr._prefetch_windows_model(
+                {
+                    "stt_engine": "parakeet",
+                    "stt_model_quantization": "q4_k",
+                    "crispasr_cache_dir": cache_dir,
+                },
+                opener=opener,
+            )
+
+            self.assertEqual(path, existing)
+            opener.assert_not_called()
+
     def test_legacy_backend_names_migrate_to_crispasr_engines(self):
         self.assertEqual(stt_backends.normalize_stt_backend("whisperx"), "whisper")
         self.assertEqual(stt_backends.normalize_stt_backend("parakeet_onnx"), "parakeet")

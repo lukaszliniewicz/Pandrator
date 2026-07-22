@@ -172,6 +172,38 @@ class TestInstallerLauncherChatterbox(unittest.TestCase):
         self.assertTrue(launch_selection.rvc)
         self.assertTrue(launch_selection.rvc_cpu)
 
+    def test_rvc_cpu_launch_option_can_switch_an_installed_cpu_runtime(self):
+        installer = PandratorInstaller(headless=True)
+        with patch.object(
+            installer,
+            "load_install_config",
+            return_value={"rvc_support": True, "rvc_gpu_support": False},
+        ), patch(
+            "pandrator_installer.gui.main_window.detect_compute_backends",
+            return_value={"cuda": {"available": True}},
+        ):
+            installer.refresh_ui_state()
+
+        self.assertTrue(installer.rvc_cpu_launch_checkbox.isEnabled())
+        self.assertTrue(installer.rvc_cpu_launch_checkbox.isChecked())
+        installer.rvc_cpu_launch_checkbox.setChecked(False)
+        self.assertFalse(installer.snapshot_launch_selection().rvc_cpu)
+
+    def test_rvc_cpu_launch_option_is_forced_without_cuda(self):
+        installer = PandratorInstaller(headless=True)
+        with patch.object(
+            installer,
+            "load_install_config",
+            return_value={"rvc_support": True, "rvc_gpu_support": True},
+        ), patch(
+            "pandrator_installer.gui.main_window.detect_compute_backends",
+            return_value={"cuda": {"available": False}},
+        ):
+            installer.refresh_ui_state()
+
+        self.assertFalse(installer.rvc_cpu_launch_checkbox.isEnabled())
+        self.assertTrue(installer.rvc_cpu_launch_checkbox.isChecked())
+
     def test_installer_uses_compact_service_controls(self):
         installer = PandratorInstaller(headless=True)
 

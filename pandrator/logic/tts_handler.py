@@ -239,6 +239,42 @@ def normalize_kokoro_language_code(language_value: str | None) -> str:
     return aliases.get(normalized, normalized)
 
 
+CHATTERBOX_LANGUAGE_CODES = {
+    "ar",
+    "da",
+    "de",
+    "el",
+    "en",
+    "es",
+    "fi",
+    "fr",
+    "he",
+    "hi",
+    "it",
+    "ja",
+    "ko",
+    "ms",
+    "nl",
+    "no",
+    "pl",
+    "pt",
+    "ru",
+    "sv",
+    "sw",
+    "tr",
+    "zh",
+}
+
+
+def normalize_chatterbox_language_code(language_value: str | None) -> str:
+    """Collapse regional tags when Chatterbox supports their base language."""
+    normalized = str(language_value or "").strip().lower().replace("_", "-")
+    if not normalized:
+        return "en"
+    base_language = normalized.split("-", 1)[0]
+    return base_language if base_language in CHATTERBOX_LANGUAGE_CODES else normalized
+
+
 def _strip_kokoro_weight_suffix(voice_token: str) -> str:
     trimmed = str(voice_token or "").strip()
     weighted_match = re.fullmatch(r"(.+?)(\(\s*\d+(?:\.\d+)?\s*\))", trimmed)
@@ -4454,7 +4490,7 @@ def _request_chatterbox_audio(text: str, tts_settings: dict, chatterbox_base_url
         "input": text,
         "voice": tts_settings.get("speaker") or None,
         "speed": _coerce_float(tts_settings.get("speed"), 1.0),
-        "language": tts_settings.get("language") or "en",
+        "language": normalize_chatterbox_language_code(tts_settings.get("language")),
     }
     
     # Pass optional advanced parameters

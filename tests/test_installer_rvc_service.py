@@ -200,11 +200,83 @@ class InstallerRVCServiceTests(unittest.TestCase):
             run_rvc.return_value = process
             check_rvc.return_value = True
 
-            installer.launch_process(LaunchSelection(pandrator=False, rvc=True))
+            with patch(
+                "pandrator_installer.runtime.detect_compute_backends",
+                return_value={"cuda": {"available": True}},
+            ):
+                installer.launch_process(LaunchSelection(pandrator=False, rvc=True))
 
             run_rvc.assert_called_once()
             self.assertFalse(run_rvc.call_args.kwargs["use_cpu"])
             self.assertFalse(installer._selected_launch_backend_keys())
+
+    def test_gpu_launch_switches_stale_cpu_metadata_after_service_is_healthy(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            install_root = os.path.join(workspace, "Pandrator")
+            os.makedirs(os.path.join(install_root, "rvc-python"))
+            installer = HeadlessInstaller(working_dir=workspace)
+            process = MagicMock()
+            process.poll.return_value = None
+            config = {"rvc_support": True, "rvc_gpu_support": False}
+
+            with patch.object(installer, "check_pixi", return_value=True), patch.object(
+                installer,
+                "get_pixi_executable",
+                return_value="pixi.exe",
+            ), patch.object(installer, "load_install_config", return_value=config), patch.object(
+                installer,
+                "save_install_config",
+            ) as save_config, patch.object(installer, "is_port_in_use", return_value=False), patch.object(
+                installer,
+                "run_rvc_api_server",
+                return_value=process,
+            ) as run_rvc, patch.object(
+                installer,
+                "check_rvc_server_online",
+                return_value=True,
+            ), patch(
+                "pandrator_installer.runtime.detect_compute_backends",
+                return_value={"cuda": {"available": True}},
+            ):
+                installer.launch_process(LaunchSelection(pandrator=False, rvc=True, rvc_cpu=False))
+
+            self.assertFalse(run_rvc.call_args.kwargs["use_cpu"])
+            self.assertTrue(config["rvc_gpu_support"])
+            save_config.assert_called_once_with(install_root, config)
+
+    def test_rvc_forces_and_remembers_cpu_when_cuda_is_unavailable(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            install_root = os.path.join(workspace, "Pandrator")
+            os.makedirs(os.path.join(install_root, "rvc-python"))
+            installer = HeadlessInstaller(working_dir=workspace)
+            process = MagicMock()
+            process.poll.return_value = None
+            config = {"rvc_support": True, "rvc_gpu_support": True}
+
+            with patch.object(installer, "check_pixi", return_value=True), patch.object(
+                installer,
+                "get_pixi_executable",
+                return_value="pixi.exe",
+            ), patch.object(installer, "load_install_config", return_value=config), patch.object(
+                installer,
+                "save_install_config",
+            ) as save_config, patch.object(installer, "is_port_in_use", return_value=False), patch.object(
+                installer,
+                "run_rvc_api_server",
+                return_value=process,
+            ) as run_rvc, patch.object(
+                installer,
+                "check_rvc_server_online",
+                return_value=True,
+            ), patch(
+                "pandrator_installer.runtime.detect_compute_backends",
+                return_value={"cuda": {"available": False}},
+            ):
+                installer.launch_process(LaunchSelection(pandrator=False, rvc=True, rvc_cpu=False))
+
+            self.assertTrue(run_rvc.call_args.kwargs["use_cpu"])
+            self.assertFalse(config["rvc_gpu_support"])
+            save_config.assert_called_once_with(install_root, config)
 
     @patch("pandrator_installer.service.HeadlessInstaller.check_rvc_server_online")
     @patch("pandrator_installer.service.HeadlessInstaller.run_rvc_api_server")

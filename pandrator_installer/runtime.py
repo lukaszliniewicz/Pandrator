@@ -16,6 +16,7 @@ except ImportError:
     PackagingSpecifierSet = None
 
 from .catalog import BACKEND_COMPONENT_KEYS, COMPONENTS
+from .crispasr import detect_compute_backends
 from .constants import (
     CHATTERBOX_API_REPO_DIRNAME,
     KOBOLD_QWEN_API_REPO_DIRNAME,
@@ -761,8 +762,8 @@ class RuntimeMixin:
                 rvc_server_path = os.path.join(pandrator_path, RVC_API_REPO_DIRNAME)
                 rvc_models_dir = os.path.join(pandrator_path, 'models', 'rvc')
                 os.makedirs(rvc_models_dir, exist_ok=True)
-                rvc_gpu_support = install_config.get(RVC_GPU_SUPPORT_CONFIG_FLAG, False)
-                rvc_use_cpu = self.rvc_cpu_launch_var or not rvc_gpu_support
+                rvc_cuda_available = bool(detect_compute_backends()["cuda"]["available"])
+                rvc_use_cpu = self.rvc_cpu_launch_var or not rvc_cuda_available
                 self.rvc_process = self.run_rvc_api_server(
                     rvc_server_path,
                     rvc_models_dir,
@@ -772,6 +773,10 @@ class RuntimeMixin:
                 if not self.check_rvc_server_online(rvc_server_url, process=self.rvc_process):
                     self.shutdown_rvc()
                     raise RuntimeError("RVC service failed to come online")
+                requested_gpu_runtime = not rvc_use_cpu
+                if install_config.get(RVC_GPU_SUPPORT_CONFIG_FLAG, False) != requested_gpu_runtime:
+                    install_config[RVC_GPU_SUPPORT_CONFIG_FLAG] = requested_gpu_runtime
+                    self.save_install_config(pandrator_path, install_config)
 
         self.reporter.progress(1.0)
         self.reporter.status("Applications are ready.")
