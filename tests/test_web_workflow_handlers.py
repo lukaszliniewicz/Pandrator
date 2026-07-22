@@ -108,7 +108,7 @@ class WebWorkflowHandlerTests(unittest.TestCase):
             "pandrator.logic.dubbing.llm_translation.translate_srt_file_deepl_with_result",
             return_value=SimpleNamespace(output_path=str(translated_path), cost=0.0, response_count=1, usage={}),
         ) as translate:
-            self.handlers.translate(
+            result = self.handlers.translate(
                 {
                     "session_id": self.session.id,
                     "source_artifact_id": source.id,
@@ -118,6 +118,10 @@ class WebWorkflowHandlerTests(unittest.TestCase):
                 threading.Event(),
             )
         self.assertEqual("database-deepl-key", translate.call_args.kwargs["auth_key"])
+        artifact, _output = self.artifacts.resolve(result["artifact_id"])
+        self.assertEqual("deepl", artifact.metadata_json["backend"])
+        self.assertEqual("pl", artifact.metadata_json["language"])
+        self.assertEqual("", artifact.metadata_json["model"])
 
     def test_workflow_reuses_translation_when_settings_and_source_are_unchanged(self):
         with self.database.session() as session:

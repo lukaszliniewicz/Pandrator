@@ -6,7 +6,6 @@
     CircleAlert,
     Clock3,
     Crop,
-    History,
     LoaderCircle,
     Library,
     Play,
@@ -19,7 +18,6 @@
     X
   } from '@lucide/svelte';
   import { api, type JobRecord, type SessionRecord } from './api';
-  import PdfEditor from './PdfEditor.svelte';
   import SubtitleReview from './SubtitleReview.svelte';
   import GuidedTour from './GuidedTour.svelte';
   import ArtifactPreview from './ArtifactPreview.svelte';
@@ -28,7 +26,9 @@
   import VoiceLibraryModal from './VoiceLibraryModal.svelte';
   import TextOptimizationReview from './TextOptimizationReview.svelte';
   import AddSourceDialog from './AddSourceDialog.svelte';
+  import StageArtifactHistory from './StageArtifactHistory.svelte';
   import { artifactRoleLabel, type PreviewableArtifact } from './artifact-display';
+  import type { StageArtifact } from './stage-artifacts';
   import { LANGUAGE_OPTIONS } from './settings-fields';
   import { describeVoice, languagesForService } from './voice-catalog';
   import { onMount } from 'svelte';
@@ -47,7 +47,7 @@
     included: boolean;
     required?: boolean;
     artifact?: PreviewableArtifact & { id: string; role: string; raw_role?: string; path: string } | null;
-    artifacts?: Array<PreviewableArtifact & { id: string; role: string; version: number; created_at: string; is_selected: boolean; parent_ids: string[]; settings_hash?: string | null }>;
+    artifacts?: StageArtifact[];
     selected_artifact_id?: string | null;
     selection_revision?: number;
     job_id?: string | null;
@@ -164,9 +164,9 @@
   let exportMode = $state('media');
   let subtitleFormat = $state('srt');
   let pdfSource = $state<{ id: string; filename: string } | null>(null);
+  let PdfEditorComponent = $state<(typeof import('./PdfEditor.svelte'))['default'] | null>(null);
   let reviewOpen = $state(false);
   let refreshingTtsServices = $state(false);
-  let refreshTimer: number | undefined;
   let workflowTour = $state(false);
   const workflowTourSteps = [
     {section:'Workflow',title:'Stages are independent',body:'Run any ready card on its own. Its latest artifact, settings, and status stay attached to that stage.'},
@@ -256,11 +256,9 @@
 
   async function sourceAdded(message: string) { sourceMessage = message; await load({ initial: false }); }
 
-  function artifactOptionLabel(artifact: NonNullable<Stage['artifacts']>[number]) {
-    const details = artifact.metadata_json ?? {};
-    const model = String(details.model ?? details.engine ?? '').trim();
-    const created = new Date(artifact.created_at).toLocaleString();
-    return `v${artifact.version} · ${model ? `${model} · ` : ''}${created}`;
+  async function openPdfEditor(source: { id: string; filename: string }) {
+    PdfEditorComponent ??= (await import('./PdfEditor.svelte')).default;
+    pdfSource = source;
   }
 
   async function chooseStageArtifact(stage: Stage, artifactId: string) {
@@ -729,15 +727,16 @@
   });
   $effect(() => { if (typeof localStorage !== 'undefined') localStorage.setItem(`pandrator:workspace-mode:${session.id}`, workspaceMode); });
   $effect(() => {
-    if (refreshTimer) window.clearTimeout(refreshTimer);
-    if (snapshot?.stages.some((stage) => stage.status === 'running')) refreshTimer = window.setTimeout(() => load({ initial: false }), 1000);
+    if (!snapshot?.stages.some((stage) => stage.status === 'running')) return;
+    const timer = window.setTimeout(() => load({ initial: false }), 1000);
+    return () => window.clearTimeout(timer);
   });
 </script>
 
 <div class="mx-auto max-w-6xl">
   <header class="mb-6 flex flex-wrap items-end justify-between gap-6">
     <div><div class="eyebrow mb-2">Resolved outcome</div><p class="muted max-w-2xl">{session.workflow_kind==='subtitles'?'Transcribe, refine, translate, and export subtitle documents. Voice generation and rendered video remain available by converting this workspace to voiceover.':'Choose how much control you want while keeping the same settings, artifacts, and review history.'}</p>{#if session.workflow_kind!=='subtitles'}<div class="mt-4 inline-flex rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-1" aria-label="Workspace mode"><button onclick={()=>workspaceMode='review'} class:mode-active={workspaceMode==='review'} class="mode-choice">Review each stage</button><button onclick={()=>workspaceMode='automatic'} class:mode-active={workspaceMode==='automatic'} class="mode-choice">Generate automatically</button></div>{/if}</div>
-    <div class="flex flex-wrap gap-2"><button onclick={() => workflowTour=true} class="lift flex items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm font-semibold"><Sparkles size={17}/> Tour</button>{#if snapshot?.sources.find((item) => item.filename.toLowerCase().endsWith('.pdf'))}{@const availablePdf = snapshot.sources.find((item) => item.filename.toLowerCase().endsWith('.pdf'))!}<button onclick={() => pdfSource=availablePdf} class="lift flex items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm font-semibold"><Crop size={18}/> Edit PDF</button>{/if}<button onclick={()=>sourceDialog=true} class="lift flex items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm font-semibold"><Plus size={18}/> Add source</button></div>
+    <div class="flex flex-wrap gap-2"><button onclick={() => workflowTour=true} class="lift flex items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm font-semibold"><Sparkles size={17}/> Tour</button>{#if snapshot?.sources.find((item) => item.filename.toLowerCase().endsWith('.pdf'))}{@const availablePdf = snapshot.sources.find((item) => item.filename.toLowerCase().endsWith('.pdf'))!}<button onclick={() => openPdfEditor(availablePdf)} class="lift flex items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm font-semibold"><Crop size={18}/> Edit PDF</button>{/if}<button onclick={()=>sourceDialog=true} class="lift flex items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm font-semibold"><Plus size={18}/> Add source</button></div>
   </header>
   {#if sourceMessage}<div class="mb-5 rounded-xl bg-[var(--accent-soft)] px-4 py-3 text-sm">{sourceMessage}</div>{/if}
   {#if session.workflow_kind !== 'subtitles' && workspaceMode === 'automatic'}
@@ -760,7 +759,7 @@
             <div class="flex min-w-0 flex-1 items-start gap-4">
               <div class="grid size-11 shrink-0 place-items-center rounded-2xl bg-[var(--accent-soft)] text-sm font-bold text-[var(--accent)]">{stage.number}</div>
               <div class="min-w-0"><div class="flex flex-wrap items-center gap-2"><h2 class="text-lg font-semibold">{stage.title}</h2><span class:running={stage.status === 'running'} class:done={stage.status === 'completed'} class:warning={stage.status === 'stale' || stage.status === 'failed'} class="status-chip inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[.68rem] font-bold uppercase tracking-wider"><StatusIcon class={stage.status === 'running' ? 'animate-spin' : ''} size={12}/>{stage.toggle?(stage.enabled?'enabled':'disabled'):stage.status}</span></div><p class="muted mt-1.5 max-w-2xl text-sm leading-relaxed">{stage.explanation}</p>{#if stage.status==='running' && stage.progress!=null}<div class="mt-3 h-1.5 max-w-md overflow-hidden rounded-full bg-[var(--line)]"><div class="h-full bg-[var(--accent)]" style={`width:${Math.max(2,stage.progress*100)}%`}></div></div>{/if}{#if stage.detail}<p class="mt-2 text-xs text-red-500">{stage.detail}</p>{/if}{#if stage.key==='optimize_tts' && stage.usage}<p class="muted mt-2 text-xs"><strong class="text-[var(--ink)]">Latest usage:</strong> {stage.usage.total_tokens.toLocaleString()} tokens ({stage.usage.input_tokens.toLocaleString()} input, {stage.usage.output_tokens.toLocaleString()} output{stage.usage.cached_input_tokens ? `, ${stage.usage.cached_input_tokens.toLocaleString()} cached` : ''}) · {formatCost(stage.usage.cost_usd)} · {stage.usage.model_id}</p>{/if}
-              {#if (stage.artifacts?.length??0)>0}<div class="mt-3 flex flex-wrap items-center gap-2"><History class="muted" size={14}/><label class="text-xs font-semibold">Selected version <select value={stage.selected_artifact_id??''} onchange={(event)=>chooseStageArtifact(stage,event.currentTarget.value)} class="ml-1 max-w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-2 py-1.5 font-normal">{#if !stage.selected_artifact_id}<option value="">No result selected</option>{/if}{#each stage.artifacts??[] as artifact}<option value={artifact.id}>{artifactOptionLabel(artifact)}</option>{/each}</select></label>{#if stage.artifact}<button onclick={() => previewArtifact(stage)} class="flex items-center gap-1 text-xs font-semibold text-[var(--accent)]">Preview selected<ChevronRight size={13}/></button><button onclick={()=>clearStageArtifact(stage)} class="muted text-xs font-semibold hover:text-red-500">Clear selection</button>{:else}<span class="muted text-xs">Choose an earlier version or run this stage for the selected input.</span>{/if}</div>{:else if stage.artifact}<button onclick={() => previewArtifact(stage)} class="mt-2 flex items-center gap-1 text-xs font-semibold text-[var(--accent)]">Preview latest: {stage.artifact.role}<ChevronRight size={13}/></button>{/if}</div>
+              {#if (stage.artifacts?.length??0)>0}<StageArtifactHistory artifacts={stage.artifacts??[]} selectedArtifactId={stage.selected_artifact_id} canPreview={Boolean(stage.artifact)} onselect={(artifactId)=>chooseStageArtifact(stage,artifactId)} onpreview={()=>previewArtifact(stage)} onclear={()=>clearStageArtifact(stage)}/>{:else if stage.artifact}<button onclick={() => previewArtifact(stage)} class="mt-2 flex items-center gap-1 text-xs font-semibold text-[var(--accent)]">Preview latest: {stage.artifact.role}<ChevronRight size={13}/></button>{/if}</div>
             </div>
             <div class="flex flex-wrap items-center gap-2 lg:justify-end">
               {#if stage.toggle}
@@ -875,7 +874,7 @@
   </div>
 {/if}
 
-{#if pdfSource}<PdfEditor sessionId={session.id} source={pdfSource} onclose={() => pdfSource=null}/>{/if}
+{#if pdfSource && PdfEditorComponent}<PdfEditorComponent sessionId={session.id} source={pdfSource} onclose={() => pdfSource=null}/>{/if}
 {#if reviewOpen}<SubtitleReview sessionId={session.id} sourceArtifactId={snapshot?.sources[0]?.id} onclose={() => reviewOpen=false} onsaved={load}/>{/if}
 {#if preview}<ArtifactPreview artifact={preview} onclose={()=>preview=null}/>{/if}
 {#if optimizationReviewArtifactId}<TextOptimizationReview artifactId={optimizationReviewArtifactId} onclose={()=>optimizationReviewArtifactId=''} onsaved={load}/>{/if}

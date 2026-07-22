@@ -980,6 +980,13 @@ class WorkflowHandlers:
             session_id=session_id,
             parent_ids=[source_artifact.id],
             settings=dict(payload.get("settings") or {}),
+            metadata={
+                "engine": transcription_result.engine,
+                "model": transcription_result.engine,
+                "model_quantization": str((payload.get("settings") or {}).get("stt_model_quantization") or "f16"),
+                "compute_backend": transcription_result.compute_backend,
+                "language": str((payload.get("settings") or {}).get("original_language") or (payload.get("settings") or {}).get("stt_language") or "auto"),
+            },
         )
         timing_artifact = self.artifacts.register(
             Path(transcription_result.word_timestamps_path),
@@ -997,7 +1004,7 @@ class WorkflowHandlers:
             session_id,
             artifact,
             "transcription",
-            language=str((payload.get("settings") or {}).get("original_language") or "") or None,
+            language=str((payload.get("settings") or {}).get("original_language") or (payload.get("settings") or {}).get("stt_language") or "") or None,
         )
         word_count = self._store_timed_words(revision_id, Path(transcription_result.word_timestamps_path))
         progress(1.0, "Transcription ready")
@@ -1031,6 +1038,7 @@ class WorkflowHandlers:
         )
         if cancel_event.is_set():
             return {}
+        settings_fingerprint = _stage_settings_fingerprint("correct", settings)
         artifact = self.artifacts.register(
             Path(result.output_path),
             kind="srt",
@@ -1042,14 +1050,16 @@ class WorkflowHandlers:
                 "source_artifact_id": source_artifact.id,
                 "source_content_hash": source_artifact.content_hash,
                 "requested_settings_hash": requested_settings_hash,
-                "settings_fingerprint": _stage_settings_fingerprint("correct", settings),
+                "settings_fingerprint": settings_fingerprint,
+                "model": settings_fingerprint["model"],
+                "language": str(settings.get("original_language") or settings.get("source_language") or "auto"),
             },
         )
         self._store_srt_document(
             session_id,
             artifact,
             "correction",
-            language=str(settings.get("original_language") or "") or None,
+            language=str(settings.get("original_language") or settings.get("source_language") or "") or None,
             parent_artifact=source_artifact,
         )
         self._record_usage(session_id, "correction", settings, result, job_id=str(payload.get("_job_id") or "") or None, artifact_id=artifact.id)
@@ -1094,6 +1104,7 @@ class WorkflowHandlers:
             )
         if cancel_event.is_set():
             return {}
+        settings_fingerprint = _stage_settings_fingerprint("translate", settings)
         artifact = self.artifacts.register(
             Path(result.output_path),
             kind="srt",
@@ -1105,7 +1116,10 @@ class WorkflowHandlers:
                 "source_artifact_id": source_artifact.id,
                 "source_content_hash": source_artifact.content_hash,
                 "requested_settings_hash": requested_settings_hash,
-                "settings_fingerprint": _stage_settings_fingerprint("translate", settings),
+                "settings_fingerprint": settings_fingerprint,
+                "backend": settings_fingerprint["backend"],
+                "model": settings_fingerprint["model"],
+                "language": settings_fingerprint["target_language"],
             },
         )
         self._store_srt_document(
