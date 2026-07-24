@@ -28,6 +28,17 @@
   import { LANGUAGE_OPTIONS } from './settings-fields';
   import { describeVoice, languagesForService, type VoiceDescriptor } from './voice-catalog';
 
+  type SegmentFilter = 'all' | 'completed' | 'queued' | 'marked' | 'failed' | 'stale' | 'verification_issues';
+  const SEGMENT_FILTER_OPTIONS: { value: SegmentFilter; label: string }[] = [
+    { value: 'all', label: 'All segments' },
+    { value: 'completed', label: 'Generated' },
+    { value: 'queued', label: 'Queued' },
+    { value: 'marked', label: 'Marked' },
+    { value: 'failed', label: 'Generation failed' },
+    { value: 'stale', label: 'Stale' },
+    { value: 'verification_issues', label: 'Verification issues' }
+  ];
+
   let { sessionId }: { sessionId: string } = $props();
   let mode = $state<'collapsed' | 'half' | 'full'>('collapsed');
   let payload = $state<any>({ items: [], total: 0, next_cursor: null });
@@ -35,7 +46,7 @@
   let runs = $state<any[]>([]);
   let selectedRunId = $state('');
   let assembly = $state<any>(null);
-  let filter = $state<'all' | 'marked' | 'failed' | 'stale' | 'completed' | 'queued'>('all');
+  let filter = $state<SegmentFilter>('all');
   let error = $state('');
   let loading = $state(false);
   let timer: number | undefined;
@@ -129,6 +140,12 @@
       .map((item: any) => item.id)
   );
   const editableTexts = $derived(payload.items.map((item: any) => String(item.text ?? '')));
+  const activeFilterLabel = $derived(
+    SEGMENT_FILTER_OPTIONS.find((option) => option.value === filter)?.label ?? 'All segments'
+  );
+  const searchScopeLabel = $derived(
+    filter === 'all' ? 'generation segments' : `${activeFilterLabel.toLowerCase()} segments`
+  );
   const selectedRun = $derived(runs.find((item: any) => item.id === selectedRunId) ?? null);
   const selectedAssembly = $derived(selectedRun?.assembly ?? (!selectedRun ? assembly : null));
   const selectedRunCost = $derived.by(() => {
@@ -258,6 +275,7 @@
     try {
       const query = new URLSearchParams({ limit: '100' });
       if (filter === 'marked') query.set('marked', 'true');
+      else if (filter === 'verification_issues') query.set('verification', 'issues');
       else if (filter !== 'all') query.set('status', filter);
       if (!reset && payload.next_cursor != null) query.set('cursor', String(payload.next_cursor));
       const [next, runPayload, latestAssembly] = await Promise.all([
@@ -728,9 +746,13 @@
             <button onclick={deleteSelectedRun} disabled={loading || !selectedRun || ['queued','running','pausing','cancel_requested'].includes(selectedRun.status)} class="action text-red-500" title="Delete the selected run and its generated takes"><Trash2 size={14}/> Delete run</button>
             <span class="h-6 w-px bg-[var(--line)]"></span>
           {/if}
-          {#each ['all', 'completed', 'queued', 'marked', 'failed', 'stale'] as value}
-            <button onclick={() => filter = value as typeof filter} class:active={filter === value} class="filter capitalize">{value === 'completed' ? 'generated' : value}</button>
-          {/each}
+          <label class="flex items-center gap-2 text-xs font-semibold">Show
+            <select bind:value={filter} class="mini min-w-44" aria-label="Segments to display">
+              {#each SEGMENT_FILTER_OPTIONS as option}
+                <option value={option.value}>{option.label}</option>
+              {/each}
+            </select>
+          </label>
           <div class="view-switch" aria-label="Generation review view">
             <button onclick={() => viewMode='segments'} class:active={viewMode==='segments'}><ListMusic size={13}/> Segments</button>
             <button onclick={() => viewMode='reading'} class:active={viewMode==='reading'}><BookOpenText size={13}/> Reading</button>
@@ -743,7 +765,7 @@
           <a href={`/sessions/${sessionId}/output`} class="action">Output settings</a>
           <button onclick={() => ttsServicesOpen = true} class="action">Speech services</button>
         </div>
-        <div class="border-b border-[var(--line)] px-3 py-2"><SearchReplaceBar texts={editableTexts} onreplace={applySearchReplacements} onnavigate={navigateSearchMatch} onactivate={loadAllSegments} disabled={searchLoading || loading} label={filter === 'all' ? 'generation segments' : `${filter} generation segments`}/>{#if searchLoading}<p class="muted mt-1 px-1 text-[.65rem]">Loading all {filter === 'all' ? '' : `${filter} `}segments for search…</p>{/if}</div>
+        <div class="border-b border-[var(--line)] px-3 py-2"><SearchReplaceBar texts={editableTexts} onreplace={applySearchReplacements} onnavigate={navigateSearchMatch} onactivate={loadAllSegments} disabled={searchLoading || loading} label={searchScopeLabel}/>{#if searchLoading}<p class="muted mt-1 px-1 text-[.65rem]">Loading all {searchScopeLabel} for search…</p>{/if}</div>
 
         {#if selectedAssembly?.status === 'completed' && selectedAssembly.artifact_id}
           <div class="flex flex-wrap items-center gap-3 border-b border-[var(--line)] bg-[var(--accent-soft)] px-4 py-2">
@@ -908,7 +930,6 @@
   .comparison-modal{border:1px solid var(--line);background:var(--paper-strong);box-shadow:0 22px 70px rgba(0,0,0,.25)}
   .action{display:flex;align-items:center;gap:.35rem;border:1px solid var(--line);border-radius:.55rem;padding:.4rem .6rem;font-size:.7rem;font-weight:700}.action.primary{background:var(--action-bg);color:white}.action.primary:hover{background:var(--action-hover)}.action:disabled{opacity:.35}
   .icon-action{padding:.42rem}
-  .filter{border-radius:.5rem;padding:.4rem .65rem;color:var(--muted);font-size:.72rem;font-weight:650}.filter.active{background:var(--accent-soft);color:var(--ink)}
   .view-switch{display:flex;border:1px solid var(--line);border-radius:.6rem;background:var(--paper);padding:.15rem}.view-switch button{display:flex;align-items:center;gap:.3rem;border-radius:.45rem;padding:.3rem .5rem;font-size:.68rem;font-weight:700;color:var(--muted)}.view-switch button.active{background:var(--accent-soft);color:var(--ink)}
   th,td{border-bottom:1px solid var(--line);padding:.55rem;text-align:center;vertical-align:middle}tr.removed{opacity:.42}tr.selected{background:var(--accent-soft)}
   .status{font-size:.68rem;text-transform:uppercase;color:var(--muted)}.mini{border:1px solid var(--line);border-radius:.45rem;background:var(--paper);padding:.3rem .45rem;font-size:.68rem}

@@ -476,6 +476,91 @@ class WebParityWorkspaceTests(unittest.TestCase):
         paused = self.client.post(f"/api/v1/generation-runs/{started.get_json()['id']}/pause", headers=self.headers)
         self.assertEqual("pausing", paused.get_json()["status"])
 
+    def test_generation_segment_filter_includes_active_verification_issues(self):
+        record = self.create_session("audiobook")
+        created = self.client.post(
+            f"/api/v1/sessions/{record['id']}/generation-plan",
+            json={
+                "segments": [
+                    {"text": "Warning take."},
+                    {"text": "Failed take."},
+                    {"text": "Passing take."},
+                ]
+            },
+            headers=self.headers,
+        )
+        self.assertEqual(201, created.status_code, created.get_json())
+        listed = self.client.get(
+            f"/api/v1/sessions/{record['id']}/generation-segments"
+        ).get_json()["items"]
+        database = self.app.extensions["pandrator"]["database"]
+        with database.session() as session:
+            for index, verification_status in enumerate(("warning", "failed", "passed")):
+                artifact = Artifact(
+                    session_id=record["id"],
+                    kind="audio",
+                    role="generation_take",
+                    relative_path=f"verification-{index}.wav",
+                    metadata_json={
+                        "audio_verification": {"status": verification_status}
+                    },
+                )
+                session.add(artifact)
+                session.flush()
+                session.add(
+                    AudioTake(
+                        generation_segment_id=listed[index]["id"],
+                        artifact_id=artifact.id,
+                        kind="tts",
+                        status="completed",
+                        is_active=True,
+                    )
+                )
+            older_artifact = Artifact(
+                session_id=record["id"],
+                kind="audio",
+                role="generation_take",
+                relative_path="older-failed.wav",
+                metadata_json={"audio_verification": {"status": "failed"}},
+            )
+            session.add(older_artifact)
+            session.flush()
+            session.add(
+                AudioTake(
+                    generation_segment_id=listed[2]["id"],
+                    artifact_id=older_artifact.id,
+                    kind="tts",
+                    status="completed",
+                    is_active=False,
+                )
+            )
+
+        first_page = self.client.get(
+            f"/api/v1/sessions/{record['id']}/generation-segments"
+            "?verification=issues&limit=1"
+        )
+        self.assertEqual(200, first_page.status_code, first_page.get_json())
+        self.assertEqual(2, first_page.get_json()["total"])
+        self.assertEqual(["Warning take."], [
+            item["text"] for item in first_page.get_json()["items"]
+        ])
+        self.assertEqual(1, first_page.get_json()["next_cursor"])
+
+        second_page = self.client.get(
+            f"/api/v1/sessions/{record['id']}/generation-segments"
+            "?verification=issues&limit=1&cursor=1"
+        )
+        self.assertEqual(["Failed take."], [
+            item["text"] for item in second_page.get_json()["items"]
+        ])
+        self.assertIsNone(second_page.get_json()["next_cursor"])
+
+        invalid = self.client.get(
+            f"/api/v1/sessions/{record['id']}/generation-segments"
+            "?verification=passed"
+        )
+        self.assertEqual(422, invalid.status_code, invalid.get_json())
+
     def test_artifact_context_exposes_textual_parent_for_comparison(self):
         record = self.create_session("audiobook")
         extension = self.app.extensions["pandrator"]

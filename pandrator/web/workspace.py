@@ -1000,18 +1000,49 @@ class GenerationService:
             session.flush()
             return {"id": plan.id, "active_revision_id": revision.id, "revision_number": revision_number, "segment_count": len(clean_segments)}
 
-    def list_segments(self, session_id: str, *, cursor: int = 0, limit: int = 100, status: str | None = None, marked: bool | None = None) -> dict[str, Any]:
+    def list_segments(
+        self,
+        session_id: str,
+        *,
+        cursor: int = 0,
+        limit: int = 100,
+        status: str | None = None,
+        marked: bool | None = None,
+        verification: str | None = None,
+    ) -> dict[str, Any]:
         limit = max(1, min(int(limit), 250))
+        if verification not in {None, "issues"}:
+            raise ValueError("verification must be 'issues' when supplied.")
         with self.database.session() as session:
             plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
             if plan is None or not plan.active_revision_id:
                 return {"items": [], "next_cursor": None, "total": 0, "plan_revision_id": None}
-            filters = [GenerationSegment.plan_revision_id == plan.active_revision_id, GenerationSegment.ordinal >= max(0, cursor)]
+            filters = [GenerationSegment.plan_revision_id == plan.active_revision_id]
             if status:
                 filters.append(GenerationSegment.status == status)
             if marked is not None:
                 filters.append(GenerationSegment.marked.is_(marked))
-            rows = list(session.scalars(select(GenerationSegment).where(*filters).order_by(GenerationSegment.ordinal).limit(limit + 1)).all())
+            if verification == "issues":
+                verification_status = Artifact.metadata_json["audio_verification"]["status"].as_string()
+                filters.append(
+                    select(AudioTake.id)
+                    .join(Artifact, Artifact.id == AudioTake.artifact_id)
+                    .where(
+                        AudioTake.generation_segment_id == GenerationSegment.id,
+                        AudioTake.is_active.is_(True),
+                        verification_status.in_(("warning", "failed")),
+                    )
+                    .exists()
+                )
+            page_filters = [*filters, GenerationSegment.ordinal >= max(0, cursor)]
+            rows = list(
+                session.scalars(
+                    select(GenerationSegment)
+                    .where(*page_filters)
+                    .order_by(GenerationSegment.ordinal)
+                    .limit(limit + 1)
+                ).all()
+            )
             has_more = len(rows) > limit
             rows = rows[:limit]
             takes_by_segment: dict[str, list[AudioTake]] = {}
@@ -1066,7 +1097,14 @@ class GenerationService:
                 }
                 for item in rows
             ]
-            total = int(session.scalar(select(func.count()).select_from(GenerationSegment).where(GenerationSegment.plan_revision_id == plan.active_revision_id)) or 0)
+            total = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(GenerationSegment)
+                    .where(*filters)
+                )
+                or 0
+            )
             return {"items": items, "next_cursor": rows[-1].ordinal + 1 if rows and has_more else None, "total": total, "plan_revision_id": plan.active_revision_id}
 
     def update_segment(self, segment_id: str, expected_revision: int, changes: dict[str, Any]) -> dict[str, Any]:

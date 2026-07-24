@@ -1101,9 +1101,18 @@ def create_app(
         marked_arg = request.args.get("marked")
         marked = None if marked_arg is None else marked_arg.lower() == "true"
         try:
-            result = generation.list_segments(session_id, cursor=request.args.get("cursor", 0, type=int), limit=request.args.get("limit", 100, type=int), status=request.args.get("status"), marked=marked)
+            result = generation.list_segments(
+                session_id,
+                cursor=request.args.get("cursor", 0, type=int),
+                limit=request.args.get("limit", 100, type=int),
+                status=request.args.get("status"),
+                marked=marked,
+                verification=request.args.get("verification"),
+            )
         except KeyError:
             return error_response("not_found", "Session not found.", 404)
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
         return jsonify(result)
 
     @app.patch("/api/v1/generation-segments/<segment_id>")
