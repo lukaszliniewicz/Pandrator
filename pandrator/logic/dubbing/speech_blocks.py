@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import tempfile
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -218,10 +219,13 @@ def _subtitle_to_parts(
     language_code: str,
     min_chars: int,
     max_chars: int,
+    speaker_override: str = "",
 ) -> list[_SpeechPart]:
     canonical_text = re.sub(r"\s+", " ", str(subtitle.text or "")).strip()
     speaker_match = _SPEAKER_PREFIX_RE.match(canonical_text)
-    speaker = speaker_match.group("speaker").casefold() if speaker_match else ""
+    speaker = str(speaker_override or subtitle.speaker or "").strip().casefold()
+    if not speaker and speaker_match:
+        speaker = speaker_match.group("speaker").casefold()
     if speaker_match:
         canonical_text = canonical_text[speaker_match.end():].strip()
     parts = _split_subtitle_text(canonical_text, language_code, min_chars, max_chars)
@@ -284,6 +288,8 @@ def create_speech_blocks(
     min_chars: int = 10,
     max_chars: int = 220,
     merge_threshold: int = 250,
+    *,
+    speaker_by_subtitle: Mapping[int, str] | None = None,
 ) -> list[dict[str, object]]:
     """Create Pandrator/Subdub-compatible speech blocks from SRT content."""
     min_chars = max(1, int(min_chars))
@@ -293,7 +299,15 @@ def create_speech_blocks(
     subtitles = parse_srt(srt_content)
     all_parts: list[_SpeechPart] = []
     for subtitle in subtitles:
-        all_parts.extend(_subtitle_to_parts(subtitle, language_code, min_chars, max_chars))
+        all_parts.extend(
+            _subtitle_to_parts(
+                subtitle,
+                language_code,
+                min_chars,
+                max_chars,
+                str((speaker_by_subtitle or {}).get(subtitle.index) or ""),
+            )
+        )
 
     merged_parts: list[_SpeechPart] = []
     for part in all_parts:
@@ -343,6 +357,8 @@ def generate_speech_blocks_file(
     min_chars: int = 10,
     max_chars: int = 220,
     merge_threshold: int = 250,
+    *,
+    speaker_by_subtitle: Mapping[int, str] | None = None,
 ) -> str:
     """Generate a speech-block JSON file next to a dubbing run/session."""
     session_path = Path(session_dir)
@@ -356,6 +372,7 @@ def generate_speech_blocks_file(
         min_chars=min_chars,
         max_chars=max_chars,
         merge_threshold=merge_threshold,
+        speaker_by_subtitle=speaker_by_subtitle,
     )
 
     output_path = session_path / f"{srt_path.stem}_speech_blocks.json"

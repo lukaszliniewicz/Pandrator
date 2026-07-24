@@ -83,7 +83,7 @@ This cue contains forty readable characters.
         config = SubtitleFinalizationConfig.from_settings({"subtitle_min_gap_ms": 0})
         self.assertEqual(config.min_gap_ms, 0)
 
-    def test_diarized_words_break_on_speaker_changes(self):
+    def test_diarized_words_break_on_speaker_changes_without_visible_labels(self):
         payload = {
             "transcription": [
                 {"speaker": "0", "words": [{"text": "Hello.", "offsets": {"from": 0, "to": 500}}]},
@@ -93,11 +93,12 @@ This cue contains forty readable characters.
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "words.json"
             path.write_text(json.dumps(payload), encoding="utf-8")
-            segments = parse_srt(compose_from_crispasr_json(path))
+            content = compose_from_crispasr_json(path)
+            segments = parse_srt(content)
 
         self.assertEqual(len(segments), 2)
-        self.assertTrue(segments[0].text.startswith("[SPEAKER_0]:"))
-        self.assertTrue(segments[1].text.startswith("[SPEAKER_1]:"))
+        self.assertEqual([segment.text for segment in segments], ["Hello.", "Welcome."])
+        self.assertNotIn("[SPEAKER_", content)
 
     def test_long_silence_is_a_hard_boundary_without_punctuation(self):
         payload = {"transcription": [{"words": [

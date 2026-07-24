@@ -6,7 +6,7 @@ import json
 import logging
 import os
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -15,7 +15,7 @@ from .. import llm_handler
 from .llm_config import resolve_dubbing_llm_settings
 from .llm_correction import DEFAULT_LLM_CHAR_LIMIT, extract_json_payload
 from .models import SubtitleSegment
-from .srt_utils import compose_srt, create_translation_blocks, parse_srt
+from .srt_utils import compose_srt, create_translation_blocks, parse_srt, split_speaker_label
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +89,7 @@ Instructions:
 9. Use correct punctuation that enhances a natural flow of speech for optimal speech generation.
 10. Do not add ANY comments, confirmations, explanations, or questions. Output only the translation formatted like the original JSON array.
 11. Before outputting your answer, validate its formatting. Return EXACTLY {subtitle_count} subtitles with the same structure as the input.
+12. Speaker identity is managed separately by Pandrator. Do not add speaker names, speaker numbers, or bracketed speaker labels to translated text.
 """
 
 CONTEXT_PROMPT_TEMPLATE = """
@@ -278,7 +279,7 @@ def parse_translation_response(
     for item in payload:
         if not isinstance(item, dict) or "number" not in item or "text" not in item:
             raise ValueError("Translation response items must contain 'number' and 'text'.")
-        translations.append(str(item["text"]).strip())
+        translations.append(split_speaker_label(str(item["text"]).strip())[1])
 
     return translations, parse_glossary_entries(glossary_text)
 
@@ -363,6 +364,7 @@ def translation_responses_to_srt(
     original_srt: str,
     *,
     remove_marked_subtitles: bool = True,
+    speaker_by_subtitle: Mapping[int, str] | None = None,
 ) -> str:
     original_segments = parse_srt(original_srt)
     segments_by_index = {segment.index: segment for segment in original_segments}
@@ -383,6 +385,11 @@ def translation_responses_to_srt(
                     start_ms=original.start_ms,
                     end_ms=original.end_ms,
                     text=str(translated_text).strip(),
+                    speaker=str(
+                        (speaker_by_subtitle or {}).get(original.index)
+                        or original.speaker
+                        or ""
+                    ).strip(),
                 )
             )
 
@@ -397,6 +404,7 @@ def translate_srt_content(
     glossary: dict[str, str] | None = None,
     completion_func: Callable[..., Any] | None = None,
     cancel_event: Any | None = None,
+    speaker_by_subtitle: Mapping[int, str] | None = None,
 ) -> TranslationResult:
     source_language = str(
         settings.get("original_language")
@@ -417,6 +425,7 @@ def translate_srt_content(
         char_limit,
         source_language,
         max_subtitles_per_block=max_subtitles_per_call,
+        speaker_by_subtitle=speaker_by_subtitle,
     )
     if not blocks:
         return TranslationResult("", [], active_glossary, cost=0.0, response_count=0)
@@ -466,13 +475,23 @@ def translate_srt_content(
                 "original_indices": [subtitle["index"] for subtitle in block],
             }
         )
-        previous_response = content
+        previous_response = json.dumps(
+            [
+                {"number": item_index, "text": text}
+                for item_index, text in enumerate(translated_texts, start=1)
+            ],
+            ensure_ascii=False,
+        )
         total_cost += cost
         if cost_source and cost_source not in cost_sources:
             cost_sources.append(cost_source)
 
     return TranslationResult(
-        srt_content=translation_responses_to_srt(translated_responses, srt_content),
+        srt_content=translation_responses_to_srt(
+            translated_responses,
+            srt_content,
+            speaker_by_subtitle=speaker_by_subtitle,
+        ),
         block_responses=translated_responses,
         glossary=active_glossary,
         cost=total_cost,
@@ -490,6 +509,7 @@ def translate_srt_file_with_result(
     *,
     completion_func: Callable[..., Any] | None = None,
     cancel_event: Any | None = None,
+    speaker_by_subtitle: Mapping[int, str] | None = None,
 ) -> TranslationResult:
     session_path = Path(session_dir)
     srt_path = Path(srt_file)
@@ -504,6 +524,7 @@ def translate_srt_file_with_result(
         glossary=glossary,
         completion_func=completion_func,
         cancel_event=cancel_event,
+        speaker_by_subtitle=speaker_by_subtitle,
     )
 
     target_language = str(settings.get("target_language") or "en")
@@ -540,6 +561,7 @@ def translate_srt_file(
     translation_instructions: str = "",
     *,
     completion_func: Callable[..., Any] | None = None,
+    speaker_by_subtitle: Mapping[int, str] | None = None,
 ) -> str:
     return translate_srt_file_with_result(
         session_dir=session_dir,
@@ -547,6 +569,7 @@ def translate_srt_file(
         settings=settings,
         translation_instructions=translation_instructions,
         completion_func=completion_func,
+        speaker_by_subtitle=speaker_by_subtitle,
     ).output_path
 
 
@@ -556,6 +579,7 @@ def translate_srt_content_deepl(
     auth_key: str,
     *,
     translator_factory: Callable[[str], Any] | None = None,
+    speaker_by_subtitle: Mapping[int, str] | None = None,
 ) -> TranslationResult:
     source_language = str(
         settings.get("original_language")
@@ -571,6 +595,7 @@ def translate_srt_content_deepl(
         char_limit,
         source_language,
         max_subtitles_per_block=max_subtitles_per_call,
+        speaker_by_subtitle=speaker_by_subtitle,
     )
     translated_responses = translate_blocks_deepl(
         translation_blocks,
@@ -584,6 +609,7 @@ def translate_srt_content_deepl(
             translated_responses,
             srt_content,
             remove_marked_subtitles=False,
+            speaker_by_subtitle=speaker_by_subtitle,
         ),
         block_responses=translated_responses,
         glossary={},
@@ -599,6 +625,7 @@ def translate_srt_file_deepl_with_result(
     *,
     auth_key: str | None = None,
     translator_factory: Callable[[str], Any] | None = None,
+    speaker_by_subtitle: Mapping[int, str] | None = None,
 ) -> TranslationResult:
     session_path = Path(session_dir)
     srt_path = Path(srt_file)
@@ -611,6 +638,7 @@ def translate_srt_file_deepl_with_result(
         settings,
         resolved_auth_key,
         translator_factory=translator_factory,
+        speaker_by_subtitle=speaker_by_subtitle,
     )
 
     target_language = str(settings.get("target_language") or "en")
@@ -643,6 +671,7 @@ def translate_srt_file_deepl(
     *,
     auth_key: str | None = None,
     translator_factory: Callable[[str], Any] | None = None,
+    speaker_by_subtitle: Mapping[int, str] | None = None,
 ) -> str:
     return translate_srt_file_deepl_with_result(
         session_dir=session_dir,
@@ -650,4 +679,5 @@ def translate_srt_file_deepl(
         settings=settings,
         auth_key=auth_key,
         translator_factory=translator_factory,
+        speaker_by_subtitle=speaker_by_subtitle,
     ).output_path

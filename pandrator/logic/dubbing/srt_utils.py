@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Mapping
 from dataclasses import replace
 from typing import Any
 
@@ -14,7 +15,10 @@ logger = logging.getLogger(__name__)
 _TIME_RE = re.compile(
     r"(?P<hours>\d{1,3}):(?P<minutes>\d{2}):(?P<seconds>\d{2})[,.](?P<millis>\d{1,3})"
 )
-_SPEAKER_RE = re.compile(r"^\[SPEAKER_(?P<speaker>\d+)\]:\s*(?P<text>.*)", re.DOTALL)
+_SPEAKER_RE = re.compile(
+    r"^\[(?P<speaker>SPEAKER(?:[\s_-]+)[^\]]+)\]\s*:?\s*(?P<text>.*)",
+    re.IGNORECASE | re.DOTALL,
+)
 _CJK_RE = re.compile(r"[\u4e00-\u9fff\u3040-\u30ff]")
 _SENTENCE_ENDERS = {
     ".",
@@ -94,27 +98,36 @@ def parse_srt(srt_content: str) -> list[SubtitleSegment]:
             logger.warning("Skipping SRT block with invalid timing: %s", error)
             continue
 
-        text = "\n".join(lines[time_line_index + 1:]).strip()
+        speaker, text = split_speaker_label("\n".join(lines[time_line_index + 1:]).strip())
         if not text:
             continue
         if end_ms <= start_ms:
             end_ms = start_ms + 100
 
-        segments.append(SubtitleSegment(index=index, start_ms=start_ms, end_ms=end_ms, text=text))
+        segments.append(
+            SubtitleSegment(
+                index=index,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                text=text,
+                speaker=speaker or "",
+            )
+        )
 
     return segments
 
 
 def compose_srt(segments: list[SubtitleSegment]) -> str:
-    """Compose subtitle segments into SRT content."""
+    """Compose clean viewer-facing subtitle text without metadata labels."""
     blocks: list[str] = []
     for output_index, segment in enumerate(segments, start=1):
+        _speaker, plain_text = split_speaker_label(str(segment.text or "").strip())
         blocks.append(
             "\n".join(
                 [
                     str(output_index),
                     f"{format_srt_timestamp(segment.start_ms)} --> {format_srt_timestamp(segment.end_ms)}",
-                    str(segment.text or "").strip(),
+                    plain_text,
                 ]
             )
         )
@@ -128,11 +141,11 @@ def compose_vtt(segments: list[SubtitleSegment]) -> str:
         "\n".join(
             [
                 f"{format_vtt_timestamp(segment.start_ms)} --> {format_vtt_timestamp(segment.end_ms)}",
-                str(segment.text or "").strip(),
+                split_speaker_label(str(segment.text or "").strip())[1],
             ]
         )
         for segment in segments
-        if str(segment.text or "").strip()
+        if split_speaker_label(str(segment.text or "").strip())[1]
     ]
     return "WEBVTT\n\n" + "\n\n".join(blocks) + ("\n" if blocks else "")
 
@@ -155,11 +168,24 @@ def renumber_subtitles(srt_content: str) -> str:
     return compose_srt(parse_srt(srt_content))
 
 
-def _speaker_and_text(text: str) -> tuple[str | None, str]:
+def split_speaker_label(text: str) -> tuple[str | None, str]:
+    """Extract a legacy bracketed speaker prefix from otherwise plain cue text.
+
+    Speaker labels were historically serialized into SRT text. They are now
+    accepted only as an import compatibility format and are never emitted by
+    the SRT composers.
+    """
+
     match = _SPEAKER_RE.match(str(text or "").strip())
     if not match:
         return None, str(text or "").strip()
-    return match.group("speaker"), match.group("text").strip()
+    return match.group("speaker").strip(), match.group("text").strip()
+
+
+def _speaker_and_text(text: str) -> tuple[str | None, str]:
+    """Backward-compatible private alias for older internal callers."""
+
+    return split_speaker_label(text)
 
 
 def _last_significant_char(text: str) -> str:
@@ -182,17 +208,17 @@ def merge_subtitles_with_speaker_awareness(
     if not segments:
         return srt_content, False
 
-    has_diarization = any(_speaker_and_text(segment.text)[0] is not None for segment in segments)
+    has_diarization = any(bool(segment.speaker) for segment in segments)
     merged: list[SubtitleSegment] = []
 
     for segment in segments:
-        current_speaker, current_text = _speaker_and_text(segment.text)
+        current_speaker, current_text = segment.speaker or None, segment.text
         if not merged:
             merged.append(segment)
             continue
 
         previous = merged[-1]
-        previous_speaker, previous_text = _speaker_and_text(previous.text)
+        previous_speaker, previous_text = previous.speaker or None, previous.text
         gap_ms = segment.start_ms - previous.end_ms
         current_limit = 5 if _contains_cjk(current_text) else 30
         can_merge = (
@@ -207,21 +233,15 @@ def merge_subtitles_with_speaker_awareness(
             continue
 
         merged_text = f"{previous_text.strip()} {current_text.strip()}".strip()
-        if has_diarization and current_speaker is not None:
-            merged_text = f"[SPEAKER_{current_speaker}]: {merged_text}"
-
         merged[-1] = replace(previous, end_ms=segment.end_ms, text=merged_text)
 
     return compose_srt(merged), has_diarization
 
 
 def remove_speaker_labels(srt_content: str) -> str:
-    """Remove Subdub-style speaker labels from subtitle text."""
-    cleaned = [
-        replace(segment, text=_speaker_and_text(segment.text)[1])
-        for segment in parse_srt(srt_content)
-    ]
-    return compose_srt(cleaned)
+    """Normalize legacy labelled SRT into clean viewer-facing subtitle text."""
+
+    return compose_srt(parse_srt(srt_content))
 
 
 def create_translation_blocks(
@@ -230,6 +250,7 @@ def create_translation_blocks(
     source_language: str,
     *,
     max_subtitles_per_block: int | None = None,
+    speaker_by_subtitle: Mapping[int, str] | None = None,
 ) -> list[list[dict[str, Any]]]:
     """Group subtitle segments by character and subtitle-count limits."""
     normalized_language = str(source_language or "").strip().lower()
@@ -255,6 +276,11 @@ def create_translation_blocks(
 
     for segment in parse_srt(srt_content):
         segment_text = segment.text
+        segment_speaker = str(
+            (speaker_by_subtitle or {}).get(segment.index)
+            or segment.speaker
+            or ""
+        ).strip()
         if (
             current_block
             and max_subtitles_per_block is not None
@@ -293,6 +319,7 @@ def create_translation_blocks(
                 "text": segment_text,
                 "start": segment.start_ms / 1000,
                 "end": segment.end_ms / 1000,
+                "speaker": segment_speaker,
             }
         )
         current_char_count += len(segment_text)

@@ -120,6 +120,30 @@ This is a separate sentence.
         )
         self.assertTrue(all("SPEAKER" not in block["text"] for block in blocks))
 
+    def test_structured_speakers_prevent_plain_cues_from_merging(self):
+        content = """1
+00:00:00,000 --> 00:00:01,500
+An unfinished thought,
+
+2
+00:00:01,580 --> 00:00:03,000
+answered by somebody else.
+"""
+
+        blocks = speech_blocks.create_speech_blocks(
+            content,
+            target_language="en",
+            min_chars=10,
+            max_chars=100,
+            merge_threshold=250,
+            speaker_by_subtitle={1: "Speaker 0", 2: "Speaker 1"},
+        )
+
+        self.assertEqual(
+            [block["text"] for block in blocks],
+            ["An unfinished thought,", "answered by somebody else."],
+        )
+
     def test_speech_block_conjunction_map_preserves_non_ascii_languages(self):
         self.assertIn("ponieważ", speech_blocks.CONJUNCTIONS["pl"])
         self.assertIn("потому что", speech_blocks.CONJUNCTIONS["ru"])

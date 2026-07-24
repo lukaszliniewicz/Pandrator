@@ -10,7 +10,7 @@ from typing import Any
 from sqlalchemy import select
 
 from pandrator.logic.dubbing.models import SubtitleSegment
-from pandrator.logic.dubbing.srt_utils import compose_srt
+from pandrator.logic.dubbing.srt_utils import compose_srt, split_speaker_label
 
 from .artifacts import ArtifactService
 from .database import Database
@@ -18,6 +18,11 @@ from .models import Artifact, Document, DocumentRevision, Segment, SegmentLineag
 
 
 STAGE_ORDER = ("transcription", "correction", "translation", "tts_optimization")
+
+
+def _speaker_and_text(segment: Segment) -> tuple[str, str]:
+    legacy_speaker, plain_text = split_speaker_label(segment.text)
+    return str(segment.speaker or legacy_speaker or "").strip(), plain_text
 
 
 def _segments_hash(segments: list[dict[str, Any]]) -> str:
@@ -41,13 +46,14 @@ class SubtitleReviewService:
 
     @staticmethod
     def _payload(segment: Segment) -> dict[str, Any]:
+        speaker, text = _speaker_and_text(segment)
         return {
             "id": segment.id,
             "ordinal": segment.ordinal,
             "start_ms": segment.start_ms,
             "end_ms": segment.end_ms,
-            "text": segment.text,
-            "speaker": segment.speaker,
+            "text": text,
+            "speaker": speaker or None,
         }
 
     def documents(self, session_id: str) -> dict[str, Any]:
@@ -151,7 +157,7 @@ class SubtitleReviewService:
                 items = [segment_by_id[segment_id] for member_stage, segment_id in members if member_stage == stage]
                 items.sort(key=lambda item: item.ordinal)
                 row[stage] = [self._payload(item) for item in items]
-                values.append("\n".join(item.text for item in items))
+                values.append("\n".join(_speaker_and_text(item)[1] for item in items))
             row["changed"] = len(set(values)) > 1
             result.append(row)
         return sorted(result, key=lambda item: (item["start_ms"], item["end_ms"]))
@@ -163,12 +169,19 @@ class SubtitleReviewService:
         for index, item in enumerate(values):
             start_ms = int(item.get("start_ms") or 0)
             end_ms = int(item.get("end_ms") or 0)
-            text = str(item.get("text") or "").strip()
+            legacy_speaker, text = split_speaker_label(str(item.get("text") or "").strip())
             if not text:
                 continue
             if start_ms < 0 or end_ms <= start_ms:
                 raise ValueError(f"Segment {index + 1} has invalid timing.")
-            normalized.append({"start_ms": start_ms, "end_ms": end_ms, "text": text, "speaker": item.get("speaker")})
+            normalized.append(
+                {
+                    "start_ms": start_ms,
+                    "end_ms": end_ms,
+                    "text": text,
+                    "speaker": str(item.get("speaker") or legacy_speaker or "").strip() or None,
+                }
+            )
         if not normalized:
             raise ValueError("A reviewed subtitle document cannot be empty.")
 
@@ -185,6 +198,25 @@ class SubtitleReviewService:
             previous_segments = list(
                 session.scalars(select(Segment).where(Segment.revision_id == previous.id).order_by(Segment.ordinal)).all()
             )
+            for index, item in enumerate(normalized, start=1):
+                overlapping_speakers: dict[str, str] = {}
+                for previous_segment in previous_segments:
+                    if (
+                        previous_segment.start_ms is None
+                        or previous_segment.end_ms is None
+                        or min(item["end_ms"], previous_segment.end_ms)
+                        <= max(item["start_ms"], previous_segment.start_ms)
+                    ):
+                        continue
+                    speaker, _text = _speaker_and_text(previous_segment)
+                    if speaker:
+                        overlapping_speakers.setdefault(speaker.casefold(), speaker)
+                if len(overlapping_speakers) > 1:
+                    raise ValueError(
+                        f"Segment {index} crosses a speaker boundary. Keep each speaker in a separate cue."
+                    )
+                if not item["speaker"] and overlapping_speakers:
+                    item["speaker"] = next(iter(overlapping_speakers.values()))
             revision = DocumentRevision(
                 document_id=document.id,
                 parent_revision_id=previous.id,
@@ -215,10 +247,21 @@ class SubtitleReviewService:
 
         content = compose_srt(
             [
-                SubtitleSegment(index=index, start_ms=item["start_ms"], end_ms=item["end_ms"], text=item["text"])
+                SubtitleSegment(
+                    index=index,
+                    start_ms=item["start_ms"],
+                    end_ms=item["end_ms"],
+                    text=item["text"],
+                    speaker=str(item.get("speaker") or ""),
+                )
                 for index, item in enumerate(normalized, start=1)
             ]
         )
+        speakers = {
+            str(item.get("speaker") or "").strip().casefold()
+            for item in normalized
+            if str(item.get("speaker") or "").strip()
+        }
         destination: Path = self.session_dir_resolver(session_id) / f"reviewed_{stage}_r{revision_number}.srt"
         destination.write_text(content, encoding="utf-8", newline="\n")
         with self.database.session() as session:
@@ -243,6 +286,8 @@ class SubtitleReviewService:
                 "stage": stage,
                 "language": language,
                 "reviewed": True,
+                "has_speaker_metadata": bool(speakers),
+                "speaker_count": len(speakers),
             },
         )
         return {"artifact_id": artifact.id, "document_id": document_id, "revision_id": revision_id, "revision": revision_number}

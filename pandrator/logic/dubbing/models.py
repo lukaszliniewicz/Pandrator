@@ -15,6 +15,7 @@ class SubtitleSegment:
     start_ms: int
     end_ms: int
     text: str
+    speaker: str = ""
 
 
 @dataclass(frozen=True)

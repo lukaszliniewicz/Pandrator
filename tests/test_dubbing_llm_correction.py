@@ -100,6 +100,40 @@ class DubbingLLMCorrectionTests(unittest.TestCase):
         self.assertNotIn('"char_count"', prompt)
         self.assertIn('"text": "hello there"', prompt)
 
+    def test_structured_speakers_stay_out_of_prompt_and_block_cross_speaker_merge(self):
+        content = """1
+00:00:00,000 --> 00:00:01,000
+An unfinished thought,
+
+2
+00:00:01,050 --> 00:00:02,000
+answered by somebody else.
+"""
+        prompts = []
+
+        def fake_completion(**kwargs):
+            prompts.append(kwargs["messages"][-1]["content"])
+            return llm_handler.ChatCompletionResult(
+                content='{"operations":[{"action":"merge","ids":[1,2],"texts":["An unfinished thought, answered by somebody else."]}]}'
+            )
+
+        result = llm_correction.correct_srt_content(
+            content,
+            _settings(),
+            completion_func=fake_completion,
+            speaker_by_subtitle={1: "Speaker 0", 2: "Speaker 1"},
+        )
+
+        prompt_cues = json.loads(prompts[0].rsplit("\nThe subtitles:\n", 1)[1])
+        self.assertEqual(
+            [item["text"] for item in prompt_cues],
+            ["An unfinished thought,", "answered by somebody else."],
+        )
+        self.assertTrue(all("speaker" not in item for item in prompt_cues))
+        segments = srt_utils.parse_srt(result.srt_content)
+        self.assertEqual(len(segments), 2)
+        self.assertNotIn("[SPEAKER_", result.srt_content)
+
     def test_apply_correction_operations_can_prevent_deletion(self):
         block = [
             {"index": 1, "start": 0.0, "end": 1.0, "text": "uh"},
@@ -120,7 +154,7 @@ class DubbingLLMCorrectionTests(unittest.TestCase):
         def fake_completion(**kwargs):
             calls.append(kwargs)
             return llm_handler.ChatCompletionResult(
-                content='{"operations":[{"action":"edit","ids":[1],"texts":["Hello."]},{"action":"delete","ids":[2],"texts":[]}]}',
+                content='{"operations":[{"action":"edit","ids":[1],"texts":["[SPEAKER_0]: Hello."]},{"action":"delete","ids":[2],"texts":[]}]}',
                 cost=0.025,
             )
 

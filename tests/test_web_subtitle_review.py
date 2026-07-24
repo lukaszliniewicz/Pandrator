@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 
@@ -98,6 +99,112 @@ class SubtitleReviewTests(unittest.TestCase):
         self.assertEqual(1, len(payload["rows"]))
         self.assertEqual(2, len(payload["rows"][0]["transcription"]))
         self.assertEqual(1, len(payload["rows"][0]["correction"]))
+
+    def test_legacy_labels_become_structured_metadata_and_propagate(self):
+        source = self._artifact(
+            "diarized-source.srt",
+            "transcription",
+            "1\n00:00:00,000 --> 00:00:01,000\n[SPEAKER_0]: Hello.\n\n"
+            "2\n00:00:01,100 --> 00:00:02,000\n[Speaker 1] Welcome.\n",
+        )
+        self._artifact(
+            "diarized-correction.srt",
+            "correction",
+            "1\n00:00:00,000 --> 00:00:01,000\nHello.\n\n"
+            "2\n00:00:01,100 --> 00:00:02,000\nWelcome.\n",
+            parent=source,
+        )
+
+        payload = self.service.documents(self.session.id)
+
+        self.assertEqual(
+            [item["text"] for item in payload["stages"]["transcription"]["segments"]],
+            ["Hello.", "Welcome."],
+        )
+        self.assertEqual(
+            [item["speaker"] for item in payload["stages"]["transcription"]["segments"]],
+            ["SPEAKER_0", "Speaker 1"],
+        )
+        self.assertEqual(
+            [item["speaker"] for item in payload["stages"]["correction"]["segments"]],
+            ["SPEAKER_0", "Speaker 1"],
+        )
+
+    def test_timed_transcript_populates_plain_cue_speakers(self):
+        artifact = self._artifact(
+            "plain-transcription.srt",
+            "transcription",
+            "1\n00:00:00,000 --> 00:00:01,000\nHello.\n\n"
+            "2\n00:00:01,100 --> 00:00:02,000\nWelcome.\n",
+        )
+        with self.database.session() as session:
+            revision_id = session.get(Artifact, artifact.id).metadata_json["revision_id"]
+        metadata_path = self.session_dir / "plain-transcription-words.json"
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "transcription": [
+                        {
+                            "speaker": "Speaker 0",
+                            "offsets": {"from": 0, "to": 1000},
+                            "text": "Hello.",
+                            "words": [
+                                {
+                                    "speaker": "Speaker 0",
+                                    "text": "Hello.",
+                                    "offsets": {"from": 0, "to": 700},
+                                }
+                            ],
+                        },
+                        {
+                            "speaker": "Speaker 1",
+                            "offsets": {"from": 1100, "to": 2000},
+                            "text": "Welcome.",
+                            "words": [
+                                {
+                                    "speaker": "Speaker 1",
+                                    "text": "Welcome.",
+                                    "offsets": {"from": 1100, "to": 1800},
+                                }
+                            ],
+                        },
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        self.handlers._store_timed_words(revision_id, metadata_path)
+        payload = self.service.documents(self.session.id)
+
+        self.assertEqual(
+            [item["speaker"] for item in payload["stages"]["transcription"]["segments"]],
+            ["Speaker 0", "Speaker 1"],
+        )
+
+    def test_review_rejects_a_cue_that_crosses_speakers(self):
+        self._artifact(
+            "speaker-boundaries.srt",
+            "transcription",
+            "1\n00:00:00,000 --> 00:00:01,000\n[SPEAKER_0]: Hello.\n\n"
+            "2\n00:00:01,000 --> 00:00:02,000\n[SPEAKER_1]: Welcome.\n",
+        )
+        payload = self.service.documents(self.session.id)
+
+        with self.assertRaisesRegex(ValueError, "crosses a speaker boundary"):
+            self.service.save_review(
+                self.session.id,
+                "transcription",
+                payload["stages"]["transcription"]["revision"],
+                [
+                    {
+                        "start_ms": 0,
+                        "end_ms": 2000,
+                        "text": "Hello. Welcome.",
+                        "speaker": "SPEAKER_0",
+                    }
+                ],
+            )
 
     def test_reviewed_upstream_revision_stales_only_derived_artifacts(self):
         source = self._artifact(

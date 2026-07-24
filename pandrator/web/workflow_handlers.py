@@ -10,11 +10,13 @@ import re
 import shutil
 import subprocess
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy import func, select
 
+from pandrator.logic.dubbing.srt_utils import split_speaker_label
 from pandrator.logic.dubbing.transcript_normalization import load_transcript
 from pandrator.runtime import DataPaths
 
@@ -65,9 +67,41 @@ from .models import (
 logger = logging.getLogger(__name__)
 
 
+def _structured_speaker(segment: Any) -> str:
+    speaker = str(getattr(segment, "speaker", None) or "").strip()
+    if speaker:
+        return speaker
+    legacy_speaker, _text = split_speaker_label(str(getattr(segment, "text", "") or ""))
+    return str(legacy_speaker or "").strip()
+
+
+def _dominant_speaker(start_ms: int, end_ms: int, candidates: list[Any]) -> str:
+    weighted: dict[str, tuple[str, int, int]] = {}
+    for order, candidate in enumerate(candidates):
+        speaker = _structured_speaker(candidate)
+        candidate_start = getattr(candidate, "start_ms", None)
+        candidate_end = getattr(candidate, "end_ms", None)
+        if not speaker or candidate_start is None or candidate_end is None:
+            continue
+        overlap = min(end_ms, int(candidate_end)) - max(start_ms, int(candidate_start))
+        if overlap <= 0:
+            continue
+        key = speaker.casefold()
+        raw, total, first_order = weighted.get(key, (speaker, 0, order))
+        weighted[key] = (raw, total + overlap, first_order)
+    if not weighted:
+        return ""
+    return max(weighted.values(), key=lambda value: (value[1], -value[2]))[0]
+
+
 def _hash_segments(segments) -> str:
     payload = [
-        {"start_ms": segment.start_ms, "end_ms": segment.end_ms, "text": segment.text}
+        {
+            "start_ms": segment.start_ms,
+            "end_ms": segment.end_ms,
+            "text": segment.text,
+            "speaker": _structured_speaker(segment) or None,
+        }
         for segment in segments
     ]
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
@@ -723,6 +757,49 @@ class WorkflowHandlers:
             language = self._usable_language(settings.get("language") or settings.get("target_language"))
         return language or "en"
 
+    def _subtitle_speaker_map(
+        self,
+        artifact: Artifact,
+        source_path: Path | None = None,
+    ) -> dict[int, str]:
+        """Resolve cue speakers without exposing them as subtitle text."""
+
+        mapping: dict[int, str] = {}
+        with self.database.session() as session:
+            managed = session.get(Artifact, artifact.id)
+            revision_id = str(
+                ((managed.metadata_json if managed is not None else artifact.metadata_json) or {}).get(
+                    "revision_id"
+                )
+                or ""
+            )
+        if revision_id:
+            with self.database.session() as session:
+                records = list(
+                    session.scalars(
+                        select(Segment)
+                        .where(Segment.revision_id == revision_id)
+                        .order_by(Segment.ordinal)
+                    ).all()
+                )
+            for record in records:
+                speaker = _structured_speaker(record)
+                if speaker:
+                    mapping[record.ordinal + 1] = speaker
+
+        try:
+            if source_path is None:
+                _record, source_path = self.artifacts.resolve(artifact.id)
+            if source_path.suffix.lower() == ".srt":
+                from pandrator.logic.dubbing.srt_utils import parse_srt
+
+                for segment in parse_srt(source_path.read_text(encoding="utf-8-sig")):
+                    if segment.speaker and segment.index not in mapping:
+                        mapping[segment.index] = segment.speaker
+        except (KeyError, OSError):
+            logger.warning("Could not resolve speaker metadata for artifact %s", artifact.id)
+        return mapping
+
     def _store_srt_document(
         self,
         session_id: str,
@@ -736,67 +813,121 @@ class WorkflowHandlers:
 
         _record, path = self.artifacts.resolve(artifact.id)
         segments = parse_srt(path.read_text(encoding="utf-8-sig"))
+        parent_revision_id = ""
+        if parent_artifact:
+            with self.database.session() as session:
+                managed_parent = session.get(Artifact, parent_artifact.id)
+                parent_revision_id = str(
+                    (
+                        (
+                            managed_parent.metadata_json
+                            if managed_parent is not None
+                            else parent_artifact.metadata_json
+                        )
+                        or {}
+                    ).get("revision_id")
+                    or ""
+                )
+        parent_file_segments: list[Any] = []
+        if parent_artifact and not parent_revision_id:
+            try:
+                _parent_record, parent_path = self.artifacts.resolve(parent_artifact.id)
+                if parent_path.suffix.lower() == ".srt":
+                    parent_file_segments = parse_srt(
+                        parent_path.read_text(encoding="utf-8-sig")
+                    )
+            except (KeyError, OSError):
+                logger.warning(
+                    "Could not load parent subtitle metadata for artifact %s",
+                    parent_artifact.id,
+                )
+
         with self.database.session() as session:
+            parents = (
+                list(
+                    session.scalars(
+                        select(Segment)
+                        .where(Segment.revision_id == parent_revision_id)
+                        .order_by(Segment.ordinal)
+                    ).all()
+                )
+                if parent_revision_id
+                else []
+            )
+            speaker_candidates: list[Any] = parents or parent_file_segments
+            resolved_segments = [
+                replace(
+                    item,
+                    speaker=(
+                        item.speaker
+                        or _dominant_speaker(
+                            item.start_ms,
+                            item.end_ms,
+                            speaker_candidates,
+                        )
+                    ),
+                )
+                for item in segments
+            ]
             document = Document(session_id=session_id, stage=stage, language=language)
             session.add(document)
             session.flush()
             revision = DocumentRevision(
                 document_id=document.id,
                 revision_number=1,
-                content_hash=_hash_segments(segments),
+                content_hash=_hash_segments(resolved_segments),
             )
             session.add(revision)
             session.flush()
             child_records: list[Segment] = []
-            for ordinal, item in enumerate(segments):
+            for ordinal, item in enumerate(resolved_segments):
                 child = Segment(
                     revision_id=revision.id,
                     ordinal=ordinal,
                     start_ms=item.start_ms,
                     end_ms=item.end_ms,
                     text=item.text,
-                    speaker=getattr(item, "speaker", None),
+                    speaker=item.speaker or None,
                 )
                 session.add(child)
                 child_records.append(child)
             session.flush()
             document.active_revision_id = revision.id
 
-            if parent_artifact:
-                parent_revision_id = str((parent_artifact.metadata_json or {}).get("revision_id") or "")
-                if parent_revision_id:
-                    parents = list(
-                        session.scalars(
-                            select(Segment).where(Segment.revision_id == parent_revision_id).order_by(Segment.ordinal)
-                        ).all()
+            for child in child_records:
+                overlaps = [
+                    parent
+                    for parent in parents
+                    if child.start_ms is not None
+                    and child.end_ms is not None
+                    and parent.start_ms is not None
+                    and parent.end_ms is not None
+                    and min(child.end_ms, parent.end_ms) > max(child.start_ms, parent.start_ms)
+                ]
+                for sequence, parent in enumerate(overlaps):
+                    session.add(
+                        SegmentLineage(
+                            parent_segment_id=parent.id,
+                            child_segment_id=child.id,
+                            relation="temporal_overlap",
+                            sequence=sequence,
+                        )
                     )
-                    for child in child_records:
-                        overlaps = [
-                            parent
-                            for parent in parents
-                            if child.start_ms is not None
-                            and child.end_ms is not None
-                            and parent.start_ms is not None
-                            and parent.end_ms is not None
-                            and min(child.end_ms, parent.end_ms) > max(child.start_ms, parent.start_ms)
-                        ]
-                        for sequence, parent in enumerate(overlaps):
-                            session.add(
-                                SegmentLineage(
-                                    parent_segment_id=parent.id,
-                                    child_segment_id=child.id,
-                                    relation="temporal_overlap",
-                                    sequence=sequence,
-                                )
-                            )
 
             managed = session.get(Artifact, artifact.id)
+            speakers = {
+                child.speaker.casefold(): child.speaker
+                for child in child_records
+                if child.speaker
+            }
             managed.metadata_json = {
                 **(managed.metadata_json or {}),
                 "document_id": document.id,
                 "revision_id": revision.id,
                 "stage": stage,
                 "language": language,
+                "has_speaker_metadata": bool(speakers),
+                "speaker_count": len(speakers),
             }
             return document.id, revision.id
 
@@ -814,10 +945,61 @@ class WorkflowHandlers:
             for word in transcript.words
         ]
         with self.database.session() as session:
-            segments = list(session.scalars(select(Segment).where(Segment.revision_id == revision_id).order_by(Segment.ordinal)).all())
+            segments = list(
+                session.scalars(
+                    select(Segment)
+                    .where(Segment.revision_id == revision_id)
+                    .order_by(Segment.ordinal)
+                ).all()
+            )
             for ordinal, word in enumerate(words):
-                owner = next((segment for segment in segments if segment.start_ms is not None and segment.end_ms is not None and min(segment.end_ms, word["end_ms"]) > max(segment.start_ms, word["start_ms"])), None)
-                session.add(TimedWord(revision_id=revision_id, segment_id=owner.id if owner else None, ordinal=ordinal, text=word["text"], start_ms=word["start_ms"], end_ms=word["end_ms"], speaker=word["speaker"], confidence=float(word["confidence"]) if word["confidence"] is not None else None, metadata_json=word["metadata"]))
+                owner = next(
+                    (
+                        segment
+                        for segment in segments
+                        if segment.start_ms is not None
+                        and segment.end_ms is not None
+                        and min(segment.end_ms, word["end_ms"])
+                        > max(segment.start_ms, word["start_ms"])
+                    ),
+                    None,
+                )
+                session.add(
+                    TimedWord(
+                        revision_id=revision_id,
+                        segment_id=owner.id if owner else None,
+                        ordinal=ordinal,
+                        text=word["text"],
+                        start_ms=word["start_ms"],
+                        end_ms=word["end_ms"],
+                        speaker=word["speaker"],
+                        confidence=(
+                            float(word["confidence"])
+                            if word["confidence"] is not None
+                            else None
+                        ),
+                        metadata_json=word["metadata"],
+                    )
+                )
+
+            speaker_candidates: list[Any] = [
+                word for word in transcript.words if word.speaker
+            ] or [
+                item for item in transcript.segments if item.speaker
+            ]
+            for segment in segments:
+                if segment.start_ms is None or segment.end_ms is None:
+                    continue
+                speaker = _dominant_speaker(
+                    segment.start_ms,
+                    segment.end_ms,
+                    speaker_candidates,
+                )
+                if speaker:
+                    segment.speaker = speaker
+            revision = session.get(DocumentRevision, revision_id)
+            if revision is not None:
+                revision.content_hash = _hash_segments(segments)
         return len(words)
 
     @staticmethod
@@ -1001,6 +1183,16 @@ class WorkflowHandlers:
             language=str((payload.get("settings") or {}).get("original_language") or (payload.get("settings") or {}).get("stt_language") or "") or None,
         )
         word_count = self._store_timed_words(revision_id, Path(transcription_result.word_timestamps_path))
+        speaker_by_subtitle = self._subtitle_speaker_map(artifact, output_path)
+        with self.database.session() as session:
+            managed = session.get(Artifact, artifact.id)
+            if managed is not None:
+                speakers = {speaker.casefold() for speaker in speaker_by_subtitle.values()}
+                managed.metadata_json = {
+                    **(managed.metadata_json or {}),
+                    "has_speaker_metadata": bool(speakers),
+                    "speaker_count": len(speakers),
+                }
         progress(1.0, "Transcription ready")
         return {
             "artifact_id": artifact.id,
@@ -1008,6 +1200,7 @@ class WorkflowHandlers:
             "word_timestamps_artifact_id": timing_artifact.id,
             "word_timestamps_path": timing_artifact.relative_path,
             "word_count": word_count,
+            "speaker_count": len({speaker.casefold() for speaker in speaker_by_subtitle.values()}),
             "revision_id": revision_id,
         }
 
@@ -1016,6 +1209,7 @@ class WorkflowHandlers:
 
         session_id = str(payload.get("session_id") or "")
         source_artifact, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
+        speaker_by_subtitle = self._subtitle_speaker_map(source_artifact, source_path)
         session_dir = self._operation_dir(session_id, "correct")
         requested_settings = dict(payload.get("settings") or {})
         requested_settings_hash = hashlib.sha256(
@@ -1029,6 +1223,7 @@ class WorkflowHandlers:
             settings,
             correction_instructions=str(payload.get("instructions") or settings.get("instructions") or ""),
             cancel_event=cancel_event,
+            speaker_by_subtitle=speaker_by_subtitle,
         )
         if cancel_event.is_set():
             return {}
@@ -1068,6 +1263,7 @@ class WorkflowHandlers:
 
         session_id = str(payload.get("session_id") or "")
         source_artifact, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
+        speaker_by_subtitle = self._subtitle_speaker_map(source_artifact, source_path)
         session_dir = self._operation_dir(session_id, "translate")
         settings = dict(payload.get("settings") or {})
         requested_settings_hash = hashlib.sha256(
@@ -1086,6 +1282,7 @@ class WorkflowHandlers:
                 source_path,
                 settings,
                 auth_key=credential.resolved_value(),
+                speaker_by_subtitle=speaker_by_subtitle,
             )
         else:
             settings = self._with_database_llm_settings(settings, "translation")
@@ -1095,6 +1292,7 @@ class WorkflowHandlers:
                 settings,
                 translation_instructions=str(payload.get("instructions") or settings.get("instructions") or ""),
                 cancel_event=cancel_event,
+                speaker_by_subtitle=speaker_by_subtitle,
             )
         if cancel_event.is_set():
             return {}
@@ -1267,9 +1465,8 @@ class WorkflowHandlers:
             parent_ids=[sample_artifact.id, artifact.id],
             settings=dict(payload.get("settings") or {}),
         )
-        # Subtitle cues may intentionally carry visible speaker labels.  Voice
-        # reference text must remain plain, so read the canonical transcript
-        # rather than round-tripping through the display SRT.
+        # Read the canonical transcript so voice-reference text stays
+        # independent from subtitle layout and structured speaker metadata.
         transcript = " ".join(
             segment.text.replace("\n", " ").strip()
             for segment in load_transcript(transcription_result.word_timestamps_path).segments
@@ -2156,6 +2353,12 @@ class WorkflowHandlers:
             raise ValueError("Dubbing audio requires a transcription, correction, or translation SRT artifact.")
         language = self._generation_language(session_id, source_artifact, settings)
         settings = {**settings, "language": language, "target_language": language}
+        speaker_by_subtitle = self._subtitle_speaker_map(source_artifact, source_path)
+        speaker_options = (
+            {"speaker_by_subtitle": speaker_by_subtitle}
+            if speaker_by_subtitle
+            else {}
+        )
         blocks_path = Path(
             generate_speech_blocks_file(
                 str(self._operation_dir(session_id, "speech-blocks")),
@@ -2168,6 +2371,7 @@ class WorkflowHandlers:
                     if settings.get("speech_block_merge_threshold") is not None
                     else settings.get("subtitle_merge_threshold", 250)
                 ),
+                **speaker_options,
             )
         )
         blocks_artifact = self.artifacts.register(
@@ -2213,6 +2417,12 @@ class WorkflowHandlers:
         settings = dict(payload.get("settings") or {})
         language = self._generation_language(session_id, source_artifact, settings)
         settings = {**settings, "language": language, "target_language": language}
+        speaker_by_subtitle = self._subtitle_speaker_map(source_artifact, source_path)
+        speaker_options = (
+            {"speaker_by_subtitle": speaker_by_subtitle}
+            if speaker_by_subtitle
+            else {}
+        )
         progress(0.0, "Preparing generation segments")
 
         plan_revision_id: str | None = None
@@ -2229,6 +2439,7 @@ class WorkflowHandlers:
                         if settings.get("speech_block_merge_threshold") is not None
                         else settings.get("subtitle_merge_threshold", 250)
                     ),
+                    **speaker_options,
                 )
             )
             records = json.loads(blocks_path.read_text(encoding="utf-8-sig"))

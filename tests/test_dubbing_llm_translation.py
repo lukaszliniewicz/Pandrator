@@ -126,6 +126,62 @@ hello = czesc
         self.assertIn("provider_configs", calls[0]["llm_settings"])
         self.assertNotIn("max_tokens", calls[0])
 
+    def test_legacy_speaker_labels_stay_out_of_llm_translation_and_output(self):
+        labelled = """1
+00:00:00,000 --> 00:00:01,000
+[SPEAKER_0]: Hello.
+
+2
+00:00:01,100 --> 00:00:02,000
+[Speaker 1] Goodbye.
+"""
+        prompt_cues = []
+
+        def fake_completion(**kwargs):
+            prompt = kwargs["messages"][0]["content"]
+            prompt_cues.extend(json.loads(prompt.rsplit("\nThe subtitles:\n", 1)[1]))
+            return llm_handler.ChatCompletionResult(
+                content='[{"number":1,"text":"[SPEAKER_0]: Cześć."},{"number":2,"text":"[Speaker 1] Do widzenia."}]'
+            )
+
+        result = llm_translation.translate_srt_content(
+            labelled,
+            _settings(),
+            completion_func=fake_completion,
+        )
+
+        self.assertEqual([item["text"] for item in prompt_cues], ["Hello.", "Goodbye."])
+        self.assertTrue(all("speaker" not in item for item in prompt_cues))
+        self.assertNotIn("SPEAKER", result.srt_content.upper())
+
+    def test_legacy_speaker_labels_stay_out_of_deepl_requests(self):
+        labelled = """1
+00:00:00,000 --> 00:00:01,000
+[SPEAKER_0]: Hello.
+
+2
+00:00:01,100 --> 00:00:02,000
+[SPEAKER_1]: Goodbye.
+"""
+
+        class FakeTranslator:
+            request_text = ""
+
+            def translate_text(self, text, target_lang):
+                self.request_text = text
+                return SimpleNamespace(text=text.replace("Hello.", "Cześć.").replace("Goodbye.", "Do widzenia."))
+
+        translator = FakeTranslator()
+        result = llm_translation.translate_srt_content_deepl(
+            labelled,
+            _settings(),
+            "test-key",
+            translator_factory=lambda _auth_key: translator,
+        )
+
+        self.assertEqual(translator.request_text, "Hello.\n\nGoodbye.")
+        self.assertNotIn("SPEAKER", result.srt_content.upper())
+
     def test_translate_srt_content_honors_max_subtitles_per_call(self):
         srt_content = "\n\n".join(
             f"{index}\n00:00:{index - 1:02d},000 --> 00:00:{index:02d},000\nSubtitle {index}."

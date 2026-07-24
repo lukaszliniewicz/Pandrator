@@ -7,7 +7,7 @@ import logging
 import os
 import re
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -15,7 +15,7 @@ from typing import Any
 from .. import llm_handler
 from .llm_config import DubbingLLMSettings, resolve_dubbing_llm_settings as _resolve_dubbing_llm_settings
 from .models import SubtitleSegment
-from .srt_utils import compose_srt, create_translation_blocks
+from .srt_utils import compose_srt, create_translation_blocks, split_speaker_label
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ Review the array of {subtitle_count} subtitle cues below and return this JSON sh
 
 Instructions:
 1. Use your editorial judgment to fix punctuation, capitalization, spelling, and clear transcription errors. Remove isolated filler and accidental repetition when appropriate.
-2. Preserve the speaker's meaning, register, names, terminology, and speaker labels. Do not paraphrase text that is already correct.
+2. Preserve each speaker's meaning, register, names, and terminology. Speaker identity is managed separately by Pandrator: do not add speaker labels to replacement text.
 3. Return operations only for cues that need a change; return an empty `operations` array when no changes are needed.
 4. Available actions:
    - "edit": one cue ID and exactly one corrected text.
@@ -151,7 +151,13 @@ def parse_correction_operations(response_text: str) -> list[dict[str, Any]]:
     return normalized
 
 
-def _split_timing(start: float, end: float, texts: list[str]) -> list[dict[str, Any]]:
+def _split_timing(
+    start: float,
+    end: float,
+    texts: list[str],
+    *,
+    speaker: str = "",
+) -> list[dict[str, Any]]:
     if not texts:
         return []
 
@@ -163,14 +169,18 @@ def _split_timing(start: float, end: float, texts: list[str]) -> list[dict[str, 
         ratio = len(text) / total_chars if total_chars > 0 else 1.0 / len(texts)
         part_duration = duration * ratio
         current_end = end if index == len(texts) - 1 else current_start + part_duration
-        subtitles.append({"start": current_start, "end": current_end, "text": text})
+        subtitle = {"start": current_start, "end": current_end, "text": text}
+        if speaker:
+            subtitle["speaker"] = speaker
+        subtitles.append(subtitle)
         current_start = current_end
     return subtitles
 
 
 def _normalize_replacement_text(value: Any) -> str:
     """Keep editorial output as cue text; visual layout is finalized later."""
-    return " ".join(str(value or "").split()).strip()
+    normalized = " ".join(str(value or "").split()).strip()
+    return split_speaker_label(normalized)[1]
 
 
 def apply_correction_operations(
@@ -206,6 +216,10 @@ def apply_correction_operations(
             continue
         if action == "delete" and no_remove_subtitles:
             continue
+        speakers = [str(subtitle.get("speaker") or "").strip() for subtitle in valid_subtitles]
+        if action == "merge" and len({speaker.casefold() for speaker in speakers}) > 1:
+            logger.warning("Ignoring correction merge across a speaker boundary: %s", ids)
+            continue
 
         processed_ids.update(ids)
         primary_id = ids[0]
@@ -218,7 +232,12 @@ def apply_correction_operations(
         if not texts:
             texts = [" ".join(str(subtitle["text"]) for subtitle in valid_subtitles)]
 
-        new_subtitles_by_primary_id[primary_id] = _split_timing(new_start, new_end, texts)
+        new_subtitles_by_primary_id[primary_id] = _split_timing(
+            new_start,
+            new_end,
+            texts,
+            speaker=speakers[0] if speakers else "",
+        )
 
     corrected: list[dict[str, Any]] = []
     for local_id in range(1, len(block) + 1):
@@ -298,6 +317,7 @@ def correct_srt_content(
     *,
     completion_func: Callable[..., Any] | None = None,
     cancel_event: Any | None = None,
+    speaker_by_subtitle: Mapping[int, str] | None = None,
 ) -> CorrectionResult:
     """Correct SRT content with Pandrator's LLM provider layer."""
     char_limit = _coerce_int(settings.get("llm_char"), DEFAULT_LLM_CHAR_LIMIT)
@@ -320,6 +340,7 @@ def correct_srt_content(
         char_limit,
         source_language,
         max_subtitles_per_block=max_subtitles_per_call,
+        speaker_by_subtitle=speaker_by_subtitle,
     )
     if not blocks:
         return CorrectionResult(srt_content="", cost=0.0, response_count=0)
@@ -397,6 +418,7 @@ def correct_srt_content(
             start_ms=max(0, int(round(float(subtitle["start"]) * 1000))),
             end_ms=max(1, int(round(float(subtitle["end"]) * 1000))),
             text=str(subtitle.get("text") or "").strip(),
+            speaker=str(subtitle.get("speaker") or "").strip(),
         )
         for index, subtitle in enumerate(corrected_subtitles, start=1)
         if str(subtitle.get("text") or "").strip()
@@ -433,6 +455,7 @@ def correct_srt_file_with_result(
     *,
     completion_func: Callable[..., Any] | None = None,
     cancel_event: Any | None = None,
+    speaker_by_subtitle: Mapping[int, str] | None = None,
 ) -> CorrectionResult:
     """Correct an SRT file and return the corrected content plus file path."""
     srt_path = Path(srt_file)
@@ -445,6 +468,7 @@ def correct_srt_file_with_result(
         correction_instructions=correction_instructions,
         completion_func=completion_func,
         cancel_event=cancel_event,
+        speaker_by_subtitle=speaker_by_subtitle,
     )
     output_path = Path(session_dir) / f"{srt_path.stem}_corrected.srt"
     _write_text_atomic(output_path, result.srt_content)
@@ -472,6 +496,7 @@ def correct_srt_file(
     correction_instructions: str = "",
     *,
     completion_func: Callable[..., Any] | None = None,
+    speaker_by_subtitle: Mapping[int, str] | None = None,
 ) -> str:
     """Correct an SRT file and return the corrected file path."""
     return correct_srt_file_with_result(
@@ -480,4 +505,5 @@ def correct_srt_file(
         settings=settings,
         correction_instructions=correction_instructions,
         completion_func=completion_func,
+        speaker_by_subtitle=speaker_by_subtitle,
     ).output_path

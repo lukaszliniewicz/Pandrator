@@ -8,6 +8,7 @@ from unittest import mock
 
 from pandrator.logic import dubbing_handler, llm_handler
 from pandrator.logic.dubbing import equalization, languages, srt_utils, video_muxing, zoom
+from pandrator.logic.dubbing.models import SubtitleSegment
 
 
 SAMPLE_SRT = """7
@@ -40,12 +41,18 @@ class DubbingSubtitleLogicTests(unittest.TestCase):
         self.assertEqual([segment.index for segment in segments], [7, 9, 10])
         self.assertEqual(segments[0].start_ms, 1000)
         self.assertEqual(segments[1].end_ms, 2500)
+        self.assertEqual([segment.text for segment in segments], ["I think", "so", "No."])
+        self.assertEqual(
+            [segment.speaker for segment in segments],
+            ["SPEAKER_00", "SPEAKER_00", "SPEAKER_01"],
+        )
 
         renumbered = srt_utils.renumber_subtitles(SAMPLE_SRT)
 
         self.assertIn("1\n00:00:01,000 --> 00:00:02,000", renumbered)
         self.assertIn("2\n00:00:02,050 --> 00:00:02,500", renumbered)
         self.assertIn("3\n00:00:03,000 --> 00:00:04,000", renumbered)
+        self.assertNotIn("[SPEAKER_", renumbered)
 
     def test_srt_converts_to_webvtt_and_concatenated_text(self):
         webvtt = srt_utils.srt_to_vtt(SAMPLE_SRT)
@@ -53,10 +60,8 @@ class DubbingSubtitleLogicTests(unittest.TestCase):
 
         self.assertTrue(webvtt.startswith("WEBVTT\n\n"))
         self.assertIn("00:00:01.000 --> 00:00:02.000", webvtt)
-        self.assertEqual(
-            "[SPEAKER_00]: I think [SPEAKER_00]: so [SPEAKER_01]: No.\n",
-            transcript,
-        )
+        self.assertNotIn("SPEAKER", webvtt)
+        self.assertEqual("I think so No.\n", transcript)
 
     def test_merge_subtitles_respects_speaker_labels_and_timing(self):
         merged_srt, diarization_detected = srt_utils.merge_subtitles_with_speaker_awareness(
@@ -67,9 +72,10 @@ class DubbingSubtitleLogicTests(unittest.TestCase):
         self.assertTrue(diarization_detected)
         merged_segments = srt_utils.parse_srt(merged_srt)
         self.assertEqual(len(merged_segments), 2)
-        self.assertEqual(merged_segments[0].text, "[SPEAKER_00]: I think so")
+        self.assertEqual(merged_segments[0].text, "I think so")
         self.assertEqual(merged_segments[0].end_ms, 2500)
-        self.assertEqual(merged_segments[1].text, "[SPEAKER_01]: No.")
+        self.assertEqual(merged_segments[1].text, "No.")
+        self.assertNotIn("[SPEAKER_", merged_srt)
 
     def test_merge_subtitles_keeps_different_speakers_separate(self):
         srt_content = """1
@@ -95,6 +101,23 @@ class DubbingSubtitleLogicTests(unittest.TestCase):
         self.assertNotIn("[SPEAKER_", cleaned)
         self.assertIn("I think", cleaned)
         self.assertIn("No.", cleaned)
+
+    def test_legacy_human_readable_speaker_label_is_imported_as_metadata(self):
+        segments = srt_utils.parse_srt(
+            "1\n00:00:00,000 --> 00:00:01,000\n[Speaker 7] Hello there.\n"
+        )
+
+        self.assertEqual(segments[0].speaker, "Speaker 7")
+        self.assertEqual(segments[0].text, "Hello there.")
+        self.assertNotIn("Speaker 7", srt_utils.compose_srt(segments))
+
+    def test_srt_composer_never_serializes_a_legacy_speaker_prefix(self):
+        content = srt_utils.compose_srt(
+            [SubtitleSegment(1, 0, 1000, "[SPEAKER_3]: Hello.", "SPEAKER_3")]
+        )
+
+        self.assertIn("\nHello.\n", content)
+        self.assertNotIn("SPEAKER", content)
 
     def test_create_translation_blocks_prefers_sentence_boundaries(self):
         blocks = srt_utils.create_translation_blocks(

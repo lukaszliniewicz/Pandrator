@@ -121,14 +121,15 @@ class TranscriptNormalizationTests(unittest.TestCase):
             {"id": "seg_1", "start": 0.2, "end": 1.0, "speaker": "S01", "text": "Hello."},
             {"id": "seg_2", "start": 1.1, "end": 2.0, "speaker": "S02", "text": "Welcome."},
         ]
+        transcript = normalize_transcript(payload)
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "moss.json"
             path.write_text(json.dumps(payload), encoding="utf-8")
             cues = parse_srt(compose_from_transcript_json(path))
 
-        self.assertEqual(len(cues), 2)
-        self.assertTrue(cues[0].text.startswith("[SPEAKER_01]:"))
-        self.assertTrue(cues[1].text.startswith("[SPEAKER_02]:"))
+        self.assertEqual([segment.speaker for segment in transcript.segments], ["S01", "S02"])
+        self.assertEqual([cue.text for cue in cues], ["Hello.", "Welcome."])
+        self.assertEqual([cue.speaker for cue in cues], ["", ""])
 
     def test_canonical_round_trip_and_custom_adapter_extension(self):
         original = NormalizedTranscript(

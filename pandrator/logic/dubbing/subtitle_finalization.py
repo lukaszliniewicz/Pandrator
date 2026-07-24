@@ -19,7 +19,6 @@ from .models import SubtitleSegment
 from .srt_utils import compose_srt, parse_srt
 from .transcript_normalization import (
     NormalizedTranscript,
-    format_speaker_label,
     load_transcript,
     normalize_transcript,
 )
@@ -220,7 +219,15 @@ def _split_segment(segment: SubtitleSegment, config: SubtitleFinalizationConfig)
             end = min(segment.end_ms, cursor + share)
         if end <= cursor:
             end = cursor + 100
-        output.append(SubtitleSegment(index=0, start_ms=cursor, end_ms=end, text=wrap_subtitle_text(chunk, config)))
+        output.append(
+            SubtitleSegment(
+                index=0,
+                start_ms=cursor,
+                end_ms=end,
+                text=wrap_subtitle_text(chunk, config),
+                speaker=segment.speaker,
+            )
+        )
         cursor = end
     return output
 
@@ -253,6 +260,7 @@ def _adjust_durations(
                 start_ms=cue.start_ms,
                 end_ms=max(cue.start_ms + 100, desired_end),
                 text=cue.text,
+                speaker=cue.speaker,
             )
         )
     return adjusted
@@ -264,7 +272,15 @@ def finalize_segments(segments: list[SubtitleSegment], config: SubtitleFinalizat
         for item in _split_segment(segment, config):
             next_start = item.start_ms
             next_end = min(item.end_ms, next_start + config.max_duration_ms)
-            output.append(SubtitleSegment(index=0, start_ms=next_start, end_ms=next_end, text=item.text))
+            output.append(
+                SubtitleSegment(
+                    index=0,
+                    start_ms=next_start,
+                    end_ms=next_end,
+                    text=item.text,
+                    speaker=item.speaker,
+                )
+            )
     return _adjust_durations(output, config)
 
 
@@ -370,11 +386,7 @@ def _source_text_and_spans(words: list[_TimedWord]) -> tuple[str, list[_TimedWor
 
 
 def _cue_plain_text(words: list[_TimedWord]) -> str:
-    text = _join_tokens([item.text for item in words])
-    speaker = words[0].speaker if words else ""
-    if speaker:
-        text = f"[{format_speaker_label(speaker)}]: {text}"
-    return text
+    return _join_tokens([item.text for item in words])
 
 
 def _cue_text(words: list[_TimedWord], config: SubtitleFinalizationConfig) -> str:
@@ -586,7 +598,13 @@ def _compose_semantic_cues(
 
     if previous[word_count] is None:
         logger.warning("Global subtitle composition found no valid path; using capacity finalization")
-        fallback = SubtitleSegment(0, words[0].start_ms, words[-1].end_ms, _cue_plain_text(words))
+        fallback = SubtitleSegment(
+            0,
+            words[0].start_ms,
+            words[-1].end_ms,
+            _cue_plain_text(words),
+            words[0].speaker,
+        )
         return finalize_segments([fallback], config)
 
     ranges: list[tuple[int, int]] = []
@@ -604,6 +622,7 @@ def _compose_semantic_cues(
             start_ms=words[start].start_ms,
             end_ms=min(words[end - 1].end_ms, words[start].start_ms + config.max_duration_ms),
             text=_cue_plain_text(words[start:end]),
+            speaker=words[start].speaker,
         )
         for index, (start, end) in enumerate(ranges, start=1)
     ]
@@ -622,11 +641,8 @@ def compose_from_transcript_json(
                 index,
                 segment.start_ms,
                 segment.end_ms,
-                (
-                    f"[{format_speaker_label(segment.speaker)}]: {segment.text}"
-                    if segment.speaker
-                    else segment.text
-                ),
+                segment.text,
+                segment.speaker,
             )
             for index, segment in enumerate(transcript.segments, start=1)
         ]
@@ -640,6 +656,7 @@ def compose_from_transcript_json(
             start_ms=cue.start_ms,
             end_ms=cue.end_ms,
             text=wrap_subtitle_text(cue.text, config),
+            speaker=cue.speaker,
         )
         for index, cue in enumerate(cues, start=1)
     ]
