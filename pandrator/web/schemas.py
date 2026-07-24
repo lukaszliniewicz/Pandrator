@@ -235,6 +235,7 @@ class GenerationSegmentCreate(StrictModel):
     node_kind: Literal["paragraph", "heading", "chapter_marker", "subtitle_cue"] = "paragraph"
     paragraph_break_after: bool = False
     voice_id: str | None = None
+    voice: str | None = Field(default=None, max_length=255)
     language: str | None = Field(default=None, max_length=40)
     silence_after_ms: int = Field(default=0, ge=0)
 
@@ -251,6 +252,7 @@ class GenerationSegmentUpdate(StrictModel):
     node_kind: Literal["paragraph", "heading", "chapter_marker", "subtitle_cue"] | None = None
     paragraph_break_after: bool | None = None
     voice_id: str | None = None
+    voice: str | None = Field(default=None, max_length=255)
     language: str | None = Field(default=None, max_length=40)
     silence_after_ms: int | None = Field(default=None, ge=0)
     marked: bool | None = None

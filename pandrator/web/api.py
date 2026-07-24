@@ -1110,13 +1110,24 @@ def create_app(
     @require_auth
     def generation_segment_update(segment_id: str):
         payload = GenerationSegmentUpdate.model_validate(request.get_json(silent=True) or {})
+        changes = payload.model_dump(exclude_unset=True)
+        clearable = {"optimized_text", "voice_id", "voice", "language"}
+        null_fields = [key for key, value in changes.items() if value is None and key not in clearable]
+        if null_fields:
+            return error_response(
+                "validation_error",
+                f"{', '.join(null_fields)} cannot be null.",
+                422,
+            )
         raw_etag = request.headers.get("If-Match", "").strip('W/" ')
         try:
             expected = int(raw_etag)
         except ValueError:
             return error_response("precondition_required", "If-Match must contain the current segment revision.", 428)
         try:
-            result = generation.update_segment(segment_id, expected, payload.model_dump(exclude_none=True))
+            # Explicit null clears a segment override back to the inherited
+            # session value; omitted fields remain unchanged.
+            result = generation.update_segment(segment_id, expected, changes)
         except KeyError:
             return error_response("not_found", "Generation segment not found.", 404)
         except WorkspaceRevisionConflict as error:

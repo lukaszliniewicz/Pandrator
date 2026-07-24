@@ -965,6 +965,65 @@ class WebWorkflowHandlerTests(unittest.TestCase):
             self.assertFalse(segment.paragraph_break_after)
             self.assertEqual(0, segment.silence_after_ms)
 
+    def test_generation_plan_uses_short_clause_pauses_and_inherits_language(self):
+        revision_id, _ = self.handlers._store_generation_plan(
+            self.session.id,
+            [
+                {"text": "An internal clause,", "sentence_continues_after": True},
+                {"text": "the sentence ends."},
+                {"text": "The paragraph ends.", "paragraph": "yes"},
+                {"text": "A legacy internal clause,", "split_part": "0a"},
+                {"text": "Explicit override.", "language": "pl", "voice": "alice"},
+            ],
+            settings={"language": "en", "sentence_silence_ms": 300, "paragraph_silence_ms": 900},
+        )
+
+        with self.database.session() as session:
+            segments = list(
+                session.scalars(
+                    select(GenerationSegment)
+                    .where(GenerationSegment.plan_revision_id == revision_id)
+                    .order_by(GenerationSegment.ordinal)
+                ).all()
+            )
+
+        self.assertEqual([100, 300, 900, 100, 300], [segment.silence_after_ms for segment in segments])
+        self.assertEqual([None, None, None, None, "pl"], [segment.language for segment in segments])
+        self.assertEqual("alice", segments[-1].voice)
+
+    def test_segment_language_and_voice_override_reach_tts_runtime(self):
+        prepared_path = self.session_dir / "segment-overrides.json"
+        prepared_path.write_text(
+            json.dumps([{"original_sentence": "Cześć.", "language": "pl", "voice": "alice"}]),
+            encoding="utf-8",
+        )
+        prepared = self.artifacts.register(
+            prepared_path,
+            kind="json",
+            role="prepared_text",
+            session_id=self.session.id,
+        )
+
+        with mock.patch(
+            "pandrator.logic.tts_handler.text_to_audio",
+            return_value=AudioSegment.silent(duration=25),
+        ) as generate:
+            self.handlers.generate_audiobook_audio(
+                {
+                    "session_id": self.session.id,
+                    "source_artifact_id": prepared.id,
+                    "settings": {"service": "XTTS", "language": "en", "voice": "default"},
+                },
+                self.progress,
+                threading.Event(),
+            )
+
+        runtime_settings = generate.call_args.args[1]
+        self.assertEqual("pl", runtime_settings["language"])
+        self.assertEqual("pl", runtime_settings["target_language"])
+        self.assertEqual("alice", runtime_settings["voice"])
+        self.assertEqual("alice", runtime_settings["speaker"])
+
     def test_generation_language_follows_selected_artifact(self):
         updated = self.sessions.update(
             self.session.id,

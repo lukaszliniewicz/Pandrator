@@ -247,6 +247,19 @@
                 "title": "Text",
                 "type": "string"
               },
+              "voice": {
+                "anyOf": [
+                  {
+                    "maxLength": 255,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Voice"
+              },
               "voice_id": {
                 "anyOf": [
                   {
@@ -350,6 +363,19 @@
             "minLength": 1,
             "title": "Text",
             "type": "string"
+          },
+          "voice": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Voice"
           },
           "voice_id": {
             "anyOf": [
@@ -477,6 +503,19 @@
             ],
             "default": null,
             "title": "Text"
+          },
+          "voice": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Voice"
           },
           "voice_id": {
             "anyOf": [

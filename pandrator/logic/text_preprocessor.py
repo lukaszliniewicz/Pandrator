@@ -451,6 +451,7 @@ def _process_chunk(chunk: str, settings: dict) -> list[dict]:
                     "paragraph": "yes",
                     "chapter": "yes",
                     "split_part": None,
+                    "sentence_continues_after": False,
                 }
             )
             continue
@@ -472,7 +473,8 @@ def _process_chunk(chunk: str, settings: dict) -> list[dict]:
                 "original_sentence": sentence,
                 "paragraph": "yes" if is_paragraph else "no",
                 "chapter": "no",
-                "split_part": None
+                "split_part": None,
+                "sentence_continues_after": False,
             }
 
             if enable_sentence_splitting:
@@ -629,7 +631,12 @@ def split_long_sentences(sentence_dict, max_sentence_length, language: str):
     second_part = sentence[best_split_index:].strip()
 
     first_part_dict = sentence_dict.copy()
-    first_part_dict.update({"original_sentence": first_part, "split_part": 0, "paragraph": "no"})
+    first_part_dict.update({
+        "original_sentence": first_part,
+        "split_part": 0,
+        "paragraph": "no",
+        "sentence_continues_after": True,
+    })
     
     second_part_dict = sentence_dict.copy()
     second_part_dict.update({"original_sentence": second_part, "split_part": 1})
@@ -690,7 +697,12 @@ def split_long_sentences_2(sentence_dict, max_sentence_length, language: str):
     split_part_prefix = "0" if sentence_dict.get("split_part") is None else str(sentence_dict["split_part"])
     
     first_part_dict = sentence_dict.copy()
-    first_part_dict.update({"original_sentence": first_part, "split_part": split_part_prefix + "a", "paragraph": "no"})
+    first_part_dict.update({
+        "original_sentence": first_part,
+        "split_part": split_part_prefix + "a",
+        "paragraph": "no",
+        "sentence_continues_after": True,
+    })
     
     split_sentences = [first_part_dict]
 
@@ -730,6 +742,9 @@ def append_short_sentences(sentence_dicts, max_sentence_length):
                         # Update the previous sentence and mark it as a paragraph
                         prev_sentence_dict["original_sentence"] = combined_text
                         prev_sentence_dict["paragraph"] = "yes"
+                        prev_sentence_dict["sentence_continues_after"] = bool(
+                            current_sentence_dict.get("sentence_continues_after", False)
+                        )
                         # Do not add current_sentence_dict, it's merged
                         i += 1
                         continue
@@ -746,6 +761,9 @@ def append_short_sentences(sentence_dicts, max_sentence_length):
                 combined_text = prev_sentence_dict["original_sentence"] + ' ' + current_sentence_dict["original_sentence"]
                 if len(combined_text) <= max_sentence_length:
                     prev_sentence_dict["original_sentence"] = combined_text
+                    prev_sentence_dict["sentence_continues_after"] = bool(
+                        current_sentence_dict.get("sentence_continues_after", False)
+                    )
                     # Paragraph status of prev_sentence_dict remains "no"
                     i += 1
                     continue
@@ -835,6 +853,7 @@ def merge_consecutive_chapters(sentences, max_sentence_length: int | None = None
                 merged.append({
                     "original_sentence": text,
                     "paragraph": "yes", "chapter": "yes", "split_part": None,
+                    "sentence_continues_after": False,
                     "sentence_number": current.get("sentence_number")
                 })
             i = j

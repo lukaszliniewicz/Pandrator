@@ -453,6 +453,21 @@ class WebParityWorkspaceTests(unittest.TestCase):
             headers={**self.headers, "If-Match": f'"{first["revision"]}"'},
         )
         self.assertEqual("stale", edited.get_json()["status"])
+        overridden = self.client.patch(
+            f"/api/v1/generation-segments/{first['id']}",
+            json={"language": "pl", "voice": "alice"},
+            headers={**self.headers, "If-Match": f'"{edited.get_json()["revision"]}"'},
+        )
+        self.assertEqual(200, overridden.status_code, overridden.get_json())
+        self.assertEqual("pl", overridden.get_json()["language"])
+        self.assertEqual("alice", overridden.get_json()["voice"])
+        inherited = self.client.patch(
+            f"/api/v1/generation-segments/{first['id']}",
+            json={"language": None, "voice": None},
+            headers={**self.headers, "If-Match": f'"{overridden.get_json()["revision"]}"'},
+        )
+        self.assertIsNone(inherited.get_json()["language"])
+        self.assertIsNone(inherited.get_json()["voice"])
         with database.session() as session:
             take = session.query(AudioTake).one()
             self.assertEqual("stale", take.status)

@@ -19,7 +19,7 @@ from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.database import SCHEMA_HEAD, Database, sqlite_url, upgrade_database
 from pandrator.web.jobs import JobQueue, Worker, noop_handler
 from pandrator.web.legacy_migration import import_legacy_data
-from pandrator.web.models import DocumentRevision, GenerationSegment, Job, ProviderModel, Segment, SessionRecord, utcnow
+from pandrator.web.models import DocumentRevision, GenerationPlan, GenerationPlanRevision, GenerationSegment, Job, ProviderModel, Segment, SessionRecord, utcnow
 from pandrator.web.sessions import SessionService
 from tests.web_test_support import prepare_web_test_data_root
 
@@ -68,13 +68,69 @@ class SchemaUpgradeTests(unittest.TestCase):
                 self.assertIn("source_text_artifact_id", [row[1] for row in connection.execute("PRAGMA table_info(training_runs)")])
                 self.assertIn("node_kind", [row[1] for row in connection.execute("PRAGMA table_info(generation_segments)")])
                 self.assertIn("paragraph_break_after", [row[1] for row in connection.execute("PRAGMA table_info(generation_segments)")])
+                self.assertIn("voice", [row[1] for row in connection.execute("PRAGMA table_info(generation_segments)")])
                 self.assertIn("node_kind", [row[1] for row in connection.execute("PRAGMA table_info(generation_segment_revisions)")])
                 self.assertIn("paragraph_break_after", [row[1] for row in connection.execute("PRAGMA table_info(generation_segment_revisions)")])
+                self.assertIn("voice", [row[1] for row in connection.execute("PRAGMA table_info(generation_segment_revisions)")])
                 self.assertIn("stored_credentials", [row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")])
                 self.assertIn("source_language", [row[1] for row in connection.execute("PRAGMA table_info(sessions)")])
                 self.assertIn("target_language", [row[1] for row in connection.execute("PRAGMA table_info(sessions)")])
                 self.assertIn("is_active", [row[1] for row in connection.execute("PRAGMA table_info(provider_models)")])
                 self.assertIn("session_stage_selections", [row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")])
+
+    def test_segment_language_equal_to_plan_default_becomes_inherited(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "pandrator.sqlite3"
+            upgrade_database(database_path)
+            database = Database(database_path)
+            with database.session() as session:
+                workspace = SessionRecord(name="Language migration", storage_key="language-migration")
+                session.add(workspace)
+                session.flush()
+                plan = GenerationPlan(session_id=workspace.id)
+                session.add(plan)
+                session.flush()
+                revision = GenerationPlanRevision(
+                    plan_id=plan.id,
+                    revision_number=1,
+                    settings_json={"language": "en"},
+                    content_hash="language-migration",
+                )
+                session.add(revision)
+                session.flush()
+                inherited = GenerationSegment(
+                    plan_revision_id=revision.id,
+                    ordinal=0,
+                    text="Inherited.",
+                    language="en",
+                )
+                overridden = GenerationSegment(
+                    plan_revision_id=revision.id,
+                    ordinal=1,
+                    text="Overridden.",
+                    language="pl",
+                )
+                session.add_all([inherited, overridden])
+                session.flush()
+                inherited_id, overridden_id = inherited.id, overridden.id
+                plan.active_revision_id = revision.id
+            database.dispose()
+
+            config = Config()
+            config.set_main_option("script_location", str(Path(__file__).parents[1] / "pandrator" / "web" / "migrations"))
+            config.set_main_option("sqlalchemy.url", sqlite_url(database_path))
+            command.downgrade(config, "0014_usage_event_links")
+            upgrade_database(database_path)
+
+            with closing(sqlite3.connect(database_path)) as connection:
+                languages = dict(
+                    connection.execute(
+                        "SELECT id, language FROM generation_segments WHERE id IN (?, ?)",
+                        (inherited_id, overridden_id),
+                    )
+                )
+            self.assertIsNone(languages[inherited_id])
+            self.assertEqual("pl", languages[overridden_id])
 
     def test_inline_tts_key_is_migrated_to_write_only_credential_table(self):
         with tempfile.TemporaryDirectory() as directory:

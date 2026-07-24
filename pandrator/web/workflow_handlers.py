@@ -66,6 +66,9 @@ from .models import (
 
 logger = logging.getLogger(__name__)
 
+CLAUSE_PAUSE_RATIO = 1 / 3
+GENERATION_SEGMENT_POLICY_VERSION = 2
+
 
 def _structured_speaker(segment: Any) -> str:
     speaker = str(getattr(segment, "speaker", None) or "").strip()
@@ -166,10 +169,73 @@ def _generation_segmentation_settings(settings: dict[str, Any]) -> dict[str, Any
     they are deliberately excluded from the plan revision content hash.
     """
     return {
-        "language": str(settings.get("language") or settings.get("target_language") or ""),
+        "segment_policy_version": GENERATION_SEGMENT_POLICY_VERSION,
         "paragraph_silence_ms": settings.get("paragraph_silence_ms", settings.get("silence_for_paragraphs", 700)),
         "sentence_silence_ms": settings.get("sentence_silence_ms", settings.get("silence_between_sentences", 250)),
+        "clause_pause_ratio": CLAUSE_PAUSE_RATIO,
     }
+
+
+def _record_continues_sentence(record: dict[str, Any]) -> bool:
+    value = record.get("sentence_continues_after")
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "clause"}
+    if value is not None:
+        return bool(value)
+    if str(record.get("pause_kind") or "").strip().lower() == "clause":
+        return True
+    # Prepared narration created before the explicit continuation flag still
+    # carries ``split_part``. Internal pieces lack terminal sentence
+    # punctuation, while the final piece retains it.
+    if record.get("split_part") is not None:
+        text = str(record.get("text") or record.get("original_sentence") or "").rstrip()
+        return re.search(r"[.!?…。！？…][\"'”’)\]}]*$", text) is None
+    return False
+
+
+def _default_silence_after_ms(
+    record: dict[str, Any],
+    settings: dict[str, Any],
+    *,
+    is_subtitle: bool = False,
+) -> int:
+    explicit = record.get("silence_after_ms")
+    if explicit is not None:
+        return max(0, int(explicit or 0))
+    if is_subtitle:
+        return 0
+
+    sentence_silence = max(
+        0,
+        int(settings.get("sentence_silence_ms", settings.get("silence_between_sentences", 250)) or 0),
+    )
+    is_paragraph = bool(record.get("paragraph_break_after")) or str(record.get("paragraph") or "").lower() == "yes"
+    if is_paragraph:
+        return max(
+            0,
+            int(settings.get("paragraph_silence_ms", settings.get("silence_for_paragraphs", 700)) or 0),
+        )
+    if _record_continues_sentence(record):
+        return max(0, round(sentence_silence * CLAUSE_PAUSE_RATIO))
+    return sentence_silence
+
+
+def _apply_segment_tts_overrides(
+    settings: dict[str, Any],
+    *,
+    language: str | None = None,
+    voice: str | None = None,
+) -> dict[str, Any]:
+    if not language and not voice:
+        return settings
+    resolved = dict(settings)
+    if language:
+        resolved.update({"language": language, "target_language": language})
+    if voice:
+        # Runtime adapters consume the legacy ``speaker`` alias, while newer
+        # and OpenAI-compatible adapters consume ``voice``.
+        resolved.update({"voice": voice, "speaker": voice})
+    return resolved
 
 
 class WorkflowHandlers:
@@ -2043,17 +2109,8 @@ class WorkflowHandlers:
             segment_ids = []
             for ordinal, record in enumerate(clean):
                 is_subtitle = self._is_subtitle_generation_record(record)
-                explicit_silence = record.get("silence_after_ms")
-                if explicit_silence is None:
-                    if is_subtitle:
-                        explicit_silence = 0
-                    else:
-                        is_paragraph = str(record.get("paragraph") or "").lower() == "yes"
-                        explicit_silence = (
-                            settings.get("paragraph_silence_ms", settings.get("silence_for_paragraphs", 700))
-                            if is_paragraph
-                            else settings.get("sentence_silence_ms", settings.get("silence_between_sentences", 250))
-                        )
+                explicit_language = self._usable_language(record.get("language")) or None
+                explicit_voice = str(record.get("voice") or "").strip() or None
                 segment = GenerationSegment(
                     plan_revision_id=revision.id,
                     ordinal=ordinal,
@@ -2061,8 +2118,12 @@ class WorkflowHandlers:
                     node_kind=str(record.get("node_kind") or ("subtitle_cue" if is_subtitle else "chapter_marker" if str(record.get("chapter") or "").lower() == "yes" else "paragraph")),
                     paragraph_break_after=False if is_subtitle else bool(record.get("paragraph_break_after", str(record.get("paragraph") or "").lower() == "yes")),
                     text=str(record.get("text") or record.get("original_sentence") or "").strip(),
-                    language=str(record.get("language") or settings.get("language") or settings.get("target_language") or "") or None,
-                    silence_after_ms=max(0, int(explicit_silence or 0)),
+                    voice_id=record.get("voice_id"),
+                    voice=explicit_voice,
+                    # A missing value is meaningful: it follows the session TTS
+                    # language and remains responsive to later settings changes.
+                    language=explicit_language,
+                    silence_after_ms=_default_silence_after_ms(record, settings, is_subtitle=is_subtitle),
                     marked=bool(record.get("marked", False)),
                 )
                 session.add(segment)
@@ -2224,6 +2285,7 @@ class WorkflowHandlers:
                             {
                                 "text": segment.text,
                                 "language": segment.language,
+                                "voice": segment.voice,
                                 "node_kind": segment.node_kind,
                                 "paragraph_break_after": segment.paragraph_break_after,
                                 "silence_after_ms": segment.silence_after_ms,
@@ -2259,10 +2321,11 @@ class WorkflowHandlers:
             progress(optimization_share + ((index - 1) / len(records)) * synthesis_share, f"Generating segment {index} of {len(records)}")
             synthesized_text = optimized_texts[index - 1]
             segment_language = self._usable_language(record.get("language"))
-            segment_tts_settings = (
-                {**settings, "language": segment_language, "target_language": segment_language}
-                if segment_language
-                else settings
+            segment_voice = str(record.get("voice") or "").strip() or None
+            segment_tts_settings = _apply_segment_tts_overrides(
+                settings,
+                language=segment_language,
+                voice=segment_voice,
             )
             audio = tts_handler.text_to_audio(
                 synthesized_text,
@@ -2311,17 +2374,12 @@ class WorkflowHandlers:
                 segment = session.get(GenerationSegment, generation_segment_id)
                 segment.status = "completed"
                 session.add(AudioTake(generation_segment_id=generation_segment_id, artifact_id=take_artifact.id, kind="tts", status="completed", settings_hash=take_artifact.settings_hash, duration_ms=len(audio), is_active=True))
-            silence_after = record.get("silence_after_ms")
-            if silence_after is None:
-                if source_artifact.role == "speech_blocks" or self._is_subtitle_generation_record(record):
-                    silence_after = 0
-                else:
-                    silence_after = (
-                        settings.get("paragraph_silence_ms", settings.get("silence_for_paragraphs", 700))
-                        if str(record.get("paragraph") or "").lower() == "yes"
-                        else settings.get("sentence_silence_ms", settings.get("silence_between_sentences", 250))
-                    )
-            audio_parts.append((audio, max(0, int(silence_after or 0))))
+            silence_after = _default_silence_after_ms(
+                record,
+                settings,
+                is_subtitle=source_artifact.role == "speech_blocks" or self._is_subtitle_generation_record(record),
+            )
+            audio_parts.append((audio, silence_after))
             progress(optimization_share + (index / len(records)) * synthesis_share, f"Generated segment {index} of {len(records)}")
         if not audio_parts:
             raise RuntimeError("The speech service returned no audio.")
@@ -2632,6 +2690,7 @@ class WorkflowHandlers:
                 segment.updated_at = utcnow()
                 text = segment.text
                 segment_language = self._usable_language(segment.language)
+                segment_voice = str(segment.voice or "").strip() or None
             progress(
                 optimization_share + (index / len(segment_ids)) * (1.0 - optimization_share),
                 f"Generating segment {index + 1} of {len(segment_ids)}",
@@ -2675,10 +2734,10 @@ class WorkflowHandlers:
                     take_settings = rvc_settings
                 else:
                     synthesized_text = optimized_by_id.get(segment_id, text)
-                    segment_tts_settings = (
-                        {**tts_settings, "language": segment_language, "target_language": segment_language}
-                        if segment_language
-                        else tts_settings
+                    segment_tts_settings = _apply_segment_tts_overrides(
+                        tts_settings,
+                        language=segment_language,
+                        voice=segment_voice,
                     )
                     audio = tts_handler.text_to_audio(
                         synthesized_text,

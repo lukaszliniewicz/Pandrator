@@ -989,6 +989,7 @@ class GenerationService:
                         paragraph_break_after=bool(item.get("paragraph_break_after", str(item.get("paragraph") or "").lower() == "yes")),
                         text=str(item.get("text") or "").strip(),
                         voice_id=item.get("voice_id"),
+                        voice=item.get("voice"),
                         language=item.get("language"),
                         silence_after_ms=max(0, int(item.get("silence_after_ms") or 0)),
                     )
@@ -1034,6 +1035,7 @@ class GenerationService:
                     "optimization_reviewed": item.optimization_reviewed,
                     "optimization_model": item.optimization_model,
                     "voice_id": item.voice_id,
+                    "voice": item.voice,
                     "language": item.language,
                     "silence_after_ms": item.silence_after_ms,
                     "marked": item.marked,
@@ -1066,14 +1068,14 @@ class GenerationService:
             return {"items": items, "next_cursor": rows[-1].ordinal + 1 if rows and has_more else None, "total": total, "plan_revision_id": plan.active_revision_id}
 
     def update_segment(self, segment_id: str, expected_revision: int, changes: dict[str, Any]) -> dict[str, Any]:
-        allowed = {"text", "optimized_text", "node_kind", "paragraph_break_after", "voice_id", "language", "silence_after_ms", "marked", "removed"}
+        allowed = {"text", "optimized_text", "node_kind", "paragraph_break_after", "voice_id", "voice", "language", "silence_after_ms", "marked", "removed"}
         with self.database.session() as session:
             segment = session.get(GenerationSegment, segment_id)
             if segment is None:
                 raise KeyError(segment_id)
             if segment.revision != expected_revision:
                 raise RevisionConflict("The generation segment changed in another client.")
-            session.add(GenerationSegmentRevision(generation_segment_id=segment.id, revision=segment.revision, node_kind=segment.node_kind, paragraph_break_after=segment.paragraph_break_after, text=segment.text, optimized_text=segment.optimized_text, optimization_status=segment.optimization_status, optimization_reviewed=segment.optimization_reviewed, marked=segment.marked, removed=segment.removed, voice_id=segment.voice_id, language=segment.language, silence_after_ms=segment.silence_after_ms))
+            session.add(GenerationSegmentRevision(generation_segment_id=segment.id, revision=segment.revision, node_kind=segment.node_kind, paragraph_break_after=segment.paragraph_break_after, text=segment.text, optimized_text=segment.optimized_text, optimization_status=segment.optimization_status, optimization_reviewed=segment.optimization_reviewed, marked=segment.marked, removed=segment.removed, voice_id=segment.voice_id, voice=segment.voice, language=segment.language, silence_after_ms=segment.silence_after_ms))
             text_changed = "text" in changes and str(changes["text"]).strip() != segment.text
             optimized_changed = "optimized_text" in changes and (str(changes["optimized_text"] or "").strip() or None) != segment.optimized_text
             for key, value in changes.items():
@@ -1100,7 +1102,7 @@ class GenerationService:
                 segment.optimization_status = "reviewed" if segment.optimized_text else "pending"
                 segment.optimization_source_hash = stable_hash(segment.text)
                 segment.optimization_reviewed = bool(segment.optimized_text)
-            if text_changed or any(key in changes for key in ("voice_id", "language")):
+            if text_changed or any(key in changes for key in ("voice_id", "voice", "language")):
                 segment.status = "stale"
                 for take in session.scalars(select(AudioTake).where(AudioTake.generation_segment_id == segment.id, AudioTake.status == "completed")).all():
                     take.status = "stale"
@@ -1108,7 +1110,7 @@ class GenerationService:
                 segment.status = "stale"
                 for take in session.scalars(select(AudioTake).where(AudioTake.generation_segment_id == segment.id, AudioTake.status == "completed")).all():
                     take.status = "stale"
-            if any(key in changes for key in ("text", "node_kind", "paragraph_break_after", "voice_id", "language", "silence_after_ms", "removed")):
+            if any(key in changes for key in ("text", "node_kind", "paragraph_break_after", "voice_id", "voice", "language", "silence_after_ms", "removed")):
                 plan_revision = session.get(GenerationPlanRevision, segment.plan_revision_id)
                 plan = session.get(GenerationPlan, plan_revision.plan_id) if plan_revision else None
                 if plan is not None:
@@ -1116,7 +1118,24 @@ class GenerationService:
             segment.revision += 1
             segment.updated_at = utcnow()
             session.flush()
-            return {"id": segment.id, "node_kind": segment.node_kind, "paragraph_break_after": segment.paragraph_break_after, "text": segment.text, "optimized_text": segment.optimized_text, "optimization_status": segment.optimization_status, "optimization_reviewed": segment.optimization_reviewed, "optimization_model": segment.optimization_model, "marked": segment.marked, "removed": segment.removed, "status": segment.status, "revision": segment.revision}
+            return {
+                "id": segment.id,
+                "node_kind": segment.node_kind,
+                "paragraph_break_after": segment.paragraph_break_after,
+                "text": segment.text,
+                "optimized_text": segment.optimized_text,
+                "optimization_status": segment.optimization_status,
+                "optimization_reviewed": segment.optimization_reviewed,
+                "optimization_model": segment.optimization_model,
+                "voice_id": segment.voice_id,
+                "voice": segment.voice,
+                "language": segment.language,
+                "silence_after_ms": segment.silence_after_ms,
+                "marked": segment.marked,
+                "removed": segment.removed,
+                "status": segment.status,
+                "revision": segment.revision,
+            }
 
     def select_take(self, segment_id: str, take_id: str, expected_revision: int) -> dict[str, Any]:
         with self.database.session() as session:
@@ -1128,7 +1147,7 @@ class GenerationService:
                 raise RevisionConflict("The generation segment changed in another client.")
             if take.status not in {"completed", "stale"} or not take.artifact_id:
                 raise ValueError("Only an available audio take can be selected.")
-            session.add(GenerationSegmentRevision(generation_segment_id=segment.id, revision=segment.revision, node_kind=segment.node_kind, paragraph_break_after=segment.paragraph_break_after, text=segment.text, optimized_text=segment.optimized_text, optimization_status=segment.optimization_status, optimization_reviewed=segment.optimization_reviewed, marked=segment.marked, removed=segment.removed, voice_id=segment.voice_id, language=segment.language, silence_after_ms=segment.silence_after_ms))
+            session.add(GenerationSegmentRevision(generation_segment_id=segment.id, revision=segment.revision, node_kind=segment.node_kind, paragraph_break_after=segment.paragraph_break_after, text=segment.text, optimized_text=segment.optimized_text, optimization_status=segment.optimization_status, optimization_reviewed=segment.optimization_reviewed, marked=segment.marked, removed=segment.removed, voice_id=segment.voice_id, voice=segment.voice, language=segment.language, silence_after_ms=segment.silence_after_ms))
             for item in session.scalars(select(AudioTake).where(AudioTake.generation_segment_id == segment_id)).all():
                 item.is_active = item.id == take_id
                 item.revision += 1

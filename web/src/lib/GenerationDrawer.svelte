@@ -25,6 +25,8 @@
   import TextDiff from './TextDiff.svelte';
   import SearchReplaceBar from './SearchReplaceBar.svelte';
   import type { TextReplacement, TextSearchMatch } from './search-replace';
+  import { LANGUAGE_OPTIONS } from './settings-fields';
+  import { describeVoice, languagesForService, type VoiceDescriptor } from './voice-catalog';
 
   let { sessionId }: { sessionId: string } = $props();
   let mode = $state<'collapsed' | 'half' | 'full'>('collapsed');
@@ -61,6 +63,64 @@
   let comparisonDiff = $state(false);
   let initialized = false;
   let searchLoading = $state(false);
+  let speechOptionsLoading = $state(false);
+  let ttsSettings = $state<Record<string, any>>({});
+  let ttsCatalogue = $state<any>({ services: [] });
+  let libraryVoices = $state<any[]>([]);
+
+  const normalizeId = (value: unknown) => String(value ?? '').trim().toLowerCase().replaceAll('-', '_');
+  const selectedTtsService = $derived.by(() => {
+    const configured = String(ttsSettings.service ?? ttsSettings.tts_service ?? ttsCatalogue.default_service ?? '');
+    return (ttsCatalogue.services ?? []).find((service: any) =>
+      [service.id, service.name].some((value) => normalizeId(value) === normalizeId(configured))
+    ) ?? null;
+  });
+  const selectedTtsModel = $derived(String(ttsSettings.model || ttsSettings.xtts_model || selectedTtsService?.default_model || ''));
+  const inheritedLanguage = $derived(String(ttsSettings.language || ttsSettings.target_language || 'en'));
+  const selectedTtsServiceId = $derived(normalizeId(selectedTtsService?.id ?? ttsSettings.service ?? ttsSettings.tts_service));
+  const modelVoiceDescriptors = $derived.by(() => {
+    if (!selectedTtsService) return [] as VoiceDescriptor[];
+    const service = selectedTtsService;
+    const catalogue = Array.from(service.voice_catalogues?.[selectedTtsModel] ?? []).map(String);
+    const qwenCloning = selectedTtsServiceId === 'kobold_qwen' && selectedTtsModel.toLowerCase() === 'voice cloning';
+    const providerVoicesAllowed = !service.supports_prebuilt_voices || qwenCloning;
+    const published = providerVoicesAllowed
+      ? libraryVoices.flatMap((voice: any) => {
+          const registration = voice?.metadata_json?.providers?.[selectedTtsServiceId];
+          return registration?.status === 'ready' && registration?.voice_id ? [String(registration.voice_id)] : [];
+        })
+      : [];
+    const live = providerVoicesAllowed ? Array.from(service.live_voices ?? []).map(String) : [];
+    const configured = catalogue.length ? catalogue : Array.from(service.voices ?? []).map(String);
+    const defaultVoice = String(
+      service.default_voices_by_language?.[selectedTtsModel]?.[inheritedLanguage]
+      ?? service.default_voices?.[selectedTtsModel]
+      ?? service.default_voice
+      ?? ''
+    );
+    return Array.from(new Set([...configured, ...live, ...published, defaultVoice].filter(Boolean))).map((voice) =>
+      describeVoice(
+        String(service.id ?? ttsSettings.service ?? ''),
+        voice,
+        service.voice_metadata?.[`${selectedTtsModel}:${voice}`]
+      )
+    );
+  });
+  const supportedSpeechLanguages = $derived.by(() => {
+    const discovered = languagesForService(
+      String(selectedTtsService?.id ?? ttsSettings.service ?? ''),
+      modelVoiceDescriptors
+    );
+    return discovered.length ? discovered : LANGUAGE_OPTIONS.filter((item) => item.value !== 'auto');
+  });
+  const inheritedVoice = $derived(String(
+    ttsSettings.voice
+    || ttsSettings.speaker
+    || selectedTtsService?.default_voices_by_language?.[selectedTtsModel]?.[inheritedLanguage]
+    || selectedTtsService?.default_voices?.[selectedTtsModel]
+    || selectedTtsService?.default_voice
+    || ''
+  ));
 
   const marked = $derived(payload.items.filter((item: any) => item.marked).map((item: any) => item.id));
   const selectedSegmentIds = $derived(
@@ -94,6 +154,105 @@
     }
     return blocks;
   });
+
+  function languageLabel(value: string) {
+    return supportedSpeechLanguages.find((item) => normalizeId(item.value) === normalizeId(value))?.label
+      ?? LANGUAGE_OPTIONS.find((item) => normalizeId(item.value) === normalizeId(value))?.label
+      ?? value;
+  }
+
+  function languageOptionsFor(item: any) {
+    const options = [...supportedSpeechLanguages];
+    const current = String(item.language ?? '').trim();
+    if (current && !options.some((option) => normalizeId(option.value) === normalizeId(current))) {
+      options.push({ value: current, label: `${current} · unavailable for this model` });
+    }
+    return options;
+  }
+
+  function voiceLabel(voice: VoiceDescriptor) {
+    return [voice.name, voice.gender, voice.languageCode ? voice.language : ''].filter(Boolean).join(' · ');
+  }
+
+  function voiceOptionsFor(item: any) {
+    const effectiveLanguage = String(item.language || inheritedLanguage);
+    const options = modelVoiceDescriptors.filter((voice) =>
+      !voice.languageCode || normalizeId(voice.languageCode) === normalizeId(effectiveLanguage)
+    );
+    const current = String(item.voice ?? '').trim();
+    if (current && !options.some((voice) => normalizeId(voice.id) === normalizeId(current))) {
+      options.push({
+        id: current,
+        name: current,
+        languageCode: '',
+        language: 'Unavailable for the current model or language',
+        gender: ''
+      });
+    }
+    return options;
+  }
+
+  async function changeSegmentLanguage(item: any, selected: string) {
+    const language = selected || null;
+    const effectiveLanguage = String(language || inheritedLanguage);
+    const currentVoice = String(item.voice ?? '').trim();
+    const descriptor = modelVoiceDescriptors.find((voice) => normalizeId(voice.id) === normalizeId(currentVoice));
+    const voiceIsIncompatible = Boolean(
+      descriptor?.languageCode
+      && normalizeId(descriptor.languageCode) !== normalizeId(effectiveLanguage)
+    );
+    await patchSegment(item, { language, ...(voiceIsIncompatible ? { voice: null } : {}) });
+  }
+
+  async function loadSpeechOptions() {
+    speechOptionsLoading = true;
+    try {
+      const [settings, services, voices] = await Promise.all([
+        api<any>(`/sessions/${sessionId}/settings/tts`),
+        api<any>('/services/tts?refresh=true'),
+        api<any>('/voices')
+      ]);
+      ttsSettings = settings.effective ?? {};
+      ttsCatalogue = services;
+      libraryVoices = voices.items ?? [];
+
+      const service = (services.services ?? []).find((candidate: any) =>
+        [candidate.id, candidate.name].some((value) =>
+          normalizeId(value) === normalizeId(ttsSettings.service ?? ttsSettings.tts_service ?? services.default_service)
+        )
+      );
+      if (service?.api_base && service.online !== false) {
+        try {
+          const discovered = await api<any>('/services/tts/discover', {
+            method: 'POST',
+            body: JSON.stringify({ base_url: service.api_base, service_id: service.id })
+          });
+          if (discovered?.success) {
+            const refreshed = (ttsCatalogue.services ?? []).map((candidate: any) =>
+              candidate.id === service.id
+                ? {
+                    ...candidate,
+                    models: Array.from(new Set([...(candidate.models ?? []), ...(discovered.models ?? [])])),
+                    voices: Array.from(new Set([...(candidate.voices ?? []), ...(discovered.voices ?? [])])),
+                    live_voices: Array.from(new Set(discovered.voices ?? [])),
+                    online: true
+                  }
+                : candidate
+            );
+            ttsCatalogue = { ...ttsCatalogue, services: refreshed };
+          }
+        } catch {
+          // The saved catalogue remains useful when a backend has no discovery route.
+        }
+      }
+    } catch {
+      ttsSettings = {};
+      ttsCatalogue = { services: [] };
+      libraryVoices = [];
+    } finally {
+      speechOptionsLoading = false;
+    }
+  }
 
   async function load(reset = true, preserveLoaded = reset) {
     try {
@@ -482,6 +641,7 @@
   onMount(() => {
     const refresh = () => load(true, true);
     loadRvc();
+    loadSpeechOptions();
     window.addEventListener('pandrator:generation-changed', refresh);
     return () => {
       window.removeEventListener('pandrator:generation-changed', refresh);
@@ -633,8 +793,27 @@
                         <option value="chapter_marker">Chapter start</option>
                         <option value="subtitle_cue">Subtitle cue</option>
                       </select>
-                      <input value={item.voice_id ?? ''} onblur={(event) => patchSegment(item, { voice_id: (event.currentTarget as HTMLInputElement).value || null })} placeholder="Voice" class="mini" />
-                      <input value={item.language ?? ''} onblur={(event) => patchSegment(item, { language: (event.currentTarget as HTMLInputElement).value || null })} placeholder="Language" class="mini" />
+                      <select
+                        value={item.voice ?? ''}
+                        onchange={(event) => patchSegment(item, { voice: (event.currentTarget as HTMLSelectElement).value || null })}
+                        aria-label={`Voice for segment ${item.ordinal + 1}`}
+                        title={`${selectedTtsService?.name ?? 'TTS service'} · ${selectedTtsModel || 'default model'}`}
+                        disabled={speechOptionsLoading}
+                        class="mini max-w-52"
+                      >
+                        <option value="">Inherited{inheritedVoice ? ` · ${voiceOptionsFor(item).find((voice) => normalizeId(voice.id) === normalizeId(inheritedVoice))?.name ?? inheritedVoice}` : ' · service default'}</option>
+                        {#each voiceOptionsFor(item) as voice}<option value={voice.id}>{voiceLabel(voice)}</option>{/each}
+                      </select>
+                      <select
+                        value={item.language ?? ''}
+                        onchange={(event) => changeSegmentLanguage(item, (event.currentTarget as HTMLSelectElement).value)}
+                        aria-label={`Language for segment ${item.ordinal + 1}`}
+                        disabled={speechOptionsLoading}
+                        class="mini max-w-48"
+                      >
+                        <option value="">Inherited · {languageLabel(inheritedLanguage)}</option>
+                        {#each languageOptionsFor(item) as language}<option value={language.value}>{language.label}</option>{/each}
+                      </select>
                     </div>
                   </td>
                   <td>
@@ -692,7 +871,7 @@
     {/if}
   </aside>
 {/if}
-{#if ttsServicesOpen}<TtsServicesModal onclose={() => ttsServicesOpen=false}/>{/if}
+{#if ttsServicesOpen}<TtsServicesModal onclose={() => { ttsServicesOpen=false; loadSpeechOptions(); }}/>{/if}
 {#if comparisonItem}
   <div class="fixed inset-0 z-[95] grid place-items-center bg-black/55 p-3 backdrop-blur-sm" role="presentation" onclick={(event)=>event.target===event.currentTarget&&(comparisonItem=null)}>
     <div class="comparison-modal flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-3xl" role="dialog" aria-modal="true" aria-labelledby="segment-optimization-title">

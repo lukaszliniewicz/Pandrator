@@ -257,5 +257,29 @@ class TextPreprocessorTests(unittest.TestCase):
         self.assertGreater(split_index, 80)
         self.assertLessEqual(split_index, 200)
 
+    @patch("pandrator.logic.text_preprocessor.sentence_segmenter.split_text")
+    def test_long_sentence_marks_only_internal_splits_as_clause_boundaries(self, split_text):
+        sentence = (
+            "This long opening clause carries enough detail to need a split, and the second clause "
+            "continues with still more narration before the complete sentence finally comes to rest."
+        )
+        split_text.return_value = [sentence]
+
+        parts = preprocess_text(
+            sentence,
+            {
+                "language": "en",
+                "max_sentence_length": 80,
+                "enable_sentence_splitting": True,
+                "enable_sentence_appending": False,
+                "enable_nemo_normalization": False,
+                "tts_service": "XTTS",
+            },
+        )
+
+        self.assertGreater(len(parts), 1)
+        self.assertTrue(all(part["sentence_continues_after"] for part in parts[:-1]))
+        self.assertFalse(parts[-1]["sentence_continues_after"])
+
 if __name__ == "__main__":
     unittest.main()

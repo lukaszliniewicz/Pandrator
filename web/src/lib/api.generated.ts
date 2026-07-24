@@ -1512,6 +1512,11 @@ export interface components {
                     /** Text */
                     text: string;
                     /**
+                     * Voice
+                     * @default null
+                     */
+                    voice: string | null;
+                    /**
                      * Voice Id
                      * @default null
                      */
@@ -1546,6 +1551,11 @@ export interface components {
             source_segment_ids?: string[];
             /** Text */
             text: string;
+            /**
+             * Voice
+             * @default null
+             */
+            voice: string | null;
             /**
              * Voice Id
              * @default null
@@ -1594,6 +1604,11 @@ export interface components {
              * @default null
              */
             text: string | null;
+            /**
+             * Voice
+             * @default null
+             */
+            voice: string | null;
             /**
              * Voice Id
              * @default null
