@@ -364,6 +364,7 @@ class WebParityWorkspaceTests(unittest.TestCase):
         self.assertEqual(800, BUILTIN_DEFAULTS["stt"]["crispasr_vad_min_silence_ms"])
         self.assertEqual(300, BUILTIN_DEFAULTS["stt"]["crispasr_vad_max_speech_seconds"])
         self.assertEqual("libx264", BUILTIN_DEFAULTS["output"]["burn_video_encoder"])
+        self.assertEqual("source", BUILTIN_DEFAULTS["output"]["burn_video_resolution"])
         self.assertEqual(18, BUILTIN_DEFAULTS["output"]["burn_video_quality"])
 
     def test_outcome_plan_supports_translation_without_correction(self):

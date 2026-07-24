@@ -3349,7 +3349,12 @@ class WorkflowHandlers:
         from pandrator.logic.dubbing.audio_sync import build_mix_audio_command, build_mix_video_audio_command, media_has_audio_stream
         from pandrator.logic.dubbing.srt_utils import concatenate_subtitle_text, srt_to_vtt
         from pandrator.logic.dubbing.subtitle_finalization import finalize_srt_file
-        from pandrator.logic.dubbing.video_muxing import build_add_subtitles_command, build_multi_soft_subtitle_command, build_replace_video_audio_command
+        from pandrator.logic.dubbing.video_muxing import (
+            build_add_subtitles_command,
+            build_multi_soft_subtitle_command,
+            build_replace_video_audio_command,
+            normalize_video_resolution,
+        )
         from pandrator.logic.dubbing_handler import resolve_ffmpeg_for_burned_subtitles
         from pandrator.web.capabilities import ffmpeg_video_encoder_ids
 
@@ -3569,6 +3574,7 @@ class WorkflowHandlers:
                 destination = _next_available_path(output_dir / f"{export_name}{variant}.mp4")
                 render_destination = output_dir / f".{record.storage_key}-render-{new_id()}.mp4"
                 video_track_artifacts: list[Artifact] = []
+                output_video_resolution = "source"
                 try:
                     if subtitle_mode == "soft" and selected_subtitles:
                         tracks = []
@@ -3620,6 +3626,9 @@ class WorkflowHandlers:
                         burn_audio_bitrate = str(settings.get("burn_audio_bitrate") or "192k").strip()
                         if burn_audio_codec == "aac" and not re.fullmatch(r"[1-9][0-9]*(?:[kKmM])?", burn_audio_bitrate):
                             raise ValueError("Burned-subtitle AAC bitrate must look like 192k or 2M.")
+                        output_video_resolution = normalize_video_resolution(
+                            settings.get("burn_video_resolution", "source")
+                        )
                         command = build_add_subtitles_command(
                             str(working_video),
                             str(burn_path),
@@ -3628,6 +3637,7 @@ class WorkflowHandlers:
                             subtitle_language=str(settings.get("target_language") or "und"),
                             ffmpeg_executable=burn_ffmpeg,
                             video_encoder=burn_video_encoder,
+                            video_resolution=output_video_resolution,
                             video_quality=settings.get("burn_video_quality", 18),
                             video_speed=str(settings.get("burn_video_speed") or "balanced"),
                             audio_codec=burn_audio_codec,
@@ -3667,6 +3677,7 @@ class WorkflowHandlers:
                         metadata={
                             "audio_mode": audio_mode,
                             "subtitle_mode": subtitle_mode,
+                            "video_resolution": output_video_resolution,
                             "subtitle_tracks": subtitle_track_metadata,
                             "mix": {
                                 "source_gain_db": settings.get("mix_source_gain_db", 0.0),

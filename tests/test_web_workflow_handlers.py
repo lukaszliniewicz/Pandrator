@@ -1188,6 +1188,7 @@ class WebWorkflowHandlerTests(unittest.TestCase):
                     export_settings.update(
                         {
                             "burn_video_encoder": "libx264",
+                            "burn_video_resolution": "720p",
                             "burn_video_quality": 23,
                             "burn_video_speed": "fast",
                             "burn_audio_codec": "aac",
@@ -1225,6 +1226,8 @@ class WebWorkflowHandlerTests(unittest.TestCase):
                     self.assertEqual(2, len(exported.metadata_json.get("subtitle_tracks", [])))
                     self.assertTrue(all(item.get("artifact_id") for item in exported.metadata_json["subtitle_tracks"]))
                 if subtitle_mode == "burned":
+                    video_stream = next(stream for stream in streams if stream["codec_type"] == "video")
+                    self.assertEqual((1280, 720), (video_stream["width"], video_stream["height"]))
                     self.assertTrue(output.name.endswith("_burned.mp4"))
                     source_frame = subprocess.run(
                         ["ffmpeg", "-v", "error", "-ss", "0.2", "-i", str(media_path), "-frames:v", "1", "-f", "md5", "-"],
@@ -1240,6 +1243,7 @@ class WebWorkflowHandlerTests(unittest.TestCase):
                     ).stdout
                     self.assertNotEqual(source_frame, burned_frame)
                     self.assertEqual("burned", exported.metadata_json.get("subtitle_mode"))
+                    self.assertEqual("720p", exported.metadata_json.get("video_resolution"))
                     with self.database.session() as session:
                         overlay = session.scalar(
                             select(Artifact).where(

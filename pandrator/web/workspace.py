@@ -255,6 +255,7 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "subtitle_selection": "translation",
         "subtitle_format": "srt",
         "burn_video_encoder": "libx264",
+        "burn_video_resolution": "source",
         "burn_video_quality": 18,
         "burn_video_speed": "balanced",
         "burn_audio_codec": "copy",
@@ -604,8 +605,9 @@ class WorkspaceSettingsService:
                         value.pop("bitrate", None)
                     else:
                         for key in (
-                            "subtitle_mode", "burn_video_encoder", "burn_video_quality",
-                            "burn_video_speed", "burn_audio_codec", "burn_audio_bitrate",
+                            "subtitle_mode", "burn_video_encoder", "burn_video_resolution",
+                            "burn_video_quality", "burn_video_speed", "burn_audio_codec",
+                            "burn_audio_bitrate",
                         ):
                             value.pop(key, None)
                     if not output_context["has_source_audio"]:

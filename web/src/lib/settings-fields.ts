@@ -40,6 +40,7 @@ const CHOICES: Record<string, SettingOption[]> = {
   subtitle_selection: [option('translation', 'Translation only'), option('source', 'Source or corrected only'), option('dual', 'Source and translation')],
   subtitle_format: [option('srt', 'SubRip (.srt)'), option('vtt', 'WebVTT (.vtt)')],
   burn_video_encoder: [option('libx264', 'H.264 software'), option('libx265', 'H.265 software'), option('h264_vaapi', 'H.264 VA-API'), option('hevc_vaapi', 'H.265 VA-API'), option('h264_amf', 'H.264 AMD AMF'), option('hevc_amf', 'H.265 AMD AMF'), option('h264_nvenc', 'H.264 NVIDIA NVENC'), option('hevc_nvenc', 'H.265 NVIDIA NVENC'), option('h264_qsv', 'H.264 Intel Quick Sync'), option('hevc_qsv', 'H.265 Intel Quick Sync')],
+  burn_video_resolution: [option('source', 'Source resolution'), option('360p'), option('480p'), option('720p', '720p (HD)'), option('1080p', '1080p (Full HD)'), option('1440p', '1440p (QHD)'), option('2160p', '2160p (4K)')],
   burn_video_speed: [option('fast', 'Fast'), option('balanced', 'Balanced'), option('quality', 'Quality')],
   burn_audio_codec: [option('copy', 'Copy without transcoding'), option('aac', 'Transcode to AAC')],
   fishs2_latency: [option('low', 'Low latency'), option('balanced', 'Balanced'), option('normal', 'Quality')],

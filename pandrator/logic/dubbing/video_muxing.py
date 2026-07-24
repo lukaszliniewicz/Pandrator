@@ -32,6 +32,34 @@ BURN_VIDEO_ENCODERS = {
     "hevc_vaapi",
 }
 
+VIDEO_RESOLUTION_HEIGHTS = {
+    "source": None,
+    "360p": 360,
+    "480p": 480,
+    "720p": 720,
+    "1080p": 1080,
+    "1440p": 1440,
+    "2160p": 2160,
+}
+
+
+def normalize_video_resolution(value: str | int | None) -> str:
+    """Normalize an output-height preset used by video transcodes."""
+
+    normalized = str(value or "source").strip().lower()
+    normalized = {
+        "auto": "source",
+        "native": "source",
+        "original": "source",
+        "original resolution": "source",
+    }.get(normalized, normalized)
+    if normalized.isdigit():
+        normalized = f"{normalized}p"
+    if normalized not in VIDEO_RESOLUTION_HEIGHTS:
+        choices = ", ".join(VIDEO_RESOLUTION_HEIGHTS)
+        raise ValueError(f"Video resolution must be one of: {choices}.")
+    return normalized
+
 
 def default_vaapi_render_device() -> str | None:
     """Return the first Linux render node suitable for FFmpeg VA-API output."""
@@ -55,6 +83,7 @@ def build_add_subtitles_command(
     audio_codec: str = "copy",
     audio_bitrate: str = "192k",
     hardware_device: str | None = None,
+    video_resolution: str | int | None = "source",
 ) -> list[str]:
     """Build the FFmpeg command for soft or burned subtitle output."""
     normalized_mode = str(subtitle_mode or "soft").strip().lower()
@@ -78,19 +107,26 @@ def build_add_subtitles_command(
         normalized_audio = str(audio_codec or "copy").strip().lower()
         if normalized_audio not in {"copy", "aac"}:
             raise ValueError("Burned-subtitle audio handling must be copy or AAC.")
+        normalized_resolution = normalize_video_resolution(video_resolution)
 
         command = [
             ffmpeg_executable,
             "-y",
         ]
-        subtitle_filter = f"subtitles=filename='{escaped_subtitle_path}'"
+        filters = []
+        target_height = VIDEO_RESOLUTION_HEIGHTS[normalized_resolution]
+        if target_height is not None:
+            # Scale first so libass rasterizes subtitles at the requested output
+            # size instead of enlarging a low-resolution subtitle bitmap.
+            filters.append(f"scale=-2:{target_height}:flags=lanczos")
+        filters.append(f"subtitles=filename='{escaped_subtitle_path}'")
         if normalized_encoder.endswith("_vaapi"):
             resolved_device = str(hardware_device or default_vaapi_render_device() or "").strip()
             if not resolved_device:
                 raise ValueError("VA-API encoding requires an accessible /dev/dri/renderD* device.")
             command.extend(["-vaapi_device", resolved_device])
-            subtitle_filter += ",format=nv12,hwupload"
-        command.extend(["-i", synced_video_path, "-vf", subtitle_filter, "-c:v", normalized_encoder])
+            filters.extend(["format=nv12", "hwupload"])
+        command.extend(["-i", synced_video_path, "-vf", ",".join(filters), "-c:v", normalized_encoder])
 
         if normalized_encoder in {"libx264", "libx265"}:
             command.extend(

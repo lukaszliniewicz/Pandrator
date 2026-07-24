@@ -335,6 +335,35 @@ Alice: hello
         self.assertIn(r"\,", filter_arg)
         self.assertIn(r"\[", filter_arg)
         self.assertIn(r"\]", filter_arg)
+        self.assertNotIn("scale=", filter_arg)
+
+    def test_build_burned_subtitle_command_scales_before_rendering_subtitles(self):
+        for resolution, expected_height in (("720p", 720), (360, 360)):
+            with self.subTest(resolution=resolution):
+                command = video_muxing.build_add_subtitles_command(
+                    synced_video_path="video.mp4",
+                    equalized_srt_path="subs.srt",
+                    temp_output_path="out.mp4",
+                    subtitle_mode="burned",
+                    video_resolution=resolution,
+                )
+
+                filter_arg = command[command.index("-vf") + 1]
+                self.assertTrue(
+                    filter_arg.startswith(
+                        f"scale=-2:{expected_height}:flags=lanczos,subtitles=filename="
+                    )
+                )
+
+    def test_build_burned_subtitle_command_rejects_unknown_resolution(self):
+        with self.assertRaisesRegex(ValueError, "Video resolution must be one of"):
+            video_muxing.build_add_subtitles_command(
+                "video.mp4",
+                "subs.srt",
+                "out.mp4",
+                subtitle_mode="burned",
+                video_resolution="900p",
+            )
 
     def test_build_burned_subtitle_command_supports_vaapi_quality_and_aac(self):
         command = video_muxing.build_add_subtitles_command(

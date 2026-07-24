@@ -109,12 +109,15 @@ test('Create export saves the visible burned-subtitle selection before submittin
   await page.goto(`/sessions/${session.id}/output`);
   await page.getByLabel('Audio result').selectOption('preserve');
   await page.locator('label').filter({ hasText: /^Subtitles/ }).locator('select').selectOption('burned');
+  await page.getByLabel('Output resolution').selectOption('720p');
   await page.getByRole('button', { name: 'Create export' }).click();
   await expect(page.getByText(/Export burned-e was submitted/)).toBeVisible();
 
   expect(requests).toEqual(['save', 'export']);
   const saved = await page.request.get(`/api/v1/sessions/${session.id}/settings/output`);
-  expect((await saved.json()).override.subtitle_mode).toBe('burned');
+  const savedSettings = await saved.json();
+  expect(savedSettings.override.subtitle_mode).toBe('burned');
+  expect(savedSettings.override.burn_video_resolution).toBe('720p');
 });
 
 test('Create export rebuilds a completed assembly when synchronization settings changed', async ({ page }) => {
