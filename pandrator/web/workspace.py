@@ -222,6 +222,7 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "speech_block_merge_threshold": 250,
     },
     "audio": {
+        "audio_verification_mode": "off",
         "sentence_silence_ms": 250,
         "paragraph_silence_ms": 700,
         "fade_enabled": False,
@@ -1058,6 +1059,7 @@ class GenerationService:
                             "synthesized_text": (artifacts_by_id.get(take.artifact_id).metadata_json or {}).get("synthesized_text") if take.artifact_id and artifacts_by_id.get(take.artifact_id) else None,
                             "llm_optimized": bool((artifacts_by_id.get(take.artifact_id).metadata_json or {}).get("llm_optimized")) if take.artifact_id and artifacts_by_id.get(take.artifact_id) else False,
                             "llm_model": (artifacts_by_id.get(take.artifact_id).metadata_json or {}).get("llm_model") if take.artifact_id and artifacts_by_id.get(take.artifact_id) else None,
+                            "audio_verification": (artifacts_by_id.get(take.artifact_id).metadata_json or {}).get("audio_verification") if take.artifact_id and artifacts_by_id.get(take.artifact_id) else None,
                         }
                         for take in takes_by_segment.get(item.id, [])
                     ],

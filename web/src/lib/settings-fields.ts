@@ -19,6 +19,7 @@ export const LANGUAGE_OPTIONS: SettingOption[] = [
 ];
 
 const CHOICES: Record<string, SettingOption[]> = {
+  audio_verification_mode: [option('off', 'Off'), option('signal', 'Flag suspicious raw audio')],
   stt_engine: [option('whisper', 'Whisper large-v3'), option('parakeet', 'Parakeet 0.6B v3'), option('moss', 'MOSS Transcribe-Diarize 0.9B')],
   stt_model_quantization: [option('f16', 'FP16 (full precision)'), option('q8_0', 'Q8_0'), option('q5_0', 'Q5_0'), option('q4_k', 'Q4_K')],
   stt_compute_backend: [option('auto', 'Automatic'), option('cpu', 'CPU'), option('cuda', 'CUDA'), option('vulkan', 'Vulkan'), option('metal', 'Apple Metal')],
@@ -88,6 +89,7 @@ const ACRONYMS: Record<string, string> = { stt: 'STT', tts: 'TTS', rvc: 'RVC', v
 
 export function settingLabel(key: string): string {
   const labels: Record<string, string> = {
+    audio_verification_mode: 'Generated-audio verification',
     llm_tts_optimization: 'Optimize each segment with an LLM',
     llm_tts_document_optimization: 'Optimize and review the document before generation',
     llm_tts_batch_size: 'Segments per inline JSON batch',

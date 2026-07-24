@@ -21,6 +21,7 @@ from pandrator.logic.dubbing.transcript_normalization import load_transcript
 from pandrator.runtime import DataPaths
 
 from .artifact_selection import canonical_stage_key, selected_artifacts
+from .audio_verification import add_run_rms_warning, run_rms_outliers, verify_audio
 from .artifacts import ArtifactService
 from .credentials import (
     TTS_SERVICE_ENVS,
@@ -243,6 +244,56 @@ class WorkflowHandlers:
         self.database = database
         self.paths = paths
         self.artifacts = ArtifactService(database, paths)
+
+    @staticmethod
+    def _verification_metadata(
+        audio,
+        synthesized_text: str,
+        settings: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        return verify_audio(audio, synthesized_text, settings)
+
+    def _finalize_run_audio_verification(self, run_id: str) -> int:
+        """Add conservative run-relative RMS warnings after all takes exist."""
+        marked_segment_ids: set[str] = set()
+        with self.database.session() as session:
+            rows = list(
+                session.execute(
+                    select(AudioTake, Artifact)
+                    .join(Artifact, AudioTake.artifact_id == Artifact.id)
+                    .where(AudioTake.generation_run_id == run_id)
+                ).all()
+            )
+            grouped: dict[tuple[str, str], list[tuple[AudioTake, Artifact, dict[str, Any]]]] = {}
+            for take, artifact in rows:
+                metadata = dict(artifact.metadata_json or {})
+                verification = metadata.get("audio_verification")
+                if not isinstance(verification, dict) or verification.get("mode") != "signal":
+                    continue
+                if verification.get("status") != "passed":
+                    marked_segment_ids.add(take.generation_segment_id)
+                key = (str(take.kind or ""), str(take.settings_hash or ""))
+                grouped.setdefault(key, []).append((take, artifact, verification))
+
+            for entries in grouped.values():
+                values = [
+                    (entry[2].get("metrics") or {}).get("rms_dbfs")
+                    for entry in entries
+                ]
+                for index, detail in run_rms_outliers(values).items():
+                    take, artifact, verification = entries[index]
+                    metadata = dict(artifact.metadata_json or {})
+                    metadata["audio_verification"] = add_run_rms_warning(verification, detail)
+                    artifact.metadata_json = metadata
+                    artifact.updated_at = utcnow()
+                    marked_segment_ids.add(take.generation_segment_id)
+
+            for segment_id in marked_segment_ids:
+                segment = session.get(GenerationSegment, segment_id)
+                if segment is not None:
+                    segment.marked = True
+                    segment.updated_at = utcnow()
+        return len(marked_segment_ids)
 
     def handlers(self):
         return {
@@ -2340,6 +2391,11 @@ class WorkflowHandlers:
             )
             if audio is None:
                 raise RuntimeError(f"Speech generation failed at segment {index}.")
+            verification = self._verification_metadata(
+                audio,
+                synthesized_text,
+                segment_tts_settings,
+            )
             take_dir = self._session_dir(session_id) / "generation" / revision_id / generation_segment_id
             take_dir.mkdir(parents=True, exist_ok=True)
             sentence_path = take_dir / f"tts-{new_id()}.wav"
@@ -2359,6 +2415,7 @@ class WorkflowHandlers:
                     "synthesized_text": synthesized_text,
                     "llm_optimized": synthesized_text != text,
                     "llm_model": optimization_model or None,
+                    **({"audio_verification": verification} if verification is not None else {}),
                 },
             )
             take_artifact_ids.append(take_artifact.id)
@@ -2373,6 +2430,8 @@ class WorkflowHandlers:
             with self.database.session() as session:
                 segment = session.get(GenerationSegment, generation_segment_id)
                 segment.status = "completed"
+                if verification is not None and verification.get("status") != "passed":
+                    segment.marked = True
                 session.add(AudioTake(generation_segment_id=generation_segment_id, artifact_id=take_artifact.id, kind="tts", status="completed", settings_hash=take_artifact.settings_hash, duration_ms=len(audio), is_active=True))
             silence_after = _default_silence_after_ms(
                 record,
@@ -2755,6 +2814,11 @@ class WorkflowHandlers:
                     take_kind = "tts"
                     parent_take_id = None
                     take_settings = segment_tts_settings
+                verification = self._verification_metadata(
+                    audio,
+                    synthesized_text,
+                    {**tts_settings, **take_settings},
+                )
                 take_dir = self._session_dir(session_id) / "generation" / plan_revision_id / segment_id
                 take_dir.mkdir(parents=True, exist_ok=True)
                 take_path = take_dir / f"{take_kind}-{new_id()}.wav"
@@ -2775,6 +2839,7 @@ class WorkflowHandlers:
                         "synthesized_text": synthesized_text,
                         "llm_optimized": operation != "rvc" and synthesized_text != text,
                         "llm_model": optimization_model or None,
+                        **({"audio_verification": verification} if verification is not None else {}),
                     },
                 )
                 if operation != "rvc":
@@ -2836,6 +2901,8 @@ class WorkflowHandlers:
                         existing_take.revision += 1
                         existing_take.created_at = utcnow()
                     segment.status = "completed"
+                    if verification is not None and verification.get("status") != "passed":
+                        segment.marked = True
                     segment.updated_at = utcnow()
                     mark_output_assemblies_stale(session, session_id, generation_run_id=run_id)
                 generated += 1
@@ -2855,6 +2922,7 @@ class WorkflowHandlers:
                         run.updated_at = utcnow()
                 raise
 
+        verification_warning_count = self._finalize_run_audio_verification(run_id)
         with self.database.session() as session:
             run = session.get(GenerationRun, run_id)
             incomplete = int(
@@ -2873,7 +2941,14 @@ class WorkflowHandlers:
             run.status = final_status
             run.updated_at = utcnow()
         progress(1.0, "Generation run complete" if final_status == "completed" else f"Generation saved; {incomplete} segment(s) remain")
-        return {"generation_run_id": run_id, "status": final_status, "generated": generated, "skipped": skipped, "remaining": incomplete}
+        return {
+            "generation_run_id": run_id,
+            "status": final_status,
+            "generated": generated,
+            "skipped": skipped,
+            "remaining": incomplete,
+            "verification_warnings": verification_warning_count,
+        }
 
     def assemble_generation_output(self, payload, progress, cancel_event):
         """Assemble the current selected takes in plan order into an immutable artifact."""

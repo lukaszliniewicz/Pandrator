@@ -541,6 +541,69 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         self.assertEqual(0.5, next(value for value, detail in updates if detail == "Generated segment 1 of 2"))
         self.assertEqual(1.0, next(value for value, detail in updates if detail == "Generated segment 2 of 2"))
 
+    def test_signal_verification_marks_a_run_relative_loud_outlier(self):
+        revision_id, segment_ids = self.handlers._store_generation_plan(
+            self.session.id,
+            [{"text": f"Sentence number {index}."} for index in range(8)],
+            settings={},
+        )
+        with self.database.session() as session:
+            run = GenerationRun(
+                session_id=self.session.id,
+                plan_revision_id=revision_id,
+                status="queued",
+                settings_snapshot_json={
+                    "text": {"llm_tts_optimization": False},
+                    "tts": {"service": "XTTS"},
+                    "audio": {"audio_verification_mode": "signal"},
+                },
+            )
+            session.add(run)
+            session.flush()
+            run_id = run.id
+        clean = Sine(220).to_audio_segment(duration=950).apply_gain(-18) + AudioSegment.silent(duration=50)
+        loud = clean.apply_gain(7)
+        generated = [clean] * 7 + [loud]
+
+        with mock.patch("pandrator.logic.tts_handler.text_to_audio", side_effect=generated):
+            result = self.handlers.run_generation(
+                {"generation_run_id": run_id, "operation": "generate"},
+                self.progress,
+                threading.Event(),
+            )
+
+        self.assertEqual(1, result["verification_warnings"])
+        with self.database.session() as session:
+            segments = list(
+                session.scalars(
+                    select(GenerationSegment)
+                    .where(GenerationSegment.id.in_(segment_ids))
+                    .order_by(GenerationSegment.ordinal)
+                ).all()
+            )
+            self.assertFalse(any(item.marked for item in segments[:-1]))
+            self.assertTrue(segments[-1].marked)
+            loud_segment_id = segments[-1].id
+            take = session.scalar(
+                select(AudioTake).where(
+                    AudioTake.generation_run_id == run_id,
+                    AudioTake.generation_segment_id == loud_segment_id,
+                )
+            )
+            artifact = session.get(Artifact, take.artifact_id)
+            verification = artifact.metadata_json["audio_verification"]
+            self.assertEqual("warning", verification["status"])
+            self.assertIn("run_rms_outlier", {item["code"] for item in verification["issues"]})
+        listed = GenerationService(
+            self.database,
+            JobQueue(self.database),
+            WorkspaceSettingsService(self.database),
+        ).list_segments(self.session.id)
+        loud_take = next(
+            item for item in listed["items"] if item["id"] == loud_segment_id
+        )["takes"][0]
+        self.assertEqual("warning", loud_take["audio_verification"]["status"])
+
     def test_individual_regeneration_overwrites_the_take_within_the_same_run(self):
         revision_id, segment_ids = self.handlers._store_generation_plan(
             self.session.id,

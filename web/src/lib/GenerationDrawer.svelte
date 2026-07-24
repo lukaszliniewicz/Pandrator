@@ -431,6 +431,19 @@
     return owner ? `${owner.label} · ${String(take.kind || 'audio').toUpperCase()}` : `Legacy take · ${String(take.kind || 'audio').toUpperCase()}`;
   }
 
+  function verificationTitle(take: any) {
+    const verification = take?.audio_verification;
+    if (!verification) return '';
+    const issues = (verification.issues ?? []).map((item: any) => String(item.message || item.code)).filter(Boolean);
+    const metrics = verification.metrics ?? {};
+    const measurements = [
+      metrics.rms_dbfs != null ? `RMS ${Number(metrics.rms_dbfs).toFixed(1)} dBFS` : '',
+      metrics.peak_dbfs != null ? `peak ${Number(metrics.peak_dbfs).toFixed(1)} dBFS` : '',
+      metrics.tail_rms_dbfs != null ? `tail ${Number(metrics.tail_rms_dbfs).toFixed(1)} dBFS` : ''
+    ].filter(Boolean).join(', ');
+    return [...issues, measurements].filter(Boolean).join(' ');
+  }
+
   async function deleteSelectedRun() {
     if (!selectedRun || ['queued', 'running', 'pausing', 'cancel_requested'].includes(selectedRun.status)) return;
     if (!window.confirm(`Delete ${selectedRun.label} and all audio takes created by it?`)) return;
@@ -823,6 +836,12 @@
                       <select value={activeTake(item).id} onchange={(event) => selectTake(item, (event.currentTarget as HTMLSelectElement).value)} class="mini mt-1 w-full">
                         {#each item.takes as take}<option value={take.id}>{takeLabel(take)} · {take.status}</option>{/each}
                       </select>
+                      {#if activeTake(item).audio_verification}
+                        <span
+                          class="verification-badge {activeTake(item).audio_verification.status}"
+                          title={verificationTitle(activeTake(item))}
+                        >Signal check: {activeTake(item).audio_verification.status}</span>
+                      {/if}
                     {:else}<span class="muted text-xs">Not generated</span>{/if}
                   </td>
                   <td><span class="status">{item.status}</span></td>
@@ -893,6 +912,7 @@
   .view-switch{display:flex;border:1px solid var(--line);border-radius:.6rem;background:var(--paper);padding:.15rem}.view-switch button{display:flex;align-items:center;gap:.3rem;border-radius:.45rem;padding:.3rem .5rem;font-size:.68rem;font-weight:700;color:var(--muted)}.view-switch button.active{background:var(--accent-soft);color:var(--ink)}
   th,td{border-bottom:1px solid var(--line);padding:.55rem;text-align:center;vertical-align:middle}tr.removed{opacity:.42}tr.selected{background:var(--accent-soft)}
   .status{font-size:.68rem;text-transform:uppercase;color:var(--muted)}.mini{border:1px solid var(--line);border-radius:.45rem;background:var(--paper);padding:.3rem .45rem;font-size:.68rem}
+  .verification-badge{display:inline-flex;margin-top:.35rem;border-radius:999px;padding:.2rem .45rem;font-size:.6rem;font-weight:750;text-transform:uppercase;background:color-mix(in srgb,var(--accent) 12%,transparent);color:var(--accent)}.verification-badge.warning{background:rgba(245,158,11,.13);color:#b45309}.verification-badge.failed{background:rgba(239,68,68,.13);color:#dc2626}
   .reading-view{font-family:Georgia,'Times New Roman',serif}.reading-heading{margin:2rem 0 .75rem;font-size:1.32rem;font-weight:700;line-height:1.35}.reading-heading button{border-radius:.3rem;text-align:left}.reading-heading.selected-heading button{background:var(--accent-soft)}.reading-heading.now-playing button{color:var(--accent)}.reading-heading button.removed{text-decoration:line-through;opacity:.42}
   .reading-paragraph{margin:0 0 1.2rem;font-size:1.02rem;line-height:1.9;white-space:normal}.reading-segment{position:relative;display:inline}.reading-sentence{display:inline;white-space:normal;border-radius:.28rem;cursor:pointer;text-align:left;transition:background .12s ease,color .12s ease}.reading-sentence:focus-visible{outline:3px solid color-mix(in srgb,var(--accent) 38%,transparent);outline-offset:2px}.reading-segment:hover .reading-sentence,.reading-segment:focus-within .reading-sentence,.reading-segment.selected-sentence .reading-sentence{background:var(--accent-soft)}.reading-segment.now-playing .reading-sentence{background:var(--action-bg);color:white;box-shadow:0 0 0 .16rem color-mix(in srgb,var(--accent) 18%,transparent)}.reading-segment.removed .reading-sentence{text-decoration:line-through;opacity:.42}.reading-actions{position:absolute;bottom:calc(100% + .32rem);left:50%;z-index:25;display:flex;gap:.18rem;border:1px solid var(--line);border-radius:.65rem;background:var(--paper-strong);padding:.22rem;box-shadow:var(--shadow);opacity:0;pointer-events:none;transform:translate(-50%,.25rem);transition:opacity .12s ease,transform .12s ease}.reading-segment:hover .reading-actions,.reading-segment:focus-within .reading-actions{opacity:1;pointer-events:auto;transform:translate(-50%,0)}.reading-actions button{display:grid;height:1.8rem;width:1.8rem;place-items:center;border-radius:.45rem;color:var(--muted)}.reading-actions button:hover:not(:disabled),.reading-actions button:focus-visible,.reading-actions button.active{background:var(--accent-soft);color:var(--accent)}.reading-actions button:disabled{opacity:.35}
   @media(prefers-reduced-motion:reduce){.generation-drawer{transition:none}}
