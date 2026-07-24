@@ -54,6 +54,12 @@ class CrispASRModel:
         return self.filename_for(self.default_quantization)
 
 
+@dataclass(frozen=True)
+class CrispASRArtifact:
+    filename: str
+    url: str
+
+
 MODELS = {
     STT_ENGINE_WHISPER: CrispASRModel(
         engine=STT_ENGINE_WHISPER,
@@ -90,6 +96,45 @@ MODELS = {
         default_quantization="q8_0",
     ),
 }
+
+VAD_ARTIFACTS = {
+    "silero": CrispASRArtifact(
+        filename="ggml-silero-v6.2.0.bin",
+        url=(
+            "https://huggingface.co/ggml-org/whisper-vad/resolve/main/"
+            "ggml-silero-v6.2.0.bin"
+        ),
+    ),
+    "firered": CrispASRArtifact(
+        filename="firered-vad.gguf",
+        url=(
+            "https://huggingface.co/cstr/firered-vad-GGUF/resolve/main/"
+            "firered-vad.gguf"
+        ),
+    ),
+    "marblenet": CrispASRArtifact(
+        filename="marblenet-vad.gguf",
+        url=(
+            "https://huggingface.co/cstr/marblenet-vad-GGUF/resolve/main/"
+            "marblenet-vad.gguf"
+        ),
+    ),
+    "whisper-vad": CrispASRArtifact(
+        filename="whisper-vad-asmr-q4_k.gguf",
+        url=(
+            "https://huggingface.co/cstr/whisper-vad-encdec-asmr-GGUF/resolve/main/"
+            "whisper-vad-asmr-q4_k.gguf"
+        ),
+    ),
+}
+
+DEFAULT_CTC_ALIGNER_ARTIFACT = CrispASRArtifact(
+    filename="canary-ctc-aligner-q4_k.gguf",
+    url=(
+        "https://huggingface.co/cstr/canary-ctc-aligner-GGUF/resolve/main/"
+        "canary-ctc-aligner-q4_k.gguf"
+    ),
+)
 
 
 MODEL_QUANTIZATION_ALIASES = {
@@ -164,32 +209,23 @@ def _model_download_url(model: CrispASRModel, filename: str) -> str:
     return f"https://huggingface.co/{model.repository}/resolve/main/{quote(filename)}"
 
 
-def _prefetch_windows_model(
+def _prefetch_windows_artifact(
     settings: dict[str, Any],
+    artifact: CrispASRArtifact,
     *,
     opener: Callable[..., Any] = urlopen,
 ) -> Path | None:
-    """Cache the selected model before CrispASR reaches its broken cmd.exe fallback."""
+    """Atomically cache an artifact before CrispASR reaches its cmd.exe fallback."""
     if platform.system() != "Windows":
         return None
 
-    engine = normalize_engine(settings.get("stt_engine") or settings.get("stt_backend"))
-    model = MODELS[engine]
-    quantization = normalize_model_quantization(
-        settings.get("stt_model_quantization")
-        or settings.get("crispasr_model_quantization")
-        or settings.get("parakeet_quantization"),
-        engine,
-    )
-    filename = model.filename_for(quantization)
     configured_cache = _cache_dir(settings)
     cache_dir = Path(configured_cache) if configured_cache else Path.home() / ".cache" / "crispasr"
-    destination = cache_dir / filename
+    destination = cache_dir / artifact.filename
     if destination.is_file() and destination.stat().st_size > 0:
         return destination
 
     cache_dir.mkdir(parents=True, exist_ok=True)
-    url = _model_download_url(model, filename)
     headers = {
         "Accept": "application/octet-stream",
         "User-Agent": f"Pandrator/{CRISPASR_VERSION}",
@@ -200,10 +236,10 @@ def _prefetch_windows_model(
 
     temporary_path: Path | None = None
     try:
-        request = Request(url, headers=headers)
+        request = Request(artifact.url, headers=headers)
         with opener(request, timeout=60) as response, tempfile.NamedTemporaryFile(
             mode="wb",
-            prefix=f"{filename}.part-",
+            prefix=f"{artifact.filename}.part-",
             dir=cache_dir,
             delete=False,
         ) as temporary:
@@ -220,7 +256,7 @@ def _prefetch_windows_model(
             expected_size = int(content_length) if content_length.isdigit() else 0
             if downloaded <= 0 or (expected_size and downloaded != expected_size):
                 raise OSError(
-                    f"Incomplete CrispASR model download for {filename}: "
+                    f"Incomplete CrispASR model download for {artifact.filename}: "
                     f"received {downloaded} of {expected_size or 'unknown'} bytes."
                 )
             temporary.flush()
@@ -233,6 +269,95 @@ def _prefetch_windows_model(
     finally:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
+
+
+def _prefetch_windows_model(
+    settings: dict[str, Any],
+    *,
+    opener: Callable[..., Any] = urlopen,
+) -> Path | None:
+    """Cache the selected transcription model on Windows."""
+    engine = normalize_engine(settings.get("stt_engine") or settings.get("stt_backend"))
+    model = MODELS[engine]
+    quantization = normalize_model_quantization(
+        settings.get("stt_model_quantization")
+        or settings.get("crispasr_model_quantization")
+        or settings.get("parakeet_quantization"),
+        engine,
+    )
+    filename = model.filename_for(quantization)
+    return _prefetch_windows_artifact(
+        settings,
+        CrispASRArtifact(filename=filename, url=_model_download_url(model, filename)),
+        opener=opener,
+    )
+
+
+def _vad_enabled(settings: dict[str, Any], engine: str) -> bool:
+    return (
+        bool(_setting(settings, "moss_vad_enabled", False))
+        if engine == STT_ENGINE_MOSS
+        else bool(settings.get("crispasr_vad_enabled", True))
+    )
+
+
+def moss_ctc_alignment_enabled(settings: dict[str, Any]) -> bool:
+    return bool(_setting(settings, "moss_ctc_alignment_enabled", True))
+
+
+def _prefetch_windows_vad_model(
+    settings: dict[str, Any],
+    *,
+    opener: Callable[..., Any] = urlopen,
+) -> Path | None:
+    engine = normalize_engine(settings.get("stt_engine") or settings.get("stt_backend"))
+    if not _vad_enabled(settings, engine):
+        return None
+
+    configured = str(settings.get("crispasr_vad_model") or "silero").strip()
+    normalized = configured.lower()
+    aliases = {
+        "": "silero",
+        "auto": "silero",
+        "default": "silero",
+        "ggml-silero-v6.2.0.bin": "silero",
+        "firered-vad": "firered",
+        "firered-vad.gguf": "firered",
+        "marblenet-vad": "marblenet",
+        "marblenet-vad.gguf": "marblenet",
+        "whisper-vad-asmr-q4_k.gguf": "whisper-vad",
+    }
+    artifact = VAD_ARTIFACTS.get(aliases.get(normalized, normalized))
+    if artifact is not None:
+        return _prefetch_windows_artifact(settings, artifact, opener=opener)
+
+    candidate = Path(configured).expanduser()
+    return candidate if candidate.is_file() else None
+
+
+def _prefetch_windows_moss_aligner(
+    settings: dict[str, Any],
+    *,
+    opener: Callable[..., Any] = urlopen,
+) -> Path | None:
+    engine = normalize_engine(settings.get("stt_engine") or settings.get("stt_backend"))
+    if engine != STT_ENGINE_MOSS or not moss_ctc_alignment_enabled(settings):
+        return None
+
+    configured = str(_setting(settings, "moss_ctc_aligner_model", "auto")).strip() or "auto"
+    if configured.lower() in {
+        "auto",
+        "canary-ctc-aligner",
+        DEFAULT_CTC_ALIGNER_ARTIFACT.filename,
+    }:
+        return _prefetch_windows_artifact(
+            settings,
+            DEFAULT_CTC_ALIGNER_ARTIFACT,
+            opener=opener,
+        )
+
+    candidate = Path(configured).expanduser()
+    return candidate if candidate.is_file() else None
 
 
 def _append_runtime_options(command: list[str], settings: dict[str, Any]) -> None:
@@ -248,10 +373,6 @@ def _append_runtime_options(command: list[str], settings: dict[str, Any]) -> Non
     device = settings.get("stt_compute_device")
     if device not in (None, "") and compute_backend not in {"auto", "cpu"}:
         command.extend(("--device", str(max(0, int(device)))))
-
-
-def moss_ctc_alignment_enabled(settings: dict[str, Any]) -> bool:
-    return bool(_setting(settings, "moss_ctc_alignment_enabled", True))
 
 
 def normalize_compute_backend(value: str | None) -> str:
@@ -293,6 +414,8 @@ def build_command(
     settings: dict[str, Any],
     *,
     executable: str = "",
+    model_path: str | os.PathLike[str] | None = None,
+    vad_model_path: str | os.PathLike[str] | None = None,
 ) -> list[str]:
     engine = normalize_engine(settings.get("stt_engine") or settings.get("stt_backend"))
     model = MODELS[engine]
@@ -313,30 +436,43 @@ def build_command(
         resolve_executable(executable),
         "--backend",
         backend,
-        "--hf-repo",
-        f"{model.repository}:{model_filename}",
-        "-m",
-        model_filename,
-        "-f",
-        str(audio_path),
-        "-of",
-        str(output_base),
-        "-osrt",
-        "-ojf",
-        "-pp",
-        "--split-on-punct",
     ]
-    _append_runtime_options(command, settings)
-    vad_enabled = (
-        bool(_setting(settings, "moss_vad_enabled", False))
-        if engine == STT_ENGINE_MOSS
-        else bool(settings.get("crispasr_vad_enabled", True))
+    if model_path is None:
+        command.extend(
+            (
+                "--hf-repo",
+                f"{model.repository}:{model_filename}",
+                "-m",
+                model_filename,
+            )
+        )
+    else:
+        # ``--hf-repo`` always asks CrispASR to fetch the model, even when an
+        # identically named file is already present in ``--cache-dir``.  Point
+        # it directly at Pandrator's completed atomic download instead.
+        command.extend(("-m", str(model_path)))
+    command.extend(
+        (
+            "-f",
+            str(audio_path),
+            "-of",
+            str(output_base),
+            "-osrt",
+            "-ojf",
+            "-pp",
+            "--split-on-punct",
+        )
     )
+    _append_runtime_options(command, settings)
+    vad_enabled = _vad_enabled(settings, engine)
     if vad_enabled:
         command.append("--vad")
-        vad_model = str(settings.get("crispasr_vad_model") or "silero").strip().lower()
-        if vad_model not in {"", "auto", "silero"}:
-            command.extend(("--vad-model", vad_model))
+        if vad_model_path is not None:
+            command.extend(("--vad-model", str(vad_model_path)))
+        else:
+            vad_model = str(settings.get("crispasr_vad_model") or "silero").strip().lower()
+            if vad_model not in {"", "auto", "silero"}:
+                command.extend(("--vad-model", vad_model))
         command.extend(
             (
                 "--vad-threshold",
@@ -435,16 +571,20 @@ def build_moss_alignment_command(
     settings: dict[str, Any],
     *,
     executable: str = "",
+    aligner_model_path: str | os.PathLike[str] | None = None,
 ) -> list[str]:
     """Build one padded-turn CTC alignment command for native MOSS output."""
 
-    aligner = str(_setting(settings, "moss_ctc_aligner_model", "auto")).strip() or "auto"
+    aligner = (
+        str(aligner_model_path)
+        if aligner_model_path is not None
+        else str(_setting(settings, "moss_ctc_aligner_model", "auto")).strip() or "auto"
+    )
     command = [
         resolve_executable(executable),
         "--align-only",
         "-am",
         aligner,
-        "--auto-download",
         "-f",
         str(audio_path),
         "--text-file",
@@ -456,6 +596,8 @@ def build_moss_alignment_command(
         "--align-output",
         str(output_path),
     ]
+    if aligner_model_path is None:
+        command.append("--auto-download")
     _append_runtime_options(command, settings)
     return command
 
@@ -467,6 +609,7 @@ def _align_moss_segments(
     *,
     executable: str,
     run_func: Callable[..., Any],
+    aligner_model_path: str | os.PathLike[str] | None = None,
 ) -> None:
     """Attach CTC words to each MOSS turn using a small acoustic margin."""
 
@@ -533,6 +676,7 @@ def _align_moss_segments(
                 aligned_path,
                 settings,
                 executable=executable,
+                aligner_model_path=aligner_model_path,
             )
             try:
                 run_func(command, check=True, capture_output=True)
@@ -601,13 +745,31 @@ def transcribe(
     session_path.mkdir(parents=True, exist_ok=True)
     temporary_base = session_path / f"{output_name}_crispasr"
     engine = normalize_engine(settings.get("stt_engine") or settings.get("stt_backend"))
+    prefetched_model: Path | None = None
+    prefetched_vad_model: Path | None = None
+    prefetched_aligner: Path | None = None
     try:
-        _prefetch_windows_model(settings)
+        prefetched_model = _prefetch_windows_model(settings)
     except (OSError, URLError, ValueError) as error:
         # Keep the native downloader as a fallback for proxies and managed
         # networks where Python and WinHTTP may have different access.
         logger.warning("Could not prefetch the CrispASR model: %s", error)
-    command = build_command(audio_path, temporary_base, settings, executable=executable)
+    try:
+        prefetched_vad_model = _prefetch_windows_vad_model(settings)
+    except (OSError, URLError, ValueError) as error:
+        logger.warning("Could not prefetch the CrispASR VAD model: %s", error)
+    try:
+        prefetched_aligner = _prefetch_windows_moss_aligner(settings)
+    except (OSError, URLError, ValueError) as error:
+        logger.warning("Could not prefetch the CrispASR CTC aligner: %s", error)
+    command = build_command(
+        audio_path,
+        temporary_base,
+        settings,
+        executable=executable,
+        model_path=prefetched_model,
+        vad_model_path=prefetched_vad_model,
+    )
     try:
         completed = run_func(command, check=True, capture_output=True)
     except (FileNotFoundError, subprocess.CalledProcessError) as error:
@@ -638,6 +800,7 @@ def transcribe(
             settings,
             executable=executable,
             run_func=run_func,
+            aligner_model_path=prefetched_aligner,
         )
     _validate_word_timestamps(
         json_generated,

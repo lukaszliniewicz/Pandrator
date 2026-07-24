@@ -96,6 +96,94 @@ class CrispASRTranscriptionTests(unittest.TestCase):
             self.assertEqual(path, existing)
             opener.assert_not_called()
 
+    def test_windows_prefetch_downloads_the_vad_companion(self):
+        class Download(io.BytesIO):
+            headers = {"Content-Length": "9"}
+
+        with tempfile.TemporaryDirectory() as cache_dir, patch.object(
+            crispasr.platform,
+            "system",
+            return_value="Windows",
+        ):
+            path = crispasr._prefetch_windows_vad_model(
+                {
+                    "stt_engine": "whisper",
+                    "crispasr_vad_enabled": True,
+                    "crispasr_cache_dir": cache_dir,
+                },
+                opener=lambda *_args, **_kwargs: Download(b"vad-model"),
+            )
+
+            self.assertEqual(path, Path(cache_dir) / "ggml-silero-v6.2.0.bin")
+            self.assertEqual(path.read_bytes(), b"vad-model")
+
+    def test_windows_prefetch_downloads_the_default_moss_ctc_aligner(self):
+        class Download(io.BytesIO):
+            headers = {"Content-Length": "7"}
+
+        with tempfile.TemporaryDirectory() as cache_dir, patch.object(
+            crispasr.platform,
+            "system",
+            return_value="Windows",
+        ):
+            path = crispasr._prefetch_windows_moss_aligner(
+                {
+                    "stt_engine": "moss",
+                    "moss_ctc_alignment_enabled": True,
+                    "crispasr_cache_dir": cache_dir,
+                },
+                opener=lambda *_args, **_kwargs: Download(b"aligner"),
+            )
+
+            self.assertEqual(path, Path(cache_dir) / "canary-ctc-aligner-q4_k.gguf")
+            self.assertEqual(path.read_bytes(), b"aligner")
+
+    def test_transcribe_uses_prefetched_model_without_forcing_a_second_download(self):
+        commands = []
+
+        def fake_run(command, **_kwargs):
+            commands.append(command)
+            output_base = Path(command[command.index("-of") + 1])
+            Path(f"{output_base}.srt").write_text(SAMPLE_SRT, encoding="utf-8")
+            Path(f"{output_base}.json").write_text(json.dumps(_crisp_json()), encoding="utf-8")
+            return SimpleNamespace(stdout=b"", stderr=b"")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model_path = Path(temp_dir) / "cache" / "ggml-large-v3.bin"
+            model_path.parent.mkdir()
+            model_path.write_bytes(b"cached-model")
+            vad_model_path = model_path.parent / "ggml-silero-v6.2.0.bin"
+            vad_model_path.write_bytes(b"vad-model")
+            with patch.object(
+                crispasr,
+                "_prefetch_windows_model",
+                return_value=model_path,
+            ), patch.object(
+                crispasr,
+                "_prefetch_windows_vad_model",
+                return_value=vad_model_path,
+            ), patch.object(
+                crispasr,
+                "_prefetch_windows_moss_aligner",
+                return_value=None,
+            ):
+                crispasr.transcribe(
+                    Path(temp_dir) / "audio.wav",
+                    session_dir=temp_dir,
+                    output_name="audio",
+                    settings={"stt_engine": "whisper"},
+                    executable="crispasr-test",
+                    run_func=fake_run,
+                )
+
+        self.assertEqual(len(commands), 1)
+        self.assertNotIn("--hf-repo", commands[0])
+        self.assertEqual(commands[0][commands[0].index("-m") + 1], str(model_path))
+        self.assertEqual(
+            commands[0][commands[0].index("--vad-model") + 1],
+            str(vad_model_path),
+        )
+
     def test_legacy_backend_names_migrate_to_crispasr_engines(self):
         self.assertEqual(stt_backends.normalize_stt_backend("whisperx"), "whisper")
         self.assertEqual(stt_backends.normalize_stt_backend("parakeet_onnx"), "parakeet")
@@ -134,6 +222,20 @@ class CrispASRTranscriptionTests(unittest.TestCase):
         self.assertEqual(align[align.index("-am") + 1], "auto")
         self.assertEqual(align[align.index("--align-granularity") + 1], "word")
         self.assertEqual(align[align.index("--gpu-backend") + 1], "vulkan")
+
+        local_aligner = crispasr.build_moss_alignment_command(
+            "turn.wav",
+            "turn.txt",
+            "turn.json",
+            {"stt_engine": "moss"},
+            executable="crispasr-test",
+            aligner_model_path="C:/cache/canary-ctc-aligner-q4_k.gguf",
+        )
+        self.assertEqual(
+            local_aligner[local_aligner.index("-am") + 1],
+            "C:/cache/canary-ctc-aligner-q4_k.gguf",
+        )
+        self.assertNotIn("--auto-download", local_aligner)
 
     def test_whisper_command_pins_f16_large_v3_and_dtw(self):
         command = crispasr.build_command(
