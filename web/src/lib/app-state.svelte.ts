@@ -27,6 +27,8 @@ class AppState {
   jobs = $state<JobRecord[]>([]);
   capabilities = $state<Record<string, any>>({});
   eventsHealthy = $state(false);
+  remoteAccess = $state(false);
+  securityWarning = $state('');
   sidebarCollapsed = $state(false);
   setupReturnVisible = $state(false);
   setupGuidance = $state('');
@@ -49,8 +51,10 @@ class AppState {
         await exchangeBootstrapToken(bootstrap);
         history.replaceState({}, '', location.pathname + location.search);
       }
-      const status = await api<{ authenticated: boolean; initialized: boolean; csrf_token?: string }>('/auth/status');
+      const status = await api<{ authenticated: boolean; initialized: boolean; csrf_token?: string; remote_access?: boolean; security_warning?: string }>('/auth/status');
       this.authenticated = status.authenticated;
+      this.remoteAccess = Boolean(status.remote_access);
+      this.securityWarning = String(status.security_warning ?? '');
       setCsrfToken(status.csrf_token);
       if (this.authenticated) {
         await this.loadEventSnapshot();

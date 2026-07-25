@@ -7,6 +7,7 @@ import hmac
 import secrets
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 
 from argon2 import PasswordHasher
@@ -55,6 +56,99 @@ class BootstrapTokenStore:
         if record is None or record.expires_at < time.monotonic():
             return False
         return hmac.compare_digest(record.digest, _token_digest(raw))
+
+
+@dataclass(slots=True)
+class LoginFailureState:
+    attempts: deque[float]
+    blocked_until: float = 0.0
+
+
+class LoginThrottle:
+    """Bound expensive remote password verification without affecting loopback."""
+
+    def __init__(
+        self,
+        *,
+        max_attempts: int = 5,
+        window_seconds: float = 300.0,
+        initial_block_seconds: float = 30.0,
+        max_block_seconds: float = 300.0,
+        max_clients: int = 4096,
+    ):
+        self.max_attempts = max(2, int(max_attempts))
+        self.window_seconds = max(10.0, float(window_seconds))
+        self.initial_block_seconds = max(1.0, float(initial_block_seconds))
+        self.max_block_seconds = max(self.initial_block_seconds, float(max_block_seconds))
+        self.max_clients = max(16, int(max_clients))
+        self._states: dict[str, LoginFailureState] = {}
+        self._lock = threading.Lock()
+
+    def _prune(self, state: LoginFailureState, now: float) -> None:
+        cutoff = now - self.window_seconds
+        while state.attempts and state.attempts[0] < cutoff:
+            state.attempts.popleft()
+
+    def retry_after(self, key: object) -> int:
+        normalized = str(key or "unknown")
+        now = time.monotonic()
+        with self._lock:
+            state = self._states.get(normalized)
+            if state is None:
+                return 0
+            self._prune(state, now)
+            if state.blocked_until <= now:
+                state.blocked_until = 0.0
+                if not state.attempts:
+                    self._states.pop(normalized, None)
+                return 0
+            return max(1, int(state.blocked_until - now + 0.999))
+
+    def record_failure(self, key: object) -> int:
+        normalized = str(key or "unknown")
+        now = time.monotonic()
+        with self._lock:
+            if normalized not in self._states and len(self._states) >= self.max_clients:
+                expired: list[str] = []
+                for client_key, existing in self._states.items():
+                    self._prune(existing, now)
+                    if not existing.attempts and existing.blocked_until <= now:
+                        expired.append(client_key)
+                for client_key in expired:
+                    self._states.pop(client_key, None)
+                if len(self._states) >= self.max_clients:
+                    oldest = min(
+                        self._states,
+                        key=lambda client_key: max(
+                            self._states[client_key].blocked_until,
+                            self._states[client_key].attempts[-1]
+                            if self._states[client_key].attempts
+                            else 0.0,
+                        ),
+                    )
+                    self._states.pop(oldest, None)
+            state = self._states.setdefault(
+                normalized,
+                LoginFailureState(attempts=deque()),
+            )
+            self._prune(state, now)
+            state.attempts.append(now)
+            if len(state.attempts) >= self.max_attempts:
+                exponent = len(state.attempts) - self.max_attempts
+                block_seconds = min(
+                    self.max_block_seconds,
+                    self.initial_block_seconds * (2**exponent),
+                )
+                state.blocked_until = max(state.blocked_until, now + block_seconds)
+            return (
+                max(1, int(state.blocked_until - now + 0.999))
+                if state.blocked_until > now
+                else 0
+            )
+
+    def reset(self, key: object) -> None:
+        with self._lock:
+            self._states.pop(str(key or "unknown"), None)
 
 
 class AuthService:

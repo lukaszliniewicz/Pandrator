@@ -7,6 +7,9 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
+CredentialBackend = Literal["database", "environment", "keyring", "file"]
+
+
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -65,6 +68,9 @@ class ProviderCreate(StrictModel):
     base_url: str | None = None
     secret_ref: str | None = None
     api_key: str | None = Field(default=None, max_length=65536)
+    credential_backend: CredentialBackend | None = None
+    credential_reference: str | None = Field(default=None, max_length=4096)
+    delete_previous_credential: bool = False
     options: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -76,12 +82,18 @@ class ProviderUpdate(StrictModel):
     secret_ref: str | None = None
     api_key: str | None = Field(default=None, max_length=65536)
     clear_api_key: bool = False
+    credential_backend: CredentialBackend | None = None
+    credential_reference: str | None = Field(default=None, max_length=4096)
+    delete_previous_credential: bool = False
     options: dict[str, Any] | None = None
 
 
 class CredentialUpdate(StrictModel):
     api_key: str | None = Field(default=None, max_length=65536)
     clear: bool = False
+    credential_backend: CredentialBackend | None = None
+    credential_reference: str | None = Field(default=None, max_length=4096)
+    delete_previous_credential: bool = False
 
 
 class PronunciationCreate(StrictModel):

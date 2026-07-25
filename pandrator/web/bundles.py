@@ -17,6 +17,7 @@ from sqlalchemy import select
 from pandrator.runtime import DataPaths
 
 from .artifacts import ArtifactService, sha256_file
+from .credentials import SecretRedactor
 from .database import Database
 from .models import Artifact, ArtifactEdge, SessionRecord
 from .sessions import SessionService
@@ -41,6 +42,7 @@ class SessionBundleService:
         self.paths = paths
         self.artifacts = ArtifactService(database, paths)
         self.sessions = SessionService(database)
+        self.secret_redactor = SecretRedactor(database, paths)
 
     def export_bundle(
         self,
@@ -92,7 +94,9 @@ class SessionBundleService:
                     "sha256": digest,
                     "state": artifact.state,
                     "settings_hash": artifact.settings_hash,
-                    "metadata": artifact.metadata_json,
+                    "metadata": self.secret_redactor.redact_value(
+                        artifact.metadata_json
+                    ),
                     "archive_path": archive_path,
                 })
                 files.append((path, archive_path))

@@ -20,7 +20,7 @@ from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.database import SCHEMA_HEAD, Database, sqlite_url, upgrade_database
 from pandrator.web.jobs import JobQueue, Worker, noop_handler
 from pandrator.web.legacy_migration import import_legacy_data
-from pandrator.web.models import DocumentRevision, GenerationPlan, GenerationPlanRevision, GenerationSegment, Job, JobEvent, ProviderModel, Segment, SessionRecord, utcnow
+from pandrator.web.models import Artifact, DocumentRevision, GenerationPlan, GenerationPlanRevision, GenerationSegment, Job, JobEvent, ProviderModel, Segment, SessionRecord, SessionSource, SourceAsset, SourceRecord, utcnow
 from pandrator.web.sessions import SessionService
 from tests.web_test_support import prepare_web_test_data_root
 
@@ -170,6 +170,93 @@ class SchemaUpgradeTests(unittest.TestCase):
             self.assertNotIn(secret, setting[0])
             self.assertEqual("db:shared:openai", json.loads(setting[0])["provider_configs"][0]["secret_ref"])
 
+    def test_legacy_sources_are_promoted_once_by_the_marked_migration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "pandrator.sqlite3"
+            upgrade_database(database_path)
+            config = Config()
+            config.set_main_option(
+                "script_location",
+                str(
+                    Path(__file__).parents[1]
+                    / "pandrator"
+                    / "web"
+                    / "migrations"
+                ),
+            )
+            config.set_main_option("sqlalchemy.url", sqlite_url(database_path))
+            command.downgrade(config, "0021_query_path_indexes")
+
+            database = Database(database_path)
+            with database.session() as session:
+                workspace = SessionRecord(
+                    name="Legacy source",
+                    storage_key="legacy-source",
+                )
+                session.add(workspace)
+                session.flush()
+                artifact = Artifact(
+                    session_id=workspace.id,
+                    kind="text",
+                    role="upload",
+                    relative_path="uploads/legacy-source.txt",
+                    mime_type="text/plain",
+                    size_bytes=12,
+                    content_hash="legacy-source-hash",
+                )
+                session.add(artifact)
+                session.flush()
+                source = SourceRecord(
+                    session_id=workspace.id,
+                    kind="text",
+                    display_name="Legacy source.txt",
+                    artifact_id=artifact.id,
+                )
+                session.add(source)
+                session.flush()
+                session_id = workspace.id
+                artifact_id = artifact.id
+                source_id = source.id
+            database.dispose()
+
+            upgrade_database(database_path)
+            database = Database(database_path)
+            with database.session() as session:
+                asset = session.scalar(
+                    select(SourceAsset).where(
+                        SourceAsset.artifact_id == artifact_id
+                    )
+                )
+                self.assertIsNotNone(asset)
+                self.assertEqual("Legacy source.txt", asset.display_name)
+                self.assertEqual(
+                    source_id,
+                    asset.metadata_json["legacy_source_id"],
+                )
+                attachment = session.scalar(
+                    select(SessionSource).where(
+                        SessionSource.session_id == session_id,
+                        SessionSource.source_asset_id == asset.id,
+                    )
+                )
+                self.assertIsNotNone(attachment)
+                self.assertEqual("primary", attachment.role)
+                counts_before = (
+                    session.scalar(select(func.count()).select_from(SourceAsset)),
+                    session.scalar(select(func.count()).select_from(SessionSource)),
+                )
+            database.dispose()
+
+            upgrade_database(database_path)
+            database = Database(database_path)
+            with database.session() as session:
+                counts_after = (
+                    session.scalar(select(func.count()).select_from(SourceAsset)),
+                    session.scalar(select(func.count()).select_from(SessionSource)),
+                )
+            database.dispose()
+            self.assertEqual(counts_before, counts_after)
+
 
 class LegacyMigrationTests(unittest.TestCase):
     def _legacy_fixture(self, root: Path):
@@ -277,7 +364,17 @@ class LegacyMigrationTests(unittest.TestCase):
                 self.assertTrue(model.is_default)
             database.dispose()
 
-            second = import_legacy_data(paths)
+            marker = json.loads(paths.migration_marker.read_text(encoding="utf-8"))
+            self.assertEqual(SCHEMA_HEAD, marker["web_schema"])
+            self.assertEqual(1, marker["generation_promotion_version"])
+            with mock.patch(
+                "pandrator.web.legacy_migration._legacy_session_rows",
+                side_effect=AssertionError("completed imports must not rescan legacy sessions"),
+            ), mock.patch(
+                "pandrator.web.legacy_migration._import_generation",
+                side_effect=AssertionError("completed imports must not re-promote generation data"),
+            ):
+                second = import_legacy_data(paths)
             self.assertEqual(second["completed_at"], result["completed_at"])
 
 

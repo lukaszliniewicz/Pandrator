@@ -1,3 +1,11 @@
+"""Deprecated Qt-era state store retained for compatibility and migration.
+
+The browser application database in :mod:`pandrator.web.models` is the
+authoritative state model. Existing dubbing compatibility code and migration
+tests may continue to read or write this module until the Qt cutover gates are
+complete, but new web features must not depend on it.
+"""
+
 import datetime
 import copy
 import hashlib
@@ -22,6 +30,8 @@ from .source_media import (
 
 STATE_DB_FILENAME = "pandrator_state.sqlite3"
 SCHEMA_VERSION = 3
+LEGACY_API_STATUS = "deprecated"
+LEGACY_API_PURPOSE = "Qt compatibility and forward migration only"
 
 OUTPUTS_DIRNAME = "Outputs"
 TRASH_DIRNAME = ".trash"

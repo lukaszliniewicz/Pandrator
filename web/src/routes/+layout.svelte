@@ -5,7 +5,7 @@
   import type { Snippet } from 'svelte';
   import {
     Activity, AudioLines, AudioWaveform, ChevronLeft, ChevronRight, ExternalLink, FolderClock,
-    Github, Home, Languages, Library, LogOut, Menu, Mic2, Moon, ServerCog, Settings2, Sun, X
+    Github, Home, Languages, Library, LogOut, Menu, Mic2, Moon, ServerCog, Settings2, ShieldAlert, Sun, X
   } from '@lucide/svelte';
   import { appState } from '$lib/app-state.svelte';
 
@@ -64,6 +64,7 @@
   <main class="grid min-h-screen place-items-center p-6">
     <form onsubmit={(event) => { event.preventDefault(); login(); }} class="surface w-full max-w-md rounded-[2rem] p-9">
       <div class="mb-7 flex items-center gap-4"><img src="/pandrator-logo.png" alt="Pandrator" class="size-12 rounded-2xl border border-[var(--line)] object-cover"/><div><div class="eyebrow">Pandrator</div><h1 class="mt-1 text-2xl font-semibold">Open your workspace</h1></div></div>
+      {#if appState.securityWarning}<div role="alert" class="mb-5 flex items-start gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-xs leading-relaxed"><ShieldAlert class="mt-0.5 shrink-0" size={16}/><span>{appState.securityWarning}</span></div>{/if}
       <label class="text-sm font-semibold">Owner password<input bind:value={password} type="password" autocomplete="current-password" class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"/></label>
       {#if loginError || appState.error}<p class="mt-3 text-sm text-red-500">{loginError || appState.error}</p>{/if}
       <button class="mt-6 w-full rounded-xl bg-[var(--accent)] px-4 py-3 font-semibold text-white">Sign in</button>
@@ -85,7 +86,7 @@
       </div>
     </aside>
     <div class="content-column flex min-h-screen min-w-0 flex-col md:col-start-2">
-      <main class="min-w-0 flex-1 px-5 pb-12 pt-20 sm:px-8 md:px-10 md:pt-9 xl:px-14">{@render children()}</main>
+      <main class="min-w-0 flex-1 px-5 pb-12 pt-20 sm:px-8 md:px-10 md:pt-9 xl:px-14">{#if appState.securityWarning}<div role="alert" class="mb-5 flex items-start gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-xs leading-relaxed"><ShieldAlert class="mt-0.5 shrink-0" size={16}/><span>{appState.securityWarning}</span></div>{/if}{@render children()}</main>
       <footer class="app-footer mx-5 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] py-5 text-xs sm:mx-8 md:mx-10 xl:mx-14"><span class="muted">Pandrator · created by Łukasz Liniewicz</span><a href="https://github.com/lukaszliniewicz/Pandrator" target="_blank" rel="noreferrer" class="inline-flex items-center gap-1.5 font-semibold text-[var(--accent)]"><Github size={14}/> Source on GitHub</a></footer>
     </div>
   </div>

@@ -21,6 +21,8 @@ run-worker = "python -m pandrator worker"
 test-web-foundation = "python -m unittest tests.test_web_foundation tests.test_web_supervisor"
 generate-web-contract = "python scripts/generate_web_contract.py"
 check-web-contract = "python scripts/generate_web_contract.py && npm --prefix web run generate-api && git diff --exit-code -- openapi.json web/src/lib/api.generated.ts"
+generate-requirements = "python scripts/generate_requirements.py"
+check-requirements = "python scripts/generate_requirements.py --check"
 
 [feature.smoke.dependencies]
 ffmpeg = "*"

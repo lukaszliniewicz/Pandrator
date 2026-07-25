@@ -178,6 +178,76 @@ class WebSecurityBoundaryTests(unittest.TestCase):
             finally:
                 app.extensions["pandrator"]["database"].dispose()
 
+    def test_remote_login_failures_are_throttled_but_loopback_is_not(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prepare_web_test_data_root(directory)
+            app = create_app(data_root=directory, testing=True)
+            try:
+                client = app.test_client()
+                throttle = app.extensions["pandrator"]["login_throttle"]
+                throttle.max_attempts = 2
+                throttle.initial_block_seconds = 30
+                remote = {"REMOTE_ADDR": "192.0.2.10"}
+
+                first = client.post(
+                    "/api/v1/auth/login",
+                    json={"password": "incorrect-password"},
+                    environ_overrides=remote,
+                )
+                second = client.post(
+                    "/api/v1/auth/login",
+                    json={"password": "incorrect-password"},
+                    environ_overrides=remote,
+                )
+                blocked = client.post(
+                    "/api/v1/auth/login",
+                    json={"password": "incorrect-password"},
+                    environ_overrides=remote,
+                )
+                self.assertEqual(401, first.status_code)
+                self.assertEqual(401, second.status_code)
+                self.assertIn("Retry-After", second.headers)
+                self.assertEqual(429, blocked.status_code)
+                self.assertEqual(
+                    "login_throttled",
+                    blocked.get_json()["error"]["code"],
+                )
+
+                for _index in range(4):
+                    local = client.post(
+                        "/api/v1/auth/login",
+                        json={"password": "incorrect-password"},
+                        environ_overrides={"REMOTE_ADDR": "127.0.0.1"},
+                    )
+                    self.assertEqual(401, local.status_code)
+                    self.assertNotIn("Retry-After", local.headers)
+            finally:
+                app.extensions["pandrator"]["database"].dispose()
+
+    def test_auth_status_warns_when_remote_transport_is_not_secure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prepare_web_test_data_root(directory)
+            app = create_app(data_root=directory, testing=True)
+            try:
+                client = app.test_client()
+                response = client.get(
+                    "/api/v1/auth/status",
+                    environ_overrides={"REMOTE_ADDR": "198.51.100.4"},
+                )
+                payload = response.get_json()
+                self.assertTrue(payload["remote_access"])
+                self.assertFalse(payload["secure_transport"])
+                self.assertIn("plain HTTP", payload["security_warning"])
+
+                local = client.get(
+                    "/api/v1/auth/status",
+                    environ_overrides={"REMOTE_ADDR": "::1"},
+                ).get_json()
+                self.assertFalse(local["remote_access"])
+                self.assertEqual("", local["security_warning"])
+            finally:
+                app.extensions["pandrator"]["database"].dispose()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,8 +3,9 @@
   import { api } from './api';
   import { onMount } from 'svelte';
   import GuidedTour from './GuidedTour.svelte';
+  import CredentialStorageFields, { type CredentialBackendProfile } from './CredentialStorageFields.svelte';
 
-  type Provider = { id: string; provider_key: string; label: string; base_url?: string; secret_ref?: string; enabled: boolean; options_json: Record<string, any>; revision: number; credential_configured: boolean; credential_source: string };
+  type Provider = { id: string; provider_key: string; label: string; base_url?: string; secret_ref?: string; enabled: boolean; options_json: Record<string, any>; revision: number; credential_configured: boolean; credential_source: string; credential_backend?: string; credential_reference?: string; previous_credential_retained?: boolean };
   type ProviderProfile = { id: string; label: string; provider_key: string; base_url: string; secret_ref: string; description: string; options?: Record<string, any> };
   type Model = { id: string; provider_id: string; model_id: string; is_active: boolean; is_default: boolean; default_temperature: number | null; default_reasoning_effort: string | null; input_cost_per_million: number | null; cached_input_cost_per_million: number | null; output_cost_per_million: number | null; options_json: Record<string, any>; revision: number };
   type RequestOptionRow = { id: string; key: string; value: string; type: 'text' | 'number' | 'boolean' };
@@ -12,6 +13,7 @@
   let { onback }: { onback: () => void } = $props();
   let providers = $state<Provider[]>([]);
   let profiles = $state<ProviderProfile[]>([]);
+  let credentialBackends = $state<CredentialBackendProfile[]>([]);
   let models = $state<Record<string, Model[]>>({});
   let error = $state('');
   let notice = $state('');
@@ -25,8 +27,11 @@
   let providerLabel = $state('');
   let providerKey = $state('openai');
   let providerUrl = $state('');
-  let providerSecretRef = $state('');
   let providerApiKey = $state('');
+  let providerCredentialBackend = $state('database');
+  let providerExistingCredentialBackend = $state('database');
+  let providerCredentialReference = $state('');
+  let deletePreviousCredential = $state(false);
   let removeProviderApiKey = $state(false);
   let providerEnabled = $state(true);
   let providerMetadata = $state<Record<string, any>>({});
@@ -63,12 +68,14 @@
   async function load() {
     loading = true;
     try {
-      const [providerResult, profileResult] = await Promise.all([
+      const [providerResult, profileResult, backendResult] = await Promise.all([
         api<{items: Provider[]}>('/providers'),
-        api<{items: ProviderProfile[]}>('/providers/profiles')
+        api<{items: ProviderProfile[]}>('/providers/profiles'),
+        api<{items: CredentialBackendProfile[]}>('/credential-backends')
       ]);
       providers = providerResult.items;
       profiles = profileResult.items;
+      credentialBackends = backendResult.items;
       const entries = await Promise.all(providers.map(async (provider) => [provider.id, (await api<{items: Model[]}>(`/providers/${provider.id}/models`)).items] as const));
       models = Object.fromEntries(entries);
       error = '';
@@ -86,7 +93,12 @@
     providerLabel = profile.label;
     providerKey = profile.provider_key;
     providerUrl = profile.base_url ?? '';
-    providerSecretRef = profile.secret_ref ?? '';
+    if (!editingProvider) {
+      providerCredentialBackend = 'database';
+      providerExistingCredentialBackend = 'database';
+      providerCredentialReference = '';
+      deletePreviousCredential = false;
+    }
     setStructuredOptions({ ...(profile.options ?? {}), profile_id: profile.id });
   }
 
@@ -122,6 +134,10 @@
     editingProvider = null;
     providerApiKey = '';
     removeProviderApiKey = false;
+    providerCredentialBackend = 'database';
+    providerExistingCredentialBackend = 'database';
+    providerCredentialReference = '';
+    deletePreviousCredential = false;
     providerEnabled = true;
     applyProfile(profiles.some((item) => item.id === 'custom-openai') ? 'custom-openai' : profiles[0]?.id ?? '');
     providerModal = true;
@@ -133,8 +149,11 @@
     providerLabel = provider.label;
     providerKey = provider.provider_key;
     providerUrl = provider.base_url ?? '';
-    providerSecretRef = provider.secret_ref ?? '';
     providerApiKey = '';
+    providerCredentialBackend = provider.credential_backend ?? (provider.secret_ref?.startsWith('env:') ? 'environment' : provider.secret_ref?.startsWith('keyring:') ? 'keyring' : provider.secret_ref?.startsWith('file') ? 'file' : 'database');
+    providerExistingCredentialBackend = providerCredentialBackend;
+    providerCredentialReference = provider.credential_reference ?? (provider.secret_ref?.startsWith('env:') ? provider.secret_ref.slice(4) : '');
+    deletePreviousCredential = false;
     removeProviderApiKey = false;
     providerEnabled = provider.enabled;
     setStructuredOptions(provider.options_json ?? {});
@@ -149,11 +168,19 @@
       catch { error = 'Vertex credentials must be a complete, valid Google service-account JSON key.'; return; }
     }
     const options: Record<string, any> = { ...providerMetadata, ...(providerProfileId ? { profile_id: providerProfileId } : {}), ...(requestOptionRows.some((row) => row.key.trim()) ? { request_options: requestOptionsValue() } : {}) };
-    const body = JSON.stringify({ provider_key: providerKey.trim(), label: providerLabel.trim(), enabled: providerEnabled, base_url: providerUrl.trim() || null, secret_ref: providerSecretRef.trim() || null, ...(providerApiKey.trim() ? { api_key: providerApiKey.trim() } : {}), ...(removeProviderApiKey ? { clear_api_key: true } : {}), options });
+    const credential = removeProviderApiKey ? { clear_api_key: true } : {
+      credential_backend: providerCredentialBackend,
+      credential_reference: providerCredentialReference.trim() || null,
+      delete_previous_credential: deletePreviousCredential,
+      ...(providerApiKey.trim() ? { api_key: providerApiKey.trim() } : {})
+    };
+    const body = JSON.stringify({ provider_key: providerKey.trim(), label: providerLabel.trim(), enabled: providerEnabled, base_url: providerUrl.trim() || null, ...credential, options });
     try {
       if (editingProvider) {
-        await api(`/providers/${editingProvider.id}`, { method: 'PATCH', headers: { 'If-Match': `"${editingProvider.revision}"` }, body });
-        notice = `Updated ${providerLabel.trim()}.`;
+        const updated = await api<Provider>(`/providers/${editingProvider.id}`, { method: 'PATCH', headers: { 'If-Match': `"${editingProvider.revision}"` }, body });
+        notice = updated.previous_credential_retained && providerCredentialBackend !== providerExistingCredentialBackend
+          ? `Updated ${providerLabel.trim()}. The previous credential was retained.`
+          : `Updated ${providerLabel.trim()}.`;
       } else {
         const created = await api<Provider>('/providers', { method: 'POST', body });
         expandedProviders[created.id] = true;
@@ -192,6 +219,12 @@
       await load();
     } catch (caught) { report(caught); }
   }
+
+  const suggestedEnvironment = $derived(
+    profiles.find((item) => item.id === providerProfileId)?.secret_ref?.startsWith('env:')
+      ? profiles.find((item) => item.id === providerProfileId)!.secret_ref.slice(4)
+      : ''
+  );
 
   async function setActive(model: Model, active: boolean) {
     try {
@@ -322,16 +355,27 @@
       <label class="text-sm font-semibold">Display name<input bind:value={providerLabel} class="field"/></label>
       <label class="text-sm font-semibold">LiteLLM provider<input bind:value={providerKey} list="litellm-providers" class="field"/><datalist id="litellm-providers">{#each providerKeys as key}<option value={key}></option>{/each}</datalist></label>
       <label class="text-sm font-semibold sm:col-span-2">API base URL<input bind:value={providerUrl} placeholder="Provider default, or http://127.0.0.1:1234/v1" class="field"/><small class="muted mt-1 block font-normal">Leave blank when the LiteLLM adapter owns endpoint discovery.</small></label>
-      {#if isVertexProvider}
-        <label class="text-sm font-semibold sm:col-span-2">Google service-account JSON<textarea bind:value={providerApiKey} oninput={() => removeProviderApiKey = false} onblur={() => { try { readVertexProjectFromCredentials(); } catch {} }} rows="8" spellcheck="false" autocomplete="off" placeholder={editingProvider?.credential_configured ? 'Leave blank to keep the saved JSON credentials' : '{\n  "type": "service_account",\n  "project_id": "your-project",\n  …\n}'} class="field font-mono text-xs"></textarea><small class="muted mt-1 block font-normal">For convenience, paste the complete downloaded JSON key; Pandrator stores it write-only and fills <code>vertex_project</code> automatically. Google recommends Application Default Credentials for a local workstation, so you may leave this blank after running <code>gcloud auth application-default login</code>. Location defaults to <code>global</code>.{editingProvider?.credential_configured ? ` Current source: ${editingProvider.credential_source}.` : ''}</small></label>
-      {:else}
-        <label class="text-sm font-semibold sm:col-span-2">API key<input bind:value={providerApiKey} oninput={() => removeProviderApiKey = false} type="password" autocomplete="new-password" placeholder={editingProvider?.credential_configured ? 'Leave blank to keep the saved key' : 'Paste API key'} class="field"/><small class="muted mt-1 block font-normal">Saved in Pandrator's local database and never shown again.{editingProvider?.credential_configured ? ` Current source: ${editingProvider.credential_source}.` : ''}</small></label>
-      {/if}
-      {#if editingProvider?.credential_source === 'database'}<label class="flex items-center gap-2 text-sm sm:col-span-2"><input type="checkbox" bind:checked={removeProviderApiKey} onchange={() => { if (removeProviderApiKey) providerApiKey = ''; }} class="accent-[var(--accent)]"/> Remove the database key</label>{/if}
+      <div class="sm:col-span-2">
+        <CredentialStorageFields
+          backends={credentialBackends}
+          bind:backend={providerCredentialBackend}
+          bind:reference={providerCredentialReference}
+          bind:secret={providerApiKey}
+          bind:deletePrevious={deletePreviousCredential}
+          configured={Boolean(editingProvider?.credential_configured)}
+          currentSource={editingProvider?.credential_source ?? 'none'}
+          existingBackend={providerExistingCredentialBackend}
+          {suggestedEnvironment}
+          secretLabel={isVertexProvider ? 'Google service-account JSON' : 'API key'}
+          multiline={isVertexProvider}
+          onsecretblur={() => { if (isVertexProvider) { try { readVertexProjectFromCredentials(); } catch {} } }}
+        />
+      </div>
+      {#if editingProvider?.credential_configured || editingProvider?.secret_ref}<label class="flex items-center gap-2 text-sm sm:col-span-2"><input type="checkbox" bind:checked={removeProviderApiKey} onchange={() => { if (removeProviderApiKey) { providerApiKey = ''; deletePreviousCredential = false; } }} class="accent-[var(--accent)]"/> Remove this provider's credential reference{#if ['database', 'keyring'].includes(editingProvider?.credential_source ?? '')} and stored value{/if}</label>{/if}
       <label class="flex items-center gap-3 rounded-xl border border-[var(--line)] p-3 text-sm font-semibold sm:col-span-2"><input type="checkbox" bind:checked={providerEnabled} class="accent-[var(--accent)]"/><span><span class="block">Provider enabled</span><small class="muted font-normal">Disabled providers remain configured but cannot be selected by new runs.</small></span></label>
-      <details class="rounded-xl border border-[var(--line)] p-4 sm:col-span-2"><summary class="cursor-pointer text-sm font-semibold">Advanced LiteLLM request options</summary><label class="mt-4 block text-sm font-semibold">External credential reference<input bind:value={providerSecretRef} placeholder="env:OPENAI_API_KEY" class="field"/><small class="muted mt-1 block font-normal">Optional compatibility fallback: env:VARIABLE, keyring:service/user, or file:key. Entering credentials above switches this provider to database storage.</small></label><p class="muted mt-4 text-xs">Add only endpoint-specific options such as organization, API version, <code>vertex_project</code>, <code>vertex_location</code>, or AWS region. Pandrator controls the model, messages, credential, timeout, temperature, and reasoning fields.</p><div class="mt-4 space-y-2">{#each requestOptionRows as row (row.id)}<div class="grid gap-2 sm:grid-cols-[minmax(9rem,.8fr)_7rem_1fr_auto]"><input bind:value={row.key} list="request-option-keys" aria-label="Request option name" placeholder="Option name" class="subfield"/><select bind:value={row.type} aria-label="Request option type" class="subfield"><option value="text">Text</option><option value="number">Number</option><option value="boolean">Boolean</option></select>{#if row.type === 'boolean'}<select bind:value={row.value} aria-label={`${row.key || 'Request option'} value`} class="subfield"><option value="true">True</option><option value="false">False</option></select>{:else}<input bind:value={row.value} type={row.type === 'number' ? 'number' : 'text'} aria-label={`${row.key || 'Request option'} value`} placeholder="Value" class="subfield"/>{/if}<button type="button" onclick={() => removeRequestOption(row.id)} aria-label="Remove request option" class="btn btn-icon btn-quiet"><Trash2 size={14}/></button></div>{/each}</div><datalist id="request-option-keys">{#each requestOptionKeys as key}<option value={key}></option>{/each}</datalist><button type="button" onclick={addRequestOption} class="btn btn-sm btn-secondary mt-3"><Plus size={13}/> Add request option</button></details>
+      <details class="rounded-xl border border-[var(--line)] p-4 sm:col-span-2"><summary class="cursor-pointer text-sm font-semibold">Advanced LiteLLM request options</summary><p class="muted mt-4 text-xs">Add only endpoint-specific options such as organization, API version, <code>vertex_project</code>, <code>vertex_location</code>, or AWS region. Pandrator controls the model, messages, credential, timeout, temperature, and reasoning fields.</p><div class="mt-4 space-y-2">{#each requestOptionRows as row (row.id)}<div class="grid gap-2 sm:grid-cols-[minmax(9rem,.8fr)_7rem_1fr_auto]"><input bind:value={row.key} list="request-option-keys" aria-label="Request option name" placeholder="Option name" class="subfield"/><select bind:value={row.type} aria-label="Request option type" class="subfield"><option value="text">Text</option><option value="number">Number</option><option value="boolean">Boolean</option></select>{#if row.type === 'boolean'}<select bind:value={row.value} aria-label={`${row.key || 'Request option'} value`} class="subfield"><option value="true">True</option><option value="false">False</option></select>{:else}<input bind:value={row.value} type={row.type === 'number' ? 'number' : 'text'} aria-label={`${row.key || 'Request option'} value`} placeholder="Value" class="subfield"/>{/if}<button type="button" onclick={() => removeRequestOption(row.id)} aria-label="Remove request option" class="btn btn-icon btn-quiet"><Trash2 size={14}/></button></div>{/each}</div><datalist id="request-option-keys">{#each requestOptionKeys as key}<option value={key}></option>{/each}</datalist><button type="button" onclick={addRequestOption} class="btn btn-sm btn-secondary mt-3"><Plus size={13}/> Add request option</button></details>
     </div>
-    <footer class="mt-6 flex justify-end gap-2"><button onclick={() => providerModal = false} class="btn btn-secondary">Cancel</button><button onclick={saveProvider} class="btn btn-primary">{editingProvider ? 'Save provider' : 'Create provider'}</button></footer>
+    <footer class="mt-6 flex justify-end gap-2"><button onclick={() => providerModal = false} class="btn btn-secondary">Cancel</button><button onclick={saveProvider} class="btn btn-primary">{editingProvider && providerCredentialBackend !== providerExistingCredentialBackend ? 'Verify move and save' : editingProvider ? 'Save provider' : 'Create provider'}</button></footer>
   </div></div>
 {/if}
 

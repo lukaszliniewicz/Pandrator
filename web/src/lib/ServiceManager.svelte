@@ -2,6 +2,7 @@
   import { CheckCircle2, ExternalLink, Library, Plus, RefreshCw, Server, Settings2, X } from '@lucide/svelte';
   import { api } from './api';
   import SettingField from './SettingField.svelte';
+  import CredentialStorageFields, { type CredentialBackendProfile } from './CredentialStorageFields.svelte';
 
   const SERVICE_SETTING_KEYS: Record<string, string[]> = {
     xtts: ['temperature', 'length_penalty', 'repetition_penalty', 'top_k', 'top_p', 'do_sample', 'num_beams', 'enable_text_splitting', 'stream_chunk_size', 'gpt_cond_len', 'gpt_cond_chunk_len', 'max_ref_len', 'sound_norm_refs', 'overlap_wav_len'],
@@ -14,6 +15,7 @@
   };
 
   let payload = $state<any>({ services: [], profiles: [], value: {}, revision: 0, default_value: {}, default_service: 'XTTS', default_revision: 0, builtin_defaults: {} });
+  let credentialBackends = $state<CredentialBackendProfile[]>([]);
   let discoverOpen = $state(false);
   let baseUrl = $state('http://127.0.0.1:8000');
   let discoveryApiKey = $state('');
@@ -23,6 +25,10 @@
   let error = $state('');
   let editing = $state<any>(null);
   let editingApiKey = $state('');
+  let editingCredentialBackend = $state('database');
+  let editingExistingCredentialBackend = $state('database');
+  let editingCredentialReference = $state('');
+  let deletePreviousCredential = $state(false);
   let editingModelsText = $state('');
   let removeEditingApiKey = $state(false);
   let selectedModel = $state('');
@@ -34,7 +40,14 @@
     editing?.default_model
   ].filter(Boolean))));
 
-  async function load() { payload = await api('/services/tts?refresh=true'); }
+  async function load() {
+    const [servicePayload, backendPayload] = await Promise.all([
+      api<any>('/services/tts?refresh=true'),
+      api<{ items: CredentialBackendProfile[] }>('/credential-backends')
+    ]);
+    payload = servicePayload;
+    credentialBackends = backendPayload.items;
+  }
   async function persist(value: any) {
     await api('/settings/services.tts', { method: 'PUT', headers: { 'If-Match': `"${payload.revision}"` }, body: JSON.stringify({ value }) });
     await load();
@@ -56,7 +69,9 @@
       settings: candidate.settings ?? existing.settings ?? {}, supports_prebuilt_voices: candidate.supports_prebuilt_voices,
       secret_ref: existing.secret_ref ?? candidate.secret_ref, api_key_env: candidate.api_key_env ?? existing.api_key_env,
       credential_configured: candidate.credential_configured ?? existing.credential_configured ?? false,
-      credential_source: candidate.credential_source ?? existing.credential_source ?? 'none'
+      credential_source: candidate.credential_source ?? existing.credential_source ?? 'none',
+      credential_backend: candidate.credential_backend ?? existing.credential_backend,
+      credential_reference: candidate.credential_reference ?? existing.credential_reference
     };
   }
 
@@ -67,6 +82,10 @@
     const saved = configuredRecord(service) ?? {};
     editing = recordFrom({ ...service, ...saved }, saved);
     editingApiKey = '';
+    editingCredentialBackend = editing.credential_backend ?? (String(editing.secret_ref ?? '').startsWith('env:') ? 'environment' : String(editing.secret_ref ?? '').startsWith('keyring:') ? 'keyring' : String(editing.secret_ref ?? '').startsWith('file') ? 'file' : 'database');
+    editingExistingCredentialBackend = editingCredentialBackend;
+    editingCredentialReference = editing.credential_reference ?? (String(editing.secret_ref ?? '').startsWith('env:') ? String(editing.secret_ref).slice(4) : '');
+    deletePreviousCredential = false;
     editingModelsText = (editing.models ?? []).join('\n');
     removeEditingApiKey = false;
     selectedModel = editing.default_model || editing.models?.[0] || '';
@@ -83,7 +102,16 @@
     const manualModels = Array.from(new Set(editingModelsText.split(/[\n,;]+/).map((value) => value.trim()).filter(Boolean)));
     const defaultModel = editing.default_model || selectedModel || manualModels[0] || '';
     const models = Array.from(new Set([defaultModel, ...manualModels].filter(Boolean)));
-    const record = { ...recordFrom({ ...editing, models, default_model: defaultModel }, editing), ...(editingApiKey.trim() ? { api_key: editingApiKey.trim() } : {}), ...(removeEditingApiKey ? { clear_api_key: true } : {}) };
+    const baseRecord = recordFrom({ ...editing, models, default_model: defaultModel }, editing);
+    delete baseRecord.credential_backend;
+    delete baseRecord.credential_reference;
+    const credential = removeEditingApiKey ? { clear_api_key: true } : {
+      credential_backend: editingCredentialBackend,
+      credential_reference: editingCredentialReference.trim() || null,
+      delete_previous_credential: deletePreviousCredential,
+      ...(editingApiKey.trim() ? { api_key: editingApiKey.trim() } : {})
+    };
+    const record = { ...baseRecord, ...credential };
     await persist({ ...payload.value, provider_configs: [...(payload.value.provider_configs ?? []).filter((item: any) => item.id !== record.id && item.api_base !== record.api_base), record] });
     editing = null;
   }
@@ -137,10 +165,10 @@
 
 {#if editing}
   <div class="fixed inset-0 z-50 grid place-items-center bg-black/40 p-2 sm:p-5"><div class="surface modal-panel flex w-full max-w-3xl flex-col" role="dialog" aria-modal="true" aria-labelledby="service-settings-title"><header class="flex shrink-0 items-start justify-between gap-4 border-b border-[var(--line)] px-5 py-4 sm:px-7"><div><div class="eyebrow">TTS service</div><h2 id="service-settings-title" class="mt-1 text-2xl font-semibold">{editing.name}</h2><p class="muted mt-2 text-sm">Connection, model, and generation defaults.</p></div><button onclick={() => editing = null} class="btn btn-icon btn-secondary" aria-label="Close service settings"><X size={18}/></button></header>
-    <div class="modal-scroll p-5 sm:p-7"><section class="rounded-2xl border border-[var(--line)] p-4 sm:p-5"><h3 class="font-semibold">Connection and defaults</h3><label class="mt-4 block text-sm font-semibold">Base URL<input bind:value={editing.api_base} class="field"/></label>{#if normalizedId(editing) === 'vertex_ai'}<div class="mt-4 grid gap-3 sm:grid-cols-2"><label class="block text-sm font-semibold">Google Cloud project<input bind:value={editing.vertex_project} placeholder="Uses project_id from JSON when blank" class="field"/></label><label class="block text-sm font-semibold">Vertex location<input bind:value={editing.vertex_location} placeholder="us-central1" class="field"/></label></div><label class="mt-4 block text-sm font-semibold">Service-account JSON<textarea bind:value={editingApiKey} oninput={() => removeEditingApiKey = false} rows="7" autocomplete="off" spellcheck="false" placeholder={editing.credential_configured ? 'Leave blank to keep the shared Google credentials' : 'Paste the complete Google service-account JSON'} class="field font-mono text-xs"></textarea><small class="muted mt-1 block font-normal">Shared with the Vertex AI LLM provider. The JSON is saved locally and never shown again.{editing.credential_configured ? ` Current source: ${editing.credential_source}.` : ''}</small></label>{:else}<label class="mt-4 block text-sm font-semibold">API key<input bind:value={editingApiKey} oninput={() => removeEditingApiKey = false} type="password" autocomplete="new-password" placeholder={editing.credential_configured ? 'Leave blank to keep the saved key' : 'Optional API key'} class="field"/><small class="muted mt-1 block font-normal">Saved in Pandrator's local database and never shown again.{['openai','gemini'].includes(normalizedId(editing)) ? ' Shared with the matching LLM provider.' : ''}{editing.credential_configured ? ` Current source: ${editing.credential_source}.` : ''}</small></label>{/if}{#if editing.credential_source === 'database'}<label class="mt-3 flex items-center gap-2 text-sm"><input type="checkbox" bind:checked={removeEditingApiKey} onchange={() => { if (removeEditingApiKey) editingApiKey = ''; }} class="accent-[var(--accent)]"/> Remove the database key</label>{/if}<label class="mt-4 block text-sm font-semibold">Models / deployment names<textarea bind:value={editingModelsText} rows="4" spellcheck="false" placeholder="One model or Azure deployment name per line" class="field font-mono text-xs"></textarea><small class="muted mt-1 block font-normal">Enter one ID per line. Azure deployment names are kept exactly as entered.</small></label><label class="mt-4 block text-sm font-semibold">Default model{#if modelChoices.length}<select value={selectedModel} onchange={(event) => setDefaultModel(event.currentTarget.value)} class="field">{#each modelChoices as model}<option value={model}>{model}</option>{/each}</select>{:else}<input value={selectedModel} oninput={(event) => setDefaultModel(event.currentTarget.value)} placeholder="Model ID" class="field"/>{/if}</label>{#if settingKeys.length}<details class="mt-5 border-t border-[var(--line)] pt-4" open><summary class="cursor-pointer text-sm font-semibold">Provider defaults</summary><div class="provider-default-grid mt-4">{#each settingKeys as key}<SettingField section="tts" keyName={key} value={editing.settings?.[key] ?? payload.builtin_defaults?.[key]} onchange={(value) => setServiceSetting(key, value)} compact/>{/each}</div></details>{/if}</section>
+    <div class="modal-scroll p-5 sm:p-7"><section class="rounded-2xl border border-[var(--line)] p-4 sm:p-5"><h3 class="font-semibold">Connection and defaults</h3><label class="mt-4 block text-sm font-semibold">Base URL<input bind:value={editing.api_base} class="field"/></label>{#if normalizedId(editing) === 'vertex_ai'}<div class="mt-4 grid gap-3 sm:grid-cols-2"><label class="block text-sm font-semibold">Google Cloud project<input bind:value={editing.vertex_project} placeholder="Uses project_id from JSON when blank" class="field"/></label><label class="block text-sm font-semibold">Vertex location<input bind:value={editing.vertex_location} placeholder="us-central1" class="field"/></label></div>{/if}<div class="mt-4"><CredentialStorageFields backends={credentialBackends} bind:backend={editingCredentialBackend} bind:reference={editingCredentialReference} bind:secret={editingApiKey} bind:deletePrevious={deletePreviousCredential} configured={Boolean(editing.credential_configured)} currentSource={editing.credential_source ?? 'none'} existingBackend={editingExistingCredentialBackend} suggestedEnvironment={editing.api_key_env ?? ''} secretLabel={normalizedId(editing) === 'vertex_ai' ? 'Google service-account JSON' : 'API key'} multiline={normalizedId(editing) === 'vertex_ai'}/></div>{#if editing.credential_configured || editing.secret_ref}<label class="mt-3 flex items-center gap-2 text-sm"><input type="checkbox" bind:checked={removeEditingApiKey} onchange={() => { if (removeEditingApiKey) { editingApiKey = ''; deletePreviousCredential = false; } }} class="accent-[var(--accent)]"/> Remove this service's credential reference{#if ['database', 'keyring'].includes(editing.credential_source ?? '')} and stored value{/if}</label>{/if}<label class="mt-4 block text-sm font-semibold">Models / deployment names<textarea bind:value={editingModelsText} rows="4" spellcheck="false" placeholder="One model or Azure deployment name per line" class="field font-mono text-xs"></textarea><small class="muted mt-1 block font-normal">Enter one ID per line. Azure deployment names are kept exactly as entered.</small></label><label class="mt-4 block text-sm font-semibold">Default model{#if modelChoices.length}<select value={selectedModel} onchange={(event) => setDefaultModel(event.currentTarget.value)} class="field">{#each modelChoices as model}<option value={model}>{model}</option>{/each}</select>{:else}<input value={selectedModel} oninput={(event) => setDefaultModel(event.currentTarget.value)} placeholder="Model ID" class="field"/>{/if}</label>{#if settingKeys.length}<details class="mt-5 border-t border-[var(--line)] pt-4" open><summary class="cursor-pointer text-sm font-semibold">Provider defaults</summary><div class="provider-default-grid mt-4">{#each settingKeys as key}<SettingField section="tts" keyName={key} value={editing.settings?.[key] ?? payload.builtin_defaults?.[key]} onchange={(value) => setServiceSetting(key, value)} compact/>{/each}</div></details>{/if}</section>
       {#if editing.supports_prebuilt_voices}<a href={`/voices?view=prebuilt&service=${encodeURIComponent(editing.id)}`} class="mt-5 flex items-center gap-3 rounded-2xl border border-[var(--line)] bg-[var(--accent-soft)] p-4"><Library class="shrink-0 text-[var(--accent)]" size={20}/><span class="min-w-0 flex-1"><strong class="block text-sm">Voice preview is in the Voice Library</strong><span class="muted mt-1 block text-xs">Browse by language, compare samples, and choose defaults there.</span></span><ExternalLink size={15}/></a>{/if}
     </div>
-    <footer class="flex shrink-0 justify-end gap-2 border-t border-[var(--line)] px-5 py-4 sm:px-7"><button onclick={() => editing = null} class="btn btn-secondary">Cancel</button><button onclick={persistEditing} class="btn btn-primary">Save service settings</button></footer>
+    <footer class="flex shrink-0 justify-end gap-2 border-t border-[var(--line)] px-5 py-4 sm:px-7"><button onclick={() => editing = null} class="btn btn-secondary">Cancel</button><button onclick={persistEditing} class="btn btn-primary">{editingCredentialBackend !== editingExistingCredentialBackend ? 'Verify move and save' : 'Save service settings'}</button></footer>
   </div></div>
 {/if}
 

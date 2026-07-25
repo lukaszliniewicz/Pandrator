@@ -13,6 +13,7 @@ from typing import Any
 
 from sqlalchemy import and_, delete, func, or_, select, update
 
+from .credentials import SecretRedactor
 from .database import Database
 from .models import Job, JobEvent, ResourceClaim, utcnow
 
@@ -41,6 +42,12 @@ class JobQueue:
 
     def __init__(self, database: Database):
         self.database = database
+        self.secret_redactor = SecretRedactor(database)
+
+    def redact_diagnostic(self, value: Any) -> Any:
+        """Remove credential-shaped fields and known secret values from diagnostics."""
+
+        return self.secret_redactor.redact_value(value)
 
     @staticmethod
     def _changed_entities(job: Job, event_type: str) -> list[str]:
@@ -78,7 +85,7 @@ class JobQueue:
         return sorted(entities)
 
     def _event(self, session, job_id: str | None, event_type: str, payload: dict | None = None) -> JobEvent:
-        event_payload = dict(payload) if isinstance(payload, dict) else {}
+        event_payload = self.redact_diagnostic(payload) if isinstance(payload, dict) else {}
         job = session.get(Job, job_id) if job_id else None
         if job is not None:
             job_payload = (
@@ -102,6 +109,7 @@ class JobQueue:
             )
             if job.progress_detail and "detail" not in event_payload:
                 event_payload["detail"] = job.progress_detail
+        event_payload = self.redact_diagnostic(event_payload)
         event = JobEvent(job_id=job_id, event_type=event_type, payload_json=event_payload)
         session.add(event)
         return event
@@ -134,9 +142,9 @@ class JobQueue:
                 "job.log",
                 {
                     "level": str(level or "INFO").upper(),
-                    "message": str(message or ""),
+                    "message": self.secret_redactor.redact(message),
                     "logger": str(logger or ""),
-                    **({"trace": str(trace)} if trace else {}),
+                    **({"trace": self.secret_redactor.redact(trace)} if trace else {}),
                 },
             )
 
@@ -487,7 +495,7 @@ class JobQueue:
                 job.progress = max(float(job.progress or 0.0), requested_progress)
                 payload["progress"] = job.progress
             if detail is not None and progress_was_current:
-                job.progress_detail = str(detail)
+                job.progress_detail = self.secret_redactor.redact(detail)
                 payload["detail"] = job.progress_detail
             if payload:
                 self._event(session, job.id, "job.progress", payload)
@@ -574,7 +582,7 @@ class JobQueue:
                 raise RuntimeError("Job lease is no longer owned by this worker.")
             job.status = "succeeded"
             job.progress = 1.0
-            job.result_json = result or {}
+            job.result_json = self.redact_diagnostic(result or {})
             job.lease_owner = None
             job.lease_expires_at = None
             job.finished_at = utcnow()
@@ -602,8 +610,11 @@ class JobQueue:
                 job.progress_detail = (
                     f"Retry scheduled after attempt {job.attempts} of {job.max_attempts}"
                 )
-            job.error_code = code
-            job.error_message = message
+            safe_code = self.secret_redactor.redact(code)
+            safe_message = self.secret_redactor.redact(message)
+            safe_trace = self.secret_redactor.redact(trace) if trace else ""
+            job.error_code = safe_code
+            job.error_message = safe_message
             job.lease_owner = None
             job.lease_expires_at = None
             job.finished_at = None if retry else utcnow()
@@ -612,7 +623,7 @@ class JobQueue:
                 session,
                 job.id,
                 "job.retry_scheduled" if retry else "job.failed",
-                {"code": code, "message": message, "trace": trace or ""},
+                {"code": safe_code, "message": safe_message, "trace": safe_trace},
             )
             return True
 
@@ -721,6 +732,15 @@ class Worker:
     def stop(self) -> None:
         self.stop_event.set()
 
+    def _report_exception(self, context: str, error: BaseException) -> tuple[str, str]:
+        """Log the active exception without exposing configured credentials."""
+
+        safe_context = self.queue.secret_redactor.redact(context)
+        safe_message = self.queue.secret_redactor.redact(error)
+        safe_trace = self.queue.secret_redactor.redact(traceback.format_exc())
+        logging.error("%s: %s\n%s", safe_context, safe_message, safe_trace)
+        return safe_message, safe_trace
+
     def _update_agent_run_status(
         self,
         job: Job,
@@ -793,8 +813,8 @@ class Worker:
                             lease_generation=lease_generation,
                         )
                         heartbeat_at = now + 5.0
-            except Exception:
-                logging.exception("Worker monitor failed for job %s", job.id)
+            except Exception as error:
+                self._report_exception(f"Worker monitor failed for job {job.id}", error)
                 lease_lost_event.set()
                 cancel_event.set()
 
@@ -868,15 +888,21 @@ class Worker:
                     lease_generation=lease_generation,
                 )
         except Exception as error:
+            safe_message = self.queue.secret_redactor.redact(error)
+            safe_trace = self.queue.secret_redactor.redact(traceback.format_exc())
             canceled = self.queue.should_cancel(
                 job.id,
                 self.worker_id,
                 lease_generation=lease_generation,
             )
             if canceled:
-                logging.warning("Worker job %s stopped after cancellation: %s", job.id, error)
+                logging.warning(
+                    "Worker job %s stopped after cancellation: %s",
+                    job.id,
+                    safe_message,
+                )
             else:
-                logging.exception("Worker job %s failed", job.id)
+                logging.error("Worker job %s failed: %s\n%s", job.id, safe_message, safe_trace)
             self._update_agent_run_status(
                 job,
                 "canceled" if canceled else "failed",
@@ -893,9 +919,9 @@ class Worker:
                     job.id,
                     self.worker_id,
                     type(error).__name__,
-                    str(error),
+                    safe_message,
                     lease_generation=lease_generation,
-                    trace=traceback.format_exc(),
+                    trace=safe_trace,
                 )
         finally:
             monitor_stop.set()
@@ -942,7 +968,10 @@ class Worker:
             self._run_claimed(job, handler, lease_generation)
             return True
         except Exception as error:
-            logging.exception("Worker infrastructure failure")
+            safe_message, safe_trace = self._report_exception(
+                "Worker infrastructure failure",
+                error,
+            )
             if job is not None and lease_generation is not None:
                 try:
                     if resources_acquired:
@@ -950,9 +979,9 @@ class Worker:
                             job.id,
                             self.worker_id,
                             "worker_infrastructure_error",
-                            str(error),
+                            safe_message,
                             lease_generation=lease_generation,
-                            trace=traceback.format_exc(),
+                            trace=safe_trace,
                         )
                     else:
                         self.queue.defer_for_resources(
@@ -960,10 +989,10 @@ class Worker:
                             self.worker_id,
                             lease_generation=lease_generation,
                         )
-                except Exception:
-                    logging.exception(
-                        "Worker could not recover job %s after an infrastructure failure",
-                        job.id,
+                except Exception as recovery_error:
+                    self._report_exception(
+                        f"Worker could not recover job {job.id} after an infrastructure failure",
+                        recovery_error,
                     )
             return job is not None
         finally:
@@ -974,17 +1003,20 @@ class Worker:
                         self.worker_id,
                         lease_generation=lease_generation,
                     )
-                except Exception:
-                    logging.exception("Worker could not release resources for job %s", job.id)
+                except Exception as error:
+                    self._report_exception(
+                        f"Worker could not release resources for job {job.id}",
+                        error,
+                    )
 
     def run_forever(self, poll_interval: float = 0.5) -> None:
         while not self.stop_event.is_set():
             try:
                 processed = self.run_once()
-            except Exception:
+            except Exception as error:
                 # Defense in depth: a future regression in run_once must not
                 # silently terminate the long-lived worker.
-                logging.exception("Unexpected worker loop failure")
+                self._report_exception("Unexpected worker loop failure", error)
                 processed = False
             if not processed:
                 self.stop_event.wait(max(0.05, poll_interval))

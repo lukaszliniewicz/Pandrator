@@ -961,6 +961,12 @@ class SourceLibraryService:
             return [self._asset_payload(asset, reference_count=int(counts.get(asset.id, 0)), current_reference_count=int(current_counts.get(asset.id, 0))) for asset in assets]
 
     def backfill_legacy(self) -> int:
+        """Deprecated compatibility hook.
+
+        Migration ``0022_source_asset_backfill`` owns this promotion for normal
+        installations.  The method remains temporarily available to older
+        integrations, but application startup must not call it.
+        """
         created = 0
         with self.database.session() as session:
             records = list(session.scalars(select(SourceRecord).where(SourceRecord.artifact_id.is_not(None))).all())

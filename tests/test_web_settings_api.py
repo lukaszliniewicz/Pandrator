@@ -1,6 +1,8 @@
 import tempfile
 import unittest
 import json
+import os
+from unittest import mock
 
 from sqlalchemy import func, select
 
@@ -137,6 +139,72 @@ class SettingsApiTests(unittest.TestCase):
         )
         from pandrator.logic import tts_handler
         self.assertEqual(secret, tts_handler.get_service_config(hydrated, "openai")["api_key"])
+
+    def test_tts_environment_reference_is_verified_and_persisted_without_value(self):
+        setting = {
+            "provider_configs": [
+                {
+                    "id": "voxcpm",
+                    "name": "VoxCPM",
+                    "credential_backend": "environment",
+                    "credential_reference": "PANDRATOR_VOXCPM_TEST_KEY",
+                }
+            ]
+        }
+        with mock.patch.dict(os.environ, {"PANDRATOR_VOXCPM_TEST_KEY": ""}):
+            rejected = self.client.put(
+                "/api/v1/settings/services.tts",
+                json={"value": setting},
+                headers={**self.headers, "If-Match": '"0"'},
+            )
+        self.assertEqual(422, rejected.status_code)
+        self.assertEqual(
+            404,
+            self.client.get("/api/v1/settings/services.tts").status_code,
+        )
+
+        secret = "voxcpm-environment-secret"
+        with mock.patch.dict(
+            os.environ,
+            {"PANDRATOR_VOXCPM_TEST_KEY": secret},
+        ):
+            saved = self.client.put(
+                "/api/v1/settings/services.tts",
+                json={"value": setting},
+                headers={**self.headers, "If-Match": '"0"'},
+            )
+            self.assertEqual(200, saved.status_code, saved.get_json())
+            self.assertNotIn(secret, json.dumps(saved.get_json()))
+            service = next(
+                item
+                for item in self.client.get(
+                    "/api/v1/services/tts"
+                ).get_json()["services"]
+                if item["id"] == "voxcpm"
+            )
+            self.assertEqual("environment", service["credential_backend"])
+            self.assertEqual("environment", service["credential_source"])
+            self.assertEqual(
+                "PANDRATOR_VOXCPM_TEST_KEY",
+                service["credential_reference"],
+            )
+            database = self.app.extensions["pandrator"]["database"]
+            hydrated = hydrate_tts_settings(
+                database,
+                self.app.extensions["pandrator"]["paths"],
+                {
+                    **saved.get_json()["value"],
+                    "service": "VoxCPM",
+                },
+            )
+            from pandrator.logic import tts_handler
+
+            runtime = tts_handler.get_service_config(hydrated, "voxcpm")
+            self.assertEqual(
+                "PANDRATOR_VOXCPM_TEST_KEY",
+                runtime["api_key_env"],
+            )
+            self.assertEqual("", runtime["api_key"])
 
     def test_generic_settings_reject_inline_credentials_but_allow_token_counts(self):
         rejected = self.client.put(

@@ -196,6 +196,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/credential-backends": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listCredentialBackends"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/credentials": {
         parameters: {
             query?: never;
@@ -1503,6 +1519,21 @@ export interface components {
              * @default false
              */
             clear: boolean;
+            /**
+             * Credential Backend
+             * @default null
+             */
+            credential_backend: ("database" | "environment" | "keyring" | "file") | null;
+            /**
+             * Credential Reference
+             * @default null
+             */
+            credential_reference: string | null;
+            /**
+             * Delete Previous Credential
+             * @default false
+             */
+            delete_previous_credential: boolean;
         };
         /** ErrorBody */
         ErrorBody: {
@@ -2063,6 +2094,21 @@ export interface components {
              */
             base_url: string | null;
             /**
+             * Credential Backend
+             * @default null
+             */
+            credential_backend: ("database" | "environment" | "keyring" | "file") | null;
+            /**
+             * Credential Reference
+             * @default null
+             */
+            credential_reference: string | null;
+            /**
+             * Delete Previous Credential
+             * @default false
+             */
+            delete_previous_credential: boolean;
+            /**
              * Enabled
              * @default true
              */
@@ -2111,6 +2157,21 @@ export interface components {
              * @default false
              */
             clear_api_key: boolean;
+            /**
+             * Credential Backend
+             * @default null
+             */
+            credential_backend: ("database" | "environment" | "keyring" | "file") | null;
+            /**
+             * Credential Reference
+             * @default null
+             */
+            credential_reference: string | null;
+            /**
+             * Delete Previous Credential
+             * @default false
+             */
+            delete_previous_credential: boolean;
             /**
              * Enabled
              * @default null
@@ -2645,6 +2706,24 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Runtime capabilities */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listCredentialBackends: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Credential storage capabilities and guidance */
             200: {
                 headers: {
                     [name: string]: unknown;

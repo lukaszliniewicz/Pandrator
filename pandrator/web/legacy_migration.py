@@ -37,6 +37,7 @@ from .models import (
 
 
 MIGRATION_VERSION = 1
+GENERATION_PROMOTION_VERSION = 1
 _SECRET_KEYS = {"api_key", "token", "password", "secret", "access_token", "refresh_token"}
 
 
@@ -297,7 +298,11 @@ def _import_generation(database: Database, legacy_path: Path, record: SessionRec
 def import_legacy_data(paths: DataPaths) -> dict[str, Any]:
     paths.ensure()
     if paths.migration_marker.is_file():
-        current_schema = None
+        result = _load_json(paths.migration_marker) or {
+            "version": MIGRATION_VERSION,
+            "status": "complete",
+        }
+        current_schema: str | None = None
         if paths.database.is_file():
             try:
                 connection = sqlite3.connect(paths.database)
@@ -309,19 +314,26 @@ def import_legacy_data(paths: DataPaths) -> dict[str, Any]:
         if current_schema != SCHEMA_HEAD:
             create_metadata_backup(paths)
         upgrade_database(paths.database)
-        database = Database(paths.database)
-        with database.session() as session:
-            records = list(session.scalars(select(SessionRecord)).all())
-            for item in records:
-                session.expunge(item)
         promoted = 0
-        for record in records:
-            legacy_path = Path(record.legacy_path).resolve() if record.legacy_path else None
-            if legacy_path and legacy_path.is_dir():
-                promoted += _import_generation(database, legacy_path, record)
-        database.dispose()
-        result = _load_json(paths.migration_marker) or {"version": MIGRATION_VERSION, "status": "complete"}
-        if promoted:
+        promotion_version = int(result.get("generation_promotion_version") or 0)
+        promotion_changed = promotion_version < GENERATION_PROMOTION_VERSION
+        if promotion_changed:
+            database = Database(paths.database)
+            with database.session() as session:
+                records = list(session.scalars(select(SessionRecord)).all())
+                for item in records:
+                    session.expunge(item)
+            for record in records:
+                legacy_path = Path(record.legacy_path).resolve() if record.legacy_path else None
+                if legacy_path and legacy_path.is_dir():
+                    promoted += _import_generation(database, legacy_path, record)
+            database.dispose()
+            result["generation_promotion_version"] = GENERATION_PROMOTION_VERSION
+        if (
+            promoted
+            or promotion_changed
+            or result.get("web_schema") != SCHEMA_HEAD
+        ):
             result["promoted_generation_segments"] = int(result.get("promoted_generation_segments") or 0) + promoted
             result["web_schema"] = SCHEMA_HEAD
             _atomic_json(paths.migration_marker, result)
@@ -400,6 +412,8 @@ def import_legacy_data(paths: DataPaths) -> dict[str, Any]:
             "segments": imported_segments,
             "artifacts": imported_artifacts,
             "providers": provider_count,
+            "web_schema": SCHEMA_HEAD,
+            "generation_promotion_version": GENERATION_PROMOTION_VERSION,
             "completed_at": datetime.now(timezone.utc).isoformat(),
         }
         _atomic_json(paths.migration_marker, result)

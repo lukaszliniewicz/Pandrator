@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.bundles import SessionBundleService
+from pandrator.web.credentials import upsert_credential
 from pandrator.web.database import Database
 from pandrator.web.models import Artifact, ArtifactEdge, SessionRecord
 from pandrator.web.sessions import SessionService
@@ -99,6 +100,43 @@ class SessionBundleTests(unittest.TestCase):
             self.bundles.import_bundle(malicious)
         with self.database.session() as session:
             self.assertEqual(session.scalar(select(func.count()).select_from(SessionRecord)), 0)
+
+    def test_bundle_manifest_redacts_credential_metadata_and_known_values(self):
+        secret = "bundle-metadata-secret"
+        source_session = self.sessions.create("Secret-free bundle")
+        directory = self.paths.sessions / source_session.storage_key
+        directory.mkdir()
+        source_path = directory / "source.txt"
+        source_path.write_text("ordinary user content", encoding="utf-8")
+        self.artifacts.register(
+            source_path,
+            kind="text",
+            role="source",
+            session_id=source_session.id,
+            metadata={
+                "api_key": secret,
+                "diagnostic": f"Provider rejected {secret}",
+                "safe": "preserved",
+            },
+        )
+        with self.database.session() as session:
+            upsert_credential(
+                session,
+                "test:bundle",
+                "Bundle test",
+                secret,
+            )
+
+        bundle_path = self.paths.root / "secret-free.pandrator-session"
+        self.bundles.export_bundle(source_session.id, bundle_path)
+        with zipfile.ZipFile(bundle_path) as archive:
+            manifest_text = archive.read("manifest.json").decode("utf-8")
+            manifest = json.loads(manifest_text)
+        self.assertNotIn(secret, manifest_text)
+        metadata = manifest["artifacts"][0]["metadata"]
+        self.assertNotIn("api_key", metadata)
+        self.assertEqual("Provider rejected [REDACTED]", metadata["diagnostic"])
+        self.assertEqual("preserved", metadata["safe"])
 
     def test_path_escape_is_rejected(self):
         malicious = self.paths.root / "escape.pandrator-session"

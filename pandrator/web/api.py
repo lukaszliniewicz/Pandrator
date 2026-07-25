@@ -10,7 +10,9 @@ import time
 import uuid
 import base64
 import hashlib
+import ipaddress
 import re
+import traceback
 from functools import wraps
 from pathlib import Path
 from typing import Any
@@ -26,7 +28,7 @@ from pandrator.runtime import DataPaths
 
 from .artifact_selection import choose_artifact, clear_selection, rerun_impact, stage_history
 from .artifacts import ArtifactService, sha256_file
-from .auth import AuthService, BootstrapTokenStore
+from .auth import AuthService, BootstrapTokenStore, LoginThrottle
 from .capabilities import CapabilityService, crispasr_install_preferences
 from .credentials import (
     AUXILIARY_CREDENTIALS,
@@ -34,28 +36,31 @@ from .credentials import (
     TTS_SERVICE_ENVS,
     auxiliary_credential_key,
     auxiliary_profiles,
+    auxiliary_reference_map,
+    configure_credential_reference,
     contains_inline_secret,
+    credential_backend,
+    credential_backend_profiles,
+    credential_reference_input,
     credential_status,
     database_reference,
-    delete_credential,
+    delete_managed_reference,
     prepare_tts_settings_for_storage,
     provider_credential_key,
     llm_provider_credential_key,
     provider_credential_status,
     redact_inline_secrets,
-    reference_key,
     resolve_secret_reference,
     resolve_provider_credential,
+    set_auxiliary_reference,
     tts_credential_key,
     tts_service_credential_key,
-    upsert_credential,
     validate_provider_options,
     validate_vertex_service_account_json,
 )
 from .database import Database
 from .jobs import JobQueue
 from .legacy_migration import import_legacy_data
-from .maintenance import apply_retention
 from .models import AgentRun, AgentStep, AppSetting, AppSettingHistory, Artifact, ArtifactEdge, Document, DocumentRevision, Job, OutputAssembly, Provider, ProviderModel, Segment, SessionRecord, SourceRecord, TimedWord, TrainingRun, UsageEvent, Voice, VoiceSample, new_id, utcnow
 from .openapi import build_openapi_document
 from .parity_registry import build_registry
@@ -63,6 +68,7 @@ from .pronunciations import PronunciationLibrary
 from .schemas import AgentRunCreateRequest, BootstrapRequest, BundleExportRequest, BundleImportRequest, ChunkUploadInitialize, CredentialUpdate, GenerationPlanCreate, GenerationSegmentUpdate, GenerationStartRequest, JobCreate, LoginRequest, ModelCreate, ModelUpdate, OptimizationReviewRequest, OutcomePlanUpdate, OutputAssemblyCreateRequest, PdfEditRequest, PronunciationCreate, PronunciationUpdate, ProviderCreate, ProviderTestRequest, ProviderUpdate, RvcConvertRequest, RvcModelUploadRequest, SessionCreate, SessionSettingsUpdate, SessionUpdate, SettingUpdate, SourceAttachRequest, SourceReuseRequest, SourceUpdateRequest, SourceUrlRequest, StageSelectionUpdate, SubtitleReviewRequest, TokenCreateRequest, TrainingCreateRequest, TtsEndpointDiscoveryRequest, TtsVoicePreviewRequest, VoiceCreate, VoiceTranscriptReview
 from .sessions import RevisionConflict, SessionService
 from .subtitle_review import SubtitleReviewService
+from .startup import StartupMaintenance
 from .workflow_handlers import WorkflowHandlers
 from .workflows import WorkflowService
 from .uploads import ChunkUploadService
@@ -85,6 +91,16 @@ def _load_or_create_flask_secret(paths: DataPaths) -> str:
     except OSError:
         pass
     return secret
+
+
+def _is_loopback_address(value: object) -> bool:
+    candidate = str(value or "").split("%", 1)[0]
+    try:
+        address = ipaddress.ip_address(candidate)
+    except ValueError:
+        return False
+    mapped = getattr(address, "ipv4_mapped", None)
+    return bool(address.is_loopback or (mapped and mapped.is_loopback))
 
 
 def _model_dict(record, fields: tuple[str, ...]) -> dict[str, Any]:
@@ -113,6 +129,8 @@ def _provider_payload(provider: Provider, database: Database, paths: DataPaths) 
             shared=share_credential,
         )
     )
+    payload["credential_backend"] = credential_backend(provider.secret_ref)
+    payload["credential_reference"] = credential_reference_input(provider.secret_ref)
     payload["options_json"] = redact_inline_secrets(payload.get("options_json") or {})
     return payload
 
@@ -190,6 +208,7 @@ def create_app(
     secure_cookies: bool = False,
     bootstrap_tokens: BootstrapTokenStore | None = None,
     capability_ttl_seconds: int | None = None,
+    background_maintenance: bool | None = None,
 ) -> Flask:
     paths = DataPaths.from_value(data_root).ensure()
     migration = import_legacy_data(paths)
@@ -207,11 +226,8 @@ def create_app(
                         },
                     )
                 )
-    with database.session() as retention_session:
-        retention_record = retention_session.get(AppSetting, "web.preferences")
-        retention_days = int((retention_record.value_json or {}).get("retention_days", 30)) if retention_record and isinstance(retention_record.value_json, dict) else 30
-    apply_retention(database, paths, retention_days)
     auth = AuthService(database)
+    login_throttle = LoginThrottle()
     capability_service = CapabilityService(
         database,
         paths,
@@ -225,7 +241,6 @@ def create_app(
     workspace_settings = WorkspaceSettingsService(database)
     outcome_plans = OutcomePlanService(database)
     source_library = SourceLibraryService(database)
-    source_library.backfill_legacy()
     generation = GenerationService(
         database,
         jobs,
@@ -235,7 +250,7 @@ def create_app(
     )
     pronunciations = PronunciationLibrary(database)
     chunk_uploads = ChunkUploadService(database, paths, artifacts, source_library)
-    chunk_uploads.cleanup_expired()
+    startup_maintenance = StartupMaintenance(database, paths, chunk_uploads)
 
     def session_dir(session_id: str) -> Path:
         with database.session() as db_session:
@@ -267,6 +282,7 @@ def create_app(
         "paths": paths,
         "database": database,
         "auth": auth,
+        "login_throttle": login_throttle,
         "capabilities": capability_service,
         "jobs": jobs,
         "sessions": sessions,
@@ -278,12 +294,22 @@ def create_app(
         "generation": generation,
         "pronunciations": pronunciations,
         "chunk_uploads": chunk_uploads,
+        "startup_maintenance": startup_maintenance,
         "bootstrap": bootstrap,
         "migration": migration,
     }
 
     def error_response(code: str, message: str, status: int, details: Any = None):
-        return jsonify({"error": {"code": code, "message": message, "details": details, "request_id": getattr(g, "request_id", "")}}), status
+        return jsonify(
+            {
+                "error": {
+                    "code": code,
+                    "message": jobs.secret_redactor.redact(message),
+                    "details": jobs.redact_diagnostic(details),
+                    "request_id": getattr(g, "request_id", ""),
+                }
+            }
+        ), status
 
     def inline_credential_error(value: Any):
         if contains_inline_secret(value):
@@ -366,7 +392,9 @@ def create_app(
     def _unexpected_error(error):
         if testing:
             raise error
-        app.logger.exception("Unhandled API error")
+        safe_message = jobs.secret_redactor.redact(error)
+        safe_trace = jobs.secret_redactor.redact(traceback.format_exc())
+        app.logger.error("Unhandled API error: %s\n%s", safe_message, safe_trace)
         return error_response("internal_error", "An unexpected error occurred.", 500)
 
     @app.get("/api/v1/health")
@@ -379,7 +407,24 @@ def create_app(
 
     @app.get("/api/v1/auth/status")
     def auth_status():
-        return jsonify({"initialized": auth.initialized(), "authenticated": authenticated(), "csrf_token": session.get("csrf_token") if session.get("authenticated") else None})
+        remote_access = not _is_loopback_address(request.remote_addr)
+        warning = ""
+        if remote_access:
+            warning = (
+                "Remote access is active. Use an HTTPS reverse proxy and a strong, unique owner password."
+                if request.is_secure
+                else "Remote access is using plain HTTP. Put Pandrator behind HTTPS before sending passwords or provider credentials."
+            )
+        return jsonify(
+            {
+                "initialized": auth.initialized(),
+                "authenticated": authenticated(),
+                "csrf_token": session.get("csrf_token") if session.get("authenticated") else None,
+                "remote_access": remote_access,
+                "secure_transport": bool(request.is_secure),
+                "security_warning": warning,
+            }
+        )
 
     @app.post("/api/v1/auth/bootstrap")
     def auth_bootstrap():
@@ -394,8 +439,31 @@ def create_app(
     @app.post("/api/v1/auth/login")
     def auth_login():
         payload = LoginRequest.model_validate(request.get_json(silent=True) or {})
+        client_key = request.remote_addr or "unknown"
+        remote_access = not _is_loopback_address(client_key)
+        retry_after = login_throttle.retry_after(client_key) if remote_access else 0
+        if retry_after:
+            response, status = error_response(
+                "login_throttled",
+                "Too many failed sign-in attempts. Try again later.",
+                429,
+                {"retry_after_seconds": retry_after},
+            )
+            response.headers["Retry-After"] = str(retry_after)
+            return response, status
         if not auth.verify_password(payload.password):
-            return error_response("invalid_credentials", "The password is incorrect.", 401)
+            retry_after = login_throttle.record_failure(client_key) if remote_access else 0
+            response, status = error_response(
+                "invalid_credentials",
+                "The password is incorrect.",
+                401,
+                {"retry_after_seconds": retry_after} if retry_after else None,
+            )
+            if retry_after:
+                response.headers["Retry-After"] = str(retry_after)
+            return response, status
+        if remote_access:
+            login_throttle.reset(client_key)
         session.clear()
         session["authenticated"] = True
         session["csrf_token"] = secrets.token_urlsafe(24)
@@ -434,7 +502,7 @@ def create_app(
         force = request.args.get("refresh", "").lower() in {"1", "true", "yes"}
         return jsonify(
             capability_service.get(
-                local_mode=request.remote_addr in {"127.0.0.1", "::1"},
+                local_mode=_is_loopback_address(request.remote_addr),
                 force=force,
             )
         )
@@ -472,15 +540,21 @@ def create_app(
         for service in services:
             service_id = str(service.get("id") or service.get("name") or "").strip().lower().replace("-", "_")
             key_env = str(service.get("api_key_env") or TTS_SERVICE_ENVS.get(service_id, "")).strip()
+            secret_reference = str(
+                service.get("secret_ref")
+                or database_reference(tts_service_credential_key(service_id))
+            )
             service.update(
                 provider_credential_status(
                     database,
                     paths,
                     service_id,
-                    service.get("secret_ref") or database_reference(tts_service_credential_key(service_id)),
+                    secret_reference,
                     fallback_environment_variable=key_env,
                 )
             )
+            service["credential_backend"] = credential_backend(secret_reference)
+            service["credential_reference"] = credential_reference_input(secret_reference)
         if request.args.get("refresh", "").lower() in {"1", "true", "yes"}:
             def probe(item: dict[str, Any]) -> bool:
                 parsed = urlparse(str(item.get("api_base") or ""))
@@ -732,12 +806,24 @@ def create_app(
             return error_response("validation_error", "Invalid setting key.", 422)
         payload = SettingUpdate.model_validate(request.get_json(silent=True) or {})
         raw_etag = request.headers.get("If-Match", "").strip('W/" ')
-        with database.session() as db_session:
-            record = db_session.get(AppSetting, setting_key)
-            try:
+        try:
+            with database.session() as db_session:
+                record = db_session.get(AppSetting, setting_key)
+                if record is None:
+                    if raw_etag not in {"", "0", "*"}:
+                        return error_response("revision_conflict", "The setting does not exist at that revision.", 409)
+                else:
+                    try:
+                        expected = int(raw_etag)
+                    except ValueError:
+                        return error_response("precondition_required", "If-Match must contain the current setting revision.", 428)
+                    if expected != record.revision:
+                        return error_response("revision_conflict", "The setting changed in another client.", 409)
                 prepared_value = (
                     prepare_tts_settings_for_storage(
                         db_session,
+                        database,
+                        paths,
                         payload.value,
                         record.value_json if record is not None else {},
                     )
@@ -746,26 +832,20 @@ def create_app(
                 )
                 if setting_key != "services.tts" and contains_inline_secret(prepared_value):
                     raise ValueError("API keys and other credentials must be saved in provider settings.")
-            except ValueError as error:
-                return error_response("validation_error", str(error), 422)
-            if record is None:
-                if raw_etag not in {"", "0", "*"}:
-                    return error_response("revision_conflict", "The setting does not exist at that revision.", 409)
-                record = AppSetting(key=setting_key, value_json=prepared_value, revision=1)
-                db_session.add(record)
-            else:
-                try:
-                    expected = int(raw_etag)
-                except ValueError:
-                    return error_response("precondition_required", "If-Match must contain the current setting revision.", 428)
-                if expected != record.revision:
-                    return error_response("revision_conflict", "The setting changed in another client.", 409)
-                db_session.add(AppSettingHistory(key=record.key, value_json=record.value_json, revision=record.revision))
-                record.value_json = prepared_value
-                record.revision += 1
-                record.updated_at = utcnow()
-            db_session.flush()
-            result = {"key": record.key, "value": redact_inline_secrets(record.value_json), "revision": record.revision, "updated_at": record.updated_at.isoformat()}
+                if record is None:
+                    record = AppSetting(key=setting_key, value_json=prepared_value, revision=1)
+                    db_session.add(record)
+                else:
+                    db_session.add(AppSettingHistory(key=record.key, value_json=record.value_json, revision=record.revision))
+                    record.value_json = prepared_value
+                    record.revision += 1
+                    record.updated_at = utcnow()
+                db_session.flush()
+                result = {"key": record.key, "value": redact_inline_secrets(record.value_json), "revision": record.revision, "updated_at": record.updated_at.isoformat()}
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
+        except (OSError, RuntimeError) as error:
+            return error_response("credential_unavailable", str(error), 422)
         response = jsonify(result)
         response.headers["ETag"] = f'"{result["revision"]}"'
         return response
@@ -1593,7 +1673,7 @@ def create_app(
         # Capture the cursor before reading resources. Events committed while
         # the snapshot is assembled are replayed after this cursor.
         bounds = jobs.event_bounds()
-        local_mode = request.remote_addr in {"127.0.0.1", "::1"}
+        local_mode = _is_loopback_address(request.remote_addr)
         return jsonify(
             {
                 "cursor": bounds["latest"],
@@ -2022,6 +2102,11 @@ def create_app(
             providers = list(db_session.scalars(select(Provider).order_by(Provider.label)).all())
             return jsonify({"items": [_provider_payload(item, database, paths) for item in providers]})
 
+    @app.get("/api/v1/credential-backends")
+    @require_auth
+    def credential_backends():
+        return jsonify({"items": credential_backend_profiles()})
+
     @app.get("/api/v1/providers/profiles")
     @require_auth
     def provider_profiles():
@@ -2037,18 +2122,37 @@ def create_app(
             validate_provider_options(payload.options)
             if payload.provider_key.strip().lower() == "vertex_ai" and str(payload.api_key or "").strip():
                 validate_vertex_service_account_json(payload.api_key)
+            if payload.credential_backend is not None and payload.secret_ref:
+                raise ValueError(
+                    "Use the structured credential storage fields or a legacy secret_ref, not both."
+                )
+            if payload.secret_ref and credential_backend(payload.secret_ref) == "unavailable":
+                raise ValueError("The legacy secret_ref uses an unsupported credential scheme.")
         except ValueError as error:
             return error_response("validation_error", str(error), 422)
-        with database.session() as db_session:
-            provider = Provider(kind=payload.kind, provider_key=payload.provider_key, label=payload.label, enabled=payload.enabled, base_url=payload.base_url, secret_ref=payload.secret_ref, options_json=payload.options)
-            db_session.add(provider)
-            db_session.flush()
-            if str(payload.api_key or "").strip():
-                key = llm_provider_credential_key(provider.provider_key, provider.id, provider.options_json)
-                credential_kind = "credentials" if provider.provider_key.strip().lower() == "vertex_ai" else "API key"
-                upsert_credential(db_session, key, f"{provider.label} {credential_kind}", payload.api_key)
-                provider.secret_ref = database_reference(key)
+        try:
+            with database.session() as db_session:
+                provider = Provider(kind=payload.kind, provider_key=payload.provider_key, label=payload.label, enabled=payload.enabled, base_url=payload.base_url, secret_ref=payload.secret_ref, options_json=payload.options)
+                db_session.add(provider)
                 db_session.flush()
+                if payload.credential_backend is not None or str(payload.api_key or "").strip():
+                    key = llm_provider_credential_key(provider.provider_key, provider.id, provider.options_json)
+                    credential_kind = "credentials" if provider.provider_key.strip().lower() == "vertex_ai" else "API key"
+                    configured = configure_credential_reference(
+                        db_session,
+                        database,
+                        paths,
+                        key=key,
+                        label=f"{provider.label} {credential_kind}",
+                        current_reference="",
+                        backend=payload.credential_backend or "database",
+                        locator=payload.credential_reference or "",
+                        secret_value=payload.api_key or "",
+                    )
+                    provider.secret_ref = configured.reference
+                db_session.flush()
+        except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
+            return error_response("credential_unavailable", str(error), 422)
         result = _provider_payload(provider, database, paths)
         return jsonify(result), 201
 
@@ -2071,8 +2175,17 @@ def create_app(
             changes = payload.model_dump(exclude_unset=True)
             submitted_key = str(changes.pop("api_key", "") or "").strip()
             clear_key = bool(changes.pop("clear_api_key", False))
+            requested_backend = changes.pop("credential_backend", None)
+            requested_locator = changes.pop("credential_reference", "")
+            delete_previous = bool(changes.pop("delete_previous_credential", False))
             if submitted_key and clear_key:
                 return error_response("validation_error", "Choose either a replacement API key or remove the current key.", 422)
+            if requested_backend is not None and "secret_ref" in changes:
+                return error_response(
+                    "validation_error",
+                    "Use the structured credential storage fields or a legacy secret_ref, not both.",
+                    422,
+                )
             effective_provider_key = str(changes.get("provider_key") or provider.provider_key or "").strip().lower()
             if submitted_key and effective_provider_key == "vertex_ai":
                 try:
@@ -2085,29 +2198,60 @@ def create_app(
                 except ValueError as error:
                     return error_response("validation_error", str(error), 422)
                 changes["options_json"] = changes.pop("options")
+            if "secret_ref" in changes and changes["secret_ref"] and credential_backend(changes["secret_ref"]) == "unavailable":
+                return error_response("validation_error", "The legacy secret_ref uses an unsupported credential scheme.", 422)
+            previous_retained = False
+            configured_reference = None
+            configured_reference_changed = False
+            if requested_backend is not None or submitted_key:
+                effective_options = changes.get("options_json", provider.options_json)
+                key = llm_provider_credential_key(
+                    effective_provider_key,
+                    provider.id,
+                    effective_options,
+                )
+                credential_kind = "credentials" if effective_provider_key == "vertex_ai" else "API key"
+                try:
+                    configured = configure_credential_reference(
+                        db_session,
+                        database,
+                        paths,
+                        key=key,
+                        label=f"{changes.get('label') or provider.label} {credential_kind}",
+                        current_reference=previous_secret_ref,
+                        backend=requested_backend or "database",
+                        locator=requested_locator or "",
+                        secret_value=submitted_key,
+                        delete_previous=delete_previous,
+                    )
+                except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
+                    db_session.rollback()
+                    return error_response("credential_unavailable", str(error), 422)
+                configured_reference = configured.reference
+                configured_reference_changed = True
+                previous_retained = configured.previous_credential_retained
+            elif clear_key:
+                current_reference = previous_secret_ref
+                if current_reference:
+                    try:
+                        delete_managed_reference(
+                            db_session,
+                            current_reference,
+                            preserve_shared=False,
+                        )
+                    except RuntimeError as error:
+                        db_session.rollback()
+                        return error_response("credential_unavailable", str(error), 422)
+                configured_reference_changed = True
             for key, value in changes.items():
                 setattr(provider, key, value)
-            if submitted_key:
-                key = llm_provider_credential_key(provider.provider_key, provider.id, provider.options_json)
-                previous_key = reference_key(previous_secret_ref)
-                if previous_key and previous_key != key and not previous_key.startswith("shared:"):
-                    delete_credential(db_session, previous_key)
-                credential_kind = "credentials" if provider.provider_key.strip().lower() == "vertex_ai" else "API key"
-                upsert_credential(db_session, key, f"{provider.label} {credential_kind}", submitted_key)
-                provider.secret_ref = database_reference(key)
-            elif clear_key:
-                key = reference_key(provider.secret_ref) or llm_provider_credential_key(provider.provider_key, provider.id, provider.options_json)
-                delete_credential(db_session, key)
-                if str(provider.secret_ref or "").startswith("db:"):
-                    provider.secret_ref = None
-            elif previous_secret_ref != str(provider.secret_ref or ""):
-                previous_key = reference_key(previous_secret_ref)
-                if previous_key and not previous_key.startswith("shared:"):
-                    delete_credential(db_session, previous_key)
+            if configured_reference_changed:
+                provider.secret_ref = configured_reference
             provider.revision += 1
             provider.updated_at = utcnow()
             db_session.flush()
         result = _provider_payload(provider, database, paths)
+        result["previous_credential_retained"] = previous_retained
         response = jsonify(result)
         response.headers["ETag"] = f'"{result["revision"]}"'
         return response
@@ -2127,9 +2271,13 @@ def create_app(
                     return error_response("replacement_required", "Select a default model from another provider before removing this provider.", 409)
                 replacement.is_active = True
                 replacement.is_default = True
-            key = reference_key(provider.secret_ref) or provider_credential_key(provider.id)
-            if not key.startswith("shared:"):
-                delete_credential(db_session, key)
+            try:
+                delete_managed_reference(
+                    db_session,
+                    str(provider.secret_ref or database_reference(provider_credential_key(provider.id))),
+                )
+            except RuntimeError as error:
+                return error_response("credential_unavailable", str(error), 422)
             db_session.delete(provider)
         return "", 204
 
@@ -2315,15 +2463,50 @@ def create_app(
         submitted_key = str(payload.api_key or "").strip()
         if submitted_key and payload.clear:
             return error_response("validation_error", "Choose either a replacement API key or remove the current key.", 422)
-        if not submitted_key and not payload.clear:
-            return error_response("validation_error", "Enter an API key or choose to remove the saved key.", 422)
+        if not submitted_key and not payload.clear and payload.credential_backend is None:
+            return error_response(
+                "validation_error",
+                "Enter an API key, choose an external credential backend, or remove the saved credential.",
+                422,
+            )
         key = auxiliary_credential_key(credential_id)
-        with database.session() as db_session:
-            if submitted_key:
-                upsert_credential(db_session, key, f"{profile['label']} API key", submitted_key)
-            else:
-                delete_credential(db_session, key)
+        try:
+            with database.session() as db_session:
+                references = auxiliary_reference_map(db_session)
+                current_reference = references.get(
+                    credential_id,
+                    database_reference(key),
+                )
+                if payload.clear:
+                    delete_managed_reference(
+                        db_session,
+                        current_reference,
+                        preserve_shared=False,
+                    )
+                    set_auxiliary_reference(db_session, credential_id, None)
+                else:
+                    configured = configure_credential_reference(
+                        db_session,
+                        database,
+                        paths,
+                        key=key,
+                        label=f"{profile['label']} API key",
+                        current_reference=current_reference,
+                        backend=payload.credential_backend or "database",
+                        locator=payload.credential_reference or "",
+                        secret_value=submitted_key,
+                        delete_previous=payload.delete_previous_credential,
+                    )
+                    set_auxiliary_reference(
+                        db_session,
+                        credential_id,
+                        configured.reference,
+                    )
+        except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
+            return error_response("credential_unavailable", str(error), 422)
         updated = next(item for item in auxiliary_profiles(database, paths) if item["id"] == credential_id)
+        if not payload.clear:
+            updated["previous_credential_retained"] = configured.previous_credential_retained
         return jsonify(updated)
 
     @app.get("/api/v1/pronunciations")
@@ -2697,4 +2880,7 @@ def create_app(
         response.headers["Cache-Control"] = "no-store"
         return response
 
+    maintenance_enabled = not testing if background_maintenance is None else background_maintenance
+    if maintenance_enabled:
+        startup_maintenance.start()
     return app

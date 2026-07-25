@@ -250,6 +250,17 @@ job, artifact, lineage, and selected-take queries are backed by workload-specifi
 indexes installed automatically by the database migration. On an unusually
 large existing database, the first startup after this migration may therefore
 spend a short period building those indexes before the server becomes ready.
+Legacy per-session source rows are likewise promoted into the reusable source
+library by a marked, idempotent database migration. Retention and expired-upload
+cleanup run in a background maintenance thread after the application is ready,
+so their work does not delay request serving.
+
+`pandrator/logic/state_db_handler.py` is deprecated, migration-only Qt
+compatibility code. The browser database models are authoritative, and new web
+features must not depend on the legacy module. It remains temporarily available
+for the existing dubbing compatibility paths and migration qualification; it
+can be removed after the external Qt cutover gates are complete and those
+callers have moved to the web data model.
 
 To capture the current concurrency, query, audio, capability, and browser request
 baselines on disposable data:
@@ -270,11 +281,74 @@ The separately packaged `pandrator-installer` CLI supports probing, planning, in
 
 - The default local server binds only to loopback.
 - LAN or remote access requires explicit configuration and authentication.
-- API credentials are resolved through supported secret stores or environment configuration rather than being stored as plaintext application settings.
+- Provider credentials are write-only through the API; responses report only
+  their storage source and non-secret locator.
 - Imported and generated files remain under the selected data root unless an explicitly allowed local reference is used.
 - Local processing does not make cloud processing private: review the provider’s terms before sending documents, subtitles, voices, or media to an external API.
 
-For internet-facing use, place Pandrator behind an HTTPS reverse proxy, keep host and proxy validation enabled, and use a dedicated data root. Pandrator is designed for a single owner, not as a multi-user hosted service.
+Pandrator offers four credential-storage routes in provider settings:
+
+1. **Pandrator database (default).** Paste the value in the UI. This is the
+   easiest route and requires no operating-system setup. The value is kept out
+   of normal settings and remains write-only, but it is stored in the local
+   SQLite database without separate at-rest encryption. Database backups
+   therefore contain database-stored credentials. Protect the data directory
+   with account permissions and use full-disk encryption where local data theft
+   is a concern.
+2. **Operating-system credential store.** Install the optional integration with
+   `pip install "pandrator[credential-stores]"`, restart Pandrator, and choose
+   this route in the UI. Pandrator detects whether Python can use Windows
+   Credential Manager, macOS Keychain, or a Linux Secret Service backend,
+   verifies the saved value, and keeps only its service/user reference in the
+   database. Headless Linux installations need an unlocked Secret Service
+   backend available to the service account.
+3. **Environment variable.** Set the variable for the account that starts
+   Pandrator, then enter only its name in the UI. For example, a Windows user
+   can persist a value from PowerShell with
+   `[Environment]::SetEnvironmentVariable("OPENAI_API_KEY", "<value>", "User")`;
+   macOS/Linux shells can export `OPENAI_API_KEY` or configure it in the process
+   supervisor. Restart Pandrator after changing a persistent user or service
+   environment. The availability check never returns the value.
+4. **Secret file.** Create a UTF-8 text file containing only the credential and
+   select its absolute path. On macOS/Linux, make it owner-only, for example
+   `chmod 600 /run/secrets/openai_api_key`. Windows access should be restricted
+   with the file ACL. Managed and container secret mounts are supported.
+   Pandrator stores the path, validates that the file is readable and no larger
+   than 1 MiB, and never returns its contents.
+
+Changing storage is an explicit, verified move: Pandrator confirms that the new
+backend resolves before changing the reference. Deleting the previous
+app-managed value is opt-in, and shared provider credentials are retained when
+another connection may still use them. Environment variables and secret files
+remain externally managed. Session bundles contain session-scoped records and
+artifacts, not the global stored-credential table.
+
+Known configured values and credential-shaped fields are redacted from durable
+job events, progress details, results, failures, and worker tracebacks. Still
+inspect diagnostics before sharing them, particularly when a third-party
+library formats an unfamiliar credential type.
+
+For internet-facing use, place Pandrator behind an HTTPS reverse proxy, keep
+host and proxy validation enabled, and use a dedicated data root. Remote login
+attempts are throttled per client address, and the UI warns when remote access
+arrives over plain HTTP. Pandrator is designed for a single owner, not as a
+multi-user hosted service.
+
+## Dependency manifests
+
+`pyproject.toml` is authoritative for the Pandrator package and
+`pandrator_installer/pyproject.toml` is authoritative for the separately
+packaged installer. The pip-compatible files are generated projections:
+
+```bash
+python scripts/generate_requirements.py
+python scripts/generate_requirements.py --check
+```
+
+The first command refreshes `requirements.txt` and
+`requirements-installer.txt`; the second is suitable for CI and fails if
+either file drifted. Update the relevant `pyproject.toml`, never a generated
+requirements file by itself.
 
 ## Building the installer
 
