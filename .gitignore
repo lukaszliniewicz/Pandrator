@@ -13,6 +13,7 @@ conda/
 # Build and packaging artifacts
 build/
 dist/
+/*.whl
 .release_blocks/
 .release_staging/
 .release_sources/
@@ -72,6 +73,14 @@ tts_voices/voice_library.json
 
 # Local planning notes (name contains "plan")
 *[Pp][Ll][Aa][Nn]*.md
+/AGENTIC_TEXT_AND_SPEECH.md
+/FUTURE_TTS_OPTIMIZATION_NOTES.md
+
+# Local development and research scratch files
+/inspect_db.py
+/test_hash_logic.py
+/test_hashes.py
+/scripts/tts_speech_plan_scratch/
 
 # IDE and OS files
 .vscode/
