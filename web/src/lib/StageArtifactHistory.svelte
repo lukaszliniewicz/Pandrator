@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Check, ChevronDown, ChevronRight, Clock3, Eye, History, RotateCcw } from '@lucide/svelte';
+  import { Check, ChevronDown, ChevronRight, Clock3, Eye, History, LoaderCircle, RotateCcw } from '@lucide/svelte';
   import { formatBytes } from './artifact-display';
   import {
     artifactDetails,
@@ -10,21 +10,30 @@
 
   let {
     artifacts,
+    total,
+    hasMore = false,
+    loadingMore = false,
     selectedArtifactId,
     canPreview,
     onselect,
     onpreview,
-    onclear
+    onclear,
+    onloadmore
   }: {
     artifacts: StageArtifact[];
+    total?: number;
+    hasMore?: boolean;
+    loadingMore?: boolean;
     selectedArtifactId?: string | null;
     canPreview: boolean;
     onselect: (artifactId: string) => void;
     onpreview: () => void;
     onclear: () => void;
+    onloadmore: () => void;
   } = $props();
 
   const selectedArtifact = $derived(artifacts.find((artifact) => artifact.id === selectedArtifactId));
+  const savedCount = $derived(total ?? artifacts.length);
 </script>
 
 <div class="mt-3 max-w-3xl">
@@ -58,7 +67,7 @@
       <span class="grid size-7 place-items-center rounded-lg bg-[var(--accent-soft)] text-[var(--accent)]"><History size={14}/></span>
       <span class="min-w-0 flex-1">
         <span class="block">Version history</span>
-        <span class="muted mt-0.5 block font-normal">{artifacts.length} saved {artifacts.length === 1 ? 'result' : 'results'}{selectedArtifact ? ` · v${selectedArtifact.version} selected` : ''}</span>
+        <span class="muted mt-0.5 block font-normal">{savedCount} saved {savedCount === 1 ? 'result' : 'results'}{selectedArtifact ? ` · v${selectedArtifact.version} selected` : ''}</span>
       </span>
       <span class="history-chevron muted shrink-0"><ChevronDown size={16}/></span>
     </summary>
@@ -104,6 +113,16 @@
           </li>
         {/each}
       </ol>
+      {#if hasMore}
+        <button
+          onclick={onloadmore}
+          disabled={loadingMore}
+          class="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2.5 text-xs font-semibold disabled:opacity-50"
+        >
+          {#if loadingMore}<LoaderCircle class="animate-spin" size={14}/>{/if}
+          Load earlier versions
+        </button>
+      {/if}
     </div>
   </details>
 </div>

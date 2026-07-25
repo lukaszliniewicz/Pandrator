@@ -48,6 +48,115 @@ test('wizard creates a guided subtitle workspace and preserves setup return', as
   await expect(page.getByRole('button', { name: 'Tour' })).toBeVisible();
 });
 
+test('workflow version history loads older pages on demand', async ({ page }) => {
+  await signIn(page);
+  const authStatus = await page.request.get('/api/v1/auth/status');
+  const csrfToken = (await authStatus.json()).csrf_token;
+  const created = await page.request.post('/api/v1/sessions', {
+    headers: { 'X-CSRF-Token': csrfToken },
+    data: {
+      name: uniqueName('Paginated workflow history'),
+      workflow_kind: 'voiceover'
+    }
+  });
+  expect(created.ok()).toBeTruthy();
+  const session = await created.json();
+  const stageArtifact = (version: number) => ({
+    id: `artifact-${version}`,
+    version,
+    kind: 'srt',
+    role: 'transcription',
+    relative_path: `sessions/history/transcript-${version}.srt`,
+    mime_type: 'application/x-subrip',
+    size_bytes: version,
+    state: version === 15 ? 'current' : 'stale',
+    settings_hash: null,
+    metadata_json: {},
+    parent_ids: [],
+    created_at: `2026-01-${String(version).padStart(2, '0')}T12:00:00`,
+    is_selected: version === 15
+  });
+  const initialItems = Array.from(
+    { length: 10 },
+    (_, index) => stageArtifact(15 - index)
+  );
+  const olderItems = Array.from(
+    { length: 5 },
+    (_, index) => stageArtifact(5 - index)
+  );
+
+  await page.route(
+    `**/api/v1/sessions/${session.id}/workflow`,
+    async (route) => {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          session_id: session.id,
+          workflow_kind: 'voiceover',
+          workflow_preset: 'default',
+          revision: 1,
+          sources: [],
+          stages: [
+            {
+              number: 1,
+              key: 'transcribe',
+              title: 'Transcribe',
+              explanation: 'Create timed subtitles.',
+              status: 'completed',
+              executable: true,
+              included: true,
+              artifact: {
+                ...initialItems[0],
+                path: initialItems[0].relative_path
+              },
+              artifacts: initialItems,
+              selected_artifact_id: initialItems[0].id,
+              selection_revision: 15,
+              artifact_history_total: 15,
+              artifact_history_has_more: true,
+              artifact_history_next_before_version: 6,
+              job_id: null,
+              progress: null,
+              detail: null,
+              usage: null
+            }
+          ]
+        })
+      });
+    }
+  );
+  await page.route(
+    `**/api/v1/sessions/${session.id}/stages/transcribe/artifacts?*`,
+    async (route) => {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          stage_key: 'transcribe',
+          selected_artifact_id: initialItems[0].id,
+          revision: 15,
+          items: olderItems,
+          total: 15,
+          limit: 50,
+          before_version: 6,
+          has_more: false,
+          next_before_version: null
+        })
+      });
+    }
+  );
+
+  await page.goto(`/sessions/${session.id}`);
+  await expect(page.getByText('15 saved results')).toBeVisible();
+  const versionSelect = page.getByLabel('Selected version');
+  await expect(versionSelect.locator('option')).toHaveCount(10);
+  await page.getByText('Version history', { exact: true }).click();
+  await page.getByRole('button', { name: 'Load earlier versions' }).click();
+  await expect(versionSelect.locator('option')).toHaveCount(15);
+  await expect(
+    page.getByRole('button', { name: 'Load earlier versions' })
+  ).toHaveCount(0);
+});
+
 test('provider defaults and restartable tours are keyboard reachable', async ({ page }) => {
   await signIn(page);
   await page.getByRole('link', { name: 'Providers & services' }).click();

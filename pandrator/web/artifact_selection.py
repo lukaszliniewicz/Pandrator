@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import deque
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 
 from .models import Artifact, ArtifactEdge, SessionRecord, SessionStageSelection, utcnow
@@ -32,6 +32,8 @@ STAGE_RANK = {
     "translate": 30,
     "optimize_tts": 40,
 }
+DEFAULT_STAGE_HISTORY_LIMIT = 50
+MAX_STAGE_HISTORY_LIMIT = 100
 
 
 def canonical_stage_key(stage_key: str) -> str:
@@ -102,15 +104,16 @@ def selected_artifacts(
     artifacts: list[Artifact] | None = None,
 ) -> dict[str, Artifact]:
     """Return explicit selections, with legacy current artifacts as fallback."""
-    records = list(
-        session.scalars(
-            select(SessionStageSelection).where(SessionStageSelection.session_id == session_id)
+    rows = list(
+        session.execute(
+            select(SessionStageSelection, Artifact)
+            .outerjoin(Artifact, Artifact.id == SessionStageSelection.artifact_id)
+            .where(SessionStageSelection.session_id == session_id)
         ).all()
     )
     selected: dict[str, Artifact] = {}
-    explicit_stages = {record.stage_key for record in records}
-    for record in records:
-        artifact = session.get(Artifact, record.artifact_id) if record.artifact_id else None
+    explicit_stages = {record.stage_key for record, _artifact in rows}
+    for record, artifact in rows:
         if artifact is not None:
             selected[record.stage_key] = artifact
     if artifacts is None:
@@ -126,6 +129,196 @@ def selected_artifacts(
         if stage_key and stage_key not in explicit_stages and artifact.state == "current":
             selected[stage_key] = artifact
     return selected
+
+
+def stage_histories(
+    session: Session,
+    session_id: str,
+    stage_keys: list[str] | tuple[str, ...],
+    *,
+    limit: int = DEFAULT_STAGE_HISTORY_LIMIT,
+    before_version: int | None = None,
+) -> tuple[dict[str, dict[str, Any]], dict[str, Artifact]]:
+    """Load bounded histories and their selections in three fixed queries.
+
+    The first query joins explicit selections to their artifacts, the second
+    ranks all requested stage artifacts and returns only the requested page
+    plus an older explicit selection, and the third fetches lineage
+    edges for that bounded result set.
+    """
+
+    canonical_keys = tuple(
+        dict.fromkeys(canonical_stage_key(stage_key) for stage_key in stage_keys)
+    )
+    if not canonical_keys:
+        return {}, {}
+    for stage_key in canonical_keys:
+        if stage_key not in STAGE_OUTPUT_ROLES:
+            raise ValueError(
+                f"Stage '{stage_key}' does not have selectable artifacts."
+            )
+    if before_version is not None and len(canonical_keys) != 1:
+        raise ValueError("A history cursor can only be used for one stage.")
+    page_limit = max(1, min(int(limit), MAX_STAGE_HISTORY_LIMIT))
+
+    selection_rows = list(
+        session.execute(
+            select(SessionStageSelection, Artifact)
+            .outerjoin(Artifact, Artifact.id == SessionStageSelection.artifact_id)
+            .where(
+                SessionStageSelection.session_id == session_id,
+                SessionStageSelection.stage_key.in_(canonical_keys),
+            )
+        ).all()
+    )
+    selection_by_stage = {
+        selection.stage_key: selection for selection, _artifact in selection_rows
+    }
+    selected: dict[str, Artifact] = {
+        selection.stage_key: artifact
+        for selection, artifact in selection_rows
+        if artifact is not None
+    }
+    selected_ids = {artifact.id for artifact in selected.values()}
+
+    role_to_stage = {
+        role: stage_key
+        for stage_key in canonical_keys
+        for role in STAGE_OUTPUT_ROLES[stage_key]
+    }
+    stage_expression = case(role_to_stage, value=Artifact.role)
+    ranked = (
+        select(
+            Artifact.id.label("artifact_id"),
+            stage_expression.label("stage_key"),
+            func.row_number()
+            .over(
+                partition_by=stage_expression,
+                order_by=(Artifact.created_at.asc(), Artifact.id.asc()),
+            )
+            .label("version"),
+            func.count()
+            .over(partition_by=stage_expression)
+            .label("total"),
+            func.row_number()
+            .over(
+                partition_by=stage_expression,
+                order_by=(Artifact.created_at.desc(), Artifact.id.desc()),
+            )
+            .label("recent_rank"),
+        )
+        .where(
+            Artifact.session_id == session_id,
+            Artifact.role.in_(tuple(role_to_stage)),
+        )
+        .subquery()
+    )
+    history_statement = (
+        select(
+            Artifact,
+            ranked.c.stage_key,
+            ranked.c.version,
+            ranked.c.total,
+            ranked.c.recent_rank,
+        )
+        .join(ranked, ranked.c.artifact_id == Artifact.id)
+        .order_by(ranked.c.stage_key, ranked.c.version.desc())
+    )
+    if before_version is not None:
+        history_statement = history_statement.where(
+            ranked.c.version < max(1, int(before_version))
+        ).limit(page_limit)
+    else:
+        page_filter = ranked.c.recent_rank <= page_limit
+        if selected_ids:
+            page_filter = or_(
+                page_filter,
+                Artifact.id.in_(selected_ids),
+            )
+        history_statement = history_statement.where(page_filter)
+    history_rows = list(session.execute(history_statement).all())
+
+    artifact_ids = [artifact.id for artifact, *_metadata in history_rows]
+    parent_ids_by_child: dict[str, list[str]] = {}
+    for parent_id, child_id in session.execute(
+        select(
+            ArtifactEdge.parent_artifact_id,
+            ArtifactEdge.child_artifact_id,
+        ).where(ArtifactEdge.child_artifact_id.in_(artifact_ids))
+    ):
+        parent_ids_by_child.setdefault(child_id, []).append(parent_id)
+
+    rows_by_stage: dict[
+        str,
+        list[tuple[Artifact, int, int, int]],
+    ] = {stage_key: [] for stage_key in canonical_keys}
+    for artifact, stage_key, version, total, recent_rank in history_rows:
+        rows_by_stage[str(stage_key)].append(
+            (artifact, int(version), int(total), int(recent_rank))
+        )
+
+    explicit_stages = set(selection_by_stage)
+    if before_version is None:
+        for stage_key, rows in rows_by_stage.items():
+            if stage_key in explicit_stages:
+                continue
+            current = next(
+                (artifact for artifact, *_metadata in rows if artifact.state == "current"),
+                None,
+            )
+            if current is not None:
+                selected[stage_key] = current
+
+    histories: dict[str, dict[str, Any]] = {}
+    for stage_key in canonical_keys:
+        rows = rows_by_stage[stage_key]
+        selected_artifact = selected.get(stage_key)
+        items = [
+            {
+                "id": artifact.id,
+                "version": version,
+                "kind": artifact.kind,
+                "role": artifact.role,
+                "relative_path": artifact.relative_path,
+                "mime_type": artifact.mime_type,
+                "size_bytes": artifact.size_bytes,
+                "state": artifact.state,
+                "settings_hash": artifact.settings_hash,
+                "metadata_json": artifact.metadata_json or {},
+                "parent_ids": parent_ids_by_child.get(artifact.id, []),
+                "created_at": artifact.created_at.isoformat(),
+                "is_selected": bool(
+                    selected_artifact and selected_artifact.id == artifact.id
+                ),
+            }
+            for artifact, version, _total, _recent_rank in rows
+        ]
+        total = rows[0][2] if rows else 0
+        page_versions = [
+            version
+            for _artifact, version, _total, recent_rank in rows
+            if before_version is not None or recent_rank <= page_limit
+        ]
+        next_before_version = (
+            min(page_versions)
+            if page_versions and min(page_versions) > 1
+            else None
+        )
+        selection = selection_by_stage.get(stage_key)
+        histories[stage_key] = {
+            "stage_key": stage_key,
+            "selected_artifact_id": (
+                selected_artifact.id if selected_artifact else None
+            ),
+            "revision": selection.revision if selection else 0,
+            "items": items,
+            "total": total,
+            "limit": page_limit,
+            "before_version": before_version,
+            "has_more": next_before_version is not None,
+            "next_before_version": next_before_version,
+        }
+    return histories, selected
 
 
 def choose_artifact(
@@ -263,55 +456,23 @@ def clear_selection(session: Session, session_id: str, stage_key: str) -> dict[s
     return {"stage_key": stage_key, "artifact_id": None, "revision": record.revision if record else 0, "cleared": cleared}
 
 
-def stage_history(session: Session, session_id: str, stage_key: str) -> dict[str, Any]:
+def stage_history(
+    session: Session,
+    session_id: str,
+    stage_key: str,
+    *,
+    limit: int = DEFAULT_STAGE_HISTORY_LIMIT,
+    before_version: int | None = None,
+) -> dict[str, Any]:
     stage_key = canonical_stage_key(stage_key)
-    roles = STAGE_OUTPUT_ROLES.get(stage_key)
-    if roles is None:
-        raise ValueError(f"Stage '{stage_key}' does not have selectable artifacts.")
-    artifacts = list(
-        session.scalars(
-            select(Artifact)
-            .where(Artifact.session_id == session_id, Artifact.role.in_(roles))
-            .order_by(Artifact.created_at.asc())
-        ).all()
+    histories, _selected = stage_histories(
+        session,
+        session_id,
+        [stage_key],
+        limit=limit,
+        before_version=before_version,
     )
-    selected = selected_artifacts(session, session_id, artifacts).get(stage_key)
-    selection = session.get(SessionStageSelection, (session_id, stage_key))
-    parent_ids_by_child: dict[str, list[str]] = {}
-    if artifacts:
-        ids = [artifact.id for artifact in artifacts]
-        for parent_id, child_id in session.execute(
-            select(ArtifactEdge.parent_artifact_id, ArtifactEdge.child_artifact_id).where(
-                ArtifactEdge.child_artifact_id.in_(ids)
-            )
-        ):
-            parent_ids_by_child.setdefault(child_id, []).append(parent_id)
-    items = []
-    for version, artifact in enumerate(artifacts, start=1):
-        items.append(
-            {
-                "id": artifact.id,
-                "version": version,
-                "kind": artifact.kind,
-                "role": artifact.role,
-                "relative_path": artifact.relative_path,
-                "mime_type": artifact.mime_type,
-                "size_bytes": artifact.size_bytes,
-                "state": artifact.state,
-                "settings_hash": artifact.settings_hash,
-                "metadata_json": artifact.metadata_json or {},
-                "parent_ids": parent_ids_by_child.get(artifact.id, []),
-                "created_at": artifact.created_at.isoformat(),
-                "is_selected": bool(selected and selected.id == artifact.id),
-            }
-        )
-    items.reverse()
-    return {
-        "stage_key": stage_key,
-        "selected_artifact_id": selected.id if selected else None,
-        "revision": selection.revision if selection else 0,
-        "items": items,
-    }
+    return histories[stage_key]
 
 
 def rerun_impact(session: Session, session_id: str, stage_key: str) -> dict[str, Any]:

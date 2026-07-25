@@ -5,12 +5,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
-from .artifact_selection import canonical_stage_key, selected_artifacts, stage_history
+from .artifact_selection import (
+    STAGE_OUTPUT_ROLES,
+    canonical_stage_key,
+    selected_artifacts,
+    stage_histories,
+)
 from .database import Database
 from .jobs import JobQueue
 from .models import Artifact, GenerationPlan, GenerationRun, Job, OutcomePlan, SessionRecord, SessionSource, SourceAsset, UsageEvent
+
+
+WORKFLOW_HISTORY_PREVIEW_LIMIT = 10
 
 
 def _attached_source_artifacts(db_session, session_id: str, *, current_only: bool = True) -> list[Artifact]:
@@ -24,6 +32,71 @@ def _attached_source_artifacts(db_session, session_id: str, *, current_only: boo
     if current_only:
         statement = statement.where(SessionSource.is_current.is_(True))
     return list(db_session.scalars(statement).all())
+
+
+def _latest_current_artifacts_by_role(
+    db_session,
+    session_id: str,
+    roles: set[str],
+) -> list[Artifact]:
+    if not roles:
+        return []
+    ranked = (
+        select(
+            Artifact.id.label("artifact_id"),
+            func.row_number()
+            .over(
+                partition_by=Artifact.role,
+                order_by=(Artifact.created_at.desc(), Artifact.id.desc()),
+            )
+            .label("role_rank"),
+        )
+        .where(
+            Artifact.session_id == session_id,
+            Artifact.state == "current",
+            Artifact.role.in_(tuple(roles)),
+        )
+        .subquery()
+    )
+    return list(
+        db_session.scalars(
+            select(Artifact)
+            .join(ranked, ranked.c.artifact_id == Artifact.id)
+            .where(ranked.c.role_rank == 1)
+        ).all()
+    )
+
+
+def _latest_jobs_by_kind(
+    db_session,
+    session_id: str,
+    kinds: set[str],
+) -> list[Job]:
+    if not kinds:
+        return []
+    ranked = (
+        select(
+            Job.id.label("job_id"),
+            func.row_number()
+            .over(
+                partition_by=Job.kind,
+                order_by=(Job.created_at.desc(), Job.id.desc()),
+            )
+            .label("kind_rank"),
+        )
+        .where(
+            Job.session_id == session_id,
+            Job.kind.in_(tuple(kinds)),
+        )
+        .subquery()
+    )
+    return list(
+        db_session.scalars(
+            select(Job)
+            .join(ranked, ranked.c.job_id == Job.id)
+            .where(ranked.c.kind_rank == 1)
+        ).all()
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,55 +181,89 @@ class WorkflowService:
             record = session.get(SessionRecord, session_id)
             if record is None:
                 raise KeyError(session_id)
-            artifacts = list(
-                session.scalars(
-                    select(Artifact).where(Artifact.session_id == session_id).order_by(Artifact.created_at.desc())
-                ).all()
-            )
             attached_sources = _attached_source_artifacts(session, session_id)
-            attached_ids = {artifact.id for artifact in attached_sources}
-            artifacts = [
-                *attached_sources,
-                *(artifact for artifact in artifacts if artifact.id not in attached_ids),
-            ]
-            latest_jobs = list(
-                session.scalars(
-                    select(Job).where(Job.session_id == session_id).order_by(Job.created_at.desc())
-                ).all()
+            provisional_definitions = self.definitions(record, attached_sources)
+            relevant_roles = {
+                role
+                for definition in provisional_definitions
+                for role in (
+                    *definition.prerequisite_roles,
+                    *((definition.output_role,) if definition.output_role else ()),
+                )
+            }
+            relevant_roles.add("upload")
+            latest_current_artifacts = _latest_current_artifacts_by_role(
+                session,
+                session_id,
+                relevant_roles,
             )
-            selections = selected_artifacts(session, session_id, artifacts)
+            artifacts = list(
+                {
+                    artifact.id: artifact
+                    for artifact in [
+                        *attached_sources,
+                        *latest_current_artifacts,
+                    ]
+                }.values()
+            )
+            definitions = self.definitions(record, artifacts)
+            history_stage_keys = tuple(
+                dict.fromkeys(
+                    canonical_stage_key(definition.key)
+                    for definition in definitions
+                    if canonical_stage_key(definition.key) in STAGE_OUTPUT_ROLES
+                )
+            )
+            histories, selections = stage_histories(
+                session,
+                session_id,
+                history_stage_keys,
+                limit=WORKFLOW_HISTORY_PREVIEW_LIMIT,
+            )
+            job_kinds = {
+                definition.job_kind
+                for definition in definitions
+                if definition.job_kind
+            }
+            job_kinds.add("workflow.continue")
+            latest_jobs = _latest_jobs_by_kind(session, session_id, job_kinds)
             roles: dict[str, Artifact] = {}
             for artifact in selections.values():
                 roles.setdefault(artifact.role, artifact)
             for artifact in attached_sources:
                 roles.setdefault("upload", artifact)
-            for artifact in artifacts:
-                if artifact.state == "current":
-                    roles.setdefault(artifact.role, artifact)
+            for artifact in latest_current_artifacts:
+                roles.setdefault(artifact.role, artifact)
             outcome = session.scalar(select(OutcomePlan).where(OutcomePlan.session_id == session_id))
             generation_plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
             generation_run = session.scalar(
                 select(GenerationRun)
                 .where(GenerationRun.session_id == session_id)
-                .order_by(GenerationRun.created_at.desc())
+                .order_by(
+                    GenerationRun.sequence_number.desc(),
+                    GenerationRun.created_at.desc(),
+                )
+                .limit(1)
             )
             completed_generation_run = session.scalar(
                 select(GenerationRun)
                 .where(GenerationRun.session_id == session_id, GenerationRun.status == "completed")
                 .order_by(GenerationRun.sequence_number.desc(), GenerationRun.created_at.desc())
+                .limit(1)
             )
             latest_optimization_usage = session.scalar(
                 select(UsageEvent)
                 .where(UsageEvent.session_id == session_id, UsageEvent.stage == "tts_optimization")
                 .order_by(UsageEvent.created_at.desc())
+                .limit(1)
             )
             transformations = (outcome.value_json or {}).get("transformations", {}) if outcome and isinstance(outcome.value_json, dict) else {}
             optimization_enabled = bool(transformations.get("llm_tts_optimization"))
             document_optimization_enabled = bool(transformations.get("llm_tts_document_optimization"))
             input_choices = (outcome.value_json or {}).get("inputs", {}) if outcome and isinstance(outcome.value_json, dict) else {}
-            latest_roles = {}
-            for artifact_record in artifacts:
-                latest_roles.setdefault(artifact_record.role, artifact_record)
+            latest_roles = {
+                artifact.role: artifact for artifact in latest_current_artifacts
+            }
             job_by_kind = {}
             for job in latest_jobs:
                 job_by_kind.setdefault(job.kind, job)
@@ -164,16 +271,17 @@ class WorkflowService:
                 job_by_kind["dubbing.generate_audio"] = job_by_kind["workflow.continue"]
                 job_by_kind["audiobook.generate_audio"] = job_by_kind["workflow.continue"]
             stages = []
-            definitions = self.definitions(record, artifacts)
             document_definition = next((item for item in definitions if item.key == "optimize_document"), None)
             visible_definitions = tuple(item for item in definitions if item.key != "optimize_document")
             for index, definition in enumerate(visible_definitions, start=1):
                 effective_definition = document_definition if definition.key == "optimize_tts" and document_optimization_enabled and document_definition else definition
                 selection_key = canonical_stage_key(definition.key)
-                artifact = selections.get(selection_key) if effective_definition.output_role else latest_roles.get(effective_definition.output_role or "")
-                history = None
-                if effective_definition.output_role and selection_key in {"transcribe", "correct", "translate", "clean_source", "prepare_text", "optimize_tts"}:
-                    history = stage_history(session, session_id, selection_key)
+                history = histories.get(selection_key)
+                artifact = (
+                    selections.get(selection_key)
+                    if history is not None
+                    else latest_roles.get(effective_definition.output_role or "")
+                )
                 active = job_by_kind.get(effective_definition.job_kind or "")
                 prerequisite_roles = effective_definition.prerequisite_roles
                 if definition.key == "translate" and str(input_choices.get("translation") or "correction") != "correction":
@@ -278,6 +386,9 @@ class WorkflowService:
                         "artifacts": history["items"] if history else [],
                         "selected_artifact_id": history["selected_artifact_id"] if history else (artifact.id if artifact else None),
                         "selection_revision": history["revision"] if history else 0,
+                        "artifact_history_total": history["total"] if history else (1 if artifact else 0),
+                        "artifact_history_has_more": history["has_more"] if history else False,
+                        "artifact_history_next_before_version": history["next_before_version"] if history else None,
                         "job_id": active.id if active else None,
                         "progress": active.progress if active and status in {"running", "failed"} else None,
                         "detail": (

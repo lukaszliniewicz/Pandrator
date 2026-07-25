@@ -15,7 +15,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select, update
 
 from pandrator.logic.dubbing.srt_utils import split_speaker_label
 from pandrator.logic.dubbing.transcript_normalization import load_transcript
@@ -1808,28 +1808,50 @@ class WorkflowHandlers:
         artifact_id: str | None = None,
         generation_run_id: str | None = None,
     ) -> None:
+        event = self._tts_usage_event(
+            session_id,
+            settings,
+            text,
+            duration_ms,
+            job_id=job_id,
+            artifact_id=artifact_id,
+            generation_run_id=generation_run_id,
+        )
+        if event is None:
+            return
+        with self.database.session() as session:
+            session.add(event)
+
+    @staticmethod
+    def _tts_usage_event(
+        session_id: str,
+        settings: dict[str, Any],
+        text: str,
+        duration_ms: int,
+        *,
+        job_id: str | None = None,
+        artifact_id: str | None = None,
+        generation_run_id: str | None = None,
+    ) -> UsageEvent | None:
         from pandrator.logic.tts_handler import estimate_tts_usage
 
         usage = estimate_tts_usage(text, duration_ms, settings)
         if usage is None:
-            return
-        with self.database.session() as session:
-            session.add(
-                UsageEvent(
-                    session_id=session_id or None,
-                    job_id=job_id or None,
-                    artifact_id=artifact_id or None,
-                    generation_run_id=generation_run_id or None,
-                    stage="tts_generation",
-                    provider_key=str(usage["provider"]),
-                    model_id=str(usage["model"]),
-                    input_tokens=int(usage.get("input_tokens") or 0),
-                    output_tokens=int(usage.get("output_audio_tokens") or 0),
-                    cost_usd=usage.get("cost_usd"),
-                    cost_source=str(usage.get("cost_source") or "") or None,
-                    raw_usage_json=usage,
-                )
-            )
+            return None
+        return UsageEvent(
+            session_id=session_id or None,
+            job_id=job_id or None,
+            artifact_id=artifact_id or None,
+            generation_run_id=generation_run_id or None,
+            stage="tts_generation",
+            provider_key=str(usage["provider"]),
+            model_id=str(usage["model"]),
+            input_tokens=int(usage.get("input_tokens") or 0),
+            output_tokens=int(usage.get("output_audio_tokens") or 0),
+            cost_usd=usage.get("cost_usd"),
+            cost_source=str(usage.get("cost_source") or "") or None,
+            raw_usage_json=usage,
+        )
 
     def _with_database_llm_settings(self, settings: dict[str, Any], stage: str) -> dict[str, Any]:
         from .provider_settings import build_llm_settings
@@ -4288,6 +4310,8 @@ class WorkflowHandlers:
                 optimization_share + (index / len(segment_ids)) * (1.0 - optimization_share),
                 f"Generating segment {index + 1} of {len(segment_ids)}",
             )
+            take_path: Path | None = None
+            take_committed = False
             try:
                 synthesized_text = text
                 if operation == "rvc":
@@ -4358,35 +4382,10 @@ class WorkflowHandlers:
                 take_path = take_dir / f"{take_kind}-{new_id()}.wav"
                 exported = audio.export(take_path, format="wav")
                 exported.close()
-                artifact = self.artifacts.register(
+                prepared_artifact = self.artifacts.prepare_registration(
                     take_path,
-                    kind="audio",
-                    role="generation_take",
-                    session_id=session_id,
-                    parent_ids=[source_artifact.id] if operation == "rvc" else [],
                     settings=take_settings,
-                    metadata={
-                        "generation_segment_id": segment_id,
-                        "generation_run_id": run_id,
-                        "kind": take_kind,
-                        "speaker": segment_speaker,
-                        "source_text": text,
-                        "synthesized_text": synthesized_text,
-                        "llm_optimized": operation != "rvc" and synthesized_text != text,
-                        "llm_model": optimization_model or None,
-                        **({"audio_verification": verification} if verification is not None else {}),
-                    },
                 )
-                if operation != "rvc":
-                    self._record_tts_usage(
-                        session_id,
-                        take_settings,
-                        synthesized_text,
-                        len(audio),
-                        job_id=job_id,
-                        artifact_id=artifact.id,
-                        generation_run_id=run_id,
-                    )
                 with self.database.session() as session:
                     segment = session.get(GenerationSegment, segment_id)
                     existing_take = None
@@ -4400,11 +4399,64 @@ class WorkflowHandlers:
                             )
                             .order_by(AudioTake.created_at.desc())
                         )
-                    for previous in session.scalars(select(AudioTake).where(AudioTake.generation_segment_id == segment_id, AudioTake.is_active.is_(True))).all():
-                        if existing_take is not None and previous.id == existing_take.id:
-                            continue
-                        previous.is_active = False
-                        previous.revision += 1
+                    artifact = self.artifacts.register_in_session(
+                        session,
+                        take_path,
+                        kind="audio",
+                        role="generation_take",
+                        session_id=session_id,
+                        parent_ids=(
+                            [source_artifact.id]
+                            if operation == "rvc"
+                            else []
+                        ),
+                        settings=take_settings,
+                        metadata={
+                            "generation_segment_id": segment_id,
+                            "generation_run_id": run_id,
+                            "kind": take_kind,
+                            "speaker": segment_speaker,
+                            "source_text": text,
+                            "synthesized_text": synthesized_text,
+                            "llm_optimized": (
+                                operation != "rvc"
+                                and synthesized_text != text
+                            ),
+                            "llm_model": optimization_model or None,
+                            **(
+                                {"audio_verification": verification}
+                                if verification is not None
+                                else {}
+                            ),
+                        },
+                        _prepared=prepared_artifact,
+                    )
+                    if operation != "rvc":
+                        usage_event = self._tts_usage_event(
+                            session_id,
+                            take_settings,
+                            synthesized_text,
+                            len(audio),
+                            job_id=job_id,
+                            artifact_id=artifact.id,
+                            generation_run_id=run_id,
+                        )
+                        if usage_event is not None:
+                            session.add(usage_event)
+                    deactivate = update(AudioTake).where(
+                        AudioTake.generation_segment_id == segment_id,
+                        AudioTake.is_active.is_(True),
+                    )
+                    if existing_take is not None:
+                        deactivate = deactivate.where(
+                            AudioTake.id != existing_take.id
+                        )
+                    session.execute(
+                        deactivate.values(
+                            is_active=False,
+                            revision=AudioTake.revision + 1,
+                        ).execution_options(synchronize_session=False)
+                    )
                     if existing_take is None:
                         session.add(AudioTake(
                             generation_segment_id=segment_id,
@@ -4440,12 +4492,22 @@ class WorkflowHandlers:
                         segment.marked = True
                     segment.updated_at = utcnow()
                     mark_output_assemblies_stale(session, session_id, generation_run_id=run_id)
+                take_committed = True
                 generated += 1
                 progress(
                     optimization_share + ((index + 1) / len(segment_ids)) * (1.0 - optimization_share),
                     f"Generated segment {index + 1} of {len(segment_ids)}",
                 )
             except Exception:
+                if take_path is not None and not take_committed:
+                    try:
+                        take_path.unlink(missing_ok=True)
+                    except OSError:
+                        logger.warning(
+                            "Could not remove uncommitted generation take %s",
+                            take_path,
+                            exc_info=True,
+                        )
                 with self.database.session() as session:
                     segment = session.get(GenerationSegment, segment_id)
                     if segment is not None:
@@ -4518,11 +4580,18 @@ class WorkflowHandlers:
             output_settings = dict(resolved.get("output") or {})
             selected_run = session.get(GenerationRun, assembly.generation_run_id) if assembly.generation_run_id else None
             selected_run_sequence = selected_run.sequence_number if selected_run else None
+            plan_revision = session.get(
+                GenerationPlanRevision,
+                plan_revision_id,
+            )
+            source_revision_id = (
+                plan_revision.source_revision_id
+                if plan_revision is not None
+                else None
+            )
 
         try:
             with self.database.session() as session:
-                plan_revision = session.get(GenerationPlanRevision, plan_revision_id)
-                source_revision_id = plan_revision.source_revision_id if plan_revision is not None else None
                 source_timings = []
                 if source_revision_id:
                     source_timings = [
@@ -4533,41 +4602,93 @@ class WorkflowHandlers:
                             .order_by(Segment.ordinal)
                         ).all()
                     ]
-                segments = list(
-                    session.scalars(
-                        select(GenerationSegment)
+                if selected_run_sequence is not None:
+                    ranked_takes = (
+                        select(
+                            AudioTake.id.label("take_id"),
+                            AudioTake.generation_segment_id.label("segment_id"),
+                            func.row_number()
+                            .over(
+                                partition_by=AudioTake.generation_segment_id,
+                                order_by=(
+                                    GenerationRun.sequence_number.desc(),
+                                    AudioTake.created_at.desc(),
+                                    AudioTake.id.desc(),
+                                ),
+                            )
+                            .label("take_rank"),
+                        )
+                        .join(
+                            GenerationRun,
+                            AudioTake.generation_run_id == GenerationRun.id,
+                        )
                         .where(
-                            GenerationSegment.plan_revision_id == plan_revision_id,
+                            AudioTake.status.in_(("completed", "stale")),
+                            GenerationRun.session_id == session_id,
+                            GenerationRun.plan_revision_id == plan_revision_id,
+                            GenerationRun.sequence_number
+                            <= selected_run_sequence,
+                        )
+                        .subquery()
+                    )
+                else:
+                    ranked_takes = (
+                        select(
+                            AudioTake.id.label("take_id"),
+                            AudioTake.generation_segment_id.label("segment_id"),
+                            func.row_number()
+                            .over(
+                                partition_by=AudioTake.generation_segment_id,
+                                order_by=(
+                                    AudioTake.created_at.desc(),
+                                    AudioTake.id.desc(),
+                                ),
+                            )
+                            .label("take_rank"),
+                        )
+                        .join(
+                            GenerationSegment,
+                            AudioTake.generation_segment_id
+                            == GenerationSegment.id,
+                        )
+                        .where(
+                            AudioTake.is_active.is_(True),
+                            AudioTake.status == "completed",
+                            GenerationSegment.plan_revision_id
+                            == plan_revision_id,
+                            GenerationSegment.removed.is_(False),
+                        )
+                        .subquery()
+                    )
+                selected_rows = list(
+                    session.execute(
+                        select(GenerationSegment, AudioTake, Artifact)
+                        .outerjoin(
+                            ranked_takes,
+                            and_(
+                                ranked_takes.c.segment_id
+                                == GenerationSegment.id,
+                                ranked_takes.c.take_rank == 1,
+                            ),
+                        )
+                        .outerjoin(
+                            AudioTake,
+                            AudioTake.id == ranked_takes.c.take_id,
+                        )
+                        .outerjoin(
+                            Artifact,
+                            Artifact.id == AudioTake.artifact_id,
+                        )
+                        .where(
+                            GenerationSegment.plan_revision_id
+                            == plan_revision_id,
                             GenerationSegment.removed.is_(False),
                         )
                         .order_by(GenerationSegment.ordinal)
                     ).all()
                 )
                 selected: list[tuple[GenerationSegment, AudioTake, Artifact]] = []
-                for segment in segments:
-                    if selected_run_sequence is not None:
-                        take = session.scalar(
-                            select(AudioTake)
-                            .join(GenerationRun, AudioTake.generation_run_id == GenerationRun.id)
-                            .where(
-                                AudioTake.generation_segment_id == segment.id,
-                                AudioTake.status.in_(("completed", "stale")),
-                                GenerationRun.session_id == session_id,
-                                GenerationRun.plan_revision_id == plan_revision_id,
-                                GenerationRun.sequence_number <= selected_run_sequence,
-                            )
-                            .order_by(GenerationRun.sequence_number.desc(), AudioTake.created_at.desc())
-                        )
-                    else:
-                        take = session.scalar(
-                            select(AudioTake)
-                            .where(
-                                AudioTake.generation_segment_id == segment.id,
-                                AudioTake.is_active.is_(True),
-                                AudioTake.status == "completed",
-                            )
-                            .order_by(AudioTake.created_at.desc())
-                        )
+                for segment, take, artifact in selected_rows:
                     allowed_statuses = {"completed", "stale"} if selected_run is not None else {"completed"}
                     if take is None or take.status not in allowed_statuses or not take.artifact_id:
                         if selected_run is None:
@@ -4575,12 +4696,8 @@ class WorkflowHandlers:
                         raise ValueError(
                             f"Segment {segment.ordinal + 1} has no available audio take in Run {selected_run.sequence_number}."
                         )
-                    artifact = session.get(Artifact, take.artifact_id)
                     if artifact is None or artifact.state != "current":
                         raise ValueError(f"Segment {segment.ordinal + 1} references an unavailable audio artifact.")
-                    session.expunge(segment)
-                    session.expunge(take)
-                    session.expunge(artifact)
                     selected.append((segment, take, artifact))
             if not selected:
                 raise ValueError("No active generation segments are available for assembly.")

@@ -57,7 +57,49 @@ def build_openapi_document() -> dict:
             "/api/v1/artifacts/{artifactId}/pdf": {"get": {"operationId": "inspectPdf", "responses": {"200": {"description": "PDF geometry"}}}},
             "/api/v1/sessions/{sessionId}/workflow": {"get": {"operationId": "getWorkflow", "responses": {"200": {"description": "Workflow snapshot"}}}},
             "/api/v1/sessions/{sessionId}/stages/{stageKey}/run": {"post": {"operationId": "runWorkflowStage", "responses": {"202": {"description": "Queued"}}}},
-            "/api/v1/sessions/{sessionId}/stages/{stageKey}/artifacts": {"get": {"operationId": "listStageArtifacts", "responses": {"200": {"description": "Stage artifact history"}}}},
+            "/api/v1/sessions/{sessionId}/stages/{stageKey}/artifacts": {
+                "get": {
+                    "operationId": "listStageArtifacts",
+                    "parameters": [
+                        {
+                            "name": "sessionId",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string", "format": "uuid"},
+                        },
+                        {
+                            "name": "stageKey",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        },
+                        {
+                            "name": "limit",
+                            "in": "query",
+                            "required": False,
+                            "schema": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 100,
+                                "default": 50,
+                            },
+                        },
+                        {
+                            "name": "before_version",
+                            "in": "query",
+                            "required": False,
+                            "schema": {"type": "integer", "minimum": 1},
+                            "description": (
+                                "Return versions older than this exclusive "
+                                "version cursor."
+                            ),
+                        },
+                    ],
+                    "responses": {
+                        "200": {"description": "Stage artifact history page"}
+                    },
+                }
+            },
             "/api/v1/sessions/{sessionId}/stages/{stageKey}/impact": {"get": {"operationId": "getStageRerunImpact", "responses": {"200": {"description": "Rerun lineage impact"}}}},
 "/api/v1/sessions/{sessionId}/stages/{stageKey}/settings-mismatches": {"get": {"operationId": "getStageSettingsMismatches", "responses": {"200": {"description": "Prerequisite settings changed since the stored artifacts were created"}}}},
             "/api/v1/sessions/{sessionId}/stages/{stageKey}/selection": {"put": {"operationId": "selectStageArtifact", "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StageSelectionUpdate"}}}}, "responses": {"200": {"description": "Stage selection updated"}, "409": {"description": "Revision conflict"}}}},

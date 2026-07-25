@@ -46,7 +46,13 @@ from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.capabilities import probe_stable_capabilities
 from pandrator.web.database import Database, upgrade_database
 from pandrator.web.jobs import JobQueue
-from pandrator.web.models import Artifact, AudioTake, GenerationSegment, Job
+from pandrator.web.models import (
+    Artifact,
+    AudioTake,
+    GenerationRun,
+    GenerationSegment,
+    Job,
+)
 from pandrator.web.sessions import SessionService
 from pandrator.web.workflow_handlers import WorkflowHandlers
 from pandrator.web.workflows import WorkflowService
@@ -398,6 +404,7 @@ def benchmark_generation_assembly(
     database: Database,
     *,
     segment_count: int,
+    run_scoped: bool = False,
 ) -> dict[str, Any]:
     jobs = JobQueue(database)
     settings = WorkspaceSettingsService(database)
@@ -432,6 +439,18 @@ def benchmark_generation_assembly(
                 .order_by(GenerationSegment.ordinal)
             ).all()
         )
+        generation_run_id = None
+        if run_scoped:
+            run = GenerationRun(
+                session_id=record.id,
+                plan_revision_id=plan["active_revision_id"],
+                sequence_number=1,
+                status="completed",
+                settings_snapshot_json={},
+            )
+            session.add(run)
+            session.flush()
+            generation_run_id = run.id
 
     take_artifact_ids: list[str] = []
     for index in range(segment_count):
@@ -453,6 +472,7 @@ def benchmark_generation_assembly(
             session.add(
                 AudioTake(
                     generation_segment_id=segment.id,
+                    generation_run_id=generation_run_id,
                     artifact_id=artifact_id,
                     kind="tts",
                     status="completed",
@@ -461,7 +481,10 @@ def benchmark_generation_assembly(
                 )
             )
 
-    assembly = generation.create_assembly(record.id)
+    assembly = generation.create_assembly(
+        record.id,
+        generation_run_id=generation_run_id,
+    )
     started = time.perf_counter()
     with QueryCounter(database) as queries:
         result = WorkflowHandlers(database, paths).assemble_generation_output(
@@ -471,7 +494,12 @@ def benchmark_generation_assembly(
         )
     elapsed = time.perf_counter() - started
     return {
-        "fixture": {"segments": segment_count, "take_duration_ms": 20, "silence_after_ms": 5},
+        "fixture": {
+            "segments": segment_count,
+            "take_duration_ms": 20,
+            "silence_after_ms": 5,
+            "run_scoped": run_scoped,
+        },
         **queries.summary(),
         "selects_per_segment": round(len(queries.statements) / max(1, segment_count), 3),
         "elapsed_ms": _round_ms(elapsed),

@@ -1473,7 +1473,18 @@ def create_app(
         try:
             sessions.get(session_id)
             with database.session() as db_session:
-                return jsonify(stage_history(db_session, session_id, stage_key))
+                return jsonify(
+                    stage_history(
+                        db_session,
+                        session_id,
+                        stage_key,
+                        limit=request.args.get("limit", 50, type=int),
+                        before_version=request.args.get(
+                            "before_version",
+                            type=int,
+                        ),
+                    )
+                )
         except KeyError:
             return error_response("not_found", "Session not found.", 404)
         except ValueError as error:

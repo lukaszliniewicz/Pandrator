@@ -744,4 +744,57 @@ class CapabilitySnapshot(Base):
 
 
 Index("idx_segments_revision_timing", Segment.revision_id, Segment.start_ms, Segment.end_ms)
+Index(
+    "idx_jobs_session_kind_created",
+    Job.session_id,
+    Job.kind,
+    Job.created_at.desc(),
+    Job.id.desc(),
+)
+Index(
+    "idx_jobs_status_created",
+    Job.status,
+    Job.created_at,
+    Job.id,
+)
+Index(
+    "idx_artifacts_session_role_created",
+    Artifact.session_id,
+    Artifact.role,
+    Artifact.created_at.desc(),
+    Artifact.id.desc(),
+)
+Index(
+    "idx_artifact_edges_child_parent",
+    ArtifactEdge.child_artifact_id,
+    ArtifactEdge.parent_artifact_id,
+)
+Index(
+    "idx_audio_takes_active_status_segment_created",
+    AudioTake.is_active,
+    AudioTake.status,
+    AudioTake.generation_segment_id,
+    AudioTake.created_at.desc(),
+    AudioTake.id.desc(),
+)
+Index(
+    "idx_session_sources_current_updated",
+    SessionSource.session_id,
+    SessionSource.is_current.desc(),
+    SessionSource.updated_at.desc(),
+    SessionSource.id,
+)
+Index(
+    "idx_usage_events_session_stage_created",
+    UsageEvent.session_id,
+    UsageEvent.stage,
+    UsageEvent.created_at.desc(),
+    UsageEvent.id.desc(),
+)
+Index(
+    "idx_output_assemblies_session_created",
+    OutputAssembly.session_id,
+    OutputAssembly.created_at.desc(),
+    OutputAssembly.id.desc(),
+)
 

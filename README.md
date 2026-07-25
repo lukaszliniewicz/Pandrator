@@ -244,6 +244,13 @@ During the compatibility period, set `PANDRATOR_AUDIO_ASSEMBLER=pydub` before
 starting the worker to restore the legacy in-memory assembler. Remove the
 variable (or set it to `streaming`) to use the default path.
 
+Workflow snapshots load only current state and a ten-version preview for each
+stage; the history control retrieves older versions in separate pages. Ranked
+job, artifact, lineage, and selected-take queries are backed by workload-specific
+indexes installed automatically by the database migration. On an unusually
+large existing database, the first startup after this migration may therefore
+spend a short period building those indexes before the server becomes ready.
+
 To capture the current concurrency, query, audio, capability, and browser request
 baselines on disposable data:
 

@@ -115,6 +115,58 @@ class WebArtifactSelectionTests(unittest.TestCase):
         self.assertTrue((self.paths.sessions / "clear-transcript.srt").is_file())
         self.assertTrue((self.paths.sessions / "clear-correction.srt").is_file())
 
+    def test_stage_history_is_paginated_without_losing_version_numbers(self):
+        source = self.artifact(
+            "pagination-source.mp4",
+            "upload",
+            "media",
+        )
+        artifacts = [
+            self.artifact(
+                f"pagination-transcript-{index:03d}.srt",
+                "transcription",
+                str(index),
+                [source.id],
+            )
+            for index in range(65)
+        ]
+
+        workflow = self.client.get(
+            f"/api/v1/sessions/{self.session_id}/workflow"
+        ).get_json()
+        transcribe = next(
+            item for item in workflow["stages"] if item["key"] == "transcribe"
+        )
+        self.assertEqual(65, transcribe["artifact_history_total"])
+        self.assertEqual(10, len(transcribe["artifacts"]))
+        self.assertTrue(transcribe["artifact_history_has_more"])
+        self.assertEqual(
+            artifacts[-1].id,
+            transcribe["selected_artifact_id"],
+        )
+        self.assertEqual(
+            list(range(65, 55, -1)),
+            [item["version"] for item in transcribe["artifacts"]],
+        )
+
+        first_page = self.client.get(
+            f"/api/v1/sessions/{self.session_id}/stages/transcribe/artifacts?limit=50"
+        ).get_json()
+        self.assertEqual(65, first_page["total"])
+        self.assertEqual(50, len(first_page["items"]))
+        self.assertEqual(16, first_page["next_before_version"])
+
+        last_page = self.client.get(
+            f"/api/v1/sessions/{self.session_id}/stages/transcribe/artifacts"
+            f"?limit=50&before_version={first_page['next_before_version']}"
+        ).get_json()
+        self.assertEqual(15, len(last_page["items"]))
+        self.assertFalse(last_page["has_more"])
+        self.assertEqual(
+            list(range(15, 0, -1)),
+            [item["version"] for item in last_page["items"]],
+        )
+
     def test_attached_library_source_is_exposed_to_the_workflow(self):
         global_path = self.paths.uploads / "library-source.srt"
         global_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n", encoding="utf-8")

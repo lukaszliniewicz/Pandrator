@@ -52,6 +52,9 @@
     artifacts?: StageArtifact[];
     selected_artifact_id?: string | null;
     selection_revision?: number;
+    artifact_history_total?: number;
+    artifact_history_has_more?: boolean;
+    artifact_history_next_before_version?: number | null;
     job_id?: string | null;
     progress?: number | null;
     detail?: string | null;
@@ -88,6 +91,7 @@
   let sourceMessage = $state('');
   let pendingRun = $state<{stage: Stage; impact: any} | null>(null);
   let pendingSettingsMismatch = $state<{stage: Stage; mismatches: {stage: string; changed_fields: string[]}[]} | null>(null);
+  let historyLoading = $state<Record<string, boolean>>({});
   const mismatchFieldLabel = (field: string) => ({backend: 'backend', target_language: 'target language', model: 'model', instructions: 'guidance'}[field] ?? field);
   const mismatchStageLabel = (key: string) => (key === 'translate' ? 'Translation' : 'Correction');
   const stageProgressPercent = (stage: Stage) => {
@@ -304,6 +308,39 @@
       });
       await load({ initial: false });
     } catch (caught) { error = caught instanceof Error ? caught.message : String(caught); }
+  }
+
+  async function loadMoreStageArtifacts(stage: Stage) {
+    const beforeVersion = stage.artifact_history_next_before_version;
+    if (!beforeVersion || historyLoading[stage.key]) return;
+    historyLoading[stage.key] = true;
+    error = '';
+    try {
+      const history = await api<{
+        items: StageArtifact[];
+        total: number;
+        has_more: boolean;
+        next_before_version: number | null;
+      }>(
+        `/sessions/${session.id}/stages/${stage.key}/artifacts?limit=50&before_version=${beforeVersion}`
+      );
+      const merged = new Map(
+        [...(stage.artifacts ?? []), ...history.items].map((artifact) => [
+          artifact.id,
+          artifact
+        ])
+      );
+      stage.artifacts = [...merged.values()].sort(
+        (left, right) => right.version - left.version
+      );
+      stage.artifact_history_total = history.total || stage.artifact_history_total;
+      stage.artifact_history_has_more = history.has_more;
+      stage.artifact_history_next_before_version = history.next_before_version;
+    } catch (caught) {
+      error = caught instanceof Error ? caught.message : String(caught);
+    } finally {
+      historyLoading[stage.key] = false;
+    }
   }
 
   const stageSection = (key: string) => ({transcribe:'stt',correct:'correction',translate:'translation',optimize_document:'text',optimize_tts:'text',clean_source:'source_cleaning',prepare_text:'text',generate_audio:'tts',export:'output'}[key] ?? 'text');
@@ -814,7 +851,20 @@
             <div class="flex min-w-0 flex-1 items-start gap-4">
               <div class="grid size-11 shrink-0 place-items-center rounded-2xl bg-[var(--accent-soft)] text-sm font-bold text-[var(--accent)]">{stage.number}</div>
               <div class="min-w-0"><div class="flex flex-wrap items-center gap-2"><h2 class="text-lg font-semibold">{stage.title}</h2><span class:running={stage.status === 'running'} class:done={stage.status === 'completed'} class:warning={stage.status === 'stale' || stage.status === 'failed'} class="status-chip inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[.68rem] font-bold uppercase tracking-wider"><StatusIcon class={stage.status === 'running' ? 'animate-spin' : ''} size={12}/>{stage.toggle?(stage.enabled?'enabled':'disabled'):stage.status}</span></div><p class="muted mt-1.5 max-w-2xl text-sm leading-relaxed">{stage.explanation}</p>{#if stage.status==='running' && stage.progress!=null}<div class="mt-3 max-w-md"><div class="flex items-center justify-between gap-3 text-xs"><span class="muted min-w-0 truncate" title={stage.detail??''}>{stage.detail??'Working…'}</span><span class="muted shrink-0 tabular-nums">{stageProgressPercent(stage)}%</span></div><div class="mt-1.5 h-1.5 overflow-hidden rounded-full bg-[var(--line)]" role="progressbar" aria-label={`${stage.title} progress`} aria-valuemin="0" aria-valuemax="100" aria-valuenow={stageProgressPercent(stage)}><div class="h-full bg-[var(--accent)] transition-[width]" style={`width:${stageProgressPercent(stage)}%`}></div></div></div>{/if}{#if stage.detail && stage.status==='failed'}<p class="mt-2 text-xs text-red-500">{stage.detail}</p>{/if}{#if stage.key==='optimize_tts' && stage.usage}<p class="muted mt-2 text-xs"><strong class="text-[var(--ink)]">Latest usage:</strong> {stage.usage.total_tokens.toLocaleString()} tokens ({stage.usage.input_tokens.toLocaleString()} input, {stage.usage.output_tokens.toLocaleString()} output{stage.usage.cached_input_tokens ? `, ${stage.usage.cached_input_tokens.toLocaleString()} cached` : ''}) · {formatCost(stage.usage.cost_usd)} · {stage.usage.model_id}</p>{/if}
-              {#if (stage.artifacts?.length??0)>0}<StageArtifactHistory artifacts={stage.artifacts??[]} selectedArtifactId={stage.selected_artifact_id} canPreview={Boolean(stage.artifact)} onselect={(artifactId)=>chooseStageArtifact(stage,artifactId)} onpreview={()=>previewArtifact(stage)} onclear={()=>clearStageArtifact(stage)}/>{:else if stage.artifact}<button onclick={() => previewArtifact(stage)} class="mt-2 flex items-center gap-1 text-xs font-semibold text-[var(--accent)]">Preview latest: {stage.artifact.role}<ChevronRight size={13}/></button>{/if}</div>
+              {#if (stage.artifacts?.length??0)>0}
+                <StageArtifactHistory
+                  artifacts={stage.artifacts??[]}
+                  total={stage.artifact_history_total}
+                  hasMore={Boolean(stage.artifact_history_has_more)}
+                  loadingMore={Boolean(historyLoading[stage.key])}
+                  selectedArtifactId={stage.selected_artifact_id}
+                  canPreview={Boolean(stage.artifact)}
+                  onselect={(artifactId)=>chooseStageArtifact(stage,artifactId)}
+                  onpreview={()=>previewArtifact(stage)}
+                  onclear={()=>clearStageArtifact(stage)}
+                  onloadmore={()=>loadMoreStageArtifacts(stage)}
+                />
+              {:else if stage.artifact}<button onclick={() => previewArtifact(stage)} class="mt-2 flex items-center gap-1 text-xs font-semibold text-[var(--accent)]">Preview latest: {stage.artifact.role}<ChevronRight size={13}/></button>{/if}</div>
             </div>
             <div class="flex flex-wrap items-center gap-2 lg:justify-end">
               {#if stage.toggle}

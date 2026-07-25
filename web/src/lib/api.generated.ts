@@ -4067,14 +4067,21 @@ export interface operations {
     };
     listStageArtifacts: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                /** @description Return versions older than this exclusive version cursor. */
+                before_version?: number;
+            };
             header?: never;
-            path?: never;
+            path: {
+                sessionId: string;
+                stageKey: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Stage artifact history */
+            /** @description Stage artifact history page */
             200: {
                 headers: {
                     [name: string]: unknown;

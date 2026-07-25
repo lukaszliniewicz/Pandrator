@@ -17,7 +17,7 @@ from pandrator.web.artifacts import ArtifactService
 from pandrator.web.database import Database
 from pandrator.web.credentials import auxiliary_credential_key, upsert_credential
 from pandrator.web.jobs import JobQueue
-from pandrator.web.models import Artifact, ArtifactEdge, AudioTake, GenerationPlan, GenerationPlanRevision, GenerationRun, GenerationSegment, OutputAssembly, PronunciationEntry, SessionRecord
+from pandrator.web.models import Artifact, ArtifactEdge, AudioTake, GenerationPlan, GenerationPlanRevision, GenerationRun, GenerationSegment, OutputAssembly, PronunciationEntry, SessionRecord, UsageEvent
 from pandrator.web.sessions import SessionService
 from pandrator.web.workflow_handlers import (
     WorkflowHandlers,
@@ -1079,6 +1079,94 @@ A single reviewed cue.
         self.assertEqual(0.0, next(value for value, detail in updates if detail == "Generating segment 1 of 2"))
         self.assertEqual(0.5, next(value for value, detail in updates if detail == "Generated segment 1 of 2"))
         self.assertEqual(1.0, next(value for value, detail in updates if detail == "Generated segment 2 of 2"))
+
+    def test_generated_segment_database_writes_roll_back_as_one_unit(self):
+        revision_id, segment_ids = self.handlers._store_generation_plan(
+            self.session.id,
+            [{"text": "Atomic segment."}],
+            settings={},
+        )
+        with self.database.session() as session:
+            run = GenerationRun(
+                session_id=self.session.id,
+                plan_revision_id=revision_id,
+                status="queued",
+                settings_snapshot_json={
+                    "text": {"llm_tts_optimization": False},
+                    "tts": {"service": "XTTS"},
+                },
+            )
+            session.add(run)
+            session.flush()
+            run_id = run.id
+
+        with (
+            mock.patch(
+                "pandrator.logic.tts_handler.text_to_audio",
+                return_value=AudioSegment.silent(duration=25),
+            ),
+            mock.patch(
+                "pandrator.web.workspace.mark_output_assemblies_stale",
+                side_effect=RuntimeError("forced unit-of-work rollback"),
+            ),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "forced unit-of-work rollback",
+            ):
+                self.handlers.run_generation(
+                    {
+                        "generation_run_id": run_id,
+                        "operation": "generate",
+                    },
+                    self.progress,
+                    threading.Event(),
+                )
+
+        with self.database.session() as session:
+            self.assertEqual(
+                0,
+                session.scalar(
+                    select(func.count())
+                    .select_from(AudioTake)
+                    .where(AudioTake.generation_run_id == run_id)
+                ),
+            )
+            self.assertEqual(
+                0,
+                session.scalar(
+                    select(func.count())
+                    .select_from(Artifact)
+                    .where(
+                        Artifact.session_id == self.session.id,
+                        Artifact.role == "generation_take",
+                    )
+                ),
+            )
+            self.assertEqual(
+                0,
+                session.scalar(
+                    select(func.count())
+                    .select_from(UsageEvent)
+                    .where(UsageEvent.generation_run_id == run_id)
+                ),
+            )
+            self.assertEqual(
+                "failed",
+                session.get(GenerationSegment, segment_ids[0]).status,
+            )
+            self.assertEqual("failed", session.get(GenerationRun, run_id).status)
+        self.assertEqual(
+            [],
+            list(
+                (
+                    self.session_dir
+                    / "generation"
+                    / revision_id
+                    / segment_ids[0]
+                ).glob("*.wav")
+            ),
+        )
 
     def test_signal_verification_marks_a_run_relative_loud_outlier(self):
         revision_id, segment_ids = self.handlers._store_generation_plan(

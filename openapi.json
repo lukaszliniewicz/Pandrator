@@ -3484,9 +3484,49 @@
     "/api/v1/sessions/{sessionId}/stages/{stageKey}/artifacts": {
       "get": {
         "operationId": "listStageArtifacts",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "stageKey",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Return versions older than this exclusive version cursor.",
+            "in": "query",
+            "name": "before_version",
+            "required": false,
+            "schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
-            "description": "Stage artifact history"
+            "description": "Stage artifact history page"
           }
         }
       }
