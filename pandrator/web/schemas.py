@@ -260,6 +260,7 @@ class GenerationSegmentCreate(StrictModel):
     source_segment_ids: list[str] = Field(default_factory=list)
     node_kind: Literal["paragraph", "heading", "chapter_marker", "subtitle_cue"] = "paragraph"
     paragraph_break_after: bool = False
+    speaker: str | None = Field(default=None, max_length=160)
     voice_id: str | None = None
     voice: str | None = Field(default=None, max_length=255)
     language: str | None = Field(default=None, max_length=40)
@@ -288,6 +289,7 @@ class GenerationSegmentUpdate(StrictModel):
 class GenerationStartRequest(StrictModel):
     run_override: dict[str, Any] = Field(default_factory=dict)
     segment_ids: list[str] = Field(default_factory=list)
+    generation_run_id: str | None = None
     operation: Literal["generate", "regenerate", "rvc"] = "generate"
 
 

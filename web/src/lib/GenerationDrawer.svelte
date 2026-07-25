@@ -312,17 +312,28 @@
       else if (filter === 'verification_issues') query.set('verification', 'issues');
       else if (filter !== 'all') query.set('status', filter);
       if (!reset && payload.next_cursor != null) query.set('cursor', String(payload.next_cursor));
-      const [next, runPayload, latestAssembly] = await Promise.all([
-        api<any>(`/sessions/${sessionId}/generation-segments?${query}`),
+      const previousTotal = payload.total;
+      const previousRunId = run?.id ?? '';
+      const [runPayload, latestAssembly] = await Promise.all([
         api<any>(`/sessions/${sessionId}/generation-runs`),
         api<any>(`/sessions/${sessionId}/output-assemblies/latest`)
       ]);
-      const previousTotal = payload.total;
-      const previousRunId = run?.id ?? '';
+      runs = runPayload.items ?? [];
+      run = runs.find((item: any) =>
+        ['queued', 'running', 'pausing', 'pause_requested', 'cancel_requested', 'paused'].includes(item.status)
+      ) ?? runs[0] ?? null;
+      if (!selectedRunId || !runs.some((item: any) => item.id === selectedRunId)) selectedRunId = run?.id ?? '';
+      if (selectedRunId) query.set('generation_run_id', selectedRunId);
+      const next = await api<any>(`/sessions/${sessionId}/generation-segments?${query}`);
       if (!reset) {
         const known = new Set(payload.items.map((item: any) => item.id));
         payload = { ...next, items: [...payload.items, ...next.items.filter((item: any) => !known.has(item.id))] };
-      } else if (preserveLoaded && loadedFilter === filter && payload.items.length > next.items.length) {
+      } else if (
+        preserveLoaded
+        && loadedFilter === filter
+        && payload.plan_revision_id === next.plan_revision_id
+        && payload.items.length > next.items.length
+      ) {
         const incoming = new Map(next.items.map((item: any) => [item.id, item]));
         const lastOrdinal = next.items.at(-1)?.ordinal ?? -1;
         payload = {
@@ -335,9 +346,6 @@
         };
       } else payload = next;
       loadedFilter = filter;
-      runs = runPayload.items ?? [];
-      run = runs[0] ?? null;
-      if (!selectedRunId || !runs.some((item: any) => item.id === selectedRunId)) selectedRunId = run?.id ?? '';
       assembly = latestAssembly.item;
       if (
         initialized
@@ -419,7 +427,12 @@
         : {};
       run = await api(`/sessions/${sessionId}/generation-runs`, {
         method: 'POST',
-        body: JSON.stringify({ operation, segment_ids: ids, run_override })
+        body: JSON.stringify({
+          operation,
+          segment_ids: ids,
+          generation_run_id: ids.length && operation !== 'rvc' ? selectedRunId || null : null,
+          run_override
+        })
       });
       selectedRunId = run.id;
       mode = 'half';
@@ -555,6 +568,15 @@
     } finally {
       searchLoading = false;
     }
+  }
+
+  async function changeSelectedRun(event: Event) {
+    selectedRunId = (event.currentTarget as HTMLSelectElement).value;
+    selectedRow = '';
+    selectedRows = [];
+    selectionAnchor = '';
+    stopPlayback();
+    await load(true, false);
   }
 
   async function applySearchReplacements(updates: TextReplacement[]) {
@@ -782,7 +804,7 @@
         <div class="flex flex-wrap items-center gap-2 border-b border-[var(--line)] p-3">
           {#if runs.length}
             <label class="run-picker flex items-center gap-2 text-xs font-semibold">Version
-              <select bind:value={selectedRunId} class="mini max-w-[22rem]">
+              <select value={selectedRunId} onchange={changeSelectedRun} class="mini max-w-[22rem]">
                 {#each runs as item}<option value={item.id}>{item.label} · {item.status}</option>{/each}
               </select>
             </label>
@@ -860,6 +882,7 @@
                   <td><input type="checkbox" checked={item.marked} onchange={(event) => patchSegment(item, { marked: (event.currentTarget as HTMLInputElement).checked })} /></td>
                   <td class="muted font-mono text-xs">{item.ordinal + 1}</td>
                   <td>
+                    {#if item.speaker}<span class="mb-1 inline-flex rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[.62rem] font-semibold text-[var(--accent)]">{item.speaker}</span>{/if}
                     <textarea value={item.text} data-generation-search-index={payload.items.indexOf(item)} onblur={(event) => { const text = (event.currentTarget as HTMLTextAreaElement).value; if (text !== item.text) patchSegment(item, { text }); }} rows="2" class="w-full resize-y rounded-lg border border-transparent bg-transparent p-2 focus:border-[var(--line)]"></textarea>
                     {#if item.optimized_text || activeTake(item)?.llm_optimized}
                       <button onclick={(event) => { event.stopPropagation(); openOptimizationReview(item); }} class="mb-2 flex max-w-full items-center gap-1.5 rounded-lg bg-[var(--accent-soft)] px-2.5 py-1.5 text-left text-[.68rem] font-semibold text-[var(--accent)]"><WandSparkles size={12}/><span class="truncate">{item.speech_plan?.version ? 'Review speech plan' : 'Compare speech optimization'}</span><span class="rounded-full bg-[var(--paper)] px-1.5 py-0.5 text-[.58rem] uppercase">{item.speech_plan?.mode_used ?? item.optimization_status ?? 'generated'}</span>{#if item.speech_plan?.proposals?.length}<span class="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[.58rem] uppercase text-amber-700">{item.speech_plan.proposals.length} proposed</span>{/if}</button>

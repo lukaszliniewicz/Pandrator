@@ -25,13 +25,17 @@ class SpeechBlock:
     number: str
     text: str
     subtitles: list[int] = field(default_factory=list)
+    speaker: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "number": self.number,
             "text": self.text,
             "subtitles": list(self.subtitles),
         }
+        if self.speaker:
+            payload["speaker"] = self.speaker
+        return payload
 
 
 @dataclass(frozen=True)

@@ -69,7 +69,7 @@ from .models import (
 logger = logging.getLogger(__name__)
 
 CLAUSE_PAUSE_RATIO = 1 / 3
-GENERATION_SEGMENT_POLICY_VERSION = 2
+GENERATION_SEGMENT_POLICY_VERSION = 3
 
 
 def _scaled_progress_callback(progress, start: float, end: float):
@@ -260,14 +260,35 @@ def _research_fingerprint(settings: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _speech_block_settings(settings: dict[str, Any]) -> tuple[int, int, int]:
+    min_chars = max(1, int(settings.get("speech_block_min_chars") or 10))
+    max_chars = max(
+        min_chars,
+        int(settings.get("speech_block_max_chars") or 220),
+    )
+    merge_threshold = max(
+        0,
+        int(
+            settings.get("speech_block_merge_threshold")
+            if settings.get("speech_block_merge_threshold") is not None
+            else settings.get("subtitle_merge_threshold", 250)
+        ),
+    )
+    return min_chars, max_chars, merge_threshold
+
+
 def _generation_segmentation_settings(settings: dict[str, Any]) -> dict[str, Any]:
     """Subset of generation settings that can change stored plan segments.
 
     Voice, service, and model choices must not invalidate a segment plan, so
     they are deliberately excluded from the plan revision content hash.
     """
+    min_chars, max_chars, merge_threshold = _speech_block_settings(settings)
     return {
         "segment_policy_version": GENERATION_SEGMENT_POLICY_VERSION,
+        "speech_block_min_chars": min_chars,
+        "speech_block_max_chars": max_chars,
+        "speech_block_merge_threshold": merge_threshold,
         "paragraph_silence_ms": settings.get("paragraph_silence_ms", settings.get("silence_for_paragraphs", 700)),
         "sentence_silence_ms": settings.get("sentence_silence_ms", settings.get("silence_between_sentences", 250)),
         "clause_pause_ratio": CLAUSE_PAUSE_RATIO,
@@ -1062,6 +1083,450 @@ class WorkflowHandlers:
         except (KeyError, OSError):
             logger.warning("Could not resolve speaker metadata for artifact %s", artifact.id)
         return mapping
+
+    @staticmethod
+    def _reviewed_subtitle_blocks(
+        display_segments: list[Any],
+        speech_segments: list[Any],
+        speaker_by_subtitle: dict[int, str],
+        *,
+        max_chars: int,
+        merge_threshold: int,
+    ) -> list[dict[str, Any]]:
+        """Group aligned display/speech cues without losing cue identity.
+
+        Reviewed speech can differ enough from its display subtitle that the
+        two texts cannot be split at equivalent character offsets. Treat each
+        aligned cue as atomic, then merge only when both text variants fit the
+        same speaker-safe timing partition. This prevents a long display cue
+        from causing its full optimized speech to be repeated in every split.
+        """
+
+        diarization_expected = bool(speaker_by_subtitle) or any(
+            segment.speaker for segment in display_segments
+        )
+        blocks: list[dict[str, Any]] = []
+        for display_segment, speech_segment in zip(
+            display_segments,
+            speech_segments,
+            strict=True,
+        ):
+            speaker = str(
+                speaker_by_subtitle.get(display_segment.index)
+                or display_segment.speaker
+                or ""
+            ).strip()
+            speaker_key = (
+                speaker.casefold()
+                if speaker
+                else f"unknown-cue:{display_segment.index}"
+                if diarization_expected
+                else ""
+            )
+            display_text = re.sub(
+                r"\s+",
+                " ",
+                str(display_segment.text or ""),
+            ).strip()
+            optimized_text = re.sub(
+                r"\s+",
+                " ",
+                str(speech_segment.text or ""),
+            ).strip()
+            if not display_text or not optimized_text:
+                continue
+
+            previous = blocks[-1] if blocks else None
+            can_merge = bool(
+                previous
+                and previous["_speaker_key"] == speaker_key
+                and max(0, display_segment.start_ms - previous["_end_ms"])
+                <= merge_threshold
+                and len(previous["text"]) + 1 + len(display_text) <= max_chars
+                and len(previous["_optimized_text"]) + 1 + len(optimized_text)
+                <= max_chars
+            )
+            if can_merge:
+                previous["text"] = f"{previous['text']} {display_text}"
+                previous["_optimized_text"] = (
+                    f"{previous['_optimized_text']} {optimized_text}"
+                )
+                previous["subtitles"].append(display_segment.index)
+                previous["_end_ms"] = display_segment.end_ms
+                continue
+
+            blocks.append(
+                {
+                    "text": display_text,
+                    "_optimized_text": optimized_text,
+                    "subtitles": [display_segment.index],
+                    "speaker": speaker,
+                    "_speaker_key": speaker_key,
+                    "_end_ms": display_segment.end_ms,
+                }
+            )
+
+        return [
+            {
+                "number": str(index).zfill(4),
+                "text": block["text"],
+                "subtitles": list(block["subtitles"]),
+                **({"speaker": block["speaker"]} if block["speaker"] else {}),
+                "_optimized_text": block["_optimized_text"],
+            }
+            for index, block in enumerate(blocks, start=1)
+        ]
+
+    def _subtitle_generation_records(
+        self,
+        source_artifact: Artifact,
+        source_path: Path,
+        settings: dict[str, Any],
+        language: str,
+    ) -> tuple[list[dict[str, Any]], str | None, Artifact]:
+        """Build one speaker-safe partition for display and speech text."""
+        from pandrator.logic.dubbing.speech_blocks import create_speech_blocks
+        from pandrator.logic.dubbing.srt_utils import parse_srt
+
+        min_chars, max_chars, merge_threshold = _speech_block_settings(settings)
+        display_artifact = source_artifact
+        display_path = source_path
+        display_segments = None
+        speech_segments = None
+        plan_by_position: dict[int, dict[str, Any]] = {}
+
+        if source_artifact.role == "tts_optimized":
+            display_artifact_id = str(
+                (source_artifact.metadata_json or {}).get("source_artifact_id") or ""
+            )
+            if display_artifact_id:
+                candidate_artifact, candidate_path = self._resolve_input(
+                    display_artifact_id
+                )
+                if candidate_path.suffix.lower() == ".srt":
+                    display_artifact = candidate_artifact
+                    display_path = candidate_path
+                    display_segments = parse_srt(
+                        display_path.read_text(encoding="utf-8-sig")
+                    )
+                    speech_segments = parse_srt(
+                        source_path.read_text(encoding="utf-8-sig")
+                    )
+                    if [item.index for item in display_segments] != [
+                        item.index for item in speech_segments
+                    ]:
+                        raise ValueError(
+                            "The reviewed speech revision no longer aligns with "
+                            "its display subtitles."
+                        )
+                    plan_artifact_id = str(
+                        (source_artifact.metadata_json or {}).get(
+                            "speech_plan_artifact_id"
+                        )
+                        or ""
+                    )
+                    if plan_artifact_id:
+                        _plan_artifact, plan_path = self._resolve_input(
+                            plan_artifact_id
+                        )
+                        plan_rows = json.loads(
+                            plan_path.read_text(encoding="utf-8-sig")
+                        )
+                        if isinstance(plan_rows, list):
+                            for position, row in enumerate(plan_rows):
+                                if isinstance(row, dict):
+                                    try:
+                                        plan_position = int(
+                                            row.get("index", position)
+                                        )
+                                    except (TypeError, ValueError):
+                                        plan_position = position
+                                    plan_by_position[plan_position] = dict(
+                                        row.get("speech_plan") or {}
+                                    )
+
+        speaker_by_subtitle = self._subtitle_speaker_map(
+            display_artifact,
+            display_path,
+        )
+        if display_segments is None:
+            display_segments = parse_srt(
+                display_path.read_text(encoding="utf-8-sig")
+            )
+        if speech_segments is not None:
+            blocks = self._reviewed_subtitle_blocks(
+                display_segments,
+                speech_segments,
+                speaker_by_subtitle,
+                max_chars=max_chars,
+                merge_threshold=merge_threshold,
+            )
+        else:
+            blocks = create_speech_blocks(
+                display_path.read_text(encoding="utf-8-sig"),
+                target_language=language,
+                min_chars=min_chars,
+                max_chars=max_chars,
+                merge_threshold=merge_threshold,
+                **(
+                    {"speaker_by_subtitle": speaker_by_subtitle}
+                    if speaker_by_subtitle
+                    else {}
+                ),
+            )
+        if not blocks:
+            raise ValueError("No dubbing speech blocks were produced.")
+
+        position_by_index = {
+            item.index: position for position, item in enumerate(display_segments)
+        }
+        records: list[dict[str, Any]] = []
+        for block in blocks:
+            subtitle_ids = [int(value) for value in block.get("subtitles") or []]
+            record = {
+                **{
+                    key: value
+                    for key, value in block.items()
+                    if not str(key).startswith("_")
+                },
+                "source_segment_ids": subtitle_ids,
+                "node_kind": "subtitle_cue",
+                "language": language,
+            }
+            if speech_segments is not None:
+                optimized_text = str(block.get("_optimized_text") or "").strip()
+                record["tts_optimized_sentence"] = optimized_text
+                cue_plans = [
+                    {
+                        "subtitle": index,
+                        "speech_plan": plan_by_position.get(
+                            position_by_index.get(index, -1),
+                            {},
+                        ),
+                    }
+                    for index in subtitle_ids
+                    if plan_by_position.get(position_by_index.get(index, -1))
+                ]
+                if len(subtitle_ids) == 1 and cue_plans:
+                    record["speech_plan"] = cue_plans[0]["speech_plan"]
+                elif cue_plans:
+                    record["speech_plan"] = {
+                        "version": 1,
+                        "status": "reviewed_aggregate",
+                        "mode_used": "document",
+                        "compiled_text": optimized_text,
+                        "cue_plans": cue_plans,
+                    }
+            records.append(record)
+
+        source_revision_id = str(
+            (display_artifact.metadata_json or {}).get("revision_id") or ""
+        ) or None
+        return records, source_revision_id, display_artifact
+
+    def _materialize_subtitle_generation_plan(
+        self,
+        session_id: str,
+        source_artifact: Artifact,
+        source_path: Path,
+        settings: dict[str, Any],
+        language: str,
+    ) -> str:
+        """Create a new versioned plan revision only when its topology changed."""
+        with self.database.session() as session:
+            plan = session.scalar(
+                select(GenerationPlan).where(
+                    GenerationPlan.session_id == session_id
+                )
+            )
+            previous_revision_id = plan.active_revision_id if plan else None
+
+        records, source_revision_id, display_artifact = (
+            self._subtitle_generation_records(
+                source_artifact,
+                source_path,
+                settings,
+                language,
+            )
+        )
+        revision_id, _segment_ids = self._store_generation_plan(
+            session_id,
+            records,
+            settings=settings,
+            source_revision_id=source_revision_id,
+            source_artifact_id=source_artifact.id,
+        )
+        if revision_id != previous_revision_id:
+            destination = _next_available_path(
+                self._operation_dir(session_id, "speech-blocks")
+                / f"{source_path.stem}-speech-blocks.json"
+            )
+            destination.write_text(
+                json.dumps(records, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            parent_ids = [source_artifact.id]
+            if display_artifact.id != source_artifact.id:
+                parent_ids.append(display_artifact.id)
+            self.artifacts.register(
+                destination,
+                kind="json",
+                role="speech_blocks",
+                session_id=session_id,
+                parent_ids=parent_ids,
+                settings=settings,
+                metadata={
+                    "generation_plan_revision_id": revision_id,
+                    "source_artifact_id": source_artifact.id,
+                    "display_artifact_id": display_artifact.id,
+                    "segment_count": len(records),
+                    **_generation_segmentation_settings(settings),
+                },
+            )
+        return revision_id
+
+    def _generation_source_for_plan_refresh(
+        self,
+        session_id: str,
+    ) -> Artifact | None:
+        """Resolve the currently selected source, with legacy plan fallbacks."""
+        with self.database.session() as session:
+            record = session.get(SessionRecord, session_id)
+            if record is None:
+                raise KeyError(session_id)
+            outcome = session.scalar(
+                select(OutcomePlan).where(OutcomePlan.session_id == session_id)
+            )
+            outcome_value = (
+                dict(outcome.value_json or {})
+                if outcome and isinstance(outcome.value_json, dict)
+                else {}
+            )
+            inputs = (
+                outcome_value.get("inputs")
+                if isinstance(outcome_value.get("inputs"), dict)
+                else {}
+            )
+            transformations = (
+                outcome_value.get("transformations")
+                if isinstance(outcome_value.get("transformations"), dict)
+                else {}
+            )
+            generation_input = str(
+                inputs.get("generation") or "translation"
+            ).strip().lower()
+            has_explicit_source_choice = bool(
+                str(inputs.get("generation") or "").strip()
+            ) or bool(
+                transformations.get("llm_tts_document_optimization")
+            )
+            plan = session.scalar(
+                select(GenerationPlan).where(
+                    GenerationPlan.session_id == session_id
+                )
+            )
+            active = (
+                session.get(GenerationPlanRevision, plan.active_revision_id)
+                if plan and plan.active_revision_id
+                else None
+            )
+            stored_source_id = str(
+                ((active.settings_json if active else {}) or {}).get(
+                    "_source_artifact_id"
+                )
+                or ""
+            )
+            source_revision_id = str(
+                (active.source_revision_id if active else "") or ""
+            )
+
+        if stored_source_id and not has_explicit_source_choice:
+            try:
+                source, _path = self._resolve_input(stored_source_id)
+                return source
+            except KeyError:
+                pass
+        if record.workflow_kind != "audiobook":
+            if bool(transformations.get("llm_tts_document_optimization")):
+                roles = ("tts_optimized",)
+            elif generation_input == "correction":
+                roles = ("correction",)
+            elif generation_input == "source":
+                roles = ("transcription", "upload")
+            else:
+                roles = ("translation",)
+            selected = self._latest_stage_input(session_id, roles)
+            if selected is not None:
+                return selected
+
+        if stored_source_id:
+            try:
+                source, _path = self._resolve_input(stored_source_id)
+                return source
+            except KeyError:
+                pass
+        if source_revision_id:
+            with self.database.session() as session:
+                candidates = list(
+                    session.scalars(
+                        select(Artifact)
+                        .where(
+                            Artifact.session_id == session_id,
+                            Artifact.state != "deleted",
+                        )
+                        .order_by(Artifact.created_at.desc())
+                    ).all()
+                )
+                for candidate in candidates:
+                    if str(
+                        (candidate.metadata_json or {}).get("revision_id") or ""
+                    ) == source_revision_id:
+                        session.expunge(candidate)
+                        return candidate
+        return None
+
+    def refresh_generation_plan(
+        self,
+        session_id: str,
+        resolved_snapshot: dict[str, Any],
+    ) -> str | None:
+        """Apply current subtitle segmentation settings before a full new run."""
+        source_artifact = self._generation_source_for_plan_refresh(session_id)
+        if source_artifact is None:
+            return None
+        source_artifact, source_path = self._resolve_input(source_artifact.id)
+        resolved_snapshot["source_artifact_id"] = source_artifact.id
+        resolved_snapshot["text"] = {
+            **dict(resolved_snapshot.get("text") or {}),
+            "use_existing_speech_plans": source_artifact.role == "tts_optimized",
+        }
+        if source_path.suffix.lower() != ".srt":
+            return None
+
+        from .workspace import adapt_runtime_settings
+
+        settings: dict[str, Any] = {}
+        for section in ("text", "subtitles", "tts", "audio", "rvc", "output"):
+            value = resolved_snapshot.get(section)
+            if isinstance(value, dict):
+                settings.update(adapt_runtime_settings(section, value))
+        language = self._generation_language(
+            session_id,
+            source_artifact,
+            settings,
+        )
+        settings = {
+            **settings,
+            "language": language,
+            "target_language": language,
+        }
+        return self._materialize_subtitle_generation_plan(
+            session_id,
+            source_artifact,
+            source_path,
+            settings,
+            language,
+        )
 
     def _store_srt_document(
         self,
@@ -2878,6 +3343,7 @@ class WorkflowHandlers:
             prepared,
             settings=settings,
             source_revision_id=str((source_artifact.metadata_json or {}).get("revision_id") or "") or None,
+            source_artifact_id=artifact.id,
         )
         progress(1.0, "Narration segments ready")
         return {"artifact_id": artifact.id, "path": artifact.relative_path, "segments": len(prepared), "generation_plan_revision_id": generation_revision_id}
@@ -2889,11 +3355,17 @@ class WorkflowHandlers:
         *,
         settings: dict[str, Any],
         source_revision_id: str | None = None,
+        source_artifact_id: str | None = None,
     ) -> tuple[str, list[str]]:
         clean = [item for item in records if str(item.get("text") or item.get("original_sentence") or "").strip()]
         digest = hashlib.sha256(
             json.dumps(
-                {"records": clean, "settings": _generation_segmentation_settings(settings)},
+                {
+                    "records": clean,
+                    "settings": _generation_segmentation_settings(settings),
+                    "source_revision_id": source_revision_id,
+                    "source_artifact_id": source_artifact_id,
+                },
                 ensure_ascii=False,
                 sort_keys=True,
                 default=str,
@@ -2920,7 +3392,16 @@ class WorkflowHandlers:
                 session.add(plan)
                 session.flush()
             maximum = session.scalar(select(func.max(GenerationPlanRevision.revision_number)).where(GenerationPlanRevision.plan_id == plan.id)) or 0
-            revision = GenerationPlanRevision(plan_id=plan.id, source_revision_id=source_revision_id, revision_number=int(maximum) + 1, settings_json=settings, content_hash=digest)
+            stored_settings = dict(settings)
+            if source_artifact_id:
+                stored_settings["_source_artifact_id"] = source_artifact_id
+            revision = GenerationPlanRevision(
+                plan_id=plan.id,
+                source_revision_id=source_revision_id,
+                revision_number=int(maximum) + 1,
+                settings_json=stored_settings,
+                content_hash=digest,
+            )
             session.add(revision)
             session.flush()
             segment_ids = []
@@ -2934,6 +3415,7 @@ class WorkflowHandlers:
                     source_segment_ids_json=list(record.get("source_segment_ids") or record.get("subtitles") or []),
                     node_kind=str(record.get("node_kind") or ("subtitle_cue" if is_subtitle else "chapter_marker" if str(record.get("chapter") or "").lower() == "yes" else "paragraph")),
                     paragraph_break_after=False if is_subtitle else bool(record.get("paragraph_break_after", str(record.get("paragraph") or "").lower() == "yes")),
+                    speaker=str(record.get("speaker") or "").strip() or None,
                     text=str(record.get("text") or record.get("original_sentence") or "").strip(),
                     optimized_text=(
                         str(record.get("tts_optimized_sentence") or "").strip()
@@ -3368,6 +3850,7 @@ class WorkflowHandlers:
                                 "text": segment.text,
                                 "language": segment.language,
                                 "voice": segment.voice,
+                                "speaker": segment.speaker,
                                 "node_kind": segment.node_kind,
                                 "paragraph_break_after": segment.paragraph_break_after,
                                 "silence_after_ms": segment.silence_after_ms,
@@ -3381,6 +3864,7 @@ class WorkflowHandlers:
                 records,
                 settings=settings,
                 source_revision_id=str((source_artifact.metadata_json or {}).get("revision_id") or "") or None,
+                source_artifact_id=source_artifact.id,
             )
         source_texts = [str(record.get("text") or record.get("original_sentence") or "").strip() for record in records]
         optimization_share = 0.25 if bool(settings.get("llm_tts_optimization")) else 0.0
@@ -3558,149 +4042,21 @@ class WorkflowHandlers:
         This boundary deliberately stops after immutable per-segment takes;
         output assembly remains an explicit review action.
         """
-        from pandrator.logic.dubbing.speech_blocks import generate_speech_blocks_file
-
         session_id = str(payload.get("session_id") or "")
         source_artifact, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
         settings = dict(payload.get("settings") or {})
         language = self._generation_language(session_id, source_artifact, settings)
         settings = {**settings, "language": language, "target_language": language}
-        speaker_by_subtitle = self._subtitle_speaker_map(source_artifact, source_path)
-        speaker_options = (
-            {"speaker_by_subtitle": speaker_by_subtitle}
-            if speaker_by_subtitle
-            else {}
-        )
         progress(0.0, "Preparing generation segments")
 
         plan_revision_id: str | None = None
         if source_path.suffix.lower() == ".srt":
-            reviewed_speech_records: list[dict[str, Any]] | None = None
-            source_revision_id = str(
-                (source_artifact.metadata_json or {}).get("revision_id") or ""
-            ) or None
-            if source_artifact.role == "tts_optimized":
-                from pandrator.logic.dubbing.srt_utils import parse_srt
-
-                display_artifact_id = str(
-                    (source_artifact.metadata_json or {}).get(
-                        "source_artifact_id"
-                    )
-                    or ""
-                )
-                if display_artifact_id:
-                    display_artifact, display_path = self._resolve_input(
-                        display_artifact_id
-                    )
-                    if display_path.suffix.lower() == ".srt":
-                        display_segments = parse_srt(
-                            display_path.read_text(encoding="utf-8-sig")
-                        )
-                        speech_segments = parse_srt(
-                            source_path.read_text(encoding="utf-8-sig")
-                        )
-                        if len(display_segments) != len(speech_segments):
-                            raise ValueError(
-                                "The reviewed speech revision no longer aligns "
-                                "with its display subtitles."
-                            )
-                        plan_by_index: dict[int, dict[str, Any]] = {}
-                        plan_artifact_id = str(
-                            (source_artifact.metadata_json or {}).get(
-                                "speech_plan_artifact_id"
-                            )
-                            or ""
-                        )
-                        if plan_artifact_id:
-                            _plan_artifact, plan_path = self._resolve_input(
-                                plan_artifact_id
-                            )
-                            plan_rows = json.loads(
-                                plan_path.read_text(encoding="utf-8-sig")
-                            )
-                            if isinstance(plan_rows, list):
-                                plan_by_index = {
-                                    int(row.get("index")): dict(
-                                        row.get("speech_plan") or {}
-                                    )
-                                    for row in plan_rows
-                                    if isinstance(row, dict)
-                                }
-                        reviewed_speech_records = []
-                        for index, (display_segment, speech_segment) in enumerate(
-                            zip(display_segments, speech_segments)
-                        ):
-                            if display_segment.index != speech_segment.index:
-                                raise ValueError(
-                                    "The reviewed speech revision changed subtitle "
-                                    "cue identity."
-                                )
-                            reviewed_speech_records.append(
-                                {
-                                    "text": display_segment.text,
-                                    "tts_optimized_sentence": speech_segment.text,
-                                    "speech_plan": plan_by_index.get(index, {}),
-                                    "source_segment_ids": [
-                                        display_segment.index
-                                    ],
-                                    "subtitles": [display_segment.index],
-                                    "node_kind": "subtitle_cue",
-                                    "language": language,
-                                }
-                            )
-                        source_revision_id = str(
-                            (display_artifact.metadata_json or {}).get(
-                                "revision_id"
-                            )
-                            or ""
-                        ) or None
-
-            if reviewed_speech_records is not None:
-                blocks_path = (
-                    self._operation_dir(session_id, "speech-blocks")
-                    / f"reviewed-speech-{new_id()}.json"
-                )
-                blocks_path.write_text(
-                    json.dumps(
-                        reviewed_speech_records,
-                        ensure_ascii=False,
-                        indent=2,
-                    ),
-                    encoding="utf-8",
-                )
-                records = reviewed_speech_records
-            else:
-                blocks_path = Path(
-                    generate_speech_blocks_file(
-                        str(self._operation_dir(session_id, "speech-blocks")),
-                        str(source_path),
-                        target_language=language,
-                        min_chars=int(settings.get("speech_block_min_chars") or 10),
-                        max_chars=int(settings.get("speech_block_max_chars") or 220),
-                        merge_threshold=int(
-                            settings.get("speech_block_merge_threshold")
-                            if settings.get("speech_block_merge_threshold") is not None
-                            else settings.get("subtitle_merge_threshold", 250)
-                        ),
-                        **speaker_options,
-                    )
-                )
-                records = json.loads(blocks_path.read_text(encoding="utf-8-sig"))
-            if not isinstance(records, list) or not records:
-                raise ValueError("No dubbing speech blocks were produced.")
-            self.artifacts.register(
-                blocks_path,
-                kind="json",
-                role="speech_blocks",
-                session_id=session_id,
-                parent_ids=[source_artifact.id],
-                settings=settings,
-            )
-            plan_revision_id, _ = self._store_generation_plan(
+            plan_revision_id = self._materialize_subtitle_generation_plan(
                 session_id,
-                records,
-                settings=settings,
-                source_revision_id=source_revision_id,
+                source_artifact,
+                source_path,
+                settings,
+                language,
             )
         elif source_path.suffix.lower() == ".json":
             # Segment narration already creates a plan. Preserve any edits the
@@ -3719,6 +4075,7 @@ class WorkflowHandlers:
                     records,
                     settings=settings,
                     source_revision_id=str((source_artifact.metadata_json or {}).get("revision_id") or "") or None,
+                    source_artifact_id=source_artifact.id,
                 )
         else:
             raise ValueError("Audio generation requires subtitle cues or segmented narration.")
@@ -3875,6 +4232,7 @@ class WorkflowHandlers:
                 segment.status = "running"
                 segment.updated_at = utcnow()
                 text = segment.text
+                segment_speaker = segment.speaker
                 segment_language = self._usable_language(segment.language)
                 segment_voice = str(segment.voice or "").strip() or None
             progress(
@@ -3962,6 +4320,7 @@ class WorkflowHandlers:
                         "generation_segment_id": segment_id,
                         "generation_run_id": run_id,
                         "kind": take_kind,
+                        "speaker": segment_speaker,
                         "source_text": text,
                         "synthesized_text": synthesized_text,
                         "llm_optimized": operation != "rvc" and synthesized_text != text,
@@ -4268,6 +4627,7 @@ class WorkflowHandlers:
                                 "segment_id": segment.id,
                                 "segment_revision": segment.revision,
                                 "node_kind": segment.node_kind,
+                                "speaker": segment.speaker,
                                 "take_id": take.id,
                                 "take_revision": take.revision,
                                 "artifact_id": artifact.id,
@@ -4323,6 +4683,7 @@ class WorkflowHandlers:
                             "segment_id": segment.id,
                             "segment_revision": segment.revision,
                             "node_kind": segment.node_kind,
+                            "speaker": segment.speaker,
                             "take_id": take.id,
                             "take_revision": take.revision,
                             "artifact_id": artifact.id,

@@ -183,7 +183,13 @@ def create_app(
     outcome_plans = OutcomePlanService(database)
     source_library = SourceLibraryService(database)
     source_library.backfill_legacy()
-    generation = GenerationService(database, jobs, workspace_settings, artifacts)
+    generation = GenerationService(
+        database,
+        jobs,
+        workspace_settings,
+        artifacts,
+        plan_refresher=workflow_handlers.refresh_generation_plan,
+    )
     pronunciations = PronunciationLibrary(database)
     chunk_uploads = ChunkUploadService(database, paths, artifacts, source_library)
     chunk_uploads.cleanup_expired()
@@ -1111,9 +1117,14 @@ def create_app(
                 status=request.args.get("status"),
                 marked=marked,
                 verification=request.args.get("verification"),
+                generation_run_id=request.args.get("generation_run_id"),
             )
         except KeyError:
-            return error_response("not_found", "Session not found.", 404)
+            return error_response(
+                "not_found",
+                "Session or generation run not found.",
+                404,
+            )
         except ValueError as error:
             return error_response("validation_error", str(error), 422)
         return jsonify(result)
@@ -1195,7 +1206,13 @@ def create_app(
         if rejected := inline_credential_error(payload.run_override):
             return rejected
         try:
-            result = generation.start(session_id, run_override=payload.run_override, segment_ids=payload.segment_ids, operation=payload.operation)
+            result = generation.start(
+                session_id,
+                run_override=payload.run_override,
+                segment_ids=payload.segment_ids,
+                generation_run_id=payload.generation_run_id,
+                operation=payload.operation,
+            )
         except KeyError:
             return error_response("not_found", "Session not found.", 404)
         except ValueError as error:

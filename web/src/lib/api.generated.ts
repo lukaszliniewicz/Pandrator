@@ -1541,6 +1541,11 @@ export interface components {
                     silence_after_ms: number;
                     /** Source Segment Ids */
                     source_segment_ids?: string[];
+                    /**
+                     * Speaker
+                     * @default null
+                     */
+                    speaker: string | null;
                     /** Text */
                     text: string;
                     /**
@@ -1581,6 +1586,11 @@ export interface components {
             silence_after_ms: number;
             /** Source Segment Ids */
             source_segment_ids?: string[];
+            /**
+             * Speaker
+             * @default null
+             */
+            speaker: string | null;
             /** Text */
             text: string;
             /**
@@ -1649,6 +1659,11 @@ export interface components {
         };
         /** GenerationStartRequest */
         GenerationStartRequest: {
+            /**
+             * Generation Run Id
+             * @default null
+             */
+            generation_run_id: string | null;
             /**
              * Operation
              * @default generate
@@ -3674,7 +3689,10 @@ export interface operations {
     };
     listGenerationSegments: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Return the plan revision bound to this generation run. */
+                generation_run_id?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;

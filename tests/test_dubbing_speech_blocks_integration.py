@@ -43,7 +43,7 @@ class DubbingSpeechBlocksIntegrationTests(unittest.TestCase):
         self.assertEqual(merged[0]["subtitles"], [1, 2])
         self.assertEqual([block["text"] for block in unmerged], ["Hello there", "friend", "Later"])
 
-    def test_speech_block_merge_keeps_subdub_directionality(self):
+    def test_short_leading_fragment_merges_when_the_timing_rule_allows_it(self):
         content = """1
 00:00:00,000 --> 00:00:00,500
 Hi
@@ -62,7 +62,7 @@ This following block is already long enough
 
         self.assertEqual(
             [block["text"] for block in blocks],
-            ["Hi", "This following block is already long enough"],
+            ["Hi This following block is already long enough"],
         )
 
     def test_capacity_cut_inside_sentence_is_rejoined_for_tts(self):
@@ -119,6 +119,10 @@ This is a separate sentence.
             ["An unfinished thought,", "answered by somebody else."],
         )
         self.assertTrue(all("SPEAKER" not in block["text"] for block in blocks))
+        self.assertEqual(
+            ["SPEAKER_0", "SPEAKER_1"],
+            [block["speaker"] for block in blocks],
+        )
 
     def test_structured_speakers_prevent_plain_cues_from_merging(self):
         content = """1
@@ -143,6 +147,70 @@ answered by somebody else.
             [block["text"] for block in blocks],
             ["An unfinished thought,", "answered by somebody else."],
         )
+        self.assertEqual(
+            ["Speaker 0", "Speaker 1"],
+            [block["speaker"] for block in blocks],
+        )
+
+    def test_missing_speaker_is_a_boundary_when_diarization_is_present(self):
+        content = """1
+00:00:00,000 --> 00:00:01,000
+Known speaker.
+
+2
+00:00:01,050 --> 00:00:02,000
+Unattributed cue one.
+
+3
+00:00:02,050 --> 00:00:03,000
+Unattributed cue two.
+"""
+
+        blocks = speech_blocks.create_speech_blocks(
+            content,
+            target_language="en",
+            min_chars=10,
+            max_chars=100,
+            merge_threshold=250,
+            speaker_by_subtitle={1: "Speaker 0"},
+        )
+
+        self.assertEqual(
+            ["Known speaker.", "Unattributed cue one.", "Unattributed cue two."],
+            [block["text"] for block in blocks],
+        )
+
+    def test_sentence_boundary_does_not_override_merge_threshold(self):
+        content = """1
+00:00:00,000 --> 00:00:01,000
+First sentence.
+
+2
+00:00:01,150 --> 00:00:02,000
+Second sentence.
+"""
+
+        merged = speech_blocks.create_speech_blocks(
+            content,
+            target_language="en",
+            min_chars=10,
+            max_chars=100,
+            merge_threshold=200,
+        )
+        separate = speech_blocks.create_speech_blocks(
+            content,
+            target_language="en",
+            min_chars=10,
+            max_chars=100,
+            merge_threshold=100,
+        )
+
+        self.assertEqual(["First sentence. Second sentence."], [
+            block["text"] for block in merged
+        ])
+        self.assertEqual(["First sentence.", "Second sentence."], [
+            block["text"] for block in separate
+        ])
 
     def test_speech_block_conjunction_map_preserves_non_ascii_languages(self):
         self.assertIn("ponieważ", speech_blocks.CONJUNCTIONS["pl"])

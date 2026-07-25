@@ -242,6 +242,19 @@
                 "title": "Source Segment Ids",
                 "type": "array"
               },
+              "speaker": {
+                "anyOf": [
+                  {
+                    "maxLength": 160,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Speaker"
+              },
               "text": {
                 "minLength": 1,
                 "title": "Text",
@@ -358,6 +371,19 @@
             },
             "title": "Source Segment Ids",
             "type": "array"
+          },
+          "speaker": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Speaker"
           },
           "text": {
             "minLength": 1,
@@ -536,6 +562,18 @@
       "GenerationStartRequest": {
         "additionalProperties": false,
         "properties": {
+          "generation_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Generation Run Id"
+          },
           "operation": {
             "default": "generate",
             "enum": [
@@ -3187,6 +3225,18 @@
     "/api/v1/sessions/{sessionId}/generation-segments": {
       "get": {
         "operationId": "listGenerationSegments",
+        "parameters": [
+          {
+            "description": "Return the plan revision bound to this generation run.",
+            "in": "query",
+            "name": "generation_run_id",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Cursor-paginated generation segments"

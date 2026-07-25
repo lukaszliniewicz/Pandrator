@@ -146,7 +146,23 @@ def build_openapi_document() -> dict:
         "/api/v1/artifacts/{artifactId}/context": {"get": operation("getArtifactContext", "Artifact lineage context for comparison", status="200")},
         "/api/v1/artifacts/{artifactId}/optimization-review": {"post": operation("saveOptimizationReview", "Reviewed speech optimization artifact", "OptimizationReviewRequest", "201")},
         "/api/v1/sessions/{sessionId}/generation-plan": {"post": operation("createGenerationPlan", "Generation plan created", "GenerationPlanCreate", "201")},
-        "/api/v1/sessions/{sessionId}/generation-segments": {"get": operation("listGenerationSegments", "Cursor-paginated generation segments")},
+        "/api/v1/sessions/{sessionId}/generation-segments": {
+            "get": {
+                **operation(
+                    "listGenerationSegments",
+                    "Cursor-paginated generation segments",
+                ),
+                "parameters": [
+                    {
+                        "name": "generation_run_id",
+                        "in": "query",
+                        "required": False,
+                        "schema": {"type": "string", "format": "uuid"},
+                        "description": "Return the plan revision bound to this generation run.",
+                    }
+                ],
+            }
+        },
         "/api/v1/generation-segments/{segmentId}": {"patch": operation("updateGenerationSegment", "Generation segment updated", "GenerationSegmentUpdate")},
         "/api/v1/generation-segments/{segmentId}/takes/{takeId}/select": {"post": operation("selectGenerationTake", "Active audio take selected")},
         "/api/v1/sessions/{sessionId}/generation-runs/latest": {"get": operation("getLatestGenerationRun", "Latest generation run")},

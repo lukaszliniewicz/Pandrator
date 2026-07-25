@@ -71,9 +71,6 @@ CONJUNCTIONS = {
 
 _FALLBACK_SENTENCE_RE = re.compile(r"(?<=[.!?\u3002\uff01\uff1f])\s+")
 _SPEAKER_PREFIX_RE = re.compile(r"^\[(?P<speaker>SPEAKER[^\]]*)\]:\s*", re.IGNORECASE)
-_SENTENCE_END_RE = re.compile(r"[.!?\u2026\u3002\uff01\uff1f][\"'\u2019\u201d\u00bb\)\]]*$")
-
-
 @dataclass
 class _SpeechPart:
     text: str
@@ -81,6 +78,7 @@ class _SpeechPart:
     start_ms: int
     end_ms: int
     speaker: str = ""
+    speaker_key: str = ""
 
 
 def _check_split_validity(text: str, split_index: int, max_chars: int, min_chars: int) -> bool:
@@ -220,12 +218,13 @@ def _subtitle_to_parts(
     min_chars: int,
     max_chars: int,
     speaker_override: str = "",
+    speaker_metadata_expected: bool = False,
 ) -> list[_SpeechPart]:
     canonical_text = re.sub(r"\s+", " ", str(subtitle.text or "")).strip()
     speaker_match = _SPEAKER_PREFIX_RE.match(canonical_text)
-    speaker = str(speaker_override or subtitle.speaker or "").strip().casefold()
+    speaker = str(speaker_override or subtitle.speaker or "").strip()
     if not speaker and speaker_match:
-        speaker = speaker_match.group("speaker").casefold()
+        speaker = speaker_match.group("speaker")
     if speaker_match:
         canonical_text = canonical_text[speaker_match.end():].strip()
     parts = _split_subtitle_text(canonical_text, language_code, min_chars, max_chars)
@@ -236,6 +235,13 @@ def _subtitle_to_parts(
             start_ms=subtitle.start_ms,
             end_ms=subtitle.end_ms,
             speaker=speaker,
+            speaker_key=(
+                speaker.casefold()
+                if speaker
+                else f"unknown-cue:{subtitle.index}"
+                if speaker_metadata_expected
+                else ""
+            ),
         )
         for part in parts
     ]
@@ -244,7 +250,6 @@ def _subtitle_to_parts(
 def _should_merge_parts(
     previous: _SpeechPart,
     current: _SpeechPart,
-    min_chars: int,
     max_chars: int,
     merge_threshold: int,
 ) -> bool:
@@ -252,21 +257,18 @@ def _should_merge_parts(
     if combined_length > max_chars:
         return False
 
-    if previous.speaker != current.speaker:
+    if previous.speaker_key != current.speaker_key:
         return False
 
     gap_ms = max(0, current.start_ms - previous.end_ms)
     if gap_ms > merge_threshold:
         return False
 
-    # A short following fragment belongs with its predecessor.  Additionally,
-    # rejoin capacity-driven subtitle cuts when the preceding cue is clearly
-    # not sentence-final; subtitle layout should not become TTS prosody.
-    if len(current.text) < min_chars:
-        return True
-    if len(previous.text) < min_chars:
-        return False
-    return _SENTENCE_END_RE.search(previous.text.strip()) is None
+    # The merge threshold is a user-facing timing rule, so sentence-final
+    # punctuation must not silently override it. Punctuation remains in the
+    # combined text for TTS prosody; speaker, gap, and capacity are the hard
+    # block boundaries.
+    return True
 
 
 def _parts_to_blocks(parts: list[_SpeechPart]) -> list[SpeechBlock]:
@@ -277,6 +279,7 @@ def _parts_to_blocks(parts: list[_SpeechPart]) -> list[SpeechBlock]:
                 number=str(index).zfill(4),
                 text=re.sub(r"\s+", " ", part.text).strip(),
                 subtitles=sorted(set(part.subtitles)),
+                speaker=part.speaker,
             )
         )
     return blocks
@@ -297,6 +300,9 @@ def create_speech_blocks(
     merge_threshold = max(0, int(merge_threshold))
     language_code = normalize_language_code(target_language)
     subtitles = parse_srt(srt_content)
+    speaker_metadata_expected = bool(speaker_by_subtitle) or any(
+        subtitle.speaker for subtitle in subtitles
+    )
     all_parts: list[_SpeechPart] = []
     for subtitle in subtitles:
         all_parts.extend(
@@ -306,6 +312,7 @@ def create_speech_blocks(
                 min_chars,
                 max_chars,
                 str((speaker_by_subtitle or {}).get(subtitle.index) or ""),
+                speaker_metadata_expected,
             )
         )
 
@@ -316,7 +323,6 @@ def create_speech_blocks(
         if merged_parts and _should_merge_parts(
             merged_parts[-1],
             part,
-            min_chars=min_chars,
             max_chars=max_chars,
             merge_threshold=merge_threshold,
         ):
@@ -327,6 +333,7 @@ def create_speech_blocks(
                 start_ms=previous.start_ms,
                 end_ms=part.end_ms,
                 speaker=previous.speaker,
+                speaker_key=previous.speaker_key,
             )
         else:
             merged_parts.append(part)

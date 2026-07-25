@@ -8,7 +8,7 @@ import math
 from copy import deepcopy
 from datetime import timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy import and_, func, or_, select
 
@@ -991,11 +991,19 @@ class SourceLibraryService:
 
 
 class GenerationService:
-    def __init__(self, database: Database, jobs: JobQueue, settings: WorkspaceSettingsService, artifacts=None):
+    def __init__(
+        self,
+        database: Database,
+        jobs: JobQueue,
+        settings: WorkspaceSettingsService,
+        artifacts=None,
+        plan_refresher: Callable[[str, dict[str, Any]], str | None] | None = None,
+    ):
         self.database = database
         self.jobs = jobs
         self.settings = settings
         self.artifacts = artifacts
+        self.plan_refresher = plan_refresher
 
     def create_plan(self, session_id: str, *, source_revision_id: str | None, segments: list[dict[str, Any]], settings: dict[str, Any] | None = None) -> dict[str, Any]:
         clean_segments = [item for item in segments if str(item.get("text") or "").strip()]
@@ -1024,6 +1032,7 @@ class GenerationService:
                         source_segment_ids_json=list(item.get("source_segment_ids") or []),
                         node_kind=str(item.get("node_kind") or ("chapter_marker" if str(item.get("chapter") or "").lower() == "yes" else "paragraph")),
                         paragraph_break_after=bool(item.get("paragraph_break_after", str(item.get("paragraph") or "").lower() == "yes")),
+                        speaker=str(item.get("speaker") or "").strip() or None,
                         text=str(item.get("text") or "").strip(),
                         optimized_text=(
                             str(item.get("tts_optimized_sentence") or "").strip()
@@ -1066,15 +1075,26 @@ class GenerationService:
         status: str | None = None,
         marked: bool | None = None,
         verification: str | None = None,
+        generation_run_id: str | None = None,
     ) -> dict[str, Any]:
         limit = max(1, min(int(limit), 250))
         if verification not in {None, "issues"}:
             raise ValueError("verification must be 'issues' when supplied.")
         with self.database.session() as session:
+            if session.get(SessionRecord, session_id) is None:
+                raise KeyError(session_id)
+            selected_run = None
+            if generation_run_id:
+                selected_run = session.get(GenerationRun, generation_run_id)
+                if selected_run is None or selected_run.session_id != session_id:
+                    raise KeyError(generation_run_id)
             plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
             if plan is None or not plan.active_revision_id:
                 return {"items": [], "next_cursor": None, "total": 0, "plan_revision_id": None}
-            filters = [GenerationSegment.plan_revision_id == plan.active_revision_id]
+            plan_revision_id = plan.active_revision_id
+            if selected_run is not None:
+                plan_revision_id = selected_run.plan_revision_id
+            filters = [GenerationSegment.plan_revision_id == plan_revision_id]
             if status:
                 filters.append(GenerationSegment.status == status)
             if marked is not None:
@@ -1117,6 +1137,7 @@ class GenerationService:
                     "ordinal": item.ordinal,
                     "node_kind": item.node_kind,
                     "paragraph_break_after": item.paragraph_break_after,
+                    "speaker": item.speaker,
                     "text": item.text,
                     "source_segment_ids": list(item.source_segment_ids_json or []),
                     "optimized_text": item.optimized_text,
@@ -1163,7 +1184,12 @@ class GenerationService:
                 )
                 or 0
             )
-            return {"items": items, "next_cursor": rows[-1].ordinal + 1 if rows and has_more else None, "total": total, "plan_revision_id": plan.active_revision_id}
+            return {
+                "items": items,
+                "next_cursor": rows[-1].ordinal + 1 if rows and has_more else None,
+                "total": total,
+                "plan_revision_id": plan_revision_id,
+            }
 
     def update_segment(self, segment_id: str, expected_revision: int, changes: dict[str, Any]) -> dict[str, Any]:
         allowed = {"text", "optimized_text", "node_kind", "paragraph_break_after", "voice_id", "voice", "language", "silence_after_ms", "marked", "removed"}
@@ -1173,7 +1199,26 @@ class GenerationService:
                 raise KeyError(segment_id)
             if segment.revision != expected_revision:
                 raise RevisionConflict("The generation segment changed in another client.")
-            session.add(GenerationSegmentRevision(generation_segment_id=segment.id, revision=segment.revision, node_kind=segment.node_kind, paragraph_break_after=segment.paragraph_break_after, text=segment.text, optimized_text=segment.optimized_text, speech_plan_json=dict(segment.speech_plan_json or {}), optimization_status=segment.optimization_status, optimization_reviewed=segment.optimization_reviewed, marked=segment.marked, removed=segment.removed, voice_id=segment.voice_id, voice=segment.voice, language=segment.language, silence_after_ms=segment.silence_after_ms))
+            session.add(
+                GenerationSegmentRevision(
+                    generation_segment_id=segment.id,
+                    revision=segment.revision,
+                    node_kind=segment.node_kind,
+                    paragraph_break_after=segment.paragraph_break_after,
+                    speaker=segment.speaker,
+                    text=segment.text,
+                    optimized_text=segment.optimized_text,
+                    speech_plan_json=dict(segment.speech_plan_json or {}),
+                    optimization_status=segment.optimization_status,
+                    optimization_reviewed=segment.optimization_reviewed,
+                    marked=segment.marked,
+                    removed=segment.removed,
+                    voice_id=segment.voice_id,
+                    voice=segment.voice,
+                    language=segment.language,
+                    silence_after_ms=segment.silence_after_ms,
+                )
+            )
             text_changed = "text" in changes and str(changes["text"]).strip() != segment.text
             optimized_changed = "optimized_text" in changes and (str(changes["optimized_text"] or "").strip() or None) != segment.optimized_text
             for key, value in changes.items():
@@ -1234,6 +1279,7 @@ class GenerationService:
                 "id": segment.id,
                 "node_kind": segment.node_kind,
                 "paragraph_break_after": segment.paragraph_break_after,
+                "speaker": segment.speaker,
                 "text": segment.text,
                 "optimized_text": segment.optimized_text,
                 "speech_plan": dict(segment.speech_plan_json or {}),
@@ -1260,7 +1306,26 @@ class GenerationService:
                 raise RevisionConflict("The generation segment changed in another client.")
             if take.status not in {"completed", "stale"} or not take.artifact_id:
                 raise ValueError("Only an available audio take can be selected.")
-            session.add(GenerationSegmentRevision(generation_segment_id=segment.id, revision=segment.revision, node_kind=segment.node_kind, paragraph_break_after=segment.paragraph_break_after, text=segment.text, optimized_text=segment.optimized_text, speech_plan_json=dict(segment.speech_plan_json or {}), optimization_status=segment.optimization_status, optimization_reviewed=segment.optimization_reviewed, marked=segment.marked, removed=segment.removed, voice_id=segment.voice_id, voice=segment.voice, language=segment.language, silence_after_ms=segment.silence_after_ms))
+            session.add(
+                GenerationSegmentRevision(
+                    generation_segment_id=segment.id,
+                    revision=segment.revision,
+                    node_kind=segment.node_kind,
+                    paragraph_break_after=segment.paragraph_break_after,
+                    speaker=segment.speaker,
+                    text=segment.text,
+                    optimized_text=segment.optimized_text,
+                    speech_plan_json=dict(segment.speech_plan_json or {}),
+                    optimization_status=segment.optimization_status,
+                    optimization_reviewed=segment.optimization_reviewed,
+                    marked=segment.marked,
+                    removed=segment.removed,
+                    voice_id=segment.voice_id,
+                    voice=segment.voice,
+                    language=segment.language,
+                    silence_after_ms=segment.silence_after_ms,
+                )
+            )
             for item in session.scalars(select(AudioTake).where(AudioTake.generation_segment_id == segment_id)).all():
                 item.is_active = item.id == take_id
                 item.revision += 1
@@ -1272,24 +1337,91 @@ class GenerationService:
                 mark_output_assemblies_stale(session, plan.session_id)
             return {"id": segment.id, "active_take_id": take.id, "revision": segment.revision}
 
-    def start(self, session_id: str, *, run_override: dict[str, Any] | None = None, segment_ids: list[str] | None = None, operation: str = "generate") -> dict[str, Any]:
+    def start(
+        self,
+        session_id: str,
+        *,
+        run_override: dict[str, Any] | None = None,
+        segment_ids: list[str] | None = None,
+        generation_run_id: str | None = None,
+        operation: str = "generate",
+    ) -> dict[str, Any]:
         requested_segment_ids = [str(value) for value in (segment_ids or []) if str(value)]
         reused_run = False
+        resolved_for_new: tuple[dict[str, Any], str] | None = None
+        if operation == "generate" and not requested_segment_ids:
+            resolved_for_new = self.settings.resolve(
+                session_id,
+                run_override=run_override,
+            )
+            if self.plan_refresher is not None:
+                self.plan_refresher(session_id, resolved_for_new[0])
+                resolved_for_new = (
+                    resolved_for_new[0],
+                    stable_hash(resolved_for_new[0]),
+                )
+
         with self.database.session() as session:
             plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
             if plan is None or not plan.active_revision_id:
                 raise ValueError("Create generation segments before starting audio generation.")
+            plan_revision_id = plan.active_revision_id
+            if requested_segment_ids:
+                unique_requested_ids = set(requested_segment_ids)
+                requested_rows = list(
+                    session.execute(
+                        select(
+                            GenerationSegment.id,
+                            GenerationSegment.plan_revision_id,
+                        ).where(
+                            GenerationSegment.id.in_(requested_segment_ids)
+                        )
+                    ).all()
+                )
+                requested_revisions = {
+                    revision_value for _segment_id, revision_value in requested_rows
+                }
+                if (
+                    len(requested_rows) != len(unique_requested_ids)
+                    or len(requested_revisions) != 1
+                ):
+                    raise ValueError(
+                        "Selected generation segments must belong to one available plan revision."
+                    )
+                requested_revision_id = next(iter(requested_revisions))
+                requested_revision = session.get(
+                    GenerationPlanRevision,
+                    requested_revision_id,
+                )
+                if requested_revision is None or requested_revision.plan_id != plan.id:
+                    raise ValueError(
+                        "Selected generation segments do not belong to this session."
+                    )
+                plan_revision_id = requested_revision_id
             reusable = None
             if requested_segment_ids and operation != "rvc":
-                reusable = session.scalar(
-                    select(GenerationRun)
-                    .where(
-                        GenerationRun.session_id == session_id,
-                        GenerationRun.plan_revision_id == plan.active_revision_id,
-                        GenerationRun.operation != "rvc",
+                if generation_run_id:
+                    preferred = session.get(GenerationRun, generation_run_id)
+                    if (
+                        preferred is None
+                        or preferred.session_id != session_id
+                        or preferred.plan_revision_id != plan_revision_id
+                        or preferred.operation == "rvc"
+                    ):
+                        raise ValueError(
+                            "The selected generation run does not match these segments."
+                        )
+                    reusable = preferred
+                else:
+                    reusable = session.scalar(
+                        select(GenerationRun)
+                        .where(
+                            GenerationRun.session_id == session_id,
+                            GenerationRun.plan_revision_id == plan_revision_id,
+                            GenerationRun.operation != "rvc",
+                        )
+                        .order_by(GenerationRun.sequence_number.desc(), GenerationRun.created_at.desc())
                     )
-                    .order_by(GenerationRun.sequence_number.desc(), GenerationRun.created_at.desc())
-                )
             if reusable is not None:
                 if reusable.status in {"queued", "running", "pausing", "pause_requested", "cancel_requested", "paused"}:
                     raise ValueError("The current generation run is still active; stop or resume it before regenerating segments.")
@@ -1301,11 +1433,16 @@ class GenerationService:
                 snapshot = dict(reusable.settings_snapshot_json or {})
                 reused_run = True
             else:
-                snapshot, settings_hash = self.settings.resolve(session_id, run_override=run_override)
+                if resolved_for_new is None:
+                    resolved_for_new = self.settings.resolve(
+                        session_id,
+                        run_override=run_override,
+                    )
+                snapshot, settings_hash = resolved_for_new
                 sequence_number = int(session.scalar(select(func.max(GenerationRun.sequence_number)).where(GenerationRun.session_id == session_id)) or 0) + 1
                 run = GenerationRun(
                     session_id=session_id,
-                    plan_revision_id=plan.active_revision_id,
+                    plan_revision_id=plan_revision_id,
                     sequence_number=sequence_number,
                     operation=operation,
                     status="queued",

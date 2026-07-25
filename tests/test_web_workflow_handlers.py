@@ -11,7 +11,7 @@ from unittest import mock
 
 from pydub import AudioSegment
 from pydub.generators import Sine
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.database import Database
@@ -346,15 +346,396 @@ class WebWorkflowHandlerTests(unittest.TestCase):
             settings={**settings, "sentence_silence_ms": 500},
         )
         self.assertNotEqual(first_id, changed_silence_id)
+        changed_merge_id, _ = self.handlers._store_generation_plan(
+            self.session.id,
+            records,
+            settings={
+                **settings,
+                "sentence_silence_ms": 500,
+                "speech_block_merge_threshold": 600,
+            },
+        )
+        self.assertNotEqual(changed_silence_id, changed_merge_id)
         with self.database.session() as session:
             plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == self.session.id))
-            self.assertEqual(changed_silence_id, plan.active_revision_id)
+            self.assertEqual(changed_merge_id, plan.active_revision_id)
         third_id, _ = self.handlers._store_generation_plan(
             self.session.id,
             [{"text": "Changed sentence."}],
             settings=settings,
         )
-        self.assertNotEqual(changed_silence_id, third_id)
+        self.assertNotEqual(changed_merge_id, third_id)
+
+    def test_subtitle_plan_threshold_is_monotonic_and_preserves_speaker(self):
+        source_path = self.session_dir / "speaker-safe.srt"
+        source_path.write_text(
+            """1
+00:00:00,000 --> 00:00:01,000
+[SPEAKER_1]: First sentence.
+
+2
+00:00:01,150 --> 00:00:02,000
+[SPEAKER_1]: Second sentence.
+
+3
+00:00:02,050 --> 00:00:03,000
+[SPEAKER_2]: A different speaker.
+""",
+            encoding="utf-8",
+        )
+        source = self.artifacts.register(
+            source_path,
+            kind="srt",
+            role="translation",
+            session_id=self.session.id,
+            metadata={"language": "en"},
+        )
+
+        first_revision = self.handlers._materialize_subtitle_generation_plan(
+            self.session.id,
+            source,
+            source_path,
+            {"speech_block_merge_threshold": 100},
+            "en",
+        )
+        second_revision = self.handlers._materialize_subtitle_generation_plan(
+            self.session.id,
+            source,
+            source_path,
+            {"speech_block_merge_threshold": 200},
+            "en",
+        )
+
+        self.assertNotEqual(first_revision, second_revision)
+        with self.database.session() as session:
+            first = list(
+                session.scalars(
+                    select(GenerationSegment)
+                    .where(GenerationSegment.plan_revision_id == first_revision)
+                    .order_by(GenerationSegment.ordinal)
+                ).all()
+            )
+            second = list(
+                session.scalars(
+                    select(GenerationSegment)
+                    .where(GenerationSegment.plan_revision_id == second_revision)
+                    .order_by(GenerationSegment.ordinal)
+                ).all()
+            )
+        self.assertEqual(3, len(first))
+        self.assertEqual(2, len(second))
+        self.assertEqual("First sentence. Second sentence.", second[0].text)
+        self.assertEqual([1, 2], second[0].source_segment_ids_json)
+        self.assertEqual(["SPEAKER_1", "SPEAKER_2"], [
+            segment.speaker for segment in second
+        ])
+
+    def test_reviewed_subtitle_speech_uses_the_same_merged_partition(self):
+        display_path = self.session_dir / "display.srt"
+        display_path.write_text(
+            """1
+00:00:00,000 --> 00:00:01,000
+[SPEAKER_1]: Dr. Imaoka arrived.
+
+2
+00:00:01,100 --> 00:00:02,000
+[SPEAKER_1]: He waved.
+
+3
+00:00:02,050 --> 00:00:03,000
+[SPEAKER_2]: Hello.
+""",
+            encoding="utf-8",
+        )
+        display = self.artifacts.register(
+            display_path,
+            kind="srt",
+            role="translation",
+            session_id=self.session.id,
+            metadata={"language": "en"},
+        )
+        speech_path = self.session_dir / "speech.srt"
+        speech_path.write_text(
+            """1
+00:00:00,000 --> 00:00:01,000
+Doctor eemahohkah arrived.
+
+2
+00:00:01,100 --> 00:00:02,000
+He waved.
+
+3
+00:00:02,050 --> 00:00:03,000
+Hello.
+""",
+            encoding="utf-8",
+        )
+        speech = self.artifacts.register(
+            speech_path,
+            kind="srt",
+            role="tts_optimized",
+            session_id=self.session.id,
+            parent_ids=[display.id],
+            metadata={
+                "language": "en",
+                "source_artifact_id": display.id,
+            },
+        )
+
+        revision_id = self.handlers._materialize_subtitle_generation_plan(
+            self.session.id,
+            speech,
+            speech_path,
+            {"speech_block_merge_threshold": 200},
+            "en",
+        )
+
+        with self.database.session() as session:
+            segments = list(
+                session.scalars(
+                    select(GenerationSegment)
+                    .where(GenerationSegment.plan_revision_id == revision_id)
+                    .order_by(GenerationSegment.ordinal)
+                ).all()
+            )
+        self.assertEqual(2, len(segments))
+        self.assertEqual("Dr. Imaoka arrived. He waved.", segments[0].text)
+        self.assertEqual(
+            "Doctor eemahohkah arrived. He waved.",
+            segments[0].optimized_text,
+        )
+        self.assertEqual([1, 2], segments[0].source_segment_ids_json)
+        self.assertEqual(["SPEAKER_1", "SPEAKER_2"], [
+            segment.speaker for segment in segments
+        ])
+        generation = GenerationService(
+            self.database,
+            JobQueue(self.database),
+            WorkspaceSettingsService(self.database),
+            self.artifacts,
+            plan_refresher=self.handlers.refresh_generation_plan,
+        )
+        started = generation.start(self.session.id)
+        with self.database.session() as session:
+            run = session.get(GenerationRun, started["id"])
+        self.assertEqual(speech.id, run.settings_snapshot_json["source_artifact_id"])
+        self.assertTrue(
+            run.settings_snapshot_json["text"]["use_existing_speech_plans"]
+        )
+
+    def test_reviewed_subtitle_partition_caps_both_aligned_text_variants(self):
+        display_path = self.session_dir / "short-display.srt"
+        display_path.write_text(
+            """1
+00:00:00,000 --> 00:00:01,000
+[SPEAKER_1]: One.
+
+2
+00:00:01,100 --> 00:00:02,000
+[SPEAKER_1]: Two.
+""",
+            encoding="utf-8",
+        )
+        display = self.artifacts.register(
+            display_path,
+            kind="srt",
+            role="translation",
+            session_id=self.session.id,
+            metadata={"language": "en"},
+        )
+        speech_path = self.session_dir / "expanded-speech.srt"
+        speech_path.write_text(
+            """1
+00:00:00,000 --> 00:00:01,000
+Expanded pronunciation for cue one.
+
+2
+00:00:01,100 --> 00:00:02,000
+Expanded pronunciation for cue two.
+""",
+            encoding="utf-8",
+        )
+        speech = self.artifacts.register(
+            speech_path,
+            kind="srt",
+            role="tts_optimized",
+            session_id=self.session.id,
+            parent_ids=[display.id],
+            metadata={"source_artifact_id": display.id, "language": "en"},
+        )
+
+        revision_id = self.handlers._materialize_subtitle_generation_plan(
+            self.session.id,
+            speech,
+            speech_path,
+            {
+                "speech_block_max_chars": 50,
+                "speech_block_merge_threshold": 200,
+            },
+            "en",
+        )
+
+        with self.database.session() as session:
+            segments = list(
+                session.scalars(
+                    select(GenerationSegment)
+                    .where(GenerationSegment.plan_revision_id == revision_id)
+                    .order_by(GenerationSegment.ordinal)
+                ).all()
+            )
+        self.assertEqual([[1], [2]], [
+            segment.source_segment_ids_json for segment in segments
+        ])
+        self.assertEqual(
+            [
+                "Expanded pronunciation for cue one.",
+                "Expanded pronunciation for cue two.",
+            ],
+            [segment.optimized_text for segment in segments],
+        )
+
+    def test_reviewed_long_cue_is_not_duplicated_by_display_splitting(self):
+        display_path = self.session_dir / "long-display.srt"
+        display_path.write_text(
+            """1
+00:00:00,000 --> 00:00:02,000
+This display cue is deliberately longer than twenty characters.
+""",
+            encoding="utf-8",
+        )
+        display = self.artifacts.register(
+            display_path,
+            kind="srt",
+            role="translation",
+            session_id=self.session.id,
+            metadata={"language": "en"},
+        )
+        speech_path = self.session_dir / "single-reviewed-cue.srt"
+        speech_path.write_text(
+            """1
+00:00:00,000 --> 00:00:02,000
+A single reviewed cue.
+""",
+            encoding="utf-8",
+        )
+        speech = self.artifacts.register(
+            speech_path,
+            kind="srt",
+            role="tts_optimized",
+            session_id=self.session.id,
+            parent_ids=[display.id],
+            metadata={"source_artifact_id": display.id, "language": "en"},
+        )
+
+        revision_id = self.handlers._materialize_subtitle_generation_plan(
+            self.session.id,
+            speech,
+            speech_path,
+            {
+                "speech_block_max_chars": 20,
+                "speech_block_merge_threshold": 200,
+            },
+            "en",
+        )
+
+        with self.database.session() as session:
+            segments = list(
+                session.scalars(
+                    select(GenerationSegment)
+                    .where(GenerationSegment.plan_revision_id == revision_id)
+                ).all()
+            )
+        self.assertEqual(1, len(segments))
+        self.assertEqual([1], segments[0].source_segment_ids_json)
+        self.assertEqual("A single reviewed cue.", segments[0].optimized_text)
+
+    def test_full_new_run_rematerializes_plan_with_current_merge_threshold(self):
+        with self.database.session() as session:
+            session.get(SessionRecord, self.session.id).workflow_kind = "voiceover"
+        source_path = self.session_dir / "rerun-threshold.srt"
+        source_path.write_text(
+            """1
+00:00:00,000 --> 00:00:01,000
+[SPEAKER_1]: First sentence.
+
+2
+00:00:01,150 --> 00:00:02,000
+[SPEAKER_1]: Second sentence.
+""",
+            encoding="utf-8",
+        )
+        source = self.artifacts.register(
+            source_path,
+            kind="srt",
+            role="translation",
+            session_id=self.session.id,
+            metadata={"language": "en"},
+        )
+        old_revision = self.handlers._materialize_subtitle_generation_plan(
+            self.session.id,
+            source,
+            source_path,
+            {"speech_block_merge_threshold": 100},
+            "en",
+        )
+        settings = WorkspaceSettingsService(self.database)
+        settings.update(
+            self.session.id,
+            "tts",
+            0,
+            {"speech_block_merge_threshold": 200},
+        )
+        generation = GenerationService(
+            self.database,
+            JobQueue(self.database),
+            settings,
+            self.artifacts,
+            plan_refresher=self.handlers.refresh_generation_plan,
+        )
+
+        started = generation.start(self.session.id)
+
+        with self.database.session() as session:
+            run = session.get(GenerationRun, started["id"])
+            plan = session.scalar(
+                select(GenerationPlan).where(
+                    GenerationPlan.session_id == self.session.id
+                )
+            )
+            old_count = session.scalar(
+                select(func.count())
+                .select_from(GenerationSegment)
+                .where(GenerationSegment.plan_revision_id == old_revision)
+            )
+            new_segments = list(
+                session.scalars(
+                    select(GenerationSegment)
+                    .where(
+                        GenerationSegment.plan_revision_id
+                        == run.plan_revision_id
+                    )
+                    .order_by(GenerationSegment.ordinal)
+                ).all()
+            )
+
+        self.assertNotEqual(old_revision, run.plan_revision_id)
+        self.assertEqual(run.plan_revision_id, plan.active_revision_id)
+        self.assertEqual(2, old_count)
+        self.assertEqual(1, len(new_segments))
+        self.assertEqual(
+            "First sentence. Second sentence.",
+            new_segments[0].text,
+        )
+        self.assertEqual(
+            200,
+            run.settings_snapshot_json["tts"][
+                "speech_block_merge_threshold"
+            ],
+        )
+        self.assertEqual(
+            source.id,
+            run.settings_snapshot_json["source_artifact_id"],
+        )
 
     def test_mark_output_assemblies_stale_preserves_other_runs(self):
         plan_revision_id, _ = self.handlers._store_generation_plan(

@@ -631,6 +631,90 @@ class WebParityWorkspaceTests(unittest.TestCase):
         self.assertNotEqual(first["job_id"], retry.get_json()["job_id"])
         self.assertEqual(1, len(self.client.get(f"/api/v1/sessions/{record['id']}/generation-runs").get_json()["items"]))
 
+    def test_generation_segments_are_scoped_to_the_selected_run_revision(self):
+        record = self.create_session("audiobook")
+        first_plan = self.client.post(
+            f"/api/v1/sessions/{record['id']}/generation-plan",
+            json={
+                "segments": [
+                    {
+                        "text": "Older plan text.",
+                        "speaker": "Narrator A",
+                    }
+                ]
+            },
+            headers=self.headers,
+        ).get_json()
+        database = self.app.extensions["pandrator"]["database"]
+        with database.session() as session:
+            first_run = GenerationRun(
+                session_id=record["id"],
+                plan_revision_id=first_plan["active_revision_id"],
+                sequence_number=1,
+                operation="generate",
+                status="failed",
+            )
+            session.add(first_run)
+            session.flush()
+            first_run_id = first_run.id
+        second_plan = self.client.post(
+            f"/api/v1/sessions/{record['id']}/generation-plan",
+            json={"segments": [{"text": "Current plan text."}]},
+            headers=self.headers,
+        ).get_json()
+        with database.session() as session:
+            second_run = GenerationRun(
+                session_id=record["id"],
+                plan_revision_id=second_plan["active_revision_id"],
+                sequence_number=2,
+                operation="generate",
+                status="completed",
+            )
+            session.add(second_run)
+            session.add(
+                GenerationRun(
+                    session_id=record["id"],
+                    plan_revision_id=first_plan["active_revision_id"],
+                    sequence_number=3,
+                    operation="generate",
+                    status="completed",
+                )
+            )
+            session.flush()
+            second_run_id = second_run.id
+
+        old_payload = self.client.get(
+            f"/api/v1/sessions/{record['id']}/generation-segments"
+            f"?generation_run_id={first_run_id}"
+        ).get_json()
+        current_payload = self.client.get(
+            f"/api/v1/sessions/{record['id']}/generation-segments"
+            f"?generation_run_id={second_run_id}"
+        ).get_json()
+
+        self.assertEqual(first_plan["active_revision_id"], old_payload["plan_revision_id"])
+        self.assertEqual(["Older plan text."], [
+            item["text"] for item in old_payload["items"]
+        ])
+        self.assertEqual("Narrator A", old_payload["items"][0]["speaker"])
+        self.assertEqual(second_plan["active_revision_id"], current_payload["plan_revision_id"])
+        self.assertEqual(["Current plan text."], [
+            item["text"] for item in current_payload["items"]
+        ])
+
+        retry = self.client.post(
+            f"/api/v1/sessions/{record['id']}/generation-runs",
+            json={
+                "operation": "regenerate",
+                "segment_ids": [old_payload["items"][0]["id"]],
+                "generation_run_id": first_run_id,
+            },
+            headers=self.headers,
+        )
+        self.assertEqual(202, retry.status_code, retry.get_json())
+        self.assertEqual(first_run_id, retry.get_json()["id"])
+        self.assertTrue(retry.get_json()["reused_run"])
+
     def test_generation_runs_have_readable_labels_and_can_be_deleted_with_their_takes(self):
         record = self.create_session("audiobook")
         self.client.post(
