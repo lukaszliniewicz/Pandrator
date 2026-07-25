@@ -85,6 +85,9 @@ class SchemaUpgradeTests(unittest.TestCase):
                 self.assertIn("is_active", [row[1] for row in connection.execute("PRAGMA table_info(provider_models)")])
                 self.assertIn("session_stage_selections", [row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")])
                 self.assertIn("progress_detail", [row[1] for row in connection.execute("PRAGMA table_info(jobs)")])
+                self.assertIn("lease_generation", [row[1] for row in connection.execute("PRAGMA table_info(jobs)")])
+                self.assertIn("available_at", [row[1] for row in connection.execute("PRAGMA table_info(jobs)")])
+                self.assertIn("lease_generation", [row[1] for row in connection.execute("PRAGMA table_info(resource_claims)")])
 
     def test_segment_language_equal_to_plan_default_becomes_inherited(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -324,9 +327,20 @@ class DurableJobTests(unittest.TestCase):
         canceled = self.queue.request_cancel(job.id)
 
         self.assertEqual("canceled", canceled.status)
-        self.assertTrue(self.queue.should_cancel(job.id, "worker"))
+        self.assertTrue(
+            self.queue.should_cancel(
+                job.id,
+                "worker",
+                lease_generation=claimed.lease_generation,
+            )
+        )
         with self.assertRaises(RuntimeError):
-            self.queue.complete(job.id, "worker", {"late": True})
+            self.queue.complete(
+                job.id,
+                "worker",
+                {"late": True},
+                lease_generation=claimed.lease_generation,
+            )
 
     def test_expired_exhausted_job_is_not_left_running(self):
         job = self.queue.enqueue("noop", max_attempts=1)
@@ -373,10 +387,22 @@ class DurableJobTests(unittest.TestCase):
 
     def test_job_progress_does_not_move_backward(self):
         job = self.queue.enqueue("noop")
-        self.queue.claim("worker-one")
+        claimed = self.queue.claim("worker-one")
 
-        self.queue.heartbeat(job.id, "worker-one", progress=0.7, detail="Later unit")
-        self.queue.heartbeat(job.id, "worker-one", progress=0.4, detail="Delayed earlier unit")
+        self.queue.heartbeat(
+            job.id,
+            "worker-one",
+            lease_generation=claimed.lease_generation,
+            progress=0.7,
+            detail="Later unit",
+        )
+        self.queue.heartbeat(
+            job.id,
+            "worker-one",
+            lease_generation=claimed.lease_generation,
+            progress=0.4,
+            detail="Delayed earlier unit",
+        )
 
         current = self.queue.get(job.id)
         self.assertEqual(0.7, current.progress)

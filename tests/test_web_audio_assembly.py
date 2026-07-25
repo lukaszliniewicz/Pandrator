@@ -198,6 +198,7 @@ class DurableOutputAssemblyTests(unittest.TestCase):
         self.jobs.heartbeat(
             job.id,
             "assembly-progress-worker",
+            lease_generation=job.lease_generation,
             progress=0.42,
             detail="Loaded 1 of 2 audio segments",
         )

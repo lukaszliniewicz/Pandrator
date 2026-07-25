@@ -13,7 +13,7 @@ from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
 
-SCHEMA_HEAD = "0018_generation_segment_speaker"
+SCHEMA_HEAD = "0019_job_lease_fencing"
 
 
 def sqlite_url(path: Path) -> str:
@@ -57,6 +57,25 @@ class Database:
             raise
         finally:
             session.close()
+
+    @contextmanager
+    def immediate_session(self) -> Iterator[Session]:
+        """Begin a short SQLite write transaction before reading mutable state."""
+        connection = self.engine.connect()
+        session: Session | None = None
+        try:
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
+            session = Session(bind=connection, expire_on_commit=False, future=True)
+            yield session
+            session.flush()
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            if session is not None:
+                session.close()
+            connection.close()
 
     def dispose(self) -> None:
         self.engine.dispose()

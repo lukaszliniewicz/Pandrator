@@ -6,7 +6,6 @@ import hashlib
 import json
 import math
 from copy import deepcopy
-from datetime import timedelta
 from pathlib import Path
 from typing import Any, Callable
 
@@ -30,7 +29,6 @@ from .models import (
     OutcomePlan,
     OutcomePlanHistory,
     OutputAssembly,
-    ResourceClaim,
     Segment,
     SessionRecord,
     SessionSetting,
@@ -1747,26 +1745,37 @@ class GenerationService:
 
 
 class ResourceClaimService:
+    """Compatibility facade over the queue's fenced resource-lease operations."""
+
     def __init__(self, database: Database):
-        self.database = database
+        self.queue = JobQueue(database)
 
-    def acquire(self, job_id: str, owner: str, keys: list[str], lease_seconds: int = 60) -> bool:
-        expires = utcnow() + timedelta(seconds=max(10, lease_seconds))
-        with self.database.session() as session:
-            active = list(session.scalars(select(ResourceClaim).where(ResourceClaim.resource_key.in_(keys), ResourceClaim.expires_at > utcnow(), ResourceClaim.job_id != job_id)).all()) if keys else []
-            if active:
-                return False
-            for key in keys:
-                claim = session.get(ResourceClaim, key)
-                if claim is None:
-                    session.add(ResourceClaim(resource_key=key, job_id=job_id, lease_owner=owner, expires_at=expires))
-                else:
-                    claim.job_id = job_id
-                    claim.lease_owner = owner
-                    claim.expires_at = expires
-            return True
+    def acquire(
+        self,
+        job_id: str,
+        owner: str,
+        keys: list[str],
+        lease_seconds: int = 60,
+        *,
+        lease_generation: int,
+    ) -> bool:
+        return self.queue.acquire_resources(
+            job_id,
+            owner,
+            keys,
+            lease_generation=lease_generation,
+            lease_seconds=lease_seconds,
+        )
 
-    def release(self, job_id: str, owner: str) -> None:
-        with self.database.session() as session:
-            for claim in session.scalars(select(ResourceClaim).where(ResourceClaim.job_id == job_id, ResourceClaim.lease_owner == owner)).all():
-                session.delete(claim)
+    def release(
+        self,
+        job_id: str,
+        owner: str,
+        *,
+        lease_generation: int,
+    ) -> None:
+        self.queue.release_resources(
+            job_id,
+            owner,
+            lease_generation=lease_generation,
+        )

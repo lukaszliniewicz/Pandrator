@@ -216,6 +216,25 @@ Run the worker in a second terminal:
 pixi run run-worker
 ```
 
+> [!NOTE]
+> Concurrent workers may share one data directory. Claims, resource leases, and
+> terminal job updates are transactionally serialized and fenced by lease
+> generation. The launcher starts one managed worker by default; additional
+> standalone workers should use distinct worker IDs. A presence warning makes
+> accidental duplicate launches visible, but does not block intentional worker
+> scaling. Do not start a second web supervisor for the same data directory.
+
+To capture the current concurrency, query, audio, capability, and browser request
+baselines on disposable data:
+
+```bash
+python scripts/phase0_baseline.py --include-browser --output logs/phase0-baseline.json
+```
+
+The command reports known target failures but exits successfully when the
+diagnostic itself completes. The output under `logs/` is local and ignored by
+Git.
+
 The `pandrator` CLI also exposes session, source, workflow, job, artifact, provider, voice, RVC, training, export, authentication, migration, and doctor commands. Use `pandrator --help` and the subcommand help for the current interface. Stable JSON output is available through `--json`.
 
 The separately packaged `pandrator-installer` CLI supports probing, planning, installing, updating, repairing, launching, stopping, and uninstalling. Uninstall preserves user data unless `--purge-data` is explicitly supplied.

@@ -29,6 +29,7 @@ from .jobs import JobQueue, Worker, noop_handler
 from .legacy_migration import import_legacy_data
 from .models import Artifact, Provider, ProviderModel, SessionRecord, SourceRecord, TrainingRun, Voice, VoiceSample, new_id, utcnow
 from .openapi import build_openapi_document
+from .process_guard import WorkerPresence
 from .sessions import SessionService
 from .subtitle_review import SubtitleReviewService
 from .workflow_handlers import WorkflowHandlers
@@ -54,7 +55,7 @@ def _paths(args) -> DataPaths:
 def _database(args) -> tuple[DataPaths, Database]:
     paths = _paths(args)
     lock_path = paths.instance_lock
-    if lock_path.is_file() and getattr(args, "command", "") not in {"serve", "worker"}:
+    if lock_path.is_file():
         try:
             lock = json.loads(lock_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -68,7 +69,25 @@ def _database(args) -> tuple[DataPaths, Database]:
         except ImportError:
             alive = pid > 0
         if alive and (not expected or expected != owner):
-            raise RuntimeError(f"Data root is owned by running Pandrator supervisor PID {pid}; use --server instead of standalone access.")
+            message = (
+                f"Data root is owned by running Pandrator supervisor PID {pid}; "
+                "use --server instead of standalone access."
+            )
+            command_name = getattr(args, "command", "")
+            if command_name == "serve":
+                print(
+                    f"WARNING: {message} Starting another web supervisor can "
+                    "duplicate application services.",
+                    file=sys.stderr,
+                )
+            elif command_name == "worker":
+                print(
+                    f"NOTICE: {message} The additional worker will use atomic, "
+                    "lease-fenced queue claims; ensure the extra capacity is intentional.",
+                    file=sys.stderr,
+                )
+            else:
+                raise RuntimeError(message)
     import_legacy_data(paths)
     return paths, Database(paths.database)
 
@@ -231,6 +250,7 @@ def command_worker(args) -> int:
     paths, database = _database(args)
     queue = JobQueue(database)
     artifacts = ArtifactService(database, paths)
+    worker_id = args.worker_id or f"{socket.gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
 
     def hash_artifact(payload, progress, cancel_event):
         artifact_id = str(payload.get("artifact_id") or "")
@@ -245,18 +265,29 @@ def command_worker(args) -> int:
         progress(1.0, "Artifact hash updated")
         return {"artifact_id": artifact_id, "sha256": digest}
 
-    worker = Worker(
-        queue,
-        args.worker_id or f"{socket.gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:8]}",
-        {"noop": noop_handler, "artifact.hash": hash_artifact, **WorkflowHandlers(database, paths).handlers()},
-    )
     try:
-        if args.once:
-            worker.run_once()
-        else:
-            worker.run_forever(args.poll_interval)
-    except KeyboardInterrupt:
-        worker.stop()
+        with WorkerPresence(paths.worker_presence, worker_id) as presence:
+            if presence.conflict:
+                conflict_pid = int(presence.conflict.get("pid") or 0)
+                conflict_worker = str(presence.conflict.get("worker_id") or "unknown")
+                print(
+                    "WARNING: Another Pandrator worker appears to be active for this data root "
+                    f"(PID {conflict_pid}, worker {conflict_worker}). Concurrent queue "
+                    "processing is supported; ensure this additional worker is intentional.",
+                    file=sys.stderr,
+                )
+            worker = Worker(
+                queue,
+                worker_id,
+                {"noop": noop_handler, "artifact.hash": hash_artifact, **WorkflowHandlers(database, paths).handlers()},
+            )
+            try:
+                if args.once:
+                    worker.run_once()
+                else:
+                    worker.run_forever(args.poll_interval)
+            except KeyboardInterrupt:
+                worker.stop()
     finally:
         database.dispose()
     return 0

@@ -105,6 +105,11 @@ class DataPaths:
     def instance_lock(self) -> Path:
         return self.root / "pandrator.instance.lock"
 
+    @property
+    def worker_presence(self) -> Path:
+        """Advisory record used to detect overlapping standalone workers."""
+        return self.root / "pandrator.worker.presence.json"
+
     def ensure(self) -> "DataPaths":
         for directory in (
             self.root,
