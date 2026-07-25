@@ -6,6 +6,7 @@
   import AddSourceDialog from '$lib/AddSourceDialog.svelte';
   import PdfEditor from '$lib/PdfEditor.svelte';
   import ArtifactPreview from '$lib/ArtifactPreview.svelte';
+  import { invalidates, type InvalidationBatch } from '$lib/invalidation';
 
   const sessionId=String(page.params.id);
   let sources=$state<any[]>([]);
@@ -39,9 +40,12 @@
 
   onMount(()=>{
     load().catch((caught)=>error=caught instanceof Error?caught.message:String(caught));
-    const refresh=()=>load().catch(()=>undefined);
-    window.addEventListener('pandrator:generation-changed',refresh);
-    return()=>window.removeEventListener('pandrator:generation-changed',refresh);
+    const refresh=(event:Event)=>{
+      const batch=(event as CustomEvent<InvalidationBatch>).detail;
+      if(invalidates(batch,'sources',sessionId))load().catch(()=>undefined);
+    };
+    window.addEventListener('pandrator:invalidate',refresh);
+    return()=>window.removeEventListener('pandrator:invalidate',refresh);
   });
 </script>
 

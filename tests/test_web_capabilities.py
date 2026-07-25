@@ -4,6 +4,9 @@ from pathlib import Path
 from unittest import mock
 
 from pandrator.web import capabilities
+from pandrator.web.api import create_app
+from pandrator.web.auth import BootstrapTokenStore
+from tests.web_test_support import prepare_web_test_data_root
 
 
 class GpuCapabilityTests(unittest.TestCase):
@@ -86,10 +89,11 @@ GPU1:
     def test_burn_encoder_profiles_require_matching_gpu_and_render_node(self):
         gpu = {"devices": [{"vendor": "AMD"}]}
         supported = {"libx264", "libx265", "h264_vaapi", "h264_nvenc", "h264_amf"}
+        render_node = Path("/dev/dri/renderD128")
         with mock.patch.object(capabilities, "ffmpeg_video_encoder_ids", return_value=supported), mock.patch.object(
             capabilities.sys, "platform", "linux"
         ), mock.patch.object(capabilities.os, "name", "posix"), mock.patch.object(
-            capabilities.Path, "glob", return_value=iter([Path("/dev/dri/renderD128")])
+            capabilities.Path, "glob", return_value=iter([render_node])
         ):
             profiles = capabilities.probe_burn_video_encoders("ffmpeg", gpu)
 
@@ -111,6 +115,74 @@ GPU1:
         self.assertEqual(1, len(devices))
         self.assertEqual("AMD Radeon RX 480", devices[0]["name"])
         self.assertEqual("AMD", devices[0]["vendor"])
+
+
+class CapabilityCacheTests(unittest.TestCase):
+    STABLE_CAPABILITIES = {
+        "ffmpeg": {
+            "available": True,
+            "path": "ffmpeg",
+            "burn_path": "ffmpeg",
+            "burn_video_encoders": [],
+        },
+        "gpu": {"available": False, "devices": []},
+        "pycroppdf": {"available": True, "local_only": True},
+        "recording": {
+            "browser_required": True,
+            "normalization_available": True,
+        },
+        "stt": {"crispasr": False, "models": {}},
+        "rvc": {"available": False},
+        "services": {"rvc": False},
+        "operations": {
+            "record_voice": True,
+            "transcribe_voice": False,
+        },
+    }
+
+    def test_api_reuses_stable_probe_and_force_refreshes_explicitly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prepare_web_test_data_root(directory)
+            bootstrap = BootstrapTokenStore()
+            token = bootstrap.issue()
+            app = create_app(
+                data_root=directory,
+                testing=True,
+                bootstrap_tokens=bootstrap,
+                capability_ttl_seconds=60,
+            )
+            database = app.extensions["pandrator"]["database"]
+            try:
+                client = app.test_client()
+                client.post("/api/v1/auth/bootstrap", json={"token": token})
+                with mock.patch.object(
+                    capabilities,
+                    "probe_stable_capabilities",
+                    return_value=self.STABLE_CAPABILITIES,
+                ) as probe:
+                    first = client.get("/api/v1/capabilities").get_json()
+                    second = client.get("/api/v1/capabilities").get_json()
+                    remote = client.get(
+                        "/api/v1/capabilities",
+                        environ_overrides={"REMOTE_ADDR": "203.0.113.5"},
+                    ).get_json()
+                    refreshed = client.get(
+                        "/api/v1/capabilities?refresh=true"
+                    ).get_json()
+
+                self.assertEqual(2, probe.call_count)
+                self.assertFalse(first["_meta"]["cache_hit"])
+                self.assertTrue(second["_meta"]["cache_hit"])
+                self.assertFalse(refreshed["_meta"]["cache_hit"])
+                self.assertEqual("local", first["mode"])
+                self.assertTrue(first["operations"]["reveal_folder"])
+                self.assertFalse(first["recording"]["secure_context_required"])
+                self.assertEqual("remote", remote["mode"])
+                self.assertFalse(remote["operations"]["reveal_folder"])
+                self.assertFalse(remote["operations"]["pycroppdf_fallback"])
+                self.assertTrue(remote["recording"]["secure_context_required"])
+            finally:
+                database.dispose()
 
 
 if __name__ == "__main__":

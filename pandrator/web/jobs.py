@@ -11,7 +11,7 @@ from collections.abc import Callable
 from datetime import timedelta
 from typing import Any
 
-from sqlalchemy import and_, delete, or_, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 
 from .database import Database
 from .models import Job, JobEvent, ResourceClaim, utcnow
@@ -21,11 +21,88 @@ JobHandler = Callable[[dict[str, Any], Callable[[float, str | None], None], thre
 
 
 class JobQueue:
+    TERMINAL_EVENT_TYPES = {"job.succeeded", "job.failed", "job.canceled"}
+    EVENT_SCOPE_IDS = (
+        "generation_run_id",
+        "output_assembly_id",
+        "source_id",
+        "source_asset_id",
+        "source_artifact_id",
+        "artifact_id",
+        "agent_run_id",
+        "training_id",
+        "training_run_id",
+        "voice_id",
+        "sample_id",
+        "upload_id",
+        "document_id",
+        "model_id",
+    )
+
     def __init__(self, database: Database):
         self.database = database
 
+    @staticmethod
+    def _changed_entities(job: Job, event_type: str) -> list[str]:
+        entities = {"jobs"}
+        if event_type == "job.progress":
+            return sorted(entities)
+
+        kind = str(job.kind or "")
+        if job.session_id:
+            entities.add("workflow")
+        if event_type in JobQueue.TERMINAL_EVENT_TYPES and (
+            job.session_id or kind.startswith("session.")
+        ):
+            entities.add("sessions")
+        if kind.startswith(("source.", "pdf.")):
+            entities.add("sources")
+        if (
+            kind.startswith("generation.")
+            or kind in {
+                "text.prepare",
+                "text.optimize_tts",
+                "audiobook.generate_audio",
+                "dubbing.generate_audio",
+                "workflow.continue",
+            }
+            or (kind == "rvc.convert" and bool(job.session_id))
+        ):
+            entities.add("generation")
+        if kind.startswith("generation.assemble") or kind.startswith("export."):
+            entities.add("output")
+        if kind.startswith(("voice.", "tts.preview")):
+            entities.add("voices")
+        if kind.startswith("training."):
+            entities.add("training")
+        return sorted(entities)
+
     def _event(self, session, job_id: str | None, event_type: str, payload: dict | None = None) -> JobEvent:
-        event = JobEvent(job_id=job_id, event_type=event_type, payload_json=payload or {})
+        event_payload = dict(payload) if isinstance(payload, dict) else {}
+        job = session.get(Job, job_id) if job_id else None
+        if job is not None:
+            job_payload = (
+                job.payload_json
+                if isinstance(job.payload_json, dict)
+                else {}
+            )
+            for key in self.EVENT_SCOPE_IDS:
+                value = job_payload.get(key)
+                if isinstance(value, (str, int)) and value != "":
+                    event_payload.setdefault(key, value)
+            event_payload.update(
+                {
+                    "job_kind": job.kind,
+                    "session_id": job.session_id,
+                    "workflow_run_id": job.workflow_run_id,
+                    "status": job.status,
+                    "progress": float(job.progress or 0.0),
+                    "changed_entities": self._changed_entities(job, event_type),
+                }
+            )
+            if job.progress_detail and "detail" not in event_payload:
+                event_payload["detail"] = job.progress_detail
+        event = JobEvent(job_id=job_id, event_type=event_type, payload_json=event_payload)
         session.add(event)
         return event
 
@@ -568,6 +645,17 @@ class JobQueue:
             for event in events:
                 session.expunge(event)
             return events
+
+    def event_bounds(self) -> dict[str, int]:
+        """Return the retained event window without loading event payloads."""
+        with self.database.session() as session:
+            oldest, latest = session.execute(
+                select(func.min(JobEvent.id), func.max(JobEvent.id))
+            ).one()
+        return {
+            "oldest": int(oldest or 0),
+            "latest": int(latest or 0),
+        }
 
     def events_for(self, job_id: str, limit: int = 1000) -> list[JobEvent]:
         with self.database.session() as session:

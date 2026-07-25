@@ -43,6 +43,7 @@ def build_openapi_document() -> dict:
                 },
             },
             "/api/v1/events": {"get": {"operationId": "streamEvents", "responses": {"200": {"description": "SSE job events"}}}},
+            "/api/v1/events/snapshot": {"get": {"operationId": "getEventSnapshot", "responses": {"200": {"description": "Initial event-stream resource snapshot and cursor"}}}},
             "/api/v1/auth/status": {"get": {"operationId": "getAuthStatus", "responses": {"200": {"description": "Authentication status"}}}},
             "/api/v1/auth/login": {"post": {"operationId": "login", "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LoginRequest"}}}}, "responses": {"200": {"description": "Authenticated"}}}},
             "/api/v1/auth/tokens": {"get": {"operationId": "listApiTokens", "responses": {"200": {"description": "Tokens"}}}, "post": {"operationId": "createApiToken", "responses": {"201": {"description": "Created"}}}},

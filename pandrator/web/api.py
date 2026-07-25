@@ -27,7 +27,7 @@ from pandrator.runtime import DataPaths
 from .artifact_selection import choose_artifact, clear_selection, rerun_impact, stage_history
 from .artifacts import ArtifactService, sha256_file
 from .auth import AuthService, BootstrapTokenStore
-from .capabilities import crispasr_install_preferences, probe_capabilities
+from .capabilities import CapabilityService, crispasr_install_preferences
 from .credentials import (
     AUXILIARY_CREDENTIALS,
     DEFAULT_PROVIDER_ENVS,
@@ -144,6 +144,43 @@ def _job_payload(record) -> dict[str, Any]:
     ))
 
 
+SSE_EVENT_FIELDS = {
+    "job_kind",
+    "session_id",
+    "workflow_run_id",
+    "generation_run_id",
+    "output_assembly_id",
+    "source_id",
+    "source_asset_id",
+    "source_artifact_id",
+    "artifact_id",
+    "agent_run_id",
+    "training_id",
+    "training_run_id",
+    "voice_id",
+    "sample_id",
+    "upload_id",
+    "document_id",
+    "model_id",
+    "status",
+    "progress",
+    "detail",
+    "code",
+    "reason",
+    "retry_after_ms",
+    "changed_entities",
+}
+
+
+def _sse_event_payload(event) -> dict[str, Any]:
+    """Project a durable event onto the small, secret-free browser contract."""
+    source = event.payload_json if isinstance(event.payload_json, dict) else {}
+    payload = {key: source[key] for key in SSE_EVENT_FIELDS if key in source}
+    payload["job_id"] = event.job_id
+    payload["created_at"] = event.created_at.isoformat()
+    return redact_inline_secrets(payload)
+
+
 def create_app(
     *,
     data_root: str | os.PathLike[str] | None = None,
@@ -152,6 +189,7 @@ def create_app(
     proxy_hops: int = 0,
     secure_cookies: bool = False,
     bootstrap_tokens: BootstrapTokenStore | None = None,
+    capability_ttl_seconds: int | None = None,
 ) -> Flask:
     paths = DataPaths.from_value(data_root).ensure()
     migration = import_legacy_data(paths)
@@ -174,6 +212,11 @@ def create_app(
         retention_days = int((retention_record.value_json or {}).get("retention_days", 30)) if retention_record and isinstance(retention_record.value_json, dict) else 30
     apply_retention(database, paths, retention_days)
     auth = AuthService(database)
+    capability_service = CapabilityService(
+        database,
+        paths,
+        ttl_seconds=capability_ttl_seconds,
+    )
     jobs = JobQueue(database)
     sessions = SessionService(database)
     artifacts = ArtifactService(database, paths)
@@ -224,6 +267,7 @@ def create_app(
         "paths": paths,
         "database": database,
         "auth": auth,
+        "capabilities": capability_service,
         "jobs": jobs,
         "sessions": sessions,
         "artifacts": artifacts,
@@ -387,7 +431,13 @@ def create_app(
     @app.get("/api/v1/capabilities")
     @require_auth
     def capabilities():
-        return jsonify(probe_capabilities(paths, local_mode=request.remote_addr in {"127.0.0.1", "::1"}))
+        force = request.args.get("refresh", "").lower() in {"1", "true", "yes"}
+        return jsonify(
+            capability_service.get(
+                local_mode=request.remote_addr in {"127.0.0.1", "::1"},
+                force=force,
+            )
+        )
 
     @app.get("/pandrator-logo.png")
     def pandrator_logo():
@@ -1526,25 +1576,94 @@ def create_app(
         except KeyError:
             return error_response("not_found", "Job not found.", 404)
 
+    @app.get("/api/v1/events/snapshot")
+    @require_auth
+    def event_snapshot():
+        # Capture the cursor before reading resources. Events committed while
+        # the snapshot is assembled are replayed after this cursor.
+        bounds = jobs.event_bounds()
+        local_mode = request.remote_addr in {"127.0.0.1", "::1"}
+        return jsonify(
+            {
+                "cursor": bounds["latest"],
+                "retained_after": max(0, bounds["oldest"] - 1),
+                "sessions": {
+                    "items": [_session_payload(item) for item in sessions.list()]
+                },
+                "jobs": {
+                    "items": [_job_payload(item) for item in jobs.list(40)]
+                },
+                "capabilities": capability_service.get(local_mode=local_mode),
+            }
+        )
+
     @app.get("/api/v1/events")
     @require_auth
     def events():
-        start_id = request.headers.get("Last-Event-ID") or request.args.get("after") or "0"
-        try:
-            cursor = int(start_id)
-        except ValueError:
-            cursor = 0
+        bounds = jobs.event_bounds()
+        supplied_cursor = request.headers.get("Last-Event-ID")
+        if supplied_cursor is None:
+            supplied_cursor = request.args.get("after")
+        reset_reason: str | None = None
+        if supplied_cursor is None:
+            # A new tab subscribes to future changes instead of replaying the
+            # complete retained job history.
+            cursor = bounds["latest"]
+        else:
+            try:
+                cursor = max(0, int(supplied_cursor))
+            except (TypeError, ValueError):
+                cursor = bounds["latest"]
+                reset_reason = "invalid_cursor"
+            if cursor > bounds["latest"]:
+                cursor = bounds["latest"]
+                reset_reason = "cursor_ahead"
+            elif bounds["oldest"] and cursor < bounds["oldest"] - 1:
+                cursor = bounds["latest"]
+                reset_reason = "cursor_expired"
 
         def stream():
-            nonlocal cursor
+            nonlocal cursor, reset_reason
+            if reset_reason:
+                yield (
+                    f"id: {cursor}\n"
+                    "event: stream.reset\n"
+                    f"data: {json.dumps({'cursor': cursor, 'reason': reset_reason})}\n\n"
+                )
+                reset_reason = None
             deadline = time.monotonic() + 25
             while time.monotonic() < deadline:
+                retained = jobs.event_bounds()
+                if retained["oldest"] and cursor < retained["oldest"] - 1:
+                    cursor = retained["latest"]
+                    yield (
+                        f"id: {cursor}\n"
+                        "event: stream.reset\n"
+                        f"data: {json.dumps({'cursor': cursor, 'reason': 'cursor_expired'})}\n\n"
+                    )
+                    continue
                 new_events = jobs.events_after(cursor)
                 if new_events:
+                    last_visible_id = cursor
                     for event in new_events:
                         cursor = event.id
-                        payload = {"job_id": event.job_id, **event.payload_json}
-                        yield f"id: {event.id}\nevent: {event.event_type}\ndata: {json.dumps(payload)}\n\n"
+                        if event.event_type == "job.log":
+                            continue
+                        last_visible_id = event.id
+                        payload = _sse_event_payload(event)
+                        yield (
+                            f"id: {event.id}\n"
+                            f"event: {event.event_type}\n"
+                            f"data: {json.dumps(payload)}\n\n"
+                        )
+                    if cursor > last_visible_id:
+                        # Advance the browser reconnect cursor without exposing
+                        # worker log records to every open tab.
+                        yield (
+                            f"id: {cursor}\n"
+                            "event: stream.cursor\n"
+                            "data: {}\n\n"
+                        )
                 else:
                     yield ": heartbeat\n\n"
                 time.sleep(1)

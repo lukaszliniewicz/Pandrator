@@ -13,7 +13,7 @@ from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
 
-SCHEMA_HEAD = "0019_job_lease_fencing"
+SCHEMA_HEAD = "0020_capability_snapshots"
 
 
 def sqlite_url(path: Path) -> str:

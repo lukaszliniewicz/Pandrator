@@ -8,6 +8,7 @@ import logging
 from datetime import timedelta
 from contextlib import closing
 from pathlib import Path
+from unittest import mock
 
 from alembic import command
 from alembic.config import Config
@@ -19,7 +20,7 @@ from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.database import SCHEMA_HEAD, Database, sqlite_url, upgrade_database
 from pandrator.web.jobs import JobQueue, Worker, noop_handler
 from pandrator.web.legacy_migration import import_legacy_data
-from pandrator.web.models import DocumentRevision, GenerationPlan, GenerationPlanRevision, GenerationSegment, Job, ProviderModel, Segment, SessionRecord, utcnow
+from pandrator.web.models import DocumentRevision, GenerationPlan, GenerationPlanRevision, GenerationSegment, Job, JobEvent, ProviderModel, Segment, SessionRecord, utcnow
 from pandrator.web.sessions import SessionService
 from tests.web_test_support import prepare_web_test_data_root
 
@@ -88,6 +89,7 @@ class SchemaUpgradeTests(unittest.TestCase):
                 self.assertIn("lease_generation", [row[1] for row in connection.execute("PRAGMA table_info(jobs)")])
                 self.assertIn("available_at", [row[1] for row in connection.execute("PRAGMA table_info(jobs)")])
                 self.assertIn("lease_generation", [row[1] for row in connection.execute("PRAGMA table_info(resource_claims)")])
+                self.assertIn("capability_snapshots", [row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")])
 
     def test_segment_language_equal_to_plan_default_becomes_inherited(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -426,6 +428,126 @@ class WebApiTests(unittest.TestCase):
         response = self.client.post("/api/v1/auth/bootstrap", json={"token": self.token})
         self.assertEqual(response.status_code, 200)
         return response.get_json()["csrf_token"]
+
+    def test_event_snapshot_captures_high_water_and_new_streams_do_not_replay(self):
+        self.authenticate()
+        queue = self.app.extensions["pandrator"]["jobs"]
+        workspace = self.app.extensions["pandrator"]["sessions"].create("Event snapshot")
+        queue.enqueue(
+            "source.clean",
+            {
+                "source_artifact_id": "artifact-1",
+                "api_key": "must-not-stream",
+                "settings": {"token": "also-private"},
+            },
+            session_id=workspace.id,
+        )
+        with mock.patch(
+            "pandrator.web.capabilities.probe_stable_capabilities",
+            return_value={},
+        ):
+            snapshot_response = self.client.get("/api/v1/events/snapshot")
+        self.assertEqual(200, snapshot_response.status_code)
+        snapshot = snapshot_response.get_json()
+        self.assertEqual(queue.event_bounds()["latest"], snapshot["cursor"])
+        self.assertIn("sessions", snapshot)
+        self.assertIn("jobs", snapshot)
+        self.assertIn("capabilities", snapshot)
+
+        response = self.client.get("/api/v1/events", buffered=False)
+        try:
+            first_chunk = next(response.response).decode()
+        finally:
+            response.close()
+        self.assertEqual(": heartbeat\n\n", first_chunk)
+
+    def test_event_stream_honors_cursor_and_projects_scoped_payload(self):
+        self.authenticate()
+        queue = self.app.extensions["pandrator"]["jobs"]
+        workspace = self.app.extensions["pandrator"]["sessions"].create("Scoped event")
+        queue.enqueue(
+            "source.clean",
+            {
+                "source_artifact_id": "artifact-1",
+                "api_key": "must-not-stream",
+                "settings": {"token": "also-private"},
+            },
+            session_id=workspace.id,
+        )
+
+        response = self.client.get("/api/v1/events?after=0", buffered=False)
+        try:
+            first_chunk = next(response.response).decode()
+        finally:
+            response.close()
+        self.assertIn("event: job.queued", first_chunk)
+        data_line = next(
+            line for line in first_chunk.splitlines() if line.startswith("data: ")
+        )
+        payload = json.loads(data_line.removeprefix("data: "))
+        self.assertEqual("source.clean", payload["job_kind"])
+        self.assertEqual(workspace.id, payload["session_id"])
+        self.assertEqual("artifact-1", payload["source_artifact_id"])
+        self.assertEqual(["jobs", "sources", "workflow"], payload["changed_entities"])
+        self.assertNotIn("api_key", payload)
+        self.assertNotIn("settings", payload)
+        self.assertNotIn("must-not-stream", first_chunk)
+
+    def test_event_stream_resets_a_cursor_older_than_retention(self):
+        self.authenticate()
+        queue = self.app.extensions["pandrator"]["jobs"]
+        queue.enqueue("first")
+        queue.enqueue("second")
+        database = self.app.extensions["pandrator"]["database"]
+        with database.session() as db_session:
+            oldest = db_session.scalar(
+                select(JobEvent).order_by(JobEvent.id.asc()).limit(1)
+            )
+            db_session.delete(oldest)
+
+        response = self.client.get("/api/v1/events?after=0", buffered=False)
+        try:
+            first_chunk = next(response.response).decode()
+        finally:
+            response.close()
+        self.assertIn("event: stream.reset", first_chunk)
+        self.assertIn('"reason": "cursor_expired"', first_chunk)
+
+    def test_event_stream_prefers_last_event_id_on_reconnect(self):
+        self.authenticate()
+        queue = self.app.extensions["pandrator"]["jobs"]
+        queue.enqueue("first")
+        latest = queue.event_bounds()["latest"]
+
+        response = self.client.get(
+            "/api/v1/events?after=0",
+            headers={"Last-Event-ID": str(latest)},
+            buffered=False,
+        )
+        try:
+            first_chunk = next(response.response).decode()
+        finally:
+            response.close()
+        self.assertEqual(": heartbeat\n\n", first_chunk)
+
+    def test_global_event_stream_advances_past_logs_without_exposing_them(self):
+        self.authenticate()
+        queue = self.app.extensions["pandrator"]["jobs"]
+        job = queue.enqueue("first")
+        queued_cursor = queue.event_bounds()["latest"]
+        queue.log(job.id, "INFO", "private worker detail")
+
+        response = self.client.get(
+            f"/api/v1/events?after={queued_cursor}",
+            buffered=False,
+        )
+        try:
+            first_chunk = next(response.response).decode()
+        finally:
+            response.close()
+        self.assertIn("event: stream.cursor", first_chunk)
+        self.assertNotIn("event: job.log", first_chunk)
+        self.assertNotIn("private worker detail", first_chunk)
 
     def test_bootstrap_is_single_use_and_session_mutations_require_csrf(self):
         csrf = self.authenticate()

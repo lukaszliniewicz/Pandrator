@@ -224,6 +224,14 @@ pixi run run-worker
 > accidental duplicate launches visible, but does not block intentional worker
 > scaling. Do not start a second web supervisor for the same data directory.
 
+Hardware and installed-runtime capability discovery is cached in the Pandrator
+database for five minutes, so normal page loads and job events never rerun GPU,
+FFmpeg, or model-cache probes. **Settings → Capability snapshot → Probe again**
+forces a fresh diagnostic scan. Developers and managed deployments can change
+the cache duration by setting `PANDRATOR_CAPABILITY_TTL_SECONDS` to a
+non-negative number before starting the web process. Live TTS service health
+and saved provider configuration remain separate from this stable snapshot.
+
 To capture the current concurrency, query, audio, capability, and browser request
 baselines on disposable data:
 

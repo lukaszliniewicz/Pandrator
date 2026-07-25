@@ -3,6 +3,8 @@
   import { onMount } from 'svelte';
   import { CheckCircle2, CircleAlert, Download, Eye, FileAudio, FileText, FileVideo, LoaderCircle, PackageCheck, Trash2 } from '@lucide/svelte';
   import { api, type JobRecord } from '$lib/api';
+  import { appState } from '$lib/app-state.svelte';
+  import { invalidates, type InvalidationBatch } from '$lib/invalidation';
   import ArtifactPreview from '$lib/ArtifactPreview.svelte';
   import { artifactFilename, artifactRoleLabel, formatBytes } from '$lib/artifact-display';
   import OutputSettingsPanel from '$lib/OutputSettingsPanel.svelte';
@@ -73,15 +75,55 @@
   function jobLabel(job:JobRecord){return job.status==='running'?'Running':job.status==='queued'?'Queued':job.status==='succeeded'?'Completed':job.status==='failed'?'Failed':job.status.replaceAll('_',' ')}
   function progressPercent(job:JobRecord){const value=Number(job.progress??0);return Math.round(Math.max(0,Math.min(1,Number.isFinite(value)?value:0))*100)}
   function progressDetail(job:JobRecord){return job.progress_detail||(job.status==='queued'?'Waiting for an available worker':'')}
+  function patchExportProgress(batch:InvalidationBatch){
+    for(const event of batch.events){
+      if(event.session_id!==sessionId||event.job_kind!=='export.create'||!event.job_id)continue;
+      const index=exportJobs.findIndex((job)=>job.id===event.job_id);
+      const current=index>=0?exportJobs[index]:null;
+      const next:JobRecord={
+        ...(current??{
+          id:String(event.job_id),
+          kind:'export.create',
+          session_id:sessionId,
+          status:String(event.status??'queued'),
+          progress:Number(event.progress??0),
+          created_at:String(event.created_at??new Date().toISOString())
+        }),
+        ...(event.status?{status:String(event.status)}:{}),
+        ...(event.progress!==undefined?{progress:Number(event.progress)}:{}),
+        ...(event.detail!==undefined?{progress_detail:event.detail}:{})
+      };
+      exportJobs=index>=0
+        ?exportJobs.map((job,jobIndex)=>jobIndex===index?next:job)
+        :[next,...exportJobs].slice(0,8);
+    }
+  }
   onMount(()=>{
     let disposed=false;
     let refreshing=false;
-    const refresh=async()=>{if(disposed||refreshing)return;refreshing=true;try{await load()}catch(caught){if(!disposed)error=caught instanceof Error?caught.message:String(caught)}finally{refreshing=false}};
+    let refreshQueued=false;
+    const refresh=async()=>{
+      if(disposed)return;
+      if(refreshing){refreshQueued=true;return}
+      refreshing=true;
+      try{
+        do{
+          refreshQueued=false;
+          try{await load()}catch(caught){if(!disposed)error=caught instanceof Error?caught.message:String(caught)}
+        }while(refreshQueued&&!disposed);
+      }finally{refreshing=false}
+    };
     refresh();
-    const timer=window.setInterval(()=>{if(exportJobs.some((item)=>['queued','running','cancel_requested'].includes(item.status)))refresh()},900);
-    const changed=()=>refresh();
-    window.addEventListener('pandrator:generation-changed',changed);
-    return()=>{disposed=true;window.clearInterval(timer);window.removeEventListener('pandrator:generation-changed',changed)};
+    const timer=window.setInterval(()=>{
+      if(!appState.eventsHealthy&&exportJobs.some((item)=>['queued','running','cancel_requested'].includes(item.status)))refresh();
+    },5000);
+    const changed=(event:Event)=>{
+      const batch=(event as CustomEvent<InvalidationBatch>).detail;
+      patchExportProgress(batch);
+      if(invalidates(batch,'output',sessionId))refresh();
+    };
+    window.addEventListener('pandrator:invalidate',changed);
+    return()=>{disposed=true;window.clearInterval(timer);window.removeEventListener('pandrator:invalidate',changed)};
   });
 </script>
 

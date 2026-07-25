@@ -2538,6 +2538,16 @@
         }
       }
     },
+    "/api/v1/events/snapshot": {
+      "get": {
+        "operationId": "getEventSnapshot",
+        "responses": {
+          "200": {
+            "description": "Initial event-stream resource snapshot and cursor"
+          }
+        }
+      }
+    },
     "/api/v1/generation-runs/{runId}": {
       "delete": {
         "operationId": "deleteGenerationRun",

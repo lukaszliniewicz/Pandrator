@@ -8,12 +8,20 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+from copy import deepcopy
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
+
+from sqlalchemy import delete, select
 
 from pandrator.runtime import DataPaths
 from pandrator.logic.dubbing.crispasr import MODELS, normalize_engine, normalize_model_quantization
 from pandrator.logic.dubbing.stt_backends import probe_crispasr_runtime
+
+from .database import Database
+from .models import CapabilitySnapshot, utcnow
 
 
 def _exists(paths: DataPaths, *candidates: str) -> bool:
@@ -466,7 +474,12 @@ def _crispasr_model_cached(paths: DataPaths, engine: str, quantization: str) -> 
     return any(cache_dir.rglob(filename))
 
 
-def probe_capabilities(paths: DataPaths, *, local_mode: bool) -> dict[str, Any]:
+def probe_stable_capabilities(paths: DataPaths) -> dict[str, Any]:
+    """Probe installation and hardware state that is stable across requests.
+
+    This function can invoke subprocesses and inspect large cache trees. Callers
+    serving interactive requests should use :class:`CapabilityService` instead.
+    """
     ffmpeg = shutil.which("ffmpeg")
     gpu = probe_gpu()
     try:
@@ -513,7 +526,6 @@ def probe_capabilities(paths: DataPaths, *, local_mode: bool) -> dict[str, Any]:
         "chatterbox": _exists(paths, "chatterbox/pixi.toml", "chatterbox-fastapi/pixi.toml"),
     }
     return {
-        "mode": "local" if local_mode else "remote",
         "ffmpeg": {
             "available": bool(ffmpeg),
             "path": ffmpeg,
@@ -522,14 +534,110 @@ def probe_capabilities(paths: DataPaths, *, local_mode: bool) -> dict[str, Any]:
         },
         "gpu": gpu,
         "pycroppdf": {"available": _exists(paths, "PyCropPDF/run.py"), "local_only": True},
-        "recording": {"browser_required": True, "secure_context_required": not local_mode, "normalization_available": bool(ffmpeg)},
+        "recording": {"browser_required": True, "normalization_available": bool(ffmpeg)},
         "stt": stt,
         "rvc": {"available": services["rvc"]},
         "services": services,
         "operations": {
-            "reveal_folder": local_mode,
-            "pycroppdf_fallback": local_mode and _exists(paths, "PyCropPDF/run.py"),
             "record_voice": bool(ffmpeg),
             "transcribe_voice": crispasr.installed,
         },
     }
+
+
+def contextualize_capabilities(stable: dict[str, Any], *, local_mode: bool) -> dict[str, Any]:
+    """Overlay request-specific policy without repeating stable probes."""
+    payload = deepcopy(stable)
+    payload["mode"] = "local" if local_mode else "remote"
+    payload.setdefault("recording", {})["secure_context_required"] = not local_mode
+    operations = payload.setdefault("operations", {})
+    operations["reveal_folder"] = local_mode
+    operations["pycroppdf_fallback"] = local_mode and bool(
+        payload.get("pycroppdf", {}).get("available")
+    )
+    return payload
+
+
+def probe_capabilities(paths: DataPaths, *, local_mode: bool) -> dict[str, Any]:
+    """Compatibility helper for explicit, uncached capability diagnostics."""
+    return contextualize_capabilities(
+        probe_stable_capabilities(paths),
+        local_mode=local_mode,
+    )
+
+
+class CapabilityService:
+    """Persist stable capability probes and serve warm reads without subprocesses."""
+
+    DEFAULT_TTL_SECONDS = 300
+    SNAPSHOTS_TO_RETAIN = 3
+
+    def __init__(
+        self,
+        database: Database,
+        paths: DataPaths,
+        *,
+        ttl_seconds: int | None = None,
+    ):
+        configured_ttl = (
+            ttl_seconds
+            if ttl_seconds is not None
+            else os.environ.get("PANDRATOR_CAPABILITY_TTL_SECONDS", self.DEFAULT_TTL_SECONDS)
+        )
+        try:
+            self.ttl_seconds = max(0, int(configured_ttl))
+        except (TypeError, ValueError):
+            self.ttl_seconds = self.DEFAULT_TTL_SECONDS
+        self.database = database
+        self.paths = paths
+        self._probe_lock = threading.Lock()
+
+    def _latest(self) -> CapabilitySnapshot | None:
+        cutoff = utcnow() - timedelta(seconds=self.ttl_seconds)
+        with self.database.session() as session:
+            snapshot = session.scalar(
+                select(CapabilitySnapshot)
+                .where(CapabilitySnapshot.created_at >= cutoff)
+                .order_by(CapabilitySnapshot.created_at.desc(), CapabilitySnapshot.id.desc())
+                .limit(1)
+            )
+            if snapshot is not None:
+                session.expunge(snapshot)
+            return snapshot
+
+    def _store(self, stable: dict[str, Any]) -> CapabilitySnapshot:
+        with self.database.session() as session:
+            snapshot = CapabilitySnapshot(payload_json=stable)
+            session.add(snapshot)
+            session.flush()
+            retained_ids = list(
+                session.scalars(
+                    select(CapabilitySnapshot.id)
+                    .order_by(CapabilitySnapshot.created_at.desc(), CapabilitySnapshot.id.desc())
+                    .limit(self.SNAPSHOTS_TO_RETAIN)
+                ).all()
+            )
+            if retained_ids:
+                session.execute(
+                    delete(CapabilitySnapshot).where(CapabilitySnapshot.id.not_in(retained_ids))
+                )
+            session.expunge(snapshot)
+            return snapshot
+
+    def get(self, *, local_mode: bool, force: bool = False) -> dict[str, Any]:
+        snapshot = None if force else self._latest()
+        cache_hit = snapshot is not None
+        if snapshot is None:
+            with self._probe_lock:
+                snapshot = None if force else self._latest()
+                cache_hit = snapshot is not None
+                if snapshot is None:
+                    snapshot = self._store(probe_stable_capabilities(self.paths))
+                    cache_hit = False
+        payload = contextualize_capabilities(snapshot.payload_json, local_mode=local_mode)
+        payload["_meta"] = {
+            "cache_hit": cache_hit,
+            "generated_at": snapshot.created_at.isoformat(),
+            "ttl_seconds": self.ttl_seconds,
+        }
+        return payload

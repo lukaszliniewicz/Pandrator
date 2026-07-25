@@ -21,8 +21,10 @@
     WandSparkles,
     X
   } from '@lucide/svelte';
-  import { onMount, tick } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
   import { api } from './api';
+  import { appState } from './app-state.svelte';
+  import { invalidates, type InvalidationBatch, type PandratorServerEvent } from './invalidation';
   import WaveformPeaks from './WaveformPeaks.svelte';
   import TtsServicesModal from './TtsServicesModal.svelte';
   import AudioPlayer from './AudioPlayer.svelte';
@@ -726,22 +728,92 @@
     }
   }
 
+  function patchLiveProgress(batch: InvalidationBatch) {
+    const relevant = batch.events.filter((event) => event.session_id === sessionId);
+    if (!relevant.length) return;
+    const patch = (item: any, event: PandratorServerEvent) => ({
+      ...item,
+      ...(event.progress !== undefined ? { progress: Number(event.progress) } : {}),
+      ...(event.detail !== undefined ? { progress_detail: event.detail } : {}),
+      ...(['queued', 'running', 'cancel_requested'].includes(String(event.status ?? ''))
+        ? { status: event.status }
+        : {})
+    });
+    for (const event of relevant) {
+      const generationRunId = String(event.generation_run_id ?? '');
+      const assemblyId = String(event.output_assembly_id ?? '');
+      runs = runs.map((item: any) => {
+        let next = item;
+        if (
+          (generationRunId && item.id === generationRunId)
+          || (event.job_id && item.job_id === event.job_id)
+        ) {
+          next = patch(next, event);
+        }
+        if (
+          next.assembly
+          && (
+            (assemblyId && next.assembly.id === assemblyId)
+            || (event.job_id && next.assembly.job_id === event.job_id)
+          )
+        ) {
+          next = { ...next, assembly: patch(next.assembly, event) };
+        }
+        return next;
+      });
+      if (
+        run
+        && (
+          (generationRunId && run.id === generationRunId)
+          || (event.job_id && run.job_id === event.job_id)
+        )
+      ) {
+        run = patch(run, event);
+      }
+      if (
+        assembly
+        && (
+          (assemblyId && assembly.id === assemblyId)
+          || (event.job_id && assembly.job_id === event.job_id)
+        )
+      ) {
+        assembly = patch(assembly, event);
+      }
+    }
+  }
+
   onMount(() => {
-    const refresh = () => load(true, true);
+    const refresh = (event: Event) => {
+      const batch = (event as CustomEvent<InvalidationBatch>).detail;
+      patchLiveProgress(batch);
+      if (
+        invalidates(batch, 'generation', sessionId)
+        || invalidates(batch, 'output', sessionId)
+      ) {
+        load(true, true);
+      }
+    };
     loadRvc();
     loadSpeechOptions();
-    window.addEventListener('pandrator:generation-changed', refresh);
+    window.addEventListener('pandrator:invalidate', refresh);
     return () => {
-      window.removeEventListener('pandrator:generation-changed', refresh);
+      window.removeEventListener('pandrator:invalidate', refresh);
       if (timer) window.clearTimeout(timer);
       stopPlayback();
     };
   });
-  $effect(() => { filter; load(true, false); });
+  $effect(() => {
+    filter;
+    untrack(() => load(true, false));
+  });
   $effect(() => {
     if (timer) clearTimeout(timer);
-    if ((run && ['queued', 'running', 'pausing', 'cancel_requested'].includes(run.status)) || (selectedAssembly && ['queued', 'running'].includes(selectedAssembly.status))) {
-      timer = window.setTimeout(() => load(true, true), 1200);
+    const active = (
+      (run && ['queued', 'running', 'pausing', 'cancel_requested'].includes(run.status))
+      || (selectedAssembly && ['queued', 'running'].includes(selectedAssembly.status))
+    );
+    if (active && !appState.eventsHealthy) {
+      timer = window.setTimeout(() => load(true, true), 5000);
     }
   });
 </script>

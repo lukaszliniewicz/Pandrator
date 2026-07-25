@@ -39,7 +39,7 @@ from pandrator.runtime import DataPaths
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.audio_assembly import compose_audio
 from pandrator.web.auth import BootstrapTokenStore
-from pandrator.web.capabilities import probe_capabilities
+from pandrator.web.capabilities import probe_stable_capabilities
 from pandrator.web.database import Database, upgrade_database
 from pandrator.web.jobs import JobQueue
 from pandrator.web.models import Artifact, AudioTake, GenerationSegment, Job
@@ -489,7 +489,10 @@ def benchmark_capability_endpoint(root: Path, *, runs: int) -> dict[str, Any]:
     durations: list[float] = []
     statuses: list[int] = []
     try:
-        with mock.patch("pandrator.web.api.probe_capabilities", wraps=probe_capabilities) as wrapped:
+        with mock.patch(
+            "pandrator.web.capabilities.probe_stable_capabilities",
+            wraps=probe_stable_capabilities,
+        ) as wrapped:
             for _index in range(runs):
                 started = time.perf_counter()
                 response = client.get("/api/v1/capabilities")
@@ -503,6 +506,7 @@ def benchmark_capability_endpoint(root: Path, *, runs: int) -> dict[str, Any]:
         "requests": runs,
         "probe_invocations": invocation_count,
         "probe_invocations_per_request": round(invocation_count / max(1, runs), 3),
+        "warm_requests_without_probe": max(0, runs - invocation_count),
         "request_duration_ms": durations,
         "statuses": statuses,
         "all_requests_succeeded": all(status == 200 for status in statuses),

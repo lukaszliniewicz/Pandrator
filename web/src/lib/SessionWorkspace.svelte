@@ -18,6 +18,8 @@
     X
   } from '@lucide/svelte';
   import { api, type JobRecord, type SessionRecord } from './api';
+  import { appState } from './app-state.svelte';
+  import { invalidates, type InvalidationBatch } from './invalidation';
   import SubtitleReview from './SubtitleReview.svelte';
   import GuidedTour from './GuidedTour.svelte';
   import ArtifactPreview from './ArtifactPreview.svelte';
@@ -208,6 +210,10 @@
   }
 
   async function loadCapabilities() {
+    if (Object.keys(appState.capabilities).length) {
+      capabilities = appState.capabilities;
+      return;
+    }
     try { capabilities = await api<Record<string, any>>('/capabilities'); }
     catch { capabilities = {}; }
   }
@@ -743,14 +749,41 @@
     await Promise.all([load({ initial: true }), loadCapabilities(), loadSpeechCatalogues(), loadLlmModels()]);
   });
   onMount(() => {
-    const refresh = () => load({ initial: false });
-    window.addEventListener('pandrator:generation-changed', refresh);
-    return () => window.removeEventListener('pandrator:generation-changed', refresh);
+    const refresh = (event: Event) => {
+      const batch = (event as CustomEvent<InvalidationBatch>).detail;
+      if (snapshot) {
+        let changed = false;
+        const stages = snapshot.stages.map((stage) => {
+          const update = batch.events.find((item) =>
+            item.session_id === session.id
+            && item.job_id
+            && item.job_id === stage.job_id
+          );
+          if (!update) return stage;
+          changed = true;
+          return {
+            ...stage,
+            ...(update.progress !== undefined ? { progress: Number(update.progress) } : {}),
+            ...(update.detail !== undefined ? { detail: update.detail } : {}),
+            ...(['queued', 'running', 'cancel_requested'].includes(String(update.status ?? ''))
+              ? { status: 'running' as const }
+              : {})
+          };
+        });
+        if (changed) snapshot = { ...snapshot, stages };
+      }
+      if (invalidates(batch, 'workflow', session.id)) {
+        load({ initial: false });
+      }
+    };
+    window.addEventListener('pandrator:invalidate', refresh);
+    return () => window.removeEventListener('pandrator:invalidate', refresh);
   });
   $effect(() => { if (typeof localStorage !== 'undefined') localStorage.setItem(`pandrator:workspace-mode:${session.id}`, workspaceMode); });
   $effect(() => {
     if (!snapshot?.stages.some((stage) => stage.status === 'running')) return;
-    const timer = window.setTimeout(() => load({ initial: false }), 1000);
+    if (appState.eventsHealthy) return;
+    const timer = window.setTimeout(() => load({ initial: false }), 5000);
     return () => window.clearTimeout(timer);
   });
 </script>
