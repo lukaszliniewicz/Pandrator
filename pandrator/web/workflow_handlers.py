@@ -3817,8 +3817,14 @@ class WorkflowHandlers:
         return output, model_name
 
     def _generate_audio(self, session_id: str, source_artifact: Artifact, source_path: Path, settings: dict[str, Any], progress, cancel_event, *, role: str, job_id: str | None = None) -> dict[str, Any]:
-        from pydub import AudioSegment
         from pandrator.logic import tts_handler
+        from .audio_assembly import (
+            AudioAssemblyPart,
+            assemble_audio_plan,
+            build_audio_assembly_plan,
+            preferred_pcm_format,
+        )
+        from .media_process import MediaProcessCancelled
 
         settings = hydrate_tts_settings(self.database, self.paths, settings)
 
@@ -3833,7 +3839,7 @@ class WorkflowHandlers:
         records = [record for record in records if str(record.get("text") or record.get("original_sentence") or "").strip()]
         if not records:
             raise ValueError("No non-empty narration segments were found.")
-        audio_parts: list[tuple[AudioSegment, int]] = []
+        assembly_inputs: list[tuple[Path, int, int]] = []
         take_artifact_ids: list[str] = []
         revision_id = ""
         generation_segment_ids: list[str] = []
@@ -3953,16 +3959,54 @@ class WorkflowHandlers:
                 settings,
                 is_subtitle=source_artifact.role == "speech_blocks" or self._is_subtitle_generation_record(record),
             )
-            audio_parts.append((audio, silence_after))
+            assembly_inputs.append((sentence_path, len(audio), silence_after))
             progress(optimization_share + (index / len(records)) * synthesis_share, f"Generated segment {index} of {len(records)}")
-        if not audio_parts:
+        if not assembly_inputs:
             raise RuntimeError("The speech service returned no audio.")
-        from .audio_assembly import compose_audio
 
-        combined = compose_audio(audio_parts, settings)
         destination = self._operation_dir(session_id, "generate-audio") / ("dubbing_audio.wav" if role == "dubbing_audio" else "audiobook_audio.wav")
-        exported = combined.export(destination, format="wav")
-        exported.close()
+        fade_enabled = bool(settings.get("fade_enabled", settings.get("enable_fade", False)))
+        fade_in_ms = (
+            max(0, int(settings.get("fade_in_ms", settings.get("fade_in_duration", 0)) or 0))
+            if fade_enabled
+            else 0
+        )
+        fade_out_ms = (
+            max(0, int(settings.get("fade_out_ms", settings.get("fade_out_duration", 0)) or 0))
+            if fade_enabled
+            else 0
+        )
+        sample_rate_hz, channels = preferred_pcm_format(
+            assembly_inputs[0][0],
+            cancel_event=cancel_event,
+        )
+        plan = build_audio_assembly_plan(
+            [
+                AudioAssemblyPart(
+                    path=path,
+                    expected_duration_ms=duration_ms,
+                    silence_after_ms=(
+                        max(0, int(silence_after_ms or 0))
+                        if index < len(assembly_inputs) - 1
+                        else 0
+                    ),
+                    fade_in_ms=fade_in_ms,
+                    fade_out_ms=fade_out_ms,
+                )
+                for index, (path, duration_ms, silence_after_ms) in enumerate(assembly_inputs)
+            ],
+            output_format="wav",
+            sample_rate_hz=sample_rate_hz,
+            channels=channels,
+        )
+        try:
+            assembly_result = assemble_audio_plan(
+                plan,
+                destination,
+                cancel_event=cancel_event,
+            )
+        except MediaProcessCancelled:
+            return {}
         artifact = self.artifacts.register(
             destination,
             kind="audio",
@@ -3970,7 +4014,12 @@ class WorkflowHandlers:
             session_id=session_id,
             parent_ids=[source_artifact.id, *take_artifact_ids],
             settings=settings,
-            metadata={"segment_count": len(records), "service": settings.get("service") or settings.get("tts_service") or "XTTS"},
+            metadata={
+                "segment_count": len(records),
+                "service": settings.get("service") or settings.get("tts_service") or "XTTS",
+                "duration_ms": assembly_result.duration_ms,
+                "assembly_backend": assembly_result.backend,
+            },
         )
         progress(1.0, "Audio ready")
         return {"artifact_id": artifact.id, "path": artifact.relative_path, "segments": len(records), "generation_plan_revision_id": revision_id}
@@ -4440,13 +4489,20 @@ class WorkflowHandlers:
         """Assemble the current selected takes in plan order into an immutable artifact."""
         import tempfile
 
-        from pydub import AudioSegment
-
-        from .audio_assembly import compose_audio, export_audio
+        from .audio_assembly import (
+            AudioAssemblyPart,
+            assemble_audio_plan,
+            build_audio_assembly_plan,
+            preferred_pcm_format,
+            resolve_assembly_backend,
+        )
+        from .media_process import MediaProcessCancelled, probe_audio_stream
         from pandrator.logic.dubbing.audio_sync import align_audio_blocks
         from pandrator.logic.dubbing.models import AudioAlignmentBlock
 
         assembly_id = str(payload.get("output_assembly_id") or "")
+        destination: Path | None = None
+        output_registered = False
         with self.database.session() as session:
             assembly = session.get(OutputAssembly, assembly_id)
             if assembly is None:
@@ -4529,11 +4585,9 @@ class WorkflowHandlers:
             if not selected:
                 raise ValueError("No active generation segments are available for assembly.")
 
-            parts: list[tuple[AudioSegment, int]] = []
-            loaded: list[tuple[GenerationSegment, AudioTake, Artifact, Path, AudioSegment]] = []
+            loaded: list[tuple[GenerationSegment, AudioTake, Artifact, Path, int]] = []
             manifest: list[dict[str, Any]] = []
             chapter_markers: list[tuple[float, str]] = []
-            timeline_ms = 0
             parent_ids: list[str] = []
             for index, (segment, take, artifact) in enumerate(selected):
                 if cancel_event.is_set():
@@ -4545,16 +4599,18 @@ class WorkflowHandlers:
                             assembly.updated_at = utcnow()
                     return {}
                 progress(
-                    0.4 * (index / len(selected)),
-                    f"Loading audio segment {index + 1} of {len(selected)}",
+                    0.2 * (index / len(selected)),
+                    f"Validating audio segment {index + 1} of {len(selected)}",
                 )
                 path = self.paths.managed_path(artifact.relative_path)
                 if not path.is_file():
                     raise ValueError(f"Audio take file is missing for segment {segment.ordinal + 1}.")
-                audio = AudioSegment.from_file(path)
-                loaded.append((segment, take, artifact, path, audio))
+                duration_ms = int(take.duration_ms or (artifact.metadata_json or {}).get("duration_ms") or 0)
+                if duration_ms <= 0:
+                    duration_ms = probe_audio_stream(path, cancel_event=cancel_event).duration_ms
+                loaded.append((segment, take, artifact, path, duration_ms))
                 parent_ids.append(artifact.id)
-            progress(0.4, f"Loaded {len(loaded)} audio segments")
+            progress(0.2, f"Validated {len(loaded)} audio segments")
 
             source_timing_by_ref: dict[str, tuple[int, int, int]] = {}
             for source_id, ordinal, start_ms, end_ms in source_timings:
@@ -4572,13 +4628,59 @@ class WorkflowHandlers:
                 "speed_adjusted_block_count": 0,
             }
 
+            session_record = self._session_record(session_id)
+            output_format = str(output_settings.get("format") or "wav").lower()
+            if session_record.workflow_kind != "audiobook" and output_format == "m4b":
+                output_format = "wav"
+            bitrate = str(output_settings.get("bitrate") or "192k")
+            assemblies_dir = self._session_dir(session_id) / "assemblies"
+            assemblies_dir.mkdir(parents=True, exist_ok=True)
+            destination = assemblies_dir / f"assembly-{assembly_id}.{output_format}"
+            backend = resolve_assembly_backend()
+            fade_enabled = bool(
+                audio_settings.get("fade_enabled", audio_settings.get("enable_fade", False))
+            )
+            fade_in_ms = (
+                max(
+                    0,
+                    int(
+                        audio_settings.get(
+                            "fade_in_ms",
+                            audio_settings.get("fade_in_duration", 0),
+                        )
+                        or 0
+                    ),
+                )
+                if fade_enabled
+                else 0
+            )
+            fade_out_ms = (
+                max(
+                    0,
+                    int(
+                        audio_settings.get(
+                            "fade_out_ms",
+                            audio_settings.get("fade_out_duration", 0),
+                        )
+                        or 0
+                    ),
+                )
+                if fade_enabled
+                else 0
+            )
+            sample_rate_hz, channels = preferred_pcm_format(
+                loaded[0][3],
+                cancel_event=cancel_event,
+            )
+
             if subtitle_timed:
                 alignment_blocks: list[AudioAlignmentBlock] = []
-                assemblies_dir = self._session_dir(session_id) / "assemblies"
-                assemblies_dir.mkdir(parents=True, exist_ok=True)
-                with tempfile.TemporaryDirectory(prefix=f".assembly-{assembly_id}-", dir=assemblies_dir) as temporary:
+                with tempfile.TemporaryDirectory(
+                    prefix=f".assembly-{assembly_id}-",
+                    dir=assemblies_dir,
+                ) as temporary:
                     temporary_path = Path(temporary)
-                    for index, (segment, take, artifact, _path, audio) in enumerate(loaded):
+                    for index, (segment, take, artifact, source_path, duration_ms) in enumerate(loaded):
                         timings = sorted(
                             {
                                 source_timing_by_ref[str(reference)]
@@ -4591,17 +4693,27 @@ class WorkflowHandlers:
                             raise ValueError(
                                 f"Subtitle generation segment {segment.ordinal + 1} has no source timing references. Regenerate its speech-block plan."
                             )
-                        processed = audio
-                        if bool(audio_settings.get("fade_enabled", audio_settings.get("enable_fade", False))):
-                            fade_in = max(0, int(audio_settings.get("fade_in_ms", audio_settings.get("fade_in_duration", 0)) or 0))
-                            fade_out = max(0, int(audio_settings.get("fade_out_ms", audio_settings.get("fade_out_duration", 0)) or 0))
-                            if fade_in:
-                                processed = processed.fade_in(min(fade_in, len(processed)))
-                            if fade_out:
-                                processed = processed.fade_out(min(fade_out, len(processed)))
-                        input_path = temporary_path / f"segment-{index + 1:04d}.wav"
-                        exported = processed.export(input_path, format="wav")
-                        exported.close()
+                        input_path = temporary_path / f"segment-{index + 1:06d}.wav"
+                        segment_plan = build_audio_assembly_plan(
+                            [
+                                AudioAssemblyPart(
+                                    path=source_path,
+                                    expected_duration_ms=duration_ms,
+                                    fade_in_ms=fade_in_ms,
+                                    fade_out_ms=fade_out_ms,
+                                )
+                            ],
+                            output_format="wav",
+                            sample_rate_hz=sample_rate_hz,
+                            channels=channels,
+                        )
+                        segment_result = assemble_audio_plan(
+                            segment_plan,
+                            input_path,
+                            backend=backend,
+                            work_dir=temporary_path,
+                            cancel_event=cancel_event,
+                        )
                         block = AudioAlignmentBlock(
                             number=str(index + 1).zfill(4),
                             text=segment.text,
@@ -4610,7 +4722,10 @@ class WorkflowHandlers:
                             audio_files=[input_path],
                             subtitles=[value[2] for value in timings],
                         )
-                        if alignment_blocks and alignment_blocks[-1].subtitles[-1:] == block.subtitles[:1]:
+                        if (
+                            alignment_blocks
+                            and alignment_blocks[-1].subtitles[-1:] == block.subtitles[:1]
+                        ):
                             previous = alignment_blocks[-1]
                             alignment_blocks[-1] = AudioAlignmentBlock(
                                 number=f"{previous.number}-{block.number}",
@@ -4618,7 +4733,9 @@ class WorkflowHandlers:
                                 start_ms=previous.start_ms,
                                 end_ms=max(previous.end_ms, block.end_ms),
                                 audio_files=[*previous.audio_files, *block.audio_files],
-                                subtitles=sorted(set([*previous.subtitles, *block.subtitles])),
+                                subtitles=sorted(
+                                    set([*previous.subtitles, *block.subtitles])
+                                ),
                             )
                         else:
                             alignment_blocks.append(block)
@@ -4632,7 +4749,7 @@ class WorkflowHandlers:
                                 "take_revision": take.revision,
                                 "artifact_id": artifact.id,
                                 "kind": take.kind,
-                                "duration_ms": len(audio),
+                                "duration_ms": segment_result.part_duration_ms[0],
                                 "silence_after_ms": 0,
                                 "target_start_ms": timings[0][0],
                                 "target_end_ms": timings[-1][1],
@@ -4640,44 +4757,165 @@ class WorkflowHandlers:
                             }
                         )
                         progress(
-                            0.4 + 0.2 * ((index + 1) / len(loaded)),
+                            0.2 + 0.25 * ((index + 1) / len(loaded)),
                             f"Prepared timing block {index + 1} of {len(loaded)}",
                         )
                     raw_speed = float(audio_settings.get("synchronization_speed") or 1.0)
-                    speed_up_percent = int(round(raw_speed * 100 if raw_speed <= 10 else raw_speed))
+                    speed_up_percent = int(
+                        round(raw_speed * 100 if raw_speed <= 10 else raw_speed)
+                    )
                     logger.info(
                         "Assembling %s with subtitle timing: blocks=%d max_speed=%.3fx max_delay=%dms sentence_gap=%dms",
                         assembly_id,
                         len(alignment_blocks),
                         max(1.0, speed_up_percent / 100.0),
-                        max(0, int(audio_settings.get("synchronization_delay_ms") or 0)),
-                        max(0, int(audio_settings.get("synchronization_sentence_gap_ms") or 100)),
+                        max(
+                            0,
+                            int(audio_settings.get("synchronization_delay_ms") or 0),
+                        ),
+                        max(
+                            0,
+                            int(
+                                audio_settings.get(
+                                    "synchronization_sentence_gap_ms"
+                                )
+                                or 100
+                            ),
+                        ),
                     )
-                    progress(0.62, f"Synchronizing {len(alignment_blocks)} speech blocks")
-                    aligned_path = align_audio_blocks(
-                        alignment_blocks,
-                        temporary_path,
-                        delay_start_ms=max(0, int(audio_settings.get("synchronization_delay_ms") or 0)),
-                        speed_up_percent=max(100, speed_up_percent),
-                        sentence_gap_ms=max(0, int(audio_settings.get("synchronization_sentence_gap_ms") or 100)),
-                        output_path=temporary_path / "aligned.wav",
-                        diagnostics=alignment_diagnostics,
+                    progress(
+                        0.48,
+                        f"Synchronizing {len(alignment_blocks)} speech blocks",
                     )
-                    combined = AudioSegment.from_wav(aligned_path)
-                    progress(0.76, "Subtitle-timed audio synchronized")
-                    logger.info(
-                        "Assembly %s synchronization applied speed-up to %d/%d blocks (max effective %.3fx, final drift %dms)",
-                        assembly_id,
-                        int(alignment_diagnostics.get("speed_adjusted_block_count") or 0),
-                        int(alignment_diagnostics.get("block_count") or 0),
-                        float(alignment_diagnostics.get("max_effective_speed_factor") or 1.0),
-                        int(alignment_diagnostics.get("final_drift_ms") or 0),
+                    aligned_path = Path(
+                        align_audio_blocks(
+                            alignment_blocks,
+                            temporary_path,
+                            delay_start_ms=max(
+                                0,
+                                int(
+                                    audio_settings.get(
+                                        "synchronization_delay_ms"
+                                    )
+                                    or 0
+                                ),
+                            ),
+                            speed_up_percent=max(100, speed_up_percent),
+                            sentence_gap_ms=max(
+                                0,
+                                int(
+                                    audio_settings.get(
+                                        "synchronization_sentence_gap_ms"
+                                    )
+                                    or 100
+                                ),
+                            ),
+                            output_path=temporary_path / "aligned.wav",
+                            diagnostics=alignment_diagnostics,
+                            backend=backend,
+                            cancel_event=cancel_event,
+                        )
                     )
+                    aligned_duration_ms = probe_audio_stream(
+                        aligned_path,
+                        cancel_event=cancel_event,
+                    ).duration_ms
+                    output_plan = build_audio_assembly_plan(
+                        [
+                            AudioAssemblyPart(
+                                path=aligned_path,
+                                expected_duration_ms=aligned_duration_ms,
+                            )
+                        ],
+                        output_format=output_format,
+                        bitrate=bitrate,
+                        sample_rate_hz=sample_rate_hz,
+                        channels=channels,
+                    )
+                    assembly_result = assemble_audio_plan(
+                        output_plan,
+                        destination,
+                        backend=backend,
+                        work_dir=temporary_path,
+                        cancel_event=cancel_event,
+                        progress=lambda fraction, detail: progress(
+                            0.62 + 0.2 * fraction,
+                            detail,
+                        ),
+                    )
+                progress(0.82, "Subtitle-timed audio synchronized")
+                logger.info(
+                    "Assembly %s synchronization applied speed-up to %d/%d blocks (max effective %.3fx, final drift %dms)",
+                    assembly_id,
+                    int(
+                        alignment_diagnostics.get(
+                            "speed_adjusted_block_count"
+                        )
+                        or 0
+                    ),
+                    int(alignment_diagnostics.get("block_count") or 0),
+                    float(
+                        alignment_diagnostics.get(
+                            "max_effective_speed_factor"
+                        )
+                        or 1.0
+                    ),
+                    int(alignment_diagnostics.get("final_drift_ms") or 0),
+                )
             else:
-                for index, (segment, take, artifact, _path, audio) in enumerate(loaded):
+                planned_parts: list[AudioAssemblyPart] = []
+                planned_chapters: list[tuple[int, str]] = []
+                for index, (segment, take, artifact, source_path, duration_ms) in enumerate(loaded):
+                    silence_after_ms = (
+                        max(0, int(segment.silence_after_ms or 0))
+                        if index < len(loaded) - 1
+                        else 0
+                    )
+                    planned_parts.append(
+                        AudioAssemblyPart(
+                            path=source_path,
+                            expected_duration_ms=duration_ms,
+                            silence_after_ms=silence_after_ms,
+                            fade_in_ms=fade_in_ms,
+                            fade_out_ms=fade_out_ms,
+                            label=segment.id,
+                        )
+                    )
                     if segment.node_kind == "chapter_marker":
-                        chapter_markers.append((timeline_ms / 1000, segment.text))
-                    parts.append((audio, segment.silence_after_ms))
+                        planned_chapters.append((index, segment.text))
+                output_plan = build_audio_assembly_plan(
+                    planned_parts,
+                    output_format=output_format,
+                    bitrate=bitrate,
+                    sample_rate_hz=sample_rate_hz,
+                    channels=channels,
+                    chapters=planned_chapters,
+                )
+                assembly_result = assemble_audio_plan(
+                    output_plan,
+                    destination,
+                    backend=backend,
+                    work_dir=assemblies_dir,
+                    cancel_event=cancel_event,
+                    progress=lambda fraction, detail: progress(
+                        0.2 + 0.62 * fraction,
+                        detail,
+                    ),
+                )
+                chapter_markers = [
+                    (start_ms / 1000, chapter.title)
+                    for chapter, start_ms in zip(
+                        output_plan.chapters,
+                        assembly_result.chapter_starts_ms,
+                    )
+                ]
+                for index, (
+                    segment,
+                    take,
+                    artifact,
+                    _source_path,
+                    _duration_ms,
+                ) in enumerate(loaded):
                     manifest.append(
                         {
                             "segment_id": segment.id,
@@ -4688,28 +4926,11 @@ class WorkflowHandlers:
                             "take_revision": take.revision,
                             "artifact_id": artifact.id,
                             "kind": take.kind,
-                            "duration_ms": len(audio),
-                            "silence_after_ms": segment.silence_after_ms if index < len(loaded) - 1 else 0,
+                            "duration_ms": assembly_result.part_duration_ms[index],
+                            "silence_after_ms": planned_parts[index].silence_after_ms,
                         }
                     )
-                    timeline_ms += len(audio)
-                    if index < len(loaded) - 1:
-                        timeline_ms += max(0, int(segment.silence_after_ms or 0))
-                    progress(
-                        0.4 + 0.2 * ((index + 1) / len(loaded)),
-                        f"Prepared audio segment {index + 1} of {len(loaded)}",
-                    )
-                progress(0.64, "Composing audio timeline")
-                combined = compose_audio(parts, audio_settings)
-                progress(0.76, "Audio timeline composed")
-            session_record = self._session_record(session_id)
-            output_format = str(output_settings.get("format") or "wav").lower()
-            if session_record.workflow_kind != "audiobook" and output_format == "m4b":
-                output_format = "wav"
-            bitrate = str(output_settings.get("bitrate") or "192k")
-            destination = self._session_dir(session_id) / "assemblies" / f"assembly-{assembly_id}.{output_format}"
-            progress(0.8, f"Encoding {output_format.upper()} output")
-            export_audio(combined, destination, output_format, bitrate)
+
             progress(0.9, "Applying output metadata")
             metadata: dict[str, str] = {}
             cover_artifact_id = ""
@@ -4742,7 +4963,7 @@ class WorkflowHandlers:
                     _add_chapters_to_m4b(
                         str(destination),
                         chapter_markers,
-                        total_duration_sec=len(combined) / 1000,
+                        total_duration_sec=assembly_result.duration_ms / 1000,
                         raise_on_error=True,
                     )
                     _save_metadata_and_cover(
@@ -4762,10 +4983,11 @@ class WorkflowHandlers:
                 settings={"audio": audio_settings, "output": output_settings, "takes": manifest},
                 metadata={
                     "output_assembly_id": assembly_id,
-                    "duration_ms": len(combined),
+                    "duration_ms": assembly_result.duration_ms,
                     "segment_count": len(selected),
                     "format": output_format,
                     "bitrate": bitrate,
+                    "assembly_backend": assembly_result.backend,
                     "metadata": metadata,
                     "cover_artifact_id": cover_artifact_id or None,
                     "chapters": [{"start_ms": int(start * 1000), "title": title} for start, title in chapter_markers],
@@ -4773,6 +4995,7 @@ class WorkflowHandlers:
                     "synchronization": alignment_diagnostics,
                 },
             )
+            output_registered = True
             with self.database.session() as session:
                 assembly = session.get(OutputAssembly, assembly_id)
                 assembly.artifact_id = artifact.id
@@ -4781,7 +5004,8 @@ class WorkflowHandlers:
                 assembly.settings_json = {
                     **dict(assembly.settings_json or {}),
                     "takes": manifest,
-                    "duration_ms": len(combined),
+                    "duration_ms": assembly_result.duration_ms,
+                    "assembly_backend": assembly_result.backend,
                     "synchronization": alignment_diagnostics,
                 }
                 assembly.updated_at = utcnow()
@@ -4789,16 +5013,29 @@ class WorkflowHandlers:
             return {
                 "output_assembly_id": assembly_id,
                 "artifact_id": artifact.id,
-                "duration_ms": len(combined),
+                "duration_ms": assembly_result.duration_ms,
                 "segment_count": len(selected),
                 "format": output_format,
+                "assembly_backend": assembly_result.backend,
                 "synchronization": {
                     key: value
                     for key, value in alignment_diagnostics.items()
                     if key != "blocks"
                 },
             }
+        except MediaProcessCancelled:
+            if destination is not None and not output_registered:
+                destination.unlink(missing_ok=True)
+            with self.database.session() as session:
+                assembly = session.get(OutputAssembly, assembly_id)
+                if assembly is not None:
+                    assembly.status = "canceled"
+                    assembly.error_message = None
+                    assembly.updated_at = utcnow()
+            return {}
         except Exception as error:
+            if destination is not None and not output_registered:
+                destination.unlink(missing_ok=True)
             with self.database.session() as session:
                 assembly = session.get(OutputAssembly, assembly_id)
                 if assembly is not None:
@@ -4809,33 +5046,39 @@ class WorkflowHandlers:
 
     def generate_waveform(self, payload, progress, cancel_event):
         """Create a compact, reusable peak artifact for browser review."""
-        from pydub import AudioSegment
+        from .media_process import MediaProcessCancelled
+        from .waveform import generate_waveform_peaks
 
         source, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
         max_points = max(128, min(5000, int(payload.get("max_points") or 1600)))
-        progress(0.1, "Decoding audio for waveform")
-        audio = AudioSegment.from_file(source_path)
-        samples = audio.get_array_of_samples()
-        channels = max(1, int(audio.channels or 1))
-        frames = max(1, len(samples) // channels)
-        frame_step = max(1, frames // max_points)
-        ceiling = float(1 << (8 * audio.sample_width - 1))
-        peaks: list[float] = []
-        for start in range(0, frames, frame_step):
-            if cancel_event.is_set():
-                return {}
-            end = min(frames, start + frame_step)
-            value = 0
-            for frame in range(start, end):
-                offset = frame * channels
-                value = max(value, *(abs(int(samples[offset + channel])) for channel in range(channels)))
-            peaks.append(round(min(1.0, value / ceiling), 5))
-            if len(peaks) % 200 == 0:
-                progress(min(0.9, end / frames), "Calculating waveform peaks")
         destination_dir = self._session_dir(source.session_id) if source.session_id else self.paths.artifacts / "waveforms"
         destination_dir.mkdir(parents=True, exist_ok=True)
+        progress(0.1, "Downsampling audio for waveform")
+        try:
+            waveform = generate_waveform_peaks(
+                source_path,
+                max_points=max_points,
+                work_dir=destination_dir,
+                cancel_event=cancel_event,
+            )
+        except MediaProcessCancelled:
+            return {}
+        if cancel_event.is_set():
+            return {}
+        progress(0.9, "Writing waveform peaks")
         destination = destination_dir / f"waveform-{source.id}-{max_points}.json"
-        destination.write_text(json.dumps({"duration_ms": len(audio), "channels": channels, "points": peaks}, separators=(",", ":")) + "\n", encoding="utf-8")
+        destination.write_text(
+            json.dumps(
+                {
+                    "duration_ms": waveform.duration_ms,
+                    "channels": waveform.channels,
+                    "points": waveform.points,
+                },
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         artifact = self.artifacts.register(
             destination,
             kind="json",
@@ -4843,10 +5086,18 @@ class WorkflowHandlers:
             session_id=source.session_id,
             parent_ids=[source.id],
             settings={"max_points": max_points},
-            metadata={"source_artifact_id": source.id, "duration_ms": len(audio)},
+            metadata={
+                "source_artifact_id": source.id,
+                "duration_ms": waveform.duration_ms,
+                "analysis_sample_rate_hz": waveform.analysis_sample_rate_hz,
+            },
         )
         progress(1.0, "Waveform ready")
-        return {"artifact_id": artifact.id, "source_artifact_id": source.id, "point_count": len(peaks)}
+        return {
+            "artifact_id": artifact.id,
+            "source_artifact_id": source.id,
+            "point_count": len(waveform.points),
+        }
 
     def export(self, payload, progress, cancel_event):
         """Create immutable, managed exports without requiring generated audio."""

@@ -37,7 +37,11 @@ from sqlalchemy.orm import Session as OrmSession
 
 from pandrator.runtime import DataPaths
 from pandrator.web.artifacts import ArtifactService
-from pandrator.web.audio_assembly import compose_audio
+from pandrator.web.audio_assembly import (
+    AudioAssemblyPart,
+    assemble_audio_plan,
+    build_audio_assembly_plan,
+)
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.capabilities import probe_stable_capabilities
 from pandrator.web.database import Database, upgrade_database
@@ -514,33 +518,100 @@ def benchmark_capability_endpoint(root: Path, *, runs: int) -> dict[str, Any]:
 
 
 def benchmark_audio_composition(segment_counts: list[int]) -> dict[str, Any]:
-    source = AudioSegment.silent(duration=20, frame_rate=16000)
     observations: list[dict[str, Any]] = []
-    for count in segment_counts:
-        parts = [(source, 0)] * count
-        tracemalloc.start()
-        started = time.perf_counter()
-        combined = compose_audio(parts, {"fade_enabled": False})
-        elapsed = time.perf_counter() - started
-        _current, peak = tracemalloc.get_traced_memory()
-        tracemalloc.stop()
-        observations.append(
-            {
-                "segments": count,
-                "output_duration_ms": len(combined),
-                "elapsed_ms": _round_ms(elapsed),
-                "python_peak_bytes": peak,
-                "python_peak_bytes_per_output_second": round(
-                    peak / max(0.001, len(combined) / 1000),
-                    3,
-                ),
-            }
-        )
-        del combined
+    duration_observations: list[dict[str, Any]] = []
+    with tempfile.TemporaryDirectory(prefix="pandrator-audio-baseline-") as directory:
+        root = Path(directory)
+        source = root / "source.wav"
+        AudioSegment.silent(duration=20, frame_rate=16000).export(
+            source,
+            format="wav",
+        ).close()
+        for count in segment_counts:
+            plan = build_audio_assembly_plan(
+                [AudioAssemblyPart(source, 20) for _index in range(count)],
+                output_format="wav",
+                sample_rate_hz=16000,
+                channels=1,
+            )
+            destination = root / f"assembled-{count}.wav"
+            tracemalloc.start()
+            started = time.perf_counter()
+            result = assemble_audio_plan(plan, destination)
+            elapsed = time.perf_counter() - started
+            _current, peak = tracemalloc.get_traced_memory()
+            tracemalloc.stop()
+            observations.append(
+                {
+                    "segments": count,
+                    "output_duration_ms": result.duration_ms,
+                    "elapsed_ms": _round_ms(elapsed),
+                    "python_peak_bytes": peak,
+                    "python_peak_bytes_per_output_second": round(
+                        peak / max(0.001, result.duration_ms / 1000),
+                        3,
+                    ),
+                }
+            )
+        for duration_ms in (10000, 20000, 40000):
+            duration_source = root / f"duration-{duration_ms}.wav"
+            AudioSegment.silent(
+                duration=duration_ms,
+                frame_rate=16000,
+            ).export(duration_source, format="wav").close()
+            duration_plan = build_audio_assembly_plan(
+                [AudioAssemblyPart(duration_source, duration_ms)],
+                output_format="wav",
+                sample_rate_hz=16000,
+                channels=1,
+            )
+            tracemalloc.start()
+            started = time.perf_counter()
+            duration_result = assemble_audio_plan(
+                duration_plan,
+                root / f"duration-output-{duration_ms}.wav",
+            )
+            elapsed = time.perf_counter() - started
+            _current, peak = tracemalloc.get_traced_memory()
+            tracemalloc.stop()
+            duration_observations.append(
+                {
+                    "segments": 1,
+                    "output_duration_ms": duration_result.duration_ms,
+                    "elapsed_ms": _round_ms(elapsed),
+                    "python_peak_bytes": peak,
+                }
+            )
+    segment_peaks = [int(item["python_peak_bytes"]) for item in observations]
+    duration_peaks = [
+        int(item["python_peak_bytes"])
+        for item in duration_observations
+    ]
+    smallest_duration_peak = min(duration_peaks, default=0)
+    largest_duration_peak = max(duration_peaks, default=0)
     return {
         "segment_duration_ms": 20,
-        "observations": observations,
-        "note": "tracemalloc reports Python allocations; native decoder/encoder memory is not included.",
+        "segment_scaling": observations,
+        "duration_scaling": duration_observations,
+        "duration_peak_growth_ratio": round(
+            largest_duration_peak / max(1, smallest_duration_peak),
+            3,
+        ),
+        "target_met": (
+            not duration_peaks
+            or largest_duration_peak
+            <= max(
+                2 * smallest_duration_peak,
+                smallest_duration_peak + 1024 * 1024,
+            )
+        ),
+        "segment_metadata_peak_bytes": max(segment_peaks, default=0),
+        "note": (
+            "Duration scaling holds the plan at one segment; segment scaling "
+            "captures the expected O(segment-count) metadata. Tracemalloc "
+            "reports Python allocations, and compatible PCM takes are "
+            "stream-copied without a native decoder."
+        ),
     }
 
 

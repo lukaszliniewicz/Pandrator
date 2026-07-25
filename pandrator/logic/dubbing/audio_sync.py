@@ -7,8 +7,11 @@ import logging
 import math
 import os
 import re
+import shutil
 import subprocess
 import tempfile
+import threading
+import wave
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -263,6 +266,287 @@ def alignment_adjustment(
     )
 
 
+def _streaming_audio_duration_ms(path: Path) -> int:
+    from pandrator.web.audio_assembly import pcm_duration_ms
+    from pandrator.web.media_process import probe_audio_stream
+
+    try:
+        return pcm_duration_ms(path)
+    except (EOFError, OSError, wave.Error):
+        return probe_audio_stream(path).duration_ms
+
+
+def _speed_up_wav_streaming(
+    source: Path,
+    destination: Path,
+    factor: float,
+    *,
+    sample_rate_hz: int,
+    channels: int,
+    ffmpeg_executable: str,
+    cancel_event: threading.Event | None,
+) -> None:
+    from pandrator.web.media_process import run_media_process
+
+    filter_chain = _atempo_filter_chain(factor)
+    if not filter_chain:
+        shutil.copyfile(source, destination)
+        return
+    run_media_process(
+        [
+            ffmpeg_executable,
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(source),
+            "-map",
+            "0:a:0",
+            "-vn",
+            "-af",
+            filter_chain,
+            "-ar",
+            str(sample_rate_hz),
+            "-ac",
+            str(channels),
+            "-c:a",
+            "pcm_s16le",
+            "-f",
+            "wav",
+            str(destination),
+        ],
+        cancel_event=cancel_event,
+    )
+
+
+def _align_audio_blocks_streaming(
+    alignment_blocks: list[AudioAlignmentBlock],
+    session_dir: str | os.PathLike[str],
+    *,
+    delay_start_ms: int,
+    speed_up_percent: int,
+    sentence_gap_ms: int,
+    ffmpeg_executable: str,
+    output_path: str | os.PathLike[str] | None,
+    diagnostics: dict[str, Any] | None,
+    cancel_event: threading.Event | None,
+) -> str:
+    from pandrator.web.audio_assembly import (
+        AudioAssemblyPart,
+        assemble_audio_plan,
+        build_audio_assembly_plan,
+        preferred_pcm_format,
+    )
+
+    session_path = Path(session_dir)
+    session_path.mkdir(parents=True, exist_ok=True)
+    if not alignment_blocks:
+        raise AudioSyncError("No generated speech blocks were supplied for synchronization.")
+    ordered_blocks = sorted(
+        alignment_blocks,
+        key=lambda item: (item.start_ms, item.end_ms, item.number),
+    )
+    for block in ordered_blocks:
+        for source in block.audio_files:
+            if not source.exists():
+                raise AudioSyncError(
+                    f"Speech block {block.number} is missing generated audio: {source.name}"
+                )
+    sample_rate_hz, channels = preferred_pcm_format(
+        ordered_blocks[0].audio_files[0],
+        cancel_event=cancel_event,
+    )
+    maximum_speed = min(4.0, max(1.0, float(speed_up_percent) / 100.0))
+    sentence_gap = max(0, min(5000, int(sentence_gap_ms)))
+    current_time = 0
+    alignment_details: list[dict[str, Any]] = []
+    destination = Path(output_path) if output_path else session_path / "aligned_audio.wav"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory(prefix=".sync-stream-", dir=session_path) as temporary:
+        temporary_path = Path(temporary)
+        aligned_parts: list[AudioAssemblyPart] = []
+        for index, block in enumerate(ordered_blocks):
+            if cancel_event is not None and cancel_event.is_set():
+                from pandrator.web.media_process import MediaProcessCancelled
+
+                raise MediaProcessCancelled("Audio synchronization was canceled.")
+            block_parts = [
+                AudioAssemblyPart(
+                    path=source,
+                    expected_duration_ms=_streaming_audio_duration_ms(source),
+                    silence_after_ms=sentence_gap if item_index < len(block.audio_files) - 1 else 0,
+                )
+                for item_index, source in enumerate(block.audio_files)
+            ]
+            block_path = temporary_path / f"block-{index + 1:06d}.wav"
+            block_plan = build_audio_assembly_plan(
+                block_parts,
+                output_format="wav",
+                sample_rate_hz=sample_rate_hz,
+                channels=channels,
+            )
+            block_result = assemble_audio_plan(
+                block_plan,
+                block_path,
+                backend="streaming",
+                work_dir=temporary_path,
+                ffmpeg_executable=ffmpeg_executable,
+                cancel_event=cancel_event,
+            )
+            original_audio_duration = block_result.duration_ms
+            if original_audio_duration <= 0:
+                raise AudioSyncError(
+                    f"Speech block {block.number} contains no audible generated audio."
+                )
+
+            block_start_ms = max(0, int(block.start_ms))
+            if index < len(ordered_blocks) - 1:
+                slot_end_ms = max(
+                    block_start_ms + 1,
+                    int(ordered_blocks[index + 1].start_ms),
+                )
+            else:
+                slot_end_ms = max(block_start_ms + 1, int(block.end_ms))
+            window_duration = slot_end_ms - block_start_ms
+            initial_silence_ms = max(0, block_start_ms - current_time)
+            current_time += initial_silence_ms
+            drift_at_start = max(0, current_time - block_start_ms)
+            adjustment = alignment_adjustment(
+                original_audio_duration,
+                window_duration,
+                drift_at_start,
+                delay_start_ms=delay_start_ms,
+                max_speed_factor=maximum_speed,
+            )
+            processed_path = block_path
+            processed_duration = original_audio_duration
+            applied_speed = adjustment.speed_factor
+            if (
+                original_audio_duration > adjustment.available_ms
+                and applied_speed > 1.0001
+            ):
+                for attempt in range(2):
+                    candidate = temporary_path / (
+                        f"block-{index + 1:06d}-speed-{attempt + 1}.wav"
+                    )
+                    _speed_up_wav_streaming(
+                        block_path,
+                        candidate,
+                        applied_speed,
+                        sample_rate_hz=sample_rate_hz,
+                        channels=channels,
+                        ffmpeg_executable=ffmpeg_executable,
+                        cancel_event=cancel_event,
+                    )
+                    processed_path = candidate
+                    processed_duration = _streaming_audio_duration_ms(candidate)
+                    if (
+                        processed_duration <= adjustment.available_ms
+                        or applied_speed >= maximum_speed - 0.0001
+                    ):
+                        break
+                    applied_speed = min(
+                        maximum_speed,
+                        applied_speed
+                        * (
+                            processed_duration
+                            / max(1, adjustment.available_ms - 1)
+                        ),
+                    )
+
+            silence_before_ms = initial_silence_ms + adjustment.start_delay_ms
+            current_time += adjustment.start_delay_ms + processed_duration
+            silence_after_ms = max(0, slot_end_ms - current_time)
+            current_time += silence_after_ms
+            drift_after_ms = max(0, current_time - slot_end_ms)
+            effective_speed = original_audio_duration / max(1, processed_duration)
+            aligned_parts.append(
+                AudioAssemblyPart(
+                    path=processed_path,
+                    expected_duration_ms=processed_duration,
+                    silence_before_ms=silence_before_ms,
+                    silence_after_ms=silence_after_ms,
+                )
+            )
+            alignment_details.append(
+                {
+                    "block": block.number,
+                    "window_ms": window_duration,
+                    "available_ms": adjustment.available_ms,
+                    "original_audio_ms": original_audio_duration,
+                    "processed_audio_ms": processed_duration,
+                    "requested_speed_factor": round(applied_speed, 6),
+                    "effective_speed_factor": round(effective_speed, 6),
+                    "speed_adjusted": effective_speed > 1.0001,
+                    "start_delay_ms": adjustment.start_delay_ms,
+                    "drift_before_ms": drift_at_start,
+                    "drift_after_ms": drift_after_ms,
+                }
+            )
+            logger.info(
+                "Aligned block %s: window=%dms audio=%dms speed=%.3fx delay=%dms drift=%dms -> %dms",
+                block.number,
+                window_duration,
+                original_audio_duration,
+                applied_speed,
+                adjustment.start_delay_ms,
+                drift_at_start,
+                drift_after_ms,
+            )
+
+        final_plan = build_audio_assembly_plan(
+            aligned_parts,
+            output_format="wav",
+            sample_rate_hz=sample_rate_hz,
+            channels=channels,
+        )
+        assemble_audio_plan(
+            final_plan,
+            destination,
+            backend="streaming",
+            work_dir=temporary_path,
+            ffmpeg_executable=ffmpeg_executable,
+            cancel_event=cancel_event,
+        )
+
+    if diagnostics is not None:
+        adjusted = [item for item in alignment_details if item["speed_adjusted"]]
+        diagnostics.clear()
+        diagnostics.update(
+            {
+                "mode": "subtitle_timed",
+                "configured_max_speed_factor": maximum_speed,
+                "configured_max_start_delay_ms": max(0, int(delay_start_ms)),
+                "configured_sentence_gap_ms": sentence_gap,
+                "block_count": len(alignment_details),
+                "speed_adjusted_block_count": len(adjusted),
+                "max_effective_speed_factor": max(
+                    (
+                        float(item["effective_speed_factor"])
+                        for item in alignment_details
+                    ),
+                    default=1.0,
+                ),
+                "total_original_audio_ms": sum(
+                    int(item["original_audio_ms"]) for item in alignment_details
+                ),
+                "total_processed_audio_ms": sum(
+                    int(item["processed_audio_ms"]) for item in alignment_details
+                ),
+                "final_drift_ms": (
+                    int(alignment_details[-1]["drift_after_ms"])
+                    if alignment_details
+                    else 0
+                ),
+                "blocks": alignment_details,
+            }
+        )
+    return str(destination)
+
+
 def align_audio_blocks(
     alignment_blocks: list[AudioAlignmentBlock],
     session_dir: str | os.PathLike[str],
@@ -274,7 +558,26 @@ def align_audio_blocks(
     run_func: Callable[..., Any] = subprocess.run,
     output_path: str | os.PathLike[str] | None = None,
     diagnostics: dict[str, Any] | None = None,
+    backend: str | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> str:
+    from pandrator.web.audio_assembly import PYDUB_BACKEND, resolve_assembly_backend
+
+    if (
+        resolve_assembly_backend(backend) != PYDUB_BACKEND
+        and run_func is subprocess.run
+    ):
+        return _align_audio_blocks_streaming(
+            alignment_blocks,
+            session_dir,
+            delay_start_ms=delay_start_ms,
+            speed_up_percent=speed_up_percent,
+            sentence_gap_ms=sentence_gap_ms,
+            ffmpeg_executable=ffmpeg_executable,
+            output_path=output_path,
+            diagnostics=diagnostics,
+            cancel_event=cancel_event,
+        )
     from pydub import AudioSegment
 
     session_path = Path(session_dir)

@@ -232,6 +232,18 @@ the cache duration by setting `PANDRATOR_CAPABILITY_TTL_SECONDS` to a
 non-negative number before starting the web process. Live TTS service health
 and saved provider configuration remain separate from this stable snapshot.
 
+Audio output assembly uses bounded-memory streaming by default. Pandrator
+normalizes only incompatible takes with FFmpeg, streams compatible PCM WAV
+takes directly, writes silence and subtitle timing in chunks, and atomically
+replaces the finished output. Temporary PCM data is kept beside the session
+assembly and removed after success, cancellation, or failure, so very long
+projects require temporary disk capacity but do not require memory proportional
+to their duration. Waveform peaks are likewise calculated in FFmpeg at the
+requested browser resolution rather than decoding the complete file in Python.
+During the compatibility period, set `PANDRATOR_AUDIO_ASSEMBLER=pydub` before
+starting the worker to restore the legacy in-memory assembler. Remove the
+variable (or set it to `streaming`) to use the default path.
+
 To capture the current concurrency, query, audio, capability, and browser request
 baselines on disposable data:
 
