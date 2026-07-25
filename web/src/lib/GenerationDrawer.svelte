@@ -2,18 +2,22 @@
   import {
     ChevronDown,
     ChevronUp,
+    ArrowRight,
     BookOpenText,
     Download,
     Flag,
     ListMusic,
+    Languages,
     Pause,
     Play,
     RefreshCw,
     RotateCcw,
     Save,
+    ShieldCheck,
     Sparkles,
     Square,
     Trash2,
+    TriangleAlert,
     WandSparkles,
     X
   } from '@lucide/svelte';
@@ -54,6 +58,7 @@
   let selectedRows = $state<string[]>([]);
   let selectionAnchor = $state('');
   let viewMode = $state<'segments' | 'reading'>('segments');
+  let readingTextMode = $state<'display' | 'speech'>('display');
   let loadedFilter = $state('');
   let playlistAudio: HTMLAudioElement | null = null;
   let playlistResolve: (() => void) | null = null;
@@ -147,6 +152,31 @@
     filter === 'all' ? 'generation segments' : `${activeFilterLabel.toLowerCase()} segments`
   );
   const selectedRun = $derived(runs.find((item: any) => item.id === selectedRunId) ?? null);
+  const comparisonPlan = $derived(comparisonItem?.speech_plan ?? {});
+  const comparisonDecisionRows = $derived.by(() => {
+    const decisions = new Map(
+      (comparisonPlan?.decisions ?? [])
+        .filter((item: any) => item && item.span_id)
+        .map((item: any) => [String(item.span_id), item])
+    );
+    const rows = (comparisonPlan?.candidates ?? []).map((candidate: any) => ({
+      id: candidate.id,
+      written: candidate.text,
+      task: candidate.task,
+      signals: candidate.signals ?? [],
+      ...(decisions.get(String(candidate.id)) ?? { action: 'unchanged', confidence: '' })
+    }));
+    for (const [index, discovery] of (comparisonPlan?.discoveries ?? []).entries()) {
+      rows.push({
+        id: `discovery-${index}`,
+        written: discovery.source_text,
+        task: 'discovery',
+        signals: ['model discovery'],
+        ...discovery
+      });
+    }
+    return rows;
+  });
   const selectedAssembly = $derived(selectedRun?.assembly ?? (!selectedRun ? assembly : null));
   const selectedRunCost = $derived.by(() => {
     const value = selectedRun?.usage?.total_cost_usd;
@@ -505,7 +535,8 @@
   }
 
   function readingSegmentText(item: any) {
-    return String(activeTake(item)?.synthesized_text || item.optimized_text || item.text || '').replace(/\s+/g, ' ').trim();
+    const speech = activeTake(item)?.synthesized_text || item.optimized_text;
+    return String(readingTextMode === 'speech' && speech ? speech : item.text || '').replace(/\s+/g, ' ').trim();
   }
 
   async function loadAllSegments() {
@@ -819,7 +850,7 @@
                   <td>
                     <textarea value={item.text} data-generation-search-index={payload.items.indexOf(item)} onblur={(event) => { const text = (event.currentTarget as HTMLTextAreaElement).value; if (text !== item.text) patchSegment(item, { text }); }} rows="2" class="w-full resize-y rounded-lg border border-transparent bg-transparent p-2 focus:border-[var(--line)]"></textarea>
                     {#if item.optimized_text || activeTake(item)?.llm_optimized}
-                      <button onclick={(event) => { event.stopPropagation(); openOptimizationReview(item); }} class="mb-2 flex max-w-full items-center gap-1.5 rounded-lg bg-[var(--accent-soft)] px-2.5 py-1.5 text-left text-[.68rem] font-semibold text-[var(--accent)]"><WandSparkles size={12}/><span class="truncate">Compare speech optimization</span><span class="rounded-full bg-[var(--paper)] px-1.5 py-0.5 text-[.58rem] uppercase">{item.optimization_status ?? 'generated'}</span></button>
+                      <button onclick={(event) => { event.stopPropagation(); openOptimizationReview(item); }} class="mb-2 flex max-w-full items-center gap-1.5 rounded-lg bg-[var(--accent-soft)] px-2.5 py-1.5 text-left text-[.68rem] font-semibold text-[var(--accent)]"><WandSparkles size={12}/><span class="truncate">{item.speech_plan?.version ? 'Review speech plan' : 'Compare speech optimization'}</span><span class="rounded-full bg-[var(--paper)] px-1.5 py-0.5 text-[.58rem] uppercase">{item.speech_plan?.mode_used ?? item.optimization_status ?? 'generated'}</span>{#if item.speech_plan?.proposals?.length}<span class="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[.58rem] uppercase text-amber-700">{item.speech_plan.proposals.length} proposed</span>{/if}</button>
                     {/if}
                     <div class="flex flex-wrap gap-2">
                       <select value={item.node_kind ?? 'paragraph'} onchange={(event) => patchSegment(item, { node_kind: (event.currentTarget as HTMLSelectElement).value })} aria-label="Segment role" class="mini">
@@ -874,7 +905,7 @@
           </table>
           {:else}
             <div class="reading-view mx-auto max-w-4xl px-5 py-7 sm:px-8">
-              <div class="mb-7 flex flex-wrap items-end justify-between gap-3 border-b border-[var(--line)] pb-4"><div><div class="eyebrow">Continuous review</div><h3 class="mt-1 text-xl font-semibold">Narration text</h3><p class="muted mt-1 text-xs">Reviewing {selectedRun?.label ?? 'the active takes'}. Select any sentence to hear that version; paragraphs are separated only at saved paragraph boundaries.</p></div><span class="muted text-xs">Loaded {payload.items.length} of {payload.total}</span></div>
+              <div class="mb-7 flex flex-wrap items-end justify-between gap-3 border-b border-[var(--line)] pb-4"><div><div class="eyebrow">Continuous review</div><h3 class="mt-1 text-xl font-semibold">Narration text</h3><p class="muted mt-1 text-xs">Reviewing {selectedRun?.label ?? 'the active takes'}. Display text is shown by default; speech text is never used for subtitle or read-along copy.</p></div><div class="flex flex-wrap items-center justify-end gap-2"><div class="view-switch font-sans" aria-label="Reading text source"><button onclick={() => readingTextMode='display'} class:active={readingTextMode==='display'}>Display</button><button onclick={() => readingTextMode='speech'} class:active={readingTextMode==='speech'}>Speech</button></div><span class="muted text-xs">Loaded {payload.items.length} of {payload.total}</span></div></div>
               {#each readingBlocks as block (block.key)}
                 {#if ['heading','chapter_marker'].includes(block.kind)}
                   <h4 class:now-playing={block.items.some((item)=>item.id===activePlayingId)} class:selected-heading={block.items.some((item)=>selectedRows.includes(item.id))} class="reading-heading">
@@ -916,8 +947,51 @@
 {#if comparisonItem}
   <div class="fixed inset-0 z-[95] grid place-items-center bg-black/55 p-3 backdrop-blur-sm" role="presentation" onclick={(event)=>event.target===event.currentTarget&&(comparisonItem=null)}>
     <div class="comparison-modal flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-3xl" role="dialog" aria-modal="true" aria-labelledby="segment-optimization-title">
-      <header class="flex items-start gap-4 border-b border-[var(--line)] px-5 py-4"><div class="min-w-0 flex-1"><div class="eyebrow">Generation segment {comparisonItem.ordinal + 1}</div><h2 id="segment-optimization-title" class="mt-1 text-xl font-semibold">Review speech optimization</h2><p class="muted mt-1 text-xs">The source remains unchanged. Saving the optimized delivery marks existing takes stale.</p></div><button onclick={() => comparisonDiff = !comparisonDiff} class:active={comparisonDiff} class="action">{comparisonDiff ? 'Side by side' : 'Diff'}</button><button onclick={()=>comparisonItem=null} class="rounded-xl p-2" aria-label="Close"><X size={20}/></button></header>
-      <div class="min-h-0 flex-1 overflow-auto p-5">{#if comparisonDiff}<div class="grid gap-4"><TextDiff before={String(comparisonItem.text ?? '')} after={comparisonText}/><section><h3 class="mb-2 text-xs font-bold uppercase tracking-wider text-[var(--muted)]">Optimized delivery · editable</h3><textarea bind:value={comparisonText} class="min-h-44 w-full resize-y rounded-2xl border border-[var(--line)] bg-[var(--paper)] p-4 text-sm leading-7"></textarea></section></div>{:else}<div class="grid gap-4 md:grid-cols-2"><section><h3 class="mb-2 text-xs font-bold uppercase tracking-wider text-[var(--muted)]">Original generation text</h3><div class="h-full min-h-44 rounded-2xl border border-[var(--line)] bg-[var(--paper)] p-4 text-sm leading-7">{comparisonItem.text}</div></section><section><h3 class="mb-2 text-xs font-bold uppercase tracking-wider text-[var(--muted)]">Optimized delivery · editable</h3><textarea bind:value={comparisonText} class="h-full min-h-44 w-full resize-y rounded-2xl border border-[var(--line)] bg-[var(--paper)] p-4 text-sm leading-7"></textarea></section></div>{/if}</div>
+      <header class="flex items-start gap-4 border-b border-[var(--line)] px-5 py-4"><div class="min-w-0 flex-1"><div class="eyebrow">Generation segment {comparisonItem.ordinal + 1}</div><div class="mt-1 flex flex-wrap items-center gap-2"><h2 id="segment-optimization-title" class="text-xl font-semibold">Review speech plan</h2>{#if comparisonPlan?.version}<span class={`plan-state ${comparisonPlan.status}`}>{comparisonPlan.status === 'safe_fallback' ? 'safe fallback' : comparisonPlan.status}</span><span class="plan-state neutral">{comparisonPlan.mode_used}</span>{/if}</div><p class="muted mt-1 text-xs">Display text remains unchanged. Saving this delivery marks existing audio takes stale.</p></div><button onclick={() => comparisonDiff = !comparisonDiff} class:active={comparisonDiff} class="action">{comparisonDiff ? 'Side by side' : 'Diff'}</button><button onclick={()=>comparisonItem=null} class="rounded-xl p-2" aria-label="Close"><X size={20}/></button></header>
+      <div class="min-h-0 flex-1 overflow-auto p-5">
+        {#if comparisonDiff}
+          <div class="grid gap-4"><TextDiff before={String(comparisonItem.text ?? '')} after={comparisonText}/><section><h3 class="mb-2 text-xs font-bold uppercase tracking-wider text-[var(--muted)]">Speech delivery · editable</h3><textarea bind:value={comparisonText} class="min-h-44 w-full resize-y rounded-2xl border border-[var(--line)] bg-[var(--paper)] p-4 text-sm leading-7"></textarea></section></div>
+        {:else}
+          <div class="grid gap-4 md:grid-cols-2"><section><h3 class="mb-2 text-xs font-bold uppercase tracking-wider text-[var(--muted)]">Display text</h3><div class="h-full min-h-44 rounded-2xl border border-[var(--line)] bg-[var(--paper)] p-4 text-sm leading-7">{comparisonItem.text}</div></section><section><h3 class="mb-2 text-xs font-bold uppercase tracking-wider text-[var(--muted)]">Speech delivery · editable</h3><textarea bind:value={comparisonText} class="h-full min-h-44 w-full resize-y rounded-2xl border border-[var(--line)] bg-[var(--paper)] p-4 text-sm leading-7"></textarea></section></div>
+        {/if}
+
+        {#if comparisonPlan?.version}
+          <section class="mt-5 overflow-hidden rounded-2xl border border-[var(--line)]">
+            <header class="flex flex-wrap items-center justify-between gap-3 bg-[var(--accent-soft)] px-4 py-3">
+              <div><h3 class="text-sm font-semibold">Structured decisions</h3><p class="muted mt-0.5 text-xs">{comparisonPlan.model || 'Unknown model'} · {comparisonPlan.language || 'und'} display → {comparisonPlan.voice_language || comparisonPlan.language || 'und'} voice</p></div>
+              <a href="/pronunciations" class="action bg-[var(--paper)]"><Languages size={14}/> Open pronunciation library</a>
+            </header>
+            <div class="grid gap-px bg-[var(--line)] md:grid-cols-2">
+              <div class="bg-[var(--paper-strong)] p-4">
+                <h4 class="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-[var(--muted)]"><WandSparkles size={14}/> Planned changes</h4>
+                {#if comparisonDecisionRows.length}
+                  <div class="mt-3 space-y-2">
+                    {#each comparisonDecisionRows as decision}
+                      <div class="decision-row">
+                        <div class="min-w-0"><strong>{decision.written}</strong><div class="muted mt-0.5 truncate text-[.65rem]">{(decision.signals ?? []).join(' · ') || decision.task}</div></div>
+                        <ArrowRight class="shrink-0 text-[var(--muted)]" size={14}/>
+                        <div class="min-w-0 text-right"><span class="font-mono text-xs font-semibold text-[var(--accent)]">{decision.spoken || decision.written}</span><div class="muted mt-0.5 text-[.62rem] uppercase">{decision.action}{decision.confidence ? ` · ${decision.confidence}` : ''}</div></div>
+                      </div>
+                    {/each}
+                  </div>
+                {:else}<p class="muted mt-3 text-xs">No unresolved spans were changed.</p>{/if}
+              </div>
+              <div class="bg-[var(--paper-strong)] p-4">
+                <h4 class="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-[var(--muted)]"><ShieldCheck size={14}/> Reused and proposed</h4>
+                {#if comparisonPlan.known_pronunciations?.length}
+                  <div class="mt-3 space-y-2">{#each comparisonPlan.known_pronunciations as known}<div class="decision-row"><strong>{known.text}</strong><ArrowRight class="text-[var(--muted)]" size={14}/><span class="font-mono text-xs text-[var(--accent)]">{known.spoken}</span></div>{/each}</div>
+                {:else}<p class="muted mt-3 text-xs">No reviewed library entries matched this segment.</p>{/if}
+                {#if comparisonPlan.proposals?.length}
+                  <div class="mt-4 rounded-xl border border-amber-400/30 bg-amber-500/10 p-3"><div class="flex items-center gap-2 text-xs font-semibold text-amber-700"><TriangleAlert size={14}/>{comparisonPlan.proposals.length} pronunciation {comparisonPlan.proposals.length === 1 ? 'needs' : 'need'} review</div><div class="mt-2 flex flex-wrap gap-1.5">{#each comparisonPlan.proposals as proposal}<span class="rounded-full bg-[var(--paper)] px-2 py-1 font-mono text-[.65rem]">{proposal.source_form} → {proposal.phonetic}</span>{/each}</div></div>
+                {/if}
+              </div>
+            </div>
+            {#if comparisonPlan.validation?.errors?.length || comparisonPlan.validation?.warnings?.length}
+              <div class="border-t border-[var(--line)] px-4 py-3 text-xs"><strong>Validator report</strong>{#each comparisonPlan.validation.errors ?? [] as message}<p class="mt-1 text-red-600">{message}</p>{/each}{#each comparisonPlan.validation.warnings ?? [] as message}<p class="mt-1 text-amber-700">{message}</p>{/each}</div>
+            {/if}
+          </section>
+        {/if}
+      </div>
       <footer class="flex flex-wrap items-center justify-end gap-3 border-t border-[var(--line)] px-5 py-4"><label class="mr-auto flex items-center gap-2 text-xs font-semibold"><input type="checkbox" bind:checked={regenerateAfterReview} class="accent-[var(--accent)]"/> Regenerate this segment after saving</label><button onclick={()=>comparisonItem=null} class="action">Cancel</button><button onclick={saveOptimizationReview} disabled={!comparisonText.trim()} class="action primary"><Save size={14}/> Save review</button></footer>
     </div>
   </div>
@@ -928,6 +1002,8 @@
   .run-progress{height:.34rem;width:min(9rem,18vw);overflow:hidden;border-radius:999px;background:var(--line)}.run-progress span{display:block;height:100%;border-radius:inherit;background:var(--accent);transition:width .2s ease}
   .cost-pill{border:1px solid var(--line);border-radius:999px;background:var(--accent-soft);padding:.28rem .55rem;font-size:.65rem;font-weight:700;color:var(--ink)}
   .comparison-modal{border:1px solid var(--line);background:var(--paper-strong);box-shadow:0 22px 70px rgba(0,0,0,.25)}
+  .plan-state{border-radius:999px;background:color-mix(in srgb,var(--success) 15%,transparent);padding:.22rem .5rem;color:var(--success);font-size:.58rem;font-weight:800;letter-spacing:.06em;text-transform:uppercase}.plan-state.safe_fallback{background:rgba(245,158,11,.14);color:#a16207}.plan-state.neutral{background:var(--accent-soft);color:var(--accent)}
+  .decision-row{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:center;gap:.6rem;border:1px solid var(--line);border-radius:.7rem;background:var(--paper);padding:.6rem .7rem;font-size:.75rem}
   .action{display:flex;align-items:center;gap:.35rem;border:1px solid var(--line);border-radius:.55rem;padding:.4rem .6rem;font-size:.7rem;font-weight:700}.action.primary{background:var(--action-bg);color:white}.action.primary:hover{background:var(--action-hover)}.action:disabled{opacity:.35}
   .icon-action{padding:.42rem}
   .view-switch{display:flex;border:1px solid var(--line);border-radius:.6rem;background:var(--paper);padding:.15rem}.view-switch button{display:flex;align-items:center;gap:.3rem;border-radius:.45rem;padding:.3rem .5rem;font-size:.68rem;font-weight:700;color:var(--muted)}.view-switch button.active{background:var(--accent-soft);color:var(--ink)}

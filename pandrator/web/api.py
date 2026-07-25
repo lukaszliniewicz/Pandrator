@@ -59,7 +59,8 @@ from .maintenance import apply_retention
 from .models import AgentRun, AgentStep, AppSetting, AppSettingHistory, Artifact, ArtifactEdge, Document, DocumentRevision, Job, OutputAssembly, Provider, ProviderModel, Segment, SessionRecord, SourceRecord, TimedWord, TrainingRun, UsageEvent, Voice, VoiceSample, new_id, utcnow
 from .openapi import build_openapi_document
 from .parity_registry import build_registry
-from .schemas import AgentRunCreateRequest, BootstrapRequest, BundleExportRequest, BundleImportRequest, ChunkUploadInitialize, CredentialUpdate, GenerationPlanCreate, GenerationSegmentUpdate, GenerationStartRequest, JobCreate, LoginRequest, ModelCreate, ModelUpdate, OptimizationReviewRequest, OutcomePlanUpdate, OutputAssemblyCreateRequest, PdfEditRequest, ProviderCreate, ProviderTestRequest, ProviderUpdate, RvcConvertRequest, RvcModelUploadRequest, SessionCreate, SessionSettingsUpdate, SessionUpdate, SettingUpdate, SourceAttachRequest, SourceReuseRequest, SourceUpdateRequest, SourceUrlRequest, StageSelectionUpdate, SubtitleReviewRequest, TokenCreateRequest, TrainingCreateRequest, TtsEndpointDiscoveryRequest, TtsVoicePreviewRequest, VoiceCreate, VoiceTranscriptReview
+from .pronunciations import PronunciationLibrary
+from .schemas import AgentRunCreateRequest, BootstrapRequest, BundleExportRequest, BundleImportRequest, ChunkUploadInitialize, CredentialUpdate, GenerationPlanCreate, GenerationSegmentUpdate, GenerationStartRequest, JobCreate, LoginRequest, ModelCreate, ModelUpdate, OptimizationReviewRequest, OutcomePlanUpdate, OutputAssemblyCreateRequest, PdfEditRequest, PronunciationCreate, PronunciationUpdate, ProviderCreate, ProviderTestRequest, ProviderUpdate, RvcConvertRequest, RvcModelUploadRequest, SessionCreate, SessionSettingsUpdate, SessionUpdate, SettingUpdate, SourceAttachRequest, SourceReuseRequest, SourceUpdateRequest, SourceUrlRequest, StageSelectionUpdate, SubtitleReviewRequest, TokenCreateRequest, TrainingCreateRequest, TtsEndpointDiscoveryRequest, TtsVoicePreviewRequest, VoiceCreate, VoiceTranscriptReview
 from .sessions import RevisionConflict, SessionService
 from .subtitle_review import SubtitleReviewService
 from .workflow_handlers import WorkflowHandlers
@@ -183,6 +184,7 @@ def create_app(
     source_library = SourceLibraryService(database)
     source_library.backfill_legacy()
     generation = GenerationService(database, jobs, workspace_settings, artifacts)
+    pronunciations = PronunciationLibrary(database)
     chunk_uploads = ChunkUploadService(database, paths, artifacts, source_library)
     chunk_uploads.cleanup_expired()
 
@@ -224,6 +226,7 @@ def create_app(
         "outcome_plans": outcome_plans,
         "source_library": source_library,
         "generation": generation,
+        "pronunciations": pronunciations,
         "chunk_uploads": chunk_uploads,
         "bootstrap": bootstrap,
         "migration": migration,
@@ -1271,8 +1274,12 @@ def create_app(
         with database.session() as db_session:
             if db_session.get(SessionRecord, session_id) is None:
                 return error_response("not_found", "Session not found.", 404)
-            records = list(db_session.scalars(select(AgentRun).where(AgentRun.session_id == session_id).order_by(AgentRun.created_at.desc())).all())
-            return jsonify({"items": [_model_dict(item, ("id", "session_id", "source_artifact_id", "result_artifact_id", "job_id", "status", "settings_json", "created_at", "updated_at")) for item in records]})
+            statement = select(AgentRun).where(AgentRun.session_id == session_id)
+            requested_kind = str(request.args.get("kind") or "").strip()
+            if requested_kind:
+                statement = statement.where(AgentRun.kind == requested_kind)
+            records = list(db_session.scalars(statement.order_by(AgentRun.created_at.desc())).all())
+            return jsonify({"items": [_model_dict(item, ("id", "kind", "session_id", "source_artifact_id", "result_artifact_id", "job_id", "status", "settings_json", "created_at", "updated_at")) for item in records]})
 
     @app.post("/api/v1/sessions/<session_id>/agent-runs")
     @require_auth
@@ -1287,7 +1294,7 @@ def create_app(
             return error_response("not_found", "Session or source artifact not found.", 404)
         run_id = new_id()
         with database.session() as db_session:
-            db_session.add(AgentRun(id=run_id, session_id=session_id, source_artifact_id=payload.source_artifact_id, status="queued", settings_json={**payload.settings, "agentic": True}))
+            db_session.add(AgentRun(id=run_id, kind="source_cleaning", session_id=session_id, source_artifact_id=payload.source_artifact_id, status="queued", settings_json={**payload.settings, "agentic": True}))
         job = jobs.enqueue("source.clean", {"session_id": session_id, "source_artifact_id": payload.source_artifact_id, "agent_run_id": run_id, "settings": {**payload.settings, "agentic": True}}, session_id=session_id, resource_keys=[f"session:{session_id}", "service:llm"])
         with database.session() as db_session:
             run = db_session.get(AgentRun, run_id)
@@ -2155,6 +2162,85 @@ def create_app(
                 delete_credential(db_session, key)
         updated = next(item for item in auxiliary_profiles(database, paths) if item["id"] == credential_id)
         return jsonify(updated)
+
+    @app.get("/api/v1/pronunciations")
+    @require_auth
+    def pronunciation_list():
+        return jsonify(
+            {
+                "items": pronunciations.list(
+                    query=str(request.args.get("q") or ""),
+                    language=str(request.args.get("language") or ""),
+                    status=str(request.args.get("status") or ""),
+                    scope=str(request.args.get("scope") or ""),
+                    session_id=str(request.args.get("session_id") or ""),
+                    limit=request.args.get("limit", 500, type=int),
+                )
+            }
+        )
+
+    @app.post("/api/v1/pronunciations")
+    @require_auth
+    def pronunciation_create():
+        payload = PronunciationCreate.model_validate(request.get_json(silent=True) or {})
+        try:
+            created = pronunciations.create(payload.model_dump())
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
+        response = jsonify(created)
+        response.headers["ETag"] = f'"{created["revision"]}"'
+        return response, 201
+
+    @app.patch("/api/v1/pronunciations/<entry_id>")
+    @require_auth
+    def pronunciation_update(entry_id: str):
+        raw_etag = request.headers.get("If-Match", "").strip('W/" ')
+        try:
+            expected_revision = int(raw_etag)
+        except ValueError:
+            return error_response(
+                "precondition_required",
+                "If-Match must contain the current pronunciation revision.",
+                428,
+            )
+        payload = PronunciationUpdate.model_validate(request.get_json(silent=True) or {})
+        try:
+            updated = pronunciations.update(
+                entry_id,
+                expected_revision,
+                payload.model_dump(exclude_unset=True),
+            )
+        except KeyError:
+            return error_response("not_found", "Pronunciation not found.", 404)
+        except ValueError as error:
+            code = "revision_conflict" if "another client" in str(error) else "validation_error"
+            status = 409 if code == "revision_conflict" else 422
+            return error_response(code, str(error), status)
+        response = jsonify(updated)
+        response.headers["ETag"] = f'"{updated["revision"]}"'
+        return response
+
+    @app.delete("/api/v1/pronunciations/<entry_id>")
+    @require_auth
+    def pronunciation_delete(entry_id: str):
+        raw_etag = request.headers.get("If-Match", "").strip('W/" ')
+        try:
+            expected_revision = int(raw_etag)
+        except ValueError:
+            return error_response(
+                "precondition_required",
+                "If-Match must contain the current pronunciation revision.",
+                428,
+            )
+        try:
+            pronunciations.delete(entry_id, expected_revision)
+        except KeyError:
+            return error_response("not_found", "Pronunciation not found.", 404)
+        except ValueError as error:
+            return error_response("revision_conflict", str(error), 409)
+        return "", 204
 
     @app.get("/api/v1/voices")
     @require_auth

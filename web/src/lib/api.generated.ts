@@ -468,6 +468,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/pronunciations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listPronunciations"];
+        put?: never;
+        post: operations["createPronunciation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pronunciations/{entryId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["deletePronunciation"];
+        options?: never;
+        head?: never;
+        patch: operations["updatePronunciation"];
+        trace?: never;
+    };
     "/api/v1/providers": {
         parameters: {
             query?: never;
@@ -1883,6 +1915,110 @@ export interface components {
                 };
             };
         };
+        /** PronunciationCreate */
+        PronunciationCreate: {
+            /**
+             * Alphabet
+             * @default respelling
+             * @constant
+             */
+            alphabet: "respelling";
+            /**
+             * Backend
+             * @default *
+             */
+            backend: string;
+            /**
+             * Language
+             * @default und
+             */
+            language: string;
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Notes
+             * @default null
+             */
+            notes: string | null;
+            /** Phonetic */
+            phonetic: string;
+            /**
+             * Scope
+             * @default global
+             * @enum {string}
+             */
+            scope: "global" | "session";
+            /**
+             * Session Id
+             * @default null
+             */
+            session_id: string | null;
+            /** Source Form */
+            source_form: string;
+            /**
+             * Status
+             * @default reviewed
+             * @enum {string}
+             */
+            status: "proposed" | "reviewed" | "disabled";
+        };
+        /** PronunciationUpdate */
+        PronunciationUpdate: {
+            /**
+             * Alphabet
+             * @default null
+             */
+            alphabet: "respelling" | null;
+            /**
+             * Backend
+             * @default null
+             */
+            backend: string | null;
+            /**
+             * Language
+             * @default null
+             */
+            language: string | null;
+            /**
+             * Metadata
+             * @default null
+             */
+            metadata: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Notes
+             * @default null
+             */
+            notes: string | null;
+            /**
+             * Phonetic
+             * @default null
+             */
+            phonetic: string | null;
+            /**
+             * Scope
+             * @default null
+             */
+            scope: ("global" | "session") | null;
+            /**
+             * Session Id
+             * @default null
+             */
+            session_id: string | null;
+            /**
+             * Source Form
+             * @default null
+             */
+            source_form: string | null;
+            /**
+             * Status
+             * @default null
+             */
+            status: ("proposed" | "reviewed" | "disabled") | null;
+        };
         /** ProviderCreate */
         ProviderCreate: {
             /**
@@ -2822,6 +2958,86 @@ export interface operations {
             };
         };
     };
+    listPronunciations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Reviewable pronunciation library */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createPronunciation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PronunciationCreate"];
+            };
+        };
+        responses: {
+            /** @description Pronunciation created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deletePronunciation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Pronunciation deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    updatePronunciation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PronunciationUpdate"];
+            };
+        };
+        responses: {
+            /** @description Pronunciation updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     listProviders: {
         parameters: {
             query?: never;
@@ -3305,7 +3521,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Agentic cleaning runs */
+            /** @description Auditable agent runs */
             200: {
                 headers: {
                     [name: string]: unknown;

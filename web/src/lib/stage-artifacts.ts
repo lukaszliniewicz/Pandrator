@@ -94,6 +94,14 @@ export function artifactDetails(artifact: StageArtifact): ArtifactDetail[] {
   if (backend) details.push({ label: 'Backend', value: backendLabels[backend] ?? titleCase(backend) });
   if (language) details.push({ label: 'Language', value: languageLabels.get(language.toLowerCase()) ?? language });
   if (compute) details.push({ label: 'Compute', value: backendLabels[compute] ?? titleCase(compute) });
+  const research = metadata.research as Record<string, unknown> | undefined;
+  if (research) {
+    const count = Number(research.evidence_count ?? 0);
+    details.push({
+      label: 'Research',
+      value: `${count} verified ${count === 1 ? 'source' : 'sources'}`
+    });
+  }
   if (metadata.reviewed === true) details.push({ label: 'Edit', value: revision ? `Reviewed revision ${revision}` : 'Manually reviewed' });
   return details;
 }

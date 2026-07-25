@@ -445,6 +445,7 @@ class GenerationSegment(Base):
     paragraph_break_after: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     optimized_text: Mapped[str | None] = mapped_column(Text)
+    speech_plan_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     optimization_status: Mapped[str] = mapped_column(String(32), nullable=False, default="not_requested", index=True)
     optimization_source_hash: Mapped[str | None] = mapped_column(String(128))
     optimization_reviewed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -473,6 +474,7 @@ class GenerationSegmentRevision(Base):
     paragraph_break_after: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     optimized_text: Mapped[str | None] = mapped_column(Text)
+    speech_plan_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     optimization_status: Mapped[str] = mapped_column(String(32), nullable=False, default="not_requested")
     optimization_reviewed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     marked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -550,6 +552,7 @@ class AgentRun(Base):
     __tablename__ = "agent_runs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    kind: Mapped[str] = mapped_column(String(80), nullable=False, default="source_cleaning", index=True)
     session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False, index=True)
     source_artifact_id: Mapped[str | None] = mapped_column(ForeignKey("artifacts.id", ondelete="SET NULL"))
     result_artifact_id: Mapped[str | None] = mapped_column(ForeignKey("artifacts.id", ondelete="SET NULL"))
@@ -575,6 +578,57 @@ class AgentStep(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
     __table_args__ = (UniqueConstraint("agent_run_id", "ordinal", name="uq_agent_step_ordinal"),)
+
+
+class ResearchCacheEntry(Base):
+    """Credential-free persistent cache for bounded web-research tool results."""
+
+    __tablename__ = "research_cache_entries"
+
+    cache_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    operation: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    request_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    response_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+
+class PronunciationEntry(Base):
+    """Reviewed or proposed pronunciation reusable by speech-plan compilation."""
+
+    __tablename__ = "pronunciation_entries"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    scope: Mapped[str] = mapped_column(String(16), nullable=False, default="global", index=True)
+    session_id: Mapped[str | None] = mapped_column(
+        ForeignKey("sessions.id", ondelete="CASCADE"),
+        index=True,
+    )
+    source_form: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_form: Mapped[str] = mapped_column(String(512), nullable=False, index=True)
+    language: Mapped[str] = mapped_column(String(40), nullable=False, default="und", index=True)
+    phonetic: Mapped[str] = mapped_column(Text, nullable=False)
+    alphabet: Mapped[str] = mapped_column(String(32), nullable=False, default="respelling")
+    backend: Mapped[str] = mapped_column(String(80), nullable=False, default="*", index=True)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="reviewed", index=True)
+    source: Mapped[str] = mapped_column(String(40), nullable=False, default="manual")
+    notes: Mapped[str | None] = mapped_column(Text)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "scope",
+            "session_id",
+            "normalized_form",
+            "language",
+            "backend",
+            name="uq_pronunciation_entry_identity",
+        ),
+    )
 
 
 class Voice(Base):

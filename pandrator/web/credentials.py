@@ -40,6 +40,12 @@ TTS_SERVICE_ENVS: dict[str, str] = {
 SHARED_PROVIDER_CREDENTIALS = {"openai", "gemini", "vertex_ai"}
 AUXILIARY_CREDENTIALS: tuple[dict[str, str], ...] = (
     {
+        "id": "jina",
+        "label": "Jina Reader",
+        "description": "Optional web search and page extraction for evidence-backed correction and translation.",
+        "environment_variable": "JINA_API_KEY",
+    },
+    {
         "id": "deepl",
         "label": "DeepL",
         "description": "Used when subtitle translation selects the DeepL backend.",

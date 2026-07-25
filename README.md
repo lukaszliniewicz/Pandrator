@@ -176,7 +176,13 @@ LLMs are optional. Pandrator uses them for tasks where deterministic processing 
 - document-cleaning assistance after deterministic extraction;
 - optional text optimization for speech, such as expanding difficult numerals or improving phonetic spelling.
 
-Correction, translation, whole-document optimization, and generation-time optimization remain separate operations and artifacts. Their results can be compared with the source and edited before later stages.
+Correction and LLM translation can optionally use bounded Jina web research to resolve uncertain names, terminology, and source-language details. Research is opt-in, uses explicit search and extraction budgets, and produces a reviewable source ledger alongside the stage artifact. Store the Jina key under **Providers & services → Other API keys**.
+
+Speech optimization uses a structured speech plan. Guarded mode, the default, limits the model to typed changes over detected spans; flexible mode permits a full-sentence speech rewrite while protecting important spans and validating retention. Pronunciation suggestions use readable syllabic spelling such as `ee-mah-oh-kah`; Pandrator removes separators deterministically only when compiling text for a TTS backend.
+
+Display and speech text are separate. Correction and translation create viewer-facing revisions, while speech plans and optimized delivery text are synthesis-only. They therefore do not leak into exported subtitles or other display-oriented outputs. The pronunciation library exposes proposed, reviewed, and disabled entries for editing and reuse, with session-specific entries taking precedence over global ones.
+
+Correction, translation, whole-document speech planning, and generation-time speech planning remain separate operations and artifacts. Their results can be compared with the source and edited before later stages. See [Agentic text research and speech planning](AGENTIC_TEXT_AND_SPEECH.md) for the data flow and safety boundaries.
 
 Providers and models are configured individually. A model may define optional temperature and reasoning defaults plus uncached input, cached input, and output rates. Pandrator prefers an authoritative cost returned by the provider and otherwise calculates a fallback from normalized token usage and the configured rates.
 

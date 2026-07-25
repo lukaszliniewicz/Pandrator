@@ -1,0 +1,382 @@
+{
+  "description": "Mixed synthetic and public-domain book sentences for TTS speech-plan experiments.",
+  "cases": [
+    {
+      "id": "synthetic-imaoka-core",
+      "kind": "synthetic",
+      "language": "en",
+      "voice_language": "en",
+      "text": "Dr. Imaoka read Ch. IV at 7½ knots.",
+      "seed_candidates": [
+        {
+          "text": "Imaoka",
+          "task": "pronunciation",
+          "signals": ["proper_name", "rare_name"]
+        }
+      ],
+      "expect": {
+        "pronunciation_terms": ["Imaoka"]
+      }
+    },
+    {
+      "id": "synthetic-multilingual-money",
+      "kind": "synthetic",
+      "language": "en",
+      "voice_language": "en",
+      "text": "At 08:05 on 14/03/1872, Prof. Nguyễn paid £3 10s. for 2½ kg of tea.",
+      "seed_candidates": [
+        {
+          "text": "Nguyễn",
+          "task": "pronunciation",
+          "signals": ["proper_name", "Vietnamese_diacritics"]
+        }
+      ],
+      "expect": {
+        "pronunciation_terms": ["Nguyễn"]
+      }
+    },
+    {
+      "id": "synthetic-names-acronyms",
+      "kind": "synthetic",
+      "language": "en",
+      "voice_language": "en",
+      "text": "Ms. Szczęsna met François-Xavier in Łódź for the NATO R&D review.",
+      "seed_candidates": [
+        {
+          "text": "Szczęsna",
+          "task": "pronunciation",
+          "signals": ["proper_name", "Polish_diacritics"]
+        },
+        {
+          "text": "François-Xavier",
+          "task": "pronunciation",
+          "signals": ["proper_name", "French_diacritics"]
+        },
+        {
+          "text": "Łódź",
+          "task": "pronunciation",
+          "signals": ["place_name", "Polish_diacritics"]
+        }
+      ],
+      "expect": {
+        "pronunciation_terms": ["Szczęsna", "François-Xavier", "Łódź"]
+      }
+    },
+    {
+      "id": "synthetic-symbols-url",
+      "kind": "synthetic",
+      "language": "en",
+      "voice_language": "en",
+      "text": "Read Ch. IV, §§ 3–5, then email qa@example.org before 5 p.m.",
+      "seed_candidates": [],
+      "expect": {
+        "pronunciation_terms": []
+      }
+    },
+    {
+      "id": "synthetic-medical-preservation",
+      "kind": "synthetic",
+      "language": "en",
+      "voice_language": "en",
+      "text": "The prescribed dose was 0.25 mg/kg q.i.d., not 25 mg.",
+      "seed_candidates": [],
+      "expect": {
+        "pronunciation_terms": []
+      }
+    },
+    {
+      "id": "synthetic-known-reuse",
+      "kind": "synthetic",
+      "language": "en",
+      "voice_language": "en",
+      "text": "Akira Imaoka bowed to Dr. Imaoka; Imaoka then introduced Ōe Kenzaburō.",
+      "known_pronunciations": {
+        "Imaoka": "ee-mah-oh-kah"
+      },
+      "seed_candidates": [
+        {
+          "text": "Akira",
+          "task": "pronunciation",
+          "signals": ["proper_name", "Japanese_name"]
+        },
+        {
+          "text": "Ōe Kenzaburō",
+          "task": "pronunciation",
+          "signals": ["proper_name", "Japanese_name", "non_ascii"]
+        }
+      ],
+      "expect": {
+        "pronunciation_terms": ["Akira", "Ōe Kenzaburō"]
+      }
+    },
+    {
+      "id": "book-helvetia-coordinates",
+      "kind": "book",
+      "language": "en",
+      "voice_language": "en",
+      "source": {
+        "title": "Twenty Thousand Leagues under the Sea",
+        "author": "Jules Verne",
+        "ebook": "Project Gutenberg #164",
+        "url": "https://www.gutenberg.org/ebooks/164"
+      },
+      "text": "Fifteen days later, two thousand miles farther off, the Helvetia, of the Compagnie-Nationale, and the Shannon, of the Royal Mail Steamship Company, sailing to windward in that portion of the Atlantic lying between the United States and Europe, respectively signalled the monster to each other in 42° 15′ N. lat. and 60° 35′ W. long.",
+      "seed_candidates": [
+        {
+          "text": "Helvetia",
+          "task": "pronunciation",
+          "signals": ["ship_name", "proper_name"]
+        },
+        {
+          "text": "Compagnie-Nationale",
+          "task": "pronunciation",
+          "signals": ["French_name", "proper_name"]
+        }
+      ],
+      "expect": {
+        "pronunciation_terms": ["Helvetia", "Compagnie-Nationale"]
+      }
+    },
+    {
+      "id": "book-scientific-societies",
+      "kind": "book",
+      "language": "en",
+      "voice_language": "en",
+      "source": {
+        "title": "Twenty Thousand Leagues under the Sea",
+        "author": "Jules Verne",
+        "ebook": "Project Gutenberg #164",
+        "url": "https://www.gutenberg.org/ebooks/164"
+      },
+      "text": "For six months war was waged with various fortune in the leading articles of the Geographical Institution of Brazil, the Royal Academy of Science of Berlin, the British Association, the Smithsonian Institution of Washington, in the discussions of the Indian Archipelago, of the Cosmos of the Abbé Moigno, in the Mittheilungen of Petermann, in the scientific chronicles of the great journals of France and other countries.",
+      "seed_candidates": [
+        {
+          "text": "Abbé Moigno",
+          "task": "pronunciation",
+          "signals": ["French_name", "proper_name"]
+        },
+        {
+          "text": "Mittheilungen",
+          "task": "pronunciation",
+          "signals": ["German_word", "foreign_word"]
+        },
+        {
+          "text": "Petermann",
+          "task": "pronunciation",
+          "signals": ["proper_name"]
+        }
+      ],
+      "expect": {
+        "pronunciation_terms": ["Abbé Moigno", "Mittheilungen", "Petermann"]
+      }
+    },
+    {
+      "id": "book-prehistoric-taxonomy",
+      "kind": "book",
+      "language": "en",
+      "voice_language": "en",
+      "source": {
+        "title": "Twenty Thousand Leagues under the Sea",
+        "author": "Jules Verne",
+        "ebook": "Project Gutenberg #164",
+        "url": "https://www.gutenberg.org/ebooks/164"
+      },
+      "text": "What! the archiotherium, the hyracotherium, the oreodons, the cheropotamus, and the other skins? And your live Babiroussa, sir?",
+      "seed_candidates": [
+        {
+          "text": "archiotherium",
+          "task": "pronunciation",
+          "signals": ["scientific_name", "hunspell_oov"]
+        },
+        {
+          "text": "hyracotherium",
+          "task": "pronunciation",
+          "signals": ["scientific_name", "hunspell_oov"]
+        },
+        {
+          "text": "oreodons",
+          "task": "pronunciation",
+          "signals": ["scientific_name", "hunspell_oov"]
+        },
+        {
+          "text": "cheropotamus",
+          "task": "pronunciation",
+          "signals": ["scientific_name", "hunspell_oov"]
+        },
+        {
+          "text": "Babiroussa",
+          "task": "pronunciation",
+          "signals": ["animal_name", "hunspell_oov"]
+        }
+      ],
+      "expect": {
+        "pronunciation_terms": [
+          "archiotherium",
+          "hyracotherium",
+          "oreodons",
+          "cheropotamus",
+          "Babiroussa"
+        ]
+      }
+    },
+    {
+      "id": "book-vanikoro-geography",
+      "kind": "book",
+      "language": "en",
+      "voice_language": "en",
+      "source": {
+        "title": "Twenty Thousand Leagues under the Sea",
+        "author": "Jules Verne",
+        "ebook": "Project Gutenberg #164",
+        "url": "https://www.gutenberg.org/ebooks/164"
+      },
+      "text": "We were close to Vanikoro, really the one to which Dumont d’Urville gave the name of Isle de la Recherche, and exactly facing the little harbour of Vanou, situated in 16° 4′ S. lat., and 164° 32′ E. long. The earth seemed covered with verdure from the shore to the summits in the interior, that were crowned by Mount Kapogo, 476 feet high.",
+      "seed_candidates": [
+        {
+          "text": "Vanikoro",
+          "task": "pronunciation",
+          "signals": ["place_name", "proper_name"]
+        },
+        {
+          "text": "Dumont d’Urville",
+          "task": "pronunciation",
+          "signals": ["French_name", "proper_name"]
+        },
+        {
+          "text": "Isle de la Recherche",
+          "task": "pronunciation",
+          "signals": ["French_name", "place_name"]
+        },
+        {
+          "text": "Vanou",
+          "task": "pronunciation",
+          "signals": ["place_name", "proper_name"]
+        },
+        {
+          "text": "Mount Kapogo",
+          "task": "pronunciation",
+          "signals": ["place_name", "proper_name"]
+        }
+      ],
+      "expect": {
+        "pronunciation_terms": [
+          "Vanikoro",
+          "Dumont d’Urville",
+          "Isle de la Recherche",
+          "Vanou",
+          "Mount Kapogo"
+        ]
+      }
+    },
+    {
+      "id": "book-expedition-names",
+      "kind": "book",
+      "language": "en",
+      "voice_language": "en",
+      "source": {
+        "title": "Twenty Thousand Leagues under the Sea",
+        "author": "Jules Verne",
+        "ebook": "Project Gutenberg #164",
+        "url": "https://www.gutenberg.org/ebooks/164"
+      },
+      "text": "La Perouse, and his second, Captain de Langle, were sent by Louis XVI, in 1785, on a voyage of circumnavigation. They embarked in the corvettes Boussole and the Astrolabe, neither of which were again heard of. In 1791, the French Government manned the Recherche and the Esperance under the command of Bruni d’Entrecasteaux.",
+      "seed_candidates": [
+        {
+          "text": "La Perouse",
+          "task": "pronunciation",
+          "signals": ["French_name", "proper_name"]
+        },
+        {
+          "text": "de Langle",
+          "task": "pronunciation",
+          "signals": ["French_name", "proper_name"]
+        },
+        {
+          "text": "Boussole",
+          "task": "pronunciation",
+          "signals": ["French_ship_name", "proper_name"]
+        },
+        {
+          "text": "Bruni d’Entrecasteaux",
+          "task": "pronunciation",
+          "signals": ["French_name", "proper_name"]
+        }
+      ],
+      "expect": {
+        "pronunciation_terms": [
+          "La Perouse",
+          "de Langle",
+          "Boussole",
+          "Bruni d’Entrecasteaux"
+        ]
+      }
+    },
+    {
+      "id": "book-marine-taxonomy",
+      "kind": "book",
+      "language": "en",
+      "voice_language": "en",
+      "source": {
+        "title": "Twenty Thousand Leagues under the Sea",
+        "author": "Jules Verne",
+        "ebook": "Project Gutenberg #164",
+        "url": "https://www.gutenberg.org/ebooks/164"
+      },
+      "text": "Under the crustations of coral, covered with fungi, syphonules, alcyons, madrepores, through myriads of charming fish—girelles, glyphisidri, pompherides, diacopes, and holocentres—I recognised certain debris that the drags had not been able to tear up.",
+      "seed_candidates": [
+        {
+          "text": "syphonules",
+          "task": "pronunciation",
+          "signals": ["scientific_name", "hunspell_oov"]
+        },
+        {
+          "text": "alcyons",
+          "task": "pronunciation",
+          "signals": ["scientific_name", "hunspell_oov"]
+        },
+        {
+          "text": "madrepores",
+          "task": "pronunciation",
+          "signals": ["scientific_name", "hunspell_oov"]
+        },
+        {
+          "text": "girelles",
+          "task": "pronunciation",
+          "signals": ["scientific_name", "hunspell_oov"]
+        },
+        {
+          "text": "glyphisidri",
+          "task": "pronunciation",
+          "signals": ["scientific_name", "hunspell_oov"]
+        },
+        {
+          "text": "pompherides",
+          "task": "pronunciation",
+          "signals": ["scientific_name", "hunspell_oov"]
+        },
+        {
+          "text": "diacopes",
+          "task": "pronunciation",
+          "signals": ["scientific_name", "hunspell_oov"]
+        },
+        {
+          "text": "holocentres",
+          "task": "pronunciation",
+          "signals": ["scientific_name", "hunspell_oov"]
+        }
+      ],
+      "expect": {
+        "pronunciation_terms": [
+          "syphonules",
+          "alcyons",
+          "madrepores",
+          "girelles",
+          "glyphisidri",
+          "pompherides",
+          "diacopes",
+          "holocentres"
+        ]
+      }
+    }
+  ]
+}

@@ -28,6 +28,8 @@ const CHOICES: Record<string, SettingOption[]> = {
   crispasr_vad_model: [option('silero', 'Silero VAD')],
   max_lines: [option(1, '1 line'), option(2, '2 lines'), option(3, '3 lines')],
   backend: [option('llm', 'LLM provider'), option('deepl', 'DeepL')],
+  speech_optimization_mode: [option('guarded', 'Guarded speech plan (recommended)'), option('flexible', 'Flexible contextual rewrite'), option('legacy', 'Legacy whole-text prompt')],
+  web_research_provider: [option('jina', 'Jina Reader')],
   f0_method: [option('rmvpe', 'RMVPE'), option('harvest', 'Harvest'), option('crepe', 'CREPE'), option('pm', 'PM')],
   pdf_ocr_mode: [option('auto', 'Automatic'), option('always', 'Always OCR'), option('never', 'Never OCR')],
   format: [option('wav', 'WAV'), option('mp3', 'MP3'), option('m4b', 'M4B audiobook'), option('flac', 'FLAC'), option('opus', 'Opus')],
@@ -50,7 +52,7 @@ const CHOICES: Record<string, SettingOption[]> = {
 };
 
 const LANGUAGE_KEYS = new Set(['language', 'stt_language', 'source_language', 'target_language', 'pdf_ocr_language']);
-const MULTILINE_KEYS = new Set(['combined_prompt', 'first_prompt', 'second_prompt', 'third_prompt', 'whisper_prompt', 'instructions', 'generation_prompt', 'glossary', 'stt_hotwords']);
+const MULTILINE_KEYS = new Set(['combined_prompt', 'first_prompt', 'second_prompt', 'third_prompt', 'whisper_prompt', 'instructions', 'generation_prompt', 'glossary', 'stt_hotwords', 'web_research_preferred_domains', 'web_research_blocked_domains']);
 const RANGE_KEYS = new Set(['crispasr_vad_threshold', 'index_rate', 'volume_envelope', 'protect', 'speed', 'top_p', 'fishs2_top_p', 'chatterbox_top_p', 'chatterbox_min_p', 'chatterbox_exaggeration', 'chatterbox_cfg_weight']);
 
 export const GLOBAL_TTS_KEYS = new Set(['service', 'language', 'speed', 'max_attempts']);
@@ -75,6 +77,7 @@ export function numberPresentation(key: string): NumberPresentation {
     top_p: { min: 0, max: 1, step: 0.05, range: true }, fishs2_top_p: { min: 0, max: 1, step: 0.05, range: true },
     chatterbox_top_p: { min: 0, max: 1, step: 0.05, range: true }, chatterbox_min_p: { min: 0, max: 1, step: 0.01, range: true },
     chatterbox_exaggeration: { min: 0, max: 1, step: 0.05, range: true }, chatterbox_cfg_weight: { min: 0, max: 1, step: 0.05, range: true },
+    speech_plan_min_retention: { min: 0.75, max: 1, step: 0.01, range: true },
     pitch: { min: -24, max: 24, step: 1 }, max_attempts: { min: 1, max: 20, step: 1 }, burn_video_quality: { min: 0, max: 51, step: 1 },
     stt_compute_device: { min: 0, step: 1 }, stt_threads: { min: 0, step: 1 }, stt_beam_size: { min: 1, step: 1 },
     moss_max_chunk_seconds: { min: 30, max: 120, step: 1 }, moss_ctc_padding_seconds: { min: 0, max: 2, step: 0.1 },
@@ -96,6 +99,20 @@ export function settingLabel(key: string): string {
     llm_tts_batch_size: 'Segments per inline JSON batch',
     llm_tts_document_batch_size: 'Segments per document JSON batch',
     tts_optimization_model: 'Speech optimization model',
+    speech_optimization_mode: 'Speech planning mode',
+    speech_plan_min_retention: 'Minimum flexible-text retention',
+    speech_plan_save_proposals: 'Save new pronunciations for review',
+    web_research_enabled: 'Ground uncertain terms with web research',
+    web_research_provider: 'Research provider',
+    web_research_language: 'Preferred research language',
+    web_research_max_searches: 'Maximum searches per stage',
+    web_research_max_extractions: 'Maximum page extractions per stage',
+    web_research_preferred_domains: 'Preferred domains (optional)',
+    web_research_blocked_domains: 'Blocked domains',
+    web_research_max_iterations: 'Maximum research-agent turns',
+    web_research_timeout_seconds: 'Research request timeout (seconds)',
+    web_research_source_chars: 'Maximum source characters for research',
+    web_research_result_chars: 'Maximum characters per tool result',
     llm_processing_enabled: 'Enable LLM text processing',
     llm_multi_stage: 'Use divided prompts',
     llm_concurrent_calls: 'Concurrent LLM calls',

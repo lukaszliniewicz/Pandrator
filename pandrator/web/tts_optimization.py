@@ -112,8 +112,28 @@ def optimize_texts(
     progress: Callable[[float, str | None], None],
     *,
     on_batch: Callable[[list[tuple[int, str]]], None] | None = None,
+    on_plan_batch: Callable[[list[tuple[int, str, dict[str, Any]]]], None] | None = None,
+    known_pronunciation_resolver: Callable[[str, str], list[dict[str, Any]]] | None = None,
+    languages: list[str] | None = None,
+    voice_languages: list[str] | None = None,
 ) -> tuple[list[str], OptimizationUsage]:
     """Optimize indexed text units in JSON batches while retaining order and count."""
+    speech_mode = str(settings.get("speech_optimization_mode") or "").strip().lower()
+    if speech_mode in {"guarded", "flexible"}:
+        return _optimize_with_speech_plans(
+            texts,
+            settings,
+            llm_settings,
+            model_name,
+            cancel_event,
+            progress,
+            mode=speech_mode,
+            on_batch=on_batch,
+            on_plan_batch=on_plan_batch,
+            known_pronunciation_resolver=known_pronunciation_resolver,
+            languages=languages,
+            voice_languages=voice_languages,
+        )
     prompts = prompt_sequence(settings)
     workers = max(1, min(16, int(settings.get("llm_concurrent_calls") or 1)))
     batch_size = max(1, min(64, int(settings.get("llm_tts_batch_size") or 3)))
@@ -163,4 +183,92 @@ def optimize_texts(
                 on_batch(revised_items)
             completed += len(revised_items)
             progress(completed / max(1, len(populated)), f"Optimized {completed} of {len(populated)} text units")
+    return output, usage
+
+
+def _optimize_with_speech_plans(
+    texts: list[str],
+    settings: dict[str, Any],
+    llm_settings: Any,
+    model_name: str,
+    cancel_event: Event,
+    progress: Callable[[float, str | None], None],
+    *,
+    mode: str,
+    on_batch: Callable[[list[tuple[int, str]]], None] | None,
+    on_plan_batch: Callable[[list[tuple[int, str, dict[str, Any]]]], None] | None,
+    known_pronunciation_resolver: Callable[[str, str], list[dict[str, Any]]] | None,
+    languages: list[str] | None,
+    voice_languages: list[str] | None,
+) -> tuple[list[str], OptimizationUsage]:
+    """Plan one stable sentence per call and compile only validated responses."""
+    from .speech_planning import plan_speech_text
+
+    workers = max(1, min(16, int(settings.get("llm_concurrent_calls") or 1)))
+    default_language = str(
+        settings.get("language")
+        or settings.get("target_language")
+        or settings.get("source_language")
+        or "en"
+    )
+    default_voice_language = str(
+        settings.get("voice_language") or settings.get("language") or default_language
+    )
+    output = list(texts)
+    usage = OptimizationUsage()
+    populated = [(index, text) for index, text in enumerate(texts) if text.strip()]
+
+    def process(index: int, text: str):
+        if cancel_event.is_set():
+            return index, text, {}, []
+        language = (
+            str(languages[index] or default_language)
+            if languages and index < len(languages)
+            else default_language
+        )
+        voice_language = (
+            str(voice_languages[index] or default_voice_language)
+            if voice_languages and index < len(voice_languages)
+            else default_voice_language
+        )
+        known = (
+            known_pronunciation_resolver(text, language)
+            if known_pronunciation_resolver is not None
+            else []
+        )
+        result = plan_speech_text(
+            text,
+            language=language,
+            voice_language=voice_language,
+            mode=mode,
+            model_name=model_name,
+            llm_settings=llm_settings,
+            known_pronunciations=known,
+            cancel_event=cancel_event,
+            min_retention=float(settings.get("speech_plan_min_retention") or 0.9),
+        )
+        return index, result.text, result.plan, result.responses
+
+    completed = 0
+    with ThreadPoolExecutor(
+        max_workers=workers,
+        thread_name_prefix="speech-plan",
+    ) as executor:
+        futures = {
+            executor.submit(process, index, text): index for index, text in populated
+        }
+        for future in as_completed(futures):
+            index, revised, plan, responses = future.result()
+            output[index] = revised
+            for response in responses:
+                usage.add(response)
+            if on_batch:
+                on_batch([(index, revised)])
+            if on_plan_batch:
+                on_plan_batch([(index, revised, plan)])
+            completed += 1
+            progress(
+                completed / max(1, len(populated)),
+                f"Planned speech for {completed} of {len(populated)} text units",
+            )
     return output, usage

@@ -250,9 +250,11 @@ class ProviderApiTests(unittest.TestCase):
         self.assertNotIn(credentials, json.dumps(created))
 
     def test_auxiliary_api_keys_share_write_only_storage(self):
-        secret = "deepl-secret-value"
+        profiles = self.client.get("/api/v1/credentials").get_json()["items"]
+        self.assertIn("jina", {item["id"] for item in profiles})
+        secret = "jina-secret-value"
         saved = self.client.put(
-            "/api/v1/credentials/deepl",
+            "/api/v1/credentials/jina",
             json={"api_key": secret},
             headers=self.headers,
         )
@@ -263,7 +265,7 @@ class ProviderApiTests(unittest.TestCase):
 
         invalid_secret = "must-not-be-echoed-" + ("x" * 65536)
         rejected = self.client.put(
-            "/api/v1/credentials/deepl",
+            "/api/v1/credentials/jina",
             json={"api_key": invalid_secret},
             headers=self.headers,
         )

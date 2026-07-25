@@ -1188,6 +1188,245 @@
         "title": "PdfWhiteoutInput",
         "type": "object"
       },
+      "PronunciationCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "alphabet": {
+            "const": "respelling",
+            "default": "respelling",
+            "title": "Alphabet",
+            "type": "string"
+          },
+          "backend": {
+            "default": "*",
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Backend",
+            "type": "string"
+          },
+          "language": {
+            "default": "und",
+            "maxLength": 40,
+            "minLength": 2,
+            "title": "Language",
+            "type": "string"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "title": "Metadata",
+            "type": "object"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Notes"
+          },
+          "phonetic": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "Phonetic",
+            "type": "string"
+          },
+          "scope": {
+            "default": "global",
+            "enum": [
+              "global",
+              "session"
+            ],
+            "title": "Scope",
+            "type": "string"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "source_form": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Source Form",
+            "type": "string"
+          },
+          "status": {
+            "default": "reviewed",
+            "enum": [
+              "proposed",
+              "reviewed",
+              "disabled"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_form",
+          "phonetic"
+        ],
+        "title": "PronunciationCreate",
+        "type": "object"
+      },
+      "PronunciationUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "alphabet": {
+            "anyOf": [
+              {
+                "const": "respelling",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Alphabet"
+          },
+          "backend": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Backend"
+          },
+          "language": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "minLength": 2,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Language"
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Metadata"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Notes"
+          },
+          "phonetic": {
+            "anyOf": [
+              {
+                "maxLength": 1024,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Phonetic"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "enum": [
+                  "global",
+                  "session"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Scope"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "source_form": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Form"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "proposed",
+                  "reviewed",
+                  "disabled"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Status"
+          }
+        },
+        "title": "PronunciationUpdate",
+        "type": "object"
+      },
       "ProviderCreate": {
         "additionalProperties": false,
         "properties": {
@@ -2409,6 +2648,62 @@
         }
       }
     },
+    "/api/v1/pronunciations": {
+      "get": {
+        "operationId": "listPronunciations",
+        "responses": {
+          "200": {
+            "description": "Reviewable pronunciation library"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createPronunciation",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PronunciationCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Pronunciation created"
+          }
+        }
+      }
+    },
+    "/api/v1/pronunciations/{entryId}": {
+      "delete": {
+        "operationId": "deletePronunciation",
+        "responses": {
+          "204": {
+            "description": "Pronunciation deleted"
+          }
+        }
+      },
+      "patch": {
+        "operationId": "updatePronunciation",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PronunciationUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Pronunciation updated"
+          }
+        }
+      }
+    },
     "/api/v1/providers": {
       "get": {
         "operationId": "listProviders",
@@ -2778,7 +3073,7 @@
         "operationId": "listAgentRuns",
         "responses": {
           "200": {
-            "description": "Agentic cleaning runs"
+            "description": "Auditable agent runs"
           }
         }
       },

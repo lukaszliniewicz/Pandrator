@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Download, FileQuestion, LoaderCircle, X } from '@lucide/svelte';
+  import { BookOpenCheck, Download, ExternalLink, FileQuestion, Globe2, LoaderCircle, TriangleAlert, X } from '@lucide/svelte';
   import { onMount } from 'svelte';
   import { artifactFilename, artifactRoleLabel, formatBytes, type PreviewableArtifact } from './artifact-display';
   import AudioPlayer from './AudioPlayer.svelte';
@@ -25,6 +25,7 @@
   const isImage = $derived(mime.startsWith('image/') || ['png','jpg','jpeg','gif','webp','svg'].includes(extension));
   const isPdf = $derived(mime === 'application/pdf' || extension === 'pdf');
   const isText = $derived(mime.startsWith('text/') || ['txt','srt','vtt','ass','ssa','json','xml','csv','md','log','yaml','yml'].includes(extension));
+  const research = $derived((artifact.metadata_json?.research ?? null) as any);
   const formattedCost = $derived.by(() => {
     const value = usageSummary?.total_cost_usd;
     if (value == null) return 'Cost unavailable';
@@ -107,6 +108,29 @@
       <button onclick={onclose} class="rounded-xl p-2" aria-label="Close preview"><X size={20}/></button>
     </header>
     <div class="min-h-0 flex-1 overflow-auto bg-[var(--paper)] p-4 sm:p-6">
+      {#if research}
+        <details class="research-ledger mb-4" open>
+          <summary>
+            <span class="grid size-8 shrink-0 place-items-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]"><Globe2 size={16}/></span>
+            <span class="min-w-0 flex-1"><strong>Web research evidence</strong><small>{research.evidence_count ?? research.sources?.length ?? 0} verified {(research.evidence_count ?? research.sources?.length ?? 0) === 1 ? 'source' : 'sources'} · used as bounded guidance, not inserted into the text</small></span>
+          </summary>
+          <div class="grid gap-4 border-t border-[var(--line)] p-4 md:grid-cols-[minmax(0,1fr)_minmax(15rem,.7fr)]">
+            <div>
+              {#if research.summary}<p class="text-sm leading-6">{research.summary}</p>{/if}
+              {#if research.glossary?.length}
+                <div class="mt-3"><div class="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-[var(--muted)]"><BookOpenCheck size={14}/> Terminology ledger</div><div class="mt-2 flex flex-wrap gap-2">{#each research.glossary as item}<span class="glossary-chip">{item.source}<span>→</span>{item.target}</span>{/each}</div></div>
+              {/if}
+              {#if research.warnings?.length}
+                <div class="mt-3 rounded-xl bg-amber-500/10 p-3 text-xs text-amber-700">{#each research.warnings as warning}<p class="flex gap-2"><TriangleAlert class="mt-0.5 shrink-0" size={13}/>{warning}</p>{/each}</div>
+              {/if}
+            </div>
+            <div>
+              <div class="text-xs font-bold uppercase tracking-wider text-[var(--muted)]">Sources</div>
+              {#if research.sources?.length}<div class="mt-2 space-y-2">{#each research.sources as source}<a href={source.url} target="_blank" rel="noreferrer" class="source-link"><span class="min-w-0 flex-1 truncate">{source.title || source.url}</span><ExternalLink class="shrink-0" size={13}/></a>{/each}</div>{:else}<p class="muted mt-2 text-xs">The research agent finished without retaining evidence.</p>{/if}
+            </div>
+          </div>
+        </details>
+      {/if}
       {#if isAudio}<div class="grid min-h-72 place-items-center"><div class="w-full max-w-3xl"><AudioPlayer src={url}/></div></div>
       {:else if isVideo}<!-- svelte-ignore a11y_media_has_caption --><video controls preload="metadata" src={url} onloadedmetadata={showDefaultSubtitleTrack} class="mx-auto max-h-[72vh] max-w-full rounded-xl bg-black">{#each subtitleTracks as track}<track kind="subtitles" src={`/api/v1/artifacts/${track.artifact_id}/content`} srclang={track.language} label={track.title} default={track.default} onload={(event)=>loadSubtitleTrack(event,track.default)}/>{/each}</video>
       {:else if isImage}<img src={url} alt={filename} class="mx-auto max-h-[74vh] max-w-full rounded-xl object-contain"/>
@@ -126,6 +150,7 @@
   .preview-panel{border:1px solid var(--line);background:var(--paper-strong);box-shadow:0 22px 70px rgba(0,0,0,.25)}
   .tool{border:1px solid var(--line);border-radius:.7rem;padding:.55rem .75rem;font-size:.75rem;font-weight:650}.tool.active{background:var(--accent-soft);color:var(--accent)}
   .cost-badge{display:flex;flex-direction:column;align-items:flex-end;border:1px solid var(--line);border-radius:.7rem;padding:.4rem .65rem;font-size:.65rem;color:var(--muted)}.cost-badge strong{font-size:.8rem;color:var(--ink)}.cost-badge small{font-size:.58rem;color:#b45309}
+  .research-ledger{overflow:hidden;border:1px solid color-mix(in srgb,var(--accent) 26%,var(--line));border-radius:1rem;background:var(--paper-strong)}.research-ledger summary{display:flex;cursor:pointer;list-style:none;align-items:center;gap:.75rem;padding:.75rem 1rem}.research-ledger summary::-webkit-details-marker{display:none}.research-ledger summary strong{display:block;font-size:.78rem}.research-ledger summary small{display:block;margin-top:.15rem;color:var(--muted);font-size:.67rem}.source-link{display:flex;align-items:center;gap:.5rem;border:1px solid var(--line);border-radius:.7rem;background:var(--paper);padding:.55rem .65rem;color:var(--accent);font-size:.7rem;font-weight:650}.source-link:hover{border-color:color-mix(in srgb,var(--accent) 50%,var(--line))}.glossary-chip{display:inline-flex;align-items:center;gap:.38rem;border-radius:999px;background:var(--accent-soft);padding:.35rem .6rem;font-size:.68rem;font-weight:650}.glossary-chip span{color:var(--accent)}
   .comparison-grid{display:grid;gap:1rem}@media(min-width:768px){.comparison-grid{grid-template-columns:1fr 1fr}}
   .comparison-grid section{min-width:0}.comparison-grid h3{position:sticky;top:-1rem;z-index:2;margin-bottom:.5rem;border:1px solid var(--line);border-radius:.7rem;background:var(--paper-strong);padding:.65rem .8rem;font-size:.7rem;font-weight:750;color:var(--muted)}
   .comparison-grid pre{min-height:18rem;white-space:pre-wrap;overflow-wrap:anywhere;border:1px solid var(--line);border-radius:.8rem;background:var(--paper-strong);padding:1rem;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.75rem;line-height:1.55}

@@ -148,19 +148,38 @@ def _stage_settings_fingerprint(stage_key: str, settings: dict[str, Any]) -> dic
         model = _model("translation_model", "translate_model", "model_name")
         if not model and backend == "llm":
             model = _text("llm_default_model")
-        return {
+        result = {
             "backend": backend,
             "target_language": _text("target_language").lower(),
             "model": model,
             "instructions": _text("translate_prompt", "instructions"),
         }
+        research = _research_fingerprint(settings)
+        return {**result, **({"web_research": research} if research else {})}
     if stage_key == "correct":
         model = _model("correction_model", "correct_model", "model_name") or _text("llm_default_model")
-        return {
+        result = {
             "model": model,
             "instructions": _text("custom_correction_prompt", "instructions"),
         }
+        research = _research_fingerprint(settings)
+        return {**result, **({"web_research": research} if research else {})}
     return {}
+
+
+def _research_fingerprint(settings: dict[str, Any]) -> dict[str, Any]:
+    if not bool(settings.get("web_research_enabled", False)):
+        # Keep pre-feature artifact fingerprints reusable when research is off.
+        return {}
+    return {
+        "enabled": True,
+        "provider": str(settings.get("web_research_provider") or "jina").strip().lower(),
+        "language": str(settings.get("web_research_language") or "").strip().lower(),
+        "max_searches": max(0, int(settings.get("web_research_max_searches") or 3)),
+        "max_extractions": max(0, int(settings.get("web_research_max_extractions") or 2)),
+        "preferred_domains": str(settings.get("web_research_preferred_domains") or "").strip(),
+        "blocked_domains": str(settings.get("web_research_blocked_domains") or "").strip(),
+    }
 
 
 def _generation_segmentation_settings(settings: dict[str, Any]) -> dict[str, Any]:
@@ -1321,8 +1340,259 @@ class WorkflowHandlers:
             "revision_id": revision_id,
         }
 
+    def _run_stage_web_research(
+        self,
+        *,
+        stage: str,
+        session_id: str,
+        source_artifact: Artifact,
+        source_path: Path,
+        settings: dict[str, Any],
+        progress,
+        cancel_event,
+        job_id: str | None,
+    ):
+        if not bool(settings.get("web_research_enabled", False)):
+            return None, ""
+        provider_id = str(settings.get("web_research_provider") or "jina").strip().lower()
+        if provider_id != "jina":
+            raise ValueError(f"Unsupported web research provider: {provider_id}")
+        if (
+            stage == "translation"
+            and str(settings.get("translation_backend") or settings.get("backend") or "llm").lower()
+            != "llm"
+        ):
+            raise ValueError(
+                "Web research currently grounds the LLM translation backend. "
+                "Choose the LLM backend or disable web research."
+            )
+
+        from types import SimpleNamespace
+
+        from pandrator.logic.dubbing.srt_utils import parse_srt
+
+        from .web_research import (
+            JinaResearchProvider,
+            PersistentResearchCache,
+            ResearchAgentConfig,
+            parse_domain_list,
+            run_web_research_agent,
+        )
+
+        credential = resolve_secret_reference(
+            self.database,
+            self.paths,
+            database_reference(auxiliary_credential_key("jina")),
+            fallback_environment_variable="JINA_API_KEY",
+        )
+        research_provider = JinaResearchProvider(
+            api_key=credential.resolved_value(),
+            cache=PersistentResearchCache(self.database),
+            timeout_seconds=int(settings.get("web_research_timeout_seconds") or 90),
+        )
+        model_key = "correction_model" if stage == "correction" else "translation_model"
+        model_name = str(settings.get(model_key) or settings.get("llm_default_model") or "")
+        llm_settings = SimpleNamespace(
+            provider_configs=settings["llm_provider_configs"],
+            default_model=settings["llm_default_model"],
+            request_timeout_seconds=settings["request_timeout_seconds"],
+        )
+        try:
+            cues = parse_srt(source_path.read_text(encoding="utf-8-sig"))
+            research_source = json.dumps(
+                [{"id": cue.index, "text": cue.text} for cue in cues],
+                ensure_ascii=False,
+            )
+        except (OSError, ValueError):
+            research_source = source_path.read_text(encoding="utf-8-sig")
+
+        run_id = new_id()
+        run_settings = {
+            "stage": stage,
+            "provider": provider_id,
+            "model": model_name,
+            "source_language": str(
+                settings.get("original_language")
+                or settings.get("source_language")
+                or "auto"
+            ),
+            "target_language": (
+                str(settings.get("target_language") or "")
+                if stage == "translation"
+                else ""
+            ),
+            "research_language": str(settings.get("web_research_language") or ""),
+            "max_searches": max(
+                0, int(settings.get("web_research_max_searches") or 3)
+            ),
+            "max_extractions": max(
+                0, int(settings.get("web_research_max_extractions") or 2)
+            ),
+            "preferred_domains": list(
+                parse_domain_list(settings.get("web_research_preferred_domains"))
+            ),
+            "blocked_domains": list(
+                parse_domain_list(settings.get("web_research_blocked_domains"))
+            ),
+        }
+        with self.database.session() as session:
+            session.add(
+                AgentRun(
+                    id=run_id,
+                    kind=f"{stage}_research",
+                    session_id=session_id,
+                    source_artifact_id=source_artifact.id,
+                    job_id=job_id,
+                    status="running",
+                    settings_json=run_settings,
+                )
+            )
+
+        try:
+            result = run_web_research_agent(
+                research_source,
+                provider=research_provider,
+                model_name=model_name,
+                llm_settings=llm_settings,
+                config=ResearchAgentConfig(
+                    stage=stage,
+                    source_language=run_settings["source_language"],
+                    target_language=run_settings["target_language"],
+                    research_language=run_settings["research_language"],
+                    max_searches=run_settings["max_searches"],
+                    max_extractions=run_settings["max_extractions"],
+                    max_iterations=max(
+                        2,
+                        int(settings.get("web_research_max_iterations") or 8),
+                    ),
+                    max_source_chars=max(
+                        2000,
+                        int(settings.get("web_research_source_chars") or 14000),
+                    ),
+                    max_tool_result_chars=max(
+                        2000,
+                        int(settings.get("web_research_result_chars") or 10000),
+                    ),
+                    preferred_domains=tuple(run_settings["preferred_domains"]),
+                    blocked_domains=tuple(run_settings["blocked_domains"]),
+                ),
+                cancel_event=cancel_event,
+                progress_callback=lambda message: progress(0.12, message),
+            )
+        except Exception:
+            with self.database.session() as session:
+                run = session.get(AgentRun, run_id)
+                if run is not None:
+                    run.status = "failed"
+                    run.updated_at = utcnow()
+            raise
+
+        with self.database.session() as session:
+            for ordinal, trace in enumerate(result.tool_trace):
+                observation = (
+                    trace.get("observation")
+                    if isinstance(trace.get("observation"), dict)
+                    else {"value": trace.get("observation")}
+                )
+                session.add(
+                    AgentStep(
+                        agent_run_id=run_id,
+                        ordinal=ordinal,
+                        phase=str(trace.get("action") or "research"),
+                        status=(
+                            "failed"
+                            if isinstance(observation, dict) and observation.get("error")
+                            else "completed"
+                        ),
+                        summary=(
+                            str(observation.get("error"))
+                            if isinstance(observation, dict) and observation.get("error")
+                            else f"Completed {str(trace.get('action') or 'research')}."
+                        ),
+                        input_json=(
+                            trace.get("arguments")
+                            if isinstance(trace.get("arguments"), dict)
+                            else {}
+                        ),
+                        output_json=observation,
+                    )
+                )
+            session.add(
+                AgentStep(
+                    agent_run_id=run_id,
+                    ordinal=len(result.tool_trace),
+                    phase="evidence_ledger",
+                    status="completed",
+                    summary=result.summary
+                    or f"Collected {len(result.evidence)} evidence item(s).",
+                    input_json={"warnings": result.warnings},
+                    output_json={
+                        "evidence": result.evidence,
+                        "glossary": result.glossary,
+                        "usage": result.usage,
+                    },
+                    cost_usd=result.cost if result.cost_sources else None,
+                )
+            )
+            run = session.get(AgentRun, run_id)
+            if run is not None:
+                run.status = "researched"
+                run.updated_at = utcnow()
+        self._record_usage(
+            session_id,
+            "web_research",
+            {**settings, "web_research_model": model_name},
+            result,
+            job_id=job_id,
+        )
+        return result, run_id
+
+    def _finish_stage_web_research(
+        self,
+        run_id: str,
+        *,
+        artifact_id: str | None = None,
+        failed: bool = False,
+    ) -> None:
+        if not run_id:
+            return
+        with self.database.session() as session:
+            run = session.get(AgentRun, run_id)
+            if run is None:
+                return
+            run.result_artifact_id = artifact_id
+            run.status = "failed" if failed else "completed"
+            run.updated_at = utcnow()
+
+    @staticmethod
+    def _research_metadata(result, run_id: str) -> dict[str, Any] | None:
+        if result is None or not run_id:
+            return None
+        sources = []
+        seen: set[str] = set()
+        for item in result.evidence:
+            url = str(item.get("source_url") or "")
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            sources.append(
+                {
+                    "url": url,
+                    "title": str(item.get("source_title") or ""),
+                }
+            )
+        return {
+            "agent_run_id": run_id,
+            "summary": result.summary,
+            "evidence_count": len(result.evidence),
+            "glossary": list(result.glossary),
+            "sources": sources,
+            "warnings": list(result.warnings),
+        }
+
     def correct(self, payload, progress, cancel_event):
         from pandrator.logic.dubbing.llm_correction import correct_srt_file_with_result
+        from .web_research import evidence_prompt
 
         session_id = str(payload.get("session_id") or "")
         source_artifact, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
@@ -1333,16 +1603,39 @@ class WorkflowHandlers:
             json.dumps(requested_settings, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
         ).hexdigest()
         settings = self._with_database_llm_settings(requested_settings, "correction")
-        progress(0.05, "Correcting subtitles")
-        result = correct_srt_file_with_result(
-            session_dir,
-            source_path,
-            settings,
-            correction_instructions=str(payload.get("instructions") or settings.get("instructions") or ""),
+        research_result, research_run_id = self._run_stage_web_research(
+            stage="correction",
+            session_id=session_id,
+            source_artifact=source_artifact,
+            source_path=source_path,
+            settings=settings,
+            progress=progress,
             cancel_event=cancel_event,
-            speaker_by_subtitle=speaker_by_subtitle,
+            job_id=str(payload.get("_job_id") or "") or None,
         )
+        instructions = str(
+            payload.get("instructions") or settings.get("instructions") or ""
+        )
+        if research_result is not None:
+            instructions += evidence_prompt(
+                research_result.evidence,
+                stage="correction",
+            )
+        progress(0.2 if research_result is not None else 0.05, "Correcting subtitles")
+        try:
+            result = correct_srt_file_with_result(
+                session_dir,
+                source_path,
+                settings,
+                correction_instructions=instructions,
+                cancel_event=cancel_event,
+                speaker_by_subtitle=speaker_by_subtitle,
+            )
+        except Exception:
+            self._finish_stage_web_research(research_run_id, failed=True)
+            raise
         if cancel_event.is_set():
+            self._finish_stage_web_research(research_run_id, failed=True)
             return {}
         settings_fingerprint = _stage_settings_fingerprint("correct", settings)
         artifact = self.artifacts.register(
@@ -1359,7 +1652,16 @@ class WorkflowHandlers:
                 "settings_fingerprint": settings_fingerprint,
                 "model": settings_fingerprint["model"],
                 "language": str(settings.get("original_language") or settings.get("source_language") or "auto"),
+                **(
+                    {"research": self._research_metadata(research_result, research_run_id)}
+                    if research_result is not None
+                    else {}
+                ),
             },
+        )
+        self._finish_stage_web_research(
+            research_run_id,
+            artifact_id=artifact.id,
         )
         self._store_srt_document(
             session_id,
@@ -1377,6 +1679,7 @@ class WorkflowHandlers:
             translate_srt_file_deepl_with_result,
             translate_srt_file_with_result,
         )
+        from .web_research import evidence_prompt
 
         session_id = str(payload.get("session_id") or "")
         source_artifact, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
@@ -1386,8 +1689,23 @@ class WorkflowHandlers:
         requested_settings_hash = hashlib.sha256(
             json.dumps(settings, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
         ).hexdigest()
-        progress(0.05, "Translating subtitles")
-        if str(settings.get("translation_backend") or "llm").lower() == "deepl":
+        research_result = None
+        research_run_id = ""
+        translation_backend = str(
+            settings.get("translation_backend")
+            or settings.get("backend")
+            or "llm"
+        ).lower()
+        if (
+            translation_backend == "deepl"
+            and bool(settings.get("web_research_enabled"))
+        ):
+            raise ValueError(
+                "Web research currently augments LLM translation only. "
+                "Choose the LLM backend or turn web research off."
+            )
+        if translation_backend == "deepl":
+            progress(0.05, "Translating subtitles")
             credential = resolve_secret_reference(
                 self.database,
                 self.paths,
@@ -1403,15 +1721,42 @@ class WorkflowHandlers:
             )
         else:
             settings = self._with_database_llm_settings(settings, "translation")
-            result = translate_srt_file_with_result(
-                session_dir,
-                source_path,
-                settings,
-                translation_instructions=str(payload.get("instructions") or settings.get("instructions") or ""),
+            research_result, research_run_id = self._run_stage_web_research(
+                stage="translation",
+                session_id=session_id,
+                source_artifact=source_artifact,
+                source_path=source_path,
+                settings=settings,
+                progress=progress,
                 cancel_event=cancel_event,
-                speaker_by_subtitle=speaker_by_subtitle,
+                job_id=str(payload.get("_job_id") or "") or None,
             )
+            instructions = str(
+                payload.get("instructions") or settings.get("instructions") or ""
+            )
+            if research_result is not None:
+                instructions += evidence_prompt(
+                    research_result.evidence,
+                    stage="translation",
+                )
+            progress(
+                0.2 if research_result is not None else 0.05,
+                "Translating subtitles",
+            )
+            try:
+                result = translate_srt_file_with_result(
+                    session_dir,
+                    source_path,
+                    settings,
+                    translation_instructions=instructions,
+                    cancel_event=cancel_event,
+                    speaker_by_subtitle=speaker_by_subtitle,
+                )
+            except Exception:
+                self._finish_stage_web_research(research_run_id, failed=True)
+                raise
         if cancel_event.is_set():
+            self._finish_stage_web_research(research_run_id, failed=True)
             return {}
         settings_fingerprint = _stage_settings_fingerprint("translate", settings)
         artifact = self.artifacts.register(
@@ -1429,7 +1774,16 @@ class WorkflowHandlers:
                 "backend": settings_fingerprint["backend"],
                 "model": settings_fingerprint["model"],
                 "language": settings_fingerprint["target_language"],
+                **(
+                    {"research": self._research_metadata(research_result, research_run_id)}
+                    if research_result is not None
+                    else {}
+                ),
             },
+        )
+        self._finish_stage_web_research(
+            research_run_id,
+            artifact_id=artifact.id,
         )
         self._store_srt_document(
             session_id,
@@ -1449,6 +1803,7 @@ class WorkflowHandlers:
 
         from pandrator.logic.dubbing.srt_utils import compose_srt, parse_srt
 
+        from .pronunciations import PronunciationLibrary, normalize_backend
         from .tts_optimization import optimize_texts
 
         session_id = str(payload.get("session_id") or "")
@@ -1468,12 +1823,87 @@ class WorkflowHandlers:
             request_timeout_seconds=settings["request_timeout_seconds"],
         )
         model_name = str(settings.get("tts_optimization_model") or settings["llm_default_model"])
+        speech_mode = str(settings.get("speech_optimization_mode") or "").strip().lower()
+        structured_mode = speech_mode in {"guarded", "flexible"}
+        default_language = str(
+            settings.get("language")
+            or settings.get("target_language")
+            or settings.get("source_language")
+            or (source_artifact.metadata_json or {}).get("language")
+            or "en"
+        )
+        voice_language = str(
+            settings.get("voice_language")
+            or settings.get("language")
+            or default_language
+        )
+        backend = normalize_backend(
+            settings.get("service")
+            or settings.get("tts_service")
+            or settings.get("backend")
+            or "*"
+        )
+        pronunciation_library = PronunciationLibrary(self.database)
+        speech_plans: list[dict[str, Any]] = []
+
+        def optimize_units(
+            source_texts: list[str],
+            languages: list[str],
+        ):
+            nonlocal speech_plans
+            speech_plans = [{} for _ in source_texts]
+            known_by_index = {
+                index: pronunciation_library.resolve(
+                    text,
+                    session_id=session_id,
+                    language=languages[index],
+                    backend=backend,
+                )
+                for index, text in enumerate(source_texts)
+            } if structured_mode else {}
+
+            def resolve_known(text: str, language: str) -> list[dict[str, Any]]:
+                for index, source_text in enumerate(source_texts):
+                    if source_text == text and languages[index] == language:
+                        return deepcopy(known_by_index.get(index, []))
+                return []
+
+            def keep_plans(items: list[tuple[int, str, dict[str, Any]]]) -> None:
+                for index, _revised, plan in items:
+                    if bool(settings.get("speech_plan_save_proposals", True)):
+                        plan["proposals"] = self._save_speech_plan_proposals(
+                            library=pronunciation_library,
+                            session_id=session_id,
+                            plan=plan,
+                            backend=backend,
+                            model_name=model_name,
+                            default_language=languages[index],
+                        )
+                    else:
+                        plan["proposals"] = []
+                    speech_plans[index] = plan
+
+            return optimize_texts(
+                source_texts,
+                settings,
+                llm_settings,
+                model_name,
+                cancel_event,
+                progress,
+                on_plan_batch=keep_plans if structured_mode else None,
+                known_pronunciation_resolver=resolve_known if structured_mode else None,
+                languages=languages,
+                voice_languages=[voice_language for _ in source_texts],
+            )
+
         suffix = source_path.suffix.lower()
         progress(0.02, "Preparing speech optimization preview")
         if suffix == ".srt":
             segments = parse_srt(source_path.read_text(encoding="utf-8-sig"))
-            optimized, usage = optimize_texts(
-                [segment.text for segment in segments], settings, llm_settings, model_name, cancel_event, progress
+            source_texts = [segment.text for segment in segments]
+            optimized, usage = optimize_units(
+                source_texts,
+                [default_language for _ in source_texts],
             )
             if cancel_event.is_set():
                 return {}
@@ -1486,38 +1916,100 @@ class WorkflowHandlers:
             if not isinstance(rows, list):
                 raise ValueError("Speech optimization JSON input must contain a list of generation units.")
             source_texts = [
-                str(row.get("processed_sentence") or row.get("original_sentence") or row.get("text") or "")
+                str(
+                    row.get("source_text")
+                    or row.get("text")
+                    or row.get("processed_sentence")
+                    or row.get("original_sentence")
+                    or ""
+                )
                 if isinstance(row, dict) else str(row)
                 for row in rows
             ]
-            optimized, usage = optimize_texts(source_texts, settings, llm_settings, model_name, cancel_event, progress)
+            languages = [
+                str(row.get("language") or default_language)
+                if isinstance(row, dict)
+                else default_language
+                for row in rows
+            ]
+            optimized, usage = optimize_units(source_texts, languages)
             if cancel_event.is_set():
                 return {}
-            for row, text in zip(rows, optimized):
+            for index, (row, text) in enumerate(zip(rows, optimized)):
                 if isinstance(row, dict):
                     row["source_text"] = str(row.get("source_text") or row.get("text") or row.get("processed_sentence") or row.get("original_sentence") or "")
                     row["tts_optimized_sentence"] = text
-                    row["processed_sentence"] = text
-                    row["text"] = text
+                    if structured_mode:
+                        row["speech_plan"] = speech_plans[index]
             destination = self._session_dir(session_id) / f"tts-optimized-{new_id()}.json"
             destination.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
             kind = "json"
         else:
             source_text = source_path.read_text(encoding="utf-8-sig")
-            optimized, usage = optimize_texts([source_text], settings, llm_settings, model_name, cancel_event, progress)
+            optimized, usage = optimize_units([source_text], [default_language])
             if cancel_event.is_set():
                 return {}
             destination = self._session_dir(session_id) / f"tts-optimized-{new_id()}.txt"
             destination.write_text(optimized[0], encoding="utf-8")
             kind = "text"
+        speech_plan_artifact_id = ""
+        if structured_mode and any(speech_plans):
+            plan_path = (
+                self._session_dir(session_id)
+                / f"speech-plans-{new_id()}.json"
+            )
+            plan_path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "index": index,
+                            "source_text": source_text,
+                            "speech_plan": plan,
+                        }
+                        for index, (source_text, plan) in enumerate(
+                            zip(source_texts, speech_plans)
+                        )
+                    ],
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            plan_artifact = self.artifacts.register(
+                plan_path,
+                kind="json",
+                role="speech_plan",
+                session_id=session_id,
+                parent_ids=[source_artifact.id],
+                settings=settings,
+                metadata={
+                    "source_artifact_id": source_artifact.id,
+                    "model": model_name,
+                    "mode": speech_mode,
+                    "plan_count": len(speech_plans),
+                },
+            )
+            speech_plan_artifact_id = plan_artifact.id
         artifact = self.artifacts.register(
             destination,
             kind=kind,
             role="tts_optimized",
             session_id=session_id,
-            parent_ids=[source_artifact.id],
+            parent_ids=[
+                source_artifact.id,
+                *([speech_plan_artifact_id] if speech_plan_artifact_id else []),
+            ],
             settings=settings,
-            metadata={"source_artifact_id": source_artifact.id, "model": model_name, "mode": "whole_document", "batch_size": settings["llm_tts_batch_size"], "requested_settings_hash": requested_settings_hash},
+            metadata={
+                "source_artifact_id": source_artifact.id,
+                "model": model_name,
+                "mode": "whole_document",
+                "speech_optimization_mode": speech_mode or "legacy",
+                "speech_plan_artifact_id": speech_plan_artifact_id or None,
+                "speech_plan_count": len([plan for plan in speech_plans if plan]),
+                "batch_size": settings["llm_tts_batch_size"],
+                "requested_settings_hash": requested_settings_hash,
+            },
         )
         if suffix == ".srt":
             self._store_srt_document(
@@ -2169,6 +2661,31 @@ class WorkflowHandlers:
                     node_kind=str(record.get("node_kind") or ("subtitle_cue" if is_subtitle else "chapter_marker" if str(record.get("chapter") or "").lower() == "yes" else "paragraph")),
                     paragraph_break_after=False if is_subtitle else bool(record.get("paragraph_break_after", str(record.get("paragraph") or "").lower() == "yes")),
                     text=str(record.get("text") or record.get("original_sentence") or "").strip(),
+                    optimized_text=(
+                        str(record.get("tts_optimized_sentence") or "").strip()
+                        or None
+                    ),
+                    speech_plan_json=dict(record.get("speech_plan") or {}),
+                    optimization_status=(
+                        "optimized"
+                        if str(record.get("tts_optimized_sentence") or "").strip()
+                        else "not_requested"
+                    ),
+                    optimization_source_hash=(
+                        self._optimization_text_hash(
+                            str(
+                                record.get("text")
+                                or record.get("original_sentence")
+                                or ""
+                            ).strip()
+                        )
+                        if str(record.get("tts_optimized_sentence") or "").strip()
+                        else None
+                    ),
+                    optimization_model=(
+                        str((record.get("speech_plan") or {}).get("model") or "").strip()
+                        or None
+                    ),
                     voice_id=record.get("voice_id"),
                     voice=explicit_voice,
                     # A missing value is meaningful: it follows the session TTS
@@ -2205,6 +2722,96 @@ class WorkflowHandlers:
     def _optimization_text_hash(text: str) -> str:
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
+    def _save_speech_plan_proposals(
+        self,
+        *,
+        library,
+        session_id: str,
+        plan: dict[str, Any],
+        backend: str,
+        model_name: str,
+        default_language: str,
+    ) -> list[dict[str, Any]]:
+        """Persist model pronunciations as review-only entries, never active ones."""
+        candidates = {
+            str(item.get("id") or ""): item
+            for item in list(plan.get("candidates") or [])
+            if isinstance(item, dict)
+        }
+        proposed_items: list[tuple[str, str, str, str]] = []
+        for decision in list(plan.get("decisions") or []):
+            if (
+                isinstance(decision, dict)
+                and decision.get("action") == "pronounce"
+                and str(decision.get("spoken") or "").strip()
+            ):
+                candidate = candidates.get(str(decision.get("span_id") or ""))
+                if candidate:
+                    proposed_items.append(
+                        (
+                            str(candidate.get("text") or ""),
+                            str(decision.get("spoken") or ""),
+                            str(decision.get("confidence") or "medium"),
+                            str(candidate.get("id") or ""),
+                        )
+                    )
+        for discovery in list(plan.get("discoveries") or []):
+            if (
+                isinstance(discovery, dict)
+                and discovery.get("action") == "pronounce"
+                and str(discovery.get("spoken") or "").strip()
+            ):
+                proposed_items.append(
+                    (
+                        str(discovery.get("source_text") or ""),
+                        str(discovery.get("spoken") or ""),
+                        str(discovery.get("confidence") or "medium"),
+                        "discovery",
+                    )
+                )
+
+        proposals: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for source_form, phonetic, confidence, span_id in proposed_items:
+            key = (source_form.casefold().strip(), phonetic)
+            if not source_form.strip() or key in seen:
+                continue
+            seen.add(key)
+            try:
+                proposal = library.propose(
+                    session_id=session_id,
+                    source_form=source_form,
+                    phonetic=phonetic,
+                    language=str(plan.get("language") or default_language),
+                    backend=backend,
+                    metadata={
+                        "case_id": plan.get("case_id"),
+                        "model": model_name,
+                        "confidence": confidence,
+                        "span_id": span_id,
+                    },
+                )
+            except (KeyError, ValueError) as error:
+                proposals.append(
+                    {
+                        "source_form": source_form,
+                        "phonetic": phonetic,
+                        "status": "not_saved",
+                        "error": str(error),
+                    }
+                )
+            else:
+                proposals.append(
+                    {
+                        "id": proposal["id"],
+                        "source_form": proposal["source_form"],
+                        "phonetic": proposal["phonetic"],
+                        "status": proposal["status"],
+                        "revision": proposal["revision"],
+                    }
+                )
+        return proposals
+
     def _optimize_generation_texts(
         self,
         session_id: str,
@@ -2219,10 +2826,33 @@ class WorkflowHandlers:
     ) -> tuple[list[str], str]:
         """Resolve reviewed or newly batched inline optimization for generation."""
         if not bool(settings.get("llm_tts_optimization")):
+            if bool(settings.get("use_existing_speech_plans")):
+                output = list(texts)
+                model_name = ""
+                with self.database.session() as session:
+                    for position, (segment_id, text) in enumerate(
+                        zip(segment_ids, texts)
+                    ):
+                        segment = session.get(GenerationSegment, segment_id)
+                        if (
+                            segment is not None
+                            and segment.optimized_text
+                            and segment.optimization_source_hash
+                            == self._optimization_text_hash(text)
+                            and segment.optimization_status
+                            in {"optimized", "reviewed"}
+                        ):
+                            output[position] = segment.optimized_text
+                            model_name = model_name or str(
+                                segment.optimization_model or ""
+                            )
+                return output, model_name
             return list(texts), ""
 
+        from copy import deepcopy
         from types import SimpleNamespace
 
+        from .pronunciations import PronunciationLibrary, normalize_backend
         from .tts_optimization import optimize_texts
 
         resolved = self._with_database_llm_settings(dict(settings), "tts_optimization")
@@ -2232,28 +2862,105 @@ class WorkflowHandlers:
             request_timeout_seconds=resolved["request_timeout_seconds"],
         )
         model_name = str(resolved.get("tts_optimization_model") or resolved["llm_default_model"])
+        speech_mode = str(resolved.get("speech_optimization_mode") or "guarded").strip().lower()
+        structured_mode = speech_mode in {"guarded", "flexible"}
+        default_language = str(
+            resolved.get("language")
+            or resolved.get("target_language")
+            or resolved.get("source_language")
+            or "en"
+        )
+        voice_language = str(
+            resolved.get("voice_language")
+            or resolved.get("language")
+            or default_language
+        )
+        backend = normalize_backend(
+            resolved.get("service")
+            or resolved.get("tts_service")
+            or resolved.get("backend")
+            or "*"
+        )
+        pronunciation_library = PronunciationLibrary(self.database)
         output = list(texts)
         pending_texts: list[str] = []
         pending_positions: list[int] = []
+        pending_languages: list[str] = []
+        pending_voice_languages: list[str] = []
+        segment_state: dict[str, dict[str, Any]] = {}
         with self.database.session() as session:
-            for position, (segment_id, text) in enumerate(zip(segment_ids, texts)):
+            for segment_id in segment_ids:
                 segment = session.get(GenerationSegment, segment_id)
-                source_hash = self._optimization_text_hash(text)
-                if (
-                    segment is not None
-                    and segment.optimized_text
-                    and segment.optimization_source_hash == source_hash
-                    and segment.optimization_status in {"optimized", "reviewed"}
-                ):
-                    output[position] = segment.optimized_text
-                    continue
+                if segment is not None:
+                    segment_state[segment_id] = {
+                        "optimized_text": segment.optimized_text,
+                        "optimization_source_hash": segment.optimization_source_hash,
+                        "optimization_status": segment.optimization_status,
+                        "optimization_model": segment.optimization_model,
+                        "speech_plan": deepcopy(segment.speech_plan_json or {}),
+                        "language": str(segment.language or default_language),
+                    }
+
+        known_by_position: dict[int, list[dict[str, Any]]] = {}
+        for position, (segment_id, text) in enumerate(zip(segment_ids, texts)):
+            state = segment_state.get(segment_id, {})
+            language = str(state.get("language") or default_language)
+            known = (
+                pronunciation_library.resolve(
+                    text,
+                    session_id=session_id,
+                    language=language,
+                    backend=backend,
+                )
+                if structured_mode
+                else []
+            )
+            known_by_position[position] = known
+            source_hash = self._optimization_text_hash(text)
+            plan_source_hash = self._optimization_text_hash(" ".join(text.split()))
+            plan = dict(state.get("speech_plan") or {})
+            current_known_signature = sorted(
+                (str(item.get("id") or ""), int(item.get("revision") or 0))
+                for item in known
+            )
+            planned_known_signature = sorted(
+                (str(item.get("entry_id") or ""), int(item.get("entry_revision") or 0))
+                for item in list(plan.get("known_pronunciations") or [])
+            )
+            reusable = bool(
+                state
+                and state.get("optimized_text")
+                and state.get("optimization_source_hash") == source_hash
+                and state.get("optimization_status") in {"optimized", "reviewed"}
+            )
+            if reusable and state.get("optimization_status") != "reviewed":
+                if structured_mode:
+                    reusable = bool(
+                        plan
+                        and plan.get("source_hash") == plan_source_hash
+                        and plan.get("mode_requested") == speech_mode
+                        and plan.get("model") == model_name
+                        and planned_known_signature == current_known_signature
+                    )
+                else:
+                    reusable = not plan and state.get("optimization_model") == model_name
+            if reusable:
+                output[position] = str(state["optimized_text"])
+                continue
+            pending_positions.append(position)
+            pending_texts.append(text)
+            pending_languages.append(language)
+            pending_voice_languages.append(voice_language)
+
+        with self.database.session() as session:
+            for position in pending_positions:
+                segment = session.get(GenerationSegment, segment_ids[position])
                 if segment is not None:
                     segment.optimization_status = "running"
                     segment.optimization_reviewed = False
                     segment.optimization_model = model_name
+                    segment.speech_plan_json = {}
                     segment.updated_at = utcnow()
-                pending_positions.append(position)
-                pending_texts.append(text)
 
         if not pending_texts:
             return output, model_name
@@ -2273,6 +2980,50 @@ class WorkflowHandlers:
                     segment.optimization_model = model_name
                     segment.updated_at = utcnow()
 
+        def resolve_pending_pronunciations(
+            _text: str,
+            _language: str,
+        ) -> list[dict[str, Any]]:
+            # Structured optimization calls this from worker threads. Resolution
+            # was performed before dispatch so workers never share ORM sessions.
+            for local_index, position in enumerate(pending_positions):
+                if (
+                    pending_texts[local_index] == _text
+                    and pending_languages[local_index] == _language
+                ):
+                    return deepcopy(known_by_position.get(position, []))
+            return []
+
+        def persist_plan_batch(
+            items: list[tuple[int, str, dict[str, Any]]],
+        ) -> None:
+            for local_index, revised, plan in items:
+                position = pending_positions[local_index]
+                proposals: list[dict[str, Any]] = []
+                if bool(resolved.get("speech_plan_save_proposals", True)):
+                    proposals = self._save_speech_plan_proposals(
+                        library=pronunciation_library,
+                        session_id=session_id,
+                        plan=plan,
+                        backend=backend,
+                        model_name=model_name,
+                        default_language=pending_languages[local_index],
+                    )
+                plan["proposals"] = proposals
+                with self.database.session() as session:
+                    segment = session.get(GenerationSegment, segment_ids[position])
+                    if segment is None:
+                        continue
+                    segment.optimized_text = revised
+                    segment.speech_plan_json = plan
+                    segment.optimization_status = "optimized"
+                    segment.optimization_source_hash = self._optimization_text_hash(
+                        texts[position]
+                    )
+                    segment.optimization_reviewed = False
+                    segment.optimization_model = model_name
+                    segment.updated_at = utcnow()
+
         try:
             optimized, usage = optimize_texts(
                 pending_texts,
@@ -2282,6 +3033,12 @@ class WorkflowHandlers:
                 cancel_event,
                 progress,
                 on_batch=persist_batch,
+                on_plan_batch=persist_plan_batch if structured_mode else None,
+                known_pronunciation_resolver=(
+                    resolve_pending_pronunciations if structured_mode else None
+                ),
+                languages=pending_languages,
+                voice_languages=pending_voice_languages,
             )
         except Exception:
             with self.database.session() as session:
@@ -2544,22 +3301,117 @@ class WorkflowHandlers:
 
         plan_revision_id: str | None = None
         if source_path.suffix.lower() == ".srt":
-            blocks_path = Path(
-                generate_speech_blocks_file(
-                    str(self._operation_dir(session_id, "speech-blocks")),
-                    str(source_path),
-                    target_language=language,
-                    min_chars=int(settings.get("speech_block_min_chars") or 10),
-                    max_chars=int(settings.get("speech_block_max_chars") or 220),
-                    merge_threshold=int(
-                        settings.get("speech_block_merge_threshold")
-                        if settings.get("speech_block_merge_threshold") is not None
-                        else settings.get("subtitle_merge_threshold", 250)
-                    ),
-                    **speaker_options,
+            reviewed_speech_records: list[dict[str, Any]] | None = None
+            source_revision_id = str(
+                (source_artifact.metadata_json or {}).get("revision_id") or ""
+            ) or None
+            if source_artifact.role == "tts_optimized":
+                from pandrator.logic.dubbing.srt_utils import parse_srt
+
+                display_artifact_id = str(
+                    (source_artifact.metadata_json or {}).get(
+                        "source_artifact_id"
+                    )
+                    or ""
                 )
-            )
-            records = json.loads(blocks_path.read_text(encoding="utf-8-sig"))
+                if display_artifact_id:
+                    display_artifact, display_path = self._resolve_input(
+                        display_artifact_id
+                    )
+                    if display_path.suffix.lower() == ".srt":
+                        display_segments = parse_srt(
+                            display_path.read_text(encoding="utf-8-sig")
+                        )
+                        speech_segments = parse_srt(
+                            source_path.read_text(encoding="utf-8-sig")
+                        )
+                        if len(display_segments) != len(speech_segments):
+                            raise ValueError(
+                                "The reviewed speech revision no longer aligns "
+                                "with its display subtitles."
+                            )
+                        plan_by_index: dict[int, dict[str, Any]] = {}
+                        plan_artifact_id = str(
+                            (source_artifact.metadata_json or {}).get(
+                                "speech_plan_artifact_id"
+                            )
+                            or ""
+                        )
+                        if plan_artifact_id:
+                            _plan_artifact, plan_path = self._resolve_input(
+                                plan_artifact_id
+                            )
+                            plan_rows = json.loads(
+                                plan_path.read_text(encoding="utf-8-sig")
+                            )
+                            if isinstance(plan_rows, list):
+                                plan_by_index = {
+                                    int(row.get("index")): dict(
+                                        row.get("speech_plan") or {}
+                                    )
+                                    for row in plan_rows
+                                    if isinstance(row, dict)
+                                }
+                        reviewed_speech_records = []
+                        for index, (display_segment, speech_segment) in enumerate(
+                            zip(display_segments, speech_segments)
+                        ):
+                            if display_segment.index != speech_segment.index:
+                                raise ValueError(
+                                    "The reviewed speech revision changed subtitle "
+                                    "cue identity."
+                                )
+                            reviewed_speech_records.append(
+                                {
+                                    "text": display_segment.text,
+                                    "tts_optimized_sentence": speech_segment.text,
+                                    "speech_plan": plan_by_index.get(index, {}),
+                                    "source_segment_ids": [
+                                        display_segment.index
+                                    ],
+                                    "subtitles": [display_segment.index],
+                                    "node_kind": "subtitle_cue",
+                                    "language": language,
+                                }
+                            )
+                        source_revision_id = str(
+                            (display_artifact.metadata_json or {}).get(
+                                "revision_id"
+                            )
+                            or ""
+                        ) or None
+
+            if reviewed_speech_records is not None:
+                blocks_path = (
+                    self._operation_dir(session_id, "speech-blocks")
+                    / f"reviewed-speech-{new_id()}.json"
+                )
+                blocks_path.write_text(
+                    json.dumps(
+                        reviewed_speech_records,
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+                records = reviewed_speech_records
+            else:
+                blocks_path = Path(
+                    generate_speech_blocks_file(
+                        str(self._operation_dir(session_id, "speech-blocks")),
+                        str(source_path),
+                        target_language=language,
+                        min_chars=int(settings.get("speech_block_min_chars") or 10),
+                        max_chars=int(settings.get("speech_block_max_chars") or 220),
+                        merge_threshold=int(
+                            settings.get("speech_block_merge_threshold")
+                            if settings.get("speech_block_merge_threshold") is not None
+                            else settings.get("subtitle_merge_threshold", 250)
+                        ),
+                        **speaker_options,
+                    )
+                )
+                records = json.loads(blocks_path.read_text(encoding="utf-8-sig"))
             if not isinstance(records, list) or not records:
                 raise ValueError("No dubbing speech blocks were produced.")
             self.artifacts.register(
@@ -2574,7 +3426,7 @@ class WorkflowHandlers:
                 session_id,
                 records,
                 settings=settings,
-                source_revision_id=str((source_artifact.metadata_json or {}).get("revision_id") or "") or None,
+                source_revision_id=source_revision_id,
             )
         elif source_path.suffix.lower() == ".json":
             # Segment narration already creates a plan. Preserve any edits the
@@ -2609,6 +3461,7 @@ class WorkflowHandlers:
         snapshot["text"] = {
             **dict(snapshot.get("text") or {}),
             "llm_tts_optimization": bool(settings.get("llm_tts_optimization")),
+            "use_existing_speech_plans": source_artifact.role == "tts_optimized",
         }
         snapshot["source_artifact_id"] = source_artifact.id
         frozen_hash = hashlib.sha256(

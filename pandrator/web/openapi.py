@@ -112,6 +112,14 @@ def build_openapi_document() -> dict:
         "/api/v1/services/tts/{serviceId}/preview": {"post": operation("previewTtsVoice", "Voice preview queued", "TtsVoicePreviewRequest", "202")},
         "/api/v1/credentials": {"get": operation("listCredentials", "Write-only auxiliary credential status")},
         "/api/v1/credentials/{credentialId}": {"put": operation("putCredential", "Auxiliary credential saved", "CredentialUpdate")},
+        "/api/v1/pronunciations": {
+            "get": operation("listPronunciations", "Reviewable pronunciation library"),
+            "post": operation("createPronunciation", "Pronunciation created", "PronunciationCreate", "201"),
+        },
+        "/api/v1/pronunciations/{entryId}": {
+            "patch": operation("updatePronunciation", "Pronunciation updated", "PronunciationUpdate"),
+            "delete": operation("deletePronunciation", "Pronunciation deleted", status="204"),
+        },
         "/api/v1/sessions/{sessionId}/settings/{section}": {
             "get": operation("getSessionSettings", "Effective settings and inheritance"),
             "put": operation("putSessionSettings", "Session override saved", "SessionSettingsUpdate"),
@@ -153,7 +161,7 @@ def build_openapi_document() -> dict:
         "/api/v1/sessions/{sessionId}/output-assemblies/latest": {"get": operation("getLatestOutputAssembly", "Latest output assembly")},
         "/api/v1/sessions/{sessionId}/output-assemblies": {"post": operation("createOutputAssembly", "Output assembly queued", "OutputAssemblyCreateRequest", "202")},
         "/api/v1/sessions/{sessionId}/agent-runs": {
-            "get": operation("listAgentRuns", "Agentic cleaning runs"),
+            "get": operation("listAgentRuns", "Auditable agent runs"),
             "post": operation("createAgentRun", "Agentic cleaning queued", "AgentRunCreateRequest", "202"),
         },
         "/api/v1/agent-runs/{runId}/steps": {"get": operation("listAgentSteps", "Auditable agent phase summaries")},

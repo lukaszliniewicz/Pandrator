@@ -77,6 +77,9 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "llm_tts_document_batch_size": 8,
         "tts_optimization_model": "",
         "llm_concurrent_calls": 1,
+        "speech_optimization_mode": "guarded",
+        "speech_plan_min_retention": 0.9,
+        "speech_plan_save_proposals": True,
         "llm_multi_stage": False,
         "combined_prompt": DEFAULT_PROMPT,
         "first_prompt": DEFAULT_FIRST_PROMPT,
@@ -122,7 +125,27 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "boundary_correction_enabled": False,
         "merge_threshold_ms": 250,
     },
-    "correction": {"enabled": False, "model_name": "", "instructions": "", "preserve_timing": True, "max_subtitles_per_call": 40, "context_before": 2, "context_after": 2, "request_timeout_seconds": 600},
+    "correction": {
+        "enabled": False,
+        "model_name": "",
+        "instructions": "",
+        "preserve_timing": True,
+        "max_subtitles_per_call": 40,
+        "context_before": 2,
+        "context_after": 2,
+        "request_timeout_seconds": 600,
+        "web_research_enabled": False,
+        "web_research_provider": "jina",
+        "web_research_language": "",
+        "web_research_max_searches": 3,
+        "web_research_max_extractions": 2,
+        "web_research_preferred_domains": "",
+        "web_research_blocked_domains": "",
+        "web_research_max_iterations": 8,
+        "web_research_timeout_seconds": 90,
+        "web_research_source_chars": 14000,
+        "web_research_result_chars": 10000,
+    },
     "translation": {
         "enabled": False,
         "backend": "llm",
@@ -141,6 +164,17 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "context": True,
         "glossary_enabled": False,
         "request_timeout_seconds": 600,
+        "web_research_enabled": False,
+        "web_research_provider": "jina",
+        "web_research_language": "",
+        "web_research_max_searches": 3,
+        "web_research_max_extractions": 2,
+        "web_research_preferred_domains": "",
+        "web_research_blocked_domains": "",
+        "web_research_max_iterations": 8,
+        "web_research_timeout_seconds": 90,
+        "web_research_source_chars": 14000,
+        "web_research_result_chars": 10000,
     },
     "tts": {
         "service": "XTTS",
@@ -991,6 +1025,27 @@ class GenerationService:
                         node_kind=str(item.get("node_kind") or ("chapter_marker" if str(item.get("chapter") or "").lower() == "yes" else "paragraph")),
                         paragraph_break_after=bool(item.get("paragraph_break_after", str(item.get("paragraph") or "").lower() == "yes")),
                         text=str(item.get("text") or "").strip(),
+                        optimized_text=(
+                            str(item.get("tts_optimized_sentence") or "").strip()
+                            or None
+                        ),
+                        speech_plan_json=dict(item.get("speech_plan") or {}),
+                        optimization_status=(
+                            "optimized"
+                            if str(item.get("tts_optimized_sentence") or "").strip()
+                            else "not_requested"
+                        ),
+                        optimization_source_hash=(
+                            hashlib.sha256(
+                                str(item.get("text") or "").strip().encode("utf-8")
+                            ).hexdigest()
+                            if str(item.get("tts_optimized_sentence") or "").strip()
+                            else None
+                        ),
+                        optimization_model=(
+                            str((item.get("speech_plan") or {}).get("model") or "").strip()
+                            or None
+                        ),
                         voice_id=item.get("voice_id"),
                         voice=item.get("voice"),
                         language=item.get("language"),
@@ -1065,6 +1120,7 @@ class GenerationService:
                     "text": item.text,
                     "source_segment_ids": list(item.source_segment_ids_json or []),
                     "optimized_text": item.optimized_text,
+                    "speech_plan": dict(item.speech_plan_json or {}),
                     "optimization_status": item.optimization_status,
                     "optimization_reviewed": item.optimization_reviewed,
                     "optimization_model": item.optimization_model,
@@ -1117,7 +1173,7 @@ class GenerationService:
                 raise KeyError(segment_id)
             if segment.revision != expected_revision:
                 raise RevisionConflict("The generation segment changed in another client.")
-            session.add(GenerationSegmentRevision(generation_segment_id=segment.id, revision=segment.revision, node_kind=segment.node_kind, paragraph_break_after=segment.paragraph_break_after, text=segment.text, optimized_text=segment.optimized_text, optimization_status=segment.optimization_status, optimization_reviewed=segment.optimization_reviewed, marked=segment.marked, removed=segment.removed, voice_id=segment.voice_id, voice=segment.voice, language=segment.language, silence_after_ms=segment.silence_after_ms))
+            session.add(GenerationSegmentRevision(generation_segment_id=segment.id, revision=segment.revision, node_kind=segment.node_kind, paragraph_break_after=segment.paragraph_break_after, text=segment.text, optimized_text=segment.optimized_text, speech_plan_json=dict(segment.speech_plan_json or {}), optimization_status=segment.optimization_status, optimization_reviewed=segment.optimization_reviewed, marked=segment.marked, removed=segment.removed, voice_id=segment.voice_id, voice=segment.voice, language=segment.language, silence_after_ms=segment.silence_after_ms))
             text_changed = "text" in changes and str(changes["text"]).strip() != segment.text
             optimized_changed = "optimized_text" in changes and (str(changes["optimized_text"] or "").strip() or None) != segment.optimized_text
             for key, value in changes.items():
@@ -1136,14 +1192,28 @@ class GenerationService:
                 setattr(segment, key, value)
             if text_changed:
                 segment.optimized_text = None
+                segment.speech_plan_json = {}
                 segment.optimization_status = "stale"
                 segment.optimization_source_hash = None
                 segment.optimization_reviewed = False
                 segment.optimization_model = None
             elif optimized_changed:
                 segment.optimization_status = "reviewed" if segment.optimized_text else "pending"
-                segment.optimization_source_hash = stable_hash(segment.text)
+                segment.optimization_source_hash = hashlib.sha256(
+                    segment.text.encode("utf-8")
+                ).hexdigest()
                 segment.optimization_reviewed = bool(segment.optimized_text)
+                speech_plan = dict(segment.speech_plan_json or {})
+                if segment.optimized_text:
+                    segment.speech_plan_json = {
+                        **speech_plan,
+                        "version": int(speech_plan.get("version") or 1),
+                        "status": "manual_override",
+                        "compiled_text": segment.optimized_text,
+                        "reviewed": True,
+                    }
+                else:
+                    segment.speech_plan_json = {}
             if text_changed or any(key in changes for key in ("voice_id", "voice", "language")):
                 segment.status = "stale"
                 for take in session.scalars(select(AudioTake).where(AudioTake.generation_segment_id == segment.id, AudioTake.status == "completed")).all():
@@ -1166,6 +1236,7 @@ class GenerationService:
                 "paragraph_break_after": segment.paragraph_break_after,
                 "text": segment.text,
                 "optimized_text": segment.optimized_text,
+                "speech_plan": dict(segment.speech_plan_json or {}),
                 "optimization_status": segment.optimization_status,
                 "optimization_reviewed": segment.optimization_reviewed,
                 "optimization_model": segment.optimization_model,
@@ -1189,7 +1260,7 @@ class GenerationService:
                 raise RevisionConflict("The generation segment changed in another client.")
             if take.status not in {"completed", "stale"} or not take.artifact_id:
                 raise ValueError("Only an available audio take can be selected.")
-            session.add(GenerationSegmentRevision(generation_segment_id=segment.id, revision=segment.revision, node_kind=segment.node_kind, paragraph_break_after=segment.paragraph_break_after, text=segment.text, optimized_text=segment.optimized_text, optimization_status=segment.optimization_status, optimization_reviewed=segment.optimization_reviewed, marked=segment.marked, removed=segment.removed, voice_id=segment.voice_id, voice=segment.voice, language=segment.language, silence_after_ms=segment.silence_after_ms))
+            session.add(GenerationSegmentRevision(generation_segment_id=segment.id, revision=segment.revision, node_kind=segment.node_kind, paragraph_break_after=segment.paragraph_break_after, text=segment.text, optimized_text=segment.optimized_text, speech_plan_json=dict(segment.speech_plan_json or {}), optimization_status=segment.optimization_status, optimization_reviewed=segment.optimization_reviewed, marked=segment.marked, removed=segment.removed, voice_id=segment.voice_id, voice=segment.voice, language=segment.language, silence_after_ms=segment.silence_after_ms))
             for item in session.scalars(select(AudioTake).where(AudioTake.generation_segment_id == segment_id)).all():
                 item.is_active = item.id == take_id
                 item.revision += 1

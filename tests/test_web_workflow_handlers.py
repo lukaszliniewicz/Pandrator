@@ -17,7 +17,7 @@ from pandrator.web.artifacts import ArtifactService
 from pandrator.web.database import Database
 from pandrator.web.credentials import auxiliary_credential_key, upsert_credential
 from pandrator.web.jobs import JobQueue
-from pandrator.web.models import Artifact, ArtifactEdge, AudioTake, GenerationPlan, GenerationPlanRevision, GenerationRun, GenerationSegment, OutputAssembly, SessionRecord
+from pandrator.web.models import Artifact, ArtifactEdge, AudioTake, GenerationPlan, GenerationPlanRevision, GenerationRun, GenerationSegment, OutputAssembly, PronunciationEntry, SessionRecord
 from pandrator.web.sessions import SessionService
 from pandrator.web.workflow_handlers import WorkflowHandlers
 from pandrator.web.tts_optimization import OptimizationUsage
@@ -510,6 +510,116 @@ class WebWorkflowHandlerTests(unittest.TestCase):
             self.assertEqual(segment.text, "Chapter 3.")
             self.assertEqual(segment.optimized_text, "Chapter three.")
             self.assertEqual(segment.optimization_status, "optimized")
+
+    def test_structured_speech_plan_is_persisted_and_pronunciation_stays_proposed(self):
+        _revision_id, segment_ids = self.handlers._store_generation_plan(
+            self.session.id,
+            [{"text": "Imaoka arrived.", "language": "en"}],
+            settings={},
+        )
+        hydrated = {
+            "llm_tts_optimization": True,
+            "speech_optimization_mode": "guarded",
+            "speech_plan_save_proposals": True,
+            "llm_provider_configs": [],
+            "llm_default_model": "local/test",
+            "request_timeout_seconds": 30,
+            "tts_optimization_model": "local/test",
+            "service": "XTTS",
+            "language": "en",
+        }
+        plan = {
+            "version": 1,
+            "case_id": "case-1",
+            "status": "valid",
+            "mode_requested": "guarded",
+            "mode_used": "guarded",
+            "model": "local/test",
+            "source_hash": self.handlers._optimization_text_hash(
+                "Imaoka arrived."
+            ),
+            "language": "en",
+            "voice_language": "en",
+            "compiled_text": "eemahohkah arrived.",
+            "known_pronunciations": [],
+            "candidates": [
+                {
+                    "id": "P1",
+                    "text": "Imaoka",
+                    "task": "pronunciation",
+                    "signals": ["foreign_name_shape"],
+                }
+            ],
+            "decisions": [
+                {
+                    "span_id": "P1",
+                    "action": "pronounce",
+                    "spoken": "ee-mah-oh-kah",
+                    "confidence": "high",
+                }
+            ],
+            "discoveries": [],
+            "validation": {"valid": True, "errors": [], "warnings": []},
+        }
+
+        def optimize(*_args, on_batch=None, on_plan_batch=None, **_kwargs):
+            if on_batch:
+                on_batch([(0, "eemahohkah arrived.")])
+            if on_plan_batch:
+                on_plan_batch([(0, "eemahohkah arrived.", plan)])
+            return ["eemahohkah arrived."], OptimizationUsage()
+
+        with mock.patch.object(
+            self.handlers,
+            "_with_database_llm_settings",
+            return_value=hydrated,
+        ), mock.patch(
+            "pandrator.web.tts_optimization.optimize_texts",
+            side_effect=optimize,
+        ):
+            optimized, _model = self.handlers._optimize_generation_texts(
+                self.session.id,
+                segment_ids,
+                ["Imaoka arrived."],
+                hydrated,
+                threading.Event(),
+                self.progress,
+            )
+
+        self.assertEqual(["eemahohkah arrived."], optimized)
+        with self.database.session() as session:
+            segment = session.get(GenerationSegment, segment_ids[0])
+            proposal = session.scalar(select(PronunciationEntry))
+            self.assertEqual("Imaoka arrived.", segment.text)
+            self.assertEqual("eemahohkah arrived.", segment.optimized_text)
+            self.assertEqual("valid", segment.speech_plan_json["status"])
+            self.assertEqual(proposal.id, segment.speech_plan_json["proposals"][0]["id"])
+            self.assertEqual("proposed", proposal.status)
+
+    def test_reviewed_document_optimization_keeps_display_and_speech_fields_separate(self):
+        _revision_id, segment_ids = self.handlers._store_generation_plan(
+            self.session.id,
+            [
+                {
+                    "text": "Dr. Imaoka arrived.",
+                    "tts_optimized_sentence": "Doctor eemahohkah arrived.",
+                    "speech_plan": {
+                        "version": 1,
+                        "status": "valid",
+                        "model": "local/test",
+                    },
+                }
+            ],
+            settings={},
+        )
+        with self.database.session() as session:
+            segment = session.get(GenerationSegment, segment_ids[0])
+            self.assertEqual("Dr. Imaoka arrived.", segment.text)
+            self.assertEqual(
+                "Doctor eemahohkah arrived.",
+                segment.optimized_text,
+            )
+            self.assertEqual("valid", segment.speech_plan_json["status"])
 
     def test_generation_progress_has_no_phantom_optimization_reserve(self):
         revision_id, _ = self.handlers._store_generation_plan(

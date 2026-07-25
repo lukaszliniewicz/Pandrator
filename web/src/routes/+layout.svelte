@@ -5,7 +5,7 @@
   import type { Snippet } from 'svelte';
   import {
     Activity, AudioLines, AudioWaveform, ChevronLeft, ChevronRight, ExternalLink, FolderClock,
-    Github, Home, Library, LogOut, Menu, Mic2, Moon, ServerCog, Settings2, Sun, X
+    Github, Home, Languages, Library, LogOut, Menu, Mic2, Moon, ServerCog, Settings2, Sun, X
   } from '@lucide/svelte';
   import { appState } from '$lib/app-state.svelte';
 
@@ -20,6 +20,7 @@
     { href: '/sessions', label: 'Sessions', icon: FolderClock },
     { href: '/sources', label: 'Source library', icon: Library },
     { href: '/voices', label: 'Voices', icon: Mic2 },
+    { href: '/pronunciations', label: 'Pronunciations', icon: Languages },
     { href: '/providers', label: 'Providers & services', icon: ServerCog },
     { href: '/rvc', label: 'RVC conversion', icon: AudioWaveform },
     { href: '/training', label: 'XTTS training', icon: AudioLines },

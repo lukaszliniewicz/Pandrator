@@ -84,6 +84,32 @@ class CredentialUpdate(StrictModel):
     clear: bool = False
 
 
+class PronunciationCreate(StrictModel):
+    source_form: str = Field(min_length=1, max_length=512)
+    phonetic: str = Field(min_length=1, max_length=1024)
+    language: str = Field(default="und", min_length=2, max_length=40)
+    backend: str = Field(default="*", min_length=1, max_length=80)
+    scope: Literal["global", "session"] = "global"
+    session_id: str | None = None
+    status: Literal["proposed", "reviewed", "disabled"] = "reviewed"
+    alphabet: Literal["respelling"] = "respelling"
+    notes: str | None = Field(default=None, max_length=4000)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PronunciationUpdate(StrictModel):
+    source_form: str | None = Field(default=None, min_length=1, max_length=512)
+    phonetic: str | None = Field(default=None, min_length=1, max_length=1024)
+    language: str | None = Field(default=None, min_length=2, max_length=40)
+    backend: str | None = Field(default=None, min_length=1, max_length=80)
+    scope: Literal["global", "session"] | None = None
+    session_id: str | None = None
+    status: Literal["proposed", "reviewed", "disabled"] | None = None
+    alphabet: Literal["respelling"] | None = None
+    notes: str | None = Field(default=None, max_length=4000)
+    metadata: dict[str, Any] | None = None
+
+
 class ProviderTestRequest(StrictModel):
     model_id: str | None = None
 
@@ -311,6 +337,8 @@ SCHEMA_MODELS = {
         ProviderUpdate,
         ProviderTestRequest,
         CredentialUpdate,
+        PronunciationCreate,
+        PronunciationUpdate,
         ModelCreate,
         ModelUpdate,
         PdfRectInput,
