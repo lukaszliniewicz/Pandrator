@@ -137,6 +137,20 @@ def optimize_texts(
     prompts = prompt_sequence(settings)
     workers = max(1, min(16, int(settings.get("llm_concurrent_calls") or 1)))
     batch_size = max(1, min(64, int(settings.get("llm_tts_batch_size") or 3)))
+    try:
+        structured_attempts = max(
+            1,
+            min(
+                5,
+                int(
+                    settings.get("tts_structured_max_attempts")
+                    or settings.get("llm_structured_max_attempts")
+                    or 3
+                ),
+            ),
+        )
+    except (TypeError, ValueError):
+        structured_attempts = 3
     output = list(texts)
     usage = OptimizationUsage()
     populated = [(index, text) for index, text in enumerate(texts) if text.strip()]
@@ -150,24 +164,48 @@ def optimize_texts(
                 return list(current.items()), responses
             indexes = list(current)
             request_payload = {"items": [{"index": index, "text": current[index]} for index in indexes]}
-            result = chat_completion_with_metadata(
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You optimize text for speech synthesis without changing meaning. "
-                            "Return valid JSON only as {\"items\":[{\"index\":0,\"text\":\"...\"}]}. "
-                            "Preserve every supplied index exactly once and never merge or split items."
-                        ),
-                    },
-                    {"role": "user", "content": f"{prompt.rstrip()}\n\nInput JSON:\n{json.dumps(request_payload, ensure_ascii=False)}"},
-                ],
-                model_name=model_name,
-                llm_settings=llm_settings,
-                cancel_event=cancel_event,
-            )
-            current = _parse_batch_response(result.content, indexes)
-            responses.append(result)
+            last_error: RuntimeError | None = None
+            for attempt in range(1, structured_attempts + 1):
+                if cancel_event.is_set():
+                    return list(current.items()), responses
+                system_prompt = (
+                    "You optimize text for speech synthesis without changing meaning. "
+                    "Return valid JSON only as {\"items\":[{\"index\":0,\"text\":\"...\"}]}. "
+                    "Preserve every supplied index exactly once and never merge or split items."
+                )
+                if last_error is not None:
+                    system_prompt += (
+                        " Your previous response was rejected because "
+                        f"{last_error}. Return a complete corrected response with every "
+                        "required index and no explanation."
+                    )
+                result = chat_completion_with_metadata(
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {
+                            "role": "user",
+                            "content": (
+                                f"{prompt.rstrip()}\n\nInput JSON:\n"
+                                f"{json.dumps(request_payload, ensure_ascii=False)}"
+                            ),
+                        },
+                    ],
+                    model_name=model_name,
+                    llm_settings=llm_settings,
+                    cancel_event=cancel_event,
+                )
+                responses.append(result)
+                try:
+                    current = _parse_batch_response(result.content, indexes)
+                except RuntimeError as error:
+                    last_error = error
+                    if attempt >= structured_attempts:
+                        raise RuntimeError(
+                            "LLM speech optimization failed structured validation "
+                            f"after {structured_attempts} attempts: {error}"
+                        ) from error
+                    continue
+                break
         return list(current.items()), responses
 
     completed = 0
@@ -217,6 +255,16 @@ def _optimize_with_speech_plans(
     output = list(texts)
     usage = OptimizationUsage()
     populated = [(index, text) for index, text in enumerate(texts) if text.strip()]
+    try:
+        structured_attempts = max(
+            1,
+            min(
+                5,
+                int(settings.get("speech_plan_structured_max_attempts") or 2),
+            ),
+        )
+    except (TypeError, ValueError):
+        structured_attempts = 2
 
     def process(index: int, text: str):
         if cancel_event.is_set():
@@ -246,6 +294,7 @@ def _optimize_with_speech_plans(
             known_pronunciations=known,
             cancel_event=cancel_event,
             min_retention=float(settings.get("speech_plan_min_retention") or 0.9),
+            max_attempts_per_mode=structured_attempts,
         )
         return index, result.text, result.plan, result.responses
 

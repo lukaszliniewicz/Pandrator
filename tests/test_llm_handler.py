@@ -1,11 +1,181 @@
 import unittest
 import os
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from pandrator.logic import llm_handler
 
 
 class LlmHandlerTests(unittest.TestCase):
+    def test_litellm_lazy_import_is_atomic_across_worker_threads(self):
+        sentinel_module = object()
+        sentinel_completion = object()
+        sentinel_discovery = object()
+        import_calls = 0
+        import_started = threading.Event()
+
+        def slow_import():
+            nonlocal import_calls
+            import_calls += 1
+            import_started.set()
+            time.sleep(0.05)
+            return sentinel_module, sentinel_completion, sentinel_discovery
+
+        original_state = (
+            llm_handler._litellm_module,
+            llm_handler._litellm_completion,
+            llm_handler._litellm_get_valid_models,
+            llm_handler._litellm_import_attempted,
+            llm_handler._litellm_import_error,
+        )
+        try:
+            llm_handler._litellm_module = None
+            llm_handler._litellm_completion = None
+            llm_handler._litellm_get_valid_models = None
+            llm_handler._litellm_import_attempted = False
+            llm_handler._litellm_import_error = None
+            with patch(
+                "pandrator.logic.llm_handler._import_litellm_clients",
+                side_effect=slow_import,
+            ):
+                with ThreadPoolExecutor(max_workers=12) as executor:
+                    first = executor.submit(llm_handler._get_litellm_clients)
+                    self.assertTrue(import_started.wait(timeout=1))
+                    remaining = [
+                        executor.submit(llm_handler._get_litellm_clients)
+                        for _index in range(11)
+                    ]
+                    results = [first.result(), *(future.result() for future in remaining)]
+        finally:
+            (
+                llm_handler._litellm_module,
+                llm_handler._litellm_completion,
+                llm_handler._litellm_get_valid_models,
+                llm_handler._litellm_import_attempted,
+                llm_handler._litellm_import_error,
+            ) = original_state
+
+        self.assertEqual(1, import_calls)
+        self.assertTrue(
+            all(result == (sentinel_completion, sentinel_discovery) for result in results)
+        )
+
+    def test_custom_endpoint_model_discovery_preserves_full_base_path(self):
+        response = Mock(
+            status_code=200,
+            headers={"content-type": "application/json"},
+        )
+        response.json.return_value = {
+            "data": [
+                {"id": "mimo-v2.5"},
+                {"id": "google/gemini-3-flash"},
+            ]
+        }
+        http_client = Mock()
+        http_client.get.return_value = response
+        static_catalogue = Mock(return_value=["gpt-5.4"])
+
+        with patch.object(
+            llm_handler,
+            "_litellm_module",
+            SimpleNamespace(module_level_client=http_client),
+        ), patch(
+            "pandrator.logic.llm_handler._get_litellm_clients",
+            return_value=(object(), static_catalogue),
+        ):
+            result = llm_handler.discover_provider_models(
+                {
+                    "provider": "openai",
+                    "api_base": "https://opencode.ai/zen/go/v1/",
+                    "api_key": "secret",
+                    "models": ["manual"],
+                }
+            )
+
+        self.assertEqual("endpoint", result.source)
+        self.assertEqual(
+            ("mimo-v2.5", "google/gemini-3-flash"),
+            result.models,
+        )
+        self.assertEqual(
+            "https://opencode.ai/zen/go/v1/models",
+            http_client.get.call_args.kwargs["url"],
+        )
+        self.assertEqual(
+            "Bearer secret",
+            http_client.get.call_args.kwargs["headers"]["Authorization"],
+        )
+        static_catalogue.assert_not_called()
+
+    def test_custom_endpoint_failure_preserves_models_without_static_fallback(self):
+        response = Mock(
+            status_code=404,
+            headers={"content-type": "text/html; charset=utf-8"},
+        )
+        http_client = Mock()
+        http_client.get.return_value = response
+        static_catalogue = Mock(return_value=["gpt-5.4"])
+
+        with patch.object(
+            llm_handler,
+            "_litellm_module",
+            SimpleNamespace(module_level_client=http_client),
+        ), patch(
+            "pandrator.logic.llm_handler._get_litellm_clients",
+            return_value=(object(), static_catalogue),
+        ):
+            result = llm_handler.discover_provider_models(
+                {
+                    "provider": "openai",
+                    "api_base": "https://example.test/custom/v1",
+                    "models": ["manual"],
+                }
+            )
+
+        self.assertEqual("preserved", result.source)
+        self.assertEqual(("manual",), result.models)
+        self.assertIn("HTTP 404", result.warning)
+        static_catalogue.assert_not_called()
+
+    def test_ollama_discovery_uses_native_path_without_static_fallback(self):
+        response = Mock(
+            status_code=200,
+            headers={"content-type": "application/json"},
+        )
+        response.json.return_value = {
+            "models": [{"name": "qwen3:8b"}, {"model": "gemma3:12b"}]
+        }
+        http_client = Mock()
+        http_client.get.return_value = response
+
+        with patch.object(
+            llm_handler,
+            "_litellm_module",
+            SimpleNamespace(module_level_client=http_client),
+        ), patch(
+            "pandrator.logic.llm_handler._get_litellm_clients",
+            return_value=(object(), Mock()),
+        ):
+            result = llm_handler.discover_provider_models(
+                {
+                    "provider": "ollama",
+                    "api_base": "http://127.0.0.1:11434",
+                }
+            )
+
+        self.assertEqual(("qwen3:8b", "gemma3:12b"), result.models)
+        self.assertEqual(
+            "http://127.0.0.1:11434/api/tags",
+            http_client.get.call_args.kwargs["url"],
+        )
+        self.assertNotIn(
+            "Authorization",
+            http_client.get.call_args.kwargs["headers"],
+        )
+
     def test_chat_completion_retries_rate_limits_and_honors_retry_after(self):
         class RateLimited(RuntimeError):
             status_code = 429

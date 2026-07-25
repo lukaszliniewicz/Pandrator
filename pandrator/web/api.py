@@ -2099,7 +2099,7 @@ def create_app(
     @app.post("/api/v1/providers/<provider_id>/models/refresh")
     @require_auth
     def model_refresh(provider_id: str):
-        from pandrator.logic.llm_handler import _detect_models_for_builtin_provider
+        from pandrator.logic.llm_handler import discover_provider_models
 
         with database.session() as db_session:
             provider = db_session.get(Provider, provider_id)
@@ -2120,22 +2120,38 @@ def create_app(
                 fallback_environment_variable=fallback_env,
                 shared=share_credential,
             )
-            detected = _detect_models_for_builtin_provider({
+            discovery = discover_provider_models({
                 "provider": provider.provider_key,
                 "api_base": provider.base_url,
                 "api_key_env": credential.environment_variable,
                 "api_key": credential.value,
                 "models": [item.model_id for item in existing],
             })
+            detected = list(discovery.models) if discovery.source != "preserved" else []
             known = {item.model_id for item in existing}
             added = []
             for model_id in detected:
                 if model_id in known:
                     continue
-                model = ProviderModel(provider_id=provider_id, model_id=model_id, is_active=False, is_default=False)
+                model = ProviderModel(
+                    provider_id=provider_id,
+                    model_id=model_id,
+                    is_active=False,
+                    is_default=False,
+                    options_json={"discovery_source": discovery.source},
+                )
                 db_session.add(model)
                 added.append(model_id)
-            return jsonify({"detected": detected, "added": added, "preserved": sorted(known)})
+            return jsonify(
+                {
+                    "detected": detected,
+                    "added": added,
+                    "preserved": sorted(known),
+                    "source": discovery.source,
+                    "endpoint": discovery.endpoint,
+                    "warning": discovery.warning,
+                }
+            )
 
     @app.get("/api/v1/credentials")
     @require_auth

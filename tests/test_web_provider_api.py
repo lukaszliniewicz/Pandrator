@@ -3,6 +3,7 @@ import unittest
 import json
 from unittest import mock
 
+from pandrator.logic.llm_handler import ModelDiscoveryResult
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.credentials import shared_provider_credential_key
@@ -70,7 +71,14 @@ class ProviderApiTests(unittest.TestCase):
             json={"model_id": "manual", "is_default": True, "default_reasoning_effort": "custom-fast"},
             headers=self.headers,
         )
-        with mock.patch("pandrator.logic.llm_handler._detect_models_for_builtin_provider", return_value=["manual", "discovered"]):
+        with mock.patch(
+            "pandrator.logic.llm_handler.discover_provider_models",
+            return_value=ModelDiscoveryResult(
+                models=("manual", "discovered"),
+                source="endpoint",
+                endpoint="http://127.0.0.1:1234/v1/models",
+            ),
+        ):
             result = self.client.post(
                 f"/api/v1/providers/{provider['id']}/models/refresh",
                 json={},
@@ -78,6 +86,7 @@ class ProviderApiTests(unittest.TestCase):
             )
         self.assertEqual(result.status_code, 200)
         self.assertEqual(result.get_json()["added"], ["discovered"])
+        self.assertEqual(result.get_json()["source"], "endpoint")
         records = self.client.get(f"/api/v1/providers/{provider['id']}/models").get_json()["items"]
         manual = next(item for item in records if item["model_id"] == "manual")
         discovered = next(item for item in records if item["model_id"] == "discovered")
@@ -110,7 +119,13 @@ class ProviderApiTests(unittest.TestCase):
             json={"model_id": "manual"},
             headers=self.headers,
         ).get_json()
-        with mock.patch("pandrator.logic.llm_handler._detect_models_for_builtin_provider", return_value=["manual", "discovered"]):
+        with mock.patch(
+            "pandrator.logic.llm_handler.discover_provider_models",
+            return_value=ModelDiscoveryResult(
+                models=("manual", "discovered"),
+                source="endpoint",
+            ),
+        ):
             self.client.post(
                 f"/api/v1/providers/{provider['id']}/models/refresh",
                 json={},

@@ -121,6 +121,45 @@ class SpeechPlanningTests(unittest.TestCase):
         self.assertFalse(result.plan["attempts"][0]["valid"])
         self.assertTrue(result.plan["attempts"][1]["valid"])
 
+    def test_guarded_plan_retries_failed_deterministic_validation(self):
+        calls = []
+
+        def complete(*, messages, **_kwargs):
+            calls.append(messages)
+            payload = json.loads(
+                messages[1]["content"].split(
+                    "Plan this single speech sentence:\n", 1
+                )[1]
+            )
+            if len(calls) == 1:
+                return "{}"
+            return json.dumps(
+                {
+                    "case_id": payload["case_id"],
+                    "decisions": [
+                        _decision_for(item)
+                        for item in payload["unresolved_candidates"]
+                    ],
+                    "discoveries": [],
+                    "prosody": [],
+                }
+            )
+
+        result = plan_speech_text(
+            "Imaoka arrived.",
+            language="en",
+            voice_language="en",
+            mode="guarded",
+            model_name="local/test",
+            llm_settings=SimpleNamespace(),
+            max_attempts_per_mode=2,
+            completion_func=complete,
+        )
+
+        self.assertEqual("valid", result.plan["status"])
+        self.assertEqual(2, len(result.plan["attempts"]))
+        self.assertIn("failed deterministic validation", calls[1][2]["content"])
+
     def test_reviewed_pronunciation_is_compiled_without_becoming_model_work(self):
         seen_payload = {}
 

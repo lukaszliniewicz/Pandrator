@@ -111,7 +111,9 @@ def parse_correction_operations(response_text: str) -> list[dict[str, Any]]:
     """Parse a Subdub-style correction response."""
     payload = extract_json_payload(response_text)
     if isinstance(payload, dict):
-        operations = payload.get("operations", [])
+        if "operations" not in payload:
+            raise ValueError("Correction response must contain an 'operations' field.")
+        operations = payload["operations"]
     elif isinstance(payload, list):
         operations = payload
     else:
@@ -121,34 +123,111 @@ def parse_correction_operations(response_text: str) -> list[dict[str, Any]]:
         raise ValueError("Correction response 'operations' must be a list.")
 
     normalized: list[dict[str, Any]] = []
-    for operation in operations:
+    for operation_index, operation in enumerate(operations, start=1):
         if not isinstance(operation, dict):
-            continue
+            raise ValueError(f"Correction operation {operation_index} must be a JSON object.")
         action = str(operation.get("action") or "").strip().lower()
-        ids = operation.get("ids", [])
-        texts = operation.get("texts", [])
         if action not in {"edit", "delete", "merge", "split"}:
-            continue
+            raise ValueError(
+                f"Correction operation {operation_index} has unsupported action "
+                f"'{action or '<blank>'}'."
+            )
+        ids = operation.get("ids")
+        texts = operation.get("texts")
         if not isinstance(ids, list) or not ids:
-            continue
+            raise ValueError(
+                f"Correction operation {operation_index} must contain a non-empty ids list."
+            )
         normalized_ids: list[int] = []
         for item in ids:
-            try:
-                normalized_ids.append(int(item))
-            except (TypeError, ValueError):
-                pass
-        if not normalized_ids:
-            continue
+            if isinstance(item, bool):
+                raise ValueError(
+                    f"Correction operation {operation_index} contains a non-integer cue ID."
+                )
+            if isinstance(item, int):
+                normalized_ids.append(item)
+            elif isinstance(item, str) and item.strip().isdigit():
+                normalized_ids.append(int(item.strip()))
+            else:
+                raise ValueError(
+                    f"Correction operation {operation_index} contains a non-integer cue ID."
+                )
+        if len(set(normalized_ids)) != len(normalized_ids):
+            raise ValueError(
+                f"Correction operation {operation_index} repeats a cue ID."
+            )
         if not isinstance(texts, list):
-            texts = [str(texts)]
+            raise ValueError(
+                f"Correction operation {operation_index} must contain a texts list."
+            )
+        if any(not isinstance(text, str) for text in texts):
+            raise ValueError(
+                f"Correction operation {operation_index} texts must all be strings."
+            )
         normalized.append(
             {
                 "action": action,
                 "ids": normalized_ids,
-                "texts": [str(text) for text in texts],
+                "texts": list(texts),
             }
         )
     return normalized
+
+
+def validate_correction_operations(
+    block: list[dict[str, Any]],
+    operations: list[dict[str, Any]],
+    *,
+    no_remove_subtitles: bool = False,
+) -> None:
+    """Reject ambiguous operation sets before any subtitle mutation is applied."""
+    valid_ids = set(range(1, len(block) + 1))
+    claimed_ids: set[int] = set()
+    for operation_index, operation in enumerate(operations, start=1):
+        action = str(operation["action"])
+        ids = list(operation["ids"])
+        texts = [
+            text
+            for raw_text in operation["texts"]
+            if (text := _normalize_replacement_text(raw_text))
+        ]
+        unexpected = [cue_id for cue_id in ids if cue_id not in valid_ids]
+        if unexpected:
+            raise ValueError(
+                f"Correction operation {operation_index} references cue ID(s) "
+                f"outside this block: {unexpected}."
+            )
+        overlap = [cue_id for cue_id in ids if cue_id in claimed_ids]
+        if overlap:
+            raise ValueError(
+                f"Correction operation {operation_index} reuses cue ID(s) "
+                f"already handled by another operation: {overlap}."
+            )
+        sequential = ids == sorted(ids) and all(
+            right == left + 1 for left, right in zip(ids, ids[1:])
+        )
+        valid_shape = (
+            (action == "edit" and len(ids) == 1 and len(texts) == 1)
+            or (action == "delete" and sequential and not texts)
+            or (
+                action == "merge"
+                and len(ids) >= 2
+                and sequential
+                and bool(texts)
+            )
+            or (action == "split" and len(ids) == 1 and len(texts) >= 2)
+        )
+        if not valid_shape:
+            raise ValueError(
+                f"Correction operation {operation_index} has an invalid "
+                f"{action} ids/texts shape."
+            )
+        if action == "delete" and no_remove_subtitles:
+            raise ValueError(
+                f"Correction operation {operation_index} deletes subtitles even "
+                "though deletion is disabled."
+            )
+        claimed_ids.update(ids)
 
 
 def _split_timing(
@@ -364,29 +443,48 @@ def correct_srt_content(
             max_line_length=max_line_length,
             no_remove_subtitles=no_remove_subtitles,
         )
+        last_protocol_error: ValueError | None = None
         for attempt in range(1, MAX_CORRECTION_ATTEMPTS + 1):
+            messages = [
+                {"role": "system", "content": CORRECTION_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ]
+            if last_protocol_error is not None:
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "Your previous response was rejected because "
+                            f"{last_protocol_error}. Return a complete replacement "
+                            'object with an explicit "operations" array. Use only cue '
+                            f"IDs 1 through {len(block)}, and do not explain the correction."
+                        ),
+                    }
+                )
+            completion_kwargs = {
+                "messages": messages,
+                "model_name": resolved.model_name,
+                "llm_settings": resolved.llm_settings,
+            }
+            if completion_func is None:
+                completion_kwargs["cancel_event"] = cancel_event
+            result = completion(**completion_kwargs)
+            content, cost, cost_source = _coerce_completion_content_and_cost(result)
+            _merge_completion_usage(usage, result)
+            total_cost += cost
+            if cost_source and cost_source not in cost_sources:
+                cost_sources.append(cost_source)
+            response_count += 1
             try:
-                completion_kwargs = {
-                    "messages": [
-                        {"role": "system", "content": CORRECTION_SYSTEM_PROMPT},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "model_name": resolved.model_name,
-                    "llm_settings": resolved.llm_settings,
-                }
-                if completion_func is None:
-                    completion_kwargs["cancel_event"] = cancel_event
-                result = completion(**completion_kwargs)
-                content, cost, cost_source = _coerce_completion_content_and_cost(result)
-                _merge_completion_usage(usage, result)
-                total_cost += cost
-                if cost_source and cost_source not in cost_sources:
-                    cost_sources.append(cost_source)
-                response_count += 1
                 if not content:
                     raise ValueError("LLM correction returned an empty response.")
 
                 operations = parse_correction_operations(content)
+                validate_correction_operations(
+                    block,
+                    operations,
+                    no_remove_subtitles=no_remove_subtitles,
+                )
                 corrected_block = apply_correction_operations(
                     block,
                     operations,
@@ -398,7 +496,8 @@ def correct_srt_content(
                     ensure_ascii=False,
                 )
                 break
-            except Exception as error:
+            except ValueError as error:
+                last_protocol_error = error
                 if attempt == MAX_CORRECTION_ATTEMPTS:
                     raise ValueError(
                         f"Failed to correct subtitle block {block_number} after "

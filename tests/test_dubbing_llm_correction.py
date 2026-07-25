@@ -51,6 +51,14 @@ class DubbingLLMCorrectionTests(unittest.TestCase):
             [{"action": "edit", "ids": [1], "texts": ["Hello."]}],
         )
 
+    def test_parse_correction_operations_rejects_malformed_entries_instead_of_skipping(self):
+        with self.assertRaisesRegex(ValueError, "unsupported action"):
+            llm_correction.parse_correction_operations(
+                '{"operations":[{"action":"rewrite","ids":[1],"texts":["Hello."]}]}'
+            )
+        with self.assertRaisesRegex(ValueError, "operations"):
+            llm_correction.parse_correction_operations("{}")
+
     def test_apply_correction_operations_supports_edit_delete_merge_split(self):
         block = [
             {"index": 10, "start": 0.0, "end": 1.0, "text": "hello"},
@@ -225,6 +233,36 @@ answered by somebody else.
         self.assertEqual(result.response_count, 2)
         self.assertEqual(result.cost, 0.03)
         self.assertEqual(srt_utils.parse_srt(result.srt_content)[0].text, "Hello.")
+
+    def test_correct_srt_content_retries_valid_json_with_invalid_operations(self):
+        calls = []
+        responses = iter(
+            [
+                llm_handler.ChatCompletionResult(
+                    content='{"operations":[{"action":"edit","ids":[99],"texts":["Wrong."]}]}',
+                    cost=0.01,
+                ),
+                llm_handler.ChatCompletionResult(
+                    content='{"operations":[{"action":"edit","ids":[1],"texts":["Hello."]}]}',
+                    cost=0.02,
+                ),
+            ]
+        )
+
+        def complete(**kwargs):
+            calls.append(kwargs)
+            return next(responses)
+
+        result = llm_correction.correct_srt_content(
+            SAMPLE_SRT,
+            _settings(),
+            completion_func=complete,
+        )
+
+        self.assertEqual(2, result.response_count)
+        self.assertAlmostEqual(0.03, result.cost)
+        self.assertIn("previous response was rejected", calls[1]["messages"][2]["content"])
+        self.assertEqual("Hello.", srt_utils.parse_srt(result.srt_content)[0].text)
 
     def test_next_batch_context_contains_corrected_cues_not_prior_operations(self):
         settings = {**_settings(), "llm_char": 1}

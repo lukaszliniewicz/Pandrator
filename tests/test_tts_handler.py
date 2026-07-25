@@ -1,11 +1,58 @@
 import unittest
 import base64
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock, patch
 
 from pandrator.logic import tts_handler
 
 
 class TTSHandlerTests(unittest.TestCase):
+    def test_litellm_speech_lazy_import_is_atomic_across_worker_threads(self):
+        sentinel = object()
+        started = threading.Event()
+        release = threading.Event()
+        import_calls = 0
+
+        def slow_import():
+            nonlocal import_calls
+            import_calls += 1
+            started.set()
+            self.assertTrue(release.wait(timeout=1))
+            return sentinel
+
+        original_state = (
+            tts_handler._litellm_speech,
+            tts_handler._litellm_speech_import_attempted,
+            tts_handler._litellm_speech_import_error,
+        )
+        try:
+            tts_handler._litellm_speech = None
+            tts_handler._litellm_speech_import_attempted = False
+            tts_handler._litellm_speech_import_error = None
+            with patch(
+                "pandrator.logic.tts_handler._import_litellm_speech_client",
+                side_effect=slow_import,
+            ):
+                with ThreadPoolExecutor(max_workers=8) as executor:
+                    first = executor.submit(tts_handler._get_litellm_speech_client)
+                    self.assertTrue(started.wait(timeout=1))
+                    remaining = [
+                        executor.submit(tts_handler._get_litellm_speech_client)
+                        for _index in range(7)
+                    ]
+                    release.set()
+                    results = [first.result(), *(future.result() for future in remaining)]
+        finally:
+            (
+                tts_handler._litellm_speech,
+                tts_handler._litellm_speech_import_attempted,
+                tts_handler._litellm_speech_import_error,
+            ) = original_state
+
+        self.assertEqual(1, import_calls)
+        self.assertTrue(all(result is sentinel for result in results))
+
     def test_commercial_tts_cost_estimate_uses_model_units_and_actual_duration(self):
         usage = tts_handler.estimate_tts_usage(
             "A" * 400,

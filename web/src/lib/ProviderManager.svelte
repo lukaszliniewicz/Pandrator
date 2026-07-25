@@ -245,8 +245,23 @@
 
   async function refresh(providerId: string) {
     try {
-      const result = await api<{added: string[]}>(`/providers/${providerId}/models/refresh`, { method: 'POST', body: '{}' });
-      notice = result.added.length ? `Discovered ${result.added.length} new model${result.added.length === 1 ? '' : 's'}.` : 'Model catalogue is already up to date.';
+      const result = await api<{
+        added: string[];
+        detected: string[];
+        source: 'endpoint' | 'provider_catalog' | 'preserved';
+        endpoint?: string;
+        warning?: string;
+      }>(`/providers/${providerId}/models/refresh`, { method: 'POST', body: '{}' });
+      if (result.warning) {
+        notice = result.warning;
+      } else if (result.added.length) {
+        const origin = result.source === 'endpoint' ? 'the configured endpoint' : 'the provider catalogue';
+        notice = `Discovered ${result.added.length} new model${result.added.length === 1 ? '' : 's'} from ${origin}.`;
+      } else if (result.detected.length) {
+        notice = `The ${result.source === 'endpoint' ? 'endpoint' : 'provider'} catalogue is already up to date.`;
+      } else {
+        notice = 'No models were returned; existing models were preserved.';
+      }
       await load();
     } catch (caught) { report(caught); }
   }

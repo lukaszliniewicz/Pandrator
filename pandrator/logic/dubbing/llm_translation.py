@@ -20,6 +20,8 @@ from .srt_utils import compose_srt, create_translation_blocks, parse_srt, split_
 logger = logging.getLogger(__name__)
 
 DEEPL_MAX_REQUEST_BYTES = 120 * 1024
+DEFAULT_TRANSLATION_STRUCTURED_ATTEMPTS = 3
+DEFAULT_TRANSLATION_RECOVERY_SPLIT_DEPTH = 3
 DEEPL_LANGUAGE_MAP = {
     "english": "EN-US",
     "en": "EN-US",
@@ -266,22 +268,63 @@ def parse_glossary_entries(glossary_text: str) -> dict[str, str]:
 
 def parse_translation_response(
     response_text: str,
-    expected_count: int,
+    expected_count: int | None = None,
+    *,
+    expected_numbers: list[int] | None = None,
 ) -> tuple[list[str], dict[str, str]]:
+    if expected_numbers is None:
+        if expected_count is None:
+            raise ValueError("Expected subtitle identifiers are required.")
+        expected_numbers = list(range(1, expected_count + 1))
+    else:
+        expected_numbers = [int(number) for number in expected_numbers]
+        if expected_count is not None and len(expected_numbers) != expected_count:
+            raise ValueError("Expected subtitle count and identifiers disagree.")
+    if len(set(expected_numbers)) != len(expected_numbers):
+        raise ValueError("Expected subtitle identifiers must be unique.")
+
     translation_text, _separator, glossary_text = str(response_text or "").partition("[GLOSSARY]")
     payload = extract_json_payload(translation_text)
     if not isinstance(payload, list):
         raise ValueError("Translation response must be a JSON array.")
-    if len(payload) != expected_count:
-        raise ValueError(f"Translation response count mismatch: expected {expected_count}, got {len(payload)}.")
+    if len(payload) != len(expected_numbers):
+        raise ValueError(
+            "Translation response count mismatch: "
+            f"expected {len(expected_numbers)}, got {len(payload)}."
+        )
 
-    translations: list[str] = []
+    translations_by_number: dict[int, str] = {}
     for item in payload:
         if not isinstance(item, dict) or "number" not in item or "text" not in item:
             raise ValueError("Translation response items must contain 'number' and 'text'.")
-        translations.append(split_speaker_label(str(item["text"]).strip())[1])
+        raw_number = item["number"]
+        if isinstance(raw_number, bool):
+            raise ValueError("Translation response identifiers must be integers.")
+        if isinstance(raw_number, int):
+            number = raw_number
+        elif isinstance(raw_number, str) and raw_number.strip().isdigit():
+            number = int(raw_number.strip())
+        else:
+            raise ValueError("Translation response identifiers must be integers.")
+        if number in translations_by_number:
+            raise ValueError(f"Translation response repeated subtitle identifier {number}.")
+        if number not in expected_numbers:
+            raise ValueError(f"Translation response returned unexpected subtitle identifier {number}.")
+        if not isinstance(item["text"], str):
+            raise ValueError(f"Translation text for subtitle {number} must be a string.")
+        translations_by_number[number] = split_speaker_label(item["text"].strip())[1]
 
-    return translations, parse_glossary_entries(glossary_text)
+    missing = [number for number in expected_numbers if number not in translations_by_number]
+    if missing:
+        raise ValueError(
+            "Translation response omitted subtitle identifier(s): "
+            + ", ".join(str(number) for number in missing)
+            + "."
+        )
+    return (
+        [translations_by_number[number] for number in expected_numbers],
+        parse_glossary_entries(glossary_text),
+    )
 
 
 def build_translation_prompt(
@@ -330,8 +373,8 @@ def build_translation_prompt(
 
     subtitles = json.dumps(
         [
-            {"number": index + 1, "text": subtitle.get("text") or ""}
-            for index, subtitle in enumerate(block)
+            {"number": int(subtitle["index"]), "text": subtitle.get("text") or ""}
+            for subtitle in block
         ],
         ensure_ascii=False,
     )
@@ -435,56 +478,186 @@ def translate_srt_content(
     previous_response = ""
     translated_responses: list[dict[str, Any]] = []
     total_cost = 0.0
+    response_count = 0
     cost_sources: list[str] = []
     usage: dict[str, Any] = {}
+    try:
+        structured_attempts = max(
+            1,
+            min(
+                5,
+                int(
+                    settings.get("translation_structured_max_attempts")
+                    or settings.get("llm_structured_max_attempts")
+                    or DEFAULT_TRANSLATION_STRUCTURED_ATTEMPTS
+                ),
+            ),
+        )
+    except (TypeError, ValueError):
+        structured_attempts = DEFAULT_TRANSLATION_STRUCTURED_ATTEMPTS
+    try:
+        recovery_split_depth = max(
+            0,
+            min(
+                6,
+                int(
+                    settings.get("translation_recovery_split_depth")
+                    if settings.get("translation_recovery_split_depth") is not None
+                    else DEFAULT_TRANSLATION_RECOVERY_SPLIT_DEPTH
+                ),
+            ),
+        )
+    except (TypeError, ValueError):
+        recovery_split_depth = DEFAULT_TRANSLATION_RECOVERY_SPLIT_DEPTH
 
-    for index, block in enumerate(blocks):
-        if cancel_event is not None and cancel_event.is_set():
-            raise RuntimeError("LLM translation was canceled.")
+    def translate_unit(
+        unit: list[dict[str, Any]],
+        *,
+        previous_context: str,
+        next_context: list[dict[str, Any]] | None,
+        label: str,
+        split_depth: int = 0,
+    ) -> tuple[list[str], dict[str, str], str]:
+        nonlocal total_cost, response_count
         prompt = build_translation_prompt(
-            block,
+            unit,
             source_language=source_language,
             target_language=target_language,
             translation_instructions=translation_instructions,
             glossary=active_glossary if use_glossary else None,
-            previous_response=previous_response if use_context else "",
-            next_block=blocks[index + 1] if use_context and index < len(blocks) - 1 else None,
+            previous_response=previous_context if use_context else "",
+            next_block=next_context if use_context else None,
             no_remove_subtitles=no_remove_subtitles,
         )
-        completion_kwargs = {
-            "messages": [{"role": "user", "content": prompt}],
-            "model_name": resolved.model_name,
-            "llm_settings": resolved.llm_settings,
-        }
-        if completion_func is None:
-            completion_kwargs["cancel_event"] = cancel_event
-        result = completion(**completion_kwargs)
-        content, cost, cost_source = _coerce_completion_content_and_cost(result)
-        _merge_completion_usage(usage, result)
-        if not content:
-            raise ValueError("LLM translation returned an empty response.")
+        expected_numbers = [int(subtitle["index"]) for subtitle in unit]
+        last_error: ValueError | None = None
 
-        translated_texts, new_glossary = parse_translation_response(content, len(block))
-        if use_glossary:
-            active_glossary.update(new_glossary)
+        for attempt in range(1, structured_attempts + 1):
+            if cancel_event is not None and cancel_event.is_set():
+                raise RuntimeError("LLM translation was canceled.")
+            messages = [{"role": "user", "content": prompt}]
+            if last_error is not None:
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "Your previous response was rejected because "
+                            f"{last_error}. Return a complete replacement JSON array now. "
+                            f"Include each identifier exactly once: {expected_numbers}. "
+                            "Do not explain the correction."
+                        ),
+                    }
+                )
+            completion_kwargs = {
+                "messages": messages,
+                "model_name": resolved.model_name,
+                "llm_settings": resolved.llm_settings,
+            }
+            if completion_func is None:
+                completion_kwargs["cancel_event"] = cancel_event
+            result = completion(**completion_kwargs)
+            content, cost, cost_source = _coerce_completion_content_and_cost(result)
+            _merge_completion_usage(usage, result)
+            total_cost += cost
+            response_count += 1
+            if cost_source and cost_source not in cost_sources:
+                cost_sources.append(cost_source)
 
+            try:
+                if not content:
+                    raise ValueError("the model returned an empty response")
+                translated_texts, new_glossary = parse_translation_response(
+                    content,
+                    expected_numbers=expected_numbers,
+                )
+            except ValueError as error:
+                last_error = error
+                if attempt < structured_attempts:
+                    logger.warning(
+                        "Translation protocol attempt %d/%d failed for %s: %s",
+                        attempt,
+                        structured_attempts,
+                        label,
+                        error,
+                    )
+                    continue
+                break
+
+            if use_glossary:
+                active_glossary.update(new_glossary)
+            context_response = json.dumps(
+                [
+                    {"number": number, "text": translated_text}
+                    for number, translated_text in zip(
+                        expected_numbers,
+                        translated_texts,
+                    )
+                ],
+                ensure_ascii=False,
+            )
+            return translated_texts, new_glossary, context_response
+
+        assert last_error is not None
+        if len(unit) > 1 and split_depth < recovery_split_depth:
+            midpoint = len(unit) // 2
+            left = unit[:midpoint]
+            right = unit[midpoint:]
+            logger.warning(
+                "Translation protocol remained invalid for %s; retrying as %d + %d subtitles.",
+                label,
+                len(left),
+                len(right),
+            )
+            left_texts, left_glossary, left_context = translate_unit(
+                left,
+                previous_context=previous_context,
+                next_context=right,
+                label=f"{label}.1",
+                split_depth=split_depth + 1,
+            )
+            right_texts, right_glossary, right_context = translate_unit(
+                right,
+                previous_context=left_context,
+                next_context=next_context,
+                label=f"{label}.2",
+                split_depth=split_depth + 1,
+            )
+            combined_texts = [*left_texts, *right_texts]
+            combined_glossary = {**left_glossary, **right_glossary}
+            combined_context = json.dumps(
+                [
+                    {"number": number, "text": translated_text}
+                    for number, translated_text in zip(
+                        expected_numbers,
+                        combined_texts,
+                    )
+                ],
+                ensure_ascii=False,
+            )
+            return combined_texts, combined_glossary, combined_context
+
+        raise ValueError(
+            f"Failed to translate {label} after {structured_attempts} structured "
+            f"response attempts: {last_error}"
+        ) from last_error
+
+    for index, block in enumerate(blocks):
+        next_block = blocks[index + 1] if index < len(blocks) - 1 else None
+        translated_texts, new_glossary, previous_response = translate_unit(
+            block,
+            previous_context=previous_response,
+            next_context=next_block,
+            label=f"subtitle block {index + 1}",
+        )
         translated_responses.append(
             {
                 "translation": translated_texts,
-                "new_glossary": "\n".join(f"{key} = {value}" for key, value in new_glossary.items()),
+                "new_glossary": "\n".join(
+                    f"{key} = {value}" for key, value in new_glossary.items()
+                ),
                 "original_indices": [subtitle["index"] for subtitle in block],
             }
         )
-        previous_response = json.dumps(
-            [
-                {"number": item_index, "text": text}
-                for item_index, text in enumerate(translated_texts, start=1)
-            ],
-            ensure_ascii=False,
-        )
-        total_cost += cost
-        if cost_source and cost_source not in cost_sources:
-            cost_sources.append(cost_source)
 
     return TranslationResult(
         srt_content=translation_responses_to_srt(
@@ -495,7 +668,7 @@ def translate_srt_content(
         block_responses=translated_responses,
         glossary=active_glossary,
         cost=total_cost,
-        response_count=len(translated_responses),
+        response_count=response_count,
         cost_sources=tuple(cost_sources),
         usage=usage,
     )

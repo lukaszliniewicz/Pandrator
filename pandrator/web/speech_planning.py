@@ -670,6 +670,7 @@ def plan_speech_text(
     known_pronunciations: list[dict[str, Any]] | None = None,
     cancel_event: Any | None = None,
     min_retention: float = 0.9,
+    max_attempts_per_mode: int = 1,
     completion_func: Callable[..., Any] | None = None,
 ) -> SpeechPlanResult:
     """Create one validated plan; flexible mode falls back to the guarded protocol."""
@@ -695,10 +696,12 @@ def plan_speech_text(
     attempts: list[SpeechPlanAttempt] = []
     responses: list[ChatCompletionResult] = []
     accepted: SpeechPlanAttempt | None = None
+    try:
+        attempts_per_mode = max(1, min(5, int(max_attempts_per_mode)))
+    except (TypeError, ValueError):
+        attempts_per_mode = 1
 
     for attempted_mode in modes:
-        if cancel_event is not None and cancel_event.is_set():
-            raise RuntimeError("Speech planning was canceled.")
         payload = _prompt_payload(
             case_id=case_id,
             language=language,
@@ -712,8 +715,11 @@ def plan_speech_text(
             placeholder_counts=placeholder_counts,
             mode=attempted_mode,
         )
-        kwargs = {
-            "messages": [
+        previous_validation: dict[str, Any] | None = None
+        for _protocol_attempt in range(1, attempts_per_mode + 1):
+            if cancel_event is not None and cancel_event.is_set():
+                raise RuntimeError("Speech planning was canceled.")
+            messages = [
                 {
                     "role": "system",
                     "content": (
@@ -727,45 +733,67 @@ def plan_speech_text(
                     "content": "Plan this single speech sentence:\n"
                     + json.dumps(payload, ensure_ascii=False, indent=2),
                 },
-            ],
-            "model_name": model_name,
-            "llm_settings": llm_settings,
-            "max_tokens": 1100 if attempted_mode == "flexible" else 850,
-        }
-        if completion_func is None:
-            kwargs["cancel_event"] = cancel_event
-        response = completion(**kwargs)
-        if isinstance(response, str):
-            raw = response
-            normalized_response = None
-        else:
-            raw = str(getattr(response, "content", "") or "")
-            normalized_response = response
-            responses.append(response)
-        parsed, parse_note = _extract_json(raw)
-        validation = validate_plan(
-            parsed,
-            mode=attempted_mode,
-            case_id=case_id,
-            deterministic_text=deterministic_text,
-            tokens=tokens,
-            candidates=candidates,
-            known=known,
-            protected_template=protected_template,
-            placeholder_counts=placeholder_counts,
-            min_retention=max(0.75, min(float(min_retention), 1.0)),
-            parse_note=parse_note,
-        )
-        attempt = SpeechPlanAttempt(
-            mode=attempted_mode,
-            response=normalized_response,
-            parsed=parsed,
-            validation=validation,
-            raw_content=raw,
-        )
-        attempts.append(attempt)
-        if validation["valid"]:
-            accepted = attempt
+            ]
+            if previous_validation is not None:
+                errors = "; ".join(
+                    str(error)
+                    for error in previous_validation.get("errors", [])[:4]
+                )
+                error_suffix = f": {errors}" if errors else ""
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "Your previous plan failed deterministic validation"
+                            f"{error_suffix}. Return a complete "
+                            "replacement plan for the same payload. Preserve every "
+                            "required identifier and placeholder; output JSON only."
+                        ),
+                    }
+                )
+            kwargs = {
+                "messages": messages,
+                "model_name": model_name,
+                "llm_settings": llm_settings,
+                "max_tokens": 1100 if attempted_mode == "flexible" else 850,
+            }
+            if completion_func is None:
+                kwargs["cancel_event"] = cancel_event
+            response = completion(**kwargs)
+            if isinstance(response, str):
+                raw = response
+                normalized_response = None
+            else:
+                raw = str(getattr(response, "content", "") or "")
+                normalized_response = response
+                responses.append(response)
+            parsed, parse_note = _extract_json(raw)
+            validation = validate_plan(
+                parsed,
+                mode=attempted_mode,
+                case_id=case_id,
+                deterministic_text=deterministic_text,
+                tokens=tokens,
+                candidates=candidates,
+                known=known,
+                protected_template=protected_template,
+                placeholder_counts=placeholder_counts,
+                min_retention=max(0.75, min(float(min_retention), 1.0)),
+                parse_note=parse_note,
+            )
+            attempt = SpeechPlanAttempt(
+                mode=attempted_mode,
+                response=normalized_response,
+                parsed=parsed,
+                validation=validation,
+                raw_content=raw,
+            )
+            attempts.append(attempt)
+            if validation["valid"]:
+                accepted = attempt
+                break
+            previous_validation = validation
+        if accepted is not None:
             break
 
     if accepted is not None and accepted.parsed is not None:

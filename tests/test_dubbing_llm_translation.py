@@ -50,6 +50,19 @@ hello = czesc
         self.assertEqual(translations, ["Czesc."])
         self.assertEqual(glossary, {"hello": "czesc"})
 
+    def test_parse_translation_response_validates_identity_and_restores_input_order(self):
+        translations, _glossary = llm_translation.parse_translation_response(
+            '[{"number":12,"text":"Twelve"},{"number":7,"text":"Seven"}]',
+            expected_numbers=[7, 12],
+        )
+        self.assertEqual(["Seven", "Twelve"], translations)
+
+        with self.assertRaisesRegex(ValueError, "repeated subtitle identifier 7"):
+            llm_translation.parse_translation_response(
+                '[{"number":7,"text":"One"},{"number":7,"text":"Two"}]',
+                expected_numbers=[7, 12],
+            )
+
     def test_translation_responses_to_srt_removes_marked_subtitles(self):
         srt_content = llm_translation.translation_responses_to_srt(
             [
@@ -216,6 +229,73 @@ hello = czesc
         self.assertEqual(prompt_batch_sizes, [2, 2, 1])
         self.assertEqual(result.response_count, 3)
         self.assertEqual(len(srt_utils.parse_srt(result.srt_content)), 5)
+
+    def test_translate_srt_content_retries_count_mismatch_and_accounts_for_cost(self):
+        calls = []
+        responses = iter(
+            [
+                llm_handler.ChatCompletionResult(
+                    content='[{"number":1,"text":"Czesc."}]',
+                    cost=0.01,
+                ),
+                llm_handler.ChatCompletionResult(
+                    content='[{"number":1,"text":"Czesc."},{"number":2,"text":"Usun to."}]',
+                    cost=0.02,
+                ),
+            ]
+        )
+
+        def complete(**kwargs):
+            calls.append(kwargs)
+            return next(responses)
+
+        result = llm_translation.translate_srt_content(
+            SAMPLE_SRT,
+            _settings(),
+            completion_func=complete,
+        )
+
+        self.assertEqual(2, result.response_count)
+        self.assertAlmostEqual(0.03, result.cost)
+        self.assertEqual(2, len(calls))
+        self.assertIn("previous response was rejected", calls[1]["messages"][1]["content"])
+        self.assertEqual(
+            ["Czesc.", "Usun to."],
+            [segment.text for segment in srt_utils.parse_srt(result.srt_content)],
+        )
+
+    def test_translate_srt_content_splits_a_persistently_invalid_batch(self):
+        def complete(**kwargs):
+            prompt = kwargs["messages"][0]["content"]
+            subtitles = json.loads(prompt.rsplit("\nThe subtitles:\n", 1)[1])
+            if len(subtitles) > 1:
+                return llm_handler.ChatCompletionResult(
+                    content=json.dumps(
+                        [{"number": subtitles[0]["number"], "text": "Incomplete"}]
+                    )
+                )
+            item = subtitles[0]
+            return llm_handler.ChatCompletionResult(
+                content=json.dumps(
+                    [{"number": item["number"], "text": f"Translated {item['text']}"}]
+                )
+            )
+
+        result = llm_translation.translate_srt_content(
+            SAMPLE_SRT,
+            {
+                **_settings(),
+                "translation_structured_max_attempts": 1,
+                "translation_recovery_split_depth": 2,
+            },
+            completion_func=complete,
+        )
+
+        self.assertEqual(3, result.response_count)
+        self.assertEqual(
+            ["Translated Hello.", "Translated Remove this."],
+            [segment.text for segment in srt_utils.parse_srt(result.srt_content)],
+        )
 
     def test_dubbing_handler_translation_writes_native_llm_result(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -7,6 +7,7 @@ import re
 import base64
 import wave
 from contextlib import ExitStack
+from threading import Lock
 from urllib.parse import quote, urljoin, urlparse, urlunparse
 
 import requests
@@ -31,18 +32,37 @@ from ..constants import (
 
 _litellm_speech = None
 _litellm_speech_import_attempted = False
+_litellm_speech_import_error: BaseException | None = None
+_litellm_speech_import_lock = Lock()
+
+
+def _import_litellm_speech_client():
+    from litellm import speech as litellm_speech
+
+    return litellm_speech
 
 
 def _get_litellm_speech_client():
     global _litellm_speech, _litellm_speech_import_attempted
-    if not _litellm_speech_import_attempted:
-        _litellm_speech_import_attempted = True
-        try:
-            from litellm import speech as litellm_speech
-        except Exception as e:  # pragma: no cover - runtime dependency guard
-            logging.debug("LiteLLM speech import failed: %s", e)
-        else:
-            _litellm_speech = litellm_speech
+    global _litellm_speech_import_error
+    if _litellm_speech_import_attempted:
+        return _litellm_speech
+
+    with _litellm_speech_import_lock:
+        if not _litellm_speech_import_attempted:
+            try:
+                _litellm_speech = _import_litellm_speech_client()
+            except Exception as error:  # pragma: no cover - runtime dependency guard
+                _litellm_speech_import_error = error
+                logging.warning(
+                    "LiteLLM speech support could not be loaded (%s): %s",
+                    type(error).__name__,
+                    error,
+                )
+            else:
+                _litellm_speech_import_error = None
+            finally:
+                _litellm_speech_import_attempted = True
 
     return _litellm_speech
 
@@ -4201,7 +4221,16 @@ def _litellm_response_to_requests_response(litellm_response) -> requests.Respons
 def _request_litellm_audio(payload: dict, endpoint: dict[str, str]) -> requests.Response:
     litellm_speech = _get_litellm_speech_client()
     if litellm_speech is None:
-        raise RuntimeError("LiteLLM is not installed. Please install the 'litellm' package.")
+        detail = ""
+        if _litellm_speech_import_error is not None:
+            detail = (
+                f" ({type(_litellm_speech_import_error).__name__}: "
+                f"{_litellm_speech_import_error})"
+            )
+        raise RuntimeError(
+            "LiteLLM speech support could not be loaded"
+            f"{detail}. Verify that the 'litellm' package and its dependencies are installed."
+        )
 
     provider = _infer_audio_provider(
         name=endpoint.get("name", ""),

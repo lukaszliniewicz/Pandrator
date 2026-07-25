@@ -4,6 +4,7 @@ import logging
 import os
 import re
 from dataclasses import asdict, dataclass, field
+from threading import Lock
 from typing import Any
 
 from .retry_utils import (
@@ -121,7 +122,10 @@ NON_TEXT_MODEL_KEYWORDS = (
 
 _litellm_completion = None
 _litellm_get_valid_models = None
+_litellm_module = None
 _litellm_import_attempted = False
+_litellm_import_error: BaseException | None = None
+_litellm_import_lock = Lock()
 
 
 @dataclass
@@ -150,27 +154,77 @@ class LLMCredentialStatus:
     message: str = ""
 
 
+@dataclass(frozen=True)
+class ModelDiscoveryResult:
+    models: tuple[str, ...]
+    source: str
+    endpoint: str = ""
+    warning: str = ""
+
+
+def _import_litellm_clients() -> tuple[Any, Any, Any]:
+    import litellm
+    from litellm import completion as litellm_completion
+
+    try:
+        from litellm.utils import get_valid_models as litellm_get_valid_models
+    except Exception as error:  # pragma: no cover - optional discovery helper
+        logging.debug("LiteLLM model-discovery helper import failed: %s", error)
+        litellm_get_valid_models = None
+    return litellm, litellm_completion, litellm_get_valid_models
+
+
 def _get_litellm_clients() -> tuple[Any, Any]:
-    global _litellm_completion, _litellm_get_valid_models, _litellm_import_attempted
-    if not _litellm_import_attempted:
-        _litellm_import_attempted = True
-        try:
-            import litellm
-            from litellm import completion as litellm_completion
-            from litellm.utils import get_valid_models as litellm_get_valid_models
-        except Exception as e:  # pragma: no cover - runtime dependency guard
-            logging.debug("LiteLLM import failed: %s", e)
-        else:
-            # Drop unsupported parameters (e.g. reasoning_effort on non-reasoning models)
-            # silently instead of raising UnsupportedParamsError.
+    global _litellm_completion, _litellm_get_valid_models, _litellm_module
+    global _litellm_import_attempted, _litellm_import_error
+    if _litellm_import_attempted:
+        return _litellm_completion, _litellm_get_valid_models
+
+    # TTS optimization can start many worker threads at once. Importing LiteLLM
+    # must be atomic: otherwise one worker can observe "attempted" before the
+    # importing worker has published the clients and falsely report it missing.
+    with _litellm_import_lock:
+        if not _litellm_import_attempted:
             try:
-                litellm.drop_params = True
-            except Exception:
-                pass
-            _litellm_completion = litellm_completion
-            _litellm_get_valid_models = litellm_get_valid_models
+                litellm, litellm_completion, litellm_get_valid_models = (
+                    _import_litellm_clients()
+                )
+            except Exception as error:  # pragma: no cover - runtime dependency guard
+                _litellm_import_error = error
+                logging.warning(
+                    "LiteLLM could not be loaded (%s): %s",
+                    type(error).__name__,
+                    error,
+                )
+            else:
+                # Drop unsupported parameters (e.g. reasoning_effort on
+                # non-reasoning models) instead of raising.
+                try:
+                    litellm.drop_params = True
+                except Exception:
+                    pass
+                _litellm_module = litellm
+                _litellm_completion = litellm_completion
+                _litellm_get_valid_models = litellm_get_valid_models
+                _litellm_import_error = None
+            finally:
+                # Publish this only after every client/global above is ready.
+                _litellm_import_attempted = True
 
     return _litellm_completion, _litellm_get_valid_models
+
+
+def _litellm_unavailable_message(capability: str = "chat") -> str:
+    detail = ""
+    if _litellm_import_error is not None:
+        detail = (
+            f" ({type(_litellm_import_error).__name__}: "
+            f"{_litellm_import_error})"
+        )
+    return (
+        f"LiteLLM {capability} support could not be loaded{detail}. "
+        "Verify that the 'litellm' package and its dependencies are installed."
+    )
 
 
 def _read_setting(settings: Any, key: str, default: Any = None) -> Any:
@@ -594,50 +648,212 @@ def _normalize_detected_models(models: list[str], provider: str) -> list[str]:
     return _dedupe_ordered(normalized_models)
 
 
-def _detect_models_for_builtin_provider(provider_config: dict[str, Any]) -> list[str]:
-    fallback_models = _parse_models(provider_config.get("models", []), provider_config.get("provider", ""))
+def _models_endpoint(api_base: str, provider: str = "") -> str:
+    normalized = _normalize_base_url(api_base)
+    if provider == "ollama":
+        if normalized.lower().endswith("/api/tags"):
+            return normalized
+        if normalized.lower().endswith("/api"):
+            return f"{normalized}/tags"
+        return f"{normalized}/api/tags"
+    if normalized.lower().endswith("/models"):
+        return normalized
+    return f"{normalized}/models"
+
+
+def _model_discovery_headers(provider: str, api_key: str) -> dict[str, str]:
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "Pandrator/model-discovery",
+    }
+    if not api_key:
+        return headers
+    if provider == "gemini":
+        headers["x-goog-api-key"] = api_key
+    elif provider == "anthropic":
+        headers["x-api-key"] = api_key
+        headers["anthropic-version"] = "2023-06-01"
+    else:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
+
+
+def _models_from_endpoint_payload(payload: Any) -> list[str]:
+    rows: Any
+    if isinstance(payload, list):
+        rows = payload
+    elif isinstance(payload, dict):
+        rows = payload.get("data")
+        if not isinstance(rows, list):
+            rows = payload.get("models")
+    else:
+        rows = None
+    if not isinstance(rows, list):
+        raise ValueError("the response did not contain a model list")
+
+    models: list[str] = []
+    for row in rows:
+        if isinstance(row, str):
+            model_id = row
+        elif isinstance(row, dict):
+            model_id = row.get("id") or row.get("name") or row.get("model")
+        else:
+            continue
+        normalized = str(model_id or "").strip()
+        if normalized:
+            models.append(normalized)
+    return models
+
+
+def _discover_models_at_configured_endpoint(
+    *,
+    api_base: str,
+    api_key: str,
+    provider: str,
+) -> tuple[list[str], str]:
+    endpoint = _models_endpoint(api_base, provider)
+    _get_litellm_clients()
+    client = getattr(_litellm_module, "module_level_client", None)
+    if client is None:
+        raise RuntimeError(_litellm_unavailable_message("HTTP"))
+
+    response = client.get(
+        url=endpoint,
+        headers=_model_discovery_headers(provider, api_key),
+        follow_redirects=True,
+        timeout=30,
+    )
+    status_code = int(getattr(response, "status_code", 0) or 0)
+    if status_code < 200 or status_code >= 300:
+        content_type = str(
+            (getattr(response, "headers", {}) or {}).get("content-type", "")
+        ).split(";", 1)[0]
+        detail = f"HTTP {status_code}" if status_code else "an invalid HTTP response"
+        if content_type:
+            detail += f" ({content_type})"
+        raise RuntimeError(detail)
+    try:
+        payload = response.json()
+    except Exception as error:
+        raise ValueError("the response was not valid JSON") from error
+    return _models_from_endpoint_payload(payload), endpoint
+
+
+def discover_provider_models(
+    provider_config: dict[str, Any],
+) -> ModelDiscoveryResult:
+    fallback_models = _parse_models(
+        provider_config.get("models", []),
+        provider_config.get("provider", ""),
+    )
     provider = _normalize_provider_key(provider_config.get("provider"))
     if not provider:
-        return fallback_models
+        return ModelDiscoveryResult(
+            models=tuple(fallback_models),
+            source="preserved",
+            warning=(
+                "The provider adapter is blank, so the existing model catalogue "
+                "was preserved."
+            ),
+        )
+
+    api_base = _normalize_base_url(provider_config.get("api_base"))
+    api_key = _resolve_api_key(provider_config)
+    if api_base:
+        endpoint = _models_endpoint(api_base, provider)
+        try:
+            discovered_models, endpoint = _discover_models_at_configured_endpoint(
+                api_base=api_base,
+                api_key=api_key,
+                provider=provider,
+            )
+        except Exception as error:
+            logging.warning(
+                "Model discovery failed at configured endpoint '%s': %s",
+                endpoint,
+                error,
+            )
+            return ModelDiscoveryResult(
+                models=tuple(fallback_models),
+                source="preserved",
+                endpoint=endpoint,
+                warning=(
+                    f"Could not refresh models from {endpoint}: {error}. "
+                    "Existing and manually added models were preserved."
+                ),
+            )
+        normalized = _normalize_detected_models(discovered_models, provider)
+        if normalized:
+            return ModelDiscoveryResult(
+                models=tuple(normalized),
+                source="endpoint",
+                endpoint=endpoint,
+            )
+        return ModelDiscoveryResult(
+            models=tuple(fallback_models),
+            source="preserved",
+            endpoint=endpoint,
+            warning=(
+                f"{endpoint} returned no usable text models. "
+                "Existing and manually added models were preserved."
+            ),
+        )
 
     _, get_valid_models = _get_litellm_clients()
     if get_valid_models is None:
-        return fallback_models
+        return ModelDiscoveryResult(
+            models=tuple(fallback_models),
+            source="preserved",
+            warning=(
+                "LiteLLM's provider catalogue is unavailable. "
+                "Existing and manually added models were preserved."
+            ),
+        )
 
-    api_key = _resolve_api_key(provider_config)
-    api_base = _normalize_base_url(provider_config.get("api_base"))
-
-    discovered_models: list[str] = []
     try:
         discovered_models = get_valid_models(
-            check_provider_endpoint=True,
+            check_provider_endpoint=False,
             custom_llm_provider=provider,
             api_key=api_key or None,
-            api_base=api_base or None,
+            api_base=None,
         )
-    except Exception as e:
-        logging.debug("LiteLLM endpoint model detection failed for provider '%s': %s", provider, e)
+    except Exception as error:
+        logging.warning(
+            "LiteLLM provider catalogue lookup failed for '%s': %s",
+            provider,
+            error,
+        )
+        return ModelDiscoveryResult(
+            models=tuple(fallback_models),
+            source="preserved",
+            warning=(
+                f"Could not load LiteLLM's {provider} model catalogue. "
+                "Existing and manually added models were preserved."
+            ),
+        )
 
-    if not discovered_models:
-        try:
-            discovered_models = get_valid_models(
-                check_provider_endpoint=False,
-                custom_llm_provider=provider,
-                api_key=api_key or None,
-                api_base=api_base or None,
-            )
-        except Exception as e:
-            logging.debug("LiteLLM fallback model detection failed for provider '%s': %s", provider, e)
-
-    normalized_detected = _normalize_detected_models(
+    normalized = _normalize_detected_models(
         [str(model) for model in discovered_models],
         provider,
     )
+    if normalized:
+        return ModelDiscoveryResult(
+            models=tuple(normalized),
+            source="provider_catalog",
+        )
+    return ModelDiscoveryResult(
+        models=tuple(fallback_models),
+        source="preserved",
+        warning=(
+            f"LiteLLM's {provider} catalogue returned no usable text models. "
+            "Existing and manually added models were preserved."
+        ),
+    )
 
-    if normalized_detected:
-        return normalized_detected
 
-    return fallback_models
+def _detect_models_for_builtin_provider(provider_config: dict[str, Any]) -> list[str]:
+    """Compatibility wrapper for callers that only need model IDs."""
+    return list(discover_provider_models(provider_config).models)
 
 
 def refresh_builtin_provider_models(
@@ -1391,8 +1607,7 @@ def chat_completion_with_metadata(
     """Runs a LiteLLM chat completion and preserves usage/cost metadata."""
     completion, _ = _get_litellm_clients()
     if completion is None:
-        logging.error("LiteLLM is not installed. Please install the 'litellm' package.")
-        return ChatCompletionResult()
+        raise RuntimeError(_litellm_unavailable_message())
 
     try:
         details = _resolve_model_request_details(model_name, llm_settings)
@@ -1573,8 +1788,7 @@ def _make_api_request(
     """Makes a single LiteLLM chat completion request."""
     completion, _ = _get_litellm_clients()
     if completion is None:
-        logging.error("LiteLLM is not installed. Please install the 'litellm' package.")
-        return ""
+        raise RuntimeError(_litellm_unavailable_message())
 
     sanitized_text = text.replace("\n", " ").replace("\t", " ")
     try:

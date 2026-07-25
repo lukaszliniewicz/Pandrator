@@ -81,6 +81,50 @@ class TtsOptimizationUnitTests(unittest.TestCase):
         self.assertEqual(3, len(calls))
         self.assertEqual({0, 1, 2, 3, 4}, {index for batch in published for index, _text in batch})
 
+    def test_structured_response_is_retried_without_losing_rejected_usage(self):
+        calls = []
+
+        def complete(*, messages, **_kwargs):
+            calls.append(messages)
+            payload = json.loads(messages[-1]["content"].split("Input JSON:\n", 1)[1])
+            if len(calls) == 1:
+                return ChatCompletionResult(
+                    content=json.dumps({"items": [payload["items"][0]]}),
+                    cost=0.01,
+                )
+            return ChatCompletionResult(
+                content=json.dumps(
+                    {
+                        "items": [
+                            {
+                                "index": item["index"],
+                                "text": item["text"].upper(),
+                            }
+                            for item in payload["items"]
+                        ]
+                    }
+                ),
+                cost=0.02,
+            )
+
+        with mock.patch(
+            "pandrator.web.tts_optimization.chat_completion_with_metadata",
+            side_effect=complete,
+        ):
+            output, usage = optimize_texts(
+                ["one", "two"],
+                {"llm_tts_batch_size": 2, "llm_concurrent_calls": 1},
+                SimpleNamespace(),
+                "provider/model",
+                threading.Event(),
+                lambda *_args: None,
+            )
+
+        self.assertEqual(["ONE", "TWO"], output)
+        self.assertEqual(2, usage.response_count)
+        self.assertAlmostEqual(0.03, usage.cost)
+        self.assertIn("previous response was rejected", calls[1][0]["content"])
+
 
 class TtsOptimizationHandlerTests(unittest.TestCase):
     def setUp(self):
