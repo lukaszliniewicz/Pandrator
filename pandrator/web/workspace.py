@@ -1435,7 +1435,15 @@ class GenerationService:
             "error_message": job.error_message if job else None,
             "take_count": take_count,
             "usage": usage_summary(usage),
-            "assembly": self._assembly_payload(assembly) if assembly else None,
+            "progress_detail": job.progress_detail if job else None,
+            "assembly": (
+                self._assembly_payload(
+                    assembly,
+                    session.get(Job, assembly.job_id) if assembly.job_id else None,
+                )
+                if assembly
+                else None
+            ),
             "created_at": run.created_at.isoformat(),
             "updated_at": run.updated_at.isoformat(),
         }
@@ -1508,7 +1516,10 @@ class GenerationService:
         return {"id": run_id, "status": "deleted"}
 
     @staticmethod
-    def _assembly_payload(record: OutputAssembly) -> dict[str, Any]:
+    def _assembly_payload(
+        record: OutputAssembly,
+        job: Job | None = None,
+    ) -> dict[str, Any]:
         return {
             "id": record.id,
             "session_id": record.session_id,
@@ -1516,6 +1527,14 @@ class GenerationService:
             "job_id": record.job_id,
             "artifact_id": record.artifact_id,
             "status": record.status,
+            "progress": (
+                1.0
+                if record.status in {"completed", "stale"}
+                else float(job.progress)
+                if job
+                else 0.0
+            ),
+            "progress_detail": job.progress_detail if job else None,
             "settings_hash": record.settings_hash,
             "error_message": record.error_message,
             "settings": deepcopy(record.settings_json or {}),
@@ -1572,7 +1591,7 @@ class GenerationService:
             record = session.get(OutputAssembly, assembly_id)
             record.job_id = job.id
             record.updated_at = utcnow()
-            payload = self._assembly_payload(record)
+            payload = self._assembly_payload(record, job)
         return payload
 
     def latest_assembly(self, session_id: str) -> dict[str, Any] | None:
@@ -1582,7 +1601,12 @@ class GenerationService:
                 .where(OutputAssembly.session_id == session_id)
                 .order_by(OutputAssembly.created_at.desc())
             )
-            return self._assembly_payload(record) if record is not None else None
+            job = (
+                session.get(Job, record.job_id)
+                if record is not None and record.job_id
+                else None
+            )
+            return self._assembly_payload(record, job) if record is not None else None
 
 
 class ResourceClaimService:

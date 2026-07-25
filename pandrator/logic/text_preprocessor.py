@@ -346,28 +346,42 @@ def normalize_all_caps_words(text: str) -> str:
     return "\n".join(result_lines)
 
 
-def preprocess_text(text: str, settings: dict) -> list[dict]:
+def preprocess_text(text: str, settings: dict, progress_callback=None) -> list[dict]:
     """
     Main entry point for text preprocessing. Chooses parallel or sequential.
     'settings' is a dictionary containing all necessary parameters.
     """
     if settings.get("enable_nemo_normalization", True):
+        if progress_callback:
+            progress_callback(0.05, "Normalizing narration text")
         text = nemo_normalizer.normalize_text_for_tts(text, settings.get("language", "en"))
+    if progress_callback:
+        progress_callback(0.2, "Splitting narration into processing chunks")
 
     if len(text) > CHUNK_SIZE and not sentence_segmenter.is_available():
-        processed_sentences = _parallel_preprocess_text(text, settings)
+        processed_sentences = _parallel_preprocess_text(
+            text,
+            settings,
+            progress_callback=progress_callback,
+        )
     else:
         processed_sentences = _sequential_preprocess_text(text, settings)
+        if progress_callback:
+            progress_callback(0.9, "Narration chunk processed")
     
+    if progress_callback:
+        progress_callback(0.95, "Finalizing narration boundaries")
     processed_sentences = merge_consecutive_chapters(
         processed_sentences,
         max_sentence_length=settings.get('max_sentence_length', 160),
     )
     for i, sentence in enumerate(processed_sentences, start=1):
         sentence['sentence_number'] = str(i)
+    if progress_callback:
+        progress_callback(1.0, f"Prepared {len(processed_sentences)} narration segments")
     return processed_sentences
 
-def _parallel_preprocess_text(text: str, settings: dict) -> list[dict]:
+def _parallel_preprocess_text(text: str, settings: dict, progress_callback=None) -> list[dict]:
     chunks = _split_text_into_chunks(text)
     
     processed_chunks = [None] * len(chunks)
@@ -376,9 +390,16 @@ def _parallel_preprocess_text(text: str, settings: dict) -> list[dict]:
         future_to_index = {executor.submit(_process_chunk, chunk, settings): i
                            for i, chunk in enumerate(chunks)}
 
+        completed = 0
         for future in concurrent.futures.as_completed(future_to_index):
             index = future_to_index[future]
             processed_chunks[index] = future.result()
+            completed += 1
+            if progress_callback:
+                progress_callback(
+                    0.2 + 0.7 * (completed / max(1, len(chunks))),
+                    f"Processed narration chunk {completed} of {len(chunks)}",
+                )
 
     all_processed_sentences = [sentence for chunk in processed_chunks if chunk for sentence in chunk]
 

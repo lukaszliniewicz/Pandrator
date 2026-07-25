@@ -39,10 +39,36 @@ class SessionBundleTests(unittest.TestCase):
         corrected = self.artifacts.register(corrected_path, kind="srt", role="correction", session_id=source_session.id, parent_ids=[source.id])
         bundle_path = self.paths.root / "portable.pandrator-session"
 
-        exported = self.bundles.export_bundle(source_session.id, bundle_path)
-        imported = self.bundles.import_bundle(bundle_path, name="Portable copy")
+        export_updates = []
+        import_updates = []
+        exported = self.bundles.export_bundle(
+            source_session.id,
+            bundle_path,
+            progress_callback=lambda value, detail=None: export_updates.append((value, detail)),
+        )
+        imported = self.bundles.import_bundle(
+            bundle_path,
+            name="Portable copy",
+            progress_callback=lambda value, detail=None: import_updates.append((value, detail)),
+        )
 
         self.assertEqual(exported["artifacts"], 2)
+        self.assertEqual(1.0, export_updates[-1][0])
+        self.assertEqual(1.0, import_updates[-1][0])
+        self.assertEqual(
+            sorted(value for value, _detail in export_updates),
+            [value for value, _detail in export_updates],
+        )
+        self.assertEqual(
+            sorted(value for value, _detail in import_updates),
+            [value for value, _detail in import_updates],
+        )
+        self.assertTrue(
+            any(detail == "Verified session artifact 2 of 2" for _value, detail in export_updates)
+        )
+        self.assertTrue(
+            any(detail == "Imported session artifact 2 of 2" for _value, detail in import_updates)
+        )
         self.assertNotEqual(imported["session_id"], source_session.id)
         with self.database.session() as session:
             record = session.get(SessionRecord, imported["session_id"])

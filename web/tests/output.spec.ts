@@ -34,6 +34,7 @@ test('output tab renders the actual running export status and progress', async (
           session_id: session.id,
           status: 'running',
           progress: 0.42,
+          progress_detail: 'Prepared subtitle track 1 of 2',
           created_at: new Date().toISOString()
         }]
       })
@@ -44,6 +45,7 @@ test('output tab renders the actual running export status and progress', async (
   await expect(page.getByText('Export activity')).toBeVisible();
   await expect(page.getByText('Running export')).toBeVisible();
   await expect(page.getByText('42%')).toBeVisible();
+  await expect(page.getByText('Prepared subtitle track 1 of 2')).toBeVisible();
 });
 
 test('completed subtitle exports can be removed from Output', async ({ page }) => {

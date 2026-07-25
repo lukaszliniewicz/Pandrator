@@ -23,6 +23,7 @@ DEFAULT_LLM_CHAR_LIMIT = 6000
 DEFAULT_MAX_LINE_LENGTH = 42
 MAX_CORRECTION_ATTEMPTS = 3
 CORRECTION_CONTEXT_CUES = 8
+ProgressCallback = Callable[[float, str | None], None]
 CORRECTION_SYSTEM_PROMPT = (
     "You are an expert subtitle transcript editor. Correct the supplied source-language "
     "cues accurately and conservatively. Return only valid JSON in the requested operation "
@@ -66,6 +67,16 @@ class CorrectionResult:
     output_path: str = ""
     cost_sources: tuple[str, ...] = ()
     usage: dict[str, Any] = field(default_factory=dict)
+
+
+def _report_progress(
+    callback: ProgressCallback | None,
+    value: float,
+    detail: str,
+) -> None:
+    if callback is None:
+        return
+    callback(max(0.0, min(1.0, float(value))), detail)
 
 
 def _coerce_int(value: Any, default: int) -> int:
@@ -397,6 +408,7 @@ def correct_srt_content(
     completion_func: Callable[..., Any] | None = None,
     cancel_event: Any | None = None,
     speaker_by_subtitle: Mapping[int, str] | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> CorrectionResult:
     """Correct SRT content with Pandrator's LLM provider layer."""
     char_limit = _coerce_int(settings.get("llm_char"), DEFAULT_LLM_CHAR_LIMIT)
@@ -422,8 +434,11 @@ def correct_srt_content(
         speaker_by_subtitle=speaker_by_subtitle,
     )
     if not blocks:
+        _report_progress(progress_callback, 1.0, "No subtitles require correction")
         return CorrectionResult(srt_content="", cost=0.0, response_count=0)
 
+    total_subtitles = sum(len(block) for block in blocks)
+    completed_subtitles = 0
     resolved = resolve_dubbing_llm_settings(settings, stage="correction")
     completion = completion_func or llm_handler.chat_completion_with_metadata
     previous_context = ""
@@ -445,6 +460,20 @@ def correct_srt_content(
         )
         last_protocol_error: ValueError | None = None
         for attempt in range(1, MAX_CORRECTION_ATTEMPTS + 1):
+            if cancel_event is not None and cancel_event.is_set():
+                raise RuntimeError("LLM correction was canceled.")
+            _report_progress(
+                progress_callback,
+                completed_subtitles / total_subtitles,
+                (
+                    f"Correcting subtitle block {block_number} of {len(blocks)}"
+                    + (
+                        f" — validation attempt {attempt} of {MAX_CORRECTION_ATTEMPTS}"
+                        if attempt > 1
+                        else ""
+                    )
+                ),
+            )
             messages = [
                 {"role": "system", "content": CORRECTION_SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
@@ -494,6 +523,15 @@ def correct_srt_content(
                 previous_context = json.dumps(
                     [_normalize_replacement_text(item.get("text")) for item in corrected_block[-CORRECTION_CONTEXT_CUES:]],
                     ensure_ascii=False,
+                )
+                completed_subtitles += len(block)
+                _report_progress(
+                    progress_callback,
+                    completed_subtitles / total_subtitles,
+                    (
+                        f"Corrected {completed_subtitles} of "
+                        f"{total_subtitles} subtitles"
+                    ),
                 )
                 break
             except ValueError as error:
@@ -555,6 +593,7 @@ def correct_srt_file_with_result(
     completion_func: Callable[..., Any] | None = None,
     cancel_event: Any | None = None,
     speaker_by_subtitle: Mapping[int, str] | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> CorrectionResult:
     """Correct an SRT file and return the corrected content plus file path."""
     srt_path = Path(srt_file)
@@ -568,6 +607,7 @@ def correct_srt_file_with_result(
         completion_func=completion_func,
         cancel_event=cancel_event,
         speaker_by_subtitle=speaker_by_subtitle,
+        progress_callback=progress_callback,
     )
     output_path = Path(session_dir) / f"{srt_path.stem}_corrected.srt"
     _write_text_atomic(output_path, result.srt_content)
@@ -596,6 +636,7 @@ def correct_srt_file(
     *,
     completion_func: Callable[..., Any] | None = None,
     speaker_by_subtitle: Mapping[int, str] | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> str:
     """Correct an SRT file and return the corrected file path."""
     return correct_srt_file_with_result(
@@ -605,4 +646,5 @@ def correct_srt_file(
         correction_instructions=correction_instructions,
         completion_func=completion_func,
         speaker_by_subtitle=speaker_by_subtitle,
+        progress_callback=progress_callback,
     ).output_path

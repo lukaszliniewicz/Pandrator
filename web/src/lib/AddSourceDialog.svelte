@@ -24,6 +24,7 @@
   let sources = $state<any[]>([]);
   let busy = $state(false);
   let progress = $state(0);
+  let progressDetail = $state('');
   let error = $state('');
   let pastedTextArea = $state<HTMLTextAreaElement>();
 
@@ -58,6 +59,8 @@
   async function add() {
     if (!valid()) return;
     busy = true;
+    progress = 0;
+    progressDetail = mode === 'paste' ? 'Creating pasted source' : 'Uploading source';
     error = '';
     try {
       let message = 'Source added and selected as the current input.';
@@ -112,7 +115,7 @@
       {:else}
         <label class="text-sm font-semibold">Reusable source<select bind:value={sourceAssetId} class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"><option value="">No source-library items available</option>{#each sources as source}<option value={source.id}>{source.display_name} · {source.kind}</option>{/each}</select></label>
       {/if}
-      {#if busy&&mode!=='url'}<div class="mt-5 h-2 overflow-hidden rounded-full bg-[var(--line)]"><div class="h-full bg-[var(--accent)]" style={`width:${Math.max(3,progress*100)}%`}></div></div>{/if}
+      {#if busy&&['upload','paste'].includes(mode)}<div class="mt-5"><div class="mb-1.5 flex items-center justify-between gap-3 text-xs"><span class="muted">{progressDetail}</span><span class="muted tabular-nums">{Math.round(Math.max(0,Math.min(1,progress))*100)}%</span></div><div class="h-2 overflow-hidden rounded-full bg-[var(--line)]" role="progressbar" aria-label="Source upload progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(Math.max(0,Math.min(1,progress))*100)}><div class="h-full bg-[var(--accent)] transition-[width]" style={`width:${Math.max(0,Math.min(1,progress))*100}%`}></div></div></div>{/if}
     </div>
     <footer class="mt-6 flex justify-end gap-2"><button onclick={onclose} disabled={busy} class="rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold">Cancel</button><button onclick={add} disabled={busy||!valid()} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-40">{#if busy}<LoaderCircle class="animate-spin" size={16}/>{:else}<Upload size={16}/>{/if} {busy?'Adding…':'Add and select'}</button></footer>
   </section>

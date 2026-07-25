@@ -28,6 +28,15 @@
     return String(event.payload_json.level ?? (event.event_type === 'job.failed' ? 'ERROR' : 'INFO')).toUpperCase();
   }
 
+  function progressPercent(job: JobRecord) {
+    const value = Number(job.progress ?? 0);
+    return Math.round(Math.max(0, Math.min(1, Number.isFinite(value) ? value : 0)) * 100);
+  }
+
+  function currentDetail(job: JobRecord) {
+    return job.progress_detail || (job.status === 'queued' ? 'Waiting for an available worker' : '');
+  }
+
   async function loadLogs(id: string, force = false) {
     if (loading[id] || (logs[id] && !force)) return;
     loading[id] = true;
@@ -77,9 +86,10 @@
         <button onclick={() => toggle(job.id)} class="min-w-0 flex-1 text-left" aria-expanded={Boolean(expanded[job.id])}>
           <div class="flex items-center gap-2"><span class="truncate font-semibold">{job.kind}</span><ChevronDown class={`muted transition-transform ${expanded[job.id] ? 'rotate-180' : ''}`} size={15}/></div>
           <div class="muted mt-1 text-xs">{job.status} - {new Date(job.created_at).toLocaleString()}</div>
+          {#if currentDetail(job) && ['running','queued','cancel_requested'].includes(job.status)}<p class="muted mt-1 truncate text-xs" title={currentDetail(job)}>{currentDetail(job)}</p>{/if}
           {#if job.error_message}<p class="mt-1 text-xs text-red-500">{job.error_message}</p>{/if}
         </button>
-        <div class="w-32"><div class="h-1.5 overflow-hidden rounded-full bg-[var(--line)]"><div class="h-full bg-[var(--accent)]" style={`width:${job.progress * 100}%`}></div></div><div class="muted mt-1 text-right text-[.65rem]">{Math.round(job.progress * 100)}%</div></div>
+        <div class="w-32" role="progressbar" aria-label={`${job.kind} progress`} aria-valuemin="0" aria-valuemax="100" aria-valuenow={progressPercent(job)}><div class="h-1.5 overflow-hidden rounded-full bg-[var(--line)]"><div class="h-full bg-[var(--accent)] transition-[width]" style={`width:${progressPercent(job)}%`}></div></div><div class="muted mt-1 text-right text-[.65rem]">{progressPercent(job)}%</div></div>
         <button onclick={() => { expanded[job.id] = true; loadLogs(job.id, true); }} class="btn btn-sm btn-secondary"><FileText size={14}/> Logs</button>
         {#if allowCancel && ['running','queued','cancel_requested'].includes(job.status)}
           <button onclick={() => cancel(job)} disabled={canceling[job.id]} class="btn btn-sm border-red-400/40 text-red-500"><Ban size={14}/> {canceling[job.id] ? 'Canceling...' : 'Cancel'}</button>

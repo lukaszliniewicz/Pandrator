@@ -30,6 +30,7 @@
   let audiobookFormat = $state<'m4b'|'mp3'|'opus'|'flac'|'wav'>('m4b');
   let creating = $state(false);
   let progress = $state(0);
+  let progressDetail = $state('');
   let error = $state('');
   let duplicateFromServer = $state<SessionRecord|null>(null);
   let pastedTextArea = $state<HTMLTextAreaElement>();
@@ -78,7 +79,7 @@
       error = 'Choose whether to open the existing session or replace it.';
       return;
     }
-    creating=true;error='';
+    creating=true;error='';progress=0.05;progressDetail='Creating workspace';
     try {
       const unique=name.trim();
       const included = custom ? [] : [
@@ -87,6 +88,7 @@
         ...((kind==='voiceover'||kind==='audiobook')?['generate_audio']:[]), 'export'
       ];
       const session=await api<SessionRecord>('/sessions',{method:'POST',body:JSON.stringify({name:unique,workflow_kind:kind,source_language:sourceLanguage,target_language:translate?targetLanguage:null,workflow_preset:'custom',included_stages:included,...(overwrite&&existing?{overwrite_session_id:existing.id}:{})})});
+      progress=0.15;progressDetail='Saving workflow plan';
       const current=await api<{value:any;revision:number}>(`/sessions/${session.id}/outcome-plan`);
       const value={
         ...current.value, workflow_kind:kind, focus:custom?'custom':'guided',
@@ -96,7 +98,9 @@
         export:{mode:kind==='subtitles'?(subtitleExport==='text'?'text':'subtitles'):'media',audio:kind==='voiceover'||kind==='audiobook'?'generated':'preserve',subtitle_mode:kind==='audiobook'||kind==='subtitles'?'none':subtitleMode,subtitle_format:subtitleExport==='text'?'srt':subtitleExport,subtitles:translate?(keepSourceSubtitles?'dual':'translation'):'source',target_language:targetLanguage}
       };
       await api(`/sessions/${session.id}/outcome-plan`,{method:'PUT',headers:{'If-Match':`"${current.revision}"`},body:JSON.stringify({value})});
-      const updateSettings=async(section:string,next:Record<string,unknown>)=>{const stored=await api<any>(`/sessions/${session.id}/settings/${section}`);await api(`/sessions/${session.id}/settings/${section}`,{method:'PUT',headers:{'If-Match':`"${stored.revision}"`},body:JSON.stringify({value:{...stored.override,...next}})});};
+      progress=0.3;progressDetail='Saving workspace settings';
+      let completedSettings=0;
+      const updateSettings=async(section:string,next:Record<string,unknown>)=>{const stored=await api<any>(`/sessions/${session.id}/settings/${section}`);await api(`/sessions/${session.id}/settings/${section}`,{method:'PUT',headers:{'If-Match':`"${stored.revision}"`},body:JSON.stringify({value:{...stored.override,...next}})});completedSettings+=1;progress=0.3+0.35*(completedSettings/4);progressDetail=`Saved workspace setting ${completedSettings} of 4`;};
       const speechLanguage=translate?targetLanguage:(sourceLanguage==='auto'?'en':sourceLanguage);
       const subtitleSelection=translate?(keepSourceSubtitles?'dual':'translation'):'source';
       const outputSettings=kind==='audiobook'
@@ -111,10 +115,11 @@
         updateSettings('output',outputSettings)
       ]);
       let file=sourceMode==='paste'&&pastedText.trim()?new File([pastedText.trim()],`${unique}.txt`,{type:'text/plain'}):sourceMode==='upload'?sourceFile:null;
-      if(file)await uploadManagedFile(file,session.id,(value)=>progress=value);
-      else if(sourceMode==='url'&&sourceUrl.trim())await api(`/sessions/${session.id}/sources/url`,{method:'POST',body:JSON.stringify({url:sourceUrl.trim()})});
-      else if(sourceMode==='reuse'&&sourceAssetId)await api(`/sessions/${session.id}/sources`,{method:'POST',body:JSON.stringify({source_asset_id:sourceAssetId,role:'primary'})});
-      await appState.refresh();location.href=`/sessions/${session.id}`;
+      if(file){progressDetail='Uploading source';await uploadManagedFile(file,session.id,(value)=>progress=0.65+Math.max(0,Math.min(1,value))*0.3);}
+      else if(sourceMode==='url'&&sourceUrl.trim()){progress=0.8;progressDetail='Queueing source download';await api(`/sessions/${session.id}/sources/url`,{method:'POST',body:JSON.stringify({url:sourceUrl.trim()})});}
+      else if(sourceMode==='reuse'&&sourceAssetId){progress=0.8;progressDetail='Attaching reusable source';await api(`/sessions/${session.id}/sources`,{method:'POST',body:JSON.stringify({source_asset_id:sourceAssetId,role:'primary'})});}
+      progress=0.97;progressDetail='Opening workspace';
+      await appState.refresh();progress=1;location.href=`/sessions/${session.id}`;
     }catch(caught){
       if(caught instanceof ApiError&&caught.code==='duplicate_session'){
         duplicateFromServer=(caught.details as any)?.existing_session??null;
@@ -168,7 +173,7 @@
           <div class="mt-4 flex flex-wrap gap-2"><a href={`/sessions/${duplicateSession.id}`} class="flex items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-2.5 text-sm font-semibold"><FolderOpen size={15}/> Open existing</a><button onclick={() => create(true)} disabled={creating} class="flex items-center gap-2 rounded-xl border border-red-400/50 px-4 py-2.5 text-sm font-semibold text-red-600"><Trash2 size={15}/> {creating?'Replacing...':'Replace older session'}</button></div>
         </div>
       {/if}
-      {#if creating}<div class="mt-5 h-2 overflow-hidden rounded-full bg-[var(--line)]"><div class="h-full bg-[var(--accent)]" style={`width:${Math.max(3,progress*100)}%`}></div></div>{/if}
+      {#if creating}<div class="mt-5"><div class="mb-1.5 flex items-center justify-between gap-3 text-xs"><span class="muted truncate">{progressDetail}</span><span class="muted shrink-0 tabular-nums">{Math.round(progress*100)}%</span></div><div class="h-2 overflow-hidden rounded-full bg-[var(--line)]" role="progressbar" aria-label="Workspace creation progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(progress*100)}><div class="h-full bg-[var(--accent)] transition-[width]" style={`width:${progress*100}%`}></div></div></div>{/if}
     {/if}
     {#if step>1}<footer class="mt-8 flex items-center justify-between"><button onclick={()=>step-=1} disabled={creating} class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold"><ArrowLeft size={16}/> {step===2&&startAtSource?'Change task':'Back'}</button>{#if step===2}<button onclick={nextFromSource} class="primary">Continue <ArrowRight size={16}/></button>{:else if step===3}<button onclick={()=>{inferName();step=4}} class="primary">Review <ArrowRight size={16}/></button>{:else}<button onclick={() => create()} disabled={creating||!name.trim()||Boolean(duplicateSession)} class="primary disabled:opacity-40">{creating?'Creating…':duplicateSession?'Choose an option above':'Create workspace'} <ArrowRight size={16}/></button>{/if}</footer>{/if}
   </section>

@@ -10,7 +10,7 @@ import tempfile
 import uuid
 import zipfile
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy import select
 
@@ -23,6 +23,16 @@ from .sessions import SessionService
 
 
 BUNDLE_VERSION = 1
+ProgressCallback = Callable[[float, str | None], None]
+
+
+def _report_progress(
+    callback: ProgressCallback | None,
+    value: float,
+    detail: str,
+) -> None:
+    if callback is not None:
+        callback(max(0.0, min(1.0, float(value))), detail)
 
 
 class SessionBundleService:
@@ -32,9 +42,17 @@ class SessionBundleService:
         self.artifacts = ArtifactService(database, paths)
         self.sessions = SessionService(database)
 
-    def export_bundle(self, session_id: str, destination: Path, *, include_sources: bool = True) -> dict[str, Any]:
+    def export_bundle(
+        self,
+        session_id: str,
+        destination: Path,
+        *,
+        include_sources: bool = True,
+        progress_callback: ProgressCallback | None = None,
+    ) -> dict[str, Any]:
         destination = destination.expanduser().resolve()
         destination.parent.mkdir(parents=True, exist_ok=True)
+        _report_progress(progress_callback, 0.02, "Collecting session artifacts")
         with self.database.session() as session:
             record = session.get(SessionRecord, session_id)
             if record is None:
@@ -54,9 +72,12 @@ class SessionBundleService:
             }
             artifact_payloads = []
             files = []
-            for artifact in artifacts:
-                if not include_sources and artifact.role == "upload":
-                    continue
+            included_artifacts = [
+                artifact
+                for artifact in artifacts
+                if include_sources or artifact.role != "upload"
+            ]
+            for index, artifact in enumerate(included_artifacts, start=1):
                 path = self.paths.managed_path(artifact.relative_path)
                 if not path.is_file():
                     raise FileNotFoundError(f"Bundle artifact is missing: {path}")
@@ -75,6 +96,11 @@ class SessionBundleService:
                     "archive_path": archive_path,
                 })
                 files.append((path, archive_path))
+                _report_progress(
+                    progress_callback,
+                    0.08 + 0.32 * (index / max(1, len(included_artifacts))),
+                    f"Verified session artifact {index} of {len(included_artifacts)}",
+                )
             included_ids = {item["source_id"] for item in artifact_payloads}
             edge_payloads = [
                 {"parent": edge.parent_artifact_id, "child": edge.child_artifact_id, "relation": edge.relation}
@@ -92,14 +118,28 @@ class SessionBundleService:
         temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
         try:
             with zipfile.ZipFile(temporary, "w", allowZip64=True) as archive:
+                _report_progress(progress_callback, 0.45, "Writing session bundle manifest")
                 archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
-                for path, archive_path in files:
+                for index, (path, archive_path) in enumerate(files, start=1):
                     compress = zipfile.ZIP_DEFLATED if path.suffix.lower() in {".txt", ".json", ".srt", ".ass", ".md"} else zipfile.ZIP_STORED
                     archive.write(path, archive_path, compress_type=compress)
+                    _report_progress(
+                        progress_callback,
+                        0.45 + 0.4 * (index / max(1, len(files))),
+                        f"Packed session artifact {index} of {len(files)}",
+                    )
+            _report_progress(progress_callback, 0.9, "Finalizing session bundle")
             os.replace(temporary, destination)
         finally:
             temporary.unlink(missing_ok=True)
-        return {"path": str(destination), "sha256": sha256_file(destination), "artifacts": len(artifact_payloads), "version": BUNDLE_VERSION}
+        _report_progress(progress_callback, 0.95, "Verifying session bundle checksum")
+        digest = sha256_file(destination)
+        _report_progress(
+            progress_callback,
+            1.0,
+            f"Session bundle ready with {len(artifact_payloads)} artifacts",
+        )
+        return {"path": str(destination), "sha256": digest, "artifacts": len(artifact_payloads), "version": BUNDLE_VERSION}
 
     @staticmethod
     def _safe_member(name: str) -> PurePosixPath:
@@ -108,10 +148,17 @@ class SessionBundleService:
             raise ValueError(f"Unsafe bundle member: {name}")
         return path
 
-    def import_bundle(self, source: Path, *, name: str | None = None) -> dict[str, Any]:
+    def import_bundle(
+        self,
+        source: Path,
+        *,
+        name: str | None = None,
+        progress_callback: ProgressCallback | None = None,
+    ) -> dict[str, Any]:
         source = source.expanduser().resolve()
         if not source.is_file():
             raise FileNotFoundError(source)
+        _report_progress(progress_callback, 0.02, "Inspecting session bundle")
         with tempfile.TemporaryDirectory(prefix="pandrator-bundle-", dir=self.paths.temporary) as temporary_directory:
             staging = Path(temporary_directory)
             with zipfile.ZipFile(source, "r") as archive:
@@ -122,7 +169,8 @@ class SessionBundleService:
                 if manifest.get("format") != "pandrator-session" or int(manifest.get("version") or 0) != BUNDLE_VERSION:
                     raise ValueError("Unsupported Pandrator session bundle version.")
                 staged: dict[str, Path] = {}
-                for item in manifest.get("artifacts") or []:
+                manifest_artifacts = list(manifest.get("artifacts") or [])
+                for index, item in enumerate(manifest_artifacts, start=1):
                     archive_path = str(item.get("archive_path") or "")
                     safe = self._safe_member(archive_path)
                     if archive_path not in members or members[archive_path].is_dir():
@@ -136,8 +184,14 @@ class SessionBundleService:
                     if destination.stat().st_size != expected_size or not expected_hash or sha256_file(destination) != expected_hash:
                         raise ValueError(f"Bundle checksum validation failed: {archive_path}")
                     staged[str(item.get("source_id") or "")] = destination
+                    _report_progress(
+                        progress_callback,
+                        0.08 + 0.42 * (index / max(1, len(manifest_artifacts))),
+                        f"Verified bundled artifact {index} of {len(manifest_artifacts)}",
+                    )
 
             session_data = dict(manifest.get("session") or {})
+            _report_progress(progress_callback, 0.55, "Creating imported session")
             imported = self.sessions.create(
                 str(name or session_data.get("name") or "Imported session"),
                 workflow_kind=str(session_data.get("workflow_kind") or "audiobook"),
@@ -150,7 +204,7 @@ class SessionBundleService:
             target_dir.mkdir(parents=True, exist_ok=False)
             id_map: dict[str, str] = {}
             try:
-                for item in manifest.get("artifacts") or []:
+                for index, item in enumerate(manifest_artifacts, start=1):
                     source_id = str(item.get("source_id") or "")
                     staged_path = staged[source_id]
                     destination = target_dir / f"{uuid.uuid4()}-{staged_path.name}"
@@ -167,6 +221,12 @@ class SessionBundleService:
                         managed.state = str(item.get("state") or "current")
                         managed.settings_hash = item.get("settings_hash")
                     id_map[source_id] = artifact.id
+                    _report_progress(
+                        progress_callback,
+                        0.55 + 0.35 * (index / max(1, len(manifest_artifacts))),
+                        f"Imported session artifact {index} of {len(manifest_artifacts)}",
+                    )
+                _report_progress(progress_callback, 0.92, "Restoring artifact relationships")
                 with self.database.session() as session:
                     for edge in manifest.get("artifact_edges") or []:
                         parent_id = id_map.get(str(edge.get("parent") or ""))
@@ -180,4 +240,11 @@ class SessionBundleService:
                         session.delete(failed)
                 shutil.rmtree(target_dir, ignore_errors=True)
                 raise
-        return {"session_id": imported.id, "name": imported.name, "artifacts": len(id_map), "source_bundle_sha256": sha256_file(source)}
+        _report_progress(progress_callback, 0.96, "Verifying source bundle checksum")
+        digest = sha256_file(source)
+        _report_progress(
+            progress_callback,
+            1.0,
+            f"Imported session with {len(id_map)} artifacts",
+        )
+        return {"session_id": imported.id, "name": imported.name, "artifacts": len(id_map), "source_bundle_sha256": digest}

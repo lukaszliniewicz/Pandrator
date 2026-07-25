@@ -85,6 +85,10 @@
   let libraryVoices = $state<any[]>([]);
 
   const normalizeId = (value: unknown) => String(value ?? '').trim().toLowerCase().replaceAll('-', '_');
+  const progressPercent = (value: unknown) => {
+    const numeric = Number(value ?? 0);
+    return Math.round(Math.max(0, Math.min(1, Number.isFinite(numeric) ? numeric : 0)) * 100);
+  };
   const selectedTtsService = $derived.by(() => {
     const configured = String(ttsSettings.service ?? ttsSettings.tts_service ?? ttsCatalogue.default_service ?? '');
     return (ttsCatalogue.services ?? []).find((service: any) =>
@@ -730,10 +734,18 @@
       <span class="muted text-xs">{payload.total} segments · {selectedRun?.label ?? 'No run selected'}{#if selectedAssembly} · output {selectedAssembly.status}{/if}</span>
       {#if selectedRun?.usage?.commercial}<span class="cost-pill">{selectedRun.usage.estimated ? 'Est.' : ''} {selectedRunCost}{selectedRun.usage.has_unpriced_usage ? ' + unpriced usage' : ''}</span>{/if}
       {#if run && ['queued', 'running', 'pausing', 'cancel_requested'].includes(run.status)}
-        <div class="run-progress" aria-label={`Generation progress ${Math.round((run.progress ?? 0) * 100)} percent`}>
-          <span style={`width:${Math.max(1, (run.progress ?? 0) * 100)}%`}></span>
+        <div class="run-progress" role="progressbar" aria-label="Generation progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow={progressPercent(run.progress)}>
+          <span style={`width:${progressPercent(run.progress)}%`}></span>
         </div>
-        <span class="muted text-[.65rem]">{Math.round((run.progress ?? 0) * 100)}%</span>
+        <span class="muted text-[.65rem] tabular-nums">{progressPercent(run.progress)}%</span>
+        <span class="muted max-w-64 truncate text-[.65rem]" title={run.progress_detail??''}>{run.progress_detail??(run.status==='queued'?'Waiting for an available worker':'')}</span>
+      {/if}
+      {#if selectedAssembly && ['queued', 'running'].includes(selectedAssembly.status)}
+        <div class="run-progress" role="progressbar" aria-label="Output assembly progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow={progressPercent(selectedAssembly.progress)}>
+          <span style={`width:${progressPercent(selectedAssembly.progress)}%`}></span>
+        </div>
+        <span class="muted text-[.65rem] tabular-nums">{progressPercent(selectedAssembly.progress)}%</span>
+        <span class="muted max-w-64 truncate text-[.65rem]" title={selectedAssembly.progress_detail??''}>{selectedAssembly.progress_detail??(selectedAssembly.status==='queued'?'Waiting for an available worker':'')}</span>
       {/if}
       <div class="header-playback flex items-center gap-1">
         <button
@@ -766,7 +778,7 @@
     </header>
 
     {#if mode !== 'collapsed'}
-      <div class="flex h-[calc(100%-3.8rem)] min-h-0 flex-col">
+      <div class="flex h-[calc(100%-3.8rem)] min-h-0 flex-col overflow-y-auto">
         <div class="flex flex-wrap items-center gap-2 border-b border-[var(--line)] p-3">
           {#if runs.length}
             <label class="run-picker flex items-center gap-2 text-xs font-semibold">Version
@@ -836,7 +848,7 @@
 
         {#if error}<p class="p-3 text-sm text-red-500">{error}</p>{/if}
 
-        <div class="min-h-0 flex-1 overflow-auto">
+        <div class="min-h-[12rem] shrink-0 flex-1 overflow-auto">
           {#if viewMode === 'segments'}
           <table class="w-full border-collapse text-sm">
             <thead class="sticky top-0 z-10 bg-[var(--paper-strong)]">

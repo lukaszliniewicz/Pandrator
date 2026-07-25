@@ -81,6 +81,54 @@ class TtsOptimizationUnitTests(unittest.TestCase):
         self.assertEqual(3, len(calls))
         self.assertEqual({0, 1, 2, 3, 4}, {index for batch in published for index, _text in batch})
 
+    def test_multi_stage_optimization_reports_each_planned_request(self):
+        updates = []
+
+        def complete(*, messages, **_kwargs):
+            request_payload = json.loads(messages[-1]["content"].split("Input JSON:\n", 1)[1])
+            return ChatCompletionResult(
+                content=json.dumps(
+                    {
+                        "items": [
+                            {"index": item["index"], "text": item["text"].upper()}
+                            for item in request_payload["items"]
+                        ]
+                    }
+                ),
+                usage={},
+            )
+
+        with mock.patch(
+            "pandrator.web.tts_optimization.chat_completion_with_metadata",
+            side_effect=complete,
+        ):
+            output, _usage = optimize_texts(
+                ["one", "two", "three", "four"],
+                {
+                    "llm_multi_stage": True,
+                    "first_prompt": "First pass",
+                    "second_prompt": "Second pass",
+                    "llm_tts_batch_size": 2,
+                    "llm_concurrent_calls": 2,
+                },
+                SimpleNamespace(),
+                "provider/model",
+                threading.Event(),
+                lambda value, detail=None: updates.append((value, detail)),
+            )
+
+        self.assertEqual(["ONE", "TWO", "THREE", "FOUR"], output)
+        requests = [
+            (value, detail)
+            for value, detail in updates
+            if str(detail).startswith("Completed speech optimization request")
+        ]
+        self.assertEqual([0.25, 0.5, 0.75, 1.0], [value for value, _detail in requests])
+        self.assertEqual(
+            "Completed speech optimization request 4 of 4 for 2 text units",
+            requests[-1][1],
+        )
+
     def test_structured_response_is_retried_without_losing_rejected_usage(self):
         calls = []
 
@@ -160,12 +208,13 @@ class TtsOptimizationHandlerTests(unittest.TestCase):
             "tts_optimization_model": "provider/model",
             "request_timeout_seconds": 30,
         }
+        progress_updates = []
         with mock.patch.object(handlers, "_with_database_llm_settings", return_value=hydrated), mock.patch(
             "pandrator.web.tts_optimization.chat_completion_with_metadata", side_effect=lambda **_kwargs: next(responses)
         ):
             result = handlers.optimize_tts(
                 {"session_id": self.session.id, "source_artifact_id": source.id, "settings": {}},
-                lambda *_args: None,
+                lambda value, detail=None: progress_updates.append((value, detail)),
                 threading.Event(),
             )
 
@@ -186,6 +235,16 @@ class TtsOptimizationHandlerTests(unittest.TestCase):
             self.assertAlmostEqual(0.02, usage.cost_usd)
             self.assertEqual(8, usage.input_tokens)
             self.assertEqual(5, usage.output_tokens)
+        request_update = next(
+            value
+            for value, detail in progress_updates
+            if str(detail).startswith("Completed speech optimization request")
+        )
+        self.assertEqual(0.9, request_update)
+        self.assertEqual(
+            1.0,
+            next(value for value, detail in progress_updates if detail == "Speech optimization preview ready"),
+        )
 
 
 if __name__ == "__main__":

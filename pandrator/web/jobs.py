@@ -221,11 +221,17 @@ class JobQueue:
             job.lease_expires_at = now + timedelta(seconds=max(5, lease_seconds))
             job.updated_at = now
             payload: dict[str, Any] = {}
+            progress_was_current = True
             if progress is not None:
-                job.progress = max(0.0, min(1.0, float(progress)))
+                requested_progress = max(0.0, min(1.0, float(progress)))
+                # Concurrent child workers may finish close together. A late
+                # callback from an earlier unit must never move the bar back.
+                progress_was_current = requested_progress >= float(job.progress or 0.0)
+                job.progress = max(float(job.progress or 0.0), requested_progress)
                 payload["progress"] = job.progress
-            if detail:
-                payload["detail"] = detail
+            if detail is not None and progress_was_current:
+                job.progress_detail = str(detail)
+                payload["detail"] = job.progress_detail
             if payload:
                 self._event(session, job.id, "job.progress", payload)
             return True
@@ -287,6 +293,11 @@ class JobQueue:
                 return
             retry = job.attempts < job.max_attempts
             job.status = "queued" if retry else "failed"
+            if retry:
+                job.progress = 0.0
+                job.progress_detail = (
+                    f"Retry scheduled after attempt {job.attempts} of {job.max_attempts}"
+                )
             job.error_code = code
             job.error_message = message
             job.lease_owner = None

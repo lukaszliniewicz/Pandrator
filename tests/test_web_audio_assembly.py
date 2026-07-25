@@ -190,6 +190,23 @@ class DurableOutputAssemblyTests(unittest.TestCase):
         with self.database.session() as session:
             self.assertEqual("stale", session.get(Artifact, artifact.id).state)
 
+    def test_assembly_payload_exposes_durable_job_progress_detail(self):
+        self._plan_with_takes()
+        queued = self.generation.create_assembly(self.record.id)
+        job = self.jobs.claim("assembly-progress-worker")
+        self.assertEqual(queued["job_id"], job.id)
+        self.jobs.heartbeat(
+            job.id,
+            "assembly-progress-worker",
+            progress=0.42,
+            detail="Loaded 1 of 2 audio segments",
+        )
+
+        latest = self.generation.latest_assembly(self.record.id)
+
+        self.assertEqual(0.42, latest["progress"])
+        self.assertEqual("Loaded 1 of 2 audio segments", latest["progress_detail"])
+
     def test_subtitle_generation_assembly_uses_source_timestamps_without_added_pauses(self):
         with self.database.session() as session:
             document = Document(session_id=self.record.id, stage="translation", language="pl")

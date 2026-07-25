@@ -140,7 +140,7 @@ def _session_payload(record) -> dict[str, Any]:
 def _job_payload(record) -> dict[str, Any]:
     return redact_inline_secrets(_model_dict(
         record,
-        ("id", "kind", "session_id", "workflow_run_id", "status", "payload_json", "result_json", "progress", "error_code", "error_message", "attempts", "max_attempts", "created_at", "started_at", "finished_at", "updated_at"),
+        ("id", "kind", "session_id", "workflow_run_id", "status", "payload_json", "result_json", "progress", "progress_detail", "error_code", "error_message", "attempts", "max_attempts", "created_at", "started_at", "finished_at", "updated_at"),
     ))
 
 

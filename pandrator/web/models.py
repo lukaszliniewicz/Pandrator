@@ -251,6 +251,7 @@ class Job(Base):
     resource_keys_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     result_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     progress: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    progress_detail: Mapped[str | None] = mapped_column(Text)
     error_code: Mapped[str | None] = mapped_column(String(120))
     error_message: Mapped[str | None] = mapped_column(Text)
     lease_owner: Mapped[str | None] = mapped_column(String(120), index=True)

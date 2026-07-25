@@ -82,6 +82,7 @@ class SchemaUpgradeTests(unittest.TestCase):
                 self.assertIn("target_language", [row[1] for row in connection.execute("PRAGMA table_info(sessions)")])
                 self.assertIn("is_active", [row[1] for row in connection.execute("PRAGMA table_info(provider_models)")])
                 self.assertIn("session_stage_selections", [row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")])
+                self.assertIn("progress_detail", [row[1] for row in connection.execute("PRAGMA table_info(jobs)")])
 
     def test_segment_language_equal_to_plan_default_becomes_inherited(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -349,6 +350,35 @@ class DurableJobTests(unittest.TestCase):
         self.assertEqual(1, len(captured))
         self.assertEqual("INFO", captured[0].payload_json["level"])
         self.assertEqual("provider retry detail", captured[0].payload_json["message"])
+
+    def test_worker_persists_latest_progress_detail(self):
+        def reporting(_payload, progress, _cancel_event):
+            progress(0.4, "Processed 4 of 10 units")
+            return {"ok": True}
+
+        job = self.queue.enqueue("reporting")
+        Worker(self.queue, "worker-one", {"reporting": reporting}).run_once()
+
+        completed = self.queue.get(job.id)
+        self.assertEqual(1.0, completed.progress)
+        self.assertEqual("Processed 4 of 10 units", completed.progress_detail)
+        progress_events = [
+            event
+            for event in self.queue.events_for(job.id)
+            if event.event_type == "job.progress"
+        ]
+        self.assertEqual("Processed 4 of 10 units", progress_events[-1].payload_json["detail"])
+
+    def test_job_progress_does_not_move_backward(self):
+        job = self.queue.enqueue("noop")
+        self.queue.claim("worker-one")
+
+        self.queue.heartbeat(job.id, "worker-one", progress=0.7, detail="Later unit")
+        self.queue.heartbeat(job.id, "worker-one", progress=0.4, detail="Delayed earlier unit")
+
+        current = self.queue.get(job.id)
+        self.assertEqual(0.7, current.progress)
+        self.assertEqual("Later unit", current.progress_detail)
 
 
 class WebApiTests(unittest.TestCase):

@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 DEEPL_MAX_REQUEST_BYTES = 120 * 1024
 DEFAULT_TRANSLATION_STRUCTURED_ATTEMPTS = 3
 DEFAULT_TRANSLATION_RECOVERY_SPLIT_DEPTH = 3
+ProgressCallback = Callable[[float, str | None], None]
 DEEPL_LANGUAGE_MAP = {
     "english": "EN-US",
     "en": "EN-US",
@@ -119,6 +120,16 @@ class TranslationResult:
     usage: dict[str, Any] = field(default_factory=dict)
 
 
+def _report_progress(
+    callback: ProgressCallback | None,
+    value: float,
+    detail: str,
+) -> None:
+    if callback is None:
+        return
+    callback(max(0.0, min(1.0, float(value))), detail)
+
+
 def get_deepl_language_code(language: str) -> str:
     normalized = str(language or "").strip()
     if not normalized:
@@ -170,6 +181,8 @@ def translate_blocks_deepl(
     auth_key: str,
     *,
     translator_factory: Callable[[str], Any] | None = None,
+    cancel_event: Any | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> list[dict[str, Any]]:
     del source_language  # DeepL can auto-detect here; keep the argument for provider parity.
     translator = translator_factory(auth_key) if translator_factory is not None else _build_deepl_translator(auth_key)
@@ -177,9 +190,24 @@ def translate_blocks_deepl(
     request_texts = _split_deepl_request_texts(translation_blocks)
 
     translated_parts: list[str] = []
-    for request_text in request_texts:
+    request_count = len(request_texts)
+    if request_count == 0:
+        _report_progress(progress_callback, 1.0, "No subtitles require translation")
+    for request_index, request_text in enumerate(request_texts, start=1):
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("DeepL translation was canceled.")
+        _report_progress(
+            progress_callback,
+            (request_index - 1) / request_count,
+            f"Sending DeepL request {request_index} of {request_count}",
+        )
         result = translator.translate_text(request_text, target_lang=target_code)
         translated_parts.append(str(getattr(result, "text", result) or ""))
+        _report_progress(
+            progress_callback,
+            request_index / request_count,
+            f"Completed DeepL request {request_index} of {request_count}",
+        )
 
     translated_units = [part.strip() for part in "\n\n".join(translated_parts).split("\n\n")]
     expected_count = sum(len(block) for block in translation_blocks)
@@ -448,6 +476,7 @@ def translate_srt_content(
     completion_func: Callable[..., Any] | None = None,
     cancel_event: Any | None = None,
     speaker_by_subtitle: Mapping[int, str] | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> TranslationResult:
     source_language = str(
         settings.get("original_language")
@@ -471,8 +500,11 @@ def translate_srt_content(
         speaker_by_subtitle=speaker_by_subtitle,
     )
     if not blocks:
+        _report_progress(progress_callback, 1.0, "No subtitles require translation")
         return TranslationResult("", [], active_glossary, cost=0.0, response_count=0)
 
+    total_subtitles = sum(len(block) for block in blocks)
+    completed_subtitle_ids: set[int] = set()
     resolved = resolve_dubbing_llm_settings(settings, stage="translation")
     completion = completion_func or llm_handler.chat_completion_with_metadata
     previous_response = ""
@@ -535,6 +567,19 @@ def translate_srt_content(
         for attempt in range(1, structured_attempts + 1):
             if cancel_event is not None and cancel_event.is_set():
                 raise RuntimeError("LLM translation was canceled.")
+            request_number = response_count + 1
+            _report_progress(
+                progress_callback,
+                len(completed_subtitle_ids) / total_subtitles,
+                (
+                    f"Translating {label} — request {request_number}"
+                    + (
+                        f", validation attempt {attempt} of {structured_attempts}"
+                        if attempt > 1
+                        else ""
+                    )
+                ),
+            )
             messages = [{"role": "user", "content": prompt}]
             if last_error is not None:
                 messages.append(
@@ -594,6 +639,15 @@ def translate_srt_content(
                     )
                 ],
                 ensure_ascii=False,
+            )
+            completed_subtitle_ids.update(expected_numbers)
+            _report_progress(
+                progress_callback,
+                len(completed_subtitle_ids) / total_subtitles,
+                (
+                    f"Translated {len(completed_subtitle_ids)} of "
+                    f"{total_subtitles} subtitles"
+                ),
             )
             return translated_texts, new_glossary, context_response
 
@@ -683,6 +737,7 @@ def translate_srt_file_with_result(
     completion_func: Callable[..., Any] | None = None,
     cancel_event: Any | None = None,
     speaker_by_subtitle: Mapping[int, str] | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> TranslationResult:
     session_path = Path(session_dir)
     srt_path = Path(srt_file)
@@ -698,6 +753,7 @@ def translate_srt_file_with_result(
         completion_func=completion_func,
         cancel_event=cancel_event,
         speaker_by_subtitle=speaker_by_subtitle,
+        progress_callback=progress_callback,
     )
 
     target_language = str(settings.get("target_language") or "en")
@@ -735,6 +791,7 @@ def translate_srt_file(
     *,
     completion_func: Callable[..., Any] | None = None,
     speaker_by_subtitle: Mapping[int, str] | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> str:
     return translate_srt_file_with_result(
         session_dir=session_dir,
@@ -743,6 +800,7 @@ def translate_srt_file(
         translation_instructions=translation_instructions,
         completion_func=completion_func,
         speaker_by_subtitle=speaker_by_subtitle,
+        progress_callback=progress_callback,
     ).output_path
 
 
@@ -753,6 +811,8 @@ def translate_srt_content_deepl(
     *,
     translator_factory: Callable[[str], Any] | None = None,
     speaker_by_subtitle: Mapping[int, str] | None = None,
+    cancel_event: Any | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> TranslationResult:
     source_language = str(
         settings.get("original_language")
@@ -776,6 +836,8 @@ def translate_srt_content_deepl(
         target_language,
         auth_key,
         translator_factory=translator_factory,
+        cancel_event=cancel_event,
+        progress_callback=progress_callback,
     )
     return TranslationResult(
         srt_content=translation_responses_to_srt(
@@ -799,6 +861,8 @@ def translate_srt_file_deepl_with_result(
     auth_key: str | None = None,
     translator_factory: Callable[[str], Any] | None = None,
     speaker_by_subtitle: Mapping[int, str] | None = None,
+    cancel_event: Any | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> TranslationResult:
     session_path = Path(session_dir)
     srt_path = Path(srt_file)
@@ -812,6 +876,8 @@ def translate_srt_file_deepl_with_result(
         resolved_auth_key,
         translator_factory=translator_factory,
         speaker_by_subtitle=speaker_by_subtitle,
+        cancel_event=cancel_event,
+        progress_callback=progress_callback,
     )
 
     target_language = str(settings.get("target_language") or "en")
@@ -845,6 +911,8 @@ def translate_srt_file_deepl(
     auth_key: str | None = None,
     translator_factory: Callable[[str], Any] | None = None,
     speaker_by_subtitle: Mapping[int, str] | None = None,
+    cancel_event: Any | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> str:
     return translate_srt_file_deepl_with_result(
         session_dir=session_dir,
@@ -853,4 +921,6 @@ def translate_srt_file_deepl(
         auth_key=auth_key,
         translator_factory=translator_factory,
         speaker_by_subtitle=speaker_by_subtitle,
+        cancel_event=cancel_event,
+        progress_callback=progress_callback,
     ).output_path

@@ -220,15 +220,57 @@ hello = czesc
             "llm_char": 100_000,
             "max_subtitles_per_call": 2,
         }
+        progress_updates = []
         result = llm_translation.translate_srt_content(
             srt_content,
             settings,
             completion_func=fake_completion,
+            progress_callback=lambda value, detail=None: progress_updates.append((value, detail)),
         )
 
         self.assertEqual(prompt_batch_sizes, [2, 2, 1])
         self.assertEqual(result.response_count, 3)
         self.assertEqual(len(srt_utils.parse_srt(result.srt_content)), 5)
+        completed = [
+            (value, detail)
+            for value, detail in progress_updates
+            if str(detail).startswith("Translated ")
+        ]
+        self.assertEqual([0.4, 0.8, 1.0], [value for value, _detail in completed])
+        self.assertEqual("Translated 5 of 5 subtitles", completed[-1][1])
+
+    def test_deepl_reports_each_known_request(self):
+        class FakeTranslator:
+            def translate_text(self, text, target_lang):
+                return SimpleNamespace(text=text.upper())
+
+        updates = []
+        blocks = [
+            [{"index": 1, "text": "one"}],
+            [{"index": 2, "text": "two"}],
+        ]
+        with patch.object(
+            llm_translation,
+            "_split_deepl_request_texts",
+            return_value=["one", "two"],
+        ):
+            responses = llm_translation.translate_blocks_deepl(
+                blocks,
+                "English",
+                "pl",
+                "test-key",
+                translator_factory=lambda _auth_key: FakeTranslator(),
+                progress_callback=lambda value, detail=None: updates.append((value, detail)),
+            )
+
+        self.assertEqual(["ONE"], responses[0]["translation"])
+        completed = [
+            (value, detail)
+            for value, detail in updates
+            if str(detail).startswith("Completed DeepL")
+        ]
+        self.assertEqual([0.5, 1.0], [value for value, _detail in completed])
+        self.assertEqual("Completed DeepL request 2 of 2", completed[-1][1])
 
     def test_translate_srt_content_retries_count_mismatch_and_accounts_for_cost(self):
         calls = []

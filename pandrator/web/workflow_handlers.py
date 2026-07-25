@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
@@ -69,6 +70,83 @@ logger = logging.getLogger(__name__)
 
 CLAUSE_PAUSE_RATIO = 1 / 3
 GENERATION_SEGMENT_POLICY_VERSION = 2
+
+
+def _scaled_progress_callback(progress, start: float, end: float):
+    """Map a child operation's 0..1 progress into a reserved job span."""
+    lower = max(0.0, min(1.0, float(start)))
+    upper = max(lower, min(1.0, float(end)))
+
+    def report(value: float, detail: str | None = None) -> None:
+        try:
+            fraction = max(0.0, min(1.0, float(value)))
+        except (TypeError, ValueError):
+            fraction = 0.0
+        progress(lower + (upper - lower) * fraction, detail)
+
+    return report
+
+
+def _fraction_message_callback(progress, start: float, end: float):
+    """Map messages containing ``current/total`` into a bounded progress span."""
+    mapped = _scaled_progress_callback(progress, start, end)
+    last_fraction = 0.0
+
+    def report(message: str) -> None:
+        nonlocal last_fraction
+        detail = str(message)
+        matches = re.findall(r"(\d+)\s*/\s*(\d+)", detail)
+        if matches:
+            current, total = (int(value) for value in matches[0])
+            if total > 0:
+                # These messages are emitted immediately before the numbered
+                # unit starts, so only earlier units are complete.
+                last_fraction = max(
+                    last_fraction,
+                    max(0.0, min(1.0, (current - 1) / total)),
+                )
+        mapped(last_fraction, detail)
+
+    return report
+
+
+def _source_cleaning_progress_callback(
+    progress,
+    start: float,
+    end: float,
+    *,
+    phase_names: list[str],
+    phase_budgets: dict[str, int],
+):
+    """Turn phase/LLM-turn messages into progress across the full agent budget."""
+    names = list(phase_names)
+    budgets = [max(1, int(phase_budgets.get(name, 1))) for name in names]
+    total_budget = max(1, sum(budgets))
+    mapped = _scaled_progress_callback(progress, start, end)
+    current_phase = 0
+    last_fraction = 0.0
+
+    def report(message: str) -> None:
+        nonlocal current_phase, last_fraction
+        detail = str(message)
+        phase_match = re.search(r"\bPhase\s+(\d+)\s*/\s*(\d+)", detail, re.IGNORECASE)
+        if phase_match and names:
+            current_phase = max(0, min(len(names) - 1, int(phase_match.group(1)) - 1))
+            completed_budget = sum(budgets[:current_phase])
+            last_fraction = max(last_fraction, completed_budget / total_budget)
+        else:
+            turn_match = re.search(r"\bLLM turn\s+(\d+)\s*/\s*(\d+)", detail, re.IGNORECASE)
+            if turn_match and names:
+                turn = max(1, int(turn_match.group(1)))
+                phase_budget = budgets[current_phase]
+                completed_budget = sum(budgets[:current_phase]) + min(
+                    phase_budget,
+                    turn - 1,
+                )
+                last_fraction = max(last_fraction, completed_budget / total_budget)
+        mapped(last_fraction, detail)
+
+    return report
 
 
 def _structured_speaker(segment: Any) -> str:
@@ -436,13 +514,61 @@ class WorkflowHandlers:
         url = self._validate_download_url(str(payload.get("url") or ""))
         destination_dir = self._session_dir(session_id) / "sources"
         destination_dir.mkdir(parents=True, exist_ok=True)
-        progress(0.05, "Inspecting source URL")
+        progress(0.03, "Inspecting source URL")
+        download_fraction = 0.0
+        last_reported_fraction = -1.0
+        last_reported_bytes = 0
+        last_reported_at = 0.0
+
+        def download_progress(status: dict[str, Any]) -> None:
+            nonlocal download_fraction, last_reported_fraction, last_reported_bytes, last_reported_at
+            if cancel_event.is_set():
+                raise yt_dlp.utils.DownloadError("Source download was canceled.")
+            state = str(status.get("status") or "")
+            if state == "downloading":
+                downloaded = max(0, int(status.get("downloaded_bytes") or 0))
+                total = max(
+                    0,
+                    int(
+                        status.get("total_bytes")
+                        or status.get("total_bytes_estimate")
+                        or 0
+                    ),
+                )
+                if total:
+                    download_fraction = max(
+                        download_fraction,
+                        min(1.0, downloaded / total),
+                    )
+                now = time.monotonic()
+                should_report = (
+                    last_reported_fraction < 0
+                    or (total and download_fraction - last_reported_fraction >= 0.005)
+                    or (not total and downloaded - last_reported_bytes >= 4 * 1024 * 1024)
+                    or now - last_reported_at >= 1.0
+                )
+                if not should_report:
+                    return
+                detail = (
+                    f"Downloading source — {round(download_fraction * 100)}%"
+                    if total
+                    else f"Downloading source — {downloaded / (1024 * 1024):.1f} MiB received"
+                )
+                progress(0.05 + download_fraction * 0.8, detail)
+                last_reported_fraction = download_fraction
+                last_reported_bytes = downloaded
+                last_reported_at = now
+            elif state == "finished":
+                download_fraction = 1.0
+                progress(0.88, "Source download complete; processing media")
+
         options = {
             "outtmpl": str(destination_dir / "%(title).160B-%(id)s.%(ext)s"),
             "restrictfilenames": True,
             "noplaylist": True,
             "quiet": True,
             "no_warnings": True,
+            "progress_hooks": [download_progress],
         }
         with yt_dlp.YoutubeDL(options) as downloader:
             information = downloader.extract_info(url, download=True)
@@ -451,6 +577,7 @@ class WorkflowHandlers:
             return {}
         if destination_dir.resolve() not in output.parents or not output.is_file():
             raise RuntimeError("Downloaded source was not created in the managed session directory.")
+        progress(0.93, "Registering downloaded source")
         source_metadata = {
             "original_filename": output.name,
             "source_url": url,
@@ -1282,6 +1409,7 @@ class WorkflowHandlers:
             dict(payload.get("settings") or {}),
             ffmpeg_executable=str(payload.get("ffmpeg_executable") or "ffmpeg"),
             crispasr_executable=str(payload.get("crispasr_executable") or ""),
+            progress_callback=_scaled_progress_callback(progress, 0.05, 0.85),
         )
         output_path = Path(transcription_result.srt_path)
         progress(0.9, "Registering transcription")
@@ -1448,6 +1576,23 @@ class WorkflowHandlers:
                 )
             )
 
+        configured_iterations = max(
+            2,
+            int(settings.get("web_research_max_iterations") or 8),
+        )
+        effective_iterations = max(
+            1,
+            min(
+                configured_iterations,
+                max(
+                    2,
+                    run_settings["max_searches"]
+                    + run_settings["max_extractions"]
+                    + 3,
+                ),
+            ),
+        )
+        progress(0.02, f"Preparing {stage} web research")
         try:
             result = run_web_research_agent(
                 research_source,
@@ -1461,10 +1606,7 @@ class WorkflowHandlers:
                     research_language=run_settings["research_language"],
                     max_searches=run_settings["max_searches"],
                     max_extractions=run_settings["max_extractions"],
-                    max_iterations=max(
-                        2,
-                        int(settings.get("web_research_max_iterations") or 8),
-                    ),
+                    max_iterations=configured_iterations,
                     max_source_chars=max(
                         2000,
                         int(settings.get("web_research_source_chars") or 14000),
@@ -1477,7 +1619,11 @@ class WorkflowHandlers:
                     blocked_domains=tuple(run_settings["blocked_domains"]),
                 ),
                 cancel_event=cancel_event,
-                progress_callback=lambda message: progress(0.12, message),
+                progress_callback=_fraction_message_callback(
+                    progress,
+                    0.02,
+                    0.18,
+                ),
             )
         except Exception:
             with self.database.session() as session:
@@ -1486,6 +1632,13 @@ class WorkflowHandlers:
                     run.status = "failed"
                     run.updated_at = utcnow()
             raise
+        progress(
+            0.2,
+            (
+                f"Web research complete after {result.response_count} of "
+                f"{effective_iterations} allowed turns"
+            ),
+        )
 
         with self.database.session() as session:
             for ordinal, trace in enumerate(result.tool_trace):
@@ -1621,7 +1774,8 @@ class WorkflowHandlers:
                 research_result.evidence,
                 stage="correction",
             )
-        progress(0.2 if research_result is not None else 0.05, "Correcting subtitles")
+        processing_start = 0.2 if research_result is not None else 0.05
+        progress(processing_start, "Preparing subtitle correction requests")
         try:
             result = correct_srt_file_with_result(
                 session_dir,
@@ -1630,6 +1784,11 @@ class WorkflowHandlers:
                 correction_instructions=instructions,
                 cancel_event=cancel_event,
                 speaker_by_subtitle=speaker_by_subtitle,
+                progress_callback=_scaled_progress_callback(
+                    progress,
+                    processing_start,
+                    0.9,
+                ),
             )
         except Exception:
             self._finish_stage_web_research(research_run_id, failed=True)
@@ -1637,6 +1796,7 @@ class WorkflowHandlers:
         if cancel_event.is_set():
             self._finish_stage_web_research(research_run_id, failed=True)
             return {}
+        progress(0.92, "Correction requests complete; preparing artifact")
         settings_fingerprint = _stage_settings_fingerprint("correct", settings)
         artifact = self.artifacts.register(
             Path(result.output_path),
@@ -1663,6 +1823,7 @@ class WorkflowHandlers:
             research_run_id,
             artifact_id=artifact.id,
         )
+        progress(0.97, "Registering corrected subtitle document")
         self._store_srt_document(
             session_id,
             artifact,
@@ -1705,7 +1866,8 @@ class WorkflowHandlers:
                 "Choose the LLM backend or turn web research off."
             )
         if translation_backend == "deepl":
-            progress(0.05, "Translating subtitles")
+            processing_start = 0.05
+            progress(processing_start, "Preparing DeepL translation requests")
             credential = resolve_secret_reference(
                 self.database,
                 self.paths,
@@ -1718,6 +1880,12 @@ class WorkflowHandlers:
                 settings,
                 auth_key=credential.resolved_value(),
                 speaker_by_subtitle=speaker_by_subtitle,
+                cancel_event=cancel_event,
+                progress_callback=_scaled_progress_callback(
+                    progress,
+                    processing_start,
+                    0.9,
+                ),
             )
         else:
             settings = self._with_database_llm_settings(settings, "translation")
@@ -1739,10 +1907,8 @@ class WorkflowHandlers:
                     research_result.evidence,
                     stage="translation",
                 )
-            progress(
-                0.2 if research_result is not None else 0.05,
-                "Translating subtitles",
-            )
+            processing_start = 0.2 if research_result is not None else 0.05
+            progress(processing_start, "Preparing subtitle translation requests")
             try:
                 result = translate_srt_file_with_result(
                     session_dir,
@@ -1751,6 +1917,11 @@ class WorkflowHandlers:
                     translation_instructions=instructions,
                     cancel_event=cancel_event,
                     speaker_by_subtitle=speaker_by_subtitle,
+                    progress_callback=_scaled_progress_callback(
+                        progress,
+                        processing_start,
+                        0.9,
+                    ),
                 )
             except Exception:
                 self._finish_stage_web_research(research_run_id, failed=True)
@@ -1758,6 +1929,7 @@ class WorkflowHandlers:
         if cancel_event.is_set():
             self._finish_stage_web_research(research_run_id, failed=True)
             return {}
+        progress(0.92, "Translation requests complete; preparing artifact")
         settings_fingerprint = _stage_settings_fingerprint("translate", settings)
         artifact = self.artifacts.register(
             Path(result.output_path),
@@ -1785,6 +1957,7 @@ class WorkflowHandlers:
             research_run_id,
             artifact_id=artifact.id,
         )
+        progress(0.97, "Registering translated subtitle document")
         self._store_srt_document(
             session_id,
             artifact,
@@ -1889,7 +2062,7 @@ class WorkflowHandlers:
                 llm_settings,
                 model_name,
                 cancel_event,
-                progress,
+                _scaled_progress_callback(progress, 0.05, 0.9),
                 on_plan_batch=keep_plans if structured_mode else None,
                 known_pronunciation_resolver=resolve_known if structured_mode else None,
                 languages=languages,
@@ -1952,6 +2125,7 @@ class WorkflowHandlers:
             destination = self._session_dir(session_id) / f"tts-optimized-{new_id()}.txt"
             destination.write_text(optimized[0], encoding="utf-8")
             kind = "text"
+        progress(0.92, "Speech optimization complete; preparing preview artifact")
         speech_plan_artifact_id = ""
         if structured_mode and any(speech_plans):
             plan_path = (
@@ -1990,6 +2164,7 @@ class WorkflowHandlers:
                 },
             )
             speech_plan_artifact_id = plan_artifact.id
+        progress(0.97, "Registering speech optimization artifacts")
         artifact = self.artifacts.register(
             destination,
             kind=kind,
@@ -2056,10 +2231,12 @@ class WorkflowHandlers:
             dict(payload.get("settings") or {}),
             ffmpeg_executable=str(payload.get("ffmpeg_executable") or "ffmpeg"),
             crispasr_executable=str(payload.get("crispasr_executable") or ""),
+            progress_callback=_scaled_progress_callback(progress, 0.05, 0.85),
         )
         output_path = Path(transcription_result.srt_path)
         if cancel_event.is_set():
             return {}
+        progress(0.9, "Registering reference transcription")
         artifact = self.artifacts.register(
             output_path,
             kind="srt",
@@ -2289,6 +2466,72 @@ class WorkflowHandlers:
             training.updated_at = utcnow()
         progress(0.02, "Validating XTTS trainer")
         try:
+            total_epochs = max(1, int(settings.get("epochs") or 6))
+        except (TypeError, ValueError):
+            total_epochs = 6
+        last_training_fraction = 0.0
+        zero_based_epochs: bool | None = None
+
+        def training_output(line: str) -> None:
+            nonlocal last_training_fraction, zero_based_epochs
+            detail = str(line)[-500:]
+            epoch_match = re.search(
+                r"\bepoch\s*[:#-]?\s*(\d+)(?:\s*(?:/|of)\s*(\d+))?",
+                detail,
+                re.IGNORECASE,
+            )
+            percent_match = re.search(r"(\d+(?:\.\d+)?)\s*%", detail)
+            if epoch_match:
+                raw_epoch = max(0, int(epoch_match.group(1)))
+                if raw_epoch == 0:
+                    zero_based_epochs = True
+                reported_total = max(
+                    1,
+                    int(epoch_match.group(2) or total_epochs),
+                )
+                # Training logs vary between zero- and one-based epoch labels.
+                completed_before = (
+                    raw_epoch
+                    if zero_based_epochs
+                    else max(0, raw_epoch - 1)
+                )
+                within_epoch = (
+                    max(0.0, min(100.0, float(percent_match.group(1)))) / 100
+                    if percent_match
+                    else 0.0
+                )
+                last_training_fraction = max(
+                    last_training_fraction,
+                    min(1.0, (completed_before + within_epoch) / reported_total),
+                )
+                display_epoch = min(
+                    reported_total,
+                    raw_epoch + 1 if zero_based_epochs else max(1, raw_epoch),
+                )
+                detail = f"Training epoch {display_epoch} of {reported_total} — {detail}"
+            elif percent_match and total_epochs == 1:
+                last_training_fraction = max(
+                    last_training_fraction,
+                    min(1.0, float(percent_match.group(1)) / 100),
+                )
+            progress(0.1 + 0.8 * last_training_fraction, detail)
+
+        def training_status(line: str) -> None:
+            detail = str(line)[-500:]
+            normalized = detail.casefold()
+            if "building" in normalized:
+                value = 0.05
+            elif "in progress" in normalized:
+                value = 0.1
+            elif "copying model" in normalized or "training finished" in normalized:
+                value = 0.92
+            elif "completed" in normalized:
+                value = 0.98
+            else:
+                value = 0.1
+            progress(value, detail)
+
+        try:
             success, message = xtts_trainer_handler.start_training(
                 {
                     **settings,
@@ -2296,8 +2539,8 @@ class WorkflowHandlers:
                     "source_audio_path": str(source_path),
                     "source_text_path": source_text_path,
                 },
-                output_callback=lambda line: progress(0.5, line[-500:]),
-                status_callback=lambda line: progress(0.25, line[-500:]),
+                output_callback=training_output,
+                status_callback=training_status,
                 stop_event=cancel_event,
             )
             if cancel_event.is_set():
@@ -2392,7 +2635,11 @@ class WorkflowHandlers:
                 str(source_path),
                 pdf_config=pdf_config,
                 artifact_dir=str(self._session_dir(session_id) / "source_ingestion"),
-                progress_callback=lambda message: progress(0.35, str(message)),
+                progress_callback=_fraction_message_callback(
+                    progress,
+                    0.05,
+                    0.35,
+                ),
             )
             deterministic_operations = source_cleaning.propose_deterministic_operations(
                 document,
@@ -2412,6 +2659,7 @@ class WorkflowHandlers:
             raise ValueError(f"Unsupported document type: {extension or 'unknown'}")
         if cancel_event.is_set():
             return {}
+        progress(0.38, "Source extraction complete")
         extraction = "deterministic"
         report: dict[str, Any] = {}
         if bool(settings.get("agentic", False)):
@@ -2424,7 +2672,11 @@ class WorkflowHandlers:
                     pdf_config=pdf_config if extension == ".pdf" else None,
                     extracted_text=cleaned_text if extension == ".epub" else None,
                     artifact_dir=str(self._session_dir(session_id) / "source_ingestion"),
-                    progress_callback=lambda message: progress(0.45, str(message)),
+                    progress_callback=_fraction_message_callback(
+                        progress,
+                        0.4,
+                        0.45,
+                    ),
                 )
             else:
                 from pandrator.logic.source_cleaning.pdf_text_adapter import build_source_document_from_text
@@ -2442,6 +2694,17 @@ class WorkflowHandlers:
             )
             total_iterations = max(1, int(settings.get("max_iterations") or 53))
             phase_iterations = settings.get("phase_max_iterations")
+            requested_phase_names = (
+                settings.get("phase_names")
+                if isinstance(settings.get("phase_names"), list)
+                else None
+            )
+            phase_names = list(requested_phase_names or source_cleaning.PHASE_ORDER)
+            phase_budgets = source_cleaning.resolve_phase_max_iterations(
+                phase_iterations if isinstance(phase_iterations, dict) else None,
+                total=total_iterations,
+                phase_names=phase_names,
+            )
             pipeline = source_cleaning.run_cleaning_pipeline(
                 document,
                 llm_settings=llm_settings,
@@ -2451,13 +2714,20 @@ class WorkflowHandlers:
                     filter_citations=bool(settings.get("filter_citations", True)),
                     total_max_iterations=total_iterations,
                     phase_max_iterations=phase_iterations if isinstance(phase_iterations, dict) else None,
-                    phase_names=settings.get("phase_names") if isinstance(settings.get("phase_names"), list) else None,
+                    phase_names=requested_phase_names,
                 ),
-                progress_callback=lambda message: progress(0.45, str(message)),
+                progress_callback=_source_cleaning_progress_callback(
+                    progress,
+                    0.45,
+                    0.9,
+                    phase_names=phase_names,
+                    phase_budgets=phase_budgets,
+                ),
                 stop_event=cancel_event,
             )
             if cancel_event.is_set():
                 return {}
+            progress(0.9, "Source-cleaning analysis complete")
             all_operations = [*deterministic_operations, *pipeline.all_operations]
             cleaning_result = source_cleaning.apply_cleaning_operations(document, all_operations)
             validation = source_cleaning.validate_cleaning_result(
@@ -2498,6 +2768,7 @@ class WorkflowHandlers:
                     )
                 )
             extraction = "agentic"
+        progress(0.93, "Saving source-cleaning artifacts")
         comparison_dir = self._session_dir(session_id) / "source_cleaning"
         comparison_dir.mkdir(parents=True, exist_ok=True)
         baseline_path = comparison_dir / f"extracted-{new_id()}.txt"
@@ -2552,6 +2823,7 @@ class WorkflowHandlers:
                                 output_json={"warnings": warnings, "operation_types": operation_types},
                             )
                         )
+        progress(0.98, "Cleaned source artifacts registered")
         progress(1.0, "Source text ready")
         return {"artifact_id": artifact.id, "path": artifact.relative_path, "characters": len(cleaned_text), "report": report}
 
@@ -2585,9 +2857,11 @@ class WorkflowHandlers:
                 "remove_quotation_marks": bool(settings.get("remove_quotation_marks", False)),
                 "normalize_all_caps": bool(settings.get("normalize_all_caps", False)),
             },
+            progress_callback=_scaled_progress_callback(progress, 0.1, 0.85),
         )
         if cancel_event.is_set():
             return {}
+        progress(0.9, "Saving narration segments")
         destination = self._operation_dir(session_id, "prepare-text") / "prepared_narration.json"
         destination.write_text(json.dumps(prepared, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         artifact = self.artifacts.register(
@@ -3911,13 +4185,17 @@ class WorkflowHandlers:
                             assembly.error_message = None
                             assembly.updated_at = utcnow()
                     return {}
-                progress(index / len(selected), f"Assembling segment {index + 1} of {len(selected)}")
+                progress(
+                    0.4 * (index / len(selected)),
+                    f"Loading audio segment {index + 1} of {len(selected)}",
+                )
                 path = self.paths.managed_path(artifact.relative_path)
                 if not path.is_file():
                     raise ValueError(f"Audio take file is missing for segment {segment.ordinal + 1}.")
                 audio = AudioSegment.from_file(path)
                 loaded.append((segment, take, artifact, path, audio))
                 parent_ids.append(artifact.id)
+            progress(0.4, f"Loaded {len(loaded)} audio segments")
 
             source_timing_by_ref: dict[str, tuple[int, int, int]] = {}
             for source_id, ordinal, start_ms, end_ms in source_timings:
@@ -4001,6 +4279,10 @@ class WorkflowHandlers:
                                 "source_subtitles": [value[2] for value in timings],
                             }
                         )
+                        progress(
+                            0.4 + 0.2 * ((index + 1) / len(loaded)),
+                            f"Prepared timing block {index + 1} of {len(loaded)}",
+                        )
                     raw_speed = float(audio_settings.get("synchronization_speed") or 1.0)
                     speed_up_percent = int(round(raw_speed * 100 if raw_speed <= 10 else raw_speed))
                     logger.info(
@@ -4011,6 +4293,7 @@ class WorkflowHandlers:
                         max(0, int(audio_settings.get("synchronization_delay_ms") or 0)),
                         max(0, int(audio_settings.get("synchronization_sentence_gap_ms") or 100)),
                     )
+                    progress(0.62, f"Synchronizing {len(alignment_blocks)} speech blocks")
                     aligned_path = align_audio_blocks(
                         alignment_blocks,
                         temporary_path,
@@ -4021,6 +4304,7 @@ class WorkflowHandlers:
                         diagnostics=alignment_diagnostics,
                     )
                     combined = AudioSegment.from_wav(aligned_path)
+                    progress(0.76, "Subtitle-timed audio synchronized")
                     logger.info(
                         "Assembly %s synchronization applied speed-up to %d/%d blocks (max effective %.3fx, final drift %dms)",
                         assembly_id,
@@ -4050,14 +4334,22 @@ class WorkflowHandlers:
                     timeline_ms += len(audio)
                     if index < len(loaded) - 1:
                         timeline_ms += max(0, int(segment.silence_after_ms or 0))
+                    progress(
+                        0.4 + 0.2 * ((index + 1) / len(loaded)),
+                        f"Prepared audio segment {index + 1} of {len(loaded)}",
+                    )
+                progress(0.64, "Composing audio timeline")
                 combined = compose_audio(parts, audio_settings)
+                progress(0.76, "Audio timeline composed")
             session_record = self._session_record(session_id)
             output_format = str(output_settings.get("format") or "wav").lower()
             if session_record.workflow_kind != "audiobook" and output_format == "m4b":
                 output_format = "wav"
             bitrate = str(output_settings.get("bitrate") or "192k")
             destination = self._session_dir(session_id) / "assemblies" / f"assembly-{assembly_id}.{output_format}"
+            progress(0.8, f"Encoding {output_format.upper()} output")
             export_audio(combined, destination, output_format, bitrate)
+            progress(0.9, "Applying output metadata")
             metadata: dict[str, str] = {}
             cover_artifact_id = ""
             cover_path = None
@@ -4099,6 +4391,7 @@ class WorkflowHandlers:
                         str(cover_path) if cover_path else None,
                         raise_on_error=True,
                     )
+            progress(0.96, "Registering assembled audio")
             artifact = self.artifacts.register(
                 destination,
                 kind="audio",
@@ -4290,7 +4583,9 @@ class WorkflowHandlers:
                 raise ValueError("Audiobook export requires generated audio.")
             _audio_record, audio_path = self._resolve_input(audio.id)
             destination = _next_available_path(output_dir / f"{export_name}{audio_path.suffix.lower()}")
+            progress(0.25, "Copying assembled audiobook")
             shutil.copy2(audio_path, destination)
+            progress(0.9, "Registering audiobook export")
             produced.append(self.artifacts.register(destination, kind="export", role="export", session_id=session_id, parent_ids=[audio.id], settings=settings))
         else:
             upload_media = next((item for item in attached_sources if Path(item.relative_path).suffix.lower() in {".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v"}), None) or next((item for item in reversed(current) if item.role == "upload" and Path(item.relative_path).suffix.lower() in {".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v"}), None)
@@ -4318,7 +4613,16 @@ class WorkflowHandlers:
             # subtitle/text-only request still uses the selected document.
             selected_subtitles = [item for item in selected_subtitles if item] if export_mode != "media" or subtitle_mode != "none" or upload_media is None else []
             finalized_subtitles: list[Artifact] = []
-            for item in selected_subtitles:
+            progress(
+                0.12,
+                (
+                    f"Preparing {len(selected_subtitles)} subtitle track"
+                    f"{'s' if len(selected_subtitles) != 1 else ''}"
+                    if selected_subtitles
+                    else "Subtitle selection complete"
+                ),
+            )
+            for index, item in enumerate(selected_subtitles, start=1):
                 _subtitle_record, subtitle_path = self._resolve_input(item.id)
                 track_name = "translation" if item.role == "translation" else "source"
                 finalized_path = _next_available_path(output_dir / f"{record.storage_key}_{track_name}_final.srt")
@@ -4336,6 +4640,10 @@ class WorkflowHandlers:
                     },
                 )
                 finalized_subtitles.append(finalized)
+                progress(
+                    0.12 + 0.18 * (index / len(selected_subtitles)),
+                    f"Prepared subtitle track {index} of {len(selected_subtitles)}",
+                )
             selected_subtitles = finalized_subtitles
             dubbing_audio = selected_audio if selected_assembly is not None else by_role.get("assembled_audio") or by_role.get("dubbing_audio")
             default_audio_mode = "mixed" if record.workflow_kind == "voiceover" and (upload_media or upload_audio) else "dubbed" if record.workflow_kind == "voiceover" else "source"
@@ -4356,7 +4664,11 @@ class WorkflowHandlers:
             if export_mode in {"subtitles", "text"}:
                 if not selected_subtitles:
                     raise ValueError("No subtitle artifact is available for this export.")
-                for item in selected_subtitles:
+                for index, item in enumerate(selected_subtitles, start=1):
+                    progress(
+                        0.35 + 0.5 * ((index - 1) / len(selected_subtitles)),
+                        f"Writing export track {index} of {len(selected_subtitles)}",
+                    )
                     _artifact, subtitle_path = self._resolve_input(item.id)
                     track_name, language, title, _default = track_details(item)
                     if export_mode == "text":
@@ -4389,7 +4701,12 @@ class WorkflowHandlers:
                             metadata={"language": language, "title": title, "source_role": (item.metadata_json or {}).get("source_role")},
                         )
                     )
+                    progress(
+                        0.35 + 0.55 * (index / len(selected_subtitles)),
+                        f"Exported track {index} of {len(selected_subtitles)}",
+                    )
             elif upload_media:
+                progress(0.35, "Preparing source media")
                 _media_record, media_path = self._resolve_input(upload_media.id)
                 working_video = media_path
                 audio_parent_ids: list[str] = [upload_media.id]
@@ -4405,6 +4722,7 @@ class WorkflowHandlers:
                             audio_mode = "dubbed"
                     if audio_mode == "dubbed":
                         command = build_replace_video_audio_command(str(media_path), str(audio_path), str(audio_video), ffmpeg_executable=ffmpeg_executable)
+                        progress(0.4, "Replacing source audio with generated speech")
                     else:
                         command = build_mix_video_audio_command(
                             str(media_path),
@@ -4419,7 +4737,9 @@ class WorkflowHandlers:
                             audio_bitrate=str(settings.get("mix_audio_bitrate") or "192k"),
                             ffmpeg_executable=ffmpeg_executable,
                         )
+                        progress(0.4, "Mixing source audio with generated speech")
                     subprocess.run(command, check=True, capture_output=True, text=True)
+                    progress(0.58, "Media audio track ready")
                     working_video = audio_video
                     temporary_video = audio_video
                     audio_parent_ids.append(dubbing_audio.id)
@@ -4431,7 +4751,7 @@ class WorkflowHandlers:
                 try:
                     if subtitle_mode == "soft" and selected_subtitles:
                         tracks = []
-                        for item in selected_subtitles:
+                        for index, item in enumerate(selected_subtitles, start=1):
                             _subtitle, subtitle_path = self._resolve_input(item.id)
                             track_name, language, title, is_default = track_details(item)
                             tracks.append({"path": str(subtitle_path), "language": language, "title": title, "default": is_default})
@@ -4448,7 +4768,12 @@ class WorkflowHandlers:
                                     metadata={"language": language, "title": title, "default": is_default},
                                 )
                             )
+                            progress(
+                                0.58 + 0.06 * (index / len(selected_subtitles)),
+                                f"Prepared selectable subtitle track {index} of {len(selected_subtitles)}",
+                            )
                         command = build_multi_soft_subtitle_command(str(working_video), tracks, str(render_destination), ffmpeg_executable=ffmpeg_executable)
+                        progress(0.65, "Rendering media with selectable subtitles")
                         subprocess.run(command, check=True, capture_output=True, text=True)
                     elif subtitle_mode == "burned" and selected_subtitles:
                         subtitle_paths = [self._resolve_input(item.id)[1] for item in selected_subtitles]
@@ -4496,6 +4821,7 @@ class WorkflowHandlers:
                             audio_codec=burn_audio_codec,
                             audio_bitrate=burn_audio_bitrate,
                         )
+                        progress(0.65, "Rendering burned subtitles into video")
                         try:
                             subprocess.run(command, check=True, capture_output=True, text=True)
                         except subprocess.CalledProcessError as error:
@@ -4503,8 +4829,10 @@ class WorkflowHandlers:
                             reason = detail[-1] if detail else "FFmpeg returned a non-zero exit status."
                             raise RuntimeError(f"Burned-subtitle transcoding with {burn_video_encoder} failed: {reason}") from error
                     else:
+                        progress(0.65, "Copying prepared media output")
                         shutil.copy2(working_video, render_destination)
                     os.replace(render_destination, destination)
+                    progress(0.9, "Rendered media output ready")
                 finally:
                     if render_destination.exists():
                         render_destination.unlink()
@@ -4520,6 +4848,8 @@ class WorkflowHandlers:
                     for item in video_track_artifacts
                 ]
                 produced.append(
+                    # Register after the potentially long render so 100% is
+                    # reserved for a durable, discoverable output.
                     self.artifacts.register(
                         destination,
                         kind="export",
@@ -4546,7 +4876,11 @@ class WorkflowHandlers:
             else:
                 # Preserve the historical behavior for SRT/audio-only sessions:
                 # a media export falls back to managed standalone artifacts.
-                for item in selected_subtitles:
+                for index, item in enumerate(selected_subtitles, start=1):
+                    progress(
+                        0.35 + 0.3 * ((index - 1) / max(1, len(selected_subtitles))),
+                        f"Writing standalone subtitle {index} of {len(selected_subtitles)}",
+                    )
                     _artifact, item_path = self._resolve_input(item.id)
                     track_name, language, title, _default = track_details(item)
                     destination = _next_available_path(output_dir / f"{export_name}_{track_name}.srt")
@@ -4562,7 +4896,12 @@ class WorkflowHandlers:
                             metadata={"language": language, "title": title, "source_role": (item.metadata_json or {}).get("source_role")},
                         )
                     )
+                    progress(
+                        0.35 + 0.3 * (index / len(selected_subtitles)),
+                        f"Exported standalone subtitle {index} of {len(selected_subtitles)}",
+                    )
                 if upload_audio and audio_mode == "source":
+                    progress(0.7, "Copying source audio")
                     _source_record, source_audio_path = self._resolve_input(upload_audio.id)
                     destination = _next_available_path(output_dir / f"{export_name}{source_audio_path.suffix.lower()}")
                     shutil.copy2(source_audio_path, destination)
@@ -4588,17 +4927,21 @@ class WorkflowHandlers:
                             release_ms=settings.get("mix_release_ms", 350),
                             ffmpeg_executable=ffmpeg_executable,
                         )
+                        progress(0.7, "Mixing standalone audio")
                         subprocess.run(command, check=True, capture_output=True, text=True)
                         parents = [upload_audio.id, dubbing_audio.id]
                         role = "export_mixed_audio"
                     else:
+                        progress(0.7, "Copying generated speech audio")
                         destination = _next_available_path(output_dir / f"{export_name}{item_path.suffix.lower()}")
                         shutil.copy2(item_path, destination)
                         parents = [dubbing_audio.id]
                         role = f"export_{dubbing_audio.role}"
                     produced.append(self.artifacts.register(destination, kind="export", role=role, session_id=session_id, parent_ids=parents, settings=settings))
+                    progress(0.92, "Standalone audio export ready")
                 if not produced:
                     raise ValueError("No subtitle or audio artifact is available to export.")
+        progress(0.98, f"Registered {len(produced)} export artifact{'s' if len(produced) != 1 else ''}")
         progress(1.0, "Export ready")
         return {"artifact_ids": [item.id for item in produced], "paths": [item.relative_path for item in produced]}
 
@@ -4654,14 +4997,16 @@ class WorkflowHandlers:
         session_id = str(payload.get("session_id") or "")
         record = self._session_record(session_id)
         destination = self._session_dir(session_id) / "exports" / f"{record.storage_key}.pandrator-session"
-        progress(0.05, "Collecting session records")
+        progress(0.02, "Preparing session bundle export")
         result = SessionBundleService(self.database, self.paths).export_bundle(
             session_id,
             destination,
             include_sources=bool(payload.get("include_sources", True)),
+            progress_callback=_scaled_progress_callback(progress, 0.02, 0.95),
         )
         if cancel_event.is_set():
             return {}
+        progress(0.97, "Registering session bundle")
         artifact = self.artifacts.register(destination, kind="bundle", role="session_bundle", session_id=session_id)
         progress(1.0, "Session bundle ready")
         return {**result, "artifact_id": artifact.id}
@@ -4670,9 +5015,13 @@ class WorkflowHandlers:
         from .bundles import SessionBundleService
 
         _artifact, source = self._resolve_input(str(payload.get("source_artifact_id") or ""))
-        progress(0.05, "Validating session bundle")
+        progress(0.02, "Preparing session bundle import")
         if cancel_event.is_set():
             return {}
-        result = SessionBundleService(self.database, self.paths).import_bundle(source, name=payload.get("name"))
+        result = SessionBundleService(self.database, self.paths).import_bundle(
+            source,
+            name=payload.get("name"),
+            progress_callback=_scaled_progress_callback(progress, 0.02, 0.98),
+        )
         progress(1.0, "Session imported")
         return result

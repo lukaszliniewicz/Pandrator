@@ -20,6 +20,7 @@ export type JobRecord = {
   payload_json?: Record<string, unknown>;
   status: string;
   progress: number;
+  progress_detail?: string | null;
   error_message?: string | null;
   result_json?: Record<string, unknown> | null;
   created_at: string;

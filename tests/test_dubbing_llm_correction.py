@@ -203,15 +203,24 @@ answered by somebody else.
             "llm_char": 100_000,
             "max_subtitles_per_call": 2,
         }
+        progress_updates = []
         result = llm_correction.correct_srt_content(
             srt_content,
             settings,
             completion_func=fake_completion,
+            progress_callback=lambda value, detail=None: progress_updates.append((value, detail)),
         )
 
         self.assertEqual(prompt_batch_sizes, [2, 2, 1])
         self.assertEqual(result.response_count, 3)
         self.assertEqual(len(srt_utils.parse_srt(result.srt_content)), 5)
+        completed = [
+            (value, detail)
+            for value, detail in progress_updates
+            if str(detail).startswith("Corrected ")
+        ]
+        self.assertEqual([0.4, 0.8, 1.0], [value for value, _detail in completed])
+        self.assertEqual("Corrected 5 of 5 subtitles", completed[-1][1])
 
     def test_correct_srt_content_retries_invalid_response(self):
         responses = iter(

@@ -6,7 +6,7 @@ import json
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from threading import Event
+from threading import Event, Lock
 from typing import Any, Callable
 
 from pandrator.logic.llm_handler import ChatCompletionResult, chat_completion_with_metadata
@@ -155,6 +155,36 @@ def optimize_texts(
     usage = OptimizationUsage()
     populated = [(index, text) for index, text in enumerate(texts) if text.strip()]
     batches = [populated[index:index + batch_size] for index in range(0, len(populated), batch_size)]
+    if not populated:
+        progress(1.0, "No non-empty text units require speech optimization")
+        return output, usage
+
+    total_requests = len(batches) * len(prompts)
+    completed_requests = 0
+    progress_lock = Lock()
+    progress(
+        0.0,
+        (
+            f"Preparing {total_requests} speech optimization "
+            f"request{'s' if total_requests != 1 else ''}"
+        ),
+    )
+
+    def report_completed_request(batch_length: int) -> None:
+        nonlocal completed_requests
+        # Worker completions can arrive concurrently. Serialize both the
+        # counter and callback so persisted job progress never moves backward.
+        with progress_lock:
+            completed_requests += 1
+            progress(
+                completed_requests / total_requests,
+                (
+                    f"Completed speech optimization request "
+                    f"{completed_requests} of {total_requests} "
+                    f"for {batch_length} text unit"
+                    f"{'s' if batch_length != 1 else ''}"
+                ),
+            )
 
     def process(batch: list[tuple[int, str]]) -> tuple[list[tuple[int, str]], list[ChatCompletionResult]]:
         current = {index: original for index, original in batch}
@@ -205,10 +235,10 @@ def optimize_texts(
                             f"after {structured_attempts} attempts: {error}"
                         ) from error
                     continue
+                report_completed_request(len(batch))
                 break
         return list(current.items()), responses
 
-    completed = 0
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="tts-optimize") as executor:
         futures = {executor.submit(process, batch): batch for batch in batches}
         for future in as_completed(futures):
@@ -219,8 +249,8 @@ def optimize_texts(
                 usage.add(response)
             if on_batch:
                 on_batch(revised_items)
-            completed += len(revised_items)
-            progress(completed / max(1, len(populated)), f"Optimized {completed} of {len(populated)} text units")
+    if not cancel_event.is_set():
+        progress(1.0, f"Optimized {len(populated)} of {len(populated)} text units")
     return output, usage
 
 
@@ -255,6 +285,13 @@ def _optimize_with_speech_plans(
     output = list(texts)
     usage = OptimizationUsage()
     populated = [(index, text) for index, text in enumerate(texts) if text.strip()]
+    if not populated:
+        progress(1.0, "No non-empty text units require speech planning")
+        return output, usage
+    progress(
+        0.0,
+        f"Preparing speech plans for {len(populated)} text units",
+    )
     try:
         structured_attempts = max(
             1,

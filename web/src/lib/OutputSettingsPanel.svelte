@@ -4,7 +4,12 @@
   import ArtifactPreview from './ArtifactPreview.svelte';
   import { artifactFilename } from './artifact-display';
 
-  let { sessionId }: { sessionId: string } = $props();
+  type SavedOutputProfile = {output:Record<string,unknown>;audio:Record<string,unknown>};
+  type Props = {
+    sessionId:string;
+    onSaveForExportReady?:(save:()=>Promise<SavedOutputProfile>)=>void;
+  };
+  let { sessionId, onSaveForExportReady }: Props = $props();
   let settings = $state<any>(null);
   let audioSettings = $state<any>(null);
   let session = $state<any>(null);
@@ -38,8 +43,6 @@
   const videoKeys = ['audio_mode','subtitle_mode','burn_video_encoder','burn_video_resolution','burn_video_quality','burn_video_speed','burn_audio_codec','burn_audio_bitrate'];
   const mixKeys = ['mix_source_gain_db','mix_voice_gain_db','mix_voice_lufs','mix_ducking','mix_attack_ms','mix_release_ms','mix_audio_bitrate'];
   const audioSyncKeys = ['synchronization_delay_ms','synchronization_speed','synchronization_sentence_gap_ms'];
-  type SavedOutputProfile = {output:Record<string,unknown>;audio:Record<string,unknown>};
-
   function applicableOutputKeys() {
     if (audiobookWorkspace) return new Set(['format','bitrate','language','title','artist','album','genre','cover_artifact_id']);
     if (subtitleWorkspace) return new Set(sharedSubtitleKeys);
@@ -70,6 +73,7 @@
     draft=sanitizeOutput({...settings.override});
     audioDraft=sanitizeAudio({...audioSettings.override});
     if(session.workflow_kind==='subtitles'&&!['subtitles','text'].includes(String(value('export_mode','subtitles'))))draft={...draft,export_mode:'subtitles'};
+    onSaveForExportReady?.(saveForExport);
   }
 
   async function save(nextDraft=draft, nextAudioDraft=audioDraft, rethrow=false):Promise<SavedOutputProfile|null> {

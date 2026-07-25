@@ -19,7 +19,11 @@ from pandrator.web.credentials import auxiliary_credential_key, upsert_credentia
 from pandrator.web.jobs import JobQueue
 from pandrator.web.models import Artifact, ArtifactEdge, AudioTake, GenerationPlan, GenerationPlanRevision, GenerationRun, GenerationSegment, OutputAssembly, PronunciationEntry, SessionRecord
 from pandrator.web.sessions import SessionService
-from pandrator.web.workflow_handlers import WorkflowHandlers
+from pandrator.web.workflow_handlers import (
+    WorkflowHandlers,
+    _fraction_message_callback,
+    _source_cleaning_progress_callback,
+)
 from pandrator.web.tts_optimization import OptimizationUsage
 from pandrator.web.workspace import GenerationService, OutcomePlanService, WorkspaceSettingsService, mark_output_assemblies_stale
 from tests.web_test_support import prepare_web_test_data_root
@@ -44,6 +48,35 @@ class WebWorkflowHandlerTests(unittest.TestCase):
     @staticmethod
     def progress(_value, _detail=None):
         return None
+
+    def test_fraction_message_progress_uses_the_primary_work_counter(self):
+        updates = []
+        callback = _fraction_message_callback(
+            lambda value, detail=None: updates.append((value, detail)),
+            0.1,
+            0.5,
+        )
+
+        callback("Web research turn 3/8 (1/3 searches, 0/2 pages)")
+
+        self.assertAlmostEqual(0.2, updates[-1][0])
+
+    def test_source_cleaning_progress_spans_phase_turn_budgets(self):
+        updates = []
+        callback = _source_cleaning_progress_callback(
+            lambda value, detail=None: updates.append((value, detail)),
+            0.4,
+            0.8,
+            phase_names=["first", "second"],
+            phase_budgets={"first": 2, "second": 2},
+        )
+
+        callback("Phase 1/2: First")
+        callback("First: LLM turn 2/2")
+        callback("Phase 2/2: Second")
+
+        for expected, (value, _detail) in zip([0.4, 0.5, 0.6], updates):
+            self.assertAlmostEqual(expected, value)
 
     def test_rerunning_an_upstream_role_marks_previous_descendants_stale(self):
         first_source = self.paths.uploads / "first.txt"
@@ -367,6 +400,7 @@ class WebWorkflowHandlerTests(unittest.TestCase):
 
     def test_url_download_uses_ytdlp_and_records_provenance(self):
         captured = {}
+        progress_updates = []
         destination = self.session_dir / "sources" / "example-video.mp4"
 
         class FakeYoutubeDL:
@@ -381,6 +415,10 @@ class WebWorkflowHandlerTests(unittest.TestCase):
 
             def extract_info(self, _url, download):
                 self.download = download
+                for hook in captured["progress_hooks"]:
+                    hook({"status": "downloading", "downloaded_bytes": 50, "total_bytes": 100})
+                    hook({"status": "downloading", "downloaded_bytes": 100, "total_bytes": 100})
+                    hook({"status": "finished"})
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_bytes(b"media")
                 return {"title": "Example video", "id": "fixture", "ext": "mp4"}
@@ -395,7 +433,7 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         ), mock.patch("yt_dlp.YoutubeDL", FakeYoutubeDL):
             result = self.handlers.download_source_url(
                 {"session_id": self.session.id, "url": "https://example.com/watch?v=fixture"},
-                self.progress,
+                lambda value, detail=None: progress_updates.append((value, detail)),
                 threading.Event(),
             )
 
@@ -404,6 +442,16 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         self.assertEqual(artifact.metadata_json["downloader"], "yt-dlp")
         self.assertTrue(captured["noplaylist"])
         self.assertTrue(captured["restrictfilenames"])
+        self.assertTrue(
+            any(detail == "Downloading source — 50%" for _value, detail in progress_updates)
+        )
+        self.assertTrue(
+            any(
+                detail == "Source download complete; processing media"
+                for _value, detail in progress_updates
+            )
+        )
+        self.assertEqual(1.0, progress_updates[-1][0])
 
     def test_audiobook_generation_rejects_unsegmented_text_with_actionable_error(self):
         raw_path = self.session_dir / "raw.txt"
@@ -770,16 +818,28 @@ class WebWorkflowHandlerTests(unittest.TestCase):
             session_id=subtitle_session.id,
             metadata={"original_filename": "captions.srt"},
         )
+        progress_updates = []
         result = self.handlers.export(
             {
                 "session_id": subtitle_session.id,
                 "source_artifact_id": uploaded.id,
                 "settings": {"subtitle_selection": "source", "subtitle_mode": "none"},
             },
-            self.progress,
+            lambda value, detail=None: progress_updates.append((value, detail)),
             threading.Event(),
         )
         self.assertEqual(len(result["artifact_ids"]), 1)
+        self.assertEqual(1.0, progress_updates[-1][0])
+        self.assertEqual(
+            sorted(value for value, _detail in progress_updates),
+            [value for value, _detail in progress_updates],
+        )
+        self.assertTrue(
+            any(detail == "Prepared subtitle track 1 of 1" for _value, detail in progress_updates)
+        )
+        self.assertTrue(
+            any(detail == "Exported track 1 of 1" for _value, detail in progress_updates)
+        )
         with self.database.session() as session:
             exported = session.scalar(select(Artifact).where(Artifact.id == result["artifact_ids"][0]))
             self.assertEqual(exported.role, "export_subtitle_source")

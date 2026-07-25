@@ -280,7 +280,16 @@ class WorkflowService:
                         "selection_revision": history["revision"] if history else 0,
                         "job_id": active.id if active else None,
                         "progress": active.progress if active and status in {"running", "failed"} else None,
-                        "detail": active.error_message if active and status == "failed" else None,
+                        "detail": (
+                            active.error_message
+                            if active and status == "failed"
+                            else (
+                                active.progress_detail
+                                or ("Waiting for an available worker" if active.status == "queued" else None)
+                                if active and status == "running"
+                                else None
+                            )
+                        ),
                         "usage": usage,
                     }
                 )
