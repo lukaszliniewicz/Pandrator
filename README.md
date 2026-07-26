@@ -378,6 +378,10 @@ Backend contributors should read
 [`BACKEND_ARCHITECTURE.md`](BACKEND_ARCHITECTURE.md) before adding
 routes, durable job kinds, or TTS providers.
 
+Frontend contributors should read
+[`FRONTEND_ARCHITECTURE.md`](FRONTEND_ARCHITECTURE.md) before adding API
+operations, shared server state, invalidation behavior, or workflow UI.
+
 ## Licence
 
 Pandrator is released under [GNU AGPLv3](LICENSE). Speech, transcription, LLM, and voice-conversion models have their own licences and usage conditions; review the information shown by the installer and the linked upstream licence before use.

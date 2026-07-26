@@ -1,17 +1,17 @@
 <script lang="ts">
   import { Columns3, Filter, Merge, Play, Save, Scissors, Trash2, X } from '@lucide/svelte';
-  import { api } from './api';
+  import { sessionApi } from './domain-api';
+  import type {
+    SubtitleComparisonRow as Row,
+    SubtitleReviewPayload as Payload,
+    SubtitleSegment as Segment
+  } from './api-models';
   import { onDestroy, onMount, tick } from 'svelte';
   import GuidedTour from './GuidedTour.svelte';
   import AudioPlayer from './AudioPlayer.svelte';
   import TextDiff from './TextDiff.svelte';
   import SearchReplaceBar from './SearchReplaceBar.svelte';
   import type { TextReplacement, TextSearchMatch } from './search-replace';
-
-  type Segment = { id?: string; ordinal: number; start_ms: number; end_ms: number; text: string; speaker?: string | null };
-  type Stage = { revision: number; segments: Segment[] };
-  type Row = { start_ms: number; end_ms: number; changed: boolean; transcription?: Segment[]; correction?: Segment[]; translation?: Segment[]; tts_optimization?: Segment[] };
-  type Payload = { stages: Record<string, Stage>; rows: Row[] };
 
   let { sessionId, sourceArtifactId, onclose, onsaved }: { sessionId: string; sourceArtifactId?: string; onclose: () => void; onsaved: () => void } = $props();
   let payload = $state<Payload | null>(null);
@@ -103,7 +103,7 @@
   async function load() {
     loading = true;
     try {
-      payload = await api<Payload>(`/sessions/${sessionId}/subtitles`);
+      payload = await sessionApi.subtitles(sessionId);
       if (!payload.stages[editStage]) editStage = (availableStages.at(-1) ?? 'transcription') as typeof editStage;
     } catch (caught) { error = caught instanceof Error ? caught.message : String(caught); }
     finally { loading = false; }
@@ -204,9 +204,9 @@
     if (!stage) return;
     saving = true; error = '';
     try {
-      await api(`/sessions/${sessionId}/subtitles/${editStage}/review`, {
-        method: 'POST',
-        body: JSON.stringify({ expected_revision: stage.revision, segments: stage.segments.map(({ start_ms, end_ms, text, speaker }) => ({ start_ms, end_ms, text, speaker })) })
+      await sessionApi.saveSubtitleReview(sessionId,editStage,{
+        expected_revision: stage.revision,
+        segments: stage.segments.map(({ start_ms, end_ms, text, speaker }) => ({ start_ms, end_ms, text, speaker }))
       });
       await load(); onsaved();
     } catch (caught) { error = caught instanceof Error ? caught.message : String(caught); }

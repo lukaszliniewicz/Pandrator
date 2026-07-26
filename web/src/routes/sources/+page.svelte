@@ -1,14 +1,17 @@
 <script lang="ts">
   import { ArchiveRestore, File, FileAudio, FileText, Link2, Pencil, Plus, Save, Search, Trash2, X } from '@lucide/svelte';
-  import { api, uploadManagedFile } from '$lib/api';
+  import { uploadManagedFile } from '$lib/api';
+  import { sourceApi } from '$lib/domain-api';
+  import type { SourceAsset } from '$lib/api-models';
+  import type { PreviewableArtifact } from '$lib/artifact-display';
   import ArtifactPreview from '$lib/ArtifactPreview.svelte';
-  let sources=$state<any[]>([]); let search=$state(''); let showTrash=$state(false); let uploading=$state(false); let progress=$state(0); let error=$state(''); let message=$state(''); let preview=$state<any|null>(null); let editingId=$state(''); let editName=$state('');
+  let sources=$state<SourceAsset[]>([]); let search=$state(''); let showTrash=$state(false); let uploading=$state(false); let progress=$state(0); let error=$state(''); let message=$state(''); let preview=$state<PreviewableArtifact|null>(null); let editingId=$state(''); let editName=$state('');
   const visible=$derived(sources.filter((item)=>item.display_name.toLowerCase().includes(search.toLowerCase())||item.kind.includes(search.toLowerCase())));
-  async function load(){sources=(await api<{items:any[]}>(`/sources?include_trashed=${showTrash}`)).items}
+  async function load(){sources=(await sourceApi.list(showTrash)).items}
   async function upload(event:Event){const input=event.currentTarget as HTMLInputElement;const file=input.files?.[0];if(!file)return;uploading=true;error='';try{await uploadManagedFile(file,undefined,(value)=>progress=value);message='Reusable source added.';await load()}catch(caught){error=caught instanceof Error?caught.message:String(caught)}finally{uploading=false;input.value=''}}
-  async function rename(item:any){if(!editName.trim())return;error='';try{await api(`/sources/${item.id}`,{method:'PATCH',headers:{'If-Match':`"${item.revision}"`},body:JSON.stringify({display_name:editName.trim()})});editingId='';message='Source renamed.';await load()}catch(caught){error=caught instanceof Error?caught.message:String(caught)}}
-  async function trash(item:any){if(item.reference_count)return;error='';try{await api(`/sources/${item.id}`,{method:'DELETE',headers:{'If-Match':`"${item.revision}"`}});message='Source moved to recoverable trash; its managed file was preserved.';await load()}catch(caught){error=caught instanceof Error?caught.message:String(caught)}}
-  async function restore(item:any){error='';try{await api(`/sources/${item.id}/restore`,{method:'POST',headers:{'If-Match':`"${item.revision}"`}});message='Source restored.';await load()}catch(caught){error=caught instanceof Error?caught.message:String(caught)}}
+  async function rename(item:SourceAsset){if(!editName.trim())return;error='';try{await sourceApi.rename(item,editName.trim());editingId='';message='Source renamed.';await load()}catch(caught){error=caught instanceof Error?caught.message:String(caught)}}
+  async function trash(item:SourceAsset){if(item.reference_count)return;error='';try{await sourceApi.trash(item);message='Source moved to recoverable trash; its managed file was preserved.';await load()}catch(caught){error=caught instanceof Error?caught.message:String(caught)}}
+  async function restore(item:SourceAsset){error='';try{await sourceApi.restore(item);message='Source restored.';await load()}catch(caught){error=caught instanceof Error?caught.message:String(caught)}}
   $effect(()=>{showTrash;load().catch((caught)=>error=caught instanceof Error?caught.message:String(caught))});
 </script>
 

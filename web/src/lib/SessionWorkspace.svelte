@@ -1,10 +1,8 @@
 <script lang="ts">
   import {
     ArrowLeft,
-    Check,
     ChevronRight,
     CircleAlert,
-    Clock3,
     Crop,
     LoaderCircle,
     Library,
@@ -13,13 +11,23 @@
     RefreshCw,
     RotateCcw,
     Save,
-    Settings2,
     Sparkles,
     X
   } from '@lucide/svelte';
-  import { api, type JobRecord, type SessionRecord } from './api';
+  import { sessionApi } from './domain-api';
+  import type {
+    OutcomePlan,
+    RuntimeCapabilities,
+    SessionRecord,
+    SettingsPayload,
+    StageRerunImpact,
+    TtsCatalogue,
+    TtsService,
+    VoiceRecord,
+    WorkflowSnapshot,
+    WorkflowStage
+  } from './api-models';
   import { appState } from './app-state.svelte';
-  import { invalidates, type InvalidationBatch } from './invalidation';
   import SubtitleReview from './SubtitleReview.svelte';
   import GuidedTour from './GuidedTour.svelte';
   import ArtifactPreview from './ArtifactPreview.svelte';
@@ -28,76 +36,42 @@
   import VoiceLibraryModal from './VoiceLibraryModal.svelte';
   import TextOptimizationReview from './TextOptimizationReview.svelte';
   import AddSourceDialog from './AddSourceDialog.svelte';
-  import StageArtifactHistory from './StageArtifactHistory.svelte';
-  import { artifactRoleLabel, type PreviewableArtifact } from './artifact-display';
-  import type { StageArtifact } from './stage-artifacts';
+  import WorkflowStageCard from './WorkflowStageCard.svelte';
+  import WorkflowRunDialogs from './WorkflowRunDialogs.svelte';
+  import type { PreviewableArtifact } from './artifact-display';
   import { LANGUAGE_OPTIONS } from './settings-fields';
   import { describeVoice, languagesForService } from './voice-catalog';
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
+  import { WorkflowStore } from './workflow-store.svelte';
 
-  type Stage = {
-    number: number;
-    key: string;
-    title: string;
-    explanation: string;
-    status: 'unavailable' | 'ready' | 'running' | 'completed' | 'stale' | 'failed';
-    executable: boolean;
-    toggle?: boolean;
-    toggle_only?: boolean;
-    enabled?: boolean | null;
-    optimization_timing?: 'document' | 'generation';
-    included: boolean;
-    required?: boolean;
-    artifact?: PreviewableArtifact & { id: string; role: string; raw_role?: string; path: string } | null;
-    artifacts?: StageArtifact[];
-    selected_artifact_id?: string | null;
-    selection_revision?: number;
-    artifact_history_total?: number;
-    artifact_history_has_more?: boolean;
-    artifact_history_next_before_version?: number | null;
-    job_id?: string | null;
-    progress?: number | null;
-    detail?: string | null;
-    usage?: {
-      input_tokens: number;
-      cached_input_tokens: number;
-      output_tokens: number;
-      total_tokens: number;
-      cost_usd: number | null;
-      model_id: string;
-      created_at: string;
-    } | null;
-  };
+  type Stage = WorkflowStage;
+  type Snapshot = WorkflowSnapshot;
 
-  type Snapshot = {
-    session_id: string;
-    workflow_kind: string;
-    workflow_preset: string;
-    revision: number;
-    stages: Stage[];
-    sources: { id: string; filename: string; kind: string; role: string }[];
-  };
-
-  let { session, onback, onupdated }: { session: SessionRecord; onback: () => void; onupdated: (session: SessionRecord) => void } = $props();
-  let snapshot = $state<Snapshot | null>(null);
-  let outcome = $state<any>(null);
-  let capabilities = $state<Record<string, any>>({});
-  let ttsCatalogue = $state<any>({services:[]});
-  let libraryVoices = $state<any[]>([]);
+  let {
+    session,
+    outcome: initialOutcome,
+    workflowStore,
+    onback,
+    onupdated
+  }: {
+    session: SessionRecord;
+    outcome: OutcomePlan;
+    workflowStore: WorkflowStore;
+    onback: () => void;
+    onupdated: (session: SessionRecord) => void;
+  } = $props();
+  const snapshot = $derived(workflowStore.snapshot);
+  let outcome = $state<OutcomePlan>(untrack(() => initialOutcome));
+  let capabilities = $state<RuntimeCapabilities>({});
+  let ttsCatalogue = $state<TtsCatalogue>({services:[]});
+  let libraryVoices = $state<VoiceRecord[]>([]);
   let llmModels = $state<{value:string;label:string;isDefault:boolean}[]>([]);
-  let loading = $state(true);
   let error = $state('');
   let sourceDialog = $state(false);
   let sourceMessage = $state('');
-  let pendingRun = $state<{stage: Stage; impact: any} | null>(null);
+  let pendingRun = $state<{stage: Stage; impact: StageRerunImpact} | null>(null);
   let pendingSettingsMismatch = $state<{stage: Stage; mismatches: {stage: string; changed_fields: string[]}[]} | null>(null);
   let historyLoading = $state<Record<string, boolean>>({});
-  const mismatchFieldLabel = (field: string) => ({backend: 'backend', target_language: 'target language', model: 'model', instructions: 'guidance'}[field] ?? field);
-  const mismatchStageLabel = (key: string) => (key === 'translate' ? 'Translation' : 'Correction');
-  const stageProgressPercent = (stage: Stage) => {
-    const value = Number(stage.progress ?? 0);
-    return Math.round(Math.max(0, Math.min(1, Number.isFinite(value) ? value : 0)) * 100);
-  };
   let settingsStage = $state<Stage | null>(null);
   let stageMessage = $state('');
   let fullSettingsSection = $state('');
@@ -109,7 +83,6 @@
   let workspaceMode = $state<'review' | 'automatic'>('review');
   let preview = $state<PreviewableArtifact | null>(null);
   const sectionDisplay = (section: string) => ({ stt: 'STT', tts: 'TTS', rvc: 'RVC' } as Record<string, string>)[section] ?? section.replaceAll('_', ' ');
-  const formatCost = (cost: number | null) => cost == null ? 'Cost not reported' : cost === 0 ? '$0.00' : cost < 0.01 ? `$${cost.toFixed(6)}` : `$${cost.toFixed(4)}`;
   let stageSettings = $state<Record<string, Record<string, unknown>>>({});
   let targetLanguage = $state('en');
   let originalLanguage = $state('auto');
@@ -190,17 +163,9 @@
   ];
 
   async function load(options: { initial?: boolean } = {}) {
-    const initial = options.initial ?? snapshot === null;
-    if (initial) loading = true;
     try {
-      [snapshot, outcome] = await Promise.all([api<Snapshot>(`/sessions/${session.id}/workflow`), api(`/sessions/${session.id}/outcome-plan`)]);
-      for (const stage of snapshot?.stages ?? []) {
-        if (stage.artifact) {
-          stage.artifact.raw_role = stage.artifact.role;
-          stage.artifact.role = artifactRoleLabel(stage.artifact.role);
-        }
-      }
-      const speechOptimization=snapshot?.stages.find((stage)=>stage.key==='optimize_tts');
+      const next = await workflowStore.load(!(options.initial ?? false));
+      const speechOptimization=next?.stages.find((stage)=>stage.key==='optimize_tts');
       if(speechOptimization){
         optimizationTiming=speechOptimization.optimization_timing??'generation';
         documentOptimizationEnabled=Boolean(speechOptimization.enabled&&optimizationTiming==='document');
@@ -208,8 +173,6 @@
       }
     } catch (caught) {
       error = caught instanceof Error ? caught.message : String(caught);
-    } finally {
-      if (initial) loading = false;
     }
   }
 
@@ -218,7 +181,10 @@
       capabilities = appState.capabilities;
       return;
     }
-    try { capabilities = await api<Record<string, any>>('/capabilities'); }
+    try {
+      await appState.refreshCapabilities();
+      capabilities = appState.capabilities;
+    }
     catch { capabilities = {}; }
   }
 
@@ -245,7 +211,7 @@
     }
     if (!confirmed && stage.artifact && (stage.artifacts?.length ?? 0) > 0) {
       try {
-        const impact = await api<any>(`/sessions/${session.id}/stages/${stage.key}/impact`);
+        const impact = await sessionApi.stageImpact(session.id, stage.key);
         pendingRun = { stage, impact };
       } catch (caught) {
         error = caught instanceof Error ? caught.message : String(caught);
@@ -254,7 +220,7 @@
     }
     if (!confirmed && stage.key === 'generate_audio') {
       try {
-        const preflight = await api<any>(`/sessions/${session.id}/stages/${stage.key}/settings-mismatches`);
+        const preflight = await sessionApi.stageSettingsMismatches(session.id, stage.key);
         if ((preflight?.mismatches ?? []).length) {
           pendingSettingsMismatch = { stage, mismatches: preflight.mismatches };
           return;
@@ -267,10 +233,7 @@
       const body = stage.key === 'generate_audio'
         ? { ...(stageSettings[stage.key] ?? {}), stage_settings: stageSettings, ...(reuseStages.length ? { reuse_stages: reuseStages } : {}) }
         : (stageSettings[stage.key] ?? {});
-      await api<JobRecord>(`/sessions/${session.id}/stages/${routeKey}/run`, {
-        method: 'POST',
-        body: JSON.stringify(body)
-      });
+      await sessionApi.runStage(session.id, routeKey, body);
       await load();
     } catch (caught) {
       error = caught instanceof Error ? caught.message : String(caught);
@@ -288,11 +251,12 @@
     if (!artifactId || artifactId === stage.selected_artifact_id) return;
     error = '';
     try {
-      await api(`/sessions/${session.id}/stages/${stage.key}/selection`, {
-        method: 'PUT',
-        headers: { 'If-Match': `"${stage.selection_revision ?? 0}"` },
-        body: JSON.stringify({ artifact_id: artifactId })
-      });
+      await sessionApi.selectStageArtifact(
+        session.id,
+        stage.key,
+        stage.selection_revision ?? 0,
+        artifactId
+      );
       await load({ initial: false });
     } catch (caught) { error = caught instanceof Error ? caught.message : String(caught); }
   }
@@ -301,11 +265,12 @@
     if (!stage.selected_artifact_id || !confirm(`Clear the selected ${stage.title.toLowerCase()} result? Dependent stage selections will also be cleared, but every artifact remains in history.`)) return;
     error = '';
     try {
-      await api(`/sessions/${session.id}/stages/${stage.key}/selection`, {
-        method: 'PUT',
-        headers: { 'If-Match': `"${stage.selection_revision ?? 0}"` },
-        body: JSON.stringify({ artifact_id: null })
-      });
+      await sessionApi.selectStageArtifact(
+        session.id,
+        stage.key,
+        stage.selection_revision ?? 0,
+        null
+      );
       await load({ initial: false });
     } catch (caught) { error = caught instanceof Error ? caught.message : String(caught); }
   }
@@ -316,13 +281,10 @@
     historyLoading[stage.key] = true;
     error = '';
     try {
-      const history = await api<{
-        items: StageArtifact[];
-        total: number;
-        has_more: boolean;
-        next_before_version: number | null;
-      }>(
-        `/sessions/${session.id}/stages/${stage.key}/artifacts?limit=50&before_version=${beforeVersion}`
+      const history = await sessionApi.stageArtifacts(
+        session.id,
+        stage.key,
+        beforeVersion
       );
       const merged = new Map(
         [...(stage.artifacts ?? []), ...history.items].map((artifact) => [
@@ -353,9 +315,9 @@
     settingsStage = stage;
     stageMessage = '';
     let saved = stageSettings[stage.key] ?? {};
-    let storedSettings:any = null;
+    let storedSettings:SettingsPayload | null = null;
     try {
-      const stored = await api<any>(`/sessions/${session.id}/settings/${stageSection(stage.key)}`);
+      const stored = await sessionApi.settings(session.id, stageSection(stage.key));
       storedSettings = stored;
       saved = {...stored.effective, ...saved};
       stageSettings[stage.key] = saved;
@@ -417,8 +379,8 @@
     removeDiacritics = Boolean(saved.remove_diacritics ?? false);
     removeQuotationMarks = Boolean(saved.remove_quotation_marks ?? false);
     const configuredServiceId=String(saved.tts_service ?? saved.service ?? ttsCatalogue.default_service ?? 'XTTS');
-    const configuredService=(ttsCatalogue.services??[]).find((item:any)=>[item.id,item.name].some((value)=>String(value??'').toLowerCase()===configuredServiceId.toLowerCase()));
-    const activeService=(configuredService?.online?configuredService:(ttsCatalogue.services??[]).find((item:any)=>item.online))??configuredService;
+    const configuredService=ttsCatalogue.services.find((item)=>[item.id,item.name].some((value)=>String(value??'').toLowerCase()===configuredServiceId.toLowerCase()));
+    const activeService=(configuredService?.online?configuredService:ttsCatalogue.services.find((item)=>item.online))??configuredService;
     ttsService = String(activeService?.id ?? configuredServiceId);
     ttsModel = activeService?.id===configuredService?.id ? String(saved.model ?? saved.xtts_model ?? activeService?.default_model ?? '') : String(activeService?.default_model ?? activeService?.models?.[0] ?? '');
     voiceName = activeService?.id===configuredService?.id ? String(saved.voice ?? saved.voice_name ?? '') : String(activeService?.default_voice ?? '');
@@ -438,8 +400,8 @@
       ttsModel = ttsModel || String(selectedTtsService.default_model ?? ttsModels[0] ?? '');
       voiceName = voiceName || String(selectedTtsDefaultVoice ?? '');
       if (String(selectedTtsService.id).toLowerCase()==='kobold_qwen') {
-        const catalogue=Array.from(selectedTtsService.voice_catalogues?.[ttsModel]??[]).map((voice:any)=>String(voice));
-        const published=libraryVoices.flatMap((voice:any)=>{
+        const catalogue=Array.from(selectedTtsService.voice_catalogues?.[ttsModel]??[]).map((voice)=>String(voice));
+        const published=libraryVoices.flatMap((voice)=>{
           const registration=voice?.metadata_json?.providers?.kobold_qwen;
           return registration?.status==='ready'&&registration?.voice_id?[String(registration.voice_id)]:[];
         });
@@ -453,29 +415,35 @@
 
   async function cancel(stage: Stage) {
     if (!stage.job_id) return;
-    try { await api(`/jobs/${stage.job_id}/cancel`, { method: 'POST' }); await load(); }
+    try { await sessionApi.cancelJob(stage.job_id); await load(); }
     catch (caught) { error = caught instanceof Error ? caught.message : String(caught); }
   }
 
   async function persistSection(section:string,value:Record<string,unknown>) {
-    const stored = await api<any>(`/sessions/${session.id}/settings/${section}`);
-    return api(`/sessions/${session.id}/settings/${section}`,{method:'PUT',headers:{'If-Match':`"${stored.revision}"`},body:JSON.stringify({value:{...stored.override,...value}})});
+    const stored = await sessionApi.settings(session.id, section);
+    return sessionApi.saveSettings(session.id, section, stored.revision, {
+      ...stored.override,
+      ...value
+    });
   }
 
   async function persistDefaultSection(section:string,value:Record<string,unknown>) {
-    const defaults=await api<any>(`/defaults/${section}`);
-    await api(`/settings/defaults.${section}`,{method:'PUT',headers:{'If-Match':`"${defaults.revision}"`},body:JSON.stringify({value:{...(defaults.value??{}),...value}})});
-    const stored=await api<any>(`/sessions/${session.id}/settings/${section}`);
+    const defaults=await sessionApi.defaults(section);
+    await sessionApi.saveDefaults(section, defaults.revision, {
+      ...defaults.value,
+      ...value
+    });
+    const stored=await sessionApi.settings(session.id, section);
     const cleaned={...(stored.override??{})};
     for(const key of Object.keys(value)) delete cleaned[key];
-    await api(`/sessions/${session.id}/settings/${section}`,{method:'PUT',headers:{'If-Match':`"${stored.revision}"`},body:JSON.stringify({value:cleaned})});
+    await sessionApi.saveSettings(session.id, section, stored.revision, cleaned);
   }
 
   async function clearSectionOverrides(section:string,keys:string[]) {
-    const stored=await api<any>(`/sessions/${session.id}/settings/${section}`);
+    const stored=await sessionApi.settings(session.id, section);
     const cleaned={...(stored.override??{})};
     for(const key of keys) delete cleaned[key];
-    await api(`/sessions/${session.id}/settings/${section}`,{method:'PUT',headers:{'If-Match':`"${stored.revision}"`},body:JSON.stringify({value:cleaned})});
+    await sessionApi.saveSettings(session.id, section, stored.revision, cleaned);
   }
 
   async function loadSpeechCatalogues(preserveSelection = false) {
@@ -483,13 +451,16 @@
     const previousModel = ttsModel;
     const previousVoice = voiceName;
     try {
-      const [services, voices] = await Promise.all([api<any>('/services/tts?refresh=true'), api<any>('/voices')]);
+      const [services, voices] = await Promise.all([
+        sessionApi.ttsCatalogue(true),
+        sessionApi.voices()
+      ]);
       ttsCatalogue = services;
       libraryVoices = voices.items ?? [];
       const catalogue = services.services ?? [];
-      const configured = catalogue.find((item:any) => [item.id,item.name].some((value) => String(value ?? '').toLowerCase() === String(services.default_service ?? '').toLowerCase()));
-      const preserved = catalogue.find((item:any) => [item.id,item.name].some((value) => String(value ?? '').toLowerCase() === previousService.toLowerCase()));
-      const active = (preserveSelection ? preserved : null) ?? (configured?.online ? configured : catalogue.find((item:any) => item.online)) ?? configured ?? catalogue[0];
+      const configured = catalogue.find((item) => [item.id,item.name].some((value) => String(value ?? '').toLowerCase() === String(services.default_service ?? '').toLowerCase()));
+      const preserved = catalogue.find((item) => [item.id,item.name].some((value) => String(value ?? '').toLowerCase() === previousService.toLowerCase()));
+      const active = (preserveSelection ? preserved : null) ?? (configured?.online ? configured : catalogue.find((item) => item.online)) ?? configured ?? catalogue[0];
       if (active) {
         ttsService = String(active.id ?? active.name);
         ttsModel = preserveSelection && preserved ? previousModel : ttsModel || String(active.default_model ?? active.models?.[0] ?? '');
@@ -514,10 +485,13 @@
 
   async function loadLlmModels() {
     try {
-      const providerPayload=await api<any>('/providers');
-      const enabled=(providerPayload.items??[]).filter((provider:any)=>provider.enabled);
-      const groups=await Promise.all(enabled.map(async(provider:any)=>({provider,models:(await api<any>(`/providers/${provider.id}/models`)).items??[]})));
-      llmModels=groups.flatMap(({provider,models}:any)=>models.filter((item:any)=>item.is_active).map((item:any)=>{
+      const providerPayload=await sessionApi.providers();
+      const enabled=providerPayload.items.filter((provider)=>provider.enabled);
+      const groups=await Promise.all(enabled.map(async(provider)=>({
+        provider,
+        models:(await sessionApi.providerModels(provider.id)).items
+      })));
+      llmModels=groups.flatMap(({provider,models})=>models.filter((item)=>item.is_active).map((item)=>{
         const custom=Boolean(provider.options_json?.is_custom)||!['openai','gemini','anthropic'].includes(provider.provider_key);
         const providerId=custom?(provider.options_json?.provider_id||provider.id):(provider.options_json?.provider_id||provider.provider_key);
         return {value:custom?`custom:${providerId}/${item.model_id}`:`${provider.provider_key}/${item.model_id}`,label:`${provider.label} · ${item.model_id}`,isDefault:Boolean(item.is_default)};
@@ -525,12 +499,12 @@
     } catch { llmModels=[]; }
   }
 
-  async function discoverTtsService(service:any = selectedTtsService) {
+  async function discoverTtsService(service:TtsService | undefined = selectedTtsService) {
     if (!service?.api_base) return;
     try {
-      const discovered = await api<any>('/services/tts/discover',{method:'POST',body:JSON.stringify({base_url:service.api_base})});
+      const discovered = await sessionApi.discoverTts(service.api_base, service.id);
       if (!discovered?.success) return;
-      const services = (ttsCatalogue.services??[]).map((item:any)=>item.id===service.id?{
+      const services = ttsCatalogue.services.map((item)=>item.id===service.id?{
         ...item,
         models:Array.from(new Set([...(discovered.models??[]),...(item.models??[])])),
         voices:Array.from(new Set([...(discovered.voices??[]),...(item.voices??[])])),
@@ -543,7 +517,7 @@
 
   async function chooseTtsService(value:string) {
     ttsService=value;
-    const service=(ttsCatalogue.services??[]).find((item:any)=>String(item.id)===value);
+    const service=ttsCatalogue.services.find((item)=>String(item.id)===value);
     ttsModel=String(service?.default_model??service?.models?.[0]??'');
     await discoverTtsService(service);
     voiceName=String(service?.default_voices_by_language?.[ttsModel]?.[targetLanguage]??service?.default_voices?.[ttsModel]??service?.default_voice??'');
@@ -569,11 +543,11 @@
     voiceName=providerVoiceId;
   }
 
-  const selectedTtsService = $derived((ttsCatalogue.services??[]).find((item:any)=>[item.id,item.name].map((value)=>String(value??'').toLowerCase()).includes(ttsService.toLowerCase())));
+  const selectedTtsService = $derived(ttsCatalogue.services.find((item)=>[item.id,item.name].map((value)=>String(value??'').toLowerCase()).includes(ttsService.toLowerCase())));
   const ttsModels = $derived(selectedTtsService?.models??[]);
   const selectedTtsDefaultVoice = $derived(selectedTtsService?.default_voices_by_language?.[ttsModel]?.[targetLanguage] ?? selectedTtsService?.default_voices?.[ttsModel] ?? selectedTtsService?.default_voice ?? '');
   const selectedTtsServiceId = $derived(String(selectedTtsService?.id??ttsService).toLowerCase());
-  const generationPromptModels = $derived(Array.from(selectedTtsService?.generation_prompt_models??[]).map((model:any)=>String(model).toLowerCase()));
+  const generationPromptModels = $derived(Array.from(selectedTtsService?.generation_prompt_models??[]).map((model)=>String(model).toLowerCase()));
   const supportsGenerationPrompt = $derived(generationPromptModels.includes(ttsModel.toLowerCase()));
   const qwenVoiceCloning = $derived(selectedTtsServiceId==='kobold_qwen' && ttsModel.toLowerCase()==='voice cloning');
   const supportsCloningVoices = $derived(Boolean(selectedTtsService?.supports_voice_cloning));
@@ -586,27 +560,42 @@
   )));
   const ttsLanguages = $derived(languagesForService(String(selectedTtsService?.id??ttsService),ttsVoiceDescriptors));
   const filteredPrebuiltVoices = $derived(ttsVoiceDescriptors.filter((voice)=>!voice.languageCode||voice.languageCode===targetLanguage));
-  const publishedProviderVoices = $derived(libraryVoices.flatMap((voice:any)=>{
+  const publishedProviderVoices = $derived(libraryVoices.flatMap((voice)=>{
     const registration=voice?.metadata_json?.providers?.[selectedTtsServiceId];
     return registration?.status==='ready'&&registration?.voice_id?[String(registration.voice_id)]:[];
   }));
-  const prebuiltVoiceIds = $derived(new Set(Array.from(selectedTtsService?.voice_catalogues?.['Prebuilt Voices']??[]).map((voice:any)=>String(voice).toLowerCase())));
+  const prebuiltVoiceIds = $derived(new Set(Array.from(selectedTtsService?.voice_catalogues?.['Prebuilt Voices']??[]).map((voice)=>String(voice).toLowerCase())));
   const clonedVoiceIds = $derived(Array.from(new Set([
     ...(qwenVoiceCloning?selectedModelVoiceIds:[]),
     ...(selectedTtsService?.live_voices??[]),
     ...publishedProviderVoices,
     ...(!selectedTtsService?.supports_prebuilt_voices?(selectedTtsService?.voices??[]):[])
-  ].map((voice:any)=>String(voice)).filter((voice:string)=>voice&&!prebuiltVoiceIds.has(voice.toLowerCase())))));
+  ].map((voice)=>String(voice)).filter((voice)=>voice&&!prebuiltVoiceIds.has(voice.toLowerCase())))));
   const clonedVoiceDescriptors = $derived(clonedVoiceIds.map((voice)=>describeVoice(selectedTtsServiceId,voice)));
   const showClonedVoices = $derived(Boolean(supportsCloningVoices && (!selectedTtsService?.supports_prebuilt_voices || qwenVoiceCloning)));
+
+  async function updateOutcomeTransformations(changes: Record<string, boolean>) {
+    const current = outcome ?? await sessionApi.outcome(session.id);
+    const value = {
+      ...current.value,
+      transformations: {
+        ...(current.value.transformations ?? {}),
+        ...changes
+      }
+    };
+    outcome = await sessionApi.updateOutcome(
+      session.id,
+      current.revision,
+      value
+    );
+    onupdated(session);
+  }
 
   async function toggleOptimization(enabled:boolean) {
     error='';
     try {
       await persistSection('text',{llm_tts_optimization:enabled,llm_processing_enabled:enabled});
-      const current=await api<any>(`/sessions/${session.id}/outcome-plan`);
-      const value={...current.value,transformations:{...(current.value?.transformations??{}),llm_tts_optimization:enabled}};
-      await api(`/sessions/${session.id}/outcome-plan`,{method:'PUT',headers:{'If-Match':`"${current.revision}"`},body:JSON.stringify({value})});
+      await updateOutcomeTransformations({llm_tts_optimization:enabled});
       optimizationEnabled=enabled;
       await load();
     } catch(caught){error=caught instanceof Error?caught.message:String(caught)}
@@ -616,9 +605,7 @@
     error='';
     try {
       await persistSection('text',{llm_tts_document_optimization:enabled});
-      const current=await api<any>(`/sessions/${session.id}/outcome-plan`);
-      const value={...current.value,transformations:{...(current.value?.transformations??{}),llm_tts_document_optimization:enabled}};
-      await api(`/sessions/${session.id}/outcome-plan`,{method:'PUT',headers:{'If-Match':`"${current.revision}"`},body:JSON.stringify({value})});
+      await updateOutcomeTransformations({llm_tts_document_optimization:enabled});
       documentOptimizationEnabled=enabled;
       await load();
     } catch(caught){error=caught instanceof Error?caught.message:String(caught)}
@@ -630,9 +617,10 @@
     const generationEnabled=enabled&&optimizationTiming==='generation';
     try {
       await persistSection('text',{llm_tts_optimization:generationEnabled,llm_processing_enabled:generationEnabled,llm_tts_document_optimization:documentEnabled});
-      const current=await api<any>(`/sessions/${session.id}/outcome-plan`);
-      const value={...current.value,transformations:{...(current.value?.transformations??{}),llm_tts_optimization:generationEnabled,llm_tts_document_optimization:documentEnabled}};
-      await api(`/sessions/${session.id}/outcome-plan`,{method:'PUT',headers:{'If-Match':`"${current.revision}"`},body:JSON.stringify({value})});
+      await updateOutcomeTransformations({
+        llm_tts_optimization:generationEnabled,
+        llm_tts_document_optimization:documentEnabled
+      });
       optimizationEnabled=generationEnabled;
       documentOptimizationEnabled=documentEnabled;
       await load();
@@ -744,12 +732,15 @@
         for(const update of updates) await persistSection(update.section,update.value);
       }
       if (mode==='session' && key === 'optimize_tts') {
-        const current=await api<any>(`/sessions/${session.id}/outcome-plan`);
-        await api(`/sessions/${session.id}/outcome-plan`,{method:'PUT',headers:{'If-Match':`"${current.revision}"`},body:JSON.stringify({value:{...current.value,transformations:{...(current.value?.transformations??{}),llm_tts_optimization:optimizationEnabled,llm_tts_document_optimization:documentOptimizationEnabled}}})});
+        await updateOutcomeTransformations({
+          llm_tts_optimization:optimizationEnabled,
+          llm_tts_document_optimization:documentOptimizationEnabled
+        });
       }
       else if (mode==='session' && key === 'optimize_document') {
-        const current=await api<any>(`/sessions/${session.id}/outcome-plan`);
-        await api(`/sessions/${session.id}/outcome-plan`,{method:'PUT',headers:{'If-Match':`"${current.revision}"`},body:JSON.stringify({value:{...current.value,transformations:{...(current.value?.transformations??{}),llm_tts_document_optimization:documentOptimizationEnabled}}})});
+        await updateOutcomeTransformations({
+          llm_tts_document_optimization:documentOptimizationEnabled
+        });
       }
       if(mode==='session') {
         await load();
@@ -758,23 +749,16 @@
     } catch (caught) { error=caught instanceof Error?caught.message:String(caught); }
   }
 
-  const statusIcon = (status: Stage['status']) => {
-    if (status === 'completed') return Check;
-    if (status === 'running') return LoaderCircle;
-    if (status === 'stale' || status === 'failed') return CircleAlert;
-    return Clock3;
-  };
-
   async function generateAutomatically() {
     const stage = snapshot?.stages.find((item) => item.key === 'generate_audio');
     if (!stage) return;
     try {
-      const preflight = await api<any>(`/sessions/${session.id}/stages/generate_audio/settings-mismatches`);
+      const preflight = await sessionApi.stageSettingsMismatches(session.id, 'generate_audio');
       const mismatches = preflight?.mismatches ?? [];
       if (mismatches.length) {
-        const names = mismatches.map((item: any) => (item.stage === 'translate' ? 'translation' : 'correction')).join(' and ');
+        const names = mismatches.map((item) => (item.stage === 'translate' ? 'translation' : 'correction')).join(' and ');
         sourceMessage = `Reusing the existing ${names} even though its settings changed; run the stage manually to update it.`;
-        await run(stage, true, mismatches.map((item: any) => String(item.stage)));
+        await run(stage, true, mismatches.map((item) => String(item.stage)));
         return;
       }
     } catch { /* the settings check is advisory; continue with the run */ }
@@ -785,37 +769,7 @@
     workspaceMode = localStorage.getItem(`pandrator:workspace-mode:${session.id}`) === 'automatic' ? 'automatic' : 'review';
     await Promise.all([load({ initial: true }), loadCapabilities(), loadSpeechCatalogues(), loadLlmModels()]);
   });
-  onMount(() => {
-    const refresh = (event: Event) => {
-      const batch = (event as CustomEvent<InvalidationBatch>).detail;
-      if (snapshot) {
-        let changed = false;
-        const stages = snapshot.stages.map((stage) => {
-          const update = batch.events.find((item) =>
-            item.session_id === session.id
-            && item.job_id
-            && item.job_id === stage.job_id
-          );
-          if (!update) return stage;
-          changed = true;
-          return {
-            ...stage,
-            ...(update.progress !== undefined ? { progress: Number(update.progress) } : {}),
-            ...(update.detail !== undefined ? { detail: update.detail } : {}),
-            ...(['queued', 'running', 'cancel_requested'].includes(String(update.status ?? ''))
-              ? { status: 'running' as const }
-              : {})
-          };
-        });
-        if (changed) snapshot = { ...snapshot, stages };
-      }
-      if (invalidates(batch, 'workflow', session.id)) {
-        load({ initial: false });
-      }
-    };
-    window.addEventListener('pandrator:invalidate', refresh);
-    return () => window.removeEventListener('pandrator:invalidate', refresh);
-  });
+  $effect(() => { outcome = initialOutcome; });
   $effect(() => { if (typeof localStorage !== 'undefined') localStorage.setItem(`pandrator:workspace-mode:${session.id}`, workspaceMode); });
   $effect(() => {
     if (!snapshot?.stages.some((stage) => stage.status === 'running')) return;
@@ -840,46 +794,24 @@
 
   {#if error}<div class="mb-5 flex items-start gap-3 rounded-xl border border-red-400/40 bg-red-500/10 px-4 py-3 text-sm"><CircleAlert class="mt-0.5 shrink-0" size={17}/><span>{error}</span></div>{/if}
 
-  {#if loading}
+  {#if workflowStore.loading}
     <div class="surface grid min-h-64 place-items-center rounded-3xl"><LoaderCircle class="animate-spin text-[var(--accent)]" size={28}/></div>
   {:else if snapshot}
     <div class="space-y-4">
       {#each snapshot.stages as stage}
-        {@const StatusIcon = statusIcon(stage.status)}
-        <article class:stage-locked={stage.status==='unavailable'} class="surface rounded-[1.4rem] p-5 sm:p-6">
-          <div class="flex flex-col gap-5 lg:flex-row lg:items-center">
-            <div class="flex min-w-0 flex-1 items-start gap-4">
-              <div class="grid size-11 shrink-0 place-items-center rounded-2xl bg-[var(--accent-soft)] text-sm font-bold text-[var(--accent)]">{stage.number}</div>
-              <div class="min-w-0"><div class="flex flex-wrap items-center gap-2"><h2 class="text-lg font-semibold">{stage.title}</h2><span class:running={stage.status === 'running'} class:done={stage.status === 'completed'} class:warning={stage.status === 'stale' || stage.status === 'failed'} class="status-chip inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[.68rem] font-bold uppercase tracking-wider"><StatusIcon class={stage.status === 'running' ? 'animate-spin' : ''} size={12}/>{stage.toggle?(stage.enabled?'enabled':'disabled'):stage.status}</span></div><p class="muted mt-1.5 max-w-2xl text-sm leading-relaxed">{stage.explanation}</p>{#if stage.status==='running' && stage.progress!=null}<div class="mt-3 max-w-md"><div class="flex items-center justify-between gap-3 text-xs"><span class="muted min-w-0 truncate" title={stage.detail??''}>{stage.detail??'Working…'}</span><span class="muted shrink-0 tabular-nums">{stageProgressPercent(stage)}%</span></div><div class="mt-1.5 h-1.5 overflow-hidden rounded-full bg-[var(--line)]" role="progressbar" aria-label={`${stage.title} progress`} aria-valuemin="0" aria-valuemax="100" aria-valuenow={stageProgressPercent(stage)}><div class="h-full bg-[var(--accent)] transition-[width]" style={`width:${stageProgressPercent(stage)}%`}></div></div></div>{/if}{#if stage.detail && stage.status==='failed'}<p class="mt-2 text-xs text-red-500">{stage.detail}</p>{/if}{#if stage.key==='optimize_tts' && stage.usage}<p class="muted mt-2 text-xs"><strong class="text-[var(--ink)]">Latest usage:</strong> {stage.usage.total_tokens.toLocaleString()} tokens ({stage.usage.input_tokens.toLocaleString()} input, {stage.usage.output_tokens.toLocaleString()} output{stage.usage.cached_input_tokens ? `, ${stage.usage.cached_input_tokens.toLocaleString()} cached` : ''}) · {formatCost(stage.usage.cost_usd)} · {stage.usage.model_id}</p>{/if}
-              {#if (stage.artifacts?.length??0)>0}
-                <StageArtifactHistory
-                  artifacts={stage.artifacts??[]}
-                  total={stage.artifact_history_total}
-                  hasMore={Boolean(stage.artifact_history_has_more)}
-                  loadingMore={Boolean(historyLoading[stage.key])}
-                  selectedArtifactId={stage.selected_artifact_id}
-                  canPreview={Boolean(stage.artifact)}
-                  onselect={(artifactId)=>chooseStageArtifact(stage,artifactId)}
-                  onpreview={()=>previewArtifact(stage)}
-                  onclear={()=>clearStageArtifact(stage)}
-                  onloadmore={()=>loadMoreStageArtifacts(stage)}
-                />
-              {:else if stage.artifact}<button onclick={() => previewArtifact(stage)} class="mt-2 flex items-center gap-1 text-xs font-semibold text-[var(--accent)]">Preview latest: {stage.artifact.role}<ChevronRight size={13}/></button>{/if}</div>
-            </div>
-            <div class="flex flex-wrap items-center gap-2 lg:justify-end">
-              {#if stage.toggle}
-                <button onclick={() => openSettings(stage)} class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3.5 py-2.5 text-sm font-semibold"><Settings2 size={16}/> Timing &amp; settings</button>
-                <label class="flex cursor-pointer items-center gap-3 rounded-xl border border-[var(--line)] px-3.5 py-2.5 text-sm font-semibold"><input type="checkbox" checked={Boolean(stage.enabled)} onchange={(event)=>toggleSpeechOptimization(event.currentTarget.checked)} class="size-4 accent-[var(--accent)]"/> {stage.enabled?'Enabled':'Disabled'}</label>
-                {#if !stage.toggle_only && stage.enabled}{#if stage.status==='running'}<button onclick={() => cancel(stage)} class="rounded-xl border border-red-400/50 px-4 py-2.5 text-sm font-semibold text-red-500">Cancel</button>{:else}<button onclick={() => run(stage)} disabled={stage.status === 'unavailable'} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35"><Play size={16}/> Run optimization</button>{/if}{/if}
-              {:else if stage.executable}
-                <button onclick={() => openSettings(stage)} class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3.5 py-2.5 text-sm font-semibold"><Settings2 size={16}/> Settings</button>
-                {#if workspaceMode==='review' || stage.key==='export'}{#if stage.status==='running'}<button onclick={() => cancel(stage)} class="rounded-xl border border-red-400/50 px-4 py-2.5 text-sm font-semibold text-red-500">Cancel</button>{:else}<button onclick={() => run(stage)} disabled={stage.status === 'unavailable'} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35"><Play size={16}/> {stage.key==='export'?'Open export':stage.artifact?'Run again':'Run now'}</button>{/if}{/if}
-              {:else}
-                <button onclick={() => run(stage)} disabled={stage.status === 'unavailable'} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35"><Sparkles size={16}/> Open comparison</button>
-              {/if}
-            </div>
-          </div>
-        </article>
+        <WorkflowStageCard
+          {stage}
+          {workspaceMode}
+          historyLoading={Boolean(historyLoading[stage.key])}
+          onsettings={() => openSettings(stage)}
+          ontoggle={toggleSpeechOptimization}
+          onrun={() => run(stage)}
+          oncancel={() => cancel(stage)}
+          onselect={(artifactId) => chooseStageArtifact(stage, artifactId)}
+          onpreview={() => previewArtifact(stage)}
+          onclear={() => clearStageArtifact(stage)}
+          onloadmore={() => loadMoreStageArtifacts(stage)}
+        />
       {/each}
     </div>
   {/if}
@@ -887,38 +819,26 @@
 
 {#if sourceDialog}<AddSourceDialog sessionId={session.id} onclose={()=>sourceDialog=false} onadded={sourceAdded}/>{/if}
 
-{#if pendingRun}
-  <div class="fixed inset-0 z-[75] grid place-items-center bg-black/40 p-5 backdrop-blur-sm" role="presentation" onclick={(event)=>event.target===event.currentTarget&&(pendingRun=null)}>
-    <!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
-    <section class="surface w-full max-w-lg rounded-[1.7rem] p-7" role="dialog" aria-modal="true" aria-labelledby="rerun-title">
-      <div class="flex items-start justify-between gap-4"><div><div class="eyebrow">Create another version</div><h2 id="rerun-title" class="mt-1 text-2xl font-semibold">Run {pendingRun.stage.title.toLowerCase()} again?</h2></div><button onclick={()=>pendingRun=null} aria-label="Close rerun confirmation" class="rounded-lg p-2"><X size={19}/></button></div>
-      <p class="muted mt-4 text-sm leading-relaxed">A new immutable result will be created and selected only after the run succeeds. The current version and all work based on it remain saved in history.</p>
-      {#if pendingRun.impact.dependent_selections?.length}<div class="mt-4 rounded-xl border border-amber-400/40 bg-amber-500/10 p-4 text-sm"><strong>Selections that will need a compatible new version</strong><div class="mt-2 flex flex-wrap gap-2">{#each pendingRun.impact.dependent_selections as dependent}<span class="rounded-full bg-[var(--paper-strong)] px-2.5 py-1 text-xs font-semibold">{artifactRoleLabel(dependent.role)}</span>{/each}</div></div>{/if}
-      {#if pendingRun.impact.descendant_total}<p class="muted mt-4 text-xs">{pendingRun.impact.descendant_total} dependent artifact{pendingRun.impact.descendant_total===1?'':'s'}, including audio takes and exports where applicable, will remain available on the earlier path.</p>{/if}
-      <div class="mt-6 flex justify-end gap-2"><button onclick={()=>pendingRun=null} class="rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold">Cancel</button><button onclick={async()=>{const stage=pendingRun!.stage;pendingRun=null;await run(stage,true)}} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white"><Play size={16}/> Run and switch when ready</button></div>
-    </section>
-  </div>
-{/if}
-
-{#if pendingSettingsMismatch}
-  <div class="fixed inset-0 z-[75] grid place-items-center bg-black/40 p-5 backdrop-blur-sm" role="presentation" onclick={(event)=>event.target===event.currentTarget&&(pendingSettingsMismatch=null)}>
-    <!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
-    <section class="surface w-full max-w-lg rounded-[1.7rem] p-7" role="dialog" aria-modal="true" aria-labelledby="mismatch-title">
-      <div class="flex items-start justify-between gap-4"><div><div class="eyebrow">Before generation</div><h2 id="mismatch-title" class="mt-1 text-2xl font-semibold">Prerequisite settings changed</h2></div><button onclick={()=>pendingSettingsMismatch=null} aria-label="Close settings change prompt" class="rounded-lg p-2"><X size={19}/></button></div>
-      <p class="muted mt-4 text-sm leading-relaxed">These stages already produced output with different settings. Recreating it spends LLM usage; reusing it keeps the current text, takes, and assembled output intact.</p>
-      <div class="mt-4 space-y-2">
-        {#each pendingSettingsMismatch.mismatches as mismatch}
-          <div class="rounded-xl border border-amber-400/40 bg-amber-500/10 p-4 text-sm"><strong>{mismatchStageLabel(mismatch.stage)}</strong><span class="muted"> — changed: {(mismatch.changed_fields?.length ? mismatch.changed_fields : ['settings']).map(mismatchFieldLabel).join(', ')}</span></div>
-        {/each}
-      </div>
-      <div class="mt-6 flex flex-wrap justify-end gap-2">
-        <button onclick={()=>pendingSettingsMismatch=null} class="rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold">Cancel</button>
-        <button onclick={async()=>{const pending=pendingSettingsMismatch!;pendingSettingsMismatch=null;await run(pending.stage,true,pending.mismatches.map((item)=>item.stage))}} class="rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold">Use current output</button>
-        <button onclick={async()=>{const pending=pendingSettingsMismatch!;pendingSettingsMismatch=null;await run(pending.stage,true)}} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white"><RefreshCw size={16}/> Rerun</button>
-      </div>
-    </section>
-  </div>
-{/if}
+<WorkflowRunDialogs
+  {pendingRun}
+  pendingMismatch={pendingSettingsMismatch}
+  onclose={() => {
+    pendingRun = null;
+    pendingSettingsMismatch = null;
+  }}
+  onrerun={async (stage) => {
+    pendingRun = null;
+    await run(stage, true);
+  }}
+  onreuse={async (pending) => {
+    pendingSettingsMismatch = null;
+    await run(pending.stage, true, pending.mismatches.map((item) => item.stage));
+  }}
+  onrefresh={async (pending) => {
+    pendingSettingsMismatch = null;
+    await run(pending.stage, true);
+  }}
+/>
 
 {#if settingsStage}
   <div class="fixed inset-0 z-50 grid place-items-center bg-black/35 p-5 backdrop-blur-sm" role="presentation" onclick={(event) => event.target === event.currentTarget && (settingsStage=null)}>
@@ -993,11 +913,6 @@
 <GuidedTour tourId="workflow" steps={workflowTourSteps} bind:open={workflowTour}/>
 
 <style>
-  .status-chip { color: var(--muted); background: color-mix(in srgb, var(--muted) 10%, transparent); }
-  .status-chip.done { color: var(--success); background: color-mix(in srgb, var(--success) 12%, transparent); }
-  .status-chip.running { color: var(--accent); background: var(--accent-soft); }
-  .status-chip.warning { color: var(--warning); background: color-mix(in srgb, var(--warning) 12%, transparent); }
   .mode-choice { border-radius: .65rem; padding: .55rem .85rem; font-size: .75rem; font-weight: 700; color: var(--muted); }
   .mode-choice.mode-active { background: var(--action-bg); color: white; box-shadow: 0 4px 14px color-mix(in srgb, var(--accent) 24%, transparent); }
-  .stage-locked { opacity: .58; }
 </style>

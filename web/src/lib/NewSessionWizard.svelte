@@ -1,7 +1,9 @@
 <script lang="ts">
   import { ArrowLeft, ArrowRight, AudioLines, BookOpenText, Captions, CircleAlert, FileText, FolderOpen, Gauge, Link2, Trash2, Upload, X } from '@lucide/svelte';
   import { untrack } from 'svelte';
-  import { api, ApiError, uploadManagedFile, type SessionRecord } from './api';
+  import { ApiError, uploadManagedFile } from './api';
+  import { sessionApi, sourceApi } from './domain-api';
+  import type { SessionRecord, SourceAsset } from './api-models';
   import { appState } from './app-state.svelte';
   import { LANGUAGE_OPTIONS } from './settings-fields';
   import SearchReplaceBar from './SearchReplaceBar.svelte';
@@ -16,7 +18,7 @@
   let pastedText = $state('');
   let sourceUrl = $state('');
   let sourceAssetId = $state('');
-  let reusableSources = $state<any[]>([]);
+  let reusableSources = $state<SourceAsset[]>([]);
   let name = $state('');
   let correct = $state(false);
   let translate = $state(false);
@@ -59,7 +61,7 @@
   ]);
 
   async function loadSources() {
-    try { reusableSources = (await api<{items:any[]}>('/sources')).items; sourceAssetId ||= reusableSources[0]?.id ?? ''; }
+    try { reusableSources = (await sourceApi.list()).items; sourceAssetId ||= reusableSources[0]?.id ?? ''; }
     catch { reusableSources = []; }
   }
   loadSources();
@@ -87,9 +89,9 @@
         ...(needsTranscription?['transcribe']:[]), ...(correct?['correct']:[]), ...(translate?['translate']:[]),
         ...((kind==='voiceover'||kind==='audiobook')?['generate_audio']:[]), 'export'
       ];
-      const session=await api<SessionRecord>('/sessions',{method:'POST',body:JSON.stringify({name:unique,workflow_kind:kind,source_language:sourceLanguage,target_language:translate?targetLanguage:null,workflow_preset:'custom',included_stages:included,...(overwrite&&existing?{overwrite_session_id:existing.id}:{})})});
+      const session=await sessionApi.create({name:unique,workflow_kind:kind,source_language:sourceLanguage,target_language:translate?targetLanguage:null,workflow_preset:'custom',included_stages:included,...(overwrite&&existing?{overwrite_session_id:existing.id}:{})});
       progress=0.15;progressDetail='Saving workflow plan';
-      const current=await api<{value:any;revision:number}>(`/sessions/${session.id}/outcome-plan`);
+      const current=await sessionApi.outcome(session.id);
       const value={
         ...current.value, workflow_kind:kind, focus:custom?'custom':'guided',
         deliverables:{audiobook:kind==='audiobook',subtitles:kind==='subtitles'||subtitleMode!=='none',voiceover:kind==='voiceover'},
@@ -97,10 +99,10 @@
         inputs:{translation:correct?'correction':'source',generation:translate?'translation':correct?'correction':'source'},
         export:{mode:kind==='subtitles'?(subtitleExport==='text'?'text':'subtitles'):'media',audio:kind==='voiceover'||kind==='audiobook'?'generated':'preserve',subtitle_mode:kind==='audiobook'||kind==='subtitles'?'none':subtitleMode,subtitle_format:subtitleExport==='text'?'srt':subtitleExport,subtitles:translate?(keepSourceSubtitles?'dual':'translation'):'source',target_language:targetLanguage}
       };
-      await api(`/sessions/${session.id}/outcome-plan`,{method:'PUT',headers:{'If-Match':`"${current.revision}"`},body:JSON.stringify({value})});
+      await sessionApi.updateOutcome(session.id,current.revision,value);
       progress=0.3;progressDetail='Saving workspace settings';
       let completedSettings=0;
-      const updateSettings=async(section:string,next:Record<string,unknown>)=>{const stored=await api<any>(`/sessions/${session.id}/settings/${section}`);await api(`/sessions/${session.id}/settings/${section}`,{method:'PUT',headers:{'If-Match':`"${stored.revision}"`},body:JSON.stringify({value:{...stored.override,...next}})});completedSettings+=1;progress=0.3+0.35*(completedSettings/4);progressDetail=`Saved workspace setting ${completedSettings} of 4`;};
+      const updateSettings=async(section:string,next:Record<string,unknown>)=>{const stored=await sessionApi.settings(session.id,section);await sessionApi.saveSettings(session.id,section,stored.revision,{...stored.override,...next});completedSettings+=1;progress=0.3+0.35*(completedSettings/4);progressDetail=`Saved workspace setting ${completedSettings} of 4`;};
       const speechLanguage=translate?targetLanguage:(sourceLanguage==='auto'?'en':sourceLanguage);
       const subtitleSelection=translate?(keepSourceSubtitles?'dual':'translation'):'source';
       const outputSettings=kind==='audiobook'
@@ -116,13 +118,13 @@
       ]);
       let file=sourceMode==='paste'&&pastedText.trim()?new File([pastedText.trim()],`${unique}.txt`,{type:'text/plain'}):sourceMode==='upload'?sourceFile:null;
       if(file){progressDetail='Uploading source';await uploadManagedFile(file,session.id,(value)=>progress=0.65+Math.max(0,Math.min(1,value))*0.3);}
-      else if(sourceMode==='url'&&sourceUrl.trim()){progress=0.8;progressDetail='Queueing source download';await api(`/sessions/${session.id}/sources/url`,{method:'POST',body:JSON.stringify({url:sourceUrl.trim()})});}
-      else if(sourceMode==='reuse'&&sourceAssetId){progress=0.8;progressDetail='Attaching reusable source';await api(`/sessions/${session.id}/sources`,{method:'POST',body:JSON.stringify({source_asset_id:sourceAssetId,role:'primary'})});}
+      else if(sourceMode==='url'&&sourceUrl.trim()){progress=0.8;progressDetail='Queueing source download';await sessionApi.downloadSourceUrl(session.id,sourceUrl.trim());}
+      else if(sourceMode==='reuse'&&sourceAssetId){progress=0.8;progressDetail='Attaching reusable source';await sessionApi.attachSource(session.id,sourceAssetId);}
       progress=0.97;progressDetail='Opening workspace';
       await appState.refresh();progress=1;location.href=`/sessions/${session.id}`;
     }catch(caught){
       if(caught instanceof ApiError&&caught.code==='duplicate_session'){
-        duplicateFromServer=(caught.details as any)?.existing_session??null;
+        duplicateFromServer=(caught.details as {existing_session?:SessionRecord}|null)?.existing_session??null;
         error='';
       }else error=caught instanceof Error?caught.message:String(caught);
     }finally{creating=false}

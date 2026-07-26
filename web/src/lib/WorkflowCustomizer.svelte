@@ -1,14 +1,15 @@
 <script lang="ts">
   import { ArrowRight, X } from '@lucide/svelte';
-  import { api, type SessionRecord } from './api';
+  import { sessionApi } from './domain-api';
+  import type { OutcomePlan, SessionRecord } from './api-models';
   import { LANGUAGE_OPTIONS } from './settings-fields';
 
   let { sessionId, onclose, onsaved }: { sessionId:string; onclose:()=>void; onsaved:()=>void }=$props();
-  let payload=$state<any>(null);
+  let payload=$state<OutcomePlan|null>(null);
   let session=$state<SessionRecord|null>(null);
   let sourceLanguage=$state('auto');
   let targetLanguage=$state('en');
-  let originalWorkflowKind=$state('audiobook');
+  let originalWorkflowKind=$state<SessionRecord['workflow_kind']>('audiobook');
   let error=$state('');
   let saving=$state(false);
   const transformations=$derived(payload?.value?.transformations??{});
@@ -27,15 +28,17 @@
   }
 
   function setTransformation(key:string,enabled:boolean){
+    const current=payload;
+    if(!current)return;
     transformations[key]=enabled;
     if(key==='translate'){
-      if(enabled&&transformations.generate_audio) payload.value.inputs.generation='translation';
-      if(!enabled&&payload.value.inputs.generation==='translation') payload.value.inputs.generation=transformations.correct?'correction':'source';
+      if(enabled&&transformations.generate_audio) current.value.inputs.generation='translation';
+      if(!enabled&&current.value.inputs.generation==='translation') current.value.inputs.generation=transformations.correct?'correction':'source';
     }
-    if(key==='generate_audio'&&enabled&&transformations.translate) payload.value.inputs.generation='translation';
+    if(key==='generate_audio'&&enabled&&transformations.translate) current.value.inputs.generation='translation';
     if(key==='correct'&&!enabled){
-      if(payload.value.inputs.translation==='correction') payload.value.inputs.translation='source';
-      if(payload.value.inputs.generation==='correction') payload.value.inputs.generation=transformations.translate?'translation':'source';
+      if(current.value.inputs.translation==='correction') current.value.inputs.translation='source';
+      if(current.value.inputs.generation==='correction') current.value.inputs.generation=transformations.translate?'translation':'source';
     }
   }
 
@@ -55,33 +58,36 @@
     }else{
       deliverables.voiceover=true;
       transformations.generate_audio=true;
-      if(transformations.translate) payload.value.inputs.generation='translation';
+      if(transformations.translate) payload.value.inputs!.generation='translation';
       transformations.deterministic_normalization=true;
       payload.value.export={...(payload.value.export??{}),mode:'media',audio:'generated'};
     }
   }
 
   async function load(){
-    [payload,session]=await Promise.all([api(`/sessions/${sessionId}/outcome-plan`),api<SessionRecord>(`/sessions/${sessionId}`)]);
+    [payload,session]=await Promise.all([sessionApi.outcome(sessionId),sessionApi.get(sessionId)]);
     originalWorkflowKind=session.workflow_kind;
     payload.value.workflow_kind=payload.value.workflow_kind??session.workflow_kind;
+    payload.value.inputs??={};
     sourceLanguage=session.source_language??'auto';
     targetLanguage=session.target_language??'en';
   }
 
   async function save(){
+    const current=payload;
+    if(!current)return;
     saving=true;
     try{
-      if(session) await api(`/sessions/${sessionId}`,{method:'PATCH',headers:{'If-Match':`"${session.revision}"`},body:JSON.stringify({source_language:sourceLanguage,target_language:transformations.translate?targetLanguage:null})});
-      const selectedWorkflowKind=String(payload.value.workflow_kind??originalWorkflowKind);
+      if(session) await sessionApi.update(sessionId,session.revision,{source_language:sourceLanguage,target_language:transformations.translate?targetLanguage:null});
+      const selectedWorkflowKind=String(current.value.workflow_kind??originalWorkflowKind);
       if(selectedWorkflowKind!==originalWorkflowKind&&['subtitles','voiceover'].includes(selectedWorkflowKind)){
-        const output=await api<any>(`/sessions/${sessionId}/settings/output`);
+        const output=await sessionApi.settings(sessionId,'output');
         const nextOutput=selectedWorkflowKind==='subtitles'
           ? {...output.override,export_mode:'subtitles',audio_mode:'preserve',subtitle_mode:'none',subtitle_selection:'source'}
           : {...output.override,export_mode:'media',audio_mode:'mixed',subtitle_mode:output.override?.subtitle_mode==='burned'?'burned':'soft'};
-        await api(`/sessions/${sessionId}/settings/output`,{method:'PUT',headers:{'If-Match':`"${output.revision}"`},body:JSON.stringify({value:nextOutput})});
+        await sessionApi.saveSettings(sessionId,'output',output.revision,nextOutput);
       }
-      await api(`/sessions/${sessionId}/outcome-plan`,{method:'PUT',headers:{'If-Match':`"${payload.revision}"`},body:JSON.stringify({value:{...payload.value,export:{...(payload.value.export??{}),target_language:targetLanguage}}})});
+      await sessionApi.updateOutcome(sessionId,current.revision,{...current.value,export:{...(current.value.export??{}),target_language:targetLanguage}});
       onsaved();onclose();
     }catch(caught){error=caught instanceof Error?caught.message:String(caught)}finally{saving=false}
   }
@@ -102,7 +108,7 @@
         {#if transformations.translate}<label class="text-sm font-semibold">Target language<select bind:value={targetLanguage} class="field">{#each LANGUAGE_OPTIONS.filter((item)=>item.value!=='auto') as item}<option value={item.value}>{item.label}</option>{/each}</select></label>{/if}
       </div>
       <div class="mt-7 grid gap-4 md:grid-cols-2">
-        <div class="rounded-2xl border border-[var(--line)] p-5"><div class="eyebrow">Transformations</div><div class="mt-4 space-y-3">{#each [{key:'transcribe',label:'Transcribe media'},{key:'correct',label:'Correct same-language subtitles'},{key:'translate',label:'Translate'},{key:'deterministic_normalization',label:'Deterministic speech normalization'},{key:'generate_audio',label:'Generate speech'},{key:'rvc',label:'Create RVC variants'}].filter((item)=>payload.value.workflow_kind!=='subtitles'||!['deterministic_normalization','generate_audio','rvc'].includes(item.key)) as item}<label class="flex items-start gap-3 text-sm"><input type="checkbox" checked={Boolean(transformations[item.key])} onchange={(event)=>setTransformation(item.key,event.currentTarget.checked)} class="mt-1 accent-[var(--accent)]"/><span>{item.label}</span></label>{/each}{#if payload.value.workflow_kind!=='subtitles'}<div class="rounded-xl border border-[var(--line)] p-3"><label class="flex items-start gap-3 text-sm"><input type="checkbox" checked={speechOptimizationEnabled} onchange={(event)=>setSpeechOptimizationEnabled(event.currentTarget.checked)} class="mt-1 accent-[var(--accent)]"/><span>Optimize text for speech</span></label>{#if speechOptimizationEnabled}<select value={speechOptimizationTiming} onchange={(event)=>setSpeechOptimizationTiming(event.currentTarget.value)} class="mt-3 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-xs"><option value="document">Before generation · whole document</option><option value="generation">During generation · segment batches</option></select>{/if}</div>{/if}</div></div>
+        <div class="rounded-2xl border border-[var(--line)] p-5"><div class="eyebrow">Transformations</div><div class="mt-4 space-y-3">{#each [{key:'transcribe',label:'Transcribe media'},{key:'correct',label:'Correct same-language subtitles'},{key:'translate',label:'Translate'},{key:'deterministic_normalization',label:'Deterministic speech normalization'},{key:'generate_audio',label:'Generate speech'},{key:'rvc',label:'Create RVC variants'}].filter((item)=>payload?.value.workflow_kind!=='subtitles'||!['deterministic_normalization','generate_audio','rvc'].includes(item.key)) as item}<label class="flex items-start gap-3 text-sm"><input type="checkbox" checked={Boolean(transformations[item.key])} onchange={(event)=>setTransformation(item.key,event.currentTarget.checked)} class="mt-1 accent-[var(--accent)]"/><span>{item.label}</span></label>{/each}{#if payload.value.workflow_kind!=='subtitles'}<div class="rounded-xl border border-[var(--line)] p-3"><label class="flex items-start gap-3 text-sm"><input type="checkbox" checked={speechOptimizationEnabled} onchange={(event)=>setSpeechOptimizationEnabled(event.currentTarget.checked)} class="mt-1 accent-[var(--accent)]"/><span>Optimize text for speech</span></label>{#if speechOptimizationEnabled}<select value={speechOptimizationTiming} onchange={(event)=>setSpeechOptimizationTiming(event.currentTarget.value)} class="mt-3 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-xs"><option value="document">Before generation · whole document</option><option value="generation">During generation · segment batches</option></select>{/if}</div>{/if}</div></div>
         <div class="rounded-2xl border border-[var(--line)] p-5"><div class="eyebrow">Deliverables</div><div class="mt-4 rounded-xl bg-[var(--accent-soft)] p-3 text-sm"><strong>{payload.value.workflow_kind==='audiobook'?'Audiobook audio':payload.value.workflow_kind==='voiceover'?'Voiceover / dubbed media':'SRT, VTT, or plain text'}</strong><p class="muted mt-1 text-xs">This primary deliverable follows the selected workspace type.</p></div>{#if payload.value.workflow_kind==='voiceover'}<label class="mt-4 flex items-start gap-3 text-sm"><input type="checkbox" bind:checked={deliverables.subtitles} class="mt-1 accent-[var(--accent)]"/><span>Also include subtitle files or tracks</span></label>{/if}{#if transformations.translate}<label class="mt-5 block text-sm font-semibold">Translation input<select bind:value={payload.value.inputs.translation} class="field"><option value="source">Source / transcription directly</option><option value="correction" disabled={!transformations.correct}>Corrected subtitles</option></select></label>{/if}{#if transformations.generate_audio}<label class="mt-4 block text-sm font-semibold">Generation input<select bind:value={payload.value.inputs.generation} class="field"><option value="source">Source text/subtitles</option><option value="correction" disabled={!transformations.correct}>Correction</option><option value="translation" disabled={!transformations.translate}>Translation</option></select></label>{/if}</div>
       </div>
       <div class="mt-5 rounded-2xl bg-[var(--accent-soft)] p-5"><div class="eyebrow">Resolved pipeline</div><div class="mt-3 flex flex-wrap items-center gap-2">{#each payload.pipeline as stage,index}<span class="rounded-lg bg-[var(--paper-strong)] px-3 py-2 text-sm font-semibold">{stage.title}</span>{#if index<payload.pipeline.length-1}<ArrowRight size={15}/>{/if}{/each}</div></div>

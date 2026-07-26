@@ -132,6 +132,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/bootstrap": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["exchangeBootstrapToken"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/login": {
         parameters: {
             query?: never;
@@ -142,6 +158,22 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["login"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["logout"];
         delete?: never;
         options?: never;
         head?: never;
@@ -596,6 +628,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/providers/{providerId}/models/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["refreshProviderModels"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/providers/{providerId}/models/{modelId}": {
         parameters: {
             query?: never;
@@ -750,7 +798,7 @@ export interface paths {
         get: operations["getSession"];
         put?: never;
         post?: never;
-        delete?: never;
+        delete: operations["trashSession"];
         options?: never;
         head?: never;
         patch: operations["updateSession"];
@@ -1444,6 +1492,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/voices/{voiceId}/samples/{sampleId}/transcribe": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["transcribeVoiceSample"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/voices/{voiceId}/samples/{sampleId}/transcript": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["reviewVoiceSampleTranscript"];
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1468,7 +1548,7 @@ export interface components {
              * Include Sources
              * @default true
              */
-            include_sources: boolean;
+            include_sources?: boolean;
         };
         /** BundleImportRequest */
         BundleImportRequest: {
@@ -1476,7 +1556,7 @@ export interface components {
              * Name
              * @default null
              */
-            name: string | null;
+            name?: string | null;
             /** Source Artifact Id */
             source_artifact_id: string;
         };
@@ -1486,24 +1566,24 @@ export interface components {
              * Chunk Size
              * @default 8388608
              */
-            chunk_size: number;
+            chunk_size?: number;
             /** Filename */
             filename: string;
             /**
              * Mime Type
              * @default null
              */
-            mime_type: string | null;
+            mime_type?: string | null;
             /**
              * Session Id
              * @default null
              */
-            session_id: string | null;
+            session_id?: string | null;
             /**
              * Sha256
              * @default null
              */
-            sha256: string | null;
+            sha256?: string | null;
             /** Size Bytes */
             size_bytes: number;
         };
@@ -1513,27 +1593,27 @@ export interface components {
              * Api Key
              * @default null
              */
-            api_key: string | null;
+            api_key?: string | null;
             /**
              * Clear
              * @default false
              */
-            clear: boolean;
+            clear?: boolean;
             /**
              * Credential Backend
              * @default null
              */
-            credential_backend: ("database" | "environment" | "keyring" | "file") | null;
+            credential_backend?: ("database" | "environment" | "keyring" | "file") | null;
             /**
              * Credential Reference
              * @default null
              */
-            credential_reference: string | null;
+            credential_reference?: string | null;
             /**
              * Delete Previous Credential
              * @default false
              */
-            delete_previous_credential: boolean;
+            delete_previous_credential?: boolean;
         };
         /** ErrorBody */
         ErrorBody: {
@@ -1543,7 +1623,7 @@ export interface components {
              * Details
              * @default null
              */
-            details: unknown;
+            details?: unknown;
             /** Message */
             message: string;
             /** Request Id */
@@ -1561,52 +1641,7 @@ export interface components {
              * Source Revision Id
              * @default null
              */
-            source_revision_id: string | null;
-            $defs: {
-                /** GenerationSegmentCreate */
-                GenerationSegmentCreate: {
-                    /**
-                     * Language
-                     * @default null
-                     */
-                    language: string | null;
-                    /**
-                     * Node Kind
-                     * @default paragraph
-                     * @enum {string}
-                     */
-                    node_kind: "paragraph" | "heading" | "chapter_marker" | "subtitle_cue";
-                    /**
-                     * Paragraph Break After
-                     * @default false
-                     */
-                    paragraph_break_after: boolean;
-                    /**
-                     * Silence After Ms
-                     * @default 0
-                     */
-                    silence_after_ms: number;
-                    /** Source Segment Ids */
-                    source_segment_ids?: string[];
-                    /**
-                     * Speaker
-                     * @default null
-                     */
-                    speaker: string | null;
-                    /** Text */
-                    text: string;
-                    /**
-                     * Voice
-                     * @default null
-                     */
-                    voice: string | null;
-                    /**
-                     * Voice Id
-                     * @default null
-                     */
-                    voice_id: string | null;
-                };
-            };
+            source_revision_id?: string | null;
         };
         /** GenerationSegmentCreate */
         GenerationSegmentCreate: {
@@ -1614,42 +1649,42 @@ export interface components {
              * Language
              * @default null
              */
-            language: string | null;
+            language?: string | null;
             /**
              * Node Kind
              * @default paragraph
              * @enum {string}
              */
-            node_kind: "paragraph" | "heading" | "chapter_marker" | "subtitle_cue";
+            node_kind?: "paragraph" | "heading" | "chapter_marker" | "subtitle_cue";
             /**
              * Paragraph Break After
              * @default false
              */
-            paragraph_break_after: boolean;
+            paragraph_break_after?: boolean;
             /**
              * Silence After Ms
              * @default 0
              */
-            silence_after_ms: number;
+            silence_after_ms?: number;
             /** Source Segment Ids */
             source_segment_ids?: string[];
             /**
              * Speaker
              * @default null
              */
-            speaker: string | null;
+            speaker?: string | null;
             /** Text */
             text: string;
             /**
              * Voice
              * @default null
              */
-            voice: string | null;
+            voice?: string | null;
             /**
              * Voice Id
              * @default null
              */
-            voice_id: string | null;
+            voice_id?: string | null;
         };
         /** GenerationSegmentUpdate */
         GenerationSegmentUpdate: {
@@ -1657,52 +1692,52 @@ export interface components {
              * Language
              * @default null
              */
-            language: string | null;
+            language?: string | null;
             /**
              * Marked
              * @default null
              */
-            marked: boolean | null;
+            marked?: boolean | null;
             /**
              * Node Kind
              * @default null
              */
-            node_kind: ("paragraph" | "heading" | "chapter_marker" | "subtitle_cue") | null;
+            node_kind?: ("paragraph" | "heading" | "chapter_marker" | "subtitle_cue") | null;
             /**
              * Optimized Text
              * @default null
              */
-            optimized_text: string | null;
+            optimized_text?: string | null;
             /**
              * Paragraph Break After
              * @default null
              */
-            paragraph_break_after: boolean | null;
+            paragraph_break_after?: boolean | null;
             /**
              * Removed
              * @default null
              */
-            removed: boolean | null;
+            removed?: boolean | null;
             /**
              * Silence After Ms
              * @default null
              */
-            silence_after_ms: number | null;
+            silence_after_ms?: number | null;
             /**
              * Text
              * @default null
              */
-            text: string | null;
+            text?: string | null;
             /**
              * Voice
              * @default null
              */
-            voice: string | null;
+            voice?: string | null;
             /**
              * Voice Id
              * @default null
              */
-            voice_id: string | null;
+            voice_id?: string | null;
         };
         /** GenerationStartRequest */
         GenerationStartRequest: {
@@ -1710,13 +1745,13 @@ export interface components {
              * Generation Run Id
              * @default null
              */
-            generation_run_id: string | null;
+            generation_run_id?: string | null;
             /**
              * Operation
              * @default generate
              * @enum {string}
              */
-            operation: "generate" | "regenerate" | "rvc";
+            operation?: "generate" | "regenerate" | "rvc";
             /** Run Override */
             run_override?: {
                 [key: string]: unknown;
@@ -1732,7 +1767,7 @@ export interface components {
              * Max Attempts
              * @default 1
              */
-            max_attempts: number;
+            max_attempts?: number;
             /** Payload */
             payload?: {
                 [key: string]: unknown;
@@ -1741,7 +1776,7 @@ export interface components {
              * Session Id
              * @default null
              */
-            session_id: string | null;
+            session_id?: string | null;
         };
         /** LoginRequest */
         LoginRequest: {
@@ -1754,32 +1789,32 @@ export interface components {
              * Cached Input Cost Per Million
              * @default null
              */
-            cached_input_cost_per_million: number | null;
+            cached_input_cost_per_million?: number | null;
             /**
              * Default Reasoning Effort
              * @default null
              */
-            default_reasoning_effort: string | null;
+            default_reasoning_effort?: string | null;
             /**
              * Default Temperature
              * @default null
              */
-            default_temperature: number | null;
+            default_temperature?: number | null;
             /**
              * Input Cost Per Million
              * @default null
              */
-            input_cost_per_million: number | null;
+            input_cost_per_million?: number | null;
             /**
              * Is Active
              * @default false
              */
-            is_active: boolean;
+            is_active?: boolean;
             /**
              * Is Default
              * @default false
              */
-            is_default: boolean;
+            is_default?: boolean;
             /** Model Id */
             model_id: string;
             /** Options */
@@ -1790,7 +1825,7 @@ export interface components {
              * Output Cost Per Million
              * @default null
              */
-            output_cost_per_million: number | null;
+            output_cost_per_million?: number | null;
         };
         /** ModelUpdate */
         ModelUpdate: {
@@ -1798,49 +1833,49 @@ export interface components {
              * Cached Input Cost Per Million
              * @default null
              */
-            cached_input_cost_per_million: number | null;
+            cached_input_cost_per_million?: number | null;
             /**
              * Default Reasoning Effort
              * @default null
              */
-            default_reasoning_effort: string | null;
+            default_reasoning_effort?: string | null;
             /**
              * Default Temperature
              * @default null
              */
-            default_temperature: number | null;
+            default_temperature?: number | null;
             /**
              * Input Cost Per Million
              * @default null
              */
-            input_cost_per_million: number | null;
+            input_cost_per_million?: number | null;
             /**
              * Is Active
              * @default null
              */
-            is_active: boolean | null;
+            is_active?: boolean | null;
             /**
              * Is Default
              * @default null
              */
-            is_default: boolean | null;
+            is_default?: boolean | null;
             /**
              * Model Id
              * @default null
              */
-            model_id: string | null;
+            model_id?: string | null;
             /**
              * Options
              * @default null
              */
-            options: {
+            options?: {
                 [key: string]: unknown;
             } | null;
             /**
              * Output Cost Per Million
              * @default null
              */
-            output_cost_per_million: number | null;
+            output_cost_per_million?: number | null;
         };
         /** OptimizationReviewItem */
         OptimizationReviewItem: {
@@ -1853,15 +1888,6 @@ export interface components {
         OptimizationReviewRequest: {
             /** Items */
             items: components["schemas"]["OptimizationReviewItem"][];
-            $defs: {
-                /** OptimizationReviewItem */
-                OptimizationReviewItem: {
-                    /** Index */
-                    index: number;
-                    /** Text */
-                    text: string;
-                };
-            };
         };
         /** OutcomePlanUpdate */
         OutcomePlanUpdate: {
@@ -1876,7 +1902,7 @@ export interface components {
              * Generation Run Id
              * @default null
              */
-            generation_run_id: string | null;
+            generation_run_id?: string | null;
             /** Run Override */
             run_override?: {
                 [key: string]: unknown;
@@ -1887,19 +1913,6 @@ export interface components {
             /** Original Page */
             original_page: number;
             rect: components["schemas"]["PdfRectInput"];
-            $defs: {
-                /** PdfRectInput */
-                PdfRectInput: {
-                    /** X0 */
-                    x0: number;
-                    /** X1 */
-                    x1: number;
-                    /** Y0 */
-                    y0: number;
-                    /** Y1 */
-                    y1: number;
-                };
-            };
         };
         /** PdfEditRequest */
         PdfEditRequest: {
@@ -1912,38 +1925,11 @@ export interface components {
              * @default right
              * @enum {string}
              */
-            first_page_side: "left" | "right";
+            first_page_side?: "left" | "right";
             /** Source Artifact Id */
             source_artifact_id: string;
             /** Whiteouts */
             whiteouts?: components["schemas"]["PdfWhiteoutInput"][];
-            $defs: {
-                /** PdfCropInput */
-                PdfCropInput: {
-                    /** Original Page */
-                    original_page: number;
-                    rect: components["schemas"]["PdfRectInput"];
-                };
-                /** PdfRectInput */
-                PdfRectInput: {
-                    /** X0 */
-                    x0: number;
-                    /** X1 */
-                    x1: number;
-                    /** Y0 */
-                    y0: number;
-                    /** Y1 */
-                    y1: number;
-                };
-                /** PdfWhiteoutInput */
-                PdfWhiteoutInput: {
-                    /** Color */
-                    color?: number[];
-                    /** Original Page */
-                    original_page: number;
-                    rect: components["schemas"]["PdfRectInput"];
-                };
-            };
         };
         /** PdfRectInput */
         PdfRectInput: {
@@ -1963,19 +1949,6 @@ export interface components {
             /** Original Page */
             original_page: number;
             rect: components["schemas"]["PdfRectInput"];
-            $defs: {
-                /** PdfRectInput */
-                PdfRectInput: {
-                    /** X0 */
-                    x0: number;
-                    /** X1 */
-                    x1: number;
-                    /** Y0 */
-                    y0: number;
-                    /** Y1 */
-                    y1: number;
-                };
-            };
         };
         /** PronunciationCreate */
         PronunciationCreate: {
@@ -1984,17 +1957,17 @@ export interface components {
              * @default respelling
              * @constant
              */
-            alphabet: "respelling";
+            alphabet?: "respelling";
             /**
              * Backend
              * @default *
              */
-            backend: string;
+            backend?: string;
             /**
              * Language
              * @default und
              */
-            language: string;
+            language?: string;
             /** Metadata */
             metadata?: {
                 [key: string]: unknown;
@@ -2003,7 +1976,7 @@ export interface components {
              * Notes
              * @default null
              */
-            notes: string | null;
+            notes?: string | null;
             /** Phonetic */
             phonetic: string;
             /**
@@ -2011,12 +1984,12 @@ export interface components {
              * @default global
              * @enum {string}
              */
-            scope: "global" | "session";
+            scope?: "global" | "session";
             /**
              * Session Id
              * @default null
              */
-            session_id: string | null;
+            session_id?: string | null;
             /** Source Form */
             source_form: string;
             /**
@@ -2024,7 +1997,7 @@ export interface components {
              * @default reviewed
              * @enum {string}
              */
-            status: "proposed" | "reviewed" | "disabled";
+            status?: "proposed" | "reviewed" | "disabled";
         };
         /** PronunciationUpdate */
         PronunciationUpdate: {
@@ -2032,54 +2005,54 @@ export interface components {
              * Alphabet
              * @default null
              */
-            alphabet: "respelling" | null;
+            alphabet?: "respelling" | null;
             /**
              * Backend
              * @default null
              */
-            backend: string | null;
+            backend?: string | null;
             /**
              * Language
              * @default null
              */
-            language: string | null;
+            language?: string | null;
             /**
              * Metadata
              * @default null
              */
-            metadata: {
+            metadata?: {
                 [key: string]: unknown;
             } | null;
             /**
              * Notes
              * @default null
              */
-            notes: string | null;
+            notes?: string | null;
             /**
              * Phonetic
              * @default null
              */
-            phonetic: string | null;
+            phonetic?: string | null;
             /**
              * Scope
              * @default null
              */
-            scope: ("global" | "session") | null;
+            scope?: ("global" | "session") | null;
             /**
              * Session Id
              * @default null
              */
-            session_id: string | null;
+            session_id?: string | null;
             /**
              * Source Form
              * @default null
              */
-            source_form: string | null;
+            source_form?: string | null;
             /**
              * Status
              * @default null
              */
-            status: ("proposed" | "reviewed" | "disabled") | null;
+            status?: ("proposed" | "reviewed" | "disabled") | null;
         };
         /** ProviderCreate */
         ProviderCreate: {
@@ -2087,37 +2060,37 @@ export interface components {
              * Api Key
              * @default null
              */
-            api_key: string | null;
+            api_key?: string | null;
             /**
              * Base Url
              * @default null
              */
-            base_url: string | null;
+            base_url?: string | null;
             /**
              * Credential Backend
              * @default null
              */
-            credential_backend: ("database" | "environment" | "keyring" | "file") | null;
+            credential_backend?: ("database" | "environment" | "keyring" | "file") | null;
             /**
              * Credential Reference
              * @default null
              */
-            credential_reference: string | null;
+            credential_reference?: string | null;
             /**
              * Delete Previous Credential
              * @default false
              */
-            delete_previous_credential: boolean;
+            delete_previous_credential?: boolean;
             /**
              * Enabled
              * @default true
              */
-            enabled: boolean;
+            enabled?: boolean;
             /**
              * Kind
              * @default llm
              */
-            kind: string;
+            kind?: string;
             /** Label */
             label: string;
             /** Options */
@@ -2130,7 +2103,7 @@ export interface components {
              * Secret Ref
              * @default null
              */
-            secret_ref: string | null;
+            secret_ref?: string | null;
         };
         /** ProviderTestRequest */
         ProviderTestRequest: {
@@ -2138,7 +2111,7 @@ export interface components {
              * Model Id
              * @default null
              */
-            model_id: string | null;
+            model_id?: string | null;
         };
         /** ProviderUpdate */
         ProviderUpdate: {
@@ -2146,59 +2119,59 @@ export interface components {
              * Api Key
              * @default null
              */
-            api_key: string | null;
+            api_key?: string | null;
             /**
              * Base Url
              * @default null
              */
-            base_url: string | null;
+            base_url?: string | null;
             /**
              * Clear Api Key
              * @default false
              */
-            clear_api_key: boolean;
+            clear_api_key?: boolean;
             /**
              * Credential Backend
              * @default null
              */
-            credential_backend: ("database" | "environment" | "keyring" | "file") | null;
+            credential_backend?: ("database" | "environment" | "keyring" | "file") | null;
             /**
              * Credential Reference
              * @default null
              */
-            credential_reference: string | null;
+            credential_reference?: string | null;
             /**
              * Delete Previous Credential
              * @default false
              */
-            delete_previous_credential: boolean;
+            delete_previous_credential?: boolean;
             /**
              * Enabled
              * @default null
              */
-            enabled: boolean | null;
+            enabled?: boolean | null;
             /**
              * Label
              * @default null
              */
-            label: string | null;
+            label?: string | null;
             /**
              * Options
              * @default null
              */
-            options: {
+            options?: {
                 [key: string]: unknown;
             } | null;
             /**
              * Provider Key
              * @default null
              */
-            provider_key: string | null;
+            provider_key?: string | null;
             /**
              * Secret Ref
              * @default null
              */
-            secret_ref: string | null;
+            secret_ref?: string | null;
         };
         /** RvcConvertRequest */
         RvcConvertRequest: {
@@ -2206,7 +2179,7 @@ export interface components {
              * Session Id
              * @default null
              */
-            session_id: string | null;
+            session_id?: string | null;
             /** Settings */
             settings?: {
                 [key: string]: unknown;
@@ -2231,28 +2204,28 @@ export interface components {
              * Overwrite Session Id
              * @default null
              */
-            overwrite_session_id: string | null;
+            overwrite_session_id?: string | null;
             /**
              * Source Language
              * @default auto
              */
-            source_language: string;
+            source_language?: string;
             /**
              * Target Language
              * @default null
              */
-            target_language: string | null;
+            target_language?: string | null;
             /**
              * Workflow Kind
              * @default audiobook
              * @enum {string}
              */
-            workflow_kind: "audiobook" | "subtitles" | "voiceover";
+            workflow_kind?: "audiobook" | "subtitles" | "voiceover";
             /**
              * Workflow Preset
              * @default custom
              */
-            workflow_preset: string;
+            workflow_preset?: string;
         };
         /** SessionSettingsUpdate */
         SessionSettingsUpdate: {
@@ -2267,37 +2240,37 @@ export interface components {
              * Included Stages
              * @default null
              */
-            included_stages: string[] | null;
+            included_stages?: string[] | null;
             /**
              * Name
              * @default null
              */
-            name: string | null;
+            name?: string | null;
             /**
              * Source Language
              * @default null
              */
-            source_language: string | null;
+            source_language?: string | null;
             /**
              * Status
              * @default null
              */
-            status: string | null;
+            status?: string | null;
             /**
              * Target Language
              * @default null
              */
-            target_language: string | null;
+            target_language?: string | null;
             /**
              * Workflow Kind
              * @default null
              */
-            workflow_kind: ("audiobook" | "subtitles" | "voiceover") | null;
+            workflow_kind?: ("audiobook" | "subtitles" | "voiceover") | null;
             /**
              * Workflow Preset
              * @default null
              */
-            workflow_preset: string | null;
+            workflow_preset?: string | null;
         };
         /** SettingUpdate */
         SettingUpdate: {
@@ -2310,7 +2283,7 @@ export interface components {
              * Role
              * @default primary
              */
-            role: string;
+            role?: string;
             /** Source Asset Id */
             source_asset_id: string;
         };
@@ -2335,7 +2308,7 @@ export interface components {
              * Artifact Id
              * @default null
              */
-            artifact_id: string | null;
+            artifact_id?: string | null;
         };
         /** SubtitleReviewRequest */
         SubtitleReviewRequest: {
@@ -2343,22 +2316,6 @@ export interface components {
             expected_revision: number;
             /** Segments */
             segments: components["schemas"]["SubtitleSegmentInput"][];
-            $defs: {
-                /** SubtitleSegmentInput */
-                SubtitleSegmentInput: {
-                    /** End Ms */
-                    end_ms: number;
-                    /**
-                     * Speaker
-                     * @default null
-                     */
-                    speaker: string | null;
-                    /** Start Ms */
-                    start_ms: number;
-                    /** Text */
-                    text: string;
-                };
-            };
         };
         /** SubtitleSegmentInput */
         SubtitleSegmentInput: {
@@ -2368,7 +2325,7 @@ export interface components {
              * Speaker
              * @default null
              */
-            speaker: string | null;
+            speaker?: string | null;
             /** Start Ms */
             start_ms: number;
             /** Text */
@@ -2380,7 +2337,7 @@ export interface components {
              * Label
              * @default CLI token
              */
-            label: string;
+            label?: string;
         };
         /** TrainingCreateRequest */
         TrainingCreateRequest: {
@@ -2396,12 +2353,12 @@ export interface components {
              * Source Text Artifact Id
              * @default null
              */
-            source_text_artifact_id: string | null;
+            source_text_artifact_id?: string | null;
             /**
              * Voice Id
              * @default null
              */
-            voice_id: string | null;
+            voice_id?: string | null;
         };
         /** TtsEndpointDiscoveryRequest */
         TtsEndpointDiscoveryRequest: {
@@ -2409,14 +2366,14 @@ export interface components {
              * Api Key
              * @default null
              */
-            api_key: string | null;
+            api_key?: string | null;
             /** Base Url */
             base_url: string;
             /**
              * Service Id
              * @default null
              */
-            service_id: string | null;
+            service_id?: string | null;
         };
         /** TtsVoicePreviewRequest */
         TtsVoicePreviewRequest: {
@@ -2424,19 +2381,19 @@ export interface components {
              * Language
              * @default
              */
-            language: string;
+            language?: string;
             /**
              * Model
              * @default
              */
-            model: string;
+            model?: string;
             /** Text */
             text: string;
             /**
              * Voice
              * @default
              */
-            voice: string;
+            voice?: string;
         };
         /** VoiceCreate */
         VoiceCreate: {
@@ -2444,12 +2401,12 @@ export interface components {
              * Description
              * @default null
              */
-            description: string | null;
+            description?: string | null;
             /**
              * Language
              * @default null
              */
-            language: string | null;
+            language?: string | null;
             /** Name */
             name: string;
         };
@@ -2459,7 +2416,7 @@ export interface components {
              * Language
              * @default null
              */
-            language: string | null;
+            language?: string | null;
             /** Transcript */
             transcript: string;
         };
@@ -2476,7 +2433,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                runId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -2494,7 +2453,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                runId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -2530,7 +2491,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                artifactId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -2548,7 +2511,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                artifactId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -2566,7 +2531,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                artifactId: string;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -2588,7 +2555,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                artifactId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -2606,12 +2575,36 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                artifactId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
             /** @description Waveform peaks or queued generation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    exchangeBootstrapToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BootstrapRequest"];
+            };
+        };
+        responses: {
+            /** @description Authenticated */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2635,6 +2628,24 @@ export interface operations {
         responses: {
             /** @description Authenticated */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    logout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Signed out */
+            204: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2754,7 +2765,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                credentialId: string;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -2776,7 +2789,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                section: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -2794,7 +2809,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                revisionId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -2848,7 +2865,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                runId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -2866,7 +2885,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                runId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -2884,7 +2905,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                runId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -2902,7 +2925,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                runId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -2920,7 +2945,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                segmentId: string;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -2942,7 +2969,10 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                segmentId: string;
+                takeId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -3018,7 +3048,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                jobId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -3036,7 +3068,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                jobId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -3054,7 +3088,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                jobId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -3130,7 +3166,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                entryId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -3148,7 +3186,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                entryId: string;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -3228,7 +3268,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                providerId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -3253,7 +3295,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                providerId: string;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -3282,7 +3326,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                providerId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -3300,7 +3346,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                providerId: string;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -3318,11 +3366,34 @@ export interface operations {
             };
         };
     };
+    refreshProviderModels: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                providerId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Provider models discovered */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     deleteProviderModel: {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                providerId: string;
+                modelId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -3347,7 +3418,10 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                providerId: string;
+                modelId: string;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -3376,7 +3450,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                providerId: string;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -3507,7 +3583,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                serviceId: string;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -3607,6 +3685,35 @@ export interface operations {
             };
         };
     };
+    trashSession: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Session moved to trash */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     updateSession: {
         parameters: {
             query?: never;
@@ -3644,7 +3751,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                sessionId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -3662,7 +3771,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                sessionId: string;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -3684,7 +3795,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                sessionId: string;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -3706,7 +3819,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                sessionId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -3724,7 +3839,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                sessionId: string;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -3746,7 +3863,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                sessionId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -3764,7 +3883,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                sessionId: string;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -3786,7 +3907,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                sessionId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -3807,7 +3930,9 @@ export interface operations {
                 generation_run_id?: string;
             };
             header?: never;
-            path?: never;
+            path: {
+                sessionId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -3825,7 +3950,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                sessionId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -3843,7 +3970,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                sessionId: string;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -3865,7 +3994,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                sessionId: string;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -3887,7 +4018,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                sessionId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -3905,7 +4038,10 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                sessionId: string;
+                artifactId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -3930,7 +4066,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                sessionId: string;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -3952,7 +4090,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                sessionId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -3970,7 +4110,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                sessionId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -3988,7 +4130,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                sessionId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -4006,7 +4150,10 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                sessionId: string;
+                section: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -4024,7 +4171,10 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                sessionId: string;
+                section: string;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -4046,7 +4196,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                sessionId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -4064,7 +4216,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                sessionId: string;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -4086,7 +4240,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                sessionId: string;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -4108,7 +4264,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                sessionId: string;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -4130,7 +4288,10 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                sessionId: string;
+                attachmentId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -4173,7 +4334,10 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                sessionId: string;
+                stageKey: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -4191,7 +4355,10 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                sessionId: string;
+                stageKey: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -4209,7 +4376,10 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                sessionId: string;
+                stageKey: string;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -4238,7 +4408,10 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                sessionId: string;
+                stageKey: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -4256,7 +4429,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                sessionId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -4274,7 +4449,10 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                sessionId: string;
+                stage: string;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -4303,7 +4481,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                sessionId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -4321,7 +4501,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                settingKey: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -4339,7 +4521,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                settingKey: string;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -4386,7 +4570,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                sourceAssetId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -4404,7 +4590,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                sourceAssetId: string;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -4426,7 +4614,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                sourceAssetId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -4484,7 +4674,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                trainingId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -4502,7 +4694,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                trainingId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -4560,7 +4754,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                uploadId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -4578,7 +4774,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                uploadId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -4596,7 +4794,10 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                uploadId: string;
+                index: number;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -4614,7 +4815,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                uploadId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -4672,7 +4875,10 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                voiceId: string;
+                serviceId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -4690,7 +4896,9 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                voiceId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -4708,13 +4916,61 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                voiceId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
             /** @description Queued */
             202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    transcribeVoiceSample: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                voiceId: string;
+                sampleId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Transcription queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    reviewVoiceSampleTranscript: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                voiceId: string;
+                sampleId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VoiceTranscriptReview"];
+            };
+        };
+        responses: {
+            /** @description Transcript reviewed */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };

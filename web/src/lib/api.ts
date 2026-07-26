@@ -1,30 +1,42 @@
-export type SessionRecord = {
-  id: string;
-  name: string;
-  storage_key: string;
-  workflow_kind: 'audiobook' | 'subtitles' | 'voiceover';
-  source_language: string;
-  target_language: string | null;
-  workflow_preset: string;
-  included_stages_json: string[];
-  status: string;
-  revision: number;
-  created_at: string;
-  updated_at: string;
-};
+import type { components, paths } from './api.generated';
 
-export type JobRecord = {
-  id: string;
-  kind: string;
-  session_id?: string | null;
-  payload_json?: Record<string, unknown>;
-  status: string;
-  progress: number;
-  progress_detail?: string | null;
-  error_message?: string | null;
-  result_json?: Record<string, unknown> | null;
-  created_at: string;
-};
+export type { JobRecord, SessionRecord } from './api-models';
+
+type ApiPath = keyof paths;
+type HttpMethod = 'get' | 'put' | 'post' | 'delete' | 'patch';
+type ApiMethod<P extends ApiPath> = {
+  [M in HttpMethod]: paths[P][M] extends never | undefined ? never : M
+}[HttpMethod];
+type ApiOperation<P extends ApiPath, M extends ApiMethod<P>> = NonNullable<paths[P][M]>;
+type OperationParameters<
+  P extends ApiPath,
+  M extends ApiMethod<P>,
+  K extends 'path' | 'query' | 'header'
+> = ApiOperation<P, M> extends { parameters: infer Parameters }
+  ? K extends keyof Parameters
+    ? Parameters[K]
+    : never
+  : never;
+type OperationBody<P extends ApiPath, M extends ApiMethod<P>> =
+  ApiOperation<P, M> extends {
+    requestBody: { content: { 'application/json': infer Body } }
+  }
+    ? Body
+    : never;
+type RequestBody<P extends ApiPath, M extends ApiMethod<P>> =
+  [OperationBody<P, M>] extends [never]
+    ? Record<string, unknown>
+    : OperationBody<P, M>;
+
+export type ApiSchema<Name extends keyof components['schemas']> = components['schemas'][Name];
+
+export type TypedApiOptions<P extends ApiPath, M extends ApiMethod<P>> =
+  Omit<RequestInit, 'method' | 'body' | 'headers'> & {
+    path?: OperationParameters<P, M, 'path'>;
+    query?: OperationParameters<P, M, 'query'> | URLSearchParams;
+    headers?: HeadersInit;
+    body?: RequestBody<P, M> | FormData | Blob | ArrayBuffer;
+  };
 
 let csrfToken = '';
 
@@ -32,13 +44,21 @@ export class ApiError extends Error {
   status: number;
   code: string;
   details: unknown;
+  requestId: string;
 
-  constructor(status: number, code: string, message: string, details?: unknown) {
+  constructor(
+    status: number,
+    code: string,
+    message: string,
+    details?: unknown,
+    requestId = ''
+  ) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.code = code;
     this.details = details;
+    this.requestId = requestId;
   }
 }
 
@@ -46,58 +66,199 @@ export function setCsrfToken(value: string | null | undefined) {
   csrfToken = value ?? '';
 }
 
-export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const headers = new Headers(init.headers);
-  if (init.body && !headers.has('Content-Type') && !(init.body instanceof FormData)) {
-    headers.set('Content-Type', 'application/json');
+function interpolatePath(
+  template: string,
+  parameters?: Record<string, unknown>
+) {
+  if (!parameters) return template;
+  return template.replace(/\{([^}]+)\}/g, (_match, key: string) => {
+    const value = parameters[key];
+    if (value === undefined || value === null) {
+      throw new Error(`Missing API path parameter: ${key}`);
+    }
+    return encodeURIComponent(String(value));
+  });
+}
+
+function appendQuery(
+  path: string,
+  query?: Record<string, unknown> | URLSearchParams
+) {
+  if (!query) return path;
+  const values = query instanceof URLSearchParams ? query : new URLSearchParams();
+  if (!(query instanceof URLSearchParams)) {
+    for (const [key, value] of Object.entries(query)) {
+      if (value === undefined || value === null) continue;
+      if (Array.isArray(value)) {
+        for (const item of value) values.append(key, String(item));
+      } else {
+        values.set(key, String(value));
+      }
+    }
   }
-  if (csrfToken && init.method && !['GET', 'HEAD'].includes(init.method.toUpperCase())) {
+  const suffix = values.toString();
+  return suffix ? `${path}?${suffix}` : path;
+}
+
+function serializeBody(body: unknown, headers: Headers) {
+  if (body === undefined || body === null) return undefined;
+  if (
+    body instanceof FormData
+    || body instanceof Blob
+    || body instanceof ArrayBuffer
+    || typeof body === 'string'
+  ) {
+    return body;
+  }
+  if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+  return JSON.stringify(body);
+}
+
+async function errorFromResponse(response: Response) {
+  const payload: unknown = await response.json().catch(() => undefined);
+  const envelope = payload && typeof payload === 'object'
+    ? (payload as { error?: unknown }).error
+    : undefined;
+  const error = envelope && typeof envelope === 'object'
+    ? envelope as {
+        code?: unknown;
+        message?: unknown;
+        details?: unknown;
+        request_id?: unknown;
+      }
+    : {};
+  return new ApiError(
+    response.status,
+    String(error.code ?? 'request_failed'),
+    String(error.message ?? `Request failed (${response.status})`),
+    error.details,
+    String(error.request_id ?? response.headers.get('X-Request-ID') ?? '')
+  );
+}
+
+export async function apiResponse(path: string, init: RequestInit = {}) {
+  const headers = new Headers(init.headers);
+  const method = String(init.method ?? 'GET').toUpperCase();
+  if (csrfToken && !['GET', 'HEAD'].includes(method)) {
     headers.set('X-CSRF-Token', csrfToken);
   }
-  const response = await fetch(`/api/v1${path}`, { ...init, headers });
-  if (!response.ok) {
-    const payload = await response.json().catch(() => ({}));
-    throw new ApiError(
-      response.status,
-      String(payload?.error?.code ?? 'request_failed'),
-      String(payload?.error?.message ?? `Request failed (${response.status})`),
-      payload?.error?.details
-    );
-  }
+  const body = serializeBody(init.body, headers);
+  const response = await fetch(
+    path.startsWith('/api/v1') ? path : `/api/v1${path}`,
+    {
+      ...init,
+      method,
+      body,
+      headers,
+      credentials: init.credentials ?? 'same-origin'
+    }
+  );
+  if (!response.ok) throw await errorFromResponse(response);
+  return response;
+}
+
+export async function apiJson<T>(
+  path: string,
+  init: RequestInit = {}
+): Promise<T> {
+  const response = await apiResponse(path, init);
   if (response.status === 204) return undefined as T;
-  return response.json() as Promise<T>;
+  return await response.json() as T;
+}
+
+export async function typedApiJson<
+  P extends ApiPath,
+  M extends ApiMethod<P>,
+  Response
+>(
+  path: P,
+  method: M,
+  options: TypedApiOptions<P, M> = {} as TypedApiOptions<P, M>
+): Promise<Response> {
+  const {
+    path: pathParameters,
+    query,
+    headers,
+    body,
+    ...init
+  } = options;
+  const resolvedPath = appendQuery(
+    interpolatePath(
+      path,
+      pathParameters as Record<string, unknown> | undefined
+    ),
+    query as Record<string, unknown> | URLSearchParams | undefined
+  );
+  return apiJson<Response>(resolvedPath, {
+    ...init,
+    method: method.toUpperCase(),
+    headers,
+    body: body as BodyInit | null | undefined
+  });
 }
 
 export async function exchangeBootstrapToken(token: string) {
-  const result = await api<{ authenticated: boolean; csrf_token: string }>('/auth/bootstrap', {
-    method: 'POST',
-    body: JSON.stringify({ token })
-  });
+  const result = await typedApiJson<
+    '/api/v1/auth/bootstrap',
+    'post',
+    { authenticated: boolean; csrf_token: string }
+  >('/api/v1/auth/bootstrap', 'post', { body: { token } });
   setCsrfToken(result.csrf_token);
   return result;
 }
 
-export async function uploadManagedFile(file: File, sessionId?: string, onProgress?: (fraction: number) => void) {
+export async function uploadManagedFile(
+  file: File,
+  sessionId?: string,
+  onProgress?: (fraction: number) => void
+) {
   if (file.size <= 32 * 1024 * 1024) {
     const form = new FormData();
     if (sessionId) form.set('session_id', sessionId);
     form.set('file', file);
-    const result = await api<Record<string, any>>('/uploads', { method: 'POST', body: form });
+    const result = await typedApiJson<
+      '/api/v1/uploads',
+      'post',
+      Record<string, unknown>
+    >('/api/v1/uploads', 'post', { body: form });
     onProgress?.(1);
     return result;
   }
-  const upload = await api<{ id: string; chunk_size: number; chunk_count: number; received: number[] }>('/uploads/init', {
-    method: 'POST',
-    body: JSON.stringify({ filename: file.name, size_bytes: file.size, mime_type: file.type || null, session_id: sessionId || null })
+  const upload = await typedApiJson<
+    '/api/v1/uploads/init',
+    'post',
+    { id: string; chunk_size: number; chunk_count: number; received: number[] }
+  >('/api/v1/uploads/init', 'post', {
+    body: {
+      filename: file.name,
+      size_bytes: file.size,
+      mime_type: file.type || null,
+      session_id: sessionId || null,
+      sha256: null,
+      chunk_size: 8 * 1024 * 1024
+    }
   });
   const received = new Set(upload.received);
   for (let index = 0; index < upload.chunk_count; index += 1) {
     if (received.has(index)) continue;
     const start = index * upload.chunk_size;
     const body = file.slice(start, Math.min(file.size, start + upload.chunk_size));
-    await api(`/uploads/${upload.id}/chunks/${index}`, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body });
+    await typedApiJson<
+      '/api/v1/uploads/{uploadId}/chunks/{index}',
+      'put',
+      Record<string, unknown>
+    >('/api/v1/uploads/{uploadId}/chunks/{index}', 'put', {
+      path: { uploadId: upload.id, index },
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body
+    });
     onProgress?.((index + 1) / upload.chunk_count);
   }
-  return api<Record<string, any>>(`/uploads/${upload.id}/complete`, { method: 'POST' });
+  return typedApiJson<
+    '/api/v1/uploads/{uploadId}/complete',
+    'post',
+    Record<string, unknown>
+  >('/api/v1/uploads/{uploadId}/complete', 'post', {
+    path: { uploadId: upload.id }
+  });
 }
-

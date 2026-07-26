@@ -1,7 +1,9 @@
 <script lang="ts">
   import { page } from '$app/state';
   import { ArrowLeft, AudioLines, CheckCircle2, CircleAlert, CloudUpload, Library, LoaderCircle, Mic, Play, Plus, Save, Settings2, Square, Trash2, Volume2, WandSparkles } from '@lucide/svelte';
-  import { api, type JobRecord } from './api';
+  import { diagnosticsApi, speechServiceApi, voiceApi } from './admin-api';
+  import type { RuntimeCapabilities, TtsService } from './api-models';
+  import { jobApi } from './domain-api';
   import { onDestroy, onMount } from 'svelte';
   import GuidedTour from './GuidedTour.svelte';
   import SettingsModal from './SettingsModal.svelte';
@@ -10,7 +12,6 @@
   type ProviderRegistration = { voice_id: string; sample_id?: string; status?: string; updated_at?: string };
   type Voice = { id: string; name: string; language?: string; description?: string; metadata_json?: { providers?: Record<string, ProviderRegistration>; bundled_voice?: string } };
   type Sample = { id: string; artifact_id: string; transcript?: string; transcript_language?: string; transcript_reviewed: boolean };
-  type TtsService = { id: string; name: string; available?: boolean; availability_reason?: string; supports_voice_cloning?: boolean };
 
   let {
     onback,
@@ -28,7 +29,7 @@
   let voices = $state<Voice[]>([]);
   let selected = $state<Voice | null>(null);
   let samples = $state<Sample[]>([]);
-  let capabilities = $state<any>({});
+  let capabilities = $state<RuntimeCapabilities>({});
   let ttsServices = $state<TtsService[]>([]);
   let error = $state('');
   let notice = $state('');
@@ -97,7 +98,7 @@
   }
 
   async function loadVoices() {
-    const result = await api<{ items: Voice[] }>('/voices');
+    const result = await voiceApi.list<Voice>();
     voices = result.items;
     if (selected) selected = voices.find((voice) => voice.id === selected?.id) ?? null;
   }
@@ -105,7 +106,7 @@
   async function choose(voice: Voice) {
     stopPlayback();
     selected = voice;
-    const result = await api<{ items: Sample[] }>(`/voices/${voice.id}/samples`);
+    const result = await voiceApi.samples<Sample>(voice.id);
     samples = result.items;
     transcripts = Object.fromEntries(samples.map((sample) => [sample.id, sample.transcript ?? '']));
   }
@@ -119,7 +120,7 @@
     nameRequired = false;
     error = '';
     try {
-      const voice = await api<Voice>('/voices', { method: 'POST', body: JSON.stringify({ name: newName.trim(), language }) });
+      const voice = await voiceApi.create<Voice>({ name: newName.trim(), language });
       newName = '';
       await loadVoices();
       await choose(voice);
@@ -183,7 +184,7 @@
       const next = new MediaRecorder(activeStream, preferred ? { mimeType: preferred } : undefined);
       chunks = [];
       next.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data); };
-      next.onerror = (event) => report((event as any).error ?? new Error('The browser recorder failed.'));
+      next.onerror = (event) => report((event as Event & { error?: DOMException }).error ?? new Error('The browser recorder failed.'));
       next.onstop = () => {
         if (timer) window.clearInterval(timer);
         timer = undefined;
@@ -238,7 +239,7 @@
     const extension = recordingBlob.type.includes('ogg') ? 'ogg' : recordingBlob.type.includes('mp4') ? 'm4a' : 'webm';
     body.set('file', recordingBlob, `recording.${extension}`);
     try {
-      const job = await api<JobRecord>(`/voices/${selected.id}/samples`, { method: 'POST', body });
+      const job = await voiceApi.uploadSample(selected.id, body);
       await waitJob(job.id);
       clearRecording();
       notice = providerTarget
@@ -261,7 +262,7 @@
     body.set('file', file);
     error = '';
     try {
-      const job = await api<JobRecord>(`/voices/${selected.id}/samples`, { method: 'POST', body });
+      const job = await voiceApi.uploadSample(selected.id, body);
       await waitJob(job.id);
       notice = providerTarget
         ? `The sample is ready. Upload this voice to ${providerTarget.name} to use it for generation.`
@@ -276,7 +277,7 @@
 
   async function waitJob(id: string) {
     for (let attempt = 0; attempt < 240; attempt += 1) {
-      const job = await api<JobRecord>(`/jobs/${id}`);
+      const job = await jobApi.get(id);
       if (job.status === 'succeeded') return job;
       if (['failed', 'canceled', 'interrupted'].includes(job.status)) throw new Error(job.error_message || `Job ${job.status}`);
       await new Promise((resolve) => setTimeout(resolve, 500));
@@ -290,21 +291,18 @@
     transcribing = { ...transcribing, [sample.id]: true };
     notice = `Transcribing sample with ${sttEngineName()}${sttModelInfo.download_on_demand ? ' (the model will download first)' : ''}…`;
     try {
-      const job = await api<JobRecord>(`/voices/${selected.id}/samples/${sample.id}/transcribe`, {
-        method: 'POST',
-        body: JSON.stringify({
-          stt_engine: engine,
-          stt_backend: engine,
-          stt_compute_backend: computeBackend,
-          stt_model_quantization: modelQuantization,
-          stt_language: language,
-          moss_max_chunk_seconds: 120,
-          moss_vad_enabled: engine === 'moss' ? vadEnabled : false,
-          moss_ctc_alignment_enabled: true,
-          moss_ctc_padding_seconds: 0.5,
-          crispasr_vad_enabled: vadEnabled,
-          crispasr_vad_threshold: vadThreshold
-        })
+      const job = await voiceApi.transcribeSample(selected.id, sample.id, {
+        stt_engine: engine,
+        stt_backend: engine,
+        stt_compute_backend: computeBackend,
+        stt_model_quantization: modelQuantization,
+        stt_language: language,
+        moss_max_chunk_seconds: 120,
+        moss_vad_enabled: engine === 'moss' ? vadEnabled : false,
+        moss_ctc_alignment_enabled: true,
+        moss_ctc_padding_seconds: 0.5,
+        crispasr_vad_enabled: vadEnabled,
+        crispasr_vad_threshold: vadThreshold
       });
       const completed = await waitJob(job.id);
       transcripts[sample.id] = String(completed.result_json?.transcript ?? '');
@@ -334,7 +332,7 @@
     error = '';
     notice = `Uploading ${selected.name} to ${providerTarget.name}…`;
     try {
-      const job = await api<JobRecord>(`/voices/${selected.id}/providers/${providerTarget.id}`, { method: 'POST' });
+      const job = await voiceApi.publish(selected.id, providerTarget.id);
       const completed = await waitJob(job.id);
       const providerVoiceId = String(completed.result_json?.provider_voice_id ?? '');
       if (!providerVoiceId) throw new Error(`${providerTarget.name} did not return a voice ID.`);
@@ -352,7 +350,7 @@
   async function saveTranscript(sample: Sample) {
     if (!selected || !transcripts[sample.id]?.trim()) return;
     try {
-      await api(`/voices/${selected.id}/samples/${sample.id}/transcript`, { method: 'PATCH', body: JSON.stringify({ transcript: transcripts[sample.id].trim(), language }) });
+      await voiceApi.reviewTranscript<Sample>(selected.id, sample.id, { transcript: transcripts[sample.id].trim(), language });
       notice = 'Reviewed transcript saved.';
       await choose(selected);
     } catch (caught) {
@@ -392,8 +390,8 @@
     activeView = initialView ?? (page.url.searchParams.get('view') === 'prebuilt' ? 'prebuilt' : 'references');
     try {
       const [capabilityPayload, servicesPayload] = await Promise.all([
-        api<any>('/capabilities'),
-        requestedService ? api<any>('/services/tts?refresh=true') : Promise.resolve({ services: [] }),
+        diagnosticsApi.capabilities(),
+        requestedService ? speechServiceApi.catalogue(true) : Promise.resolve({ services: [] }),
         loadVoices()
       ]);
       capabilities = capabilityPayload;

@@ -1,6 +1,12 @@
 <script lang="ts">
   import { ImagePlus, RotateCcw, Save, Trash2 } from '@lucide/svelte';
-  import { api } from './api';
+  import { appApi, artifactApi, sessionApi } from './domain-api';
+  import type {
+    ArtifactRecord,
+    RuntimeCapabilities,
+    SessionRecord,
+    SettingsPayload
+  } from './api-models';
   import ArtifactPreview from './ArtifactPreview.svelte';
   import { artifactFilename } from './artifact-display';
 
@@ -10,21 +16,21 @@
     onSaveForExportReady?:(save:()=>Promise<SavedOutputProfile>)=>void;
   };
   let { sessionId, onSaveForExportReady }: Props = $props();
-  let settings = $state<any>(null);
-  let audioSettings = $state<any>(null);
-  let session = $state<any>(null);
-  let capabilities = $state<any>({});
+  let settings = $state<SettingsPayload|null>(null);
+  let audioSettings = $state<SettingsPayload|null>(null);
+  let session = $state<SessionRecord|null>(null);
+  let capabilities = $state<RuntimeCapabilities>({});
   let draft = $state<Record<string, unknown>>({});
   let audioDraft = $state<Record<string, unknown>>({});
-  let images = $state<any[]>([]);
-  let preview = $state<any|null>(null);
+  let images = $state<ArtifactRecord[]>([]);
+  let preview = $state<ArtifactRecord|null>(null);
   let busy = $state(false);
   let message = $state('');
   let error = $state('');
 
   const audiobookWorkspace = $derived(session?.workflow_kind==='audiobook');
   const subtitleWorkspace = $derived(session?.workflow_kind==='subtitles');
-  const context = $derived(settings?.context??{});
+  const context = $derived(settings?.context&&typeof settings.context==='object' ? settings.context as Record<string,unknown> : {});
   const sourceProfile = $derived(String(context.source_profile??'none'));
   const hasSourceVideo = $derived(Boolean(context.has_source_video));
   const hasSourceAudio = $derived(Boolean(context.has_source_audio));
@@ -64,11 +70,11 @@
 
   async function load() {
     [session, settings, audioSettings, {items:images}, capabilities] = await Promise.all([
-      api<any>(`/sessions/${sessionId}`),
-      api<any>(`/sessions/${sessionId}/settings/output`),
-      api<any>(`/sessions/${sessionId}/settings/audio`),
-      api<any>(`/artifacts?session_id=${sessionId}&limit=500`).then((payload)=>({items:(payload.items??[]).filter((item:any)=>item.state==='current'&&(item.kind==='image'||String(item.mime_type??'').startsWith('image/')))})),
-      api<any>('/capabilities').catch(()=>({}))
+      sessionApi.get(sessionId),
+      sessionApi.settings(sessionId,'output'),
+      sessionApi.settings(sessionId,'audio'),
+      artifactApi.list({sessionId,limit:500}).then((payload)=>({items:payload.items.filter((item)=>item.state==='current'&&(item.kind==='image'||String(item.mime_type??'').startsWith('image/')))})),
+      appApi.capabilities().catch(()=>({}))
     ]);
     draft=sanitizeOutput({...settings.override});
     audioDraft=sanitizeAudio({...audioSettings.override});
@@ -81,14 +87,14 @@
     try {
       const cleanedOutput=sanitizeOutput(nextDraft);
       const cleanedAudio=sanitizeAudio(nextAudioDraft);
-      settings=await api<any>(`/sessions/${sessionId}/settings/output`,{method:'PUT',headers:{'If-Match':`"${settings.revision}"`},body:JSON.stringify({value:cleanedOutput})});
+      settings=await sessionApi.saveSettings(sessionId,'output',settings!.revision,cleanedOutput);
       if(!audiobookWorkspace&&!subtitleWorkspace){
-        audioSettings=await api<any>(`/sessions/${sessionId}/settings/audio`,{method:'PUT',headers:{'If-Match':`"${audioSettings.revision}"`},body:JSON.stringify({value:cleanedAudio})});
+        audioSettings=await sessionApi.saveSettings(sessionId,'audio',audioSettings!.revision,cleanedAudio);
       }
       draft=sanitizeOutput({...settings.override});
-      audioDraft=sanitizeAudio({...audioSettings.override});
+      audioDraft=sanitizeAudio({...audioSettings!.override});
       message='Output settings saved for this session.';
-      return {output:{...(settings.effective??{})},audio:{...(audioSettings.effective??{})}};
+      return {output:{...(settings.effective??{})},audio:{...(audioSettings!.effective??{})}};
     } catch(caught){
       error=caught instanceof Error?caught.message:String(caught);
       if(rethrow)throw caught;
@@ -107,16 +113,16 @@
     busy=true;error='';message='';
     try {
       const promoted=Object.fromEntries(Object.entries(sanitizeOutput(draft)).filter(([key])=>key!=='cover_artifact_id'));
-      const defaults=await api<any>('/defaults/output');
-      await api('/settings/defaults.output',{method:'PUT',headers:{'If-Match':`"${defaults.revision}"`},body:JSON.stringify({value:{...(defaults.value??{}),...promoted}})});
+      const defaults=await sessionApi.defaults('output');
+      await sessionApi.saveDefaults('output',defaults.revision,{...(defaults.value??{}),...promoted});
       if(!audiobookWorkspace&&!subtitleWorkspace){
-        const audioDefaults=await api<any>('/defaults/audio');
-        await api('/settings/defaults.audio',{method:'PUT',headers:{'If-Match':`"${audioDefaults.revision}"`},body:JSON.stringify({value:{...(audioDefaults.value??{}),...sanitizeAudio(audioDraft)}})});
+        const audioDefaults=await sessionApi.defaults('audio');
+        await sessionApi.saveDefaults('audio',audioDefaults.revision,{...(audioDefaults.value??{}),...sanitizeAudio(audioDraft)});
       }
       const retained=Object.fromEntries(Object.entries(sanitizeOutput(draft)).filter(([key])=>!Object.prototype.hasOwnProperty.call(promoted,key)));
-      settings=await api<any>(`/sessions/${sessionId}/settings/output`,{method:'PUT',headers:{'If-Match':`"${settings.revision}"`},body:JSON.stringify({value:retained})});
+      settings=await sessionApi.saveSettings(sessionId,'output',settings!.revision,retained);
       if(!audiobookWorkspace&&!subtitleWorkspace){
-        audioSettings=await api<any>(`/sessions/${sessionId}/settings/audio`,{method:'PUT',headers:{'If-Match':`"${audioSettings.revision}"`},body:JSON.stringify({value:{}})});
+        audioSettings=await sessionApi.saveSettings(sessionId,'audio',audioSettings!.revision,{});
       }
       draft=sanitizeOutput({...settings.override});audioDraft={};
       message='Saved as the application defaults for compatible outputs.';
@@ -127,10 +133,9 @@
     const input=event.currentTarget as HTMLInputElement; const file=input.files?.[0]; if(!file)return;
     busy=true;error='';message='Uploading cover artwork…';
     try {
-      const form=new FormData(); form.set('session_id',sessionId); form.set('purpose','cover'); form.set('file',file);
-      const result=await api<any>('/uploads',{method:'POST',body:form});
-      const artifacts=await api<any>(`/artifacts?session_id=${sessionId}&limit=500`);
-      images=(artifacts.items??[]).filter((item:any)=>item.state==='current'&&(item.kind==='image'||String(item.mime_type??'').startsWith('image/')));
+      const result=await artifactApi.upload(file,sessionId,'cover');
+      const artifacts=await artifactApi.list({sessionId,limit:500});
+      images=artifacts.items.filter((item)=>item.state==='current'&&(item.kind==='image'||String(item.mime_type??'').startsWith('image/')));
       const next={...draft,cover_artifact_id:result.artifact_id}; draft=next; await save(next,audioDraft);
     } catch(caught){error=caught instanceof Error?caught.message:String(caught)} finally{busy=false;input.value=''}
   }
@@ -193,7 +198,7 @@
         {/if}
 
         {#if exportMode==='media'&&hasSourceVideo&&subtitleMode==='burned'}
-          <div class="rounded-2xl border border-[var(--line)] p-5"><div class="text-sm font-semibold">Burned-subtitle transcoding</div><p class="muted mt-1 text-xs">Output height preserves the source aspect ratio. Scaling runs before subtitles are rendered so upscaled text stays sharp.</p><div class="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3"><label>Output resolution<select value={String(value('burn_video_resolution','source'))} onchange={(event)=>set('burn_video_resolution',event.currentTarget.value)} class="field"><option value="source">Source resolution</option><option value="360p">360p</option><option value="480p">480p</option><option value="720p">720p (HD)</option><option value="1080p">1080p (Full HD)</option><option value="1440p">1440p (QHD)</option><option value="2160p">2160p (4K)</option></select></label><label>Video encoder<select value={String(value('burn_video_encoder','libx264'))} onchange={(event)=>set('burn_video_encoder',event.currentTarget.value)} class="field">{#if !burnVideoEncoders.some((item:any)=>item.id===String(value('burn_video_encoder','libx264')))}<option value={String(value('burn_video_encoder','libx264'))}>{String(value('burn_video_encoder','libx264'))} (currently unavailable)</option>{/if}{#each burnVideoEncoders as encoder}<option value={encoder.id}>{encoder.label}</option>{/each}</select></label><label>Quality<input value={Number(value('burn_video_quality',18))} oninput={(event)=>set('burn_video_quality',Number(event.currentTarget.value))} type="number" min="0" max="51" step="1" class="field"/></label><label>Encoding speed<select value={String(value('burn_video_speed','balanced'))} onchange={(event)=>set('burn_video_speed',event.currentTarget.value)} class="field"><option value="fast">Fast</option><option value="balanced">Balanced</option><option value="quality">Quality</option></select></label><label>Audio<select value={String(value('burn_audio_codec','copy'))} onchange={(event)=>set('burn_audio_codec',event.currentTarget.value)} class="field"><option value="copy">Copy without transcoding</option><option value="aac">Transcode to AAC</option></select></label>{#if value('burn_audio_codec','copy')==='aac'}<label>AAC bitrate<input value={String(value('burn_audio_bitrate','192k'))} oninput={(event)=>set('burn_audio_bitrate',event.currentTarget.value)} class="field"/></label>{/if}</div></div>
+          <div class="rounded-2xl border border-[var(--line)] p-5"><div class="text-sm font-semibold">Burned-subtitle transcoding</div><p class="muted mt-1 text-xs">Output height preserves the source aspect ratio. Scaling runs before subtitles are rendered so upscaled text stays sharp.</p><div class="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3"><label>Output resolution<select value={String(value('burn_video_resolution','source'))} onchange={(event)=>set('burn_video_resolution',event.currentTarget.value)} class="field"><option value="source">Source resolution</option><option value="360p">360p</option><option value="480p">480p</option><option value="720p">720p (HD)</option><option value="1080p">1080p (Full HD)</option><option value="1440p">1440p (QHD)</option><option value="2160p">2160p (4K)</option></select></label><label>Video encoder<select value={String(value('burn_video_encoder','libx264'))} onchange={(event)=>set('burn_video_encoder',event.currentTarget.value)} class="field">{#if !burnVideoEncoders.some((item)=>item.id===String(value('burn_video_encoder','libx264')))}<option value={String(value('burn_video_encoder','libx264'))}>{String(value('burn_video_encoder','libx264'))} (currently unavailable)</option>{/if}{#each burnVideoEncoders as encoder}<option value={encoder.id}>{encoder.label}</option>{/each}</select></label><label>Quality<input value={Number(value('burn_video_quality',18))} oninput={(event)=>set('burn_video_quality',Number(event.currentTarget.value))} type="number" min="0" max="51" step="1" class="field"/></label><label>Encoding speed<select value={String(value('burn_video_speed','balanced'))} onchange={(event)=>set('burn_video_speed',event.currentTarget.value)} class="field"><option value="fast">Fast</option><option value="balanced">Balanced</option><option value="quality">Quality</option></select></label><label>Audio<select value={String(value('burn_audio_codec','copy'))} onchange={(event)=>set('burn_audio_codec',event.currentTarget.value)} class="field"><option value="copy">Copy without transcoding</option><option value="aac">Transcode to AAC</option></select></label>{#if value('burn_audio_codec','copy')==='aac'}<label>AAC bitrate<input value={String(value('burn_audio_bitrate','192k'))} oninput={(event)=>set('burn_audio_bitrate',event.currentTarget.value)} class="field"/></label>{/if}</div></div>
         {/if}
       </div>
     {/if}

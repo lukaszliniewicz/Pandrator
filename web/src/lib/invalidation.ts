@@ -21,7 +21,7 @@ export type PandratorServerEvent = {
   progress?: number;
   detail?: string | null;
   created_at?: string;
-  changed_entities?: string[];
+  changed_entities?: InvalidationResource[];
   [key: string]: unknown;
 };
 
@@ -33,6 +33,23 @@ export type InvalidationBatch = {
 };
 
 const KNOWN_RESOURCES = new Set<string>(INVALIDATION_RESOURCES);
+
+type InvalidationListener = (batch: InvalidationBatch) => void;
+
+class InvalidationBus {
+  private listeners = new Set<InvalidationListener>();
+
+  publish(batch: InvalidationBatch) {
+    for (const listener of this.listeners) listener(batch);
+  }
+
+  subscribe(listener: InvalidationListener) {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+}
+
+export const invalidationBus = new InvalidationBus();
 
 function resourcesFor(event: PandratorServerEvent): InvalidationResource[] {
   const supplied = Array.isArray(event.changed_entities)

@@ -2,7 +2,13 @@
   import { AudioWaveform, CheckCircle2, Cpu, KeyRound, Mic2, ShieldCheck, Volume2, X } from '@lucide/svelte';
   import { appState } from './app-state.svelte';
   let { onclose }: { onclose: () => void } = $props();
-  const ready = (key:string) => Boolean(appState.capabilities?.services?.[key] ?? appState.capabilities?.[key]?.available);
+  const ready = (key:string) => {
+    const capability = appState.capabilities[key];
+    const available = capability && typeof capability === 'object'
+      ? (capability as { available?: boolean }).available
+      : false;
+    return Boolean(appState.capabilities.services?.[key] ?? available);
+  };
 </script>
 
 <div class="fixed inset-0 z-50 bg-black/35" role="presentation">

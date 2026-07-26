@@ -2,56 +2,58 @@
   import {
     ChevronDown,
     ChevronUp,
-    ArrowRight,
     BookOpenText,
     Download,
-    Flag,
     ListMusic,
-    Languages,
     Pause,
     Play,
     RefreshCw,
-    RotateCcw,
-    Save,
-    ShieldCheck,
     Sparkles,
     Square,
     Trash2,
-    TriangleAlert,
-    WandSparkles,
-    X
+    WandSparkles
   } from '@lucide/svelte';
   import { onMount, tick, untrack } from 'svelte';
-  import { api } from './api';
   import { appState } from './app-state.svelte';
-  import { invalidates, type InvalidationBatch, type PandratorServerEvent } from './invalidation';
-  import WaveformPeaks from './WaveformPeaks.svelte';
+  import { generationApi, sessionApi, type GenerationSegmentChanges } from './domain-api';
+  import type {
+    AudioTake,
+    GenerationSegment,
+    SpeechPlan,
+    TtsCatalogue,
+    VoiceRecord
+  } from './api-models';
+  import {
+    GenerationStore,
+    SEGMENT_FILTER_OPTIONS,
+    type GenerationLoadResult,
+    type SegmentFilter
+  } from './generation-store.svelte';
   import TtsServicesModal from './TtsServicesModal.svelte';
   import AudioPlayer from './AudioPlayer.svelte';
-  import TextDiff from './TextDiff.svelte';
+  import GenerationSegmentTable from './GenerationSegmentTable.svelte';
+  import GenerationReadingView from './GenerationReadingView.svelte';
+  import SpeechPlanReviewDialog from './SpeechPlanReviewDialog.svelte';
   import SearchReplaceBar from './SearchReplaceBar.svelte';
   import type { TextReplacement, TextSearchMatch } from './search-replace';
   import { LANGUAGE_OPTIONS } from './settings-fields';
   import { describeVoice, languagesForService, type VoiceDescriptor } from './voice-catalog';
-
-  type SegmentFilter = 'all' | 'completed' | 'queued' | 'marked' | 'failed' | 'stale' | 'verification_issues';
-  const SEGMENT_FILTER_OPTIONS: { value: SegmentFilter; label: string }[] = [
-    { value: 'all', label: 'All segments' },
-    { value: 'completed', label: 'Generated' },
-    { value: 'queued', label: 'Queued' },
-    { value: 'marked', label: 'Marked' },
-    { value: 'failed', label: 'Generation failed' },
-    { value: 'stale', label: 'Stale' },
-    { value: 'verification_issues', label: 'Verification issues' }
-  ];
+  import type {
+    ComparisonDecisionRow,
+    PlayableTake,
+    ReadingBlock
+  } from './generation-view-models';
+  const hasArtifact = (take: AudioTake): take is PlayableTake =>
+    Boolean(take.artifact_id);
 
   let { sessionId }: { sessionId: string } = $props();
+  const generationStore = new GenerationStore(untrack(() => sessionId));
   let mode = $state<'collapsed' | 'half' | 'full'>('collapsed');
-  let payload = $state<any>({ items: [], total: 0, next_cursor: null });
-  let run = $state<any>(null);
-  let runs = $state<any[]>([]);
+  const payload = $derived(generationStore.payload);
+  const run = $derived(generationStore.activeRun);
+  const runs = $derived(generationStore.runs);
   let selectedRunId = $state('');
-  let assembly = $state<any>(null);
+  const assembly = $derived(generationStore.assembly);
   let filter = $state<SegmentFilter>('all');
   let error = $state('');
   let loading = $state(false);
@@ -61,7 +63,6 @@
   let selectionAnchor = $state('');
   let viewMode = $state<'segments' | 'reading'>('segments');
   let readingTextMode = $state<'display' | 'speech'>('display');
-  let loadedFilter = $state('');
   let playlistAudio: HTMLAudioElement | null = null;
   let playlistResolve: (() => void) | null = null;
   let playlistToken = 0;
@@ -75,16 +76,15 @@
   let rvcIndexRate = $state(0.3);
   let showRvc = $state(false);
   let ttsServicesOpen = $state(false);
-  let comparisonItem = $state<any>(null);
+  let comparisonItem = $state<GenerationSegment | null>(null);
   let comparisonText = $state('');
   let regenerateAfterReview = $state(true);
   let comparisonDiff = $state(false);
-  let initialized = false;
   let searchLoading = $state(false);
   let speechOptionsLoading = $state(false);
-  let ttsSettings = $state<Record<string, any>>({});
-  let ttsCatalogue = $state<any>({ services: [] });
-  let libraryVoices = $state<any[]>([]);
+  let ttsSettings = $state<Record<string, unknown>>({});
+  let ttsCatalogue = $state<TtsCatalogue>({ services: [] });
+  let libraryVoices = $state<VoiceRecord[]>([]);
 
   const normalizeId = (value: unknown) => String(value ?? '').trim().toLowerCase().replaceAll('-', '_');
   const progressPercent = (value: unknown) => {
@@ -93,7 +93,7 @@
   };
   const selectedTtsService = $derived.by(() => {
     const configured = String(ttsSettings.service ?? ttsSettings.tts_service ?? ttsCatalogue.default_service ?? '');
-    return (ttsCatalogue.services ?? []).find((service: any) =>
+    return ttsCatalogue.services.find((service) =>
       [service.id, service.name].some((value) => normalizeId(value) === normalizeId(configured))
     ) ?? null;
   });
@@ -107,7 +107,7 @@
     const qwenCloning = selectedTtsServiceId === 'kobold_qwen' && selectedTtsModel.toLowerCase() === 'voice cloning';
     const providerVoicesAllowed = !service.supports_prebuilt_voices || qwenCloning;
     const published = providerVoicesAllowed
-      ? libraryVoices.flatMap((voice: any) => {
+      ? libraryVoices.flatMap((voice) => {
           const registration = voice?.metadata_json?.providers?.[selectedTtsServiceId];
           return registration?.status === 'ready' && registration?.voice_id ? [String(registration.voice_id)] : [];
         })
@@ -144,28 +144,28 @@
     || ''
   ));
 
-  const marked = $derived(payload.items.filter((item: any) => item.marked).map((item: any) => item.id));
+  const marked = $derived(payload.items.filter((item) => item.marked).map((item) => item.id));
   const selectedSegmentIds = $derived(
     payload.items
-      .filter((item: any) => selectedRows.includes(item.id))
-      .map((item: any) => item.id)
+      .filter((item) => selectedRows.includes(item.id))
+      .map((item) => item.id)
   );
-  const editableTexts = $derived(payload.items.map((item: any) => String(item.text ?? '')));
+  const editableTexts = $derived(payload.items.map((item) => String(item.text ?? '')));
   const activeFilterLabel = $derived(
     SEGMENT_FILTER_OPTIONS.find((option) => option.value === filter)?.label ?? 'All segments'
   );
   const searchScopeLabel = $derived(
     filter === 'all' ? 'generation segments' : `${activeFilterLabel.toLowerCase()} segments`
   );
-  const selectedRun = $derived(runs.find((item: any) => item.id === selectedRunId) ?? null);
-  const comparisonPlan = $derived(comparisonItem?.speech_plan ?? {});
+  const selectedRun = $derived(runs.find((item) => item.id === selectedRunId) ?? null);
+  const comparisonPlan = $derived<SpeechPlan>(comparisonItem?.speech_plan ?? {});
   const comparisonDecisionRows = $derived.by(() => {
     const decisions = new Map(
       (comparisonPlan?.decisions ?? [])
-        .filter((item: any) => item && item.span_id)
-        .map((item: any) => [String(item.span_id), item])
+        .filter((item) => item && item.span_id)
+        .map((item) => [String(item.span_id), item])
     );
-    const rows = (comparisonPlan?.candidates ?? []).map((candidate: any) => ({
+    const rows: ComparisonDecisionRow[] = (comparisonPlan?.candidates ?? []).map((candidate) => ({
       id: candidate.id,
       written: candidate.text,
       task: candidate.task,
@@ -175,7 +175,7 @@
     for (const [index, discovery] of (comparisonPlan?.discoveries ?? []).entries()) {
       rows.push({
         id: `discovery-${index}`,
-        written: discovery.source_text,
+        written: discovery.source_text ?? '',
         task: 'discovery',
         signals: ['model discovery'],
         ...discovery
@@ -190,7 +190,7 @@
     return `$${Number(value).toFixed(Number(value) < 0.01 ? 6 : 4)}`;
   });
   const readingBlocks = $derived.by(() => {
-    const blocks: { key: string; kind: string; items: any[]; closed?: boolean }[] = [];
+    const blocks: ReadingBlock[] = [];
     for (const item of payload.items) {
       const standalone = ['heading', 'chapter_marker'].includes(item.node_kind);
       if (standalone) {
@@ -214,7 +214,7 @@
       ?? value;
   }
 
-  function languageOptionsFor(item: any) {
+  function languageOptionsFor(item: GenerationSegment) {
     const options = [...supportedSpeechLanguages];
     const current = String(item.language ?? '').trim();
     if (current && !options.some((option) => normalizeId(option.value) === normalizeId(current))) {
@@ -227,7 +227,7 @@
     return [voice.name, voice.gender, voice.languageCode ? voice.language : ''].filter(Boolean).join(' · ');
   }
 
-  function voiceOptionsFor(item: any) {
+  function voiceOptionsFor(item: GenerationSegment) {
     const effectiveLanguage = String(item.language || inheritedLanguage);
     const options = modelVoiceDescriptors.filter((voice) =>
       !voice.languageCode || normalizeId(voice.languageCode) === normalizeId(effectiveLanguage)
@@ -245,7 +245,7 @@
     return options;
   }
 
-  async function changeSegmentLanguage(item: any, selected: string) {
+  async function changeSegmentLanguage(item: GenerationSegment, selected: string) {
     const language = selected || null;
     const effectiveLanguage = String(language || inheritedLanguage);
     const currentVoice = String(item.voice ?? '').trim();
@@ -261,27 +261,27 @@
     speechOptionsLoading = true;
     try {
       const [settings, services, voices] = await Promise.all([
-        api<any>(`/sessions/${sessionId}/settings/tts`),
-        api<any>('/services/tts?refresh=true'),
-        api<any>('/voices')
+        sessionApi.settings(sessionId, 'tts'),
+        sessionApi.ttsCatalogue(true),
+        sessionApi.voices()
       ]);
       ttsSettings = settings.effective ?? {};
       ttsCatalogue = services;
       libraryVoices = voices.items ?? [];
 
-      const service = (services.services ?? []).find((candidate: any) =>
+      const service = services.services.find((candidate) =>
         [candidate.id, candidate.name].some((value) =>
           normalizeId(value) === normalizeId(ttsSettings.service ?? ttsSettings.tts_service ?? services.default_service)
         )
       );
       if (service?.api_base && service.online !== false) {
         try {
-          const discovered = await api<any>('/services/tts/discover', {
-            method: 'POST',
-            body: JSON.stringify({ base_url: service.api_base, service_id: service.id })
-          });
+          const discovered = await sessionApi.discoverTts(
+            service.api_base,
+            service.id
+          );
           if (discovered?.success) {
-            const refreshed = (ttsCatalogue.services ?? []).map((candidate: any) =>
+            const refreshed = ttsCatalogue.services.map((candidate) =>
               candidate.id === service.id
                 ? {
                     ...candidate,
@@ -309,68 +309,25 @@
 
   async function load(reset = true, preserveLoaded = reset) {
     try {
-      const query = new URLSearchParams({ limit: '100' });
-      if (filter === 'marked') query.set('marked', 'true');
-      else if (filter === 'verification_issues') query.set('verification', 'issues');
-      else if (filter !== 'all') query.set('status', filter);
-      if (!reset && payload.next_cursor != null) query.set('cursor', String(payload.next_cursor));
-      const previousTotal = payload.total;
-      const previousRunId = run?.id ?? '';
-      const [runPayload, latestAssembly] = await Promise.all([
-        api<any>(`/sessions/${sessionId}/generation-runs`),
-        api<any>(`/sessions/${sessionId}/output-assemblies/latest`)
-      ]);
-      runs = runPayload.items ?? [];
-      run = runs.find((item: any) =>
-        ['queued', 'running', 'pausing', 'pause_requested', 'cancel_requested', 'paused'].includes(item.status)
-      ) ?? runs[0] ?? null;
-      if (!selectedRunId || !runs.some((item: any) => item.id === selectedRunId)) selectedRunId = run?.id ?? '';
-      if (selectedRunId) query.set('generation_run_id', selectedRunId);
-      const next = await api<any>(`/sessions/${sessionId}/generation-segments?${query}`);
-      if (!reset) {
-        const known = new Set(payload.items.map((item: any) => item.id));
-        payload = { ...next, items: [...payload.items, ...next.items.filter((item: any) => !known.has(item.id))] };
-      } else if (
+      applyLoadResult(await generationStore.load({
+        filter,
+        selectedRunId,
+        reset,
         preserveLoaded
-        && loadedFilter === filter
-        && payload.plan_revision_id === next.plan_revision_id
-        && payload.items.length > next.items.length
-      ) {
-        const incoming = new Map(next.items.map((item: any) => [item.id, item]));
-        const lastOrdinal = next.items.at(-1)?.ordinal ?? -1;
-        payload = {
-          ...next,
-          items: [
-            ...next.items,
-            ...payload.items.filter((item: any) => item.ordinal > lastOrdinal && !incoming.has(item.id))
-          ],
-          next_cursor: payload.next_cursor
-        };
-      } else payload = next;
-      loadedFilter = filter;
-      assembly = latestAssembly.item;
-      if (
-        initialized
-        && (
-          (previousTotal === 0 && payload.total > 0)
-          || (run?.id && run.id !== previousRunId && ['queued', 'running', 'pausing'].includes(run.status))
-        )
-      ) mode = 'half';
-      initialized = true;
+      }));
     } catch (caught) {
       error = caught instanceof Error ? caught.message : String(caught);
     }
   }
 
-  async function patchSegment(item: any, changes: Record<string, unknown>) {
+  function applyLoadResult(result: GenerationLoadResult) {
+    selectedRunId = result.selectedRunId;
+    if (result.shouldExpand) mode = 'half';
+  }
+
+  async function patchSegment(item: GenerationSegment, changes: GenerationSegmentChanges) {
     try {
-      const updated = await api<any>(`/generation-segments/${item.id}`, {
-        method: 'PATCH',
-        headers: { 'If-Match': `"${item.revision}"` },
-        body: JSON.stringify(changes)
-      });
-      Object.assign(item, updated);
-      payload = { ...payload, items: [...payload.items] };
+      const updated = await generationStore.updateSegment(item, changes);
       if ('node_kind' in changes || 'silence_after_ms' in changes || 'removed' in changes) await refreshAssembly();
       return updated;
     } catch (caught) {
@@ -378,7 +335,7 @@
     }
   }
 
-  function openOptimizationReview(item: any) {
+  function openOptimizationReview(item: GenerationSegment) {
     comparisonItem = item;
     comparisonText = String(item.optimized_text ?? activeTake(item)?.synthesized_text ?? item.text ?? '');
     comparisonDiff = false;
@@ -395,22 +352,16 @@
 
   async function refreshAssembly() {
     try {
-      assembly = (await api<any>(`/sessions/${sessionId}/output-assemblies/latest`)).item;
+      await generationStore.refreshAssembly();
     } catch {
-      assembly = null;
+      generationStore.setAssembly(null);
     }
   }
 
-  async function selectTake(item: any, takeId: string) {
-    const result = await api<any>(`/generation-segments/${item.id}/takes/${takeId}/select`, {
-      method: 'POST',
-      headers: { 'If-Match': `"${item.revision}"` }
-    });
-    item.revision = result.revision;
-    for (const take of item.takes) take.is_active = take.id === takeId;
-    const selectedTake = item.takes.find((take: any) => take.id === takeId);
+  async function selectTake(item: GenerationSegment, takeId: string) {
+    const updated = await generationStore.selectTake(item, takeId);
+    const selectedTake = updated.takes.find((take) => take.id === takeId);
     if (selectedTake?.generation_run_id) selectedRunId = selectedTake.generation_run_id;
-    payload = { ...payload, items: [...payload.items] };
     await refreshAssembly();
   }
 
@@ -427,16 +378,15 @@
       const run_override = operation === 'rvc'
         ? { rvc: { enabled: true, model: rvcModel, rvc_model: rvcModel, pitch: rvcPitch, f0_method: rvcF0, index_rate: rvcIndexRate, source_run_id: selectedRunId || null } }
         : {};
-      run = await api(`/sessions/${sessionId}/generation-runs`, {
-        method: 'POST',
-        body: JSON.stringify({
-          operation,
-          segment_ids: ids,
-          generation_run_id: ids.length && operation !== 'rvc' ? selectedRunId || null : null,
-          run_override
-        })
-      });
-      selectedRunId = run.id;
+      const started = await generationApi.start(
+        sessionId,
+        operation,
+        ids,
+        ids.length && operation !== 'rvc' ? selectedRunId || null : null,
+        run_override
+      );
+      generationStore.upsertRun(started);
+      selectedRunId = started.id;
       mode = 'half';
       await load();
     } catch (caught) {
@@ -448,7 +398,7 @@
 
   async function loadRvc() {
     try {
-      const result = await api<{ items: string[] }>('/rvc/models');
+      const result = await generationApi.rvcModels();
       rvcModels = result.items ?? [];
       rvcModel ||= rvcModels[0] ?? '';
     } catch {
@@ -458,7 +408,7 @@
 
   async function action(name: 'pause' | 'resume' | 'cancel') {
     if (!run) return;
-    run = await api(`/generation-runs/${run.id}/${name}`, { method: 'POST' });
+    generationStore.upsertRun(await generationApi.runAction(run.id, name));
     await load();
   }
 
@@ -466,10 +416,9 @@
     loading = true;
     error = '';
     try {
-      assembly = await api(`/sessions/${sessionId}/output-assemblies`, {
-        method: 'POST',
-        body: JSON.stringify({ generation_run_id: selectedRunId || null })
-      });
+      generationStore.setAssembly(
+        await generationApi.createAssembly(sessionId, selectedRunId || null)
+      );
       await load();
     } catch (caught) {
       error = caught instanceof Error ? caught.message : String(caught);
@@ -478,30 +427,30 @@
     }
   }
 
-  function activeTake(item: any) {
+  function activeTake(item: GenerationSegment): PlayableTake | undefined {
     if (selectedRun) {
-      const sequences = new Map(runs.map((item: any) => [item.id, Number(item.sequence_number || 0)]));
+      const sequences = new Map(runs.map((item) => [item.id, Number(item.sequence_number || 0)]));
       const targetSequence = Number(selectedRun.sequence_number || 0);
       const candidates = (item.takes ?? [])
-        .filter((take: any) => take.artifact_id && ['completed', 'stale'].includes(take.status) && take.generation_run_id && Number(sequences.get(take.generation_run_id) ?? Number.POSITIVE_INFINITY) <= targetSequence)
-        .sort((left: any, right: any) => Number(sequences.get(right.generation_run_id) ?? 0) - Number(sequences.get(left.generation_run_id) ?? 0) || String(right.created_at).localeCompare(String(left.created_at)));
+        .filter((take): take is PlayableTake => hasArtifact(take) && ['completed', 'stale'].includes(take.status) && Boolean(take.generation_run_id) && Number(sequences.get(take.generation_run_id ?? '') ?? Number.POSITIVE_INFINITY) <= targetSequence)
+        .sort((left, right) => Number(sequences.get(right.generation_run_id ?? '') ?? 0) - Number(sequences.get(left.generation_run_id ?? '') ?? 0) || String(right.created_at).localeCompare(String(left.created_at)));
       if (candidates.length) return candidates[0];
-      return item.takes?.find((take: any) => !take.generation_run_id && take.is_active && take.artifact_id)
-        ?? item.takes?.find((take: any) => !take.generation_run_id && take.artifact_id);
+      return item.takes?.find((take): take is PlayableTake => !take.generation_run_id && take.is_active && hasArtifact(take))
+        ?? item.takes?.find((take): take is PlayableTake => !take.generation_run_id && hasArtifact(take));
     }
-    return item.takes?.find((take: any) => take.is_active && take.artifact_id)
-      ?? item.takes?.find((take: any) => !take.generation_run_id && take.artifact_id);
+    return item.takes?.find((take): take is PlayableTake => take.is_active && hasArtifact(take))
+      ?? item.takes?.find((take): take is PlayableTake => !take.generation_run_id && hasArtifact(take));
   }
 
-  function takeLabel(take: any) {
-    const owner = runs.find((item: any) => item.id === take.generation_run_id);
+  function takeLabel(take: AudioTake) {
+    const owner = runs.find((item) => item.id === take.generation_run_id);
     return owner ? `${owner.label} · ${String(take.kind || 'audio').toUpperCase()}` : `Legacy take · ${String(take.kind || 'audio').toUpperCase()}`;
   }
 
-  function verificationTitle(take: any) {
+  function verificationTitle(take: AudioTake) {
     const verification = take?.audio_verification;
     if (!verification) return '';
-    const issues = (verification.issues ?? []).map((item: any) => String(item.message || item.code)).filter(Boolean);
+    const issues = (verification.issues ?? []).map((item) => String(item.message || item.code)).filter(Boolean);
     const metrics = verification.metrics ?? {};
     const measurements = [
       metrics.rms_dbfs != null ? `RMS ${Number(metrics.rms_dbfs).toFixed(1)} dBFS` : '',
@@ -517,7 +466,8 @@
     loading = true;
     error = '';
     try {
-      await api(`/generation-runs/${selectedRun.id}`, { method: 'DELETE' });
+      await generationApi.deleteRun(selectedRun.id);
+      generationStore.removeRun(selectedRun.id);
       selectedRunId = '';
       await load(true, false);
     } catch (caught) {
@@ -553,7 +503,7 @@
     togglePlaylistPause();
   }
 
-  function readingSegmentText(item: any) {
+  function readingSegmentText(item: GenerationSegment) {
     const speech = activeTake(item)?.synthesized_text || item.optimized_text;
     return String(readingTextMode === 'speech' && speech ? speech : item.text || '').replace(/\s+/g, ' ').trim();
   }
@@ -590,15 +540,9 @@
         if (!item || update.text === item.text) continue;
         if (!update.text.trim()) throw new Error('Replacement would leave a generation segment blank. Remove that segment instead.');
         const changedText = update.text.trim();
-        const updated = await api<any>(`/generation-segments/${item.id}`, {
-          method: 'PATCH',
-          headers: { 'If-Match': `"${item.revision}"` },
-          body: JSON.stringify({ text: changedText })
-        });
-        Object.assign(item, updated);
+        await generationStore.updateSegment(item, { text: changedText });
         completed += 1;
       }
-      payload = { ...payload, items: [...payload.items] };
       if (completed) await refreshAssembly();
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
@@ -617,16 +561,16 @@
     field?.setSelectionRange(match.start, match.end);
   }
 
-  function selectSegment(item: any, event?: MouseEvent | KeyboardEvent) {
+  function selectSegment(item: GenerationSegment, event?: MouseEvent | KeyboardEvent) {
     const toggle = Boolean(event && (event.ctrlKey || event.metaKey));
     const extend = Boolean(event?.shiftKey && selectionAnchor);
     if (extend) {
-      const anchorIndex = payload.items.findIndex((candidate: any) => candidate.id === selectionAnchor);
-      const itemIndex = payload.items.findIndex((candidate: any) => candidate.id === item.id);
+      const anchorIndex = payload.items.findIndex((candidate) => candidate.id === selectionAnchor);
+      const itemIndex = payload.items.findIndex((candidate) => candidate.id === item.id);
       if (anchorIndex >= 0 && itemIndex >= 0) {
         const first = Math.min(anchorIndex, itemIndex);
         const last = Math.max(anchorIndex, itemIndex);
-        const range = payload.items.slice(first, last + 1).map((candidate: any) => candidate.id);
+        const range = payload.items.slice(first, last + 1).map((candidate) => candidate.id);
         selectedRows = toggle ? Array.from(new Set([...selectedRows, ...range])) : range;
       } else {
         selectedRows = [item.id];
@@ -644,12 +588,12 @@
     selectedRow = selectedRows.includes(item.id) ? item.id : (selectedRows.at(-1) ?? '');
   }
 
-  function activateReadingSegment(event: MouseEvent | KeyboardEvent, item: any) {
+  function activateReadingSegment(event: MouseEvent | KeyboardEvent, item: GenerationSegment) {
     selectSegment(item, event);
     if (!event.ctrlKey && !event.metaKey && !event.shiftKey && activeTake(item) && !item.removed) void playOnly(item);
   }
 
-  function activateReadingSegmentFromKeyboard(event: KeyboardEvent, item: any) {
+  function activateReadingSegmentFromKeyboard(event: KeyboardEvent, item: GenerationSegment) {
     if (!['Enter', ' '].includes(event.key)) return;
     event.preventDefault();
     activateReadingSegment(event, item);
@@ -666,7 +610,7 @@
     }
   }
 
-  async function playTake(item: any, token: number) {
+  async function playTake(item: GenerationSegment, token: number) {
     const take = activeTake(item);
     if (!take || item.removed) return;
     activePlayingId = item.id;
@@ -687,7 +631,7 @@
     stopPlayback();
     const token = playlistToken;
     playlistActive = true;
-    let index = Math.max(0, payload.items.findIndex((item: any) => item.id === startId));
+    let index = Math.max(0, payload.items.findIndex((item) => item.id === startId));
     while (token === playlistToken) {
       if (index >= payload.items.length) {
         if (payload.next_cursor == null) break;
@@ -701,7 +645,7 @@
     if (token === playlistToken) stopPlayback();
   }
 
-  async function playOnly(item: any) {
+  async function playOnly(item: GenerationSegment) {
     stopPlayback();
     const token = playlistToken;
     playlistActive = true;
@@ -710,7 +654,7 @@
   }
 
   function keyboard(event: KeyboardEvent) {
-    const index = payload.items.findIndex((item: any) => item.id === selectedRow);
+    const index = payload.items.findIndex((item) => item.id === selectedRow);
     if (event.key === 'ArrowDown') {
       const item = payload.items[Math.min(payload.items.length - 1, Math.max(0, index + 1))];
       if (item) selectSegment(item, event);
@@ -728,76 +672,15 @@
     }
   }
 
-  function patchLiveProgress(batch: InvalidationBatch) {
-    const relevant = batch.events.filter((event) => event.session_id === sessionId);
-    if (!relevant.length) return;
-    const patch = (item: any, event: PandratorServerEvent) => ({
-      ...item,
-      ...(event.progress !== undefined ? { progress: Number(event.progress) } : {}),
-      ...(event.detail !== undefined ? { progress_detail: event.detail } : {}),
-      ...(['queued', 'running', 'cancel_requested'].includes(String(event.status ?? ''))
-        ? { status: event.status }
-        : {})
-    });
-    for (const event of relevant) {
-      const generationRunId = String(event.generation_run_id ?? '');
-      const assemblyId = String(event.output_assembly_id ?? '');
-      runs = runs.map((item: any) => {
-        let next = item;
-        if (
-          (generationRunId && item.id === generationRunId)
-          || (event.job_id && item.job_id === event.job_id)
-        ) {
-          next = patch(next, event);
-        }
-        if (
-          next.assembly
-          && (
-            (assemblyId && next.assembly.id === assemblyId)
-            || (event.job_id && next.assembly.job_id === event.job_id)
-          )
-        ) {
-          next = { ...next, assembly: patch(next.assembly, event) };
-        }
-        return next;
-      });
-      if (
-        run
-        && (
-          (generationRunId && run.id === generationRunId)
-          || (event.job_id && run.job_id === event.job_id)
-        )
-      ) {
-        run = patch(run, event);
-      }
-      if (
-        assembly
-        && (
-          (assemblyId && assembly.id === assemblyId)
-          || (event.job_id && assembly.job_id === event.job_id)
-        )
-      ) {
-        assembly = patch(assembly, event);
-      }
-    }
-  }
-
   onMount(() => {
-    const refresh = (event: Event) => {
-      const batch = (event as CustomEvent<InvalidationBatch>).detail;
-      patchLiveProgress(batch);
-      if (
-        invalidates(batch, 'generation', sessionId)
-        || invalidates(batch, 'output', sessionId)
-      ) {
-        load(true, true);
-      }
-    };
     loadRvc();
     loadSpeechOptions();
-    window.addEventListener('pandrator:invalidate', refresh);
+    const disconnect = generationStore.connect(
+      () => ({ filter, selectedRunId }),
+      applyLoadResult
+    );
     return () => {
-      window.removeEventListener('pandrator:invalidate', refresh);
+      disconnect();
       if (timer) window.clearTimeout(timer);
       stopPlayback();
     };
@@ -944,105 +827,48 @@
 
         <div class="min-h-[12rem] shrink-0 flex-1 overflow-auto">
           {#if viewMode === 'segments'}
-          <table class="w-full border-collapse text-sm">
-            <thead class="sticky top-0 z-10 bg-[var(--paper-strong)]">
-              <tr><th class="w-12">Mark</th><th class="w-14">#</th><th class="text-left">Generation text and delivery</th><th class="w-52">Audio take</th><th class="w-24">Status</th><th class="w-24"></th></tr>
-            </thead>
-            <tbody>
-              {#each payload.items as item}
-                <tr onclick={(event) => selectSegment(item, event)} class:selected={selectedRows.includes(item.id)} class:removed={item.removed}>
-                  <td><input type="checkbox" checked={item.marked} onchange={(event) => patchSegment(item, { marked: (event.currentTarget as HTMLInputElement).checked })} /></td>
-                  <td class="muted font-mono text-xs">{item.ordinal + 1}</td>
-                  <td>
-                    {#if item.speaker}<span class="mb-1 inline-flex rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[.62rem] font-semibold text-[var(--accent)]">{item.speaker}</span>{/if}
-                    <textarea value={item.text} data-generation-search-index={payload.items.indexOf(item)} onblur={(event) => { const text = (event.currentTarget as HTMLTextAreaElement).value; if (text !== item.text) patchSegment(item, { text }); }} rows="2" class="w-full resize-y rounded-lg border border-transparent bg-transparent p-2 focus:border-[var(--line)]"></textarea>
-                    {#if item.optimized_text || activeTake(item)?.llm_optimized}
-                      <button onclick={(event) => { event.stopPropagation(); openOptimizationReview(item); }} class="mb-2 flex max-w-full items-center gap-1.5 rounded-lg bg-[var(--accent-soft)] px-2.5 py-1.5 text-left text-[.68rem] font-semibold text-[var(--accent)]"><WandSparkles size={12}/><span class="truncate">{item.speech_plan?.version ? 'Review speech plan' : 'Compare speech optimization'}</span><span class="rounded-full bg-[var(--paper)] px-1.5 py-0.5 text-[.58rem] uppercase">{item.speech_plan?.mode_used ?? item.optimization_status ?? 'generated'}</span>{#if item.speech_plan?.proposals?.length}<span class="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[.58rem] uppercase text-amber-700">{item.speech_plan.proposals.length} proposed</span>{/if}</button>
-                    {/if}
-                    <div class="flex flex-wrap gap-2">
-                      <select value={item.node_kind ?? 'paragraph'} onchange={(event) => patchSegment(item, { node_kind: (event.currentTarget as HTMLSelectElement).value })} aria-label="Segment role" class="mini">
-                        <option value="paragraph">Paragraph</option>
-                        <option value="heading">Heading</option>
-                        <option value="chapter_marker">Chapter start</option>
-                        <option value="subtitle_cue">Subtitle cue</option>
-                      </select>
-                      <select
-                        value={item.voice ?? ''}
-                        onchange={(event) => patchSegment(item, { voice: (event.currentTarget as HTMLSelectElement).value || null })}
-                        aria-label={`Voice for segment ${item.ordinal + 1}`}
-                        title={`${selectedTtsService?.name ?? 'TTS service'} · ${selectedTtsModel || 'default model'}`}
-                        disabled={speechOptionsLoading}
-                        class="mini max-w-52"
-                      >
-                        <option value="">Inherited{inheritedVoice ? ` · ${voiceOptionsFor(item).find((voice) => normalizeId(voice.id) === normalizeId(inheritedVoice))?.name ?? inheritedVoice}` : ' · service default'}</option>
-                        {#each voiceOptionsFor(item) as voice}<option value={voice.id}>{voiceLabel(voice)}</option>{/each}
-                      </select>
-                      <select
-                        value={item.language ?? ''}
-                        onchange={(event) => changeSegmentLanguage(item, (event.currentTarget as HTMLSelectElement).value)}
-                        aria-label={`Language for segment ${item.ordinal + 1}`}
-                        disabled={speechOptionsLoading}
-                        class="mini max-w-48"
-                      >
-                        <option value="">Inherited · {languageLabel(inheritedLanguage)}</option>
-                        {#each languageOptionsFor(item) as language}<option value={language.value}>{language.label}</option>{/each}
-                      </select>
-                    </div>
-                  </td>
-                  <td>
-                    {#if activeTake(item)}
-                      <AudioPlayer compact preload="none" src={`/api/v1/artifacts/${activeTake(item).artifact_id}/content`} label={`Segment ${item.ordinal + 1}`}/>
-                      <WaveformPeaks artifactId={activeTake(item).artifact_id} />
-                      <select value={activeTake(item).id} onchange={(event) => selectTake(item, (event.currentTarget as HTMLSelectElement).value)} class="mini mt-1 w-full">
-                        {#each item.takes as take}<option value={take.id}>{takeLabel(take)} · {take.status}</option>{/each}
-                      </select>
-                      {#if activeTake(item).audio_verification}
-                        <span
-                          class="verification-badge {activeTake(item).audio_verification.status}"
-                          title={verificationTitle(activeTake(item))}
-                        >Signal check: {activeTake(item).audio_verification.status}</span>
-                      {/if}
-                    {:else}<span class="muted text-xs">Not generated</span>{/if}
-                  </td>
-                  <td><span class="status">{item.status}</span></td>
-                  <td><div class="flex justify-center gap-1"><button onclick={(event) => { event.stopPropagation(); start('regenerate', [item.id]); }} disabled={loading || item.removed} class="action icon-action" title="Regenerate this segment" aria-label={`Regenerate segment ${item.ordinal + 1}`}><RefreshCw size={14}/></button><button onclick={(event) => { event.stopPropagation(); patchSegment(item, { removed: !item.removed }); }} class="action icon-action" aria-label={item.removed ? 'Restore segment' : 'Remove segment'}>{#if item.removed}<RotateCcw size={14} />{:else}<Trash2 size={14} />{/if}</button></div></td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
+            <GenerationSegmentTable
+              items={payload.items}
+              {selectedRows}
+              {loading}
+              {speechOptionsLoading}
+              selectedTtsServiceName={selectedTtsService?.name}
+              {selectedTtsModel}
+              {inheritedVoice}
+              {inheritedLanguage}
+              onselect={selectSegment}
+              onpatch={patchSegment}
+              onreview={openOptimizationReview}
+              onvoices={voiceOptionsFor}
+              onvoicelabel={voiceLabel}
+              onlanguages={languageOptionsFor}
+              onlanguagelabel={languageLabel}
+              onlanguagechange={changeSegmentLanguage}
+              onactivetake={activeTake}
+              onselecttake={selectTake}
+              ontakelabel={takeLabel}
+              onverificationtitle={verificationTitle}
+              onregenerate={(item) => start('regenerate', [item.id])}
+            />
           {:else}
-            <div class="reading-view mx-auto max-w-4xl px-5 py-7 sm:px-8">
-              <div class="mb-7 flex flex-wrap items-end justify-between gap-3 border-b border-[var(--line)] pb-4"><div><div class="eyebrow">Continuous review</div><h3 class="mt-1 text-xl font-semibold">Narration text</h3><p class="muted mt-1 text-xs">Reviewing {selectedRun?.label ?? 'the active takes'}. Display text is shown by default; speech text is never used for subtitle or read-along copy.</p></div><div class="flex flex-wrap items-center justify-end gap-2"><div class="view-switch font-sans" aria-label="Reading text source"><button onclick={() => readingTextMode='display'} class:active={readingTextMode==='display'}>Display</button><button onclick={() => readingTextMode='speech'} class:active={readingTextMode==='speech'}>Speech</button></div><span class="muted text-xs">Loaded {payload.items.length} of {payload.total}</span></div></div>
-              {#each readingBlocks as block (block.key)}
-                {#if ['heading','chapter_marker'].includes(block.kind)}
-                  <h4 class:now-playing={block.items.some((item)=>item.id===activePlayingId)} class:selected-heading={block.items.some((item)=>selectedRows.includes(item.id))} class="reading-heading">
-                    {#each block.items as item}<button onclick={(event) => activateReadingSegment(event, item)} class:removed={item.removed}>{item.text}</button>{/each}
-                  </h4>
-                {:else}
-                  <p class="reading-paragraph">
-                    {#each block.items as item, index}
-                      <span class:now-playing={item.id===activePlayingId} class:selected-sentence={selectedRows.includes(item.id)} class:removed={item.removed} class="reading-segment">
-                        <span
-                          role="button"
-                          tabindex="0"
-                          onclick={(event) => activateReadingSegment(event, item)}
-                          onkeydown={(event) => activateReadingSegmentFromKeyboard(event, item)}
-                          class="reading-sentence"
-                          title={activeTake(item)?`Play segment ${item.ordinal + 1}`:'Select segment actions'}
-                        >{readingSegmentText(item)}</span>
-                        <span class="reading-actions" aria-label={`Actions for segment ${item.ordinal + 1}`}>
-                          <button onclick={(event)=>{event.stopPropagation();playOnly(item)}} disabled={!activeTake(item)||item.removed} title="Play segment" aria-label={`Play segment ${item.ordinal + 1}`}><Play size={13}/></button>
-                          <button onclick={(event)=>{event.stopPropagation();start('regenerate',[item.id])}} disabled={loading||item.removed} title="Regenerate segment" aria-label={`Regenerate segment ${item.ordinal + 1}`}><RefreshCw size={13}/></button>
-                          <button onclick={(event)=>{event.stopPropagation();patchSegment(item,{marked:!item.marked})}} class:active={item.marked} title={item.marked?'Unmark segment':'Mark for bulk regeneration'} aria-label={item.marked?`Unmark segment ${item.ordinal + 1}`:`Mark segment ${item.ordinal + 1}`}><Flag size={13}/></button>
-                          <button onclick={(event)=>{event.stopPropagation();patchSegment(item,{removed:!item.removed})}} title={item.removed?'Restore segment':'Remove segment'} aria-label={item.removed?`Restore segment ${item.ordinal + 1}`:`Remove segment ${item.ordinal + 1}`}>{#if item.removed}<RotateCcw size={13}/>{:else}<Trash2 size={13}/>{/if}</button>
-                        </span>
-                      </span>{#if index < block.items.length - 1}{' '}{/if}
-                    {/each}
-                  </p>
-                {/if}
-              {/each}
-              {#if !readingBlocks.length}<p class="muted py-16 text-center">No segments match this filter.</p>{/if}
-            </div>
+            <GenerationReadingView
+              blocks={readingBlocks}
+              selectedRunLabel={selectedRun?.label}
+              textMode={readingTextMode}
+              loaded={payload.items.length}
+              total={payload.total}
+              {activePlayingId}
+              {selectedRows}
+              {loading}
+              ontextmode={(value) => readingTextMode = value}
+              onactivate={activateReadingSegment}
+              onactivatekeyboard={activateReadingSegmentFromKeyboard}
+              ontext={readingSegmentText}
+              onhasaudio={(item) => Boolean(activeTake(item))}
+              onplay={playOnly}
+              onregenerate={(item) => start('regenerate', [item.id])}
+              onpatch={patchSegment}
+            />
           {/if}
           {#if payload.next_cursor != null}<button onclick={() => load(false)} class="m-4 w-[calc(100%-2rem)] rounded-xl border border-[var(--line)] py-2 text-sm font-semibold">Load more</button>{/if}
         </div>
@@ -1052,72 +878,28 @@
 {/if}
 {#if ttsServicesOpen}<TtsServicesModal onclose={() => { ttsServicesOpen=false; loadSpeechOptions(); }}/>{/if}
 {#if comparisonItem}
-  <div class="fixed inset-0 z-[95] grid place-items-center bg-black/55 p-3 backdrop-blur-sm" role="presentation" onclick={(event)=>event.target===event.currentTarget&&(comparisonItem=null)}>
-    <div class="comparison-modal flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-3xl" role="dialog" aria-modal="true" aria-labelledby="segment-optimization-title">
-      <header class="flex items-start gap-4 border-b border-[var(--line)] px-5 py-4"><div class="min-w-0 flex-1"><div class="eyebrow">Generation segment {comparisonItem.ordinal + 1}</div><div class="mt-1 flex flex-wrap items-center gap-2"><h2 id="segment-optimization-title" class="text-xl font-semibold">Review speech plan</h2>{#if comparisonPlan?.version}<span class={`plan-state ${comparisonPlan.status}`}>{comparisonPlan.status === 'safe_fallback' ? 'safe fallback' : comparisonPlan.status}</span><span class="plan-state neutral">{comparisonPlan.mode_used}</span>{/if}</div><p class="muted mt-1 text-xs">Display text remains unchanged. Saving this delivery marks existing audio takes stale.</p></div><button onclick={() => comparisonDiff = !comparisonDiff} class:active={comparisonDiff} class="action">{comparisonDiff ? 'Side by side' : 'Diff'}</button><button onclick={()=>comparisonItem=null} class="rounded-xl p-2" aria-label="Close"><X size={20}/></button></header>
-      <div class="min-h-0 flex-1 overflow-auto p-5">
-        {#if comparisonDiff}
-          <div class="grid gap-4"><TextDiff before={String(comparisonItem.text ?? '')} after={comparisonText}/><section><h3 class="mb-2 text-xs font-bold uppercase tracking-wider text-[var(--muted)]">Speech delivery · editable</h3><textarea bind:value={comparisonText} class="min-h-44 w-full resize-y rounded-2xl border border-[var(--line)] bg-[var(--paper)] p-4 text-sm leading-7"></textarea></section></div>
-        {:else}
-          <div class="grid gap-4 md:grid-cols-2"><section><h3 class="mb-2 text-xs font-bold uppercase tracking-wider text-[var(--muted)]">Display text</h3><div class="h-full min-h-44 rounded-2xl border border-[var(--line)] bg-[var(--paper)] p-4 text-sm leading-7">{comparisonItem.text}</div></section><section><h3 class="mb-2 text-xs font-bold uppercase tracking-wider text-[var(--muted)]">Speech delivery · editable</h3><textarea bind:value={comparisonText} class="h-full min-h-44 w-full resize-y rounded-2xl border border-[var(--line)] bg-[var(--paper)] p-4 text-sm leading-7"></textarea></section></div>
-        {/if}
-
-        {#if comparisonPlan?.version}
-          <section class="mt-5 overflow-hidden rounded-2xl border border-[var(--line)]">
-            <header class="flex flex-wrap items-center justify-between gap-3 bg-[var(--accent-soft)] px-4 py-3">
-              <div><h3 class="text-sm font-semibold">Structured decisions</h3><p class="muted mt-0.5 text-xs">{comparisonPlan.model || 'Unknown model'} · {comparisonPlan.language || 'und'} display → {comparisonPlan.voice_language || comparisonPlan.language || 'und'} voice</p></div>
-              <a href="/pronunciations" class="action bg-[var(--paper)]"><Languages size={14}/> Open pronunciation library</a>
-            </header>
-            <div class="grid gap-px bg-[var(--line)] md:grid-cols-2">
-              <div class="bg-[var(--paper-strong)] p-4">
-                <h4 class="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-[var(--muted)]"><WandSparkles size={14}/> Planned changes</h4>
-                {#if comparisonDecisionRows.length}
-                  <div class="mt-3 space-y-2">
-                    {#each comparisonDecisionRows as decision}
-                      <div class="decision-row">
-                        <div class="min-w-0"><strong>{decision.written}</strong><div class="muted mt-0.5 truncate text-[.65rem]">{(decision.signals ?? []).join(' · ') || decision.task}</div></div>
-                        <ArrowRight class="shrink-0 text-[var(--muted)]" size={14}/>
-                        <div class="min-w-0 text-right"><span class="font-mono text-xs font-semibold text-[var(--accent)]">{decision.spoken || decision.written}</span><div class="muted mt-0.5 text-[.62rem] uppercase">{decision.action}{decision.confidence ? ` · ${decision.confidence}` : ''}</div></div>
-                      </div>
-                    {/each}
-                  </div>
-                {:else}<p class="muted mt-3 text-xs">No unresolved spans were changed.</p>{/if}
-              </div>
-              <div class="bg-[var(--paper-strong)] p-4">
-                <h4 class="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-[var(--muted)]"><ShieldCheck size={14}/> Reused and proposed</h4>
-                {#if comparisonPlan.known_pronunciations?.length}
-                  <div class="mt-3 space-y-2">{#each comparisonPlan.known_pronunciations as known}<div class="decision-row"><strong>{known.text}</strong><ArrowRight class="text-[var(--muted)]" size={14}/><span class="font-mono text-xs text-[var(--accent)]">{known.spoken}</span></div>{/each}</div>
-                {:else}<p class="muted mt-3 text-xs">No reviewed library entries matched this segment.</p>{/if}
-                {#if comparisonPlan.proposals?.length}
-                  <div class="mt-4 rounded-xl border border-amber-400/30 bg-amber-500/10 p-3"><div class="flex items-center gap-2 text-xs font-semibold text-amber-700"><TriangleAlert size={14}/>{comparisonPlan.proposals.length} pronunciation {comparisonPlan.proposals.length === 1 ? 'needs' : 'need'} review</div><div class="mt-2 flex flex-wrap gap-1.5">{#each comparisonPlan.proposals as proposal}<span class="rounded-full bg-[var(--paper)] px-2 py-1 font-mono text-[.65rem]">{proposal.source_form} → {proposal.phonetic}</span>{/each}</div></div>
-                {/if}
-              </div>
-            </div>
-            {#if comparisonPlan.validation?.errors?.length || comparisonPlan.validation?.warnings?.length}
-              <div class="border-t border-[var(--line)] px-4 py-3 text-xs"><strong>Validator report</strong>{#each comparisonPlan.validation.errors ?? [] as message}<p class="mt-1 text-red-600">{message}</p>{/each}{#each comparisonPlan.validation.warnings ?? [] as message}<p class="mt-1 text-amber-700">{message}</p>{/each}</div>
-            {/if}
-          </section>
-        {/if}
-      </div>
-      <footer class="flex flex-wrap items-center justify-end gap-3 border-t border-[var(--line)] px-5 py-4"><label class="mr-auto flex items-center gap-2 text-xs font-semibold"><input type="checkbox" bind:checked={regenerateAfterReview} class="accent-[var(--accent)]"/> Regenerate this segment after saving</label><button onclick={()=>comparisonItem=null} class="action">Cancel</button><button onclick={saveOptimizationReview} disabled={!comparisonText.trim()} class="action primary"><Save size={14}/> Save review</button></footer>
-    </div>
-  </div>
+  <SpeechPlanReviewDialog
+    item={comparisonItem}
+    plan={comparisonPlan}
+    decisionRows={comparisonDecisionRows}
+    text={comparisonText}
+    diff={comparisonDiff}
+    regenerate={regenerateAfterReview}
+    ontext={(value) => comparisonText = value}
+    ontogglediff={() => comparisonDiff = !comparisonDiff}
+    ontoggleregenerate={(value) => regenerateAfterReview = value}
+    onclose={() => comparisonItem = null}
+    onsave={saveOptimizationReview}
+  />
 {/if}
 
 <style>
   .generation-drawer{height:3.9rem;border:1px solid var(--line);background:var(--paper-strong);box-shadow:0 18px 55px color-mix(in srgb,var(--ink) 18%,transparent);transition:height .18s ease}.generation-drawer.half{height:min(52vh,38rem)}.generation-drawer.full{height:calc(100vh - 1.5rem)}
   .run-progress{height:.34rem;width:min(9rem,18vw);overflow:hidden;border-radius:999px;background:var(--line)}.run-progress span{display:block;height:100%;border-radius:inherit;background:var(--accent);transition:width .2s ease}
   .cost-pill{border:1px solid var(--line);border-radius:999px;background:var(--accent-soft);padding:.28rem .55rem;font-size:.65rem;font-weight:700;color:var(--ink)}
-  .comparison-modal{border:1px solid var(--line);background:var(--paper-strong);box-shadow:0 22px 70px rgba(0,0,0,.25)}
-  .plan-state{border-radius:999px;background:color-mix(in srgb,var(--success) 15%,transparent);padding:.22rem .5rem;color:var(--success);font-size:.58rem;font-weight:800;letter-spacing:.06em;text-transform:uppercase}.plan-state.safe_fallback{background:rgba(245,158,11,.14);color:#a16207}.plan-state.neutral{background:var(--accent-soft);color:var(--accent)}
-  .decision-row{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:center;gap:.6rem;border:1px solid var(--line);border-radius:.7rem;background:var(--paper);padding:.6rem .7rem;font-size:.75rem}
   .action{display:flex;align-items:center;gap:.35rem;border:1px solid var(--line);border-radius:.55rem;padding:.4rem .6rem;font-size:.7rem;font-weight:700}.action.primary{background:var(--action-bg);color:white}.action.primary:hover{background:var(--action-hover)}.action:disabled{opacity:.35}
   .icon-action{padding:.42rem}
   .view-switch{display:flex;border:1px solid var(--line);border-radius:.6rem;background:var(--paper);padding:.15rem}.view-switch button{display:flex;align-items:center;gap:.3rem;border-radius:.45rem;padding:.3rem .5rem;font-size:.68rem;font-weight:700;color:var(--muted)}.view-switch button.active{background:var(--accent-soft);color:var(--ink)}
-  th,td{border-bottom:1px solid var(--line);padding:.55rem;text-align:center;vertical-align:middle}tr.removed{opacity:.42}tr.selected{background:var(--accent-soft)}
-  .status{font-size:.68rem;text-transform:uppercase;color:var(--muted)}.mini{border:1px solid var(--line);border-radius:.45rem;background:var(--paper);padding:.3rem .45rem;font-size:.68rem}
-  .verification-badge{display:inline-flex;margin-top:.35rem;border-radius:999px;padding:.2rem .45rem;font-size:.6rem;font-weight:750;text-transform:uppercase;background:color-mix(in srgb,var(--accent) 12%,transparent);color:var(--accent)}.verification-badge.warning{background:rgba(245,158,11,.13);color:#b45309}.verification-badge.failed{background:rgba(239,68,68,.13);color:#dc2626}
-  .reading-view{font-family:Georgia,'Times New Roman',serif}.reading-heading{margin:2rem 0 .75rem;font-size:1.32rem;font-weight:700;line-height:1.35}.reading-heading button{border-radius:.3rem;text-align:left}.reading-heading.selected-heading button{background:var(--accent-soft)}.reading-heading.now-playing button{color:var(--accent)}.reading-heading button.removed{text-decoration:line-through;opacity:.42}
-  .reading-paragraph{margin:0 0 1.2rem;font-size:1.02rem;line-height:1.9;white-space:normal}.reading-segment{position:relative;display:inline}.reading-sentence{display:inline;white-space:normal;border-radius:.28rem;cursor:pointer;text-align:left;transition:background .12s ease,color .12s ease}.reading-sentence:focus-visible{outline:3px solid color-mix(in srgb,var(--accent) 38%,transparent);outline-offset:2px}.reading-segment:hover .reading-sentence,.reading-segment:focus-within .reading-sentence,.reading-segment.selected-sentence .reading-sentence{background:var(--accent-soft)}.reading-segment.now-playing .reading-sentence{background:var(--action-bg);color:white;box-shadow:0 0 0 .16rem color-mix(in srgb,var(--accent) 18%,transparent)}.reading-segment.removed .reading-sentence{text-decoration:line-through;opacity:.42}.reading-actions{position:absolute;bottom:calc(100% + .32rem);left:50%;z-index:25;display:flex;gap:.18rem;border:1px solid var(--line);border-radius:.65rem;background:var(--paper-strong);padding:.22rem;box-shadow:var(--shadow);opacity:0;pointer-events:none;transform:translate(-50%,.25rem);transition:opacity .12s ease,transform .12s ease}.reading-segment:hover .reading-actions,.reading-segment:focus-within .reading-actions{opacity:1;pointer-events:auto;transform:translate(-50%,0)}.reading-actions button{display:grid;height:1.8rem;width:1.8rem;place-items:center;border-radius:.45rem;color:var(--muted)}.reading-actions button:hover:not(:disabled),.reading-actions button:focus-visible,.reading-actions button.active{background:var(--accent-soft);color:var(--accent)}.reading-actions button:disabled{opacity:.35}
+  .mini{border:1px solid var(--line);border-radius:.45rem;background:var(--paper);padding:.3rem .45rem;font-size:.68rem}
   @media(prefers-reduced-motion:reduce){.generation-drawer{transition:none}}
 </style>

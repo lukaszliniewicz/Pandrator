@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import type { PDFDocumentProxy } from 'pdfjs-dist';
 
-  let { document, pageIndex }: { document: any; pageIndex: number } = $props();
+  let { document, pageIndex }: { document: PDFDocumentProxy; pageIndex: number } = $props();
   let canvas: HTMLCanvasElement;
 
   onMount(() => {
@@ -15,7 +16,7 @@
       const viewport = page.getViewport({ scale: Math.min(0.28, 96 / base.width) });
       canvas.width = Math.ceil(viewport.width);
       canvas.height = Math.ceil(viewport.height);
-      await page.render({ canvasContext: canvas.getContext('2d')!, viewport }).promise;
+      await page.render({ canvas, canvasContext: canvas.getContext('2d')!, viewport }).promise;
     }, { rootMargin: '240px' });
     observer.observe(canvas);
     return () => { disposed = true; observer.disconnect(); };

@@ -1,12 +1,13 @@
 <script lang="ts">
   import { ExternalLink, RotateCcw, Save } from '@lucide/svelte';
-  import { api } from './api';
+  import { sessionApi } from './domain-api';
+  import type { GlobalDefaultsPayload } from './api-models';
   import SettingField from './SettingField.svelte';
   import { GLOBAL_TTS_KEYS } from './settings-fields';
 
   let { section }: { section: string } = $props();
-  let payload = $state<any>(null);
-  let value = $state<Record<string, any>>({});
+  let payload = $state<GlobalDefaultsPayload|null>(null);
+  let value = $state<Record<string, unknown>>({});
   let saving = $state(false);
   let message = $state('');
 
@@ -18,11 +19,11 @@
     return GLOBAL_TTS_KEYS.has(key);
   }).sort(([a], [b]) => a.localeCompare(b)));
 
-  const current = (key: string, fallback: any) => Object.prototype.hasOwnProperty.call(value, key) ? value[key] : fallback;
-  const set = (key: string, next: any) => value = { ...value, [key]: next };
+  const current = (key: string, fallback: unknown) => Object.prototype.hasOwnProperty.call(value, key) ? value[key] : fallback;
+  const set = (key: string, next: unknown) => value = { ...value, [key]: next };
 
   async function load() {
-    payload = await api(`/defaults/${section}`);
+    payload = await sessionApi.defaults(section);
     value = { ...(payload.value ?? {}) };
   }
 
@@ -30,11 +31,13 @@
     saving = true;
     message = '';
     try {
+      const currentPayload=payload;
+      if(!currentPayload)return;
       if (section === 'tts') {
         value = Object.fromEntries(Object.entries(value).filter(([key]) => !providerSetting(key)));
       }
-      const result = await api<any>(`/settings/defaults.${section}`, { method: 'PUT', headers: { 'If-Match': `"${payload.revision}"` }, body: JSON.stringify({ value }) });
-      payload = { ...payload, revision: result.revision, value: result.value, effective: { ...payload.builtin, ...result.value } };
+      const result = await sessionApi.saveDefaults(section,currentPayload.revision,value);
+      payload = { ...currentPayload, revision: result.revision, value: result.value, effective: { ...currentPayload.builtin, ...result.value } };
       message = 'Saved.';
     } catch (caught) { message = caught instanceof Error ? caught.message : String(caught); }
     finally { saving = false; }
@@ -43,8 +46,10 @@
   async function restoreBuiltins() {
     saving = true; message = '';
     try {
-      const result = await api<any>(`/settings/defaults.${section}`, { method: 'PUT', headers: { 'If-Match': `"${payload.revision}"` }, body: JSON.stringify({ value: {} }) });
-      payload = { ...payload, revision: result.revision, value: {}, effective: { ...payload.builtin } };
+      const currentPayload=payload;
+      if(!currentPayload)return;
+      const result = await sessionApi.saveDefaults(section,currentPayload.revision,{});
+      payload = { ...currentPayload, revision: result.revision, value: {}, effective: { ...currentPayload.builtin } };
       value = {};
       message = 'Restored built-in defaults.';
     } catch (caught) { message = caught instanceof Error ? caught.message : String(caught); }

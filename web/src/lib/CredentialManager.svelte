@@ -1,6 +1,6 @@
 <script lang="ts">
   import { CheckCircle2, KeyRound, Trash2 } from '@lucide/svelte';
-  import { api } from './api';
+  import { credentialApi } from './admin-api';
   import CredentialStorageFields, { type CredentialBackendProfile } from './CredentialStorageFields.svelte';
 
   type CredentialProfile = {
@@ -28,8 +28,8 @@
   async function load() {
     try {
       const [credentialPayload, backendPayload] = await Promise.all([
-        api<{ items: CredentialProfile[] }>('/credentials'),
-        api<{ items: CredentialBackendProfile[] }>('/credential-backends')
+        credentialApi.list<CredentialProfile>(),
+        credentialApi.backends<CredentialBackendProfile>()
       ]);
       items = credentialPayload.items;
       credentialBackends = backendPayload.items;
@@ -52,14 +52,11 @@
     }
     busy = item.id; error = ''; notice = '';
     try {
-      const updated = await api<CredentialProfile>(`/credentials/${item.id}`, {
-        method: 'PUT',
-        body: JSON.stringify({
-          credential_backend: backend,
-          credential_reference: String(references[item.id] ?? '').trim() || null,
-          delete_previous_credential: Boolean(deletePrevious[item.id]),
-          ...(apiKey ? { api_key: apiKey } : {})
-        })
+      const updated = await credentialApi.update<CredentialProfile>(item.id, {
+        credential_backend: backend as 'database' | 'environment' | 'keyring' | 'file',
+        credential_reference: String(references[item.id] ?? '').trim() || null,
+        delete_previous_credential: Boolean(deletePrevious[item.id]),
+        ...(apiKey ? { api_key: apiKey } : {})
       });
       values = { ...values, [item.id]: '' };
       deletePrevious = { ...deletePrevious, [item.id]: false };
@@ -75,7 +72,7 @@
   async function remove(item: CredentialProfile) {
     busy = item.id; error = ''; notice = '';
     try {
-      await api(`/credentials/${item.id}`, { method: 'PUT', body: JSON.stringify({ clear: true }) });
+      await credentialApi.update<CredentialProfile>(item.id, { clear: true });
       values = { ...values, [item.id]: '' };
       selectedBackends = { ...selectedBackends, [item.id]: 'database' };
       references = { ...references, [item.id]: '' };

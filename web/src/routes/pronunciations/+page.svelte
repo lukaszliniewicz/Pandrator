@@ -11,7 +11,9 @@
     X
   } from '@lucide/svelte';
   import { onMount } from 'svelte';
-  import { api, type SessionRecord } from '$lib/api';
+  import { pronunciationApi } from '$lib/admin-api';
+  import type { SessionRecord } from '$lib/api-models';
+  import { sessionApi } from '$lib/domain-api';
 
   type Pronunciation = {
     id: string;
@@ -86,9 +88,7 @@
       if (status) parameters.set('status', status);
       if (scope) parameters.set('scope', scope);
       if (language.trim()) parameters.set('language', language.trim());
-      const result = await api<{ items: Pronunciation[] }>(
-        `/pronunciations${parameters.size ? `?${parameters}` : ''}`
-      );
+      const result = await pronunciationApi.list<Pronunciation>(parameters);
       items = result.items;
     } catch (caught) {
       error = caught instanceof Error ? caught.message : String(caught);
@@ -133,16 +133,9 @@
     };
     try {
       if (editing) {
-        await api(`/pronunciations/${editing.id}`, {
-          method: 'PATCH',
-          headers: { 'If-Match': `"${editing.revision}"` },
-          body: JSON.stringify(payload)
-        });
+        await pronunciationApi.update<Pronunciation>(editing.id, editing.revision, payload);
       } else {
-        await api('/pronunciations', {
-          method: 'POST',
-          body: JSON.stringify(payload)
-        });
+        await pronunciationApi.create<Pronunciation>(payload);
       }
       editorOpen = false;
       await load();
@@ -156,11 +149,7 @@
   async function setStatus(item: Pronunciation, next: Pronunciation['status']) {
     error = '';
     try {
-      await api(`/pronunciations/${item.id}`, {
-        method: 'PATCH',
-        headers: { 'If-Match': `"${item.revision}"` },
-        body: JSON.stringify({ status: next })
-      });
+      await pronunciationApi.update<Pronunciation>(item.id, item.revision, { status: next });
       await load();
     } catch (caught) {
       error = caught instanceof Error ? caught.message : String(caught);
@@ -171,10 +160,7 @@
     if (!confirm(`Delete the pronunciation for “${item.source_form}”?`)) return;
     error = '';
     try {
-      await api(`/pronunciations/${item.id}`, {
-        method: 'DELETE',
-        headers: { 'If-Match': `"${item.revision}"` }
-      });
+      await pronunciationApi.remove(item.id, item.revision);
       await load();
     } catch (caught) {
       error = caught instanceof Error ? caught.message : String(caught);
@@ -182,7 +168,7 @@
   }
 
   onMount(async () => {
-    const sessionResult = await api<{ items: SessionRecord[] }>('/sessions').catch(() => ({ items: [] }));
+    const sessionResult = await sessionApi.list().catch(() => ({ items: [] as SessionRecord[] }));
     sessions = sessionResult.items;
     await load();
   });

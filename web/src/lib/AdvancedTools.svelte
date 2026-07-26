@@ -1,9 +1,10 @@
 <script lang="ts">
   import { ArrowLeft, AudioWaveform, BrainCircuit, LoaderCircle, Play, RefreshCw, Upload } from '@lucide/svelte';
   import { onMount } from 'svelte';
-  import { api, type JobRecord } from './api';
+  import { toolApi } from './admin-api';
+  import type { JobRecord } from './api-models';
 
-  let { onback, capabilities = {}, mode = 'all' }: { onback: () => void; capabilities?: Record<string, any>; mode?: 'rvc'|'training'|'all' } = $props();
+  let { onback, capabilities = {}, mode = 'all' }: { onback: () => void; capabilities?: Record<string, unknown>; mode?: 'rvc'|'training'|'all' } = $props();
   type Artifact = { id: string; role: string; relative_path: string; mime_type?: string | null; state: string };
   type Training = { id: string; model_name: string; status: string; error_message?: string | null; job_id?: string | null; output_artifact_id?:string|null; created_at: string };
 
@@ -56,9 +57,9 @@
     error='';
     try {
       const [models, artifactPayload, trainingPayload] = await Promise.all([
-        api<{available:boolean;items:string[]}>('/rvc/models'),
-        api<{items:Artifact[]}>('/artifacts'),
-        api<{items:Training[]}>('/training')
+        toolApi.rvcModels(),
+        toolApi.artifacts(),
+        toolApi.training<Training>()
       ]);
       rvc=models; artifacts=artifactPayload.items; training=trainingPayload.items;
       rvcModel ||= models.items[0] ?? '';
@@ -67,8 +68,7 @@
   }
 
   async function uploadFile(file: File) {
-    const form=new FormData(); form.set('file',file);
-    return api<{artifact_id:string}>('/uploads',{method:'POST',body:form});
+    return toolApi.upload(file);
   }
 
   async function uploadModel() {
@@ -76,7 +76,7 @@
     busy=true; error=''; message='Uploading model…';
     try {
       const [pth,indexFile]=await Promise.all([uploadFile(weights),uploadFile(index)]);
-      const job=await api<JobRecord>('/rvc/models',{method:'POST',body:JSON.stringify({pth_artifact_id:pth.artifact_id,index_artifact_id:indexFile.artifact_id})});
+      const job=await toolApi.addRvcModel({pth_artifact_id:pth.artifact_id,index_artifact_id:indexFile.artifact_id});
       message=`RVC model upload queued as job ${job.id.slice(0,8)}.`;
     } catch(caught){error=caught instanceof Error?caught.message:String(caught);} finally{busy=false;}
   }
@@ -85,7 +85,7 @@
     if(!sourceArtifact||!rvcModel) return;
     busy=true; error='';
     try {
-      const job=await api<JobRecord>('/rvc/convert',{method:'POST',body:JSON.stringify({source_artifact_id:sourceArtifact,settings:{rvc_model:rvcModel,pitch,f0_method:f0Method,filter_radius:filterRadius,index_rate:indexRate,volume_envelope:volumeEnvelope,protect}})});
+      const job=await toolApi.convertRvc({source_artifact_id:sourceArtifact,settings:{rvc_model:rvcModel,pitch,f0_method:f0Method,filter_radius:filterRadius,index_rate:indexRate,volume_envelope:volumeEnvelope,protect}});
       message=`RVC conversion queued as job ${job.id.slice(0,8)}.`;
     } catch(caught){error=caught instanceof Error?caught.message:String(caught);} finally{busy=false;}
   }
@@ -94,7 +94,7 @@
     if(!sourceArtifact||!modelName.trim()) return;
     busy=true; error='';
     try {
-      const result=await api<JobRecord & {training_id:string}>('/training',{method:'POST',body:JSON.stringify({model_name:modelName.trim(),source_artifact_id:sourceArtifact,source_text_artifact_id:sourceTextArtifact||null,settings:{
+      const result=await toolApi.createTraining<JobRecord & {training_id:string}>({model_name:modelName.trim(),source_artifact_id:sourceArtifact,source_text_artifact_id:sourceTextArtifact||null,settings:{
         model_language:language,whisper_model:whisperModel,sample_rate:sampleRate,max_duration:maxDuration,
         max_text_length:maxTextLength,training_split:trainingSplit,method_proportion:methodProportion,
         sample_method:sampleMethod,alignment_model:alignmentModel,chapter_per_audio:chapterPerAudio,
@@ -103,14 +103,14 @@
         enable_denoise:enableDenoise,enable_breath_removal:enableBreathRemoval,
         enable_normalize:enableNormalize,enable_compress:enableCompress,enable_dess:enableDess,
         lufs_value:String(lufsValue),compress_profile:compressProfile
-      }})});
+      }});
       message=`XTTS training queued as ${result.training_id.slice(0,8)}.`;
       await load();
     } catch(caught){error=caught instanceof Error?caught.message:String(caught);} finally{busy=false;}
   }
 
-  async function cancel(item:Training){if(!item.job_id)return;await api(`/training/${item.id}/cancel`,{method:'POST'});await load();}
-  async function retry(item:Training){busy=true;error='';try{const result=await api<JobRecord & {training_id:string}>(`/training/${item.id}/retry`,{method:'POST'});message=`XTTS retry queued as ${result.training_id.slice(0,8)}.`;await load()}catch(caught){error=caught instanceof Error?caught.message:String(caught)}finally{busy=false}}
+  async function cancel(item:Training){if(!item.job_id)return;await toolApi.cancelTraining(item.id);await load();}
+  async function retry(item:Training){busy=true;error='';try{const result=await toolApi.retryTraining<JobRecord & {training_id:string}>(item.id);message=`XTTS retry queued as ${result.training_id.slice(0,8)}.`;await load()}catch(caught){error=caught instanceof Error?caught.message:String(caught)}finally{busy=false}}
   onMount(load);
 </script>
 

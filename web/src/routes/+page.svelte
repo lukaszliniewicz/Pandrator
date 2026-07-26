@@ -2,16 +2,17 @@
   import { page } from '$app/state';
   import { Activity, AudioLines, BookOpenText, Captions, ChevronRight, CirclePlus, FolderClock, ServerCog } from '@lucide/svelte';
   import { appState } from '$lib/app-state.svelte';
-  import { api } from '$lib/api';
+  import { settingApi } from '$lib/admin-api';
   import NewSessionWizard from '$lib/NewSessionWizard.svelte';
   import SetupChecklist from '$lib/SetupChecklist.svelte';
   import { onMount } from 'svelte';
   let wizard = $state(false);
   let initialKind = $state<'audiobook'|'subtitles'|'voiceover'>('audiobook');
   let skipKindStep = $state(false);
+  type WebPreferences = { show_startup_wizard?: boolean; retention_days?: number };
   function start(kind: typeof initialKind) { initialKind=kind;skipKindStep=true;wizard=true; }
   const setupOpen=$derived(page.url.searchParams.get('setup')==='1');
-  onMount(async()=>{if(sessionStorage.getItem('pandrator-guided-creation-shown'))return;try{const setting=await api<any>('/settings/web.preferences');if(setting.value?.show_startup_wizard){wizard=true;sessionStorage.setItem('pandrator-guided-creation-shown','1')}}catch{}});
+  onMount(async()=>{if(sessionStorage.getItem('pandrator-guided-creation-shown'))return;try{const setting=await settingApi.get<WebPreferences>('web.preferences');if(setting.value?.show_startup_wizard){wizard=true;sessionStorage.setItem('pandrator-guided-creation-shown','1')}}catch{}});
 </script>
 
 <div class="mx-auto max-w-7xl">

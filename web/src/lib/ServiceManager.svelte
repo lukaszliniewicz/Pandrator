@@ -1,6 +1,7 @@
 <script lang="ts">
   import { CheckCircle2, ExternalLink, Library, Plus, RefreshCw, Server, Settings2, X } from '@lucide/svelte';
-  import { api } from './api';
+  import { credentialApi, settingApi, speechServiceApi } from './admin-api';
+  import type { TtsCatalogue, TtsDiscovery, TtsService, TtsSettingsValue } from './api-models';
   import SettingField from './SettingField.svelte';
   import CredentialStorageFields, { type CredentialBackendProfile } from './CredentialStorageFields.svelte';
 
@@ -14,26 +15,38 @@
     openai: ['openai_audio_instructions'], gemini: ['openai_audio_instructions']
   };
 
-  let payload = $state<any>({ services: [], profiles: [], value: {}, revision: 0, default_value: {}, default_service: 'XTTS', default_revision: 0, builtin_defaults: {} });
+  type ServicePayload = TtsCatalogue & {
+    services: TtsService[];
+    profiles: TtsService[];
+    value: TtsSettingsValue;
+    revision: number;
+    default_value: Record<string, unknown>;
+    default_service: string;
+    default_revision: number;
+    builtin_defaults: Record<string, unknown>;
+  };
+  type CredentialBackend = 'database' | 'environment' | 'keyring' | 'file';
+
+  let payload = $state<ServicePayload>({ services: [], profiles: [], value: {}, revision: 0, default_value: {}, default_service: 'XTTS', default_revision: 0, builtin_defaults: {} });
   let credentialBackends = $state<CredentialBackendProfile[]>([]);
   let discoverOpen = $state(false);
   let baseUrl = $state('http://127.0.0.1:8000');
   let discoveryApiKey = $state('');
   let discovering = $state(false);
   let refreshing = $state('');
-  let result = $state<any>(null);
+  let result = $state<TtsDiscovery | null>(null);
   let error = $state('');
-  let editing = $state<any>(null);
+  let editing = $state<TtsService | null>(null);
   let editingApiKey = $state('');
-  let editingCredentialBackend = $state('database');
-  let editingExistingCredentialBackend = $state('database');
+  let editingCredentialBackend = $state<CredentialBackend>('database');
+  let editingExistingCredentialBackend = $state<CredentialBackend>('database');
   let editingCredentialReference = $state('');
   let deletePreviousCredential = $state(false);
   let editingModelsText = $state('');
   let removeEditingApiKey = $state(false);
   let selectedModel = $state('');
 
-  const normalizedId = (service: any) => String(service?.id ?? '').toLowerCase().replaceAll('-', '_');
+  const normalizedId = (service: TtsService | null) => String(service?.id ?? '').toLowerCase().replaceAll('-', '_');
   const settingKeys = $derived(SERVICE_SETTING_KEYS[normalizedId(editing)] ?? []);
   const modelChoices = $derived(Array.from(new Set([
     ...editingModelsText.split(/[\n,;]+/).map((value) => value.trim()).filter(Boolean),
@@ -42,22 +55,23 @@
 
   async function load() {
     const [servicePayload, backendPayload] = await Promise.all([
-      api<any>('/services/tts?refresh=true'),
-      api<{ items: CredentialBackendProfile[] }>('/credential-backends')
+      speechServiceApi.catalogueAs<ServicePayload>(true),
+      credentialApi.backends<CredentialBackendProfile>()
     ]);
     payload = servicePayload;
     credentialBackends = backendPayload.items;
   }
-  async function persist(value: any) {
-    await api('/settings/services.tts', { method: 'PUT', headers: { 'If-Match': `"${payload.revision}"` }, body: JSON.stringify({ value }) });
+  async function persist(value: TtsSettingsValue) {
+    await settingApi.put<TtsSettingsValue>('services.tts', payload.revision, value);
     await load();
   }
 
-  function recordFrom(candidate: any, existing: any = {}) {
+  function recordFrom(candidate: Partial<TtsService>, existing: Partial<TtsService> = {}): TtsService {
+    const id = existing.id ?? candidate.id ?? String(candidate.name ?? 'service').toLowerCase().replace(/[^a-z0-9]+/g, '_');
     return {
       ...existing,
-      id: existing.id ?? candidate.id ?? String(candidate.name ?? 'service').toLowerCase().replace(/[^a-z0-9]+/g, '_'),
-      name: candidate.name, kind: candidate.kind, api_base: candidate.api_base, provider: candidate.provider,
+      id,
+      name: candidate.name ?? existing.name ?? id, kind: candidate.kind, api_base: candidate.api_base, provider: candidate.provider,
       adapter: candidate.adapter, speech_path: candidate.speech_path, models_path: candidate.models_path,
       voices_path: candidate.voices_path, request_fields: candidate.request_fields, request_defaults: candidate.request_defaults,
       auth_mode: candidate.auth_mode ?? existing.auth_mode, direct_http: candidate.direct_http ?? existing.direct_http,
@@ -75,10 +89,10 @@
     };
   }
 
-  const configuredRecord = (service: any) => (payload.value.provider_configs ?? []).find((item: any) => item.id === service.id || item.api_base === service.api_base);
-  const isDefault = (service: any) => [service.id, service.name].map((value) => String(value ?? '').toLowerCase()).includes(String(payload.default_service ?? '').toLowerCase());
+  const configuredRecord = (service: TtsService) => (payload.value.provider_configs ?? []).find((item) => item.id === service.id || item.api_base === service.api_base);
+  const isDefault = (service: TtsService) => [service.id, service.name].map((value) => String(value ?? '').toLowerCase()).includes(String(payload.default_service ?? '').toLowerCase());
 
-  function openSettings(service: any) {
+  function openSettings(service: TtsService) {
     const saved = configuredRecord(service) ?? {};
     editing = recordFrom({ ...service, ...saved }, saved);
     editingApiKey = '';
@@ -94,8 +108,11 @@
     error = '';
   }
 
-  function setServiceSetting(key: string, value: any) { editing = { ...editing, settings: { ...(editing.settings ?? {}), [key]: value } }; }
-  function setDefaultModel(value: string) { selectedModel = value; editing = { ...editing, default_model: value, models: Array.from(new Set([...(editing.models ?? []), value].filter(Boolean))) }; }
+  function setServiceSetting(key: string, value: unknown) { if (editing) editing = { ...editing, settings: { ...(editing.settings ?? {}), [key]: value } }; }
+  function setDefaultModel(value: string) {
+    selectedModel = value;
+    if (editing) editing = { ...editing, default_model: value, models: Array.from(new Set([...(editing.models ?? []), value].filter(Boolean))) };
+  }
 
   async function persistEditing() {
     if (!editing) return;
@@ -112,39 +129,39 @@
       ...(editingApiKey.trim() ? { api_key: editingApiKey.trim() } : {})
     };
     const record = { ...baseRecord, ...credential };
-    await persist({ ...payload.value, provider_configs: [...(payload.value.provider_configs ?? []).filter((item: any) => item.id !== record.id && item.api_base !== record.api_base), record] });
+    await persist({ ...payload.value, provider_configs: [...(payload.value.provider_configs ?? []).filter((item) => item.id !== record.id && item.api_base !== record.api_base), record] });
     editing = null;
   }
 
   async function discover() {
     discovering = true; error = '';
-    try { result = await api('/services/tts/discover', { method: 'POST', body: JSON.stringify({ base_url: baseUrl, ...(discoveryApiKey.trim() ? { api_key: discoveryApiKey.trim() } : {}) }) }); }
+    try { result = await speechServiceApi.discover({ base_url: baseUrl, ...(discoveryApiKey.trim() ? { api_key: discoveryApiKey.trim() } : {}) }); }
     catch (caught) { error = caught instanceof Error ? caught.message : String(caught); }
     finally { discovering = false; }
   }
   async function saveDiscovered() {
     if (!result?.success) return;
-    const existing = (payload.value.provider_configs ?? []).find((item: any) => item.api_base === result.api_base);
+    const existing = (payload.value.provider_configs ?? []).find((item) => item.api_base === result?.api_base);
     const record = { ...recordFrom(result, existing), ...(discoveryApiKey.trim() ? { api_key: discoveryApiKey.trim() } : {}) };
-    await persist({ ...payload.value, provider_configs: [...(payload.value.provider_configs ?? []).filter((item: any) => item.api_base !== result.api_base), record] });
+    await persist({ ...payload.value, provider_configs: [...(payload.value.provider_configs ?? []).filter((item) => item.api_base !== result?.api_base), record] });
     discoverOpen = false; result = null; discoveryApiKey = '';
   }
-  async function useProfile(profile: any) {
-    const existing = (payload.value.provider_configs ?? []).find((item: any) => item.id === profile.id || item.api_base === profile.api_base);
-    await persist({ ...payload.value, provider_configs: [...(payload.value.provider_configs ?? []).filter((item: any) => item.id !== profile.id && item.api_base !== profile.api_base), recordFrom(profile, existing ?? { id: profile.id })] });
+  async function useProfile(profile: TtsService) {
+    const existing = (payload.value.provider_configs ?? []).find((item) => item.id === profile.id || item.api_base === profile.api_base);
+    await persist({ ...payload.value, provider_configs: [...(payload.value.provider_configs ?? []).filter((item) => item.id !== profile.id && item.api_base !== profile.api_base), recordFrom(profile, existing ?? { id: profile.id })] });
   }
-  async function setDefault(service: any) {
+  async function setDefault(service: TtsService) {
     const { provider_configs: _legacyProviders, ...defaults } = payload.default_value ?? {};
-    await api('/settings/defaults.tts', { method: 'PUT', headers: { 'If-Match': `"${payload.default_revision}"` }, body: JSON.stringify({ value: { ...defaults, service: service.id } }) });
+    await settingApi.put<Record<string, unknown>>('defaults.tts', payload.default_revision, { ...defaults, service: service.id });
     await load();
   }
-  async function removeService(service: any) { await persist({ ...payload.value, provider_configs: (payload.value.provider_configs ?? []).filter((item: any) => item.id !== service.id && item.api_base !== service.api_base) }); }
-  async function refreshService(service: any) {
+  async function removeService(service: TtsService) { await persist({ ...payload.value, provider_configs: (payload.value.provider_configs ?? []).filter((item) => item.id !== service.id && item.api_base !== service.api_base) }); }
+  async function refreshService(service: TtsService) {
     refreshing = service.id; error = '';
     try {
-      const found = await api<any>('/services/tts/discover', { method: 'POST', body: JSON.stringify({ base_url: service.api_base, service_id: service.id }) });
+      const found = await speechServiceApi.discover({ base_url: service.api_base ?? '', service_id: service.id });
       const existing = configuredRecord(service) ?? { id: service.id };
-      await persist({ ...payload.value, provider_configs: [...(payload.value.provider_configs ?? []).filter((item: any) => item.id !== existing.id && item.api_base !== service.api_base), recordFrom(found, existing)] });
+      await persist({ ...payload.value, provider_configs: [...(payload.value.provider_configs ?? []).filter((item) => item.id !== existing.id && item.api_base !== service.api_base), recordFrom(found, existing)] });
     } catch (caught) { error = caught instanceof Error ? caught.message : String(caught); }
     finally { refreshing = ''; }
   }

@@ -232,103 +232,6 @@
         "type": "object"
       },
       "GenerationPlanCreate": {
-        "$defs": {
-          "GenerationSegmentCreate": {
-            "additionalProperties": false,
-            "properties": {
-              "language": {
-                "anyOf": [
-                  {
-                    "maxLength": 40,
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "title": "Language"
-              },
-              "node_kind": {
-                "default": "paragraph",
-                "enum": [
-                  "paragraph",
-                  "heading",
-                  "chapter_marker",
-                  "subtitle_cue"
-                ],
-                "title": "Node Kind",
-                "type": "string"
-              },
-              "paragraph_break_after": {
-                "default": false,
-                "title": "Paragraph Break After",
-                "type": "boolean"
-              },
-              "silence_after_ms": {
-                "default": 0,
-                "minimum": 0,
-                "title": "Silence After Ms",
-                "type": "integer"
-              },
-              "source_segment_ids": {
-                "items": {
-                  "type": "string"
-                },
-                "title": "Source Segment Ids",
-                "type": "array"
-              },
-              "speaker": {
-                "anyOf": [
-                  {
-                    "maxLength": 160,
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "title": "Speaker"
-              },
-              "text": {
-                "minLength": 1,
-                "title": "Text",
-                "type": "string"
-              },
-              "voice": {
-                "anyOf": [
-                  {
-                    "maxLength": 255,
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "title": "Voice"
-              },
-              "voice_id": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "title": "Voice Id"
-              }
-            },
-            "required": [
-              "text"
-            ],
-            "title": "GenerationSegmentCreate",
-            "type": "object"
-          }
-        },
         "additionalProperties": false,
         "properties": {
           "segments": {
@@ -923,29 +826,6 @@
         "type": "object"
       },
       "OptimizationReviewRequest": {
-        "$defs": {
-          "OptimizationReviewItem": {
-            "additionalProperties": false,
-            "properties": {
-              "index": {
-                "minimum": 0,
-                "title": "Index",
-                "type": "integer"
-              },
-              "text": {
-                "minLength": 1,
-                "title": "Text",
-                "type": "string"
-              }
-            },
-            "required": [
-              "index",
-              "text"
-            ],
-            "title": "OptimizationReviewItem",
-            "type": "object"
-          }
-        },
         "additionalProperties": false,
         "properties": {
           "items": {
@@ -1003,37 +883,6 @@
         "type": "object"
       },
       "PdfCropInput": {
-        "$defs": {
-          "PdfRectInput": {
-            "additionalProperties": false,
-            "properties": {
-              "x0": {
-                "title": "X0",
-                "type": "number"
-              },
-              "x1": {
-                "title": "X1",
-                "type": "number"
-              },
-              "y0": {
-                "title": "Y0",
-                "type": "number"
-              },
-              "y1": {
-                "title": "Y1",
-                "type": "number"
-              }
-            },
-            "required": [
-              "x0",
-              "y0",
-              "x1",
-              "y1"
-            ],
-            "title": "PdfRectInput",
-            "type": "object"
-          }
-        },
         "additionalProperties": false,
         "properties": {
           "original_page": {
@@ -1053,84 +902,6 @@
         "type": "object"
       },
       "PdfEditRequest": {
-        "$defs": {
-          "PdfCropInput": {
-            "additionalProperties": false,
-            "properties": {
-              "original_page": {
-                "minimum": 0,
-                "title": "Original Page",
-                "type": "integer"
-              },
-              "rect": {
-                "$ref": "#/components/schemas/PdfRectInput"
-              }
-            },
-            "required": [
-              "original_page",
-              "rect"
-            ],
-            "title": "PdfCropInput",
-            "type": "object"
-          },
-          "PdfRectInput": {
-            "additionalProperties": false,
-            "properties": {
-              "x0": {
-                "title": "X0",
-                "type": "number"
-              },
-              "x1": {
-                "title": "X1",
-                "type": "number"
-              },
-              "y0": {
-                "title": "Y0",
-                "type": "number"
-              },
-              "y1": {
-                "title": "Y1",
-                "type": "number"
-              }
-            },
-            "required": [
-              "x0",
-              "y0",
-              "x1",
-              "y1"
-            ],
-            "title": "PdfRectInput",
-            "type": "object"
-          },
-          "PdfWhiteoutInput": {
-            "additionalProperties": false,
-            "properties": {
-              "color": {
-                "items": {
-                  "type": "number"
-                },
-                "maxItems": 3,
-                "minItems": 3,
-                "title": "Color",
-                "type": "array"
-              },
-              "original_page": {
-                "minimum": 0,
-                "title": "Original Page",
-                "type": "integer"
-              },
-              "rect": {
-                "$ref": "#/components/schemas/PdfRectInput"
-              }
-            },
-            "required": [
-              "original_page",
-              "rect"
-            ],
-            "title": "PdfWhiteoutInput",
-            "type": "object"
-          }
-        },
         "additionalProperties": false,
         "properties": {
           "crops": {
@@ -1204,37 +975,6 @@
         "type": "object"
       },
       "PdfWhiteoutInput": {
-        "$defs": {
-          "PdfRectInput": {
-            "additionalProperties": false,
-            "properties": {
-              "x0": {
-                "title": "X0",
-                "type": "number"
-              },
-              "x1": {
-                "title": "X1",
-                "type": "number"
-              },
-              "y0": {
-                "title": "Y0",
-                "type": "number"
-              },
-              "y1": {
-                "title": "Y1",
-                "type": "number"
-              }
-            },
-            "required": [
-              "x0",
-              "y0",
-              "x1",
-              "y1"
-            ],
-            "title": "PdfRectInput",
-            "type": "object"
-          }
-        },
         "additionalProperties": false,
         "properties": {
           "color": {
@@ -2107,47 +1847,6 @@
         "type": "object"
       },
       "SubtitleReviewRequest": {
-        "$defs": {
-          "SubtitleSegmentInput": {
-            "additionalProperties": false,
-            "properties": {
-              "end_ms": {
-                "exclusiveMinimum": 0,
-                "title": "End Ms",
-                "type": "integer"
-              },
-              "speaker": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "title": "Speaker"
-              },
-              "start_ms": {
-                "minimum": 0,
-                "title": "Start Ms",
-                "type": "integer"
-              },
-              "text": {
-                "minLength": 1,
-                "title": "Text",
-                "type": "string"
-              }
-            },
-            "required": [
-              "start_ms",
-              "end_ms",
-              "text"
-            ],
-            "title": "SubtitleSegmentInput",
-            "type": "object"
-          }
-        },
         "additionalProperties": false,
         "properties": {
           "expected_revision": {
@@ -2441,6 +2140,16 @@
     "/api/v1/agent-runs/{runId}/accept": {
       "post": {
         "operationId": "acceptAgentRun",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Cleaning result accepted"
@@ -2451,6 +2160,16 @@
     "/api/v1/agent-runs/{runId}/steps": {
       "get": {
         "operationId": "listAgentSteps",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Auditable agent phase summaries"
@@ -2471,6 +2190,16 @@
     "/api/v1/artifacts/{artifactId}/content": {
       "get": {
         "operationId": "getArtifactContent",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifactId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Range-capable artifact content"
@@ -2481,6 +2210,16 @@
     "/api/v1/artifacts/{artifactId}/context": {
       "get": {
         "operationId": "getArtifactContext",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifactId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Artifact lineage context for comparison"
@@ -2491,6 +2230,16 @@
     "/api/v1/artifacts/{artifactId}/optimization-review": {
       "post": {
         "operationId": "saveOptimizationReview",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifactId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -2511,6 +2260,16 @@
     "/api/v1/artifacts/{artifactId}/pdf": {
       "get": {
         "operationId": "inspectPdf",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifactId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "PDF geometry"
@@ -2521,9 +2280,39 @@
     "/api/v1/artifacts/{artifactId}/waveform": {
       "get": {
         "operationId": "getArtifactWaveform",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifactId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Waveform peaks or queued generation"
+          }
+        }
+      }
+    },
+    "/api/v1/auth/bootstrap": {
+      "post": {
+        "operationId": "exchangeBootstrapToken",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BootstrapRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Authenticated"
           }
         }
       }
@@ -2544,6 +2333,16 @@
         "responses": {
           "200": {
             "description": "Authenticated"
+          }
+        }
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "operationId": "logout",
+        "responses": {
+          "204": {
+            "description": "Signed out"
           }
         }
       }
@@ -2609,6 +2408,16 @@
     "/api/v1/credentials/{credentialId}": {
       "put": {
         "operationId": "putCredential",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "credentialId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -2629,6 +2438,16 @@
     "/api/v1/defaults/{section}": {
       "get": {
         "operationId": "getGlobalDefaults",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "section",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Built-in and configured global defaults"
@@ -2639,6 +2458,16 @@
     "/api/v1/document-revisions/{revisionId}/words": {
       "get": {
         "operationId": "listTimedWords",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "revisionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Immutable timed words"
@@ -2669,6 +2498,16 @@
     "/api/v1/generation-runs/{runId}": {
       "delete": {
         "operationId": "deleteGenerationRun",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "204": {
             "description": "Generation run deleted"
@@ -2679,6 +2518,16 @@
     "/api/v1/generation-runs/{runId}/cancel": {
       "post": {
         "operationId": "cancelGenerationRun",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "202": {
             "description": "Cancellation requested"
@@ -2689,6 +2538,16 @@
     "/api/v1/generation-runs/{runId}/pause": {
       "post": {
         "operationId": "pauseGenerationRun",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "202": {
             "description": "Safe pause requested"
@@ -2699,6 +2558,16 @@
     "/api/v1/generation-runs/{runId}/resume": {
       "post": {
         "operationId": "resumeGenerationRun",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "202": {
             "description": "Generation resumed"
@@ -2709,6 +2578,16 @@
     "/api/v1/generation-segments/{segmentId}": {
       "patch": {
         "operationId": "updateGenerationSegment",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "segmentId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -2729,6 +2608,24 @@
     "/api/v1/generation-segments/{segmentId}/takes/{takeId}/select": {
       "post": {
         "operationId": "selectGenerationTake",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "segmentId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "takeId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Active audio take selected"
@@ -2777,6 +2674,16 @@
     "/api/v1/jobs/{jobId}": {
       "get": {
         "operationId": "getJob",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "jobId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Job"
@@ -2787,6 +2694,16 @@
     "/api/v1/jobs/{jobId}/cancel": {
       "post": {
         "operationId": "cancelJob",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "jobId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Cancellation requested"
@@ -2797,6 +2714,16 @@
     "/api/v1/jobs/{jobId}/logs": {
       "get": {
         "operationId": "getJobLogs",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "jobId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Durable job event and log timeline"
@@ -2845,6 +2772,16 @@
     "/api/v1/pronunciations/{entryId}": {
       "delete": {
         "operationId": "deletePronunciation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entryId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "204": {
             "description": "Pronunciation deleted"
@@ -2853,6 +2790,16 @@
       },
       "patch": {
         "operationId": "updatePronunciation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entryId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -2911,6 +2858,16 @@
     "/api/v1/providers/{providerId}": {
       "delete": {
         "operationId": "deleteProvider",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "providerId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "204": {
             "description": "Deleted"
@@ -2922,6 +2879,16 @@
       },
       "patch": {
         "operationId": "updateProvider",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "providerId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -2945,6 +2912,16 @@
     "/api/v1/providers/{providerId}/models": {
       "get": {
         "operationId": "listProviderModels",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "providerId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Models"
@@ -2953,6 +2930,16 @@
       },
       "post": {
         "operationId": "createProviderModel",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "providerId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -2970,9 +2957,47 @@
         }
       }
     },
+    "/api/v1/providers/{providerId}/models/refresh": {
+      "post": {
+        "operationId": "refreshProviderModels",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "providerId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Provider models discovered"
+          }
+        }
+      }
+    },
     "/api/v1/providers/{providerId}/models/{modelId}": {
       "delete": {
         "operationId": "deleteProviderModel",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "providerId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "modelId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "204": {
             "description": "Deleted"
@@ -2984,6 +3009,24 @@
       },
       "patch": {
         "operationId": "updateProviderModel",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "providerId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "modelId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3007,6 +3050,16 @@
     "/api/v1/providers/{providerId}/test": {
       "post": {
         "operationId": "testProvider",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "providerId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3108,6 +3161,16 @@
     "/api/v1/services/tts/{serviceId}/preview": {
       "post": {
         "operationId": "previewTtsVoice",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "serviceId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3174,6 +3237,36 @@
       }
     },
     "/api/v1/sessions/{sessionId}": {
+      "delete": {
+        "operationId": "trashSession",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Session moved to trash"
+          },
+          "409": {
+            "description": "Revision conflict"
+          }
+        }
+      },
       "get": {
         "operationId": "getSession",
         "parameters": [
@@ -3237,6 +3330,16 @@
     "/api/v1/sessions/{sessionId}/agent-runs": {
       "get": {
         "operationId": "listAgentRuns",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Auditable agent runs"
@@ -3245,6 +3348,16 @@
       },
       "post": {
         "operationId": "createAgentRun",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3265,6 +3378,16 @@
     "/api/v1/sessions/{sessionId}/bundle": {
       "post": {
         "operationId": "exportSessionBundle",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3285,6 +3408,16 @@
     "/api/v1/sessions/{sessionId}/documents": {
       "get": {
         "operationId": "listSessionDocuments",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Document and subtitle revisions"
@@ -3295,6 +3428,16 @@
     "/api/v1/sessions/{sessionId}/generation-plan": {
       "post": {
         "operationId": "createGenerationPlan",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3315,6 +3458,16 @@
     "/api/v1/sessions/{sessionId}/generation-runs": {
       "get": {
         "operationId": "listGenerationRuns",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Named generation runs"
@@ -3323,6 +3476,16 @@
       },
       "post": {
         "operationId": "startGenerationRun",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3343,6 +3506,16 @@
     "/api/v1/sessions/{sessionId}/generation-runs/latest": {
       "get": {
         "operationId": "getLatestGenerationRun",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Latest generation run"
@@ -3363,6 +3536,14 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -3375,6 +3556,16 @@
     "/api/v1/sessions/{sessionId}/outcome-plan": {
       "get": {
         "operationId": "getOutcomePlan",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Revisioned outcome plan"
@@ -3383,6 +3574,16 @@
       },
       "put": {
         "operationId": "putOutcomePlan",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3403,6 +3604,16 @@
     "/api/v1/sessions/{sessionId}/output-assemblies": {
       "post": {
         "operationId": "createOutputAssembly",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3423,6 +3634,16 @@
     "/api/v1/sessions/{sessionId}/output-assemblies/latest": {
       "get": {
         "operationId": "getLatestOutputAssembly",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Latest output assembly"
@@ -3433,6 +3654,24 @@
     "/api/v1/sessions/{sessionId}/outputs/{artifactId}": {
       "delete": {
         "operationId": "deleteOutputArtifact",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "artifactId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Export removed"
@@ -3446,6 +3685,16 @@
     "/api/v1/sessions/{sessionId}/pdf/apply": {
       "post": {
         "operationId": "applyPdfEdits",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3466,6 +3715,16 @@
     "/api/v1/sessions/{sessionId}/reindex": {
       "post": {
         "operationId": "reindexSession",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Reconciliation report"
@@ -3476,6 +3735,16 @@
     "/api/v1/sessions/{sessionId}/restore": {
       "post": {
         "operationId": "restoreSession",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Session restored"
@@ -3486,6 +3755,16 @@
     "/api/v1/sessions/{sessionId}/settings/resolve": {
       "post": {
         "operationId": "resolveSessionSettings",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Immutable effective settings snapshot"
@@ -3496,6 +3775,24 @@
     "/api/v1/sessions/{sessionId}/settings/{section}": {
       "get": {
         "operationId": "getSessionSettings",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "section",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Effective settings and inheritance"
@@ -3504,6 +3801,24 @@
       },
       "put": {
         "operationId": "putSessionSettings",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "section",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3524,6 +3839,16 @@
     "/api/v1/sessions/{sessionId}/sources": {
       "get": {
         "operationId": "listSessionSources",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Session source attachments"
@@ -3532,6 +3857,16 @@
       },
       "post": {
         "operationId": "attachSessionSource",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3552,6 +3887,16 @@
     "/api/v1/sessions/{sessionId}/sources/reuse": {
       "post": {
         "operationId": "reuseSource",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3572,6 +3917,16 @@
     "/api/v1/sessions/{sessionId}/sources/url": {
       "post": {
         "operationId": "downloadSourceUrl",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3592,6 +3947,24 @@
     "/api/v1/sessions/{sessionId}/sources/{attachmentId}": {
       "delete": {
         "operationId": "detachSessionSource",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "attachmentId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "204": {
             "description": "Source detached"
@@ -3652,6 +4025,24 @@
     "/api/v1/sessions/{sessionId}/stages/{stageKey}/impact": {
       "get": {
         "operationId": "getStageRerunImpact",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "stageKey",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Rerun lineage impact"
@@ -3662,6 +4053,24 @@
     "/api/v1/sessions/{sessionId}/stages/{stageKey}/run": {
       "post": {
         "operationId": "runWorkflowStage",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "stageKey",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "202": {
             "description": "Queued"
@@ -3672,6 +4081,24 @@
     "/api/v1/sessions/{sessionId}/stages/{stageKey}/selection": {
       "put": {
         "operationId": "selectStageArtifact",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "stageKey",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3695,6 +4122,24 @@
     "/api/v1/sessions/{sessionId}/stages/{stageKey}/settings-mismatches": {
       "get": {
         "operationId": "getStageSettingsMismatches",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "stageKey",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Prerequisite settings changed since the stored artifacts were created"
@@ -3705,6 +4150,16 @@
     "/api/v1/sessions/{sessionId}/subtitles": {
       "get": {
         "operationId": "getSubtitleComparison",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Aligned subtitle revisions"
@@ -3715,6 +4170,24 @@
     "/api/v1/sessions/{sessionId}/subtitles/{stage}/review": {
       "post": {
         "operationId": "saveSubtitleReview",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "stage",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3738,6 +4211,16 @@
     "/api/v1/sessions/{sessionId}/workflow": {
       "get": {
         "operationId": "getWorkflow",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Workflow snapshot"
@@ -3748,6 +4231,16 @@
     "/api/v1/settings/{settingKey}": {
       "get": {
         "operationId": "getSetting",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "settingKey",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Setting"
@@ -3756,6 +4249,16 @@
       },
       "put": {
         "operationId": "putSetting",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "settingKey",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3789,6 +4292,16 @@
     "/api/v1/sources/{sourceAssetId}": {
       "delete": {
         "operationId": "trashSourceAsset",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sourceAssetId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Source asset moved to trash"
@@ -3797,6 +4310,16 @@
       },
       "patch": {
         "operationId": "updateSourceAsset",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sourceAssetId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3817,6 +4340,16 @@
     "/api/v1/sources/{sourceAssetId}/restore": {
       "post": {
         "operationId": "restoreSourceAsset",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sourceAssetId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Source asset restored"
@@ -3855,6 +4388,16 @@
     "/api/v1/training/{trainingId}/cancel": {
       "post": {
         "operationId": "cancelTrainingRun",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "trainingId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "202": {
             "description": "Cancellation requested"
@@ -3865,6 +4408,16 @@
     "/api/v1/training/{trainingId}/retry": {
       "post": {
         "operationId": "retryTrainingRun",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "trainingId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "202": {
             "description": "Retry queued"
@@ -3905,6 +4458,16 @@
     "/api/v1/uploads/{uploadId}": {
       "delete": {
         "operationId": "cancelChunkUpload",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "uploadId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "204": {
             "description": "Chunk upload canceled"
@@ -3913,6 +4476,16 @@
       },
       "get": {
         "operationId": "getChunkUpload",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "uploadId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Chunk upload status"
@@ -3923,6 +4496,25 @@
     "/api/v1/uploads/{uploadId}/chunks/{index}": {
       "put": {
         "operationId": "putUploadChunk",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "uploadId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "index",
+            "required": true,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Chunk accepted"
@@ -3933,6 +4525,16 @@
     "/api/v1/uploads/{uploadId}/complete": {
       "post": {
         "operationId": "completeChunkUpload",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "uploadId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "201": {
             "description": "Upload promoted"
@@ -3971,6 +4573,24 @@
     "/api/v1/voices/{voiceId}/providers/{serviceId}": {
       "post": {
         "operationId": "publishVoiceToProvider",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "voiceId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "serviceId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "202": {
             "description": "Provider upload queued"
@@ -3981,6 +4601,16 @@
     "/api/v1/voices/{voiceId}/samples": {
       "get": {
         "operationId": "listVoiceSamples",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "voiceId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Samples"
@@ -3989,9 +4619,85 @@
       },
       "post": {
         "operationId": "uploadVoiceSample",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "voiceId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "202": {
             "description": "Queued"
+          }
+        }
+      }
+    },
+    "/api/v1/voices/{voiceId}/samples/{sampleId}/transcribe": {
+      "post": {
+        "operationId": "transcribeVoiceSample",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "voiceId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sampleId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Transcription queued"
+          }
+        }
+      }
+    },
+    "/api/v1/voices/{voiceId}/samples/{sampleId}/transcript": {
+      "patch": {
+        "operationId": "reviewVoiceSampleTranscript",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "voiceId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sampleId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoiceTranscriptReview"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Transcript reviewed"
           }
         }
       }

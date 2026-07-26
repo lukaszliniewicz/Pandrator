@@ -1,7 +1,8 @@
 <script lang="ts">
   import { Check, LoaderCircle, Save, X } from '@lucide/svelte';
   import { onMount, tick } from 'svelte';
-  import { api } from './api';
+  import { apiResponse } from './api';
+  import { artifactApi } from './domain-api';
   import TextDiff from './TextDiff.svelte';
   import SearchReplaceBar from './SearchReplaceBar.svelte';
   import type { TextReplacement, TextSearchMatch } from './search-replace';
@@ -33,15 +34,17 @@
 
   onMount(async () => {
     try {
-      const response = await fetch(`/api/v1/artifacts/${artifactId}/content`, { credentials: 'same-origin' });
-      if (!response.ok) throw new Error(`Review could not be loaded (${response.status}).`);
-      const payload = await response.json();
+      const response = await apiResponse(`/artifacts/${artifactId}/content`);
+      const payload: unknown = await response.json();
       if (!Array.isArray(payload)) throw new Error('This optimization artifact is not a segment list.');
-      rows = payload.map((item: any, index: number) => ({
-        index,
-        source: String(item?.source_text ?? item?.original_sentence ?? item?.text ?? ''),
-        optimized: String(item?.tts_optimized_sentence ?? item?.processed_sentence ?? item?.text ?? '')
-      }));
+      rows = payload.map((item: unknown, index: number) => {
+        const value = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+        return {
+          index,
+          source: String(value.source_text ?? value.original_sentence ?? value.text ?? ''),
+          optimized: String(value.tts_optimized_sentence ?? value.processed_sentence ?? value.text ?? '')
+        };
+      });
     } catch (caught) {
       error = caught instanceof Error ? caught.message : String(caught);
     } finally {
@@ -53,10 +56,10 @@
     saving = true;
     error = '';
     try {
-      await api(`/artifacts/${artifactId}/optimization-review`, {
-        method: 'POST',
-        body: JSON.stringify({ items: rows.map((row) => ({ index: row.index, text: row.optimized })) })
-      });
+      await artifactApi.saveOptimizationReview(
+        artifactId,
+        rows.map((row) => ({ index: row.index, text: row.optimized }))
+      );
       onsaved();
       onclose();
     } catch (caught) {

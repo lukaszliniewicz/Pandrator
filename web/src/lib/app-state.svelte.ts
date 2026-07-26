@@ -1,31 +1,36 @@
-import { api, exchangeBootstrapToken, setCsrfToken, type JobRecord, type SessionRecord } from './api';
+import { exchangeBootstrapToken, setCsrfToken } from './api';
+import { appApi } from './domain-api';
+import type {
+  JobRecord,
+  LoadState,
+  RuntimeCapabilities,
+  SessionRecord
+} from './api-models';
 import {
   InvalidationCoordinator,
+  INVALIDATION_RESOURCES,
+  invalidationBus,
   type InvalidationBatch,
+  type InvalidationResource,
   type PandratorServerEvent
 } from './invalidation';
+import { ResourceState } from './resource-state.svelte';
 
 const EVENT_TYPES = [
   'job.queued', 'job.started', 'job.reclaimed', 'job.waiting_for_resource', 'job.progress',
   'job.succeeded', 'job.failed', 'job.retry_scheduled', 'job.cancel_requested', 'job.canceled'
 ];
 
-type EventSnapshot = {
-  cursor: number;
-  retained_after: number;
-  sessions: { items: SessionRecord[] };
-  jobs: { items: JobRecord[] };
-  capabilities: Record<string, any>;
-};
+const KNOWN_INVALIDATIONS = new Set<string>(INVALIDATION_RESOURCES);
 
 class AppState {
   authenticated = $state(false);
   initialized = $state(false);
   loading = $state(true);
   error = $state('');
-  sessions = $state<SessionRecord[]>([]);
-  jobs = $state<JobRecord[]>([]);
-  capabilities = $state<Record<string, any>>({});
+  readonly sessionsResource = new ResourceState<SessionRecord[]>([]);
+  readonly jobsResource = new ResourceState<JobRecord[]>([]);
+  readonly capabilitiesResource = new ResourceState<RuntimeCapabilities>({});
   eventsHealthy = $state(false);
   remoteAccess = $state(false);
   securityWarning = $state('');
@@ -41,6 +46,30 @@ class AppState {
     (batch) => this.flushInvalidations(batch)
   );
 
+  get sessions() {
+    return this.sessionsResource.value;
+  }
+
+  get sessionsState(): LoadState {
+    return this.sessionsResource.status;
+  }
+
+  get jobs() {
+    return this.jobsResource.value;
+  }
+
+  get jobsState(): LoadState {
+    return this.jobsResource.status;
+  }
+
+  get capabilities() {
+    return this.capabilitiesResource.value;
+  }
+
+  get capabilitiesState(): LoadState {
+    return this.capabilitiesResource.status;
+  }
+
   async initialize() {
     if (this.initialized) return;
     this.loading = true;
@@ -51,7 +80,7 @@ class AppState {
         await exchangeBootstrapToken(bootstrap);
         history.replaceState({}, '', location.pathname + location.search);
       }
-      const status = await api<{ authenticated: boolean; initialized: boolean; csrf_token?: string; remote_access?: boolean; security_warning?: string }>('/auth/status');
+      const status = await appApi.authStatus();
       this.authenticated = status.authenticated;
       this.remoteAccess = Boolean(status.remote_access);
       this.securityWarning = String(status.security_warning ?? '');
@@ -69,9 +98,7 @@ class AppState {
   }
 
   async login(password: string) {
-    const result = await api<{ authenticated: boolean; csrf_token: string }>('/auth/login', {
-      method: 'POST', body: JSON.stringify({ password })
-    });
+    const result = await appApi.login(password);
     setCsrfToken(result.csrf_token);
     this.authenticated = true;
     await this.loadEventSnapshot();
@@ -79,42 +106,50 @@ class AppState {
   }
 
   async logout() {
-    await api('/auth/logout', { method: 'POST' });
+    await appApi.logout();
     this.disconnectEvents();
     this.authenticated = false;
-    this.sessions = [];
-    this.jobs = [];
-    this.capabilities = {};
+    this.sessionsResource.reset([]);
+    this.jobsResource.reset([]);
+    this.capabilitiesResource.reset({});
   }
 
   async refresh() {
     const [sessions, jobs, capabilities] = await Promise.all([
-      api<{ items: SessionRecord[] }>('/sessions'),
-      api<{ items: JobRecord[] }>('/jobs?limit=40'),
-      api<Record<string, any>>('/capabilities')
+      appApi.sessions(),
+      appApi.jobs(),
+      appApi.capabilities()
     ]);
-    this.sessions = sessions.items;
-    this.jobs = jobs.items;
-    this.capabilities = capabilities;
+    this.sessionsResource.replace(sessions.items, sessions.items.length === 0);
+    this.jobsResource.replace(jobs.items, jobs.items.length === 0);
+    this.capabilitiesResource.replace(capabilities);
   }
 
   async refreshSessions() {
-    const response = await api<{ items: SessionRecord[] }>('/sessions');
-    this.sessions = response.items;
+    await this.sessionsResource.load(
+      async () => (await appApi.sessions()).items,
+      { force: true, empty: (items) => items.length === 0 }
+    );
   }
 
   async refreshJobs() {
-    const response = await api<{ items: JobRecord[] }>('/jobs?limit=40');
-    this.jobs = response.items;
+    await this.jobsResource.load(
+      async () => (await appApi.jobs()).items,
+      { force: true, empty: (items) => items.length === 0 }
+    );
   }
 
   async refreshCapabilities() {
-    this.capabilities = await api<Record<string, any>>('/capabilities?refresh=true');
+    await this.capabilitiesResource.load(
+      () => appApi.capabilities(true),
+      { force: true }
+    );
   }
 
   upsertSession(record: SessionRecord) {
-    this.sessions = [record, ...this.sessions.filter((item) => item.id !== record.id)]
+    const sessions = [record, ...this.sessions.filter((item) => item.id !== record.id)]
       .sort((left, right) => right.updated_at.localeCompare(left.updated_at));
+    this.sessionsResource.replace(sessions);
   }
 
   showSetupReturn(guidance: string) {
@@ -123,10 +158,13 @@ class AppState {
   }
 
   private async loadEventSnapshot() {
-    const snapshot = await api<EventSnapshot>('/events/snapshot');
-    this.sessions = snapshot.sessions.items;
-    this.jobs = snapshot.jobs.items;
-    this.capabilities = snapshot.capabilities;
+    const snapshot = await appApi.eventSnapshot();
+    this.sessionsResource.replace(
+      snapshot.sessions.items,
+      snapshot.sessions.items.length === 0
+    );
+    this.jobsResource.replace(snapshot.jobs.items, snapshot.jobs.items.length === 0);
+    this.capabilitiesResource.replace(snapshot.capabilities);
     this.eventCursor = Number(snapshot.cursor || 0);
   }
 
@@ -149,9 +187,10 @@ class AppState {
       ...(event.progress !== undefined ? { progress: Number(event.progress) } : {}),
       ...(event.detail !== undefined ? { progress_detail: event.detail } : {})
     };
-    this.jobs = index >= 0
+    const jobs = index >= 0
       ? this.jobs.map((job, jobIndex) => jobIndex === index ? next : job)
       : [next, ...this.jobs].slice(0, 40);
+    this.jobsResource.replace(jobs, jobs.length === 0);
   }
 
   private flushInvalidations(batch: InvalidationBatch) {
@@ -164,9 +203,7 @@ class AppState {
     if (batch.resources.includes('sessions')) {
       this.refreshSessions().catch(() => undefined);
     }
-    window.dispatchEvent(
-      new CustomEvent<InvalidationBatch>('pandrator:invalidate', { detail: batch })
-    );
+    invalidationBus.publish(batch);
   }
 
   private markEventsHealthy() {
@@ -244,7 +281,18 @@ class AppState {
         }
         let detail: PandratorServerEvent = { type };
         try {
-          detail = { type, ...JSON.parse(message.data || '{}') };
+          const parsed = JSON.parse(message.data || '{}') as unknown;
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            for (const [key, value] of Object.entries(parsed)) detail[key] = value;
+            if (Array.isArray(detail.changed_entities)) {
+              detail.changed_entities = detail.changed_entities.filter(
+                (value): value is InvalidationResource =>
+                  typeof value === 'string' && KNOWN_INVALIDATIONS.has(value)
+              );
+            } else {
+              delete detail.changed_entities;
+            }
+          }
         } catch { /* retain the event type if an older server sent no JSON */ }
         this.patchJob(detail);
         this.invalidations.enqueue(detail);

@@ -2,36 +2,38 @@
   import { FileAudio, FileText, History, Plus, Trash2 } from '@lucide/svelte';
   import { page } from '$app/state';
   import { onMount } from 'svelte';
-  import { api } from '$lib/api';
+  import { sessionApi } from '$lib/domain-api';
+  import type { SessionSource } from '$lib/api-models';
+  import type { PreviewableArtifact } from '$lib/artifact-display';
   import AddSourceDialog from '$lib/AddSourceDialog.svelte';
   import PdfEditor from '$lib/PdfEditor.svelte';
   import ArtifactPreview from '$lib/ArtifactPreview.svelte';
-  import { invalidates, type InvalidationBatch } from '$lib/invalidation';
+  import { invalidates, invalidationBus, type InvalidationBatch } from '$lib/invalidation';
 
   const sessionId=String(page.params.id);
-  let sources=$state<any[]>([]);
+  let sources=$state<SessionSource[]>([]);
   let error=$state('');
   let message=$state('');
-  let pdf=$state<any>(null);
-  let preview=$state<any|null>(null);
+  let pdf=$state<{id:string;filename:string}|null>(null);
+  let preview=$state<PreviewableArtifact|null>(null);
   let sourceDialog=$state(false);
 
   async function load(){
-    sources=(await api<{items:any[]}>(`/sessions/${sessionId}/sources`)).items;
+    sources=(await sessionApi.sources(sessionId)).items;
   }
-  async function makeCurrent(source:any){
+  async function makeCurrent(source:SessionSource){
     error='';
     try{
-      await api(`/sessions/${sessionId}/sources`,{method:'POST',body:JSON.stringify({source_asset_id:source.id,role:source.attachment.role})});
+      await sessionApi.attachSource(sessionId,source.id,source.attachment.role);
       message=`${source.display_name} is now the current ${source.attachment.role} source.`;
       await load();
     }catch(caught){error=caught instanceof Error?caught.message:String(caught)}
   }
-  async function detach(source:any){
+  async function detach(source:SessionSource){
     if(!confirm(`Detach ${source.display_name} from this session? The library source and managed file will be preserved.`))return;
     error='';
     try{
-      await api(`/sessions/${sessionId}/sources/${source.attachment.id}`,{method:'DELETE',headers:{'If-Match':`"${source.attachment.revision}"`}});
+      await sessionApi.detachSource(sessionId,source.attachment.id,source.attachment.revision);
       message='Source detached. Its library record and file were preserved.';
       await load();
     }catch(caught){error=caught instanceof Error?caught.message:String(caught)}
@@ -40,12 +42,11 @@
 
   onMount(()=>{
     load().catch((caught)=>error=caught instanceof Error?caught.message:String(caught));
-    const refresh=(event:Event)=>{
-      const batch=(event as CustomEvent<InvalidationBatch>).detail;
+    const refresh=(batch:InvalidationBatch)=>{
       if(invalidates(batch,'sources',sessionId))load().catch(()=>undefined);
     };
-    window.addEventListener('pandrator:invalidate',refresh);
-    return()=>window.removeEventListener('pandrator:invalidate',refresh);
+    const unsubscribe=invalidationBus.subscribe(refresh);
+    return unsubscribe;
   });
 </script>
 

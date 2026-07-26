@@ -1,23 +1,24 @@
 <script lang="ts">
   import { page } from '$app/state';
   import { Clock3, Columns3, Download, Eye, FileText, History, SlidersHorizontal } from '@lucide/svelte';
-  import { api } from '$lib/api';
+  import { artifactApi, sessionApi } from '$lib/domain-api';
+  import type { ArtifactRecord, DocumentRecord } from '$lib/api-models';
   import ArtifactPreview from '$lib/ArtifactPreview.svelte';
   import SettingsPanel from '$lib/SettingsPanel.svelte';
   import SubtitleReview from '$lib/SubtitleReview.svelte';
   import { artifactFilename, formatBytes } from '$lib/artifact-display';
 
   const sessionId = String(page.params.id);
-  let documents = $state<any[]>([]);
+  let documents = $state<DocumentRecord[]>([]);
   let review = $state(false);
   let sourceArtifact = $state('');
   let activeTab = $state<'settings' | 'history'>('settings');
-  let preview = $state<any | null>(null);
+  let preview = $state<ArtifactRecord | null>(null);
 
   async function load() {
-    documents = (await api<{ items: any[] }>(`/sessions/${sessionId}/documents`)).items;
-    const artifacts = await api<{ items: any[] }>(`/artifacts?session_id=${sessionId}&limit=100`);
-    sourceArtifact = artifacts.items.find((item: any) => item.role === 'upload')?.id ?? '';
+    documents = (await sessionApi.documents(sessionId)).items;
+    const artifacts = await artifactApi.list({ sessionId, limit: 100 });
+    sourceArtifact = artifacts.items.find((item) => item.role === 'upload')?.id ?? '';
   }
 
   function duration(value: number) {

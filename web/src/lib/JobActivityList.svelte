@@ -1,14 +1,8 @@
 <script lang="ts">
   import { Ban, CheckCircle2, ChevronDown, CircleAlert, FileText, LoaderCircle, RefreshCw } from '@lucide/svelte';
-  import { api, type JobRecord } from './api';
+  import type { JobLogRecord as JobLog, JobRecord } from './api-models';
   import { appState } from './app-state.svelte';
-
-  type JobLog = {
-    id: number;
-    event_type: string;
-    payload_json: Record<string, unknown>;
-    created_at: string;
-  };
+  import { jobApi } from './domain-api';
 
   let { jobs, allowCancel = true }: { jobs: JobRecord[]; allowCancel?: boolean } = $props();
   let expanded = $state<Record<string, boolean>>({});
@@ -42,7 +36,7 @@
     loading[id] = true;
     errors[id] = '';
     try {
-      const result = await api<{ items: JobLog[] }>(`/jobs/${id}/logs?limit=2000`);
+      const result = await jobApi.logs(id);
       logs[id] = result.items;
     } catch (caught) {
       errors[id] = caught instanceof Error ? caught.message : String(caught);
@@ -60,7 +54,7 @@
     if (canceling[job.id]) return;
     canceling[job.id] = true;
     try {
-      const updated = await api<JobRecord>(`/jobs/${job.id}/cancel`, { method: 'POST' });
+      const updated = await jobApi.cancel(job.id);
       Object.assign(job, updated);
       await Promise.all([appState.refresh(), expanded[job.id] ? loadLogs(job.id, true) : Promise.resolve()]);
     } catch (caught) {

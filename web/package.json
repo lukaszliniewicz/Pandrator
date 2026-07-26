@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-    "generate-api": "openapi-typescript ../openapi.json -o src/lib/api.generated.ts",
+    "generate-api": "openapi-typescript ../openapi.json --default-non-nullable false -o src/lib/api.generated.ts",
     "test:e2e": "playwright test"
   },
   "devDependencies": {

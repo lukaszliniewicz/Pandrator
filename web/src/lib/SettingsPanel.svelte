@@ -1,18 +1,19 @@
 <script lang="ts">
   import { ChevronDown, ExternalLink, Globe2, RotateCcw, Save, ShieldCheck, TriangleAlert } from '@lucide/svelte';
-  import { api } from './api';
+  import { sessionApi } from './domain-api';
+  import type { SettingsPayload } from './api-models';
   import SettingField from './SettingField.svelte';
 
   let { sessionId, section, title, description = '' }: { sessionId: string; section: string; title: string; description?: string } = $props();
-  let payload = $state<any>(null);
-  let override = $state<Record<string, any>>({});
+  let payload = $state<SettingsPayload|null>(null);
+  let override = $state<Record<string, unknown>>({});
   let advanced = $state(false);
   let saving = $state(false);
   let message = $state('');
   const common: Record<string, string[]> = { text: ['enable_sentence_splitting', 'max_sentence_length', 'enable_sentence_appending', 'enable_nemo_normalization', 'normalize_all_caps', 'llm_tts_document_optimization', 'llm_tts_optimization', 'llm_tts_document_batch_size', 'llm_tts_batch_size'], stt: ['stt_engine', 'stt_model_quantization', 'stt_compute_backend', 'stt_compute_device', 'stt_language', 'whisper_prompt', 'moss_max_chunk_seconds', 'moss_vad_enabled', 'moss_ctc_alignment_enabled', 'moss_ctc_padding_seconds', 'crispasr_vad_enabled', 'crispasr_vad_threshold', 'crispasr_vad_min_speech_ms', 'crispasr_vad_min_silence_ms', 'crispasr_vad_max_speech_seconds', 'crispasr_vad_speech_pad_ms', 'diarization_enabled'], subtitles: ['max_lines', 'max_chars_per_line', 'max_cps', 'min_duration_ms', 'max_duration_ms', 'min_gap_ms', 'phrase_gap_ms', 'boundary_correction_enabled', 'merge_threshold_ms'], correction: ['enabled', 'model_name', 'instructions', 'preserve_timing', 'max_subtitles_per_call', 'context_before', 'context_after', 'web_research_enabled', 'web_research_provider', 'web_research_language', 'web_research_max_searches', 'web_research_max_extractions', 'web_research_preferred_domains', 'web_research_blocked_domains', 'request_timeout_seconds'], translation: ['enabled', 'backend', 'source_language', 'target_language', 'professional_cleanup', 'model_name', 'instructions', 'glossary', 'glossary_enabled', 'context', 'max_subtitles_per_call', 'max_line_length', 'no_remove_subtitles', 'web_research_enabled', 'web_research_provider', 'web_research_language', 'web_research_max_searches', 'web_research_max_extractions', 'web_research_preferred_domains', 'web_research_blocked_domains', 'request_timeout_seconds'], tts: ['service', 'model', 'voice', 'language', 'speed', 'max_attempts'], audio: ['audio_verification_mode', 'sentence_silence_ms', 'paragraph_silence_ms', 'fade_enabled', 'fade_in_ms', 'fade_out_ms', 'synchronization_delay_ms', 'synchronization_speed', 'synchronization_sentence_gap_ms'], rvc: ['enabled', 'model', 'pitch', 'f0_method', 'filter_radius', 'index_rate', 'volume_envelope', 'protect'], source_cleaning: ['agentic', 'max_iterations', 'pdf_ocr_mode', 'pdf_ocr_language', 'pdf_ocr_dpi', 'pdf_remove_toc', 'pdf_remove_repeated_marginals', 'request_timeout_seconds'], output: ['format', 'bitrate', 'export_mode', 'audio_mode', 'subtitle_mode', 'subtitle_selection', 'subtitle_format', 'burn_video_encoder', 'burn_video_resolution', 'burn_video_quality', 'burn_video_speed', 'burn_audio_codec', 'burn_audio_bitrate', 'title', 'artist', 'album', 'genre', 'language'] };
   common.text.splice(7, 0, 'speech_optimization_mode', 'speech_plan_save_proposals', 'tts_optimization_model', 'llm_concurrent_calls');
-  const value = (key: string, fallback: any) => Object.prototype.hasOwnProperty.call(override, key) ? override[key] : fallback;
-  const set = (key: string, next: any) => override = { ...override, [key]: next };
+  const value = (key: string, fallback: unknown) => Object.prototype.hasOwnProperty.call(override, key) ? override[key] : fallback;
+  const set = (key: string, next: unknown) => override = { ...override, [key]: next };
   const entries = $derived(Object.entries(payload?.effective ?? {}).sort(([left], [right]) => { const order = common[section] ?? []; const li = order.indexOf(left), ri = order.indexOf(right); return (li < 0 ? 999 : li) - (ri < 0 ? 999 : ri) || left.localeCompare(right); }));
   const providerSetting = (key: string) => key === 'provider_configs' || key === 'use_external_server' || key === 'external_server_url' || key === 'openai_audio_endpoint' || key.endsWith('_base_url') || key.endsWith('_api_key');
   const sectionName = (value: string) => ({ tts: 'TTS', stt: 'STT', rvc: 'RVC' } as Record<string, string>)[value] ?? value.replaceAll('_', ' ');
@@ -46,16 +47,16 @@
     if (key === 'combined_prompt') return !divided;
     return true;
   }));
-  async function load() { payload = await api(`/sessions/${sessionId}/settings/${section}`); override = { ...(payload.override ?? {}) }; }
-  async function save() { saving = true; message = ''; try { if (section === 'tts') override = Object.fromEntries(Object.entries(override).filter(([key]) => !providerSetting(key))); payload = await api(`/sessions/${sessionId}/settings/${section}`, { method: 'PUT', headers: { 'If-Match': `"${payload.revision}"` }, body: JSON.stringify({ value: override }) }); override = { ...payload.override }; message = 'Saved for this session.'; } catch (caught) { message = caught instanceof Error ? caught.message : String(caught); } finally { saving = false; } }
-  async function reset() { saving = true; message = ''; try { payload = await api(`/sessions/${sessionId}/settings/${section}`, { method: 'PUT', headers: { 'If-Match': `"${payload.revision}"` }, body: JSON.stringify({ value: {} }) }); override = {}; message = 'Reverted to application defaults.'; } catch (caught) { message = caught instanceof Error ? caught.message : String(caught); } finally { saving = false; } }
+  async function load() { payload = await sessionApi.settings(sessionId,section); override = { ...(payload.override ?? {}) }; }
+  async function save() { saving = true; message = ''; try { if (section === 'tts') override = Object.fromEntries(Object.entries(override).filter(([key]) => !providerSetting(key))); payload = await sessionApi.saveSettings(sessionId,section,payload!.revision,override); override = { ...payload.override }; message = 'Saved for this session.'; } catch (caught) { message = caught instanceof Error ? caught.message : String(caught); } finally { saving = false; } }
+  async function reset() { saving = true; message = ''; try { payload = await sessionApi.saveSettings(sessionId,section,payload!.revision,{}); override = {}; message = 'Reverted to application defaults.'; } catch (caught) { message = caught instanceof Error ? caught.message : String(caught); } finally { saving = false; } }
   async function saveAsDefaults() {
     saving = true; message = '';
     try {
       const promoted = section === 'tts' ? Object.fromEntries(Object.entries(override).filter(([key]) => !providerSetting(key))) : override;
-      const defaults = await api<any>(`/defaults/${section}`);
-      await api(`/settings/defaults.${section}`, { method: 'PUT', headers: { 'If-Match': `"${defaults.revision}"` }, body: JSON.stringify({ value: { ...(defaults.value ?? {}), ...promoted } }) });
-      payload = await api(`/sessions/${sessionId}/settings/${section}`, { method: 'PUT', headers: { 'If-Match': `"${payload.revision}"` }, body: JSON.stringify({ value: Object.fromEntries(Object.entries(override).filter(([key]) => !Object.prototype.hasOwnProperty.call(promoted, key))) }) });
+      const defaults = await sessionApi.defaults(section);
+      await sessionApi.saveDefaults(section,defaults.revision,{ ...(defaults.value ?? {}), ...promoted });
+      payload = await sessionApi.saveSettings(sessionId,section,payload!.revision,Object.fromEntries(Object.entries(override).filter(([key]) => !Object.prototype.hasOwnProperty.call(promoted, key))));
       override = { ...payload.override };
       message = 'Saved as application defaults.';
     } catch (caught) { message = caught instanceof Error ? caught.message : String(caught); }

@@ -2,11 +2,26 @@
 
 from __future__ import annotations
 
+import re
+
 from .schemas import SCHEMA_MODELS
 
 
 def build_openapi_document() -> dict:
-    schemas = {name: model.model_json_schema(ref_template="#/components/schemas/{model}") for name, model in SCHEMA_MODELS.items()}
+    schemas: dict[str, dict] = {}
+    for name, model in SCHEMA_MODELS.items():
+        schema = model.model_json_schema(
+            ref_template="#/components/schemas/{model}"
+        )
+        definitions = schema.pop("$defs", {})
+        for definition_name, definition in definitions.items():
+            existing = schemas.get(definition_name)
+            if existing is not None and existing != definition:
+                raise ValueError(
+                    f"Conflicting OpenAPI schema definition: {definition_name}"
+                )
+            schemas[definition_name] = definition
+        schemas[name] = schema
     document = {
         "openapi": "3.1.0",
         "info": {"title": "Pandrator API", "version": "1.0.0"},
@@ -33,6 +48,14 @@ def build_openapi_document() -> dict:
                     "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SessionUpdate"}}}},
                     "responses": {"200": {"description": "Updated"}, "409": {"description": "Revision conflict"}},
                 },
+                "delete": {
+                    "operationId": "trashSession",
+                    "parameters": [
+                        {"name": "sessionId", "in": "path", "required": True, "schema": {"type": "string", "format": "uuid"}},
+                        {"name": "If-Match", "in": "header", "required": True, "schema": {"type": "string"}},
+                    ],
+                    "responses": {"200": {"description": "Session moved to trash"}, "409": {"description": "Revision conflict"}},
+                },
             },
             "/api/v1/jobs": {
                 "get": {"operationId": "listJobs", "responses": {"200": {"description": "Jobs"}}},
@@ -45,7 +68,9 @@ def build_openapi_document() -> dict:
             "/api/v1/events": {"get": {"operationId": "streamEvents", "responses": {"200": {"description": "SSE job events"}}}},
             "/api/v1/events/snapshot": {"get": {"operationId": "getEventSnapshot", "responses": {"200": {"description": "Initial event-stream resource snapshot and cursor"}}}},
             "/api/v1/auth/status": {"get": {"operationId": "getAuthStatus", "responses": {"200": {"description": "Authentication status"}}}},
+            "/api/v1/auth/bootstrap": {"post": {"operationId": "exchangeBootstrapToken", "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BootstrapRequest"}}}}, "responses": {"200": {"description": "Authenticated"}}}},
             "/api/v1/auth/login": {"post": {"operationId": "login", "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LoginRequest"}}}}, "responses": {"200": {"description": "Authenticated"}}}},
+            "/api/v1/auth/logout": {"post": {"operationId": "logout", "responses": {"204": {"description": "Signed out"}}}},
             "/api/v1/auth/tokens": {"get": {"operationId": "listApiTokens", "responses": {"200": {"description": "Tokens"}}}, "post": {"operationId": "createApiToken", "responses": {"201": {"description": "Created"}}}},
             "/api/v1/settings/{settingKey}": {"get": {"operationId": "getSetting", "responses": {"200": {"description": "Setting"}}}, "put": {"operationId": "putSetting", "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SettingUpdate"}}}}, "responses": {"200": {"description": "Saved"}, "409": {"description": "Revision conflict"}}}},
             "/api/v1/uploads": {"post": {"operationId": "uploadSource", "responses": {"201": {"description": "Uploaded"}}}},
@@ -111,11 +136,14 @@ def build_openapi_document() -> dict:
             "/api/v1/providers": {"get": {"operationId": "listProviders", "responses": {"200": {"description": "Providers"}}}, "post": {"operationId": "createProvider", "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProviderCreate"}}}}, "responses": {"201": {"description": "Created"}}}},
             "/api/v1/providers/profiles": {"get": {"operationId": "listProviderProfiles", "responses": {"200": {"description": "LiteLLM provider profiles"}}}},
             "/api/v1/providers/{providerId}": {"patch": {"operationId": "updateProvider", "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProviderUpdate"}}}}, "responses": {"200": {"description": "Updated"}, "409": {"description": "Revision conflict"}}}, "delete": {"operationId": "deleteProvider", "responses": {"204": {"description": "Deleted"}, "409": {"description": "Replacement required"}}}},
-            "/api/v1/providers/{providerId}/models": {"get": {"operationId": "listProviderModels", "responses": {"200": {"description": "Models"}}}, "post": {"operationId": "createProviderModel", "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ModelCreate"}}}}, "responses": {"201": {"description": "Created"}}}},
-            "/api/v1/providers/{providerId}/test": {"post": {"operationId": "testProvider", "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProviderTestRequest"}}}}, "responses": {"200": {"description": "Provider ready"}, "422": {"description": "Provider test failed"}}}},
+        "/api/v1/providers/{providerId}/models": {"get": {"operationId": "listProviderModels", "responses": {"200": {"description": "Models"}}}, "post": {"operationId": "createProviderModel", "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ModelCreate"}}}}, "responses": {"201": {"description": "Created"}}}},
+        "/api/v1/providers/{providerId}/models/refresh": {"post": {"operationId": "refreshProviderModels", "responses": {"200": {"description": "Provider models discovered"}}}},
+        "/api/v1/providers/{providerId}/test": {"post": {"operationId": "testProvider", "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProviderTestRequest"}}}}, "responses": {"200": {"description": "Provider ready"}, "422": {"description": "Provider test failed"}}}},
             "/api/v1/providers/{providerId}/models/{modelId}": {"patch": {"operationId": "updateProviderModel", "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ModelUpdate"}}}}, "responses": {"200": {"description": "Updated"}, "409": {"description": "Revision conflict"}}}, "delete": {"operationId": "deleteProviderModel", "responses": {"204": {"description": "Deleted"}, "409": {"description": "Replacement required"}}}},
             "/api/v1/voices": {"get": {"operationId": "listVoices", "responses": {"200": {"description": "Voices"}}}, "post": {"operationId": "createVoice", "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VoiceCreate"}}}}, "responses": {"201": {"description": "Created"}}}},
-            "/api/v1/voices/{voiceId}/samples": {"get": {"operationId": "listVoiceSamples", "responses": {"200": {"description": "Samples"}}}, "post": {"operationId": "uploadVoiceSample", "responses": {"202": {"description": "Queued"}}}},
+        "/api/v1/voices/{voiceId}/samples": {"get": {"operationId": "listVoiceSamples", "responses": {"200": {"description": "Samples"}}}, "post": {"operationId": "uploadVoiceSample", "responses": {"202": {"description": "Queued"}}}},
+        "/api/v1/voices/{voiceId}/samples/{sampleId}/transcribe": {"post": {"operationId": "transcribeVoiceSample", "responses": {"202": {"description": "Transcription queued"}}}},
+        "/api/v1/voices/{voiceId}/samples/{sampleId}/transcript": {"patch": {"operationId": "reviewVoiceSampleTranscript", "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VoiceTranscriptReview"}}}}, "responses": {"200": {"description": "Transcript reviewed"}}}},
             "/api/v1/voices/{voiceId}/providers/{serviceId}": {"post": {"operationId": "publishVoiceToProvider", "responses": {"202": {"description": "Provider upload queued"}}}},
             "/api/v1/rvc/models": {"get": {"operationId": "listRvcModels", "responses": {"200": {"description": "RVC readiness and models"}}}, "post": {"operationId": "uploadRvcModel", "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RvcModelUploadRequest"}}}}, "responses": {"202": {"description": "Queued"}}}},
             "/api/v1/rvc/convert": {"post": {"operationId": "convertWithRvc", "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RvcConvertRequest"}}}}, "responses": {"202": {"description": "Queued"}}}},
@@ -236,5 +264,34 @@ def build_openapi_document() -> dict:
         "/api/v1/sessions/{sessionId}/restore": {"post": operation("restoreSession", "Session restored")},
         "/api/v1/sessions/{sessionId}/reindex": {"post": operation("reindexSession", "Reconciliation report")},
     })
+
+    # Every templated route must expose its parameters to generated clients.
+    # Most operations use the same UUID-like string identifiers, while chunk
+    # indices are the one numeric route component.
+    for path, path_item in paths.items():
+        parameter_names = re.findall(r"{([^}]+)}", path)
+        if not parameter_names:
+            continue
+        for method, definition in path_item.items():
+            if method not in {"get", "put", "post", "delete", "patch"}:
+                continue
+            parameters = definition.setdefault("parameters", [])
+            documented = {
+                parameter.get("name")
+                for parameter in parameters
+                if parameter.get("in") == "path"
+            }
+            for name in parameter_names:
+                if name in documented:
+                    continue
+                schema = {"type": "integer", "minimum": 0} if name == "index" else {"type": "string"}
+                parameters.append(
+                    {
+                        "name": name,
+                        "in": "path",
+                        "required": True,
+                        "schema": schema,
+                    }
+                )
     return document
 

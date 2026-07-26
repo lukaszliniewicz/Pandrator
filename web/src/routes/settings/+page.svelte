@@ -1,6 +1,7 @@
 <script lang="ts">
   import { RefreshCw, Save, ShieldCheck } from '@lucide/svelte';
-  import { api } from '$lib/api';
+  import { settingApi } from '$lib/admin-api';
+  import type { GpuDevice } from '$lib/api-models';
   import { appState } from '$lib/app-state.svelte';
   import GlobalSettingsPanel from '$lib/GlobalSettingsPanel.svelte';
 
@@ -9,15 +10,16 @@
   let revision = $state(0);
   let saving = $state(false);
   let message = $state('');
+  type WebPreferences = { show_startup_wizard?: boolean; retention_days?: number };
   const sections = ['text', 'stt', 'subtitles', 'correction', 'translation', 'tts', 'audio', 'rvc', 'source_cleaning', 'output'];
   const acronyms: Record<string, string> = { tts: 'TTS', stt: 'STT', rvc: 'RVC' };
   const sectionLabel = (section: string) => acronyms[section] ?? section.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
   const gpuDevices = $derived(Array.isArray(appState.capabilities?.gpu?.devices) ? appState.capabilities.gpu.devices : []);
-  const gpuMemory = (device:any) => Number(device?.vram_mb)>0 ? `${(Number(device.vram_mb)/1024).toFixed(Number(device.vram_mb)>=10240?0:1)} GiB` : 'VRAM unknown';
+  const gpuMemory = (device: GpuDevice) => Number(device.vram_mb)>0 ? `${(Number(device.vram_mb)/1024).toFixed(Number(device.vram_mb)>=10240?0:1)} GiB` : 'VRAM unknown';
 
   async function load() {
     try {
-      const result = await api<any>('/settings/web.preferences');
+      const result = await settingApi.get<WebPreferences>('web.preferences');
       revision = result.revision;
       wizardVisible = Boolean(result.value?.show_startup_wizard);
       retention = Number(result.value?.retention_days ?? 30);
@@ -28,7 +30,7 @@
     saving = true;
     message = '';
     try {
-      const result = await api<any>('/settings/web.preferences', { method: 'PUT', headers: { 'If-Match': `"${revision}"` }, body: JSON.stringify({ value: { show_startup_wizard: wizardVisible, retention_days: retention } }) });
+      const result = await settingApi.put<WebPreferences>('web.preferences', revision, { show_startup_wizard: wizardVisible, retention_days: retention });
       revision = result.revision;
       message = 'Application preferences saved.';
     } catch (caught) { message = caught instanceof Error ? caught.message : String(caught); }

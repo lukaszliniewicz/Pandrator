@@ -1,11 +1,19 @@
 <script lang="ts">
   import { Check, CircleAlert, Library, Play, Plus, RefreshCw, Save, Trash2, Volume2 } from '@lucide/svelte';
-  import { api, type JobRecord } from './api';
+  import { settingApi, speechServiceApi } from './admin-api';
+  import type { JobRecord, TtsCatalogue, TtsPreviewRecord, TtsService, TtsSettingsValue } from './api-models';
+  import { jobApi } from './domain-api';
   import { describeVoice, languagesForService, type VoiceDescriptor } from './voice-catalog';
   import AudioPlayer from './AudioPlayer.svelte';
 
   let { initialService = '' }: { initialService?: string } = $props();
-  let payload = $state<any>({ services: [], value: {}, revision: 0 });
+  type VoiceLibraryPayload = TtsCatalogue & {
+    services: TtsService[];
+    value: TtsSettingsValue;
+    revision: number;
+    previews: TtsPreviewRecord[];
+  };
+  let payload = $state<VoiceLibraryPayload>({ services: [], value: {}, revision: 0, previews: [] });
   let serviceId = $state('');
   let model = $state('');
   let language = $state('');
@@ -18,14 +26,15 @@
   let generatedCount = $state(0);
   let newVoice = $state('');
 
-  const services = $derived((payload.services ?? []).filter((service: any) => service.supports_prebuilt_voices));
-  const service = $derived(services.find((item: any) => item.id === serviceId) ?? services.find((item: any) => item.available !== false) ?? services[0]);
+  const isString = (value: string | undefined): value is string => Boolean(value);
+  const services = $derived((payload.services ?? []).filter((service) => service.supports_prebuilt_voices));
+  const service = $derived(services.find((item) => item.id === serviceId) ?? services.find((item) => item.available !== false) ?? services[0]);
   const qwenPrebuiltModel = $derived(service?.id === 'kobold_qwen'
     ? (service?.models ?? []).find((item: string) => ['prebuilt voices', 'qwen3-tts-customvoice'].includes(item.toLowerCase())) || 'Prebuilt Voices'
     : '');
   const models = $derived(service?.id === 'kobold_qwen'
     ? [qwenPrebuiltModel]
-    : Array.from(new Set([...(service?.models ?? []), service?.default_model].filter(Boolean))));
+    : Array.from(new Set([...(service?.models ?? []), service?.default_model].filter(isString))));
   const rawVoices = $derived(Array.from(new Set([
     ...(service?.voice_catalogues?.[model] ?? (service?.id === 'kobold_qwen' ? [] : service?.voices ?? [])),
     service?.default_voices?.[model],
@@ -39,11 +48,11 @@
   const languages = $derived(languagesForService(service?.id ?? '', descriptors));
   const visibleVoices = $derived(descriptors.filter((voice) => !language || !voice.languageCode || voice.languageCode === language));
   const languageDefault = $derived(String(service?.default_voices_by_language?.[model]?.[language] ?? service?.default_voices?.[model] ?? service?.default_voice ?? ''));
-  const modelInfo = $derived((service?.model_catalog ?? []).find((item: any) => item.id === model));
-  const modelLanguageNames = $derived((modelInfo?.languages ?? []).map((item: any) => typeof item === 'string' ? item : item.name).filter(Boolean));
+  const modelInfo = $derived((service?.model_catalog ?? []).find((item) => item.id === model));
+  const modelLanguageNames = $derived((modelInfo?.languages ?? []).map((item) => typeof item === 'string' ? item : item.name).filter(Boolean));
 
   function modelLabel(modelId: string) {
-    const info = (service?.model_catalog ?? []).find((item: any) => item.id === modelId);
+    const info = (service?.model_catalog ?? []).find((item) => item.id === modelId);
     const friendly = String(info?.display_name ?? info?.name ?? '').trim();
     return friendly ? `${friendly} · ${modelId}` : modelId;
   }
@@ -57,15 +66,15 @@
     if (!languages.length) language = '';
   });
 
-  function configuredRecord(candidate: any) {
-    return (payload.value.provider_configs ?? []).find((item: any) => item.id === candidate.id || item.api_base === candidate.api_base);
+  function configuredRecord(candidate: TtsService) {
+    return (payload.value.provider_configs ?? []).find((item) => item.id === candidate.id || item.api_base === candidate.api_base);
   }
 
   function previewKey(serviceValue: string, modelValue: string, languageValue: string, voiceValue: string) {
     return [serviceValue, modelValue, languageValue, voiceValue].map((item) => encodeURIComponent(String(item ?? ''))).join('|');
   }
 
-  function restorePreviews(items: any[]) {
+  function restorePreviews(items: TtsPreviewRecord[]) {
     const restored: Record<string, { status: string; artifactId?: string; error?: string }> = {};
     for (const item of items ?? []) {
       const key = previewKey(item.service_id, item.model, item.language, item.voice);
@@ -77,8 +86,8 @@
     previews = restored;
   }
 
-  function editableRecord(candidate: any) {
-    const existing = configuredRecord(candidate) ?? {};
+  function editableRecord(candidate: TtsService): TtsService {
+    const existing: Partial<TtsService> = configuredRecord(candidate) ?? {};
     return {
       ...existing,
       id: existing.id ?? candidate.id,
@@ -100,14 +109,14 @@
   }
 
   async function load() {
-    payload = await api('/services/tts?refresh=true');
+    payload = await speechServiceApi.catalogueAs<VoiceLibraryPayload>(true);
     restorePreviews(payload.previews ?? []);
-    if (initialService && services.some((item: any) => item.id === initialService)) serviceId = initialService;
+    if (initialService && services.some((item) => item.id === initialService)) serviceId = initialService;
   }
 
-  async function saveRecord(record: any) {
-    const value = { ...payload.value, provider_configs: [...(payload.value.provider_configs ?? []).filter((item: any) => item.id !== record.id && item.api_base !== record.api_base), record] };
-    await api('/settings/services.tts', { method: 'PUT', headers: { 'If-Match': `"${payload.revision}"` }, body: JSON.stringify({ value }) });
+  async function saveRecord(record: TtsService) {
+    const value = { ...payload.value, provider_configs: [...(payload.value.provider_configs ?? []).filter((item) => item.id !== record.id && item.api_base !== record.api_base), record] };
+    await settingApi.put<TtsSettingsValue>('services.tts', payload.revision, value);
     await load();
   }
 
@@ -115,7 +124,7 @@
     if (!service || refreshing) return;
     refreshing = true; error = ''; notice = '';
     try {
-      const found = await api<any>('/services/tts/discover', { method: 'POST', body: JSON.stringify({ base_url: service.api_base }) });
+      const found = await speechServiceApi.discover({ base_url: service.api_base ?? '' });
       const record = editableRecord(service);
       const discoveredModels = (found.models ?? []).filter(Boolean);
       const discoveredVoices = (found.voices ?? []).filter(Boolean);
@@ -188,7 +197,7 @@
     // the first pre-built preview.  Keep polling while that durable job does
     // its one-time preparation rather than claiming it timed out after 2 min.
     for (let attempt = 0; attempt < 4000; attempt += 1) {
-      const job = await api<JobRecord>(`/jobs/${id}`);
+      const job = await jobApi.get(id);
       if (job.status === 'succeeded') return job;
       if (['failed', 'canceled', 'interrupted'].includes(job.status)) throw new Error(job.error_message || `Preview ${job.status}.`);
       await new Promise((resolve) => setTimeout(resolve, 500));
@@ -211,7 +220,7 @@
         : '';
     }
     try {
-      const queued = await api<JobRecord>(`/services/tts/${service.id}/preview`, { method: 'POST', body: JSON.stringify({ text: previewText.trim(), model: service.id === 'kobold_qwen' ? qwenPrebuiltModel : model, voice: voice.id, language }) });
+      const queued = await speechServiceApi.preview(service.id, { text: previewText.trim(), model: service.id === 'kobold_qwen' ? qwenPrebuiltModel : model, voice: voice.id, language });
       const complete = await waitJob(queued.id);
       const artifactId = String(complete.result_json?.artifact_id ?? '');
       if (!artifactId) throw new Error('The preview completed without a playable audio artifact.');

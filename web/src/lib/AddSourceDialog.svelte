@@ -1,6 +1,8 @@
 <script lang="ts">
   import { BookOpenText, FileText, Link2, LoaderCircle, Upload, X } from '@lucide/svelte';
-  import { api, uploadManagedFile } from './api';
+  import { uploadManagedFile } from './api';
+  import { sessionApi, sourceApi } from './domain-api';
+  import type { SourceAsset } from './api-models';
   import SearchReplaceBar from './SearchReplaceBar.svelte';
   import type { TextSearchMatch } from './search-replace';
 
@@ -21,7 +23,7 @@
   let pastedName = $state('Pasted text');
   let sourceUrl = $state('');
   let sourceAssetId = $state('');
-  let sources = $state<any[]>([]);
+  let sources = $state<SourceAsset[]>([]);
   let busy = $state(false);
   let progress = $state(0);
   let progressDetail = $state('');
@@ -42,7 +44,7 @@
 
   async function loadSources() {
     try {
-      sources = (await api<{items:any[]}>('/sources')).items;
+      sources = (await sourceApi.list()).items;
       sourceAssetId ||= sources[0]?.id ?? '';
     } catch {
       sources = [];
@@ -71,16 +73,10 @@
         const textFile = new File([pastedText.trim()], `${safeName}.txt`, { type: 'text/plain' });
         await uploadManagedFile(textFile, sessionId, (value) => progress = value);
       } else if (mode === 'url') {
-        await api(`/sessions/${sessionId}/sources/url`, {
-          method: 'POST',
-          body: JSON.stringify({ url: sourceUrl.trim() })
-        });
+        await sessionApi.downloadSourceUrl(sessionId, sourceUrl.trim());
         message = 'Source download queued. It will become the current input when the download finishes.';
       } else {
-        await api(`/sessions/${sessionId}/sources`, {
-          method: 'POST',
-          body: JSON.stringify({ source_asset_id: sourceAssetId, role: 'primary' })
-        });
+        await sessionApi.attachSource(sessionId, sourceAssetId);
         message = 'Source-library item attached and selected as the current input.';
       }
       await onadded(message);

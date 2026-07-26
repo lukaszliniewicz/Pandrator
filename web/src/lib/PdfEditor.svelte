@@ -1,8 +1,10 @@
 <script lang="ts">
   import { ArrowLeft, Check, Crop, Eraser, Layers3, LoaderCircle, Redo2, RotateCcw, Save, SplitSquareHorizontal, Trash2, Undo2, X } from '@lucide/svelte';
-  import { api } from './api';
+  import { pdfApi } from './admin-api';
   import { onMount } from 'svelte';
   import * as pdfjs from 'pdfjs-dist';
+  import type { PDFDocumentProxy } from 'pdfjs-dist';
+  import type { PageViewport } from 'pdfjs-dist/types/src/display/display_utils';
   import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
   import GuidedTour from './GuidedTour.svelte';
   import PdfPageThumbnail from './PdfPageThumbnail.svelte';
@@ -16,7 +18,7 @@
 
   let { sessionId, source, onclose }: { sessionId: string; source: { id: string; filename: string }; onclose: () => void } = $props();
   let metadata = $state<Metadata | null>(null);
-  let document = $state<any>(null);
+  let document = $state<PDFDocumentProxy | null>(null);
   let canvas = $state<HTMLCanvasElement>();
   let tourOpen = $state(false);
   const tourSteps = [{section:'PDF',title:'Stacks expose shared margins',body:'Compare translucent all-page, left-page, or right-page stacks. Membership always follows original page identity.'},{section:'PDF',title:'Geometry remains exact',body:'Draw crops or whiteouts on a stack or single page. Coordinates are transformed back into original PDF space.'},{section:'PDF',title:'Edits are reversible',body:'Undo, redo, mark deletions, and change first-page side. Applying edits always creates a derived PDF.'}];
@@ -32,7 +34,7 @@
   let drawing = $state(false);
   let dragStart = $state<{ x: number; y: number } | null>(null);
   let dragCurrent = $state<{ x: number; y: number } | null>(null);
-  let activeViewport = $state<any>(null);
+  let activeViewport = $state<PageViewport | null>(null);
   let activeOffset = $state({ x: 0, y: 0 });
   let activePageIndex = $state(0);
   let renderEpoch = 0;
@@ -62,7 +64,7 @@
   async function load() {
     loading = true;
     try {
-      metadata = await api<Metadata>(`/artifacts/${source.id}/pdf?first_page_side=${plan.first_page_side}`);
+      metadata = await pdfApi.inspect<Metadata>(source.id, plan.first_page_side);
       document = await pdfjs.getDocument({ url: `/api/v1/artifacts/${source.id}/content`, withCredentials: true }).promise;
       await render();
     } catch (caught) {
@@ -120,7 +122,7 @@
       const pageViewport = page.getViewport({ scale });
       const offscreen = window.document.createElement('canvas');
       offscreen.width = Math.ceil(pageViewport.width); offscreen.height = Math.ceil(pageViewport.height);
-      await page.render({ canvasContext: offscreen.getContext('2d')!, viewport: pageViewport }).promise;
+      await page.render({ canvas: offscreen, canvasContext: offscreen.getContext('2d')!, viewport: pageViewport }).promise;
       if (epoch !== renderEpoch) return;
       context.globalAlpha = drawn === 0 ? 1 : opacity;
       context.drawImage(offscreen, (canvas.width - offscreen.width) / 2, (canvas.height - offscreen.height) / 2);
@@ -204,16 +206,14 @@
   async function changeSide() {
     pushUndo();
     plan.first_page_side = plan.first_page_side === 'right' ? 'left' : 'right';
-    metadata = await api<Metadata>(`/artifacts/${source.id}/pdf?first_page_side=${plan.first_page_side}`);
+    metadata = await pdfApi.inspect<Metadata>(source.id, plan.first_page_side);
     await render();
   }
 
   async function applyEdits() {
     applying = true; error = ''; resultMessage = '';
     try {
-      const job = await api<{ id: string }>(`/sessions/${sessionId}/pdf/apply`, {
-        method: 'POST', body: JSON.stringify({ source_artifact_id: source.id, ...plan })
-      });
+      const job = await pdfApi.apply(sessionId, { source_artifact_id: source.id, ...plan });
       resultMessage = `PDF edit job queued: ${job.id.slice(0, 8)}`;
     } catch (caught) { error = caught instanceof Error ? caught.message : String(caught); }
     finally { applying = false; }

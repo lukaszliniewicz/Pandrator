@@ -2,6 +2,9 @@
   import { BookOpenCheck, Download, ExternalLink, FileQuestion, Globe2, LoaderCircle, TriangleAlert, X } from '@lucide/svelte';
   import { onMount } from 'svelte';
   import { artifactFilename, artifactRoleLabel, formatBytes, type PreviewableArtifact } from './artifact-display';
+  import { apiResponse } from './api';
+  import { artifactApi } from './domain-api';
+  import type { UsageSummary } from './api-models';
   import AudioPlayer from './AudioPlayer.svelte';
   import TextDiff from './TextDiff.svelte';
 
@@ -13,8 +16,15 @@
   let comparisonName = $state('');
   let comparisonId = $state('');
   let comparisonMode = $state<'single' | 'side' | 'diff'>('single');
-  let usageSummary = $state<any>(null);
+  let usageSummary = $state<UsageSummary|null>(null);
   type SubtitleTrack = { artifact_id: string; language: string; title: string; default: boolean };
+  type ResearchLedger = {
+    evidence_count?: number;
+    summary?: string;
+    glossary?: {source:string;target:string}[];
+    warnings?: string[];
+    sources?: {url:string;title?:string}[];
+  };
   let subtitleTracks = $state<SubtitleTrack[]>([]);
   const url = $derived(`/api/v1/artifacts/${artifact.id}/content`);
   const filename = $derived(artifactFilename(artifact));
@@ -25,7 +35,7 @@
   const isImage = $derived(mime.startsWith('image/') || ['png','jpg','jpeg','gif','webp','svg'].includes(extension));
   const isPdf = $derived(mime === 'application/pdf' || extension === 'pdf');
   const isText = $derived(mime.startsWith('text/') || ['txt','srt','vtt','ass','ssa','json','xml','csv','md','log','yaml','yml'].includes(extension));
-  const research = $derived((artifact.metadata_json?.research ?? null) as any);
+  const research = $derived((artifact.metadata_json?.research ?? null) as ResearchLedger|null);
   const formattedCost = $derived.by(() => {
     const value = usageSummary?.total_cost_usd;
     if (value == null) return 'Cost unavailable';
@@ -34,12 +44,15 @@
 
   function parsedSubtitleTracks(value: unknown): SubtitleTrack[] {
     if (!Array.isArray(value)) return [];
-    return value.flatMap((item: any) => item?.artifact_id ? [{
-      artifact_id: String(item.artifact_id),
-      language: String(item.language || 'und'),
-      title: String(item.title || 'Subtitles'),
-      default: Boolean(item.default)
-    }] : []);
+    return value.flatMap((item: unknown) => {
+      const record=item&&typeof item==='object'?item as Record<string,unknown>:null;
+      return record?.artifact_id ? [{
+        artifact_id: String(record.artifact_id),
+        language: String(record.language || 'und'),
+        title: String(record.title || 'Subtitles'),
+        default: Boolean(record.default)
+      }] : [];
+    });
   }
 
   function showDefaultSubtitleTrack(event: Event) {
@@ -57,20 +70,18 @@
     loading = isText;
     try {
       if (isText) {
-        const response = await fetch(url, { credentials: 'same-origin', headers: { Range: 'bytes=0-2097151' } });
-        if (!response.ok && response.status !== 206) throw new Error(`Preview failed (${response.status})`);
+        const response = await apiResponse(url, { headers: { Range: 'bytes=0-2097151' } });
         text = await response.text();
         if (text.length >= 2_097_000) text += '\n\n— Preview truncated at 2 MiB —';
       }
 
-      const contextResponse = await fetch(`/api/v1/artifacts/${artifact.id}/context`, { credentials: 'same-origin' });
-      if (contextResponse.ok) {
-        const context = await contextResponse.json();
+      const context = await artifactApi.context(artifact.id).catch(() => null);
+      if (context) {
         usageSummary = context.usage ?? null;
         if (isVideo) {
           subtitleTracks = parsedSubtitleTracks(context.artifact?.metadata_json?.subtitle_tracks ?? artifact.metadata_json?.subtitle_tracks);
           if (!subtitleTracks.length) {
-            subtitleTracks = (context.parents ?? []).flatMap((item: any) => {
+            subtitleTracks = (context.parents ?? []).flatMap((item) => {
               const name = String(item.relative_path ?? '').toLowerCase();
               if (item.kind !== 'vtt' && !name.endsWith('.vtt')) return [];
               return [{ artifact_id: String(item.id), language: String(item.metadata_json?.language || 'und'), title: String(item.metadata_json?.title || 'Subtitles'), default: Boolean(item.metadata_json?.default) }];
@@ -78,14 +89,14 @@
           }
         }
         if (isText) {
-          const parent = (context.parents ?? []).find((item: any) => {
+          const parent = (context.parents ?? []).find((item) => {
             const name = String(item.relative_path ?? '').toLowerCase();
             const type = String(item.mime_type ?? '').toLowerCase();
             return item.kind === 'text' || type.startsWith('text/') || ['.txt','.md','.srt','.vtt','.json'].some((suffix) => name.endsWith(suffix));
           });
           if (parent) {
-            const parentResponse = await fetch(`/api/v1/artifacts/${parent.id}/content`, { credentials: 'same-origin', headers: { Range: 'bytes=0-2097151' } });
-            if (parentResponse.ok || parentResponse.status === 206) {
+            const parentResponse = await apiResponse(`/artifacts/${parent.id}/content`, { headers: { Range: 'bytes=0-2097151' } }).catch(() => null);
+            if (parentResponse) {
               comparisonText = await parentResponse.text();
               comparisonId = parent.id;
               comparisonName = artifactFilename(parent);

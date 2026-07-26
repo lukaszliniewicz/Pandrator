@@ -1,13 +1,14 @@
 <script lang="ts">
   import { ArrowLeft, Bot, CheckCircle2, ChevronDown, CircleAlert, Pencil, Plus, RefreshCw, Settings2, Trash2, X } from '@lucide/svelte';
-  import { api } from './api';
+  import { credentialApi, providerApi } from './admin-api';
   import { onMount } from 'svelte';
   import GuidedTour from './GuidedTour.svelte';
   import CredentialStorageFields, { type CredentialBackendProfile } from './CredentialStorageFields.svelte';
 
-  type Provider = { id: string; provider_key: string; label: string; base_url?: string; secret_ref?: string; enabled: boolean; options_json: Record<string, any>; revision: number; credential_configured: boolean; credential_source: string; credential_backend?: string; credential_reference?: string; previous_credential_retained?: boolean };
-  type ProviderProfile = { id: string; label: string; provider_key: string; base_url: string; secret_ref: string; description: string; options?: Record<string, any> };
-  type Model = { id: string; provider_id: string; model_id: string; is_active: boolean; is_default: boolean; default_temperature: number | null; default_reasoning_effort: string | null; input_cost_per_million: number | null; cached_input_cost_per_million: number | null; output_cost_per_million: number | null; options_json: Record<string, any>; revision: number };
+  type CredentialBackend = 'database' | 'environment' | 'keyring' | 'file';
+  type Provider = { id: string; provider_key: string; label: string; base_url?: string; secret_ref?: string; enabled: boolean; options_json: Record<string, unknown>; revision: number; credential_configured: boolean; credential_source: string; credential_backend?: CredentialBackend; credential_reference?: string; previous_credential_retained?: boolean };
+  type ProviderProfile = { id: string; label: string; provider_key: string; base_url: string; secret_ref: string; description: string; options?: Record<string, unknown> };
+  type Model = { id: string; provider_id: string; model_id: string; is_active: boolean; is_default: boolean; default_temperature: number | null; default_reasoning_effort: string | null; input_cost_per_million: number | null; cached_input_cost_per_million: number | null; output_cost_per_million: number | null; options_json: Record<string, unknown>; revision: number };
   type RequestOptionRow = { id: string; key: string; value: string; type: 'text' | 'number' | 'boolean' };
 
   let { onback }: { onback: () => void } = $props();
@@ -28,13 +29,13 @@
   let providerKey = $state('openai');
   let providerUrl = $state('');
   let providerApiKey = $state('');
-  let providerCredentialBackend = $state('database');
-  let providerExistingCredentialBackend = $state('database');
+  let providerCredentialBackend = $state<CredentialBackend>('database');
+  let providerExistingCredentialBackend = $state<CredentialBackend>('database');
   let providerCredentialReference = $state('');
   let deletePreviousCredential = $state(false);
   let removeProviderApiKey = $state(false);
   let providerEnabled = $state(true);
-  let providerMetadata = $state<Record<string, any>>({});
+  let providerMetadata = $state<Record<string, unknown>>({});
   let requestOptionRows = $state<RequestOptionRow[]>([]);
 
   let addModelProvider = $state<string | null>(null);
@@ -69,14 +70,14 @@
     loading = true;
     try {
       const [providerResult, profileResult, backendResult] = await Promise.all([
-        api<{items: Provider[]}>('/providers'),
-        api<{items: ProviderProfile[]}>('/providers/profiles'),
-        api<{items: CredentialBackendProfile[]}>('/credential-backends')
+        providerApi.list<Provider>(),
+        providerApi.profiles<ProviderProfile>(),
+        credentialApi.backends<CredentialBackendProfile>()
       ]);
       providers = providerResult.items;
       profiles = profileResult.items;
       credentialBackends = backendResult.items;
-      const entries = await Promise.all(providers.map(async (provider) => [provider.id, (await api<{items: Model[]}>(`/providers/${provider.id}/models`)).items] as const));
+      const entries = await Promise.all(providers.map(async (provider) => [provider.id, (await providerApi.models<Model>(provider.id)).items] as const));
       models = Object.fromEntries(entries);
       error = '';
     } catch (caught) {
@@ -103,8 +104,8 @@
   }
 
   const rowId = () => Math.random().toString(36).slice(2);
-  function setStructuredOptions(options: Record<string, any>) {
-    const requestOptions = options.request_options && typeof options.request_options === 'object' ? options.request_options : {};
+  function setStructuredOptions(options: Record<string, unknown>) {
+    const requestOptions = options.request_options && typeof options.request_options === 'object' ? options.request_options as Record<string, unknown> : {};
     providerMetadata = Object.fromEntries(Object.entries(options).filter(([key]) => !['request_options', 'profile_id'].includes(key)));
     requestOptionRows = Object.entries(requestOptions).map(([key, value]) => ({ id: rowId(), key, value: String(value ?? ''), type: typeof value === 'boolean' ? 'boolean' : typeof value === 'number' ? 'number' : 'text' }));
   }
@@ -167,22 +168,22 @@
       try { readVertexProjectFromCredentials(); }
       catch { error = 'Vertex credentials must be a complete, valid Google service-account JSON key.'; return; }
     }
-    const options: Record<string, any> = { ...providerMetadata, ...(providerProfileId ? { profile_id: providerProfileId } : {}), ...(requestOptionRows.some((row) => row.key.trim()) ? { request_options: requestOptionsValue() } : {}) };
+    const options: Record<string, unknown> = { ...providerMetadata, ...(providerProfileId ? { profile_id: providerProfileId } : {}), ...(requestOptionRows.some((row) => row.key.trim()) ? { request_options: requestOptionsValue() } : {}) };
     const credential = removeProviderApiKey ? { clear_api_key: true } : {
       credential_backend: providerCredentialBackend,
       credential_reference: providerCredentialReference.trim() || null,
       delete_previous_credential: deletePreviousCredential,
       ...(providerApiKey.trim() ? { api_key: providerApiKey.trim() } : {})
     };
-    const body = JSON.stringify({ provider_key: providerKey.trim(), label: providerLabel.trim(), enabled: providerEnabled, base_url: providerUrl.trim() || null, ...credential, options });
+    const common = { provider_key: providerKey.trim(), label: providerLabel.trim(), enabled: providerEnabled, base_url: providerUrl.trim() || null, options };
     try {
       if (editingProvider) {
-        const updated = await api<Provider>(`/providers/${editingProvider.id}`, { method: 'PATCH', headers: { 'If-Match': `"${editingProvider.revision}"` }, body });
+        const updated = await providerApi.update<Provider>(editingProvider.id, editingProvider.revision, { ...common, ...credential });
         notice = updated.previous_credential_retained && providerCredentialBackend !== providerExistingCredentialBackend
           ? `Updated ${providerLabel.trim()}. The previous credential was retained.`
           : `Updated ${providerLabel.trim()}.`;
       } else {
-        const created = await api<Provider>('/providers', { method: 'POST', body });
+        const created = await providerApi.create<Provider>({ ...common, ...(removeProviderApiKey ? {} : credential) });
         expandedProviders[created.id] = true;
         notice = `Added ${providerLabel.trim()}. Models remain inactive until you activate one.`;
       }
@@ -205,7 +206,7 @@
   async function saveModel() {
     if (!edit) return;
     try {
-      await api(`/providers/${edit.provider_id}/models/${edit.id}`, { method: 'PATCH', headers: { 'If-Match': `"${edit.revision}"` }, body: JSON.stringify({ default_temperature: optionalNumber(temperature), default_reasoning_effort: reasoning.trim() || null, input_cost_per_million: optionalNumber(inputCost), cached_input_cost_per_million: optionalNumber(cachedCost), output_cost_per_million: optionalNumber(outputCost) }) });
+      await providerApi.updateModel<Model>(edit.provider_id, edit.id, edit.revision, { default_temperature: optionalNumber(temperature), default_reasoning_effort: reasoning.trim() || null, input_cost_per_million: optionalNumber(inputCost), cached_input_cost_per_million: optionalNumber(cachedCost), output_cost_per_million: optionalNumber(outputCost) });
       edit = null;
       notice = 'Model defaults saved.';
       await load();
@@ -214,7 +215,7 @@
 
   async function makeDefault(model: Model) {
     try {
-      await api(`/providers/${model.provider_id}/models/${model.id}`, { method: 'PATCH', headers: { 'If-Match': `"${model.revision}"` }, body: JSON.stringify({ is_default: true }) });
+      await providerApi.updateModel<Model>(model.provider_id, model.id, model.revision, { is_default: true });
       notice = `${model.model_id} is now the application default.`;
       await load();
     } catch (caught) { report(caught); }
@@ -228,7 +229,7 @@
 
   async function setActive(model: Model, active: boolean) {
     try {
-      await api(`/providers/${model.provider_id}/models/${model.id}`, { method: 'PATCH', headers: { 'If-Match': `"${model.revision}"` }, body: JSON.stringify({ is_active: active }) });
+      await providerApi.updateModel<Model>(model.provider_id, model.id, model.revision, { is_active: active });
       notice = `${model.model_id} is now ${active ? 'available' : 'hidden'} in workflow selectors.`;
       await load();
     } catch (caught) { report(caught); }
@@ -237,7 +238,7 @@
   async function createModel(providerId: string) {
     if (!modelId.trim()) { error = 'A canonical model ID is required.'; return; }
     try {
-      await api(`/providers/${providerId}/models`, { method: 'POST', body: JSON.stringify({ model_id: modelId.trim(), is_active: false, is_default: false }) });
+      await providerApi.createModel<Model>(providerId, { model_id: modelId.trim(), is_active: false, is_default: false });
       modelId = '';
       addModelProvider = null;
       notice = 'Model added as inactive. Activate it when you are ready to use it.';
@@ -253,7 +254,7 @@
   async function removeModel() {
     if (!deletingModel) return;
     try {
-      await api(`/providers/${deletingModel.provider_id}/models/${deletingModel.id}`, { method: 'DELETE', body: JSON.stringify({ replacement_model_record_id: replacementModelRecordId || null }) });
+      await providerApi.removeModel(deletingModel.provider_id, deletingModel.id, replacementModelRecordId || null);
       deletingModel = null;
       notice = 'Model removed.';
       await load();
@@ -269,7 +270,7 @@
   async function removeProvider() {
     if (!deletingProvider) return;
     try {
-      await api(`/providers/${deletingProvider.id}`, { method: 'DELETE', body: JSON.stringify({ replacement_model_record_id: replacementModelRecordId || null }) });
+      await providerApi.remove(deletingProvider.id, replacementModelRecordId || null);
       deletingProvider = null;
       notice = 'Provider removed.';
       await load();
@@ -278,13 +279,13 @@
 
   async function refresh(providerId: string) {
     try {
-      const result = await api<{
+      const result = await providerApi.refreshModels<{
         added: string[];
         detected: string[];
         source: 'endpoint' | 'provider_catalog' | 'preserved';
         endpoint?: string;
         warning?: string;
-      }>(`/providers/${providerId}/models/refresh`, { method: 'POST', body: '{}' });
+      }>(providerId);
       if (result.warning) {
         notice = result.warning;
       } else if (result.added.length) {
@@ -307,7 +308,7 @@
     const selected = models[providerId]?.find((item) => item.is_active && item.is_default) ?? models[providerId]?.find((item) => item.is_active);
     if (!selected) { error = 'Activate a model before testing this provider.'; return; }
     try {
-      const result = await api<{model: string}>(`/providers/${providerId}/test`, { method: 'POST', body: JSON.stringify({ model_id: selected.model_id }) });
+      const result = await providerApi.test<{model: string}>(providerId, { model_id: selected.model_id });
       error = '';
       notice = `Connection succeeded with ${result.model}.`;
     } catch (caught) { report(caught); }

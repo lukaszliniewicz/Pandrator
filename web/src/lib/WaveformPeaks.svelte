@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Activity, LoaderCircle } from '@lucide/svelte';
-  import { api } from './api';
+  import { artifactApi } from './domain-api';
 
   let { artifactId }: { artifactId: string } = $props();
   let loading = $state(false);
@@ -12,7 +12,7 @@
     loading = true; error = '';
     try {
       for (let attempt = 0; attempt < 30; attempt += 1) {
-        const result = await api<any>(`/artifacts/${artifactId}/waveform?points=1600`);
+        const result = await artifactApi.waveform(artifactId);
         if (Array.isArray(result.points)) { points = result.points; return; }
         await new Promise((resolve) => setTimeout(resolve, 700));
       }

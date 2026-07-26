@@ -1,17 +1,18 @@
 <script lang="ts">
   import { ArchiveRestore, ChevronDown, CirclePlus, FileAudio, FileText, RefreshCw, Search, Trash2 } from '@lucide/svelte';
-  import { api, type SessionRecord } from '$lib/api';
+  import type { ArtifactRecord, SessionRecord } from '$lib/api-models';
+  import { artifactApi, sessionApi } from '$lib/domain-api';
   import { appState } from '$lib/app-state.svelte';
   import ArtifactPreview from '$lib/ArtifactPreview.svelte';
   import NewSessionWizard from '$lib/NewSessionWizard.svelte';
   import { artifactRoleLabel } from '$lib/artifact-display';
-  let items=$state<SessionRecord[]>([]); let search=$state(''); let showTrash=$state(false); let expanded=$state(''); let artifacts=$state<Record<string,any[]>>({}); let error=$state(''); let preview=$state<any|null>(null); let wizard=$state(false);
+  let items=$state<SessionRecord[]>([]); let search=$state(''); let showTrash=$state(false); let expanded=$state(''); let artifacts=$state<Record<string,ArtifactRecord[]>>({}); let error=$state(''); let preview=$state<ArtifactRecord|null>(null); let wizard=$state(false);
   const visible=$derived(items.filter((item)=>item.name.toLowerCase().includes(search.toLowerCase())));
-  async function load(){try{items=(await api<{items:SessionRecord[]}>(`/sessions?include_trashed=${showTrash}`)).items}catch(caught){error=caught instanceof Error?caught.message:String(caught)}}
-  async function expand(id:string){expanded=expanded===id?'':id;if(expanded&&!artifacts[id])artifacts[id]=(await api<{items:any[]}>(`/artifacts?session_id=${id}&limit=200`)).items}
-  async function trash(item:SessionRecord){try{const updated=await api<SessionRecord>(`/sessions/${item.id}`,{method:'DELETE',headers:{'If-Match':`"${item.revision}"`}});items=items.map((value)=>value.id===item.id?updated:value);await appState.refresh()}catch(caught){error=caught instanceof Error?caught.message:String(caught)}}
-  async function restore(item:SessionRecord){try{const updated=await api<SessionRecord>(`/sessions/${item.id}/restore`,{method:'POST',headers:{'If-Match':`"${item.revision}"`}});items=items.map((value)=>value.id===item.id?updated:value);await appState.refresh()}catch(caught){error=caught instanceof Error?caught.message:String(caught)}}
-  async function reindex(item:SessionRecord){const result=await api<{reports:any[]}>(`/sessions/${item.id}/reindex`,{method:'POST'});error=result.reports.length?`${result.reports.length} artifact issue(s) found.`:'Reindex complete; no artifact problems found.'}
+  async function load(){try{items=(await sessionApi.list(showTrash)).items}catch(caught){error=caught instanceof Error?caught.message:String(caught)}}
+  async function expand(id:string){expanded=expanded===id?'':id;if(expanded&&!artifacts[id])artifacts[id]=(await artifactApi.list({sessionId:id,limit:200})).items}
+  async function trash(item:SessionRecord){try{const updated=await sessionApi.trash(item.id,item.revision);items=items.map((value)=>value.id===item.id?updated:value);await appState.refresh()}catch(caught){error=caught instanceof Error?caught.message:String(caught)}}
+  async function restore(item:SessionRecord){try{const updated=await sessionApi.restore(item.id,item.revision);items=items.map((value)=>value.id===item.id?updated:value);await appState.refresh()}catch(caught){error=caught instanceof Error?caught.message:String(caught)}}
+  async function reindex(item:SessionRecord){const result=await sessionApi.reindex(item.id);error=result.reports.length?`${result.reports.length} artifact issue(s) found.`:'Reindex complete; no artifact problems found.'}
   $effect(()=>{showTrash;load()});
 </script>
 
