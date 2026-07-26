@@ -7,7 +7,7 @@ import random
 import threading
 import time
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import timedelta
 from typing import Any
 
@@ -720,10 +720,15 @@ class _JobLogHandler(logging.Handler):
 
 
 class Worker:
-    def __init__(self, queue: JobQueue, worker_id: str, handlers: dict[str, JobHandler] | None = None):
+    def __init__(
+        self,
+        queue: JobQueue,
+        worker_id: str,
+        handlers: Mapping[str, JobHandler] | None = None,
+    ):
         self.queue = queue
         self.worker_id = worker_id
-        self.handlers = handlers or {}
+        self.handlers = dict(handlers or {})
         self.stop_event = threading.Event()
 
     def register(self, kind: str, handler: JobHandler) -> None:

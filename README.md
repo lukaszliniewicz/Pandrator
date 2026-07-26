@@ -374,6 +374,10 @@ The wrapper auto-detects Docker or Podman, builds inside the pinned Debian 11/Pi
 
 Bug reports, workflow descriptions, documentation corrections, and focused pull requests are welcome. Please include the operating system, relevant service/model, reproduction steps, and logs with secrets removed.
 
+Backend contributors should read
+[`BACKEND_ARCHITECTURE.md`](BACKEND_ARCHITECTURE.md) before adding
+routes, durable job kinds, or TTS providers.
+
 ## Licence
 
 Pandrator is released under [GNU AGPLv3](LICENSE). Speech, transcription, LLM, and voice-conversion models have their own licences and usage conditions; review the information shown by the installer and the linked upstream licence before use.

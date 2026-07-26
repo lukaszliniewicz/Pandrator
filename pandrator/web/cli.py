@@ -26,6 +26,7 @@ from .auth import AuthService, BootstrapTokenStore
 from .bundles import SessionBundleService
 from .database import Database
 from .jobs import JobQueue, Worker, noop_handler
+from .job_registry import JobHandlerRegistry
 from .legacy_migration import import_legacy_data
 from .models import Artifact, Provider, ProviderModel, SessionRecord, SourceRecord, TrainingRun, Voice, VoiceSample, new_id, utcnow
 from .openapi import build_openapi_document
@@ -276,11 +277,22 @@ def command_worker(args) -> int:
                     "processing is supported; ensure this additional worker is intentional.",
                     file=sys.stderr,
                 )
-            worker = Worker(
-                queue,
-                worker_id,
-                {"noop": noop_handler, "artifact.hash": hash_artifact, **WorkflowHandlers(database, paths).handlers()},
+            handler_registry = JobHandlerRegistry()
+            handler_registry.register("noop", noop_handler, domain="system")
+            handler_registry.register(
+                "artifact.hash",
+                hash_artifact,
+                domain="artifacts",
             )
+            workflow_handlers = WorkflowHandlers(database, paths)
+            for registration in workflow_handlers.handler_registry.registrations():
+                handler_registry.register(
+                    registration.kind,
+                    registration.handler,
+                    domain=registration.domain,
+                    payload_contract=registration.payload_contract,
+                )
+            worker = Worker(queue, worker_id, handler_registry)
             try:
                 if args.once:
                     worker.run_once()

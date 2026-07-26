@@ -13,7 +13,7 @@ import time
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import and_, func, select, update
 
@@ -64,6 +64,9 @@ from .models import (
     new_id,
     utcnow,
 )
+
+if TYPE_CHECKING:
+    from .tts_providers import TtsProviderRegistry
 
 
 logger = logging.getLogger(__name__)
@@ -358,10 +361,24 @@ def _apply_segment_tts_overrides(
 
 
 class WorkflowHandlers:
-    def __init__(self, database: Database, paths: DataPaths):
+    def __init__(
+        self,
+        database: Database,
+        paths: DataPaths,
+        *,
+        tts_providers: TtsProviderRegistry | None = None,
+    ):
         self.database = database
         self.paths = paths
         self.artifacts = ArtifactService(database, paths)
+        if tts_providers is None:
+            from .tts_providers import TtsProviderRegistry
+
+            tts_providers = TtsProviderRegistry()
+        self.tts_providers = tts_providers
+        from .job_handler_domains import build_workflow_handler_registry
+
+        self.handler_registry = build_workflow_handler_registry(self)
 
     @staticmethod
     def _verification_metadata(
@@ -414,33 +431,9 @@ class WorkflowHandlers:
         return len(marked_segment_ids)
 
     def handlers(self):
-        return {
-            "dubbing.transcribe": self.transcribe,
-            "dubbing.correct": self.correct,
-            "dubbing.translate": self.translate,
-            "text.optimize_tts": self.optimize_tts,
-            "dubbing.generate_audio": self.generate_dubbing_audio,
-            "source.clean": self.clean_source,
-            "text.prepare": self.prepare_text,
-            "audiobook.generate_audio": self.generate_audiobook_audio,
-            "export.create": self.export,
-            "voice.transcribe": self.transcribe_voice,
-            "voice.normalize_recording": self.normalize_voice_recording,
-            "voice.publish": self.publish_voice,
-            "rvc.model.upload": self.upload_rvc_model,
-            "rvc.convert": self.convert_with_rvc,
-            "training.xtts": self.train_xtts,
-            "pdf.apply_edits": self.apply_pdf_edits,
-            "session.bundle.export": self.export_session_bundle,
-            "session.bundle.import": self.import_session_bundle,
-            "workflow.continue": self.continue_workflow,
-            "source.download_url": self.download_source_url,
-            "source.reuse": self.reuse_source,
-            "generation.run": self.run_generation,
-            "generation.assemble": self.assemble_generation_output,
-            "audio.waveform": self.generate_waveform,
-            "tts.preview": self.preview_tts_voice,
-        }
+        """Compatibility mapping for callers not yet accepting a registry."""
+
+        return self.handler_registry.as_dict()
 
     def preview_tts_voice(self, payload, progress, cancel_event):
         """Generate a short managed preview without mutating a session plan."""
@@ -463,7 +456,7 @@ class WorkflowHandlers:
         }.get(service_id)
         if url_key and api_base:
             urls[url_key] = api_base
-        audio = tts_handler.text_to_audio(
+        audio = self.tts_providers.synthesize(
             text,
             settings,
             max_attempts=int(settings.get("max_attempts") or 5),
@@ -717,7 +710,7 @@ class WorkflowHandlers:
             if index <= target_index and item.executable and item.job_kind and (item.key in included or item.key in required)
         ]
         produced: list[dict[str, Any]] = []
-        handlers = self.handlers()
+        handlers = self.handler_registry
         stage_weights = {
             "clean_source": 0.12,
             "transcribe": 0.18,
@@ -2824,7 +2817,8 @@ class WorkflowHandlers:
             service_config.get("secret_ref") or database_reference(tts_service_credential_key(normalized_service_id)),
             fallback_environment_variable=str(service_config.get("api_key_env") or TTS_SERVICE_ENVS.get(normalized_service_id, "")),
         )
-        provider_voice_id = tts_handler.upload_speaker_voice(
+        provider_voice_id = self.tts_providers.upload_voice(
+            normalized_service_id,
             str(sample_path),
             base_url=base_url,
             service=service_name,
@@ -3921,7 +3915,7 @@ class WorkflowHandlers:
                 language=segment_language,
                 voice=segment_voice,
             )
-            audio = tts_handler.text_to_audio(
+            audio = self.tts_providers.synthesize(
                 synthesized_text,
                 segment_tts_settings,
                 max_attempts=int(segment_tts_settings.get("max_attempts") or 5),
@@ -4356,7 +4350,7 @@ class WorkflowHandlers:
                         language=segment_language,
                         voice=segment_voice,
                     )
-                    audio = tts_handler.text_to_audio(
+                    audio = self.tts_providers.synthesize(
                         synthesized_text,
                         segment_tts_settings,
                         max_attempts=int(segment_tts_settings.get("max_attempts") or 5),
