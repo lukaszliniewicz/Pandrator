@@ -686,7 +686,13 @@ class WorkspaceSettingsService:
             provider_defaults = selected.get("settings") if selected and isinstance(selected.get("settings"), dict) else {}
             resolved["tts"] = _merge(snapshot["builtin"], snapshot["global"], connection_value, provider_defaults, snapshot.get("session_context", {}), snapshot["override"], override.get("tts", {}))
             if selected:
-                model = str(resolved["tts"].get("model") or selected.get("default_model") or "")
+                if str(selected.get("id") or "").lower() == "kobold_qwen":
+                    model = tts_handler.resolve_kobold_qwen_model(
+                        resolved["tts"],
+                        fallback=str(selected.get("default_model") or ""),
+                    )
+                else:
+                    model = str(resolved["tts"].get("model") or selected.get("default_model") or "")
                 default_voices = selected.get("default_voices") if isinstance(selected.get("default_voices"), dict) else {}
                 language_defaults = selected.get("default_voices_by_language") if isinstance(selected.get("default_voices_by_language"), dict) else {}
                 model_language_defaults = language_defaults.get(model) if isinstance(language_defaults.get(model), dict) else {}

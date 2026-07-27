@@ -10,6 +10,7 @@ from pandrator.web.api import create_app
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.models import AppSetting, Artifact, AudioTake, GenerationRun, GenerationSegment, Job, UsageEvent
+from pandrator.web.tts_providers import KoboldQwenAdapter
 from pandrator.web.workspace import BUILTIN_DEFAULTS, adapt_runtime_settings
 from tests.web_test_support import prepare_web_test_data_root
 
@@ -59,6 +60,30 @@ class WebParityWorkspaceTests(unittest.TestCase):
         self.assertEqual("http://127.0.0.1:8880", resolved["value"]["tts"]["kokoro_base_url"])
         self.assertEqual("local", resolved["value"]["tts"]["provider_configs"][0]["id"])
         self.assertEqual(64, len(resolved["settings_hash"]))
+
+    def test_qwen_voice_cloning_selection_survives_the_run_snapshot_resolution(self):
+        record = self.create_session()
+        saved = self.client.put(
+            f"/api/v1/sessions/{record['id']}/settings/tts",
+            json={
+                "value": {
+                    "service": "kobold_qwen",
+                    "model": "Voice Cloning",
+                    "xtts_model": "Prebuilt Voices",
+                    "voice": "cloned-voice",
+                }
+            },
+            headers={**self.headers, "If-Match": '"0"'},
+        )
+        self.assertEqual(200, saved.status_code, saved.get_json())
+        resolved = self.client.post(
+            f"/api/v1/sessions/{record['id']}/settings/resolve",
+            json={"sections": ["tts"]},
+            headers=self.headers,
+        ).get_json()["value"]["tts"]
+
+        self.assertEqual("Voice Cloning", resolved["model"])
+        self.assertEqual("cloned-voice", resolved["voice"])
 
     def test_global_defaults_endpoint_exposes_builtins_and_revisioned_values(self):
         services = self.client.get("/api/v1/services/tts").get_json()
@@ -198,17 +223,17 @@ class WebParityWorkspaceTests(unittest.TestCase):
         self.assertEqual("af_heart", payload["settings"]["voice"])
         self.assertEqual("en", payload["settings"]["language"])
 
-    def test_qwen_prebuilt_preview_always_selects_customvoice_model(self):
+    def test_qwen_preview_preserves_the_selected_voice_cloning_model(self):
         response = self.client.post(
             "/api/v1/services/tts/kobold_qwen/preview",
-            json={"text": "A Qwen preview.", "model": "Voice Cloning", "voice": "Ryan", "language": "en"},
+            json={"text": "A Qwen preview.", "model": "Voice Cloning", "voice": "cloned-voice", "language": "en"},
             headers=self.headers,
         )
         self.assertEqual(202, response.status_code, response.get_json())
         settings = response.get_json()["payload_json"]["settings"]
-        self.assertEqual("Prebuilt Voices", settings["model"])
-        self.assertEqual("Prebuilt Voices", settings["xtts_model"])
-        self.assertEqual("Ryan", settings["voice"])
+        self.assertEqual("Voice Cloning", settings["model"])
+        self.assertEqual("Voice Cloning", settings["xtts_model"])
+        self.assertEqual("cloned-voice", settings["voice"])
         catalogue = self.client.get("/api/v1/services/tts").get_json()
         qwen = next(item for item in catalogue["services"] if item["id"] == "kobold_qwen")
         self.assertEqual(
@@ -219,6 +244,28 @@ class WebParityWorkspaceTests(unittest.TestCase):
         self.assertEqual("kobo", qwen["default_voices"]["Voice Cloning"])
         self.assertIn("Prebuilt Voices", qwen["generation_prompt_models"])
         self.assertNotIn("Voice Cloning", qwen["generation_prompt_models"])
+
+    def test_qwen_catalogue_refresh_preserves_an_available_saved_default_model(self):
+        adapter = KoboldQwenAdapter("kobold_qwen")
+        service = {
+            "api_base": "http://localhost:8042",
+            "default_model": "Voice Cloning",
+        }
+        with patch(
+            "pandrator.logic.tts_handler.get_kobold_qwen_voice_catalog",
+            return_value=[
+                {"id": "Aiden", "type": "preset", "model": "Prebuilt Voices"},
+                {"id": "cloned-voice", "type": "cloned", "model": "Voice Cloning"},
+            ],
+        ):
+            refreshed = adapter.enrich_catalog(service)
+
+        self.assertEqual("Voice Cloning", service["default_model"])
+        self.assertEqual(["cloned-voice"], refreshed["voices"])
+        self.assertEqual(
+            "cloned",
+            refreshed["voice_metadata"]["Voice Cloning:cloned-voice"]["type"],
+        )
 
     def test_tts_catalogue_restores_managed_previews_and_marks_unavailable_services(self):
         extension = self.app.extensions["pandrator"]

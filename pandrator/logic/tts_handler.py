@@ -794,7 +794,7 @@ def _merge_service_config(
     for key in ("request_fields", "request_defaults"):
         if isinstance(raw_record.get(key), dict):
             record[key] = copy.deepcopy(raw_record[key])
-    for key in ("settings", "voice_catalogues", "default_voices", "default_voices_by_language", "pricing"):
+    for key in ("settings", "voice_catalogues", "voice_metadata", "default_voices", "default_voices_by_language", "pricing"):
         if isinstance(raw_record.get(key), dict):
             record[key] = copy.deepcopy(raw_record[key])
     if PREBUILT_VOICE_PROVIDER_FIELD in raw_record:
@@ -4585,14 +4585,58 @@ def _request_chatterbox_audio(text: str, tts_settings: dict, chatterbox_base_url
     raise RuntimeError(f"No Chatterbox speech endpoint could be resolved for '{normalized_base_url}'.")
 
 
+def _kobold_qwen_cloning_model_from_metadata(tts_settings: dict, voice: str) -> str:
+    """Return the catalogue model for a cloned Qwen voice, when supplied."""
+    if not voice:
+        return ""
+    metadata_sources = [tts_settings.get("voice_metadata")]
+    metadata_sources.extend(
+        item.get("voice_metadata")
+        for item in tts_settings.get("provider_configs", [])
+        if isinstance(item, dict)
+    )
+    for metadata in metadata_sources:
+        if not isinstance(metadata, dict):
+            continue
+        for key, item in metadata.items():
+            if not isinstance(item, dict):
+                continue
+            voice_id = str(item.get("id") or item.get("voice_id") or "").strip()
+            if not voice_id and ":" in str(key):
+                voice_id = str(key).rsplit(":", 1)[-1].strip()
+            if voice_id.lower() != voice.lower():
+                continue
+            voice_type = str(item.get("type") or "").strip().lower()
+            if voice_type and voice_type != "preset":
+                return "Voice Cloning"
+            model = str(item.get("model") or "").strip()
+            if model.lower() in {"voice cloning", "qwen3-tts", "qwen3-tts-base"}:
+                return "Voice Cloning"
+    return ""
+
+
+def resolve_kobold_qwen_model(tts_settings: dict, fallback: str = KOBOLD_QWEN_DEFAULT_MODEL) -> str:
+    """Resolve Qwen's current model field before its legacy XTTS alias.
+
+    A voice catalogue can identify a cloned reference even when no model was
+    selected yet; in that case the only compatible Qwen model is Voice Cloning.
+    Explicit model selections deliberately remain authoritative so validation
+    can reject an incompatible explicit pairing instead of masking it.
+    """
+    model = str(tts_settings.get("model") or "").strip()
+    if model:
+        return model
+    legacy_model = str(tts_settings.get("xtts_model") or "").strip()
+    if legacy_model:
+        return legacy_model
+    voice = str(tts_settings.get("speaker") or tts_settings.get("voice") or "").strip()
+    return _kobold_qwen_cloning_model_from_metadata(tts_settings, voice) or fallback
+
+
 def _request_kobold_qwen_audio(text: str, tts_settings: dict, kobold_qwen_base_url: str) -> requests.Response:
     normalized_base_url = _normalize_base_url(kobold_qwen_base_url, KOBOLD_QWEN_API_BASE_URL)
     api_key = _resolve_kobold_qwen_api_key(tts_settings)
-    model = str(
-        tts_settings.get("xtts_model")
-        or tts_settings.get("model")
-        or KOBOLD_QWEN_DEFAULT_MODEL
-    ).strip()
+    model = resolve_kobold_qwen_model(tts_settings)
     if not model:
         model = KOBOLD_QWEN_DEFAULT_MODEL
 
