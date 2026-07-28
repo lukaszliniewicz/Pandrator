@@ -54,6 +54,7 @@ jobs:
           -e "./pandrator_manager[dev]"
           "alembic>=1.14,<2"
           "argon2-cffi>=23.1,<26"
+          "authlib>=1.7,<2"
           "pydub>=0.25,<1"
           "sqlalchemy>=2.0,<3"
 
