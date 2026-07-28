@@ -354,3 +354,10 @@ The source repository's
 [`INSTALLER_MANAGER_ARCHITECTURE.md`](https://github.com/lukaszliniewicz/Pandrator/blob/main/INSTALLER_MANAGER_ARCHITECTURE.md)
 defines the complete architecture, implementation phases, qualification
 matrix, and Qt cutover gates.
+
+## License
+
+Pandrator Manager is released under the
+[MIT License](https://github.com/lukaszliniewicz/Pandrator/blob/main/LICENSE).
+Third-party runtimes, services, and models retain their own licences and usage
+conditions.

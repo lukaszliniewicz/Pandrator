@@ -206,7 +206,7 @@ def stage_appdir(
                 "  <name>Pandrator Manager</name>",
                 "  <summary>Install, update, repair, and run Pandrator</summary>",
                 "  <metadata_license>CC0-1.0</metadata_license>",
-                "  <project_license>AGPL-3.0-only</project_license>",
+                "  <project_license>MIT</project_license>",
                 '  <developer id="io.github.lukaszliniewicz">',
                 "    <name>Pandrator contributors</name>",
                 "  </developer>",

@@ -1,9 +1,28 @@
+import tomllib
 import unittest
+from pathlib import Path
 
 from scripts.generate_requirements import TARGETS, _dependencies, _render
 
 
 class DependencyManifestTests(unittest.TestCase):
+    def test_project_distributions_use_the_canonical_mit_license(self):
+        root = Path(__file__).resolve().parents[1]
+        canonical = (root / "LICENSE").read_text(encoding="utf-8")
+        manager = (root / "pandrator_manager" / "LICENSE").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertTrue(canonical.startswith("MIT License\n"))
+        self.assertEqual(canonical, manager)
+        for project in (root, root / "pandrator_manager"):
+            with self.subTest(project=project.name):
+                metadata = tomllib.loads(
+                    (project / "pyproject.toml").read_text(encoding="utf-8")
+                )["project"]
+                self.assertEqual(metadata["license"], "MIT")
+                self.assertEqual(metadata["license-files"], ["LICENSE"])
+
     def test_requirements_are_current_projections_of_project_metadata(self):
         for destination, source, extras in TARGETS:
             with self.subTest(destination=destination.name):

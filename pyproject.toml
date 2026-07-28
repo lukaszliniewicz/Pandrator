@@ -8,7 +8,8 @@ version = "0.6.0"
 description = "Browser-based audiobook, subtitle, and voiceover production workspace"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
   "alembic>=1.14,<2",
   "argon2-cffi>=23.1,<26",

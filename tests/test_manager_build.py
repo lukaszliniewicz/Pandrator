@@ -287,7 +287,7 @@ class ManagerBootstrapBuildTests(unittest.TestCase):
                 desktop.read_text(encoding="utf-8"),
             )
             self.assertIn(
-                "<project_license>AGPL-3.0-only</project_license>",
+                "<project_license>MIT</project_license>",
                 metainfo.read_text(encoding="utf-8"),
             )
             self.assertNotIn(

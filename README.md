@@ -25,13 +25,14 @@ feature-frozen migration fallback. See
 |---|---|
 | Create an audiobook with ready-made voices | **Kokoro** is the simplest lightweight starting point. Consult the [language table](#speech-generation-language-support) for alternatives. |
 | Clone a voice from a reference recording | Install **Qwen3 TTS Base** or another cloning model supporting your language. |
-| Create subtitles from audio or video | Install **CrispASR**. Use Whisper large-v3 for broad coverage or Parakeet TDT 0.6B v3 for its supported languages. |
+| Create subtitles from audio or video | Install **CrispASR**. MOSS Transcribe-Diarize is the guided default; Whisper large-v3 and Parakeet TDT remain available alternatives. |
 | Correct or translate text and subtitles | Configure a local or cloud LLM provider. This is optional for basic speech generation. |
 | Convert generated speech to another trained voice | Install **RVC**. It runs after speech generation and is optional. |
 
-For the current packaged release, download the launcher from
-[GitHub Releases](https://github.com/lukaszliniewicz/Pandrator/releases). You
-can begin with only the components you need and add others later.
+The current packaged release is
+[Pandrator 0.6.0](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.6.0),
+with Pandrator Manager 0.9.0 for Windows and Linux. You can begin with only the
+components you need and add others later.
 
 Local models process content on your machine. Cloud LLM and speech providers are optional; when used, they may send content to an external service and incur charges.
 
@@ -75,19 +76,24 @@ remembered workspace.
 
 ### Windows
 
-Download `PandratorManager-0.9.0-windows-x86_64.exe` from
-[Releases](https://github.com/lukaszliniewicz/Pandrator/releases) and run it.
+Download
+[`PandratorManager-0.9.0-windows-x86_64.exe`](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.6.0/PandratorManager-0.9.0-windows-x86_64.exe)
+and run it.
 Choose the parent installation folder; the managed installation is created in
 its `Pandrator` subdirectory. The same Manager is used later to launch,
 update, repair, or extend the installation.
 
 The Windows executable is not Authenticode-signed and may be shown as
 **Unknown publisher** or trigger a SmartScreen warning. Where a release
-publishes a SHA-256 checksum, verify it before running the download.
+publishes a SHA-256 checksum, verify it before running the download. The
+[0.6.0 release page](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.6.0)
+contains the checksum and all other package formats.
 
 ### Linux
 
-Download `PandratorManager-0.9.0-x86_64.AppImage`, make it executable, and run it:
+Download
+[`PandratorManager-0.9.0-x86_64.AppImage`](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.6.0/PandratorManager-0.9.0-x86_64.AppImage),
+make it executable, and run it:
 
 ```bash
 chmod +x PandratorManager-0.9.0-x86_64.AppImage
@@ -250,8 +256,8 @@ Before the first web-based launch, Pandrator backs up legacy metadata and import
 
 | Service | Voice type | Typical hardware path | Notes |
 |---|---|---|---|
-| Kokoro 82M | Pre-built | CPU, CUDA; experimental ROCm and Apple Silicon paths | Lightweight and a good first installation. |
-| Qwen3 TTS | Pre-built and cloning | CPU, CUDA, Vulkan, Metal | CustomVoice 1.7B supplies named voices; Base 0.6B/1.7B clones references. |
+| Kokoro 82M | Pre-built | CPU, CUDA; ROCm only on explicitly supported modern AMD hardware | Lightweight and a good first installation; legacy AMD cards use CPU guidance. |
+| Qwen3 TTS | Pre-built and cloning | CPU, CUDA, Vulkan, Metal | The 1.7B model is the default. CustomVoice supplies named voices; Base clones references. |
 | XTTS v2 | Cloning | CPU or CUDA | Mature multilingual cloning; GPU is much faster. |
 | VoxCPM2 | Cloning | CUDA | Large multilingual model intended for capable NVIDIA hardware. |
 | Fish S2 Pro | Cloning | Configurable native backend and quantization | Very broad declared language coverage. |
@@ -259,7 +265,7 @@ Before the first web-based launch, Pandrator backs up legacy metadata and import
 | Silero | Pre-built | CPU | Efficient regional, East European, and legacy language packs. |
 | Chatterbox | Cloning | CPU or CUDA | English and multilingual models. |
 | Magpie 357M | Pre-built | CPU or CUDA | Five speakers shared across nine languages. |
-| CrispASR | Transcription | CPU, CUDA, Vulkan; Metal on Apple Silicon | Whisper and Parakeet engines with word timestamps. |
+| CrispASR | Transcription | CPU, CUDA, Vulkan; Metal on Apple Silicon | MOSS with diarization is the default; Whisper and Parakeet remain available. |
 | RVC | Speech-to-speech | CPU or CUDA | Applies a `.pth` model and matching `.index` after generation. |
 
 Hardware requirements vary with model size, quantization, input length, and the selected compute backend. The installer shows the available variants and model licences before downloading them.
@@ -616,6 +622,10 @@ Frontend contributors should read
 [`FRONTEND_ARCHITECTURE.md`](FRONTEND_ARCHITECTURE.md) before adding API
 operations, shared server state, invalidation behavior, or workflow UI.
 
-## Licence
+## License
 
-Pandrator is released under [GNU AGPLv3](LICENSE). Speech, transcription, LLM, and voice-conversion models have their own licences and usage conditions; review the information shown by the installer and the linked upstream licence before use.
+Pandrator is released under the [MIT License](LICENSE). This applies to
+Pandrator's own source code and does not relicense third-party dependencies,
+speech models, transcription models, LLMs, or voice-conversion models. Review
+the licences and usage conditions shown by the installer before downloading
+those components.
