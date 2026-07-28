@@ -13,6 +13,7 @@ from unittest import mock
 from urllib.parse import parse_qs, urlsplit
 
 import psutil
+import requests
 
 from pandrator_manager.api import create_api
 from pandrator_manager.api.app import RECOVERY_COOKIE, _browser_handoff_url
@@ -833,7 +834,37 @@ class DaemonClientIntegrationTests(unittest.TestCase):
             self.assertTrue(client.status()["ready"])
             self.assertFalse(client.capabilities()["tray_required"])
             self.assertTrue(descriptor.is_file())
-            client.stop_manager()
+            original_request = client.request
+
+            with (
+                mock.patch.object(
+                    client,
+                    "request",
+                    side_effect=requests.ConnectionError(
+                        "fixture connection failure"
+                    ),
+                ),
+                mock.patch.object(
+                    client,
+                    "_wait_for_shutdown_confirmation",
+                    return_value=False,
+                ),
+                self.assertRaises(requests.ConnectionError),
+            ):
+                client.stop_manager()
+
+            def disconnect_after_shutdown(*args, **kwargs):
+                original_request(*args, **kwargs)
+                raise requests.ConnectionError(
+                    "fixture dropped the shutdown response"
+                )
+
+            with mock.patch.object(
+                client,
+                "request",
+                side_effect=disconnect_after_shutdown,
+            ):
+                client.stop_manager()
             deadline = time.monotonic() + 10
             while descriptor.exists() and time.monotonic() < deadline:
                 time.sleep(0.1)

@@ -547,10 +547,49 @@ class ManagerClient:
             idempotency_key=str(uuid.uuid4()),
         ).json()["url"]
 
-    def stop_manager(self) -> None:
-        self.request(
-            "POST",
-            "/v1/runtime/stop-manager",
-            json_payload={},
-            idempotency_key=str(uuid.uuid4()),
+    def _wait_for_shutdown_confirmation(
+        self,
+        *,
+        timeout_seconds: float = 10,
+    ) -> bool:
+        """Confirm that the exact manager process exited after a lost reply."""
+
+        identity = ProcessIdentity(
+            pid=self.descriptor.pid,
+            create_time=self.descriptor.process_create_time,
+            executable=self.descriptor.executable,
+            manager_instance_id=self.descriptor.instance_id,
         )
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            try:
+                if validate_identity(identity) is None:
+                    return True
+            except IdentityMismatch:
+                # The recorded PID now refers to another process, so the exact
+                # manager instance addressed by this client has exited.
+                return True
+            except IdentityInspectionFailed:
+                # A transient inspection failure is not enough to claim that
+                # an authenticated shutdown request succeeded.
+                pass
+            time.sleep(0.05)
+        return False
+
+    def stop_manager(self) -> None:
+        try:
+            self.request(
+                "POST",
+                "/v1/runtime/stop-manager",
+                json_payload={},
+                idempotency_key=str(uuid.uuid4()),
+            )
+        except requests.ConnectionError:
+            # The endpoint necessarily closes the server that is carrying its
+            # own response. A slow event loop can therefore finish the
+            # authenticated shutdown but drop the final response bytes.
+            # Accept that disconnect only after the recorded PID/create-time/
+            # executable identity is demonstrably gone.
+            if self._wait_for_shutdown_confirmation():
+                return
+            raise
