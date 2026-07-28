@@ -202,6 +202,25 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _default_bundle_path(
+    repo_root: Path,
+    version: str,
+    *,
+    system: str | None = None,
+    machine: str | None = None,
+) -> Path:
+    from scripts.build_manager_release_bundle import _release_platform
+
+    return (
+        repo_root
+        / "dist"
+        / (
+            f"pandrator-manager-{version}-"
+            f"{_release_platform(system=system, machine=machine)}.zip"
+        )
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     repo_root = Path(__file__).resolve().parents[1]
@@ -223,9 +242,7 @@ def main(argv: list[str] | None = None) -> int:
     ).expanduser().resolve(strict=True)
     bundle = (
         args.bundle
-        or repo_root
-        / "dist"
-        / f"pandrator-manager-{__version__}-{sys.platform}.zip"
+        or _default_bundle_path(repo_root, __version__)
     ).expanduser().resolve(strict=True)
     if not bootstrap.is_file() or bootstrap.is_symlink():
         raise RuntimeError(f"Unsafe or missing bootstrap: {bootstrap}")

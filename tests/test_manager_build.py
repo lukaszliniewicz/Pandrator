@@ -15,6 +15,7 @@ from scripts.build_manager_bootstrap import (
     _wheel_from_directory,
 )
 from scripts.build_manager_release_bundle import _release_platform
+from scripts.qualify_manager_lifecycle import _default_bundle_path
 
 
 class ManagerBootstrapBuildTests(unittest.TestCase):
@@ -26,6 +27,28 @@ class ManagerBootstrapBuildTests(unittest.TestCase):
         self.assertEqual(
             _release_platform(system="linux", machine="x86_64"),
             "linux-x86_64",
+        )
+
+    def test_lifecycle_qualification_uses_the_release_bundle_name(self) -> None:
+        root = Path("/release")
+
+        self.assertEqual(
+            _default_bundle_path(
+                root,
+                "0.9.0",
+                system="win32",
+                machine="AMD64",
+            ),
+            root / "dist" / "pandrator-manager-0.9.0-windows-x86_64.zip",
+        )
+        self.assertEqual(
+            _default_bundle_path(
+                root,
+                "0.9.0",
+                system="linux",
+                machine="x86_64",
+            ),
+            root / "dist" / "pandrator-manager-0.9.0-linux-x86_64.zip",
         )
 
     def test_wheel_source_staging_excludes_local_build_residue(self) -> None:
