@@ -615,6 +615,86 @@ class InstallerArchitectureTests(unittest.TestCase):
                 timeout=0.2,
             )
 
+    def test_calibre_msi_timeout_terminates_process_tree(self):
+        with tempfile.TemporaryDirectory() as directory:
+            installer = HeadlessInstaller(working_dir=directory)
+            process = Mock()
+            process.communicate.side_effect = subprocess.TimeoutExpired(
+                ["msiexec"],
+                900,
+            )
+            with patch.object(
+                installer,
+                "download_verified_file",
+            ), patch(
+                "pandrator_installer.operations.subprocess.Popen",
+                return_value=process,
+            ), patch.object(
+                installer,
+                "_terminate_timed_out_process",
+            ) as terminate:
+                self.assertFalse(installer.install_calibre_portable(directory))
+            terminate.assert_called_once_with(process)
+
+    def test_winget_timeout_terminates_process_tree_before_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            installer = HeadlessInstaller(working_dir=directory)
+            process = Mock()
+            process.communicate.side_effect = subprocess.TimeoutExpired(
+                ["winget"],
+                600,
+            )
+            with patch.object(
+                installer,
+                "check_calibre_available",
+                return_value=False,
+            ), patch.object(
+                installer,
+                "check_program_installed",
+                return_value=True,
+            ), patch(
+                "pandrator_installer.operations.subprocess.Popen",
+                return_value=process,
+            ), patch.object(
+                installer,
+                "_terminate_timed_out_process",
+            ) as terminate, patch.object(
+                installer,
+                "install_with_chocolatey",
+                return_value=False,
+            ), patch.object(
+                installer,
+                "install_calibre_portable",
+                return_value=False,
+            ):
+                self.assertFalse(installer.install_calibre(directory))
+            terminate.assert_called_once_with(process)
+
+    def test_espeak_msi_timeout_terminates_process_tree(self):
+        with tempfile.TemporaryDirectory() as directory:
+            installer = HeadlessInstaller(working_dir=directory)
+            process = Mock()
+            process.communicate.side_effect = subprocess.TimeoutExpired(
+                ["msiexec"],
+                600,
+            )
+            with patch.object(
+                installer,
+                "resolve_espeak_paths",
+                return_value=("", ""),
+            ), patch.object(
+                installer,
+                "download_verified_file",
+            ), patch(
+                "pandrator_installer.operations.subprocess.Popen",
+                return_value=process,
+            ), patch.object(
+                installer,
+                "_terminate_timed_out_process",
+            ) as terminate:
+                self.assertFalse(installer.install_espeak_ng_direct(directory))
+            terminate.assert_called_once_with(process)
+
     def test_appimage_launcher_defaults_to_home_workspace(self):
         workspace = platforms.resolve_launcher_workspace(
             system="Linux",
@@ -1190,6 +1270,129 @@ class InstallerArchitectureTests(unittest.TestCase):
         self.assertEqual(request.get_method(), "HEAD")
         self.assertEqual(urlopen.call_args.kwargs["timeout"], 20)
         self.assertIn("TLS self-check passed", printed.call_args.args[0])
+
+    def test_explicit_custom_ca_bundle_is_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            requests_ca = os.path.join(directory, "requests-ca.pem")
+            ssl_ca = os.path.join(directory, "ssl-ca.pem")
+            Path(requests_ca).write_text("requests-ca", encoding="utf-8")
+            Path(ssl_ca).write_text("ssl-ca", encoding="utf-8")
+            installer = HeadlessInstaller(working_dir=directory)
+
+            with patch.dict(
+                os.environ,
+                {
+                    "REQUESTS_CA_BUNDLE": requests_ca,
+                    "SSL_CERT_FILE": ssl_ca,
+                },
+                clear=True,
+            ):
+                installer.configure_tls_certificates()
+                network_env = installer.get_network_subprocess_env()
+
+                self.assertEqual(installer.ca_bundle_path, requests_ca)
+                self.assertEqual(os.environ["REQUESTS_CA_BUNDLE"], requests_ca)
+                self.assertEqual(os.environ["SSL_CERT_FILE"], ssl_ca)
+                self.assertEqual(network_env["REQUESTS_CA_BUNDLE"], requests_ca)
+                self.assertEqual(network_env["SSL_CERT_FILE"], ssl_ca)
+
+    def test_linux_fish_runtime_readiness_uses_run_py(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory)
+            run_script = repository / "run.py"
+            environment_python = repository / ".pixi" / "envs" / "default" / "bin" / "python"
+            run_script.write_text("pass\n", encoding="utf-8")
+            environment_python.parent.mkdir(parents=True)
+            environment_python.write_text("", encoding="utf-8")
+            installer = HeadlessInstaller(working_dir=directory)
+
+            with patch("pandrator_installer.components.is_windows", return_value=False), patch(
+                "pandrator_installer.components.pixi_env_python_path",
+                return_value=str(environment_python),
+            ):
+                self.assertTrue(installer.is_fishs2_runtime_ready(str(repository)))
+
+    def test_fishs2_cpu_install_clones_bootstraps_and_replaces_gpu_config(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            installer = HeadlessInstaller(working_dir=workspace)
+            install_root = Path(workspace) / "Pandrator"
+            (install_root / "Pandrator").mkdir(parents=True)
+            pixi_manifest = (
+                install_root
+                / "envs"
+                / "pandrator_installer"
+                / "pixi.toml"
+            )
+            pixi_manifest.parent.mkdir(parents=True)
+            pixi_manifest.write_text("", encoding="utf-8")
+            selection = InstallSelection(
+                pandrator=False,
+                fishs2_cpu=True,
+                fishs2_backend="cuda",
+                fishs2_model_quant="Q6_K",
+            )
+            captured_tasks = {}
+
+            def capture_tasks(tasks, **_kwargs):
+                captured_tasks.update(tasks)
+
+            with patch.object(
+                installer, "configure_tls_certificates"
+            ), patch.object(
+                installer, "is_admin", return_value=False
+            ), patch.object(
+                installer, "execute_concurrently", side_effect=capture_tasks
+            ), patch.object(
+                installer, "check_pixi", return_value=True
+            ), patch.object(
+                installer, "install_fishs2_api_server"
+            ) as install_fishs2, patch.object(
+                installer,
+                "load_install_config",
+                return_value={
+                    "fishs2_support": True,
+                    "fishs2_gpu_support": True,
+                    "fishs2_backend": "cuda",
+                },
+            ), patch.object(
+                installer, "save_install_config"
+            ) as save_config, patch.object(
+                installer, "write_packaging_layout"
+            ), patch.object(
+                installer, "cleanup_installer_package_caches"
+            ):
+                installer.install_process(selection)
+
+            self.assertIn("Clone FishS2", captured_tasks)
+            install_fishs2.assert_called_once()
+            self.assertEqual(
+                install_fishs2.call_args.kwargs["backend"],
+                "cpu",
+            )
+            self.assertEqual(
+                install_fishs2.call_args.kwargs["model_quant"],
+                "q6_k",
+            )
+            config = save_config.call_args.args[1]
+            self.assertTrue(config["fishs2_support"])
+            self.assertFalse(config["fishs2_gpu_support"])
+            self.assertEqual(config["fishs2_backend"], "cpu")
+            self.assertEqual(config["fishs2_model_quant"], "q6_k")
+
+    def test_fishs2_update_options_cannot_infer_gpu_from_legacy_default(self):
+        installer = HeadlessInstaller(working_dir="workspace")
+        self.assertEqual(
+            installer.resolve_fishs2_runtime_options(
+                gpu_support=False,
+                backend="auto",
+                model_quant="q6_k",
+            ),
+            {
+                "gpu_support": False,
+                "backend": "cpu",
+                "model_quant": "q6_k",
+            },
+        )
 
     def test_tls_self_check_cli_flag(self):
         args = parse_launcher_cli_args(["--tls-self-check"])

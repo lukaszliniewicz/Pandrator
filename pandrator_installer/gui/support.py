@@ -123,8 +123,8 @@ class Worker(QThread):
     """Worker thread for running background processes"""
     update_progress = pyqtSignal(float)
     update_status = pyqtSignal(str)
-    finished = pyqtSignal()
-    error = pyqtSignal(str)
+    succeeded = pyqtSignal()
+    failed = pyqtSignal(str)
 
     def __init__(self, function, *args, **kwargs):
         super().__init__()
@@ -135,11 +135,12 @@ class Worker(QThread):
     def run(self):
         try:
             self.function(*self.args, **self.kwargs)
-            self.finished.emit()
         except Exception as e:
-            self.error.emit(str(e))
+            self.failed.emit(str(e))
             logging.error(f"Error in worker thread: {str(e)}")
             logging.error(traceback.format_exc())
+        else:
+            self.succeeded.emit()
 
 class QtLogEmitter(QObject):
     message_logged = pyqtSignal(str)

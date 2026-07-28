@@ -1,0 +1,375 @@
+import json
+import os
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from pandrator.web.api import create_app as create_web_app
+from pandrator.web.auth import BootstrapTokenStore
+from pandrator_manager.api import create_api
+from pandrator_manager.application import create_application
+from pandrator_manager.components.runtime_bootstrap import generated_runtime_files
+from pandrator_manager.components.slots import component_pointer
+from pandrator_manager.context import WorkspaceLayout
+from pandrator_manager.models import (
+    ComputeVariant,
+    DesiredComponentState,
+    OperationKind,
+)
+from pandrator_manager.runtime_specs import pandrator_runtime_specs
+from pandrator_manager.supervisor import ProcessSupervisor
+from tests.web_test_support import prepare_web_test_data_root
+
+
+class GuidedCatalogueTests(unittest.TestCase):
+    def test_catalogue_is_grouped_with_pandrator_first_and_typed_models(self):
+        with tempfile.TemporaryDirectory() as directory:
+            application = create_application(directory)
+            items = application.list_components()
+
+        self.assertEqual("pandrator", items[0]["definition"]["id"])
+        self.assertEqual("core", items[0]["definition"]["section"])
+
+        qwen = next(
+            item
+            for item in items
+            if item["definition"]["id"] == "qwen_tts"
+        )
+        self.assertEqual("text_to_speech", qwen["definition"]["section"])
+        self.assertTrue(qwen["definition"]["models"])
+        self.assertEqual(
+            ["initial_model", "model_size", "quantization"],
+            [
+                option["key"]
+                for option in qwen["definition"]["install_options"]
+            ],
+        )
+        self.assertIn(
+            "voice_cloning",
+            {
+                capability["id"]
+                for capability in qwen["definition"]["capabilities"]
+                if capability["available"]
+            },
+        )
+        qwen_options = {
+            option["key"]: option
+            for option in qwen["definition"]["install_options"]
+        }
+        self.assertEqual("1.7b", qwen_options["model_size"]["default"])
+
+        crisp = next(
+            item
+            for item in items
+            if item["definition"]["id"] == "crispasr"
+        )
+        self.assertIn("install", crisp["definition"]["supported_actions"])
+        self.assertEqual(3, len(crisp["definition"]["models"]))
+        self.assertEqual("estimate", crisp["definition"]["size_provenance"])
+        crisp_options = {
+            option["key"]: option
+            for option in crisp["definition"]["install_options"]
+        }
+        self.assertEqual(
+            "moss-transcribe-diarize-0.9b",
+            crisp_options["engine"]["default"],
+        )
+        self.assertEqual("q8_0", crisp_options["quantization"]["default"])
+
+        kokoro = next(
+            item
+            for item in items
+            if item["definition"]["id"] == "kokoro"
+        )
+        self.assertIn("estimate", kokoro["definition"]["size_note"].lower())
+        self.assertIn("install", kokoro["definition"]["supported_actions"])
+        voxcpm = next(
+            item
+            for item in items
+            if item["definition"]["id"] == "voxcpm"
+        )
+        self.assertIn("install", voxcpm["definition"]["supported_actions"])
+
+    def test_manager_owned_runtime_adapters_are_valid_python(self):
+        for component_id in ("kokoro", "voxcpm"):
+            files = generated_runtime_files(component_id)
+            self.assertIn("pandrator-manager-run.py", files)
+            if component_id == "kokoro":
+                self.assertIn(".pandrator-manager/pixi.toml", files)
+            compile(
+                files["pandrator-manager-run.py"],
+                f"<{component_id}-manager-runner>",
+                "exec",
+            )
+            if component_id == "kokoro":
+                runner = files["pandrator-manager-run.py"]
+                self.assertIn("PHONEMIZER_ESPEAK_DATA_PATH", runner)
+                self.assertIn("EspeakWrapper.set_data_path", runner)
+                self.assertIn("uvicorn.run(", runner)
+
+    def test_combined_plan_supports_qwen_and_verified_crispasr_runtime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            application = create_application(directory)
+            plan = application.plan(
+                kind=OperationKind.INSTALL,
+                desired={
+                    "qwen_tts": DesiredComponentState(
+                        compute=ComputeVariant.CPU,
+                        quantization="q8_0",
+                        options={
+                            "initial_model": "base",
+                            "model_size": "0.6b",
+                        },
+                    ),
+                    "crispasr": DesiredComponentState(
+                        compute=ComputeVariant.CPU,
+                        quantization="f16",
+                        options={"engine": "whisper-large-v3"},
+                    ),
+                },
+            )
+        self.assertIn("stage_crispasr", {task.kind for task in plan.tasks})
+        self.assertEqual(
+            {"crispasr", "qwen_tts"},
+            set(plan.desired).intersection({"crispasr", "qwen_tts"}),
+        )
+        self.assertGreater(plan.estimated_download_bytes, 0)
+
+    def test_qwen_rejects_custom_voice_with_the_unsupported_small_model(self):
+        with tempfile.TemporaryDirectory() as directory:
+            application = create_application(directory)
+            with self.assertRaisesRegex(ValueError, "not available"):
+                application.plan(
+                    kind=OperationKind.INSTALL,
+                    desired={
+                        "qwen_tts": DesiredComponentState(
+                            compute=ComputeVariant.CPU,
+                            quantization="q8_0",
+                            options={
+                                "initial_model": "custom_voice",
+                                "model_size": "0.6b",
+                            },
+                        )
+                    },
+                )
+
+
+class ManagedApplicationLaunchTests(unittest.TestCase):
+    @staticmethod
+    def _activate_fixture(layout, component_id):
+        source = layout.services / component_id / "versions" / "fixture"
+        source.mkdir(parents=True)
+        component_pointer(layout, component_id).write_text(
+            json.dumps({"path": str(source)}),
+            encoding="utf-8",
+        )
+        return source
+
+    def test_failed_application_launch_is_typed_and_visible_in_activity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            application = create_application(directory)
+            application.instance_id = "guided-test"
+            supervisor = ProcessSupervisor(
+                application.context,
+                application.store,
+                manager_instance_id="guided-test",
+            )
+            secret = "m" * 43
+            api = create_api(
+                application,
+                supervisor,
+                client_secret=secret,
+            )
+            client = api.test_client()
+            headers = {
+                "Authorization": f"Bearer {secret}",
+                "Idempotency-Key": "launch-absent",
+            }
+            response = client.post(
+                "/v1/application/launch",
+                headers=headers,
+                json={},
+            )
+            self.assertEqual(409, response.status_code)
+            self.assertEqual(
+                "application_not_installed",
+                response.get_json()["error"]["code"],
+            )
+            activity = client.get(
+                "/v1/activity",
+                headers={"Authorization": f"Bearer {secret}"},
+            ).get_json()["items"]
+            event_types = [event["event_type"] for event in activity]
+            self.assertIn("application.action_requested", event_types)
+            self.assertIn("application.action_failed", event_types)
+
+    def test_frozen_manager_uses_pixi_not_its_launcher_as_python(self):
+        with tempfile.TemporaryDirectory() as directory:
+            layout = WorkspaceLayout.from_value(directory)
+            layout.ensure_base_directories()
+            source = layout.root / "app" / "versions" / "revision"
+            (source / "pandrator" / "web").mkdir(parents=True)
+            (source / "pyproject.toml").write_text(
+                "[project]\nname='pandrator'\n",
+                encoding="utf-8",
+            )
+            (source / "pixi.toml").write_text(
+                "[workspace]\nname='pandrator'\n",
+                encoding="utf-8",
+            )
+            (source / "pandrator" / "web" / "cli.py").write_text(
+                "",
+                encoding="utf-8",
+            )
+            component_pointer(layout, "pandrator").write_text(
+                json.dumps({"path": str(source)}),
+                encoding="utf-8",
+            )
+            pixi = layout.bin / ("pixi.exe" if os.name == "nt" else "pixi")
+            pixi.write_bytes(b"pixi")
+
+            with mock.patch.object(sys, "frozen", True, create=True):
+                specs = pandrator_runtime_specs(layout)
+
+        self.assertTrue(all(spec.executable == str(pixi) for spec in specs))
+        self.assertTrue(all(spec.arguments[0] == "run" for spec in specs))
+        self.assertTrue(
+            all("-m" in spec.arguments and "pandrator" in spec.arguments for spec in specs)
+        )
+
+    def test_frozen_manager_uses_pixi_for_python_backend_bootstrappers(self):
+        from pandrator_manager.models import ResolvedComponentState
+        from pandrator_manager.runtime_specs import component_runtime_spec
+
+        with tempfile.TemporaryDirectory() as directory:
+            layout = WorkspaceLayout.from_value(directory)
+            layout.ensure_base_directories()
+            self._activate_fixture(layout, "qwen_tts")
+            pixi = layout.bin / ("pixi.exe" if os.name == "nt" else "pixi")
+            resolved = ResolvedComponentState(
+                compute=ComputeVariant.CPU,
+                platform="test",
+                options={"initial_model": "base"},
+            )
+            with mock.patch.object(sys, "frozen", True, create=True):
+                spec = component_runtime_spec(layout, "qwen_tts", resolved)
+
+        self.assertIsNotNone(spec)
+        self.assertEqual(str(pixi), spec.executable)
+        self.assertEqual("run", spec.arguments[0])
+        self.assertIn("python", spec.arguments)
+        self.assertIn("run.py", spec.arguments)
+        self.assertIn("1.7b", spec.arguments)
+
+    def test_kokoro_and_voxcpm_have_manager_owned_runtime_contracts(self):
+        from pandrator_manager.models import ResolvedComponentState
+        from pandrator_manager.runtime_specs import component_runtime_spec
+
+        with tempfile.TemporaryDirectory() as directory:
+            layout = WorkspaceLayout.from_value(directory)
+            layout.ensure_base_directories()
+            self._activate_fixture(layout, "kokoro")
+            self._activate_fixture(layout, "voxcpm")
+            kokoro = component_runtime_spec(
+                layout,
+                "kokoro",
+                ResolvedComponentState(
+                    compute=ComputeVariant.CPU,
+                    platform="test",
+                ),
+            )
+            voxcpm = component_runtime_spec(
+                layout,
+                "voxcpm",
+                ResolvedComponentState(
+                    compute=ComputeVariant.CUDA,
+                    platform="test",
+                ),
+            )
+
+        self.assertIsNotNone(kokoro)
+        self.assertEqual((8880,), kokoro.ports)
+        self.assertTrue(
+            any(
+                Path(argument).name == "pixi.toml"
+                for argument in kokoro.arguments
+            )
+        )
+        self.assertEqual(
+            str(layout.state / "services" / "kokoro"),
+            kokoro.environment["PANDRATOR_KOKORO_STATE_DIR"],
+        )
+        model_argument = kokoro.arguments.index("--model-dir") + 1
+        self.assertEqual(
+            str(layout.data / "models" / "kokoro"),
+            kokoro.arguments[model_argument],
+        )
+        self.assertEqual({"status": "healthy"}, kokoro.readiness.expected_json)
+        self.assertIsNotNone(voxcpm)
+        self.assertEqual((8021,), voxcpm.ports)
+        self.assertIn("pandrator-manager-run.py", voxcpm.arguments)
+        self.assertEqual("8021", voxcpm.environment["VOXCPM_PORT"])
+
+
+class ManagerBootstrapSecurityTests(unittest.TestCase):
+    def test_only_the_loopback_manager_credential_can_mint_browser_tokens(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prepare_web_test_data_root(directory)
+            credential = Path(directory) / "manager.secret"
+            credential.write_text("manager-secret", encoding="utf-8")
+            bootstrap = BootstrapTokenStore()
+            with mock.patch.dict(
+                os.environ,
+                {"PANDRATOR_MANAGER_CREDENTIAL": str(credential)},
+                clear=False,
+            ):
+                app = create_web_app(
+                    data_root=directory,
+                    testing=True,
+                    bootstrap_tokens=bootstrap,
+                )
+                try:
+                    client = app.test_client()
+                    self.assertEqual(
+                        401,
+                        client.post(
+                            "/api/v1/auth/manager-bootstrap",
+                            headers={"Authorization": "Bearer wrong"},
+                        ).status_code,
+                    )
+                    self.assertEqual(
+                        401,
+                        client.post(
+                            "/api/v1/auth/manager-bootstrap",
+                            headers={"Authorization": "Bearer manager-secret"},
+                            environ_overrides={"REMOTE_ADDR": "192.0.2.20"},
+                        ).status_code,
+                    )
+                    issued = client.post(
+                        "/api/v1/auth/manager-bootstrap",
+                        headers={"Authorization": "Bearer manager-secret"},
+                    )
+                    self.assertEqual(200, issued.status_code)
+                    token = issued.get_json()["token"]
+                    self.assertEqual(
+                        200,
+                        client.post(
+                            "/api/v1/auth/bootstrap",
+                            json={"token": token},
+                        ).status_code,
+                    )
+                    self.assertEqual(
+                        401,
+                        client.post(
+                            "/api/v1/auth/bootstrap",
+                            json={"token": token},
+                        ).status_code,
+                    )
+                finally:
+                    app.extensions["pandrator"]["database"].dispose()
+
+
+if __name__ == "__main__":
+    unittest.main()

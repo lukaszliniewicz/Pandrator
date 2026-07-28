@@ -12,6 +12,25 @@ from .support import Worker
 
 
 class GuiActionsMixin:
+    def _start_worker(self, function, success_handler, error_handler, *args):
+        if self.worker is not None and self.worker.isRunning():
+            raise RuntimeError("Another installer operation is already running.")
+
+        worker = Worker(function, *args)
+        self.worker = worker
+        self.reporter = SignalReporter(worker.update_progress, worker.update_status)
+        worker.update_progress.connect(self.update_progress)
+        worker.update_status.connect(self.update_status)
+        worker.succeeded.connect(success_handler)
+        worker.failed.connect(error_handler)
+        worker.finished.connect(lambda: self._release_worker(worker))
+        worker.start()
+
+    def _release_worker(self, worker):
+        if self.worker is worker:
+            self.worker = None
+        worker.deleteLater()
+
     def install_pandrator(self):
         pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
         pandrator_already_installed = os.path.exists(pandrator_path)
@@ -24,7 +43,7 @@ class GuiActionsMixin:
         new_components_selected = (
             ((selection.xtts or selection.xtts_cpu) and not installed_components['xtts']) or
             (selection.voxcpm and not installed_components['voxcpm']) or
-            (selection.fishs2 and not installed_components['fishs2']) or
+            ((selection.fishs2 or selection.fishs2_cpu) and not installed_components['fishs2']) or
             (selection.silero and not installed_components['silero']) or
             (selection.voxtral and not installed_components['voxtral']) or
             ((selection.kokoro or selection.kokoro_cpu) and not installed_components['kokoro']) or
@@ -52,14 +71,12 @@ class GuiActionsMixin:
 
         logging.info("Installation process started.")
 
-        # Create worker thread to run the installation
-        self.worker = Worker(self.install_process, selection)
-        self.reporter = SignalReporter(self.worker.update_progress, self.worker.update_status)
-        self.worker.update_progress.connect(self.update_progress)
-        self.worker.update_status.connect(self.update_status)
-        self.worker.finished.connect(self.on_installation_finished)
-        self.worker.error.connect(self.on_installation_error)
-        self.worker.start()
+        self._start_worker(
+            self.install_process,
+            self.on_installation_finished,
+            self.on_installation_error,
+            selection,
+        )
 
     def on_installation_finished(self):
         """Handle completion of installation process"""
@@ -85,11 +102,6 @@ class GuiActionsMixin:
         """Update Pandrator and components"""
         pandrator_base_path = os.path.join(self.initial_working_dir, 'Pandrator')
         pandrator_repo_path = os.path.join(pandrator_base_path, 'Pandrator')
-
-        # Check admin status
-        is_admin = self.is_admin()
-        if os.name == 'nt' and not is_admin:
-            logging.info("Running update without admin privileges - file permission changes won't be applied")
 
         logging.info(f"Checking for Pandrator at: {pandrator_repo_path}")
 
@@ -127,14 +139,12 @@ class GuiActionsMixin:
         self.update_status("Updating Pandrator and components...")
         logging.info("Starting update process")
 
-        # Create worker thread to run the update
-        self.worker = Worker(self.update_process, stop_running_processes)
-        self.reporter = SignalReporter(self.worker.update_progress, self.worker.update_status)
-        self.worker.update_progress.connect(self.update_progress)
-        self.worker.update_status.connect(self.update_status)
-        self.worker.finished.connect(self.on_update_finished)
-        self.worker.error.connect(self.on_update_error)
-        self.worker.start()
+        self._start_worker(
+            self.update_process,
+            self.on_update_finished,
+            self.on_update_error,
+            stop_running_processes,
+        )
 
     def on_update_finished(self):
         """Handle completion of update process"""
@@ -259,13 +269,11 @@ class GuiActionsMixin:
         self.stop_backend_button.setEnabled(False)
         self.refresh_backend_status_button.setEnabled(False)
 
-        self.worker = Worker(self.stop_running_backends_process)
-        self.reporter = SignalReporter(self.worker.update_progress, self.worker.update_status)
-        self.worker.update_progress.connect(self.update_progress)
-        self.worker.update_status.connect(self.update_status)
-        self.worker.finished.connect(self.on_stop_backends_finished)
-        self.worker.error.connect(self.on_stop_backends_error)
-        self.worker.start()
+        self._start_worker(
+            self.stop_running_backends_process,
+            self.on_stop_backends_finished,
+            self.on_stop_backends_error,
+        )
 
     def on_stop_backends_finished(self):
         stopped_names = ", ".join(getattr(self, 'backend_stop_labels', [])) or "Backend"
@@ -307,14 +315,12 @@ class GuiActionsMixin:
         self.initialize_logging()
         self._apply_launch_selection_state(selection)
 
-        # Create worker thread to run the launch process
-        self.worker = Worker(self.launch_process, selection)
-        self.reporter = SignalReporter(self.worker.update_progress, self.worker.update_status)
-        self.worker.update_progress.connect(self.update_progress)
-        self.worker.update_status.connect(self.update_status)
-        self.worker.finished.connect(self.on_launch_finished)
-        self.worker.error.connect(self.on_launch_error)
-        self.worker.start()
+        self._start_worker(
+            self.launch_process,
+            self.on_launch_finished,
+            self.on_launch_error,
+            selection,
+        )
 
     def on_launch_finished(self):
         """Handle successful launch"""
@@ -376,6 +382,16 @@ class GuiActionsMixin:
 
     def closeEvent(self, event):
         """Handle window close event"""
+        if self.worker is not None and self.worker.isRunning():
+            QMessageBox.information(
+                self,
+                "Operation in progress",
+                "The installer cannot close while an operation is running. "
+                "Wait for it to finish before closing the launcher.",
+            )
+            event.ignore()
+            return
+
         running = bool(
             self.pandrator_process
             or self._collect_running_backends()
@@ -385,11 +401,13 @@ class GuiActionsMixin:
             dialog = QMessageBox(self)
             dialog.setWindowTitle("Pandrator is still running")
             dialog.setText("The browser can close independently. What should the launcher do with the running services?")
-            minimize = dialog.addButton("Minimize to tray", QMessageBox.ButtonRole.AcceptRole)
+            minimize = None
+            if getattr(self, "tray_icon", None) is not None:
+                minimize = dialog.addButton("Minimize to tray", QMessageBox.ButtonRole.AcceptRole)
             stop = dialog.addButton("Stop everything", QMessageBox.ButtonRole.DestructiveRole)
             cancel = dialog.addButton(QMessageBox.StandardButton.Cancel)
             dialog.exec()
-            if dialog.clickedButton() is minimize:
+            if minimize is not None and dialog.clickedButton() is minimize:
                 event.ignore()
                 self.hide()
                 self.tray_icon.showMessage("Pandrator", "Services are still running. Use the tray menu to return or stop them.")

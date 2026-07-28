@@ -206,6 +206,152 @@ class SettingsApiTests(unittest.TestCase):
             )
             self.assertEqual("", runtime["api_key"])
 
+    def test_managed_tts_binding_is_typed_and_does_not_change_the_default(self):
+        saved = self.client.put(
+            "/api/v1/settings/services.tts",
+            json={
+                "value": {
+                    "provider_configs": [
+                        {
+                            "id": "xtts",
+                            "name": "XTTS",
+                            "api_base": "http://external.example.test:8020",
+                            "connection_mode": "managed_local",
+                            "managed_service_id": "tts.xtts",
+                        }
+                    ]
+                }
+            },
+            headers={**self.headers, "If-Match": '"0"'},
+        )
+        self.assertEqual(200, saved.status_code, saved.get_json())
+        stored = saved.get_json()["value"]["provider_configs"][0]
+        self.assertEqual("managed_local", stored["connection_mode"])
+        self.assertEqual("tts.xtts", stored["managed_service_id"])
+        self.assertEqual(
+            "XTTS",
+            self.client.get("/api/v1/services/tts").get_json()["default_service"],
+        )
+
+        rejected = self.client.put(
+            "/api/v1/settings/services.tts",
+            json={
+                "value": {
+                    "provider_configs": [
+                        {
+                            **stored,
+                            "managed_service_id": "tts.chatterbox",
+                        }
+                    ]
+                }
+            },
+            headers={**self.headers, "If-Match": '"1"'},
+        )
+        self.assertEqual(422, rejected.status_code)
+
+    def test_managed_tts_endpoint_is_resolved_at_execution_time(self):
+        class FakeManager:
+            @staticmethod
+            def managed_service(service_id):
+                self.assertEqual("tts.xtts", service_id)
+                return {
+                    "id": service_id,
+                    "endpoint": "http://127.0.0.1:9123",
+                    "health": {"state": "healthy"},
+                }
+
+        database = self.app.extensions["pandrator"]["database"]
+        hydrated = hydrate_tts_settings(
+            database,
+            self.app.extensions["pandrator"]["paths"],
+            {
+                "service": "XTTS",
+                "provider_configs": [
+                    {
+                        "id": "xtts",
+                        "connection_mode": "managed_local",
+                        "managed_service_id": "tts.xtts",
+                        "api_base": "http://external.example.test:8020",
+                    }
+                ],
+            },
+            manager_bridge=FakeManager(),
+        )
+        self.assertEqual(
+            "http://127.0.0.1:9123",
+            hydrated["xtts_base_url"],
+        )
+        from pandrator.logic import tts_handler
+
+        runtime = tts_handler.get_service_config(hydrated, "xtts")
+        self.assertEqual("http://127.0.0.1:9123", runtime["api_base"])
+
+    def test_tts_catalogue_projects_manager_state_without_persisting_endpoint(self):
+        saved = self.client.put(
+            "/api/v1/settings/services.tts",
+            json={
+                "value": {
+                    "provider_configs": [
+                        {
+                            "id": "xtts",
+                            "name": "XTTS",
+                            "api_base": "http://external.example.test:8020",
+                            "connection_mode": "managed_local",
+                            "managed_service_id": "tts.xtts",
+                        }
+                    ]
+                }
+            },
+            headers={**self.headers, "If-Match": '"0"'},
+        )
+        self.assertEqual(200, saved.status_code, saved.get_json())
+        inventory = {
+            "status": {"configuration_revision": 4},
+            "components": [
+                {
+                    "definition": {
+                        "id": "xtts",
+                        "supported_actions": [
+                            "install",
+                            "update",
+                            "repair",
+                            "remove",
+                            "start",
+                            "stop",
+                        ],
+                    },
+                    "inspection": {"state": "present"},
+                }
+            ],
+            "services": [
+                {
+                    "id": "tts.xtts",
+                    "endpoint": "http://127.0.0.1:9234",
+                    "health": {"state": "healthy"},
+                    "process": {"pid": 42},
+                }
+            ],
+        }
+        bridge = self.app.extensions["pandrator"]["manager_bridge"]
+        with mock.patch.object(bridge, "inventory", return_value=inventory):
+            catalogue = self.client.get("/api/v1/services/tts").get_json()
+        xtts = next(
+            service for service in catalogue["services"] if service["id"] == "xtts"
+        )
+        self.assertEqual("managed_local", xtts["connection_mode"])
+        self.assertEqual("http://127.0.0.1:9234", xtts["api_base"])
+        self.assertEqual("present", xtts["manager_component_state"])
+        self.assertEqual("healthy", xtts["manager_service"]["health"]["state"])
+        self.assertTrue(catalogue["manager"]["available"])
+
+        persisted = self.client.get(
+            "/api/v1/settings/services.tts"
+        ).get_json()["value"]["provider_configs"][0]
+        self.assertEqual(
+            "http://external.example.test:8020",
+            persisted["api_base"],
+        )
+
     def test_generic_settings_reject_inline_credentials_but_allow_token_counts(self):
         rejected = self.client.put(
             "/api/v1/settings/custom",

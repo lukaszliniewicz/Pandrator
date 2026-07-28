@@ -1,0 +1,87 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pandrator-manager"
+version = "0.9.0"
+description = "Per-user installation, update, repair, and runtime manager for Pandrator"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = "AGPL-3.0-only"
+dependencies = [
+  "certifi>=2024.8",
+  "cryptography>=43,<46",
+  "dulwich>=0.22,<1",
+  "flask>=3.1,<4",
+  "packaging>=24,<26",
+  "psutil>=6,<8",
+  "pydantic>=2.10,<3",
+  "requests>=2.32,<3",
+  "waitress>=3.0,<4",
+]
+
+[project.optional-dependencies]
+tray = [
+  "Pillow>=10,<13",
+  "pystray>=0.19,<1",
+]
+build = [
+  "build>=1.2,<2",
+  "PyInstaller==6.20.0",
+]
+dev = [
+  "pytest>=8.3,<9",
+  "ruff==0.16.0",
+]
+
+[project.scripts]
+pandrator-manager = "pandrator_manager.cli:main"
+pandrator-manager-launcher = "pandrator_manager.launcher:main"
+pandrator-tray = "pandrator_manager.tray:main"
+pandrator-installer = "pandrator_manager.compat:main"
+
+[tool.setuptools]
+packages = [
+  "pandrator_manager",
+  "pandrator_manager.api",
+  "pandrator_manager.artifacts",
+  "pandrator_manager.auth",
+  "pandrator_manager.components",
+  "pandrator_manager.environments",
+  "pandrator_manager.operations",
+  "pandrator_manager.processes",
+  "pandrator_manager.recovery_ui",
+  "pandrator_manager.releases",
+  "pandrator_manager.state",
+  "pandrator_manager.supervisor",
+  "pandrator_manager.tray",
+]
+include-package-data = false
+
+[tool.setuptools.package-dir]
+pandrator_manager = "."
+"pandrator_manager.api" = "api"
+"pandrator_manager.artifacts" = "artifacts"
+"pandrator_manager.auth" = "auth"
+"pandrator_manager.components" = "components"
+"pandrator_manager.environments" = "environments"
+"pandrator_manager.operations" = "operations"
+"pandrator_manager.processes" = "processes"
+"pandrator_manager.recovery_ui" = "recovery_ui"
+"pandrator_manager.releases" = "releases"
+"pandrator_manager.state" = "state"
+"pandrator_manager.supervisor" = "supervisor"
+"pandrator_manager.tray" = "tray"
+
+[tool.setuptools.package-data]
+"pandrator_manager.recovery_ui" = [
+  "static/**",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B"]

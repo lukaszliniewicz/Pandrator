@@ -8,7 +8,7 @@ import sqlite3
 import sys
 import webbrowser
 
-from PyQt6.QtCore import QThread, Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QFont
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
@@ -75,6 +75,9 @@ class PandratorInstaller(
     GuiActionsMixin,
     QMainWindow,
 ):
+    error_requested = pyqtSignal(str, str)
+    warning_requested = pyqtSignal(str, str)
+
     def __init__(self, headless=False, working_dir=None, skip_space_warning=False):
         super().__init__()
         self.headless = bool(headless)
@@ -240,6 +243,8 @@ class PandratorInstaller(
         self.log_filename = None
         self.log_emitter = QtLogEmitter()
         self.log_emitter.message_logged.connect(self.append_log_message)
+        self.error_requested.connect(self._show_error_message)
+        self.warning_requested.connect(self._show_warning_message)
         self.tls_configured = False
         self.ca_bundle_path = None
 
@@ -255,6 +260,11 @@ class PandratorInstaller(
 
     def setup_system_tray(self):
         """Keep locally supervised services available when the launcher is minimized."""
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            self.tray_icon = None
+            logging.info("System tray is unavailable; browser and launcher controls remain active.")
+            return
+
         self.tray_icon = QSystemTrayIcon(self.windowIcon(), self)
         menu = QMenu(self)
         show_action = QAction("Show Pandrator Launcher", self)
@@ -281,10 +291,26 @@ class PandratorInstaller(
         self.activateWindow()
 
     def stop_everything_from_tray(self):
+        if self.worker is not None and self.worker.isRunning():
+            self.restore_from_tray()
+            QMessageBox.information(
+                self,
+                "Operation in progress",
+                "Wait for the current installer operation to finish before stopping services.",
+            )
+            return
         self.shutdown_apps()
         self.update_status("All supervised processes stopped.")
 
     def quit_from_tray(self):
+        if self.worker is not None and self.worker.isRunning():
+            self.restore_from_tray()
+            QMessageBox.information(
+                self,
+                "Operation in progress",
+                "The launcher cannot quit while an installer operation is running.",
+            )
+            return
         self._quit_requested = True
         self.shutdown_apps()
         QApplication.instance().quit()
@@ -948,7 +974,9 @@ class PandratorInstaller(
             "magpie",
         )
         self.launch_backend_cards = {
-            key: card for key, card in zip(launch_card_keys, launch_cards) if key
+            key: card
+            for key, card in zip(launch_card_keys, launch_cards, strict=True)
+            if key
         }
         self.launch_backend_controls = {
             "rvc": self.launch_rvc_checkbox,
@@ -1411,17 +1439,16 @@ class PandratorInstaller(
         logging.info(text)
 
     def notify_error(self, title, message):
-        QMessageBox.critical(self, title, message)
+        self.error_requested.emit(str(title), str(message))
 
     def notify_warning(self, title, message):
-        def show_message():
-            QMessageBox.warning(self, title, message)
+        self.warning_requested.emit(str(title), str(message))
 
-        app = QApplication.instance()
-        if app is not None and QThread.currentThread() is not app.thread():
-            QTimer.singleShot(0, show_message)
-            return
-        show_message()
+    def _show_error_message(self, title, message):
+        QMessageBox.critical(self, title, message)
+
+    def _show_warning_message(self, title, message):
+        QMessageBox.warning(self, title, message)
 
     def create_gui_log_handler(self):
         return QtLogHandler(self.log_emitter)

@@ -1,0 +1,632 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>Pandrator setup and recovery</title>
+    <link rel="stylesheet" href="/recovery/styles.css" />
+    <script src="/recovery/app.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Setup and recovery</p>
+          <h1>Pandrator Manager</h1>
+          <p class="muted hero-copy">
+            Install, launch, and recover Pandrator without needing the
+            application itself to be running.
+          </p>
+        </div>
+        <div class="header-actions">
+          <span
+            id="manager-health"
+            class="health-indicator"
+            data-state="connecting"
+            role="status"
+            tabindex="0"
+            aria-label="Connecting to Pandrator Manager"
+          >
+            <span class="health-dot" aria-hidden="true"></span>
+            <span id="manager-health-text" class="visually-hidden">
+              Connecting to Pandrator Manager
+            </span>
+            <span
+              id="manager-health-tooltip"
+              class="status-tooltip"
+              aria-hidden="true"
+            >
+              Connecting…
+            </span>
+          </span>
+          <details id="session-menu" class="action-menu session-menu hidden">
+            <summary
+              id="session-summary"
+              class="icon-button"
+              aria-label="Browser authorization"
+              title="Browser authorization"
+            >
+              <svg aria-hidden="true" viewBox="0 0 24 24">
+                <path
+                  d="M12 3 5 6v5.2c0 4.4 2.9 8.3 7 9.8 4.1-1.5 7-5.4 7-9.8V6l-7-3Z"
+                />
+                <path d="M9.5 12.2 11.2 14l3.6-4" />
+              </svg>
+              <span id="session-summary-label" class="visually-hidden">
+                Browser authorized
+              </span>
+            </summary>
+            <div class="action-menu-popover session-popover">
+              <strong>Authorized browser</strong>
+              <p id="session-detail" class="meta"></p>
+              <p id="session-security-note" class="problem hidden"></p>
+              <button id="sign-out-session" class="button quiet" type="button">
+                Sign out this browser
+              </button>
+              <button
+                id="forget-browser-sessions"
+                class="button quiet danger"
+                type="button"
+              >
+                Forget all authorized browsers
+              </button>
+            </div>
+          </details>
+          <button
+            id="refresh"
+            class="icon-button"
+            type="button"
+            aria-label="Refresh manager status"
+            title="Refresh"
+          >
+            <svg aria-hidden="true" viewBox="0 0 24 24">
+              <path d="M20 11a8 8 0 1 0-2.3 5.7" />
+              <path d="M20 5v6h-6" />
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <div
+        id="message"
+        class="message hidden"
+        role="status"
+        aria-live="polite"
+      ></div>
+
+      <section
+        id="active-operation"
+        class="panel operation-panel hidden"
+        aria-live="polite"
+      >
+        <div class="row">
+          <div>
+            <p class="eyebrow">Installation activity</p>
+            <h2 id="operation-title">Working…</h2>
+            <p id="operation-detail" class="muted"></p>
+          </div>
+          <button
+            id="cancel-operation"
+            class="button secondary"
+            type="button"
+          >
+            Cancel safely
+          </button>
+        </div>
+        <progress
+          id="operation-progress"
+          class="progress"
+          max="1"
+          value="0"
+          aria-label="Operation progress"
+        ></progress>
+      </section>
+
+      <nav
+        class="manager-tabs"
+        role="tablist"
+        aria-label="Pandrator Manager sections"
+      >
+        <button
+          id="tab-install"
+          class="manager-tab"
+          type="button"
+          role="tab"
+          aria-selected="true"
+          aria-controls="panel-install"
+          data-tab="install"
+        >
+          Install &amp; launch
+        </button>
+        <button
+          id="tab-maintenance"
+          class="manager-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="panel-maintenance"
+          data-tab="maintenance"
+          tabindex="-1"
+        >
+          Maintenance
+        </button>
+        <button
+          id="tab-activity"
+          class="manager-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="panel-activity"
+          data-tab="activity"
+          tabindex="-1"
+        >
+          Activity
+        </button>
+      </nav>
+
+      <div
+        id="panel-install"
+        class="tab-panel"
+        role="tabpanel"
+        aria-labelledby="tab-install"
+        data-panel="install"
+      >
+        <section id="application-panel" class="panel application-panel">
+          <div class="application-copy">
+            <div class="application-heading">
+              <h2 id="application-title">Pandrator</h2>
+              <span id="application-state" class="application-state">
+                Checking…
+              </span>
+            </div>
+            <p id="application-detail" class="muted">
+              The manager is inspecting the application.
+            </p>
+            <div id="application-problem" class="problem hidden"></div>
+          </div>
+          <div class="application-actions">
+            <button
+              id="application-primary"
+              class="button primary"
+              type="button"
+              disabled
+            >
+              Please wait…
+            </button>
+            <details id="application-more" class="action-menu hidden">
+              <summary class="button secondary">More</summary>
+              <div class="action-menu-popover">
+                <button
+                  id="application-restart"
+                  class="button quiet"
+                  type="button"
+                >
+                  Restart Pandrator
+                </button>
+                <button
+                  id="application-stop"
+                  class="button quiet danger"
+                  type="button"
+                >
+                  Stop Pandrator
+                </button>
+              </div>
+            </details>
+          </div>
+        </section>
+
+        <div class="access-summary-row">
+          <div>
+            <span class="access-label">Access</span>
+            <strong id="network-summary">This device only</strong>
+            <span id="network-browser-url" class="meta"></span>
+          </div>
+          <button
+            id="open-network-settings"
+            class="text-button"
+            type="button"
+          >
+            Change
+          </button>
+        </div>
+
+        <section id="component-panel" class="panel component-panel">
+          <div class="setup-heading">
+            <p class="eyebrow">Optional speech engines</p>
+            <h2>Add only what you need</h2>
+            <p class="muted">
+              Choose several engines if you like. Expand one for language,
+              model, licence, compute, and download details before reviewing
+              one exact installation plan.
+            </p>
+          </div>
+          <div id="components" class="component-sections" aria-live="polite">
+            <p class="muted">Loading the engine catalogue…</p>
+          </div>
+        </section>
+
+        <div
+          id="selection-bar"
+          class="selection-bar hidden"
+          aria-live="polite"
+        >
+          <span id="selection-count">Nothing selected</span>
+          <button
+            id="review-selection"
+            class="button primary"
+            type="button"
+            disabled
+          >
+            Review installation
+          </button>
+        </div>
+      </div>
+
+      <div
+        id="panel-maintenance"
+        class="tab-panel"
+        role="tabpanel"
+        aria-labelledby="tab-maintenance"
+        data-panel="maintenance"
+        hidden
+      >
+        <section class="panel maintenance-overview">
+          <p class="eyebrow">Pandrator application</p>
+          <div class="row">
+            <div>
+              <h2>Updates and repair</h2>
+              <p id="application-maintenance-detail" class="muted">
+                Checking the Pandrator installation…
+              </p>
+            </div>
+            <div
+              id="application-maintenance-actions"
+              class="actions"
+            ></div>
+          </div>
+        </section>
+
+        <section class="panel manager-update-panel">
+          <div class="row">
+            <div>
+              <p class="eyebrow">Pandrator Manager</p>
+              <h2>Keep setup and recovery current</h2>
+              <p id="manager-update-status" class="muted">
+                Check the project-signed release channel for a newer Manager.
+              </p>
+            </div>
+            <button
+              id="check-manager-update"
+              class="button secondary"
+              type="button"
+            >
+              Check for update
+            </button>
+          </div>
+        </section>
+
+        <section class="panel network-panel">
+          <details id="network-details">
+            <summary>
+              <span>
+                <span class="eyebrow">Access and network</span>
+                <strong>Use Pandrator from another device</strong>
+              </span>
+              <span id="network-maintenance-summary" class="meta">
+                This device only
+              </span>
+            </summary>
+            <div class="network-content">
+              <p class="muted">
+                Useful for a rented GPU machine, a pod, or a home server. Local
+                access remains the safe default. Internet-facing deployments
+                should use an HTTPS ingress or reverse proxy.
+              </p>
+              <div class="network-grid">
+                <label>
+                  Access
+                  <select id="network-mode">
+                    <option value="local">Only on this device</option>
+                    <option value="private_network">
+                      Other devices on a trusted private network
+                    </option>
+                    <option value="https_proxy">
+                      HTTPS proxy or pod ingress
+                    </option>
+                  </select>
+                  <small id="network-mode-help">
+                    Pandrator listens only on this computer.
+                  </small>
+                </label>
+                <label>
+                  Pandrator port
+                  <input
+                    id="network-port"
+                    type="number"
+                    min="1"
+                    max="65535"
+                    value="8097"
+                    inputmode="numeric"
+                  />
+                </label>
+                <label class="network-remote-field">
+                  Address you will open
+                  <input
+                    id="network-public-url"
+                    type="url"
+                    autocomplete="url"
+                    placeholder="http://gpu-box.local:8097"
+                  />
+                  <small>
+                    Enter the exact address used on your workstation, including
+                    http:// or https://.
+                  </small>
+                </label>
+                <label class="network-remote-field">
+                  Listening interface
+                  <select id="network-bind-host">
+                    <option value="0.0.0.0">All IPv4 interfaces</option>
+                    <option value="::">All IPv6 interfaces</option>
+                    <option value="127.0.0.1">Loopback only</option>
+                  </select>
+                </label>
+                <label class="network-proxy-field">
+                  Trusted proxy hops
+                  <select id="network-proxy-hops">
+                    <option value="1">1 proxy</option>
+                    <option value="2">2 proxies</option>
+                    <option value="3">3 proxies</option>
+                  </select>
+                  <small>Trust only the proxies you explicitly operate.</small>
+                </label>
+                <label class="network-remote-field">
+                  Additional trusted names (optional)
+                  <input
+                    id="network-trusted-hosts"
+                    type="text"
+                    autocomplete="off"
+                    placeholder="gpu-box.local, 192.168.1.50"
+                  />
+                </label>
+                <label class="network-password-field">
+                  Owner password
+                  <input
+                    id="network-owner-password"
+                    type="password"
+                    autocomplete="new-password"
+                    minlength="10"
+                    placeholder="At least 10 characters"
+                  />
+                  <small id="network-password-help">
+                    Required before first network exposure; it is never saved
+                    by the manager.
+                  </small>
+                </label>
+                <label class="network-password-field">
+                  Confirm owner password
+                  <input
+                    id="network-owner-confirm"
+                    type="password"
+                    autocomplete="new-password"
+                    minlength="10"
+                  />
+                </label>
+              </div>
+              <div id="network-warning" class="problem hidden"></div>
+              <div class="row network-footer">
+                <div>
+                  <p id="manager-network-detail" class="meta"></p>
+                  <p class="meta">
+                    Exposing this setup manager itself is a separate, explicit
+                    launcher/deployment setting. Its launch links are one-use;
+                    the browser authorization they create can be remembered.
+                  </p>
+                </div>
+                <button id="save-network" class="button primary" type="button">
+                  Save access settings
+                </button>
+              </div>
+            </div>
+          </details>
+        </section>
+
+        <section class="panel">
+          <div class="row">
+            <div>
+              <p class="eyebrow">Recovery tools</p>
+              <h2>Diagnostics, migration, and uninstall</h2>
+              <p class="muted">
+                Check the installation, import a positively identified legacy
+                workspace, or use advanced recovery controls.
+              </p>
+            </div>
+            <button id="run-doctor" class="button secondary" type="button">
+              Run diagnostics
+            </button>
+          </div>
+
+          <div id="doctor-summary" class="maintenance-result muted">
+            Diagnostics have not been run in this session.
+          </div>
+
+          <div class="maintenance-grid">
+            <div class="maintenance-block">
+              <h3>Existing Qt-era installation</h3>
+              <p class="muted">
+                Inspect and import positively identified components without
+                deleting unknown files, projects, voices, models, or databases.
+              </p>
+              <button
+                id="inspect-legacy"
+                class="button secondary"
+                type="button"
+              >
+                Inspect existing installation
+              </button>
+              <div id="legacy-status" class="meta"></div>
+            </div>
+
+            <details class="maintenance-block advanced-update">
+              <summary>Advanced or offline signed update</summary>
+              <p class="muted">
+                Select a project-signed Pandrator or manager manifest only when
+                using an offline/recovery release. This Ed25519 release
+                signature is independent of Windows executable publisher
+                signing.
+              </p>
+              <label>
+                Signed JSON manifest
+                <input
+                  id="release-manifest"
+                  type="file"
+                  accept="application/json,.json"
+                />
+              </label>
+              <label class="check-row">
+                <input id="release-offline" type="checkbox" />
+                Require the exact artifact to already be in the verified cache
+              </label>
+              <label class="check-row">
+                <input id="release-keep-stopped" type="checkbox" />
+                Leave Pandrator stopped after activation
+              </label>
+              <button
+                id="review-release"
+                class="button secondary"
+                type="button"
+              >
+                Review signed update
+              </button>
+              <div id="release-status" class="meta"></div>
+            </details>
+
+            <details class="maintenance-block danger-zone">
+              <summary>Uninstall Pandrator</summary>
+              <p class="muted">
+                Managed software and services are removed. Projects and
+                generated media are preserved unless you explicitly choose to
+                purge them.
+              </p>
+              <label>
+                Optional new ZIP export path
+                <input
+                  id="uninstall-export"
+                  type="text"
+                  autocomplete="off"
+                  placeholder="C:\Backups\Pandrator-data.zip or /home/me/Pandrator-data.zip"
+                />
+              </label>
+              <label class="check-row danger-text">
+                <input id="uninstall-purge" type="checkbox" />
+                Permanently purge user data after any export
+              </label>
+              <button
+                id="review-uninstall"
+                class="button secondary danger"
+                type="button"
+              >
+                Review uninstall
+              </button>
+            </details>
+          </div>
+        </section>
+      </div>
+
+      <div
+        id="panel-activity"
+        class="tab-panel"
+        role="tabpanel"
+        aria-labelledby="tab-activity"
+        data-panel="activity"
+        hidden
+      >
+        <section class="panel activity-panel">
+          <p class="eyebrow">Activity</p>
+          <h2>Operations and technical details</h2>
+          <p class="muted">
+            Follow recent manager actions. Service and manager internals remain
+            available here for troubleshooting.
+          </p>
+          <div class="diagnostics">
+            <div>
+              <h3>Recent activity</h3>
+              <div id="activity"></div>
+            </div>
+            <div>
+              <h3>Advanced service details</h3>
+              <p class="muted">
+                These API and worker processes are shown for troubleshooting.
+                Normal use requires only the single Pandrator control above.
+              </p>
+              <div id="services" class="service-list"></div>
+            </div>
+            <div>
+              <h3>Manager status</h3>
+              <pre id="status">Connecting…</pre>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <dialog id="trust-browser-dialog">
+      <form method="dialog" class="dialog-shell">
+        <p class="eyebrow">Trusted private network</p>
+        <h2>Authorize this browser?</h2>
+        <p class="muted">
+          This manager address uses unencrypted HTTP. Continue only on a home
+          network, private VPN, or another network you trust.
+        </p>
+        <label class="check-row trust-browser-choice">
+          <input id="remember-browser" type="checkbox" checked />
+          Remember this browser for convenient future access
+        </label>
+        <p class="problem">
+          A remembered authorization can be intercepted by another device that
+          can observe or manipulate this network. Use HTTPS for a rented server
+          or any untrusted network.
+        </p>
+        <div class="dialog-actions">
+          <button class="button secondary" value="session" type="submit">
+            Use until this browser closes
+          </button>
+          <button class="button primary" value="continue" type="submit">
+            Continue
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="plan-dialog">
+      <div class="dialog-shell">
+        <div class="row">
+          <div>
+            <p class="eyebrow">Review exact plan</p>
+            <h2 id="plan-title">Installation plan</h2>
+          </div>
+          <button
+            id="close-plan"
+            class="button icon secondary"
+            type="button"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+        <div id="plan-summary" class="plan-summary"></div>
+        <h3>What the manager will do</h3>
+        <ol id="plan-tasks"></ol>
+        <div id="plan-confirmations"></div>
+        <div class="dialog-actions">
+          <button id="cancel-plan" class="button secondary" type="button">
+            Go back
+          </button>
+          <button id="confirm-plan" class="button primary" type="button">
+            Confirm exact plan
+          </button>
+        </div>
+      </div>
+    </dialog>
+  </body>
+</html>

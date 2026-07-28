@@ -8,6 +8,7 @@
     Github, Home, Languages, Library, LogOut, Menu, Mic2, Moon, ServerCog, Settings2, ShieldAlert, Sun, X
   } from '@lucide/svelte';
   import { appState } from '$lib/app-state.svelte';
+  import ManagerOperationBanner from '$lib/ManagerOperationBanner.svelte';
 
   let { children }: { children: Snippet } = $props();
   let password = $state('');
@@ -86,7 +87,7 @@
       </div>
     </aside>
     <div class="content-column flex min-h-screen min-w-0 flex-col md:col-start-2">
-      <main class="min-w-0 flex-1 px-5 pb-12 pt-20 sm:px-8 md:px-10 md:pt-9 xl:px-14">{#if appState.securityWarning}<div role="alert" class="mb-5 flex items-start gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-xs leading-relaxed"><ShieldAlert class="mt-0.5 shrink-0" size={16}/><span>{appState.securityWarning}</span></div>{/if}{@render children()}</main>
+      <main class="min-w-0 flex-1 px-5 pb-12 pt-20 sm:px-8 md:px-10 md:pt-9 xl:px-14">{#if appState.securityWarning}<div role="alert" class="mb-5 flex items-start gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-xs leading-relaxed"><ShieldAlert class="mt-0.5 shrink-0" size={16}/><span>{appState.securityWarning}</span></div>{/if}<ManagerOperationBanner/>{@render children()}</main>
       <footer class="app-footer mx-5 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] py-5 text-xs sm:mx-8 md:mx-10 xl:mx-14"><span class="muted">Pandrator · created by Łukasz Liniewicz</span><a href="https://github.com/lukaszliniewicz/Pandrator" target="_blank" rel="noreferrer" class="inline-flex items-center gap-1.5 font-semibold text-[var(--accent)]"><Github size={14}/> Source on GitHub</a></footer>
     </div>
   </div>

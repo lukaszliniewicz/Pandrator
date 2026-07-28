@@ -332,6 +332,67 @@ class TtsVoicePreviewRequest(StrictModel):
     language: str = Field(default="", max_length=40)
 
 
+class ManagerDesiredComponentState(StrictModel):
+    present: bool = True
+    compute: Literal[
+        "auto",
+        "cpu",
+        "cuda",
+        "vulkan",
+        "metal",
+        "rocm",
+        "wgpu",
+    ] = "auto"
+    quantization: str | None = Field(default=None, max_length=120)
+    options: dict[str, Any] = Field(default_factory=dict)
+
+
+class ManagerPlanRequest(StrictModel):
+    kind: Literal[
+        "install",
+        "update",
+        "repair",
+        "remove",
+        "uninstall",
+        "start",
+        "stop",
+        "restart",
+        "import",
+    ]
+    desired: dict[str, ManagerDesiredComponentState]
+    expected_revision: int | None = Field(default=None, ge=0)
+
+
+class ManagerReleasePlanRequest(StrictModel):
+    """Signed product release envelope forwarded without adding trust inputs."""
+
+    manifest: dict[str, Any]
+    expected_revision: int | None = Field(default=None, ge=0)
+    offline: bool = False
+    start_after_activation: bool = True
+
+
+class ManagerUninstallPlanRequest(StrictModel):
+    expected_revision: int | None = Field(default=None, ge=0)
+    purge_data: bool = False
+    export_data: str | None = Field(default=None, min_length=1, max_length=4096)
+
+
+class ManagerLegacyImportRequest(StrictModel):
+    source_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    confirmed: bool = True
+
+
+class ManagerOperationRequest(StrictModel):
+    plan_id: str = Field(min_length=1, max_length=160)
+    plan_digest: str = Field(min_length=32, max_length=256)
+    accepted_confirmations: list[str] = Field(default_factory=list)
+
+
+class ManagerRuntimeRequest(StrictModel):
+    service_ids: list[str] = Field(default_factory=list)
+
+
 class AgentRunCreateRequest(StrictModel):
     source_artifact_id: str
     settings: dict[str, Any] = Field(default_factory=dict)
@@ -364,6 +425,13 @@ SCHEMA_MODELS = {
         VoiceCreate,
         VoiceTranscriptReview,
         TtsVoicePreviewRequest,
+        ManagerDesiredComponentState,
+        ManagerPlanRequest,
+        ManagerReleasePlanRequest,
+        ManagerUninstallPlanRequest,
+        ManagerLegacyImportRequest,
+        ManagerOperationRequest,
+        ManagerRuntimeRequest,
         RvcModelUploadRequest,
         RvcConvertRequest,
         TrainingCreateRequest,

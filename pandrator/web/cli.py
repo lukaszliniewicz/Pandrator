@@ -3,20 +3,22 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import os
-import socket
 import shutil
+import socket
 import sys
 import uuid
 import webbrowser
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import requests
-
-from waitress import serve as waitress_serve
 from sqlalchemy import select
+from waitress import serve as waitress_serve
 
 from pandrator.runtime import DataPaths
 
@@ -25,10 +27,21 @@ from .artifacts import ArtifactService, sha256_file
 from .auth import AuthService, BootstrapTokenStore
 from .bundles import SessionBundleService
 from .database import Database
-from .jobs import JobQueue, Worker, noop_handler
 from .job_registry import JobHandlerRegistry
+from .jobs import JobQueue, Worker, noop_handler
 from .legacy_migration import import_legacy_data
-from .models import Artifact, Provider, ProviderModel, SessionRecord, SourceRecord, TrainingRun, Voice, VoiceSample, new_id, utcnow
+from .models import (
+    Artifact,
+    Provider,
+    ProviderModel,
+    SessionRecord,
+    SourceRecord,
+    TrainingRun,
+    Voice,
+    VoiceSample,
+    new_id,
+    utcnow,
+)
 from .openapi import build_openapi_document
 from .process_guard import WorkerPresence
 from .sessions import SessionService
@@ -163,7 +176,8 @@ def command_remote(args) -> int:
         elif args.rvc_command == "upload":
             result = _remote_api(args, "POST", "/rvc/models", payload={"pth_artifact_id": _remote_upload(args, args.weights), "index_artifact_id": _remote_upload(args, args.index)})
         else:
-            settings = json.loads(args.settings); settings["rvc_model"] = args.model
+            settings = json.loads(args.settings)
+            settings["rvc_model"] = args.model
             result = _remote_api(args, "POST", "/rvc/convert", payload={"source_artifact_id": args.artifact_id, "session_id": args.session_id, "settings": settings})
     elif command == "training":
         if args.training_command == "list":
@@ -212,19 +226,182 @@ def command_migrate(args) -> int:
     return 0
 
 
+@dataclass(frozen=True, slots=True)
+class ServeNetworkProfile:
+    public_url: str
+    public_scheme: str
+    remote: bool
+    trusted_hosts: tuple[str, ...]
+    browser_url: str
+
+
+def _loopback_bind_host(value: str) -> bool:
+    candidate = str(value or "").strip().split("%", 1)[0]
+    if candidate.lower() == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(candidate)
+    except ValueError:
+        return False
+    mapped = getattr(address, "ipv4_mapped", None)
+    return bool(address.is_loopback or (mapped and mapped.is_loopback))
+
+
+def _exact_trusted_host(value: str) -> str:
+    candidate = str(value or "").strip().lower().rstrip(".")
+    if candidate.startswith("[") and candidate.endswith("]"):
+        candidate = candidate[1:-1]
+    if not candidate or any(character in candidate for character in "/?#@*"):
+        raise ValueError("Trusted hosts must be exact hostnames or IP addresses.")
+    try:
+        address = ipaddress.ip_address(candidate.split("%", 1)[0])
+    except ValueError:
+        if (
+            len(candidate) > 253
+            or any(
+                not label
+                or len(label) > 63
+                or label.startswith("-")
+                or label.endswith("-")
+                or not all(
+                    character.isalnum() or character == "-"
+                    for character in label
+                )
+                for label in candidate.split(".")
+            )
+        ):
+            raise ValueError("Trusted host is not a valid hostname.") from None
+        return candidate
+    return f"[{candidate}]" if address.version == 6 else candidate
+
+
+def serve_network_profile(args) -> ServeNetworkProfile:
+    """Validate browser-facing access before touching the application database."""
+
+    public_url = str(args.public_url or "").strip().rstrip("/")
+    public_scheme = ""
+    public_hostname = ""
+    public_port = None
+    if public_url:
+        parsed_public = urlsplit(public_url)
+        try:
+            invalid_public_url = (
+                parsed_public.scheme not in {"http", "https"}
+                or not parsed_public.hostname
+                or parsed_public.username
+                or parsed_public.password
+                or parsed_public.path not in {"", "/"}
+                or parsed_public.query
+                or parsed_public.fragment
+                or (
+                    parsed_public.port is not None
+                    and not 1 <= parsed_public.port <= 65535
+                )
+            )
+        except ValueError:
+            invalid_public_url = True
+        if invalid_public_url:
+            raise ValueError(
+                "--public-url must be an HTTP(S) origin without credentials, "
+                "a path, a query, or a fragment."
+            )
+        public_scheme = parsed_public.scheme.lower()
+        public_hostname = str(parsed_public.hostname or "").lower().rstrip(".")
+        public_port = parsed_public.port
+        public_url = urlunsplit(
+            (
+                public_scheme,
+                parsed_public.netloc.lower(),
+                "",
+                "",
+                "",
+            )
+        )
+
+    remote = not _loopback_bind_host(args.host) or bool(public_url)
+    if remote and not public_url:
+        raise ValueError(
+            "Remote mode requires the exact workstation-facing --public-url."
+        )
+    if remote and public_scheme == "https":
+        if args.proxy_hops < 1:
+            raise ValueError(
+                "An HTTPS public URL requires --proxy-hops for the explicitly "
+                "trusted reverse proxy."
+            )
+        if args.allow_insecure_remote:
+            raise ValueError(
+                "--allow-insecure-remote cannot be combined with an HTTPS "
+                "public URL."
+            )
+    elif remote:
+        if not args.allow_insecure_remote:
+            raise ValueError(
+                "Refusing remote plain HTTP without --allow-insecure-remote. "
+                "Prefer an HTTPS reverse proxy or pod ingress."
+            )
+        if args.proxy_hops:
+            raise ValueError(
+                "Private-network HTTP cannot trust forwarded proxy headers."
+            )
+        if (public_port or 80) != args.port:
+            raise ValueError(
+                "A private-network public URL port must match --port because "
+                "no reverse proxy is configured."
+            )
+
+    trusted = ["localhost", "127.0.0.1", "[::1]"]
+    if public_hostname:
+        trusted.append(public_hostname)
+    trusted.extend(args.trusted_host or ())
+    trusted_hosts = tuple(
+        dict.fromkeys(_exact_trusted_host(value) for value in trusted)
+    )
+    url_host = "127.0.0.1" if args.host in {"0.0.0.0", "::"} else args.host
+    if ":" in url_host and not url_host.startswith("["):
+        url_host = f"[{url_host}]"
+    return ServeNetworkProfile(
+        public_url=public_url,
+        public_scheme=public_scheme,
+        remote=remote,
+        trusted_hosts=trusted_hosts,
+        browser_url=public_url or f"http://{url_host}:{args.port}",
+    )
+
+
 def command_serve(args) -> int:
+    owner_password = str(
+        os.environ.pop("PANDRATOR_OWNER_PASSWORD", "") or ""
+    )
+    try:
+        network = serve_network_profile(args)
+    except ValueError as error:
+        owner_password = ""
+        print(str(error), file=sys.stderr)
+        return 3
+
     paths, database = _database(args)
-    auth = AuthService(database)
-    database.dispose()
-    remote = args.host not in {"127.0.0.1", "localhost", "::1"}
-    if remote and not auth.initialized():
-        print("Remote mode requires an initialized owner password. Run 'pandrator auth init' first.", file=sys.stderr)
-        return 3
-    if remote and not args.allow_insecure_remote:
-        print("Refusing non-loopback HTTP without --allow-insecure-remote. Put Pandrator behind an HTTPS reverse proxy.", file=sys.stderr)
-        return 3
-    if remote and not args.trusted_host:
-        print("Remote mode requires at least one --trusted-host value.", file=sys.stderr)
+    initialized = False
+    try:
+        auth = AuthService(database)
+        initialized = auth.initialized()
+        if network.remote and not initialized and owner_password:
+            try:
+                auth.initialize_owner(owner_password)
+            except ValueError as error:
+                print(str(error), file=sys.stderr)
+                return 3
+            initialized = True
+    finally:
+        database.dispose()
+        owner_password = ""
+    if network.remote and not initialized:
+        print(
+            "Remote mode requires an initialized owner password. Run "
+            "'pandrator auth init' first or provide PANDRATOR_OWNER_PASSWORD "
+            "for first startup.",
+            file=sys.stderr,
+        )
         return 3
 
     bootstrap = BootstrapTokenStore()
@@ -233,17 +410,29 @@ def command_serve(args) -> int:
         bootstrap.add(initial)
     app = create_app(
         data_root=paths.root,
-        trusted_hosts=args.trusted_host or None,
+        trusted_hosts=list(network.trusted_hosts),
         proxy_hops=args.proxy_hops,
-        secure_cookies=remote and not args.allow_insecure_remote,
+        secure_cookies=network.public_scheme == "https",
         bootstrap_tokens=bootstrap,
     )
-    url_host = "127.0.0.1" if args.host in {"0.0.0.0", "::"} else args.host
     if args.open_browser:
         token = bootstrap.issue()
-        webbrowser.open(f"http://{url_host}:{args.port}/#bootstrap={token}")
-    print(f"Pandrator API listening on http://{args.host}:{args.port}")
-    waitress_serve(app, host=args.host, port=args.port, threads=max(6, args.threads), url_scheme="http")
+        webbrowser.open(f"{network.browser_url}/#bootstrap={token}")
+    print(
+        f"Pandrator API listening on http://{args.host}:{args.port}"
+        + (
+            f" (public URL: {network.browser_url})"
+            if network.public_url
+            else ""
+        )
+    )
+    waitress_serve(
+        app,
+        host=args.host,
+        port=args.port,
+        threads=max(6, args.threads),
+        url_scheme="http",
+    )
     return 0
 
 
@@ -619,7 +808,8 @@ def command_training_start(args) -> int:
             record = session.get(TrainingRun, training_id)
             record.job_id = job.id
             record.updated_at = utcnow()
-        payload = _job_dict(job); payload["training_id"] = training_id
+        payload = _job_dict(job)
+        payload["training_id"] = training_id
         _emit(payload, args.json)
         return 0
     finally:
@@ -690,6 +880,10 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--threads", type=int, default=12)
     serve.add_argument("--trusted-host", action="append", default=[])
     serve.add_argument("--proxy-hops", type=int, choices=range(0, 4), default=0, help="Trust this many explicitly configured reverse proxies.")
+    serve.add_argument(
+        "--public-url",
+        help="Exact browser-facing HTTP(S) origin when using LAN access or a reverse proxy.",
+    )
     serve.add_argument("--allow-insecure-remote", action="store_true")
     serve.add_argument("--open-browser", action=argparse.BooleanOptionalAction, default=True)
     serve.set_defaults(handler=command_serve)

@@ -593,6 +593,238 @@
         "title": "LoginRequest",
         "type": "object"
       },
+      "ManagerDesiredComponentState": {
+        "additionalProperties": false,
+        "properties": {
+          "compute": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "cpu",
+              "cuda",
+              "vulkan",
+              "metal",
+              "rocm",
+              "wgpu"
+            ],
+            "title": "Compute",
+            "type": "string"
+          },
+          "options": {
+            "additionalProperties": true,
+            "title": "Options",
+            "type": "object"
+          },
+          "present": {
+            "default": true,
+            "title": "Present",
+            "type": "boolean"
+          },
+          "quantization": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Quantization"
+          }
+        },
+        "title": "ManagerDesiredComponentState",
+        "type": "object"
+      },
+      "ManagerLegacyImportRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed": {
+            "default": true,
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "source_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Source Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_digest"
+        ],
+        "title": "ManagerLegacyImportRequest",
+        "type": "object"
+      },
+      "ManagerOperationRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted_confirmations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Accepted Confirmations",
+            "type": "array"
+          },
+          "plan_digest": {
+            "maxLength": 256,
+            "minLength": 32,
+            "title": "Plan Digest",
+            "type": "string"
+          },
+          "plan_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Plan Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "plan_id",
+          "plan_digest"
+        ],
+        "title": "ManagerOperationRequest",
+        "type": "object"
+      },
+      "ManagerPlanRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "desired": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ManagerDesiredComponentState"
+            },
+            "title": "Desired",
+            "type": "object"
+          },
+          "expected_revision": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Revision"
+          },
+          "kind": {
+            "enum": [
+              "install",
+              "update",
+              "repair",
+              "remove",
+              "uninstall",
+              "start",
+              "stop",
+              "restart",
+              "import"
+            ],
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "desired"
+        ],
+        "title": "ManagerPlanRequest",
+        "type": "object"
+      },
+      "ManagerReleasePlanRequest": {
+        "additionalProperties": false,
+        "description": "Signed product release envelope forwarded without adding trust inputs.",
+        "properties": {
+          "expected_revision": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Revision"
+          },
+          "manifest": {
+            "additionalProperties": true,
+            "title": "Manifest",
+            "type": "object"
+          },
+          "offline": {
+            "default": false,
+            "title": "Offline",
+            "type": "boolean"
+          },
+          "start_after_activation": {
+            "default": true,
+            "title": "Start After Activation",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "manifest"
+        ],
+        "title": "ManagerReleasePlanRequest",
+        "type": "object"
+      },
+      "ManagerRuntimeRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "service_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Service Ids",
+            "type": "array"
+          }
+        },
+        "title": "ManagerRuntimeRequest",
+        "type": "object"
+      },
+      "ManagerUninstallPlanRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Revision"
+          },
+          "export_data": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Export Data"
+          },
+          "purge_data": {
+            "default": false,
+            "title": "Purge Data",
+            "type": "boolean"
+          }
+        },
+        "title": "ManagerUninstallPlanRequest",
+        "type": "object"
+      },
       "ModelCreate": {
         "additionalProperties": false,
         "properties": {
@@ -2727,6 +2959,274 @@
         "responses": {
           "200": {
             "description": "Durable job event and log timeline"
+          }
+        }
+      }
+    },
+    "/api/v1/manager/components": {
+      "get": {
+        "operationId": "listManagerComponents",
+        "responses": {
+          "200": {
+            "description": "Manager component inventory"
+          }
+        }
+      }
+    },
+    "/api/v1/manager/doctor": {
+      "get": {
+        "operationId": "getManagerDoctorReport",
+        "responses": {
+          "200": {
+            "description": "Non-mutating host diagnostics"
+          }
+        }
+      }
+    },
+    "/api/v1/manager/legacy": {
+      "get": {
+        "operationId": "getManagerLegacyImportReport",
+        "responses": {
+          "200": {
+            "description": "Read-only legacy workspace inspection"
+          }
+        }
+      }
+    },
+    "/api/v1/manager/legacy/import": {
+      "post": {
+        "operationId": "importManagerLegacyWorkspace",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManagerLegacyImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Import the exact reviewed legacy workspace"
+          }
+        }
+      }
+    },
+    "/api/v1/manager/logs": {
+      "get": {
+        "operationId": "getManagerLogs",
+        "responses": {
+          "200": {
+            "description": "Bounded managed-service log tail"
+          }
+        }
+      }
+    },
+    "/api/v1/manager/operations": {
+      "get": {
+        "operationId": "listManagerOperations",
+        "responses": {
+          "200": {
+            "description": "Durable manager operations"
+          }
+        }
+      },
+      "post": {
+        "operationId": "submitManagerOperation",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManagerOperationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Manager operation accepted"
+          }
+        }
+      }
+    },
+    "/api/v1/manager/operations/{operationId}": {
+      "get": {
+        "operationId": "getManagerOperation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "operationId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Durable manager operation"
+          }
+        }
+      }
+    },
+    "/api/v1/manager/operations/{operationId}/cancel": {
+      "post": {
+        "operationId": "cancelManagerOperation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "operationId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Safe cancellation requested"
+          }
+        }
+      }
+    },
+    "/api/v1/manager/operations/{operationId}/tasks": {
+      "get": {
+        "operationId": "listManagerOperationTasks",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "operationId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Durable manager operation tasks"
+          }
+        }
+      }
+    },
+    "/api/v1/manager/plans": {
+      "post": {
+        "operationId": "createManagerPlan",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManagerPlanRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Immutable manager plan"
+          }
+        }
+      }
+    },
+    "/api/v1/manager/releases": {
+      "get": {
+        "operationId": "listManagerReleases",
+        "responses": {
+          "200": {
+            "description": "Accepted product releases and activation slots"
+          }
+        }
+      }
+    },
+    "/api/v1/manager/releases/plans": {
+      "post": {
+        "operationId": "createManagerReleasePlan",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManagerReleasePlanRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Immutable signed product release plan"
+          }
+        }
+      }
+    },
+    "/api/v1/manager/runtime/{action}": {
+      "post": {
+        "operationId": "controlManagerRuntime",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "action",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManagerRuntimeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Managed runtime action completed"
+          }
+        }
+      }
+    },
+    "/api/v1/manager/services": {
+      "get": {
+        "operationId": "listManagerServices",
+        "responses": {
+          "200": {
+            "description": "Manager service inventory"
+          }
+        }
+      }
+    },
+    "/api/v1/manager/status": {
+      "get": {
+        "operationId": "getManagerStatus",
+        "responses": {
+          "200": {
+            "description": "Local manager availability and status"
+          }
+        }
+      }
+    },
+    "/api/v1/manager/uninstall/plans": {
+      "post": {
+        "operationId": "createManagerUninstallPlan",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManagerUninstallPlanRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Immutable whole-product uninstall plan"
           }
         }
       }

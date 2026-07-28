@@ -135,6 +135,10 @@ class DomainBlueprints:
     def delete(self, rule: str, **options: Any):
         return self._decorator("delete", rule, **options)
 
+    def route(self, rule: str, **options: Any):
+        blueprint = self._blueprints[route_domain(rule)]
+        return blueprint.route(rule, **options)
+
     def register(self, app: Flask) -> None:
         if self._registered:
             raise RuntimeError("Domain Blueprints have already been registered.")

@@ -450,14 +450,25 @@ def crispasr_install_preferences(paths: DataPaths) -> dict[str, Any]:
             config = loaded
             break
 
-    raw_engine = str(config.get("crispasr_engine") or "whisper-large-v3")
+    environment_engine = str(
+        os.environ.get("CRISPASR_DEFAULT_ENGINE") or ""
+    ).strip()
+    environment_quantization = str(
+        os.environ.get("CRISPASR_DEFAULT_QUANTIZATION") or ""
+    ).strip()
+    raw_engine = str(
+        environment_engine
+        or config.get("crispasr_engine")
+        or "whisper-large-v3"
+    )
     engine = normalize_engine(raw_engine)
     quantization = normalize_model_quantization(
-        config.get("crispasr_model_quantization"),
+        environment_quantization
+        or config.get("crispasr_model_quantization"),
         engine,
     )
     return {
-        "configured": bool(config),
+        "configured": bool(config or environment_engine or environment_quantization),
         "engine": engine,
         "quantization": quantization,
     }

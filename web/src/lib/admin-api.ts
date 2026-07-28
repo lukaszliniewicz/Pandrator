@@ -1,4 +1,4 @@
-import { typedApiJson, type ApiSchema } from './api';
+import { apiJson, typedApiJson, type ApiSchema } from './api';
 import type {
   ArtifactRecord,
   ItemPage,
@@ -175,6 +175,138 @@ export const providerApi = {
       '/api/v1/providers/{providerId}/test',
       'post',
       { path: { providerId }, body }
+    )
+};
+
+export const managerApi = {
+  status: <T>() =>
+    typedApiJson<'/api/v1/manager/status', 'get', T>(
+      '/api/v1/manager/status',
+      'get'
+    ),
+  components: <T>() =>
+    typedApiJson<'/api/v1/manager/components', 'get', T>(
+      '/api/v1/manager/components',
+      'get'
+    ),
+  doctor: <T>() =>
+    typedApiJson<'/api/v1/manager/doctor', 'get', T>(
+      '/api/v1/manager/doctor',
+      'get'
+    ),
+  legacy: <T>() =>
+    typedApiJson<'/api/v1/manager/legacy', 'get', T>(
+      '/api/v1/manager/legacy',
+      'get'
+    ),
+  importLegacy: <T>(body: ApiSchema<'ManagerLegacyImportRequest'>) =>
+    typedApiJson<'/api/v1/manager/legacy/import', 'post', T>(
+      '/api/v1/manager/legacy/import',
+      'post',
+      {
+        headers: { 'Idempotency-Key': crypto.randomUUID() },
+        body
+      }
+    ),
+  services: <T>() =>
+    typedApiJson<'/api/v1/manager/services', 'get', T>(
+      '/api/v1/manager/services',
+      'get'
+    ),
+  releases: <T>() =>
+    typedApiJson<'/api/v1/manager/releases', 'get', T>(
+      '/api/v1/manager/releases',
+      'get'
+    ),
+  releasePlan: <T>(body: ApiSchema<'ManagerReleasePlanRequest'>) =>
+    typedApiJson<'/api/v1/manager/releases/plans', 'post', T>(
+      '/api/v1/manager/releases/plans',
+      'post',
+      {
+        headers: { 'Idempotency-Key': crypto.randomUUID() },
+        body
+      }
+    ),
+  uninstallPlan: <T>(body: ApiSchema<'ManagerUninstallPlanRequest'>) =>
+    typedApiJson<'/api/v1/manager/uninstall/plans', 'post', T>(
+      '/api/v1/manager/uninstall/plans',
+      'post',
+      {
+        headers: { 'Idempotency-Key': crypto.randomUUID() },
+        body
+      }
+    ),
+  operations: <T>() =>
+    typedApiJson<'/api/v1/manager/operations', 'get', T>(
+      '/api/v1/manager/operations',
+      'get'
+    ),
+  operation: <T>(operationId: string) =>
+    typedApiJson<'/api/v1/manager/operations/{operationId}', 'get', T>(
+      '/api/v1/manager/operations/{operationId}',
+      'get',
+      { path: { operationId } }
+    ),
+  operationTasks: <T>(operationId: string) =>
+    typedApiJson<
+      '/api/v1/manager/operations/{operationId}/tasks',
+      'get',
+      T
+    >(
+      '/api/v1/manager/operations/{operationId}/tasks',
+      'get',
+      { path: { operationId } }
+    ),
+  plan: <T>(body: ApiSchema<'ManagerPlanRequest'>) =>
+    typedApiJson<'/api/v1/manager/plans', 'post', T>(
+      '/api/v1/manager/plans',
+      'post',
+      {
+      headers: { 'Idempotency-Key': crypto.randomUUID() },
+      body
+      }
+    ),
+  submit: <T>(body: ApiSchema<'ManagerOperationRequest'>) =>
+    typedApiJson<'/api/v1/manager/operations', 'post', T>(
+      '/api/v1/manager/operations',
+      'post',
+      {
+        headers: { 'Idempotency-Key': crypto.randomUUID() },
+        body
+      }
+    ),
+  cancel: <T>(operationId: string) =>
+    typedApiJson<
+      '/api/v1/manager/operations/{operationId}/cancel',
+      'post',
+      T
+    >(
+      '/api/v1/manager/operations/{operationId}/cancel',
+      'post',
+      {
+        headers: { 'Idempotency-Key': crypto.randomUUID() },
+        path: { operationId }
+      }
+    ),
+  runtime: <T>(
+    action: 'start' | 'stop' | 'restart',
+    serviceIds: string[]
+  ) =>
+    typedApiJson<'/api/v1/manager/runtime/{action}', 'post', T>(
+      '/api/v1/manager/runtime/{action}',
+      'post',
+      {
+        headers: { 'Idempotency-Key': crypto.randomUUID() },
+        path: { action },
+        body: { service_ids: serviceIds }
+      }
+    ),
+  logs: <T>(serviceId: string, bytes = 65536) =>
+    apiJson<T>(
+      `/api/v1/manager/logs?${new URLSearchParams({
+        service_id: serviceId,
+        bytes: String(bytes)
+      })}`
     )
 };
 

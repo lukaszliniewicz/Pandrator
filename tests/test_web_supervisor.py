@@ -1,7 +1,9 @@
 import json
 import os
+import socket
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -9,6 +11,7 @@ from unittest import mock
 from pandrator_installer.supervisor import (
     InstanceAlreadyRunning,
     InstanceLock,
+    ManagedProcess,
     ManagedProcessSpec,
     ProcessSupervisor,
     load_runtime_manifest,
@@ -36,6 +39,55 @@ class InstanceLockTests(unittest.TestCase):
             lock.acquire()
             self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["instance_id"], lock.instance_id)
             lock.release()
+
+    def test_malformed_json_values_are_replaced_without_crashing(self):
+        for payload in ({"pid": "not-a-number"}, ["not", "an", "object"]):
+            with self.subTest(payload=payload), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "instance.lock"
+                path.write_text(json.dumps(payload), encoding="utf-8")
+                lock = InstanceLock(path)
+                lock.acquire()
+                current = json.loads(path.read_text(encoding="utf-8"))
+                self.assertEqual(current["instance_id"], lock.instance_id)
+                self.assertIn("process_create_time", current)
+                self.assertIn("executable", current)
+                lock.release()
+
+    def test_reused_live_pid_with_different_identity_is_replaced(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "instance.lock"
+            path.write_text(
+                json.dumps(
+                    {
+                        "pid": os.getpid(),
+                        "instance_id": "stale",
+                        "process_create_time": 0.0,
+                        "executable": sys.executable,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            lock = InstanceLock(path)
+            lock.acquire()
+            self.assertEqual(
+                json.loads(path.read_text(encoding="utf-8"))["instance_id"],
+                lock.instance_id,
+            )
+            lock.release()
+
+    def test_live_legacy_lock_without_full_identity_is_not_removed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "instance.lock"
+            path.write_text(
+                json.dumps({"pid": os.getpid(), "instance_id": "legacy"}),
+                encoding="utf-8",
+            )
+            with self.assertRaises(InstanceAlreadyRunning):
+                InstanceLock(path).acquire()
+            self.assertEqual(
+                json.loads(path.read_text(encoding="utf-8"))["instance_id"],
+                "legacy",
+            )
 
 
 class SupervisorTests(unittest.TestCase):
@@ -79,6 +131,132 @@ class SupervisorTests(unittest.TestCase):
             manifest.write_text(json.dumps({"processes": [{"key": "bad", "command": "shell command"}]}), encoding="utf-8")
             with self.assertRaises(ValueError):
                 load_runtime_manifest(manifest)
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "processes": [
+                            {
+                                "key": "bad-health",
+                                "command": [sys.executable, "-c", "pass"],
+                                "health_expected": ["not", "an", "object"],
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "health expectation"):
+                load_runtime_manifest(manifest)
+
+    def test_supervisor_rejects_duplicate_keys_and_ports(self):
+        command = (sys.executable, "-c", "pass")
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ValueError, "duplicated"):
+                ProcessSupervisor(
+                    data_root=directory,
+                    specs=[
+                        ManagedProcessSpec(key="same", label="One", command=command),
+                        ManagedProcessSpec(key="same", label="Two", command=command),
+                    ],
+                )
+            with self.assertRaisesRegex(ValueError, "port 8123"):
+                ProcessSupervisor(
+                    data_root=directory,
+                    specs=[
+                        ManagedProcessSpec(
+                            key="one",
+                            label="One",
+                            command=command,
+                            ports=(8123,),
+                        ),
+                        ManagedProcessSpec(
+                            key="two",
+                            label="Two",
+                            command=command,
+                            ports=(8123,),
+                        ),
+                    ],
+                )
+
+    def test_health_requires_success_and_expected_identity(self):
+        spec = ManagedProcessSpec(
+            key="api",
+            label="API",
+            command=(sys.executable, "-c", "pass"),
+            health_url="http://127.0.0.1:8097/health",
+            health_expected={"status": "ok", "service": "pandrator"},
+        )
+        supervisor = ProcessSupervisor(data_root=".", specs=[spec])
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.status = 200
+        response.read.return_value = b'{"status":"ok","service":"other"}'
+        with mock.patch("pandrator_installer.supervisor.urlopen", return_value=response):
+            self.assertFalse(supervisor._healthy(spec))
+        response.read.return_value = b'{"status":"ok","service":"pandrator"}'
+        with mock.patch("pandrator_installer.supervisor.urlopen", return_value=response):
+            self.assertTrue(supervisor._healthy(spec))
+        response.status = 404
+        with mock.patch("pandrator_installer.supervisor.urlopen", return_value=response):
+            self.assertFalse(supervisor._healthy(spec))
+
+    def test_start_refuses_a_declared_port_that_is_already_in_use(self):
+        with tempfile.TemporaryDirectory() as directory, socket.socket(
+            socket.AF_INET, socket.SOCK_STREAM
+        ) as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            port = listener.getsockname()[1]
+            spec = ManagedProcessSpec(
+                key="api",
+                label="API",
+                command=(sys.executable, "-c", "pass"),
+                ports=(port,),
+            )
+            supervisor = ProcessSupervisor(data_root=directory, specs=[spec])
+
+            with self.assertRaisesRegex(RuntimeError, f"port {port}"):
+                supervisor._start_one(spec)
+
+            self.assertNotIn("api", supervisor.processes)
+
+    def test_live_but_unhealthy_process_restarts_after_three_checks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            spec = ManagedProcessSpec(
+                key="api",
+                label="API",
+                command=(sys.executable, "-c", "pass"),
+                health_url="http://127.0.0.1:8097/health",
+                restart_limit=1,
+            )
+            supervisor = ProcessSupervisor(data_root=directory, specs=[spec])
+            process = mock.Mock(pid=1234)
+            process.poll.return_value = None
+            managed = ManagedProcess(
+                spec=spec,
+                process=process,
+                log_handle=mock.Mock(),
+                process_create_time=100.0,
+                executable=sys.executable,
+            )
+            supervisor.processes["api"] = managed
+
+            with mock.patch.object(
+                supervisor, "_healthy", return_value=False
+            ), mock.patch.object(
+                supervisor, "_stop_one"
+            ) as stop, mock.patch.object(
+                supervisor, "_start_one"
+            ) as restart, mock.patch.object(
+                supervisor, "_write_state"
+            ):
+                supervisor.monitor_once()
+                supervisor.monitor_once()
+                stop.assert_not_called()
+                supervisor.monitor_once()
+
+            stop.assert_called_once_with(managed)
+            restart.assert_called_once_with(spec, restarts=1)
 
     def test_supervisor_starts_and_stops_process_without_shell(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -97,6 +275,9 @@ class SupervisorTests(unittest.TestCase):
             supervisor = ProcessSupervisor(data_root=directory, specs=[spec])
             supervisor.start_all()
             try:
+                deadline = time.monotonic() + 2
+                while not marker.is_file() and time.monotonic() < deadline:
+                    time.sleep(0.05)
                 self.assertTrue(marker.is_file())
                 self.assertIsNone(supervisor.processes["test"].process.poll())
                 state = json.loads((Path(directory) / "runtime-processes.json").read_text(encoding="utf-8"))

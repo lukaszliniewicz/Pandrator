@@ -7,6 +7,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import psutil
+
 from pandrator_installer.service import HeadlessInstaller
 
 
@@ -174,6 +176,7 @@ class InstallerUpdateMigrationTests(unittest.TestCase):
                 info={
                     "name": "python.exe",
                     "exe": os.path.abspath("C:/Pandrator/envs/pandrator_installer/python.exe"),
+                    "create_time": 100.0,
                 },
             )
         ]
@@ -222,7 +225,7 @@ class InstallerUpdateMigrationTests(unittest.TestCase):
 
         self.assertEqual([], running)
 
-    def test_frozen_supervisor_is_detected_from_runtime_state_outside_install_tree(self):
+    def test_unverifiable_frozen_supervisor_pid_is_not_treated_as_owned(self):
         with tempfile.TemporaryDirectory() as install_root:
             supervisor_pid = 43210
             with open(os.path.join(install_root, "runtime-processes.json"), "w", encoding="utf-8") as handle:
@@ -246,6 +249,49 @@ class InstallerUpdateMigrationTests(unittest.TestCase):
             ):
                 running = installer.get_running_installation_processes(install_root)
 
+            self.assertEqual([], running)
+
+    def test_verified_frozen_supervisor_is_detected_outside_install_tree(self):
+        with tempfile.TemporaryDirectory() as install_root:
+            supervisor_pid = 43210
+            executable = os.path.abspath("C:/Downloads/PandratorInstaller.exe")
+            state = {
+                "instance_id": "verified-instance",
+                "supervisor_pid": supervisor_pid,
+                "supervisor_create_time": 100.0,
+                "supervisor_executable": executable,
+                "processes": {},
+            }
+            lock = {
+                "instance_id": "verified-instance",
+                "pid": supervisor_pid,
+                "process_create_time": 100.0,
+                "executable": executable,
+            }
+            with open(os.path.join(install_root, "runtime-processes.json"), "w", encoding="utf-8") as handle:
+                json.dump(state, handle)
+            with open(os.path.join(install_root, "pandrator.instance.lock"), "w", encoding="utf-8") as handle:
+                json.dump(lock, handle)
+            installer = HeadlessInstaller(working_dir=os.path.dirname(install_root))
+            current = SimpleNamespace(parents=lambda: [])
+            supervisor = SimpleNamespace(
+                pid=supervisor_pid,
+                create_time=lambda: 100.0,
+                exe=lambda: executable,
+            )
+
+            with patch(
+                "pandrator_installer.components.psutil.process_iter",
+                return_value=[],
+            ), patch(
+                "pandrator_installer.components.psutil.Process",
+                side_effect=lambda pid: current if pid == os.getpid() else supervisor,
+            ), patch(
+                "pandrator_installer.process_identity.psutil.Process",
+                side_effect=lambda pid: current if pid == os.getpid() else supervisor,
+            ):
+                running = installer.get_running_installation_processes(install_root)
+
             self.assertEqual(1, len(running))
             self.assertEqual(supervisor_pid, running[0]["pid"])
             self.assertEqual("Pandrator web supervisor", running[0]["name"])
@@ -261,7 +307,12 @@ class InstallerUpdateMigrationTests(unittest.TestCase):
         try:
             stopped = installer.stop_running_installation_processes(
                 os.path.abspath("C:/Pandrator"),
-                [{"pid": process.pid, "name": "Pandrator worker", "exe": sys.executable}],
+                [{
+                    "pid": process.pid,
+                    "name": "Pandrator worker",
+                    "exe": sys.executable,
+                    "create_time": psutil.Process(process.pid).create_time(),
+                }],
                 timeout=5,
             )
             process.wait(timeout=5)
@@ -271,6 +322,62 @@ class InstallerUpdateMigrationTests(unittest.TestCase):
                 process.wait(timeout=5)
 
         self.assertEqual(process.pid, stopped[0]["pid"])
+
+    def test_stale_runtime_metadata_with_reused_pid_is_removed(self):
+        with tempfile.TemporaryDirectory() as install_root:
+            state_path = os.path.join(install_root, "runtime-processes.json")
+            lock_path = os.path.join(install_root, "pandrator.instance.lock")
+            executable = psutil.Process(os.getpid()).exe()
+            with open(state_path, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "instance_id": "stale",
+                        "supervisor_pid": os.getpid(),
+                        "supervisor_create_time": 0.0,
+                        "supervisor_executable": executable,
+                        "processes": {},
+                    },
+                    handle,
+                )
+            with open(lock_path, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "instance_id": "stale",
+                        "pid": os.getpid(),
+                        "process_create_time": 0.0,
+                        "executable": executable,
+                    },
+                    handle,
+                )
+
+            HeadlessInstaller(
+                working_dir=os.path.dirname(install_root)
+            )._remove_stale_runtime_metadata(install_root)
+
+            self.assertFalse(os.path.exists(state_path))
+            self.assertFalse(os.path.exists(lock_path))
+
+    def test_live_legacy_runtime_metadata_is_preserved_conservatively(self):
+        with tempfile.TemporaryDirectory() as install_root:
+            state_path = os.path.join(install_root, "runtime-processes.json")
+            lock_path = os.path.join(install_root, "pandrator.instance.lock")
+            with open(state_path, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "supervisor_pid": os.getpid(),
+                        "processes": {},
+                    },
+                    handle,
+                )
+            with open(lock_path, "w", encoding="utf-8") as handle:
+                json.dump({"pid": os.getpid()}, handle)
+
+            HeadlessInstaller(
+                working_dir=os.path.dirname(install_root)
+            )._remove_stale_runtime_metadata(install_root)
+
+            self.assertTrue(os.path.exists(state_path))
+            self.assertTrue(os.path.exists(lock_path))
 
     def test_update_stop_choice_is_applied_before_the_runtime_guard(self):
         installer = HeadlessInstaller(working_dir="workspace")

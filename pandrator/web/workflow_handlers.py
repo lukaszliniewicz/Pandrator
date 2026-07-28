@@ -66,6 +66,7 @@ from .models import (
 )
 
 if TYPE_CHECKING:
+    from .manager_proxy import LocalManagerProxy
     from .tts_providers import TtsProviderRegistry
 
 
@@ -367,6 +368,7 @@ class WorkflowHandlers:
         paths: DataPaths,
         *,
         tts_providers: TtsProviderRegistry | None = None,
+        manager_bridge: LocalManagerProxy | None = None,
     ):
         self.database = database
         self.paths = paths
@@ -376,6 +378,7 @@ class WorkflowHandlers:
 
             tts_providers = TtsProviderRegistry()
         self.tts_providers = tts_providers
+        self.manager_bridge = manager_bridge
         from .job_handler_domains import build_workflow_handler_registry
 
         self.handler_registry = build_workflow_handler_registry(self)
@@ -437,10 +440,14 @@ class WorkflowHandlers:
 
     def preview_tts_voice(self, payload, progress, cancel_event):
         """Generate a short managed preview without mutating a session plan."""
-        from pandrator.logic import tts_handler
 
         text = str(payload.get("text") or "").strip()
-        settings = hydrate_tts_settings(self.database, self.paths, dict(payload.get("settings") or {}))
+        settings = hydrate_tts_settings(
+            self.database,
+            self.paths,
+            dict(payload.get("settings") or {}),
+            manager_bridge=self.manager_bridge,
+        )
         if not text:
             raise ValueError("Preview text is required.")
         if cancel_event.is_set():
@@ -2560,7 +2567,10 @@ class WorkflowHandlers:
             )
             if cancel_event.is_set():
                 return {}
-            segments = [replace(segment, text=text) for segment, text in zip(segments, optimized)]
+            segments = [
+                replace(segment, text=text)
+                for segment, text in zip(segments, optimized, strict=True)
+            ]
             destination = self._session_dir(session_id) / f"tts-optimized-{new_id()}.srt"
             destination.write_text(compose_srt(segments), encoding="utf-8")
             kind = "srt"
@@ -2588,7 +2598,9 @@ class WorkflowHandlers:
             optimized, usage = optimize_units(source_texts, languages)
             if cancel_event.is_set():
                 return {}
-            for index, (row, text) in enumerate(zip(rows, optimized)):
+            for index, (row, text) in enumerate(
+                zip(rows, optimized, strict=True)
+            ):
                 if isinstance(row, dict):
                     row["source_text"] = str(row.get("source_text") or row.get("text") or row.get("processed_sentence") or row.get("original_sentence") or "")
                     row["tts_optimized_sentence"] = text
@@ -2621,7 +2633,7 @@ class WorkflowHandlers:
                             "speech_plan": plan,
                         }
                         for index, (source_text, plan) in enumerate(
-                            zip(source_texts, speech_plans)
+                            zip(source_texts, speech_plans, strict=True)
                         )
                     ],
                     ensure_ascii=False,
@@ -3603,7 +3615,7 @@ class WorkflowHandlers:
                 model_name = ""
                 with self.database.session() as session:
                     for position, (segment_id, text) in enumerate(
-                        zip(segment_ids, texts)
+                        zip(segment_ids, texts, strict=True)
                     ):
                         segment = session.get(GenerationSegment, segment_id)
                         if (
@@ -3674,7 +3686,9 @@ class WorkflowHandlers:
                     }
 
         known_by_position: dict[int, list[dict[str, Any]]] = {}
-        for position, (segment_id, text) in enumerate(zip(segment_ids, texts)):
+        for position, (segment_id, text) in enumerate(
+            zip(segment_ids, texts, strict=True)
+        ):
             state = segment_state.get(segment_id, {})
             language = str(state.get("language") or default_language)
             known = (
@@ -3833,7 +3847,6 @@ class WorkflowHandlers:
         return output, model_name
 
     def _generate_audio(self, session_id: str, source_artifact: Artifact, source_path: Path, settings: dict[str, Any], progress, cancel_event, *, role: str, job_id: str | None = None) -> dict[str, Any]:
-        from pandrator.logic import tts_handler
         from .audio_assembly import (
             AudioAssemblyPart,
             assemble_audio_plan,
@@ -3842,7 +3855,12 @@ class WorkflowHandlers:
         )
         from .media_process import MediaProcessCancelled
 
-        settings = hydrate_tts_settings(self.database, self.paths, settings)
+        settings = hydrate_tts_settings(
+            self.database,
+            self.paths,
+            settings,
+            manager_bridge=self.manager_bridge,
+        )
 
         if source_path.suffix.lower() != ".json":
             raise ValueError("Audio generation requires segmented narration. Run Segment narration first.")
@@ -3899,7 +3917,10 @@ class WorkflowHandlers:
             lambda value, detail=None: progress(float(value) * optimization_share, detail),
             job_id=job_id,
         )
-        for index, (record, generation_segment_id) in enumerate(zip(records, generation_segment_ids), start=1):
+        for index, (record, generation_segment_id) in enumerate(
+            zip(records, generation_segment_ids, strict=True),
+            start=1,
+        ):
             if cancel_event.is_set():
                 return {}
             text = str(record.get("text") or record.get("original_sentence") or "").strip()
@@ -3920,8 +3941,9 @@ class WorkflowHandlers:
                 segment_tts_settings,
                 max_attempts=int(segment_tts_settings.get("max_attempts") or 5),
                 cancel_event=cancel_event,
-                retry_callback=lambda attempt, total, delay: progress(
-                    optimization_share + ((index - 1) / len(records)) * synthesis_share,
+                retry_callback=lambda attempt, total, delay, index=index, synthesis_share=synthesis_share: progress(
+                    optimization_share
+                    + ((index - 1) / len(records)) * synthesis_share,
                     f"Retrying segment {index} ({attempt}/{total}) in {delay:.1f}s",
                 ),
                 **self._tts_urls(segment_tts_settings),
@@ -4197,7 +4219,7 @@ class WorkflowHandlers:
     def run_generation(self, payload, progress, cancel_event):
         """Generate immutable per-segment takes with safe pause and resume boundaries."""
         from pydub import AudioSegment
-        from pandrator.logic import rvc_handler, tts_handler
+        from pandrator.logic import rvc_handler
 
         run_id = str(payload.get("generation_run_id") or "")
         selected_ids = {str(value) for value in (payload.get("segment_ids") or []) if str(value)}
@@ -4238,7 +4260,12 @@ class WorkflowHandlers:
             **adapt_runtime_settings("tts", dict(settings_snapshot.get("tts") or {})),
             **adapt_runtime_settings("audio", dict(settings_snapshot.get("audio") or {})),
         }
-        tts_settings = hydrate_tts_settings(self.database, self.paths, tts_settings)
+        tts_settings = hydrate_tts_settings(
+            self.database,
+            self.paths,
+            tts_settings,
+            manager_bridge=self.manager_bridge,
+        )
         text_settings = adapt_runtime_settings("text", dict(settings_snapshot.get("text") or {}))
         optimization_model = ""
         optimized_by_id: dict[str, str] = {}
@@ -4255,7 +4282,9 @@ class WorkflowHandlers:
                     job_id=job_id,
                     generation_run_id=run_id,
                 )
-                optimized_by_id = dict(zip(segment_ids, optimized))
+                optimized_by_id = dict(
+                    zip(segment_ids, optimized, strict=True)
+                )
             except Exception:
                 with self.database.session() as session:
                     run = session.get(GenerationRun, run_id)
@@ -4355,8 +4384,10 @@ class WorkflowHandlers:
                         segment_tts_settings,
                         max_attempts=int(segment_tts_settings.get("max_attempts") or 5),
                         cancel_event=cancel_event,
-                        retry_callback=lambda attempt, total, delay: progress(
-                            optimization_share + (index / len(segment_ids)) * (1.0 - optimization_share),
+                        retry_callback=lambda attempt, total, delay, index=index: progress(
+                            optimization_share
+                            + (index / len(segment_ids))
+                            * (1.0 - optimization_share),
                             f"Retrying segment {index + 1} ({attempt}/{total}) in {delay:.1f}s",
                         ),
                         **self._tts_urls(segment_tts_settings),
@@ -4976,7 +5007,13 @@ class WorkflowHandlers:
             else:
                 planned_parts: list[AudioAssemblyPart] = []
                 planned_chapters: list[tuple[int, str]] = []
-                for index, (segment, take, artifact, source_path, duration_ms) in enumerate(loaded):
+                for index, (
+                    segment,
+                    _take,
+                    _artifact,
+                    source_path,
+                    duration_ms,
+                ) in enumerate(loaded):
                     silence_after_ms = (
                         max(0, int(segment.silence_after_ms or 0))
                         if index < len(loaded) - 1
@@ -5018,6 +5055,7 @@ class WorkflowHandlers:
                     for chapter, start_ms in zip(
                         output_plan.chapters,
                         assembly_result.chapter_starts_ms,
+                        strict=True,
                     )
                 ]
                 for index, (

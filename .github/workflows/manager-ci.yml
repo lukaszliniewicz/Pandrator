@@ -1,0 +1,142 @@
+name: Pandrator Manager
+
+on:
+  push:
+    paths:
+      - ".github/workflows/manager-ci.yml"
+      - "pandrator_manager/**"
+      - "pandrator_manager_bootstrap.py"
+      - "pandrator_manager_bootstrap.spec"
+      - "scripts/build_manager_*.py"
+      - "scripts/generate_manager_release_key.py"
+      - "scripts/qualify_manager_lifecycle.py"
+      - "scripts/sign_manager_release.py"
+      - "tests/test_manager_*.py"
+  pull_request:
+    paths:
+      - ".github/workflows/manager-ci.yml"
+      - "pandrator_manager/**"
+      - "pandrator_manager_bootstrap.py"
+      - "pandrator_manager_bootstrap.spec"
+      - "scripts/build_manager_*.py"
+      - "scripts/generate_manager_release_key.py"
+      - "scripts/qualify_manager_lifecycle.py"
+      - "scripts/sign_manager_release.py"
+      - "tests/test_manager_*.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-22.04]
+        python: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: pandrator_manager/pyproject.toml
+
+      - name: Install manager test environment
+        run: >-
+          python -m pip install --disable-pip-version-check
+          -e "./pandrator_manager[dev]"
+          "alembic>=1.14,<2"
+          "argon2-cffi>=23.1,<26"
+          "pydub>=0.25,<1"
+          "sqlalchemy>=2.0,<3"
+
+      - name: Check manager source
+        shell: bash
+        run: |
+          ruff check --config pandrator_manager/pyproject.toml \
+            pandrator_manager \
+            scripts/build_manager_appimage.py \
+            scripts/build_manager_bootstrap.py \
+            scripts/build_manager_release_bundle.py \
+            scripts/generate_manager_release_key.py \
+            scripts/qualify_manager_lifecycle.py \
+            scripts/sign_manager_release.py
+          python -m compileall -q pandrator_manager pandrator_manager_bootstrap.py
+
+      - name: Run manager tests
+        shell: bash
+        run: python -m pytest -q tests/test_manager_*.py
+
+  package:
+    name: Package and lifecycle (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-22.04]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pandrator_manager/pyproject.toml
+
+      - name: Install isolated build environment
+        run: python -m pip install --disable-pip-version-check -e "./pandrator_manager[build,dev]"
+
+      - name: Build PyPI artifacts
+        run: python -m build pandrator_manager --outdir manager-dist
+
+      - name: Smoke-test the built wheel without Qt
+        shell: bash
+        run: |
+          python -m venv wheel-smoke
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            PYTHON="wheel-smoke/Scripts/python.exe"
+            MANAGER="wheel-smoke/Scripts/pandrator-manager.exe"
+          else
+            PYTHON="wheel-smoke/bin/python"
+            MANAGER="wheel-smoke/bin/pandrator-manager"
+          fi
+          "$PYTHON" -m pip install --disable-pip-version-check \
+            manager-dist/pandrator_manager-*.whl
+          "$PYTHON" -c \
+            "import importlib.util, pandrator_manager; assert importlib.util.find_spec('PyQt5') is None; assert importlib.util.find_spec('PySide6') is None"
+          "$MANAGER" --help >/dev/null
+
+      - name: Build and self-check native bootstrap
+        run: python scripts/build_manager_bootstrap.py --wheel-dir manager-dist
+
+      - name: Build native manager release bundle
+        run: python scripts/build_manager_release_bundle.py
+
+      - name: Build Linux manager AppImage
+        if: runner.os == 'Linux'
+        run: >-
+          python scripts/build_manager_appimage.py
+          --bootstrap dist/PandratorManagerBootstrap
+
+      - name: Exercise bootstrap, signed handoff, and uninstall
+        run: python scripts/qualify_manager_lifecycle.py
+
+      - name: Upload qualification artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pandrator-manager-${{ matrix.os }}
+          if-no-files-found: error
+          path: |
+            manager-dist/*
+            dist/PandratorManagerBootstrap*
+            dist/PandratorManager-*.AppImage*
+            dist/pandrator-manager-*.zip

@@ -9,6 +9,7 @@ import shutil
 import time
 import uuid
 import ipaddress
+from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +47,8 @@ from .credentials import (
 from .database import Database
 from .domain_blueprints import DomainBlueprints
 from .models import AgentRun, AgentStep, AppSetting, AppSettingHistory, Artifact, ArtifactEdge, Document, DocumentRevision, Job, OutputAssembly, Provider, ProviderModel, Segment, SessionRecord, SourceRecord, TimedWord, TrainingRun, UsageEvent, Voice, VoiceSample, new_id, utcnow
+from .manager_proxy import register_manager_routes
+from .managed_services import binding_for_provider, normalize_tts_provider_id
 from .openapi import build_openapi_document
 from .parity_registry import build_registry
 from .route_context import RouteContext
@@ -53,6 +56,12 @@ from .schemas import AgentRunCreateRequest, BootstrapRequest, BundleExportReques
 from .sessions import RevisionConflict
 from .voice_library import ensure_bundled_voice
 from .workspace import BUILTIN_DEFAULTS, SETTING_SECTIONS, RevisionConflict as WorkspaceRevisionConflict
+
+
+try:
+    PANDRATOR_VERSION = package_version("pandrator")
+except PackageNotFoundError:
+    PANDRATOR_VERSION = "0+unknown"
 
 
 def _is_loopback_address(value: object) -> bool:
@@ -179,9 +188,92 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     authenticated = context.guards.authenticated
     require_auth = context.guards.require_auth
 
+    def enrich_manager_plan(
+        manager_plan: dict[str, Any],
+        requested_plan: dict[str, Any],
+    ) -> dict[str, Any]:
+        desired = requested_plan.get("desired")
+        if not isinstance(desired, dict):
+            return manager_plan
+        removals = {
+            str(component_id)
+            for component_id, state in desired.items()
+            if isinstance(state, dict) and state.get("present") is False
+        }
+        if not removals:
+            return manager_plan
+        with database.session() as db_session:
+            setting = db_session.get(AppSetting, "services.tts")
+            value = (
+                dict(setting.value_json)
+                if setting is not None
+                and isinstance(setting.value_json, dict)
+                else {}
+            )
+        selected_provider = normalize_tts_provider_id(
+            value.get("service") or value.get("tts_service")
+        )
+        impacts: list[dict[str, Any]] = []
+        for record in value.get("provider_configs") or []:
+            if not isinstance(record, dict):
+                continue
+            provider_id = normalize_tts_provider_id(
+                record.get("id")
+                or record.get("name")
+                or record.get("provider")
+            )
+            binding = binding_for_provider(provider_id)
+            if (
+                binding is None
+                or binding.component_id not in removals
+                or str(record.get("connection_mode") or "external")
+                != "managed_local"
+            ):
+                continue
+            impacts.append(
+                {
+                    "kind": "managed_tts_binding",
+                    "component_id": binding.component_id,
+                    "provider_id": binding.provider_id,
+                    "service_id": binding.service_id,
+                    "label": str(record.get("name") or binding.provider_id),
+                    "selected_default": provider_id == selected_provider,
+                    "message": (
+                        f"{record.get('name') or binding.provider_id} is "
+                        "configured to use this managed local component. "
+                        "Switch it to an external endpoint or reinstall the "
+                        "component before generating speech."
+                    ),
+                }
+            )
+        if not impacts:
+            return manager_plan
+        enriched = dict(manager_plan)
+        enriched["application_impacts"] = {
+            "managed_provider_bindings": impacts,
+        }
+        return enriched
+
+    register_manager_routes(
+        app,
+        require_auth=require_auth,
+        error_response=error_response,
+        proxy=services.manager_bridge,
+        plan_response_transform=enrich_manager_plan,
+    )
+
     @app.get("/api/v1/health")
     def health():
-        return jsonify({"status": "ok", "database": paths.database.name, "migration": migration.get("status")})
+        return jsonify(
+            {
+                "status": "ok",
+                "service": "pandrator",
+                "version": PANDRATOR_VERSION,
+                "protocol_version": "v1",
+                "database": paths.database.name,
+                "migration": migration.get("status"),
+            }
+        )
 
     @app.get("/api/v1/openapi.json")
     def openapi():
@@ -217,6 +309,56 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         session["authenticated"] = True
         session["csrf_token"] = secrets.token_urlsafe(24)
         return jsonify({"authenticated": True, "csrf_token": session["csrf_token"]})
+
+    @app.post("/api/v1/auth/manager-bootstrap")
+    def auth_manager_bootstrap():
+        """Mint a browser token for the authenticated loopback manager only."""
+
+        if not _is_loopback_address(request.remote_addr):
+            return error_response(
+                "manager_authentication_failed",
+                "The manager launch credential is invalid.",
+                401,
+            )
+        credential_value = str(
+            os.environ.get("PANDRATOR_MANAGER_CREDENTIAL") or ""
+        ).strip()
+        if not credential_value:
+            return error_response(
+                "manager_not_configured",
+                "This Pandrator process was not started by Pandrator Manager.",
+                503,
+            )
+        try:
+            credential_path = Path(credential_value).expanduser().resolve(
+                strict=True
+            )
+            if credential_path.stat().st_size > 4096:
+                raise OSError("Manager credential file is unexpectedly large.")
+            expected = credential_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return error_response(
+                "manager_credential_unavailable",
+                "The manager launch credential is unavailable.",
+                503,
+            )
+        authorization = request.headers.get("Authorization", "")
+        supplied = (
+            authorization[7:].strip()
+            if authorization.startswith("Bearer ")
+            else ""
+        )
+        if (
+            not supplied
+            or not expected
+            or not secrets.compare_digest(supplied, expected)
+        ):
+            return error_response(
+                "manager_authentication_failed",
+                "The manager launch credential is invalid.",
+                401,
+            )
+        return jsonify({"token": bootstrap.issue(), "expires_in_seconds": 120})
 
     @app.post("/api/v1/auth/login")
     def auth_login():

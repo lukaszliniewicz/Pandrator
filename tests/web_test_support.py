@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import shutil
 import tempfile
 import threading
@@ -12,6 +13,7 @@ from pandrator.web.database import upgrade_database
 
 
 _TEMPLATE_DIRECTORY = tempfile.TemporaryDirectory(prefix="pandrator-web-test-schema-")
+atexit.register(_TEMPLATE_DIRECTORY.cleanup)
 _TEMPLATE_LOCK = threading.Lock()
 _TEMPLATE_DATABASE: Path | None = None
 

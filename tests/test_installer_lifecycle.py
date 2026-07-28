@@ -1,7 +1,6 @@
 import contextlib
 import io
 import json
-import os
 import sys
 import tempfile
 import unittest
@@ -13,6 +12,7 @@ from pathlib import Path
 from pandrator_installer.cli import main as launcher_main, parse_launcher_cli_args, run_headless_install_from_cli
 from pandrator_installer.lifecycle import SERVICE_HEALTH_URLS, _owned_service_processes, _runtime_specs, main
 from pandrator_installer.models import WorkspacePaths, normalize_password_scope
+from pandrator_installer.supervisor import ProcessSupervisor
 from pandrator_installer.update import verify_release_manifest
 
 
@@ -124,6 +124,41 @@ class InstallerLifecycleTests(unittest.TestCase):
             self.assertEqual(specs[1].health_url, "http://127.0.0.1:8880/health")
             self.assertEqual(specs[1].startup_timeout_seconds, 180)
             self.assertIn("service", specs[0].command)
+
+    def test_runtime_specs_deduplicate_repeated_components(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            args = type(
+                "Args",
+                (),
+                {
+                    "host": "127.0.0.1",
+                    "port": 8097,
+                    "components": ["rvc_cpu,rvc_cpu"],
+                },
+            )()
+            specs = _runtime_specs(WorkspacePaths.from_value(workspace), args)
+            self.assertEqual(
+                [spec.key for spec in specs],
+                ["service-rvc_cpu", "api", "worker"],
+            )
+
+    def test_runtime_supervisor_rejects_services_that_share_a_port(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            args = type(
+                "Args",
+                (),
+                {
+                    "host": "127.0.0.1",
+                    "port": 8097,
+                    "components": ["xtts,fishs2"],
+                },
+            )()
+            specs = _runtime_specs(WorkspacePaths.from_value(workspace), args)
+            with self.assertRaisesRegex(ValueError, "port 8020"):
+                ProcessSupervisor(
+                    data_root=Path(workspace) / "Pandrator",
+                    specs=specs,
+                )
 
     def test_supervised_services_use_dedicated_readiness_endpoints(self):
         self.assertEqual(
@@ -348,10 +383,13 @@ class InstallerLifecycleTests(unittest.TestCase):
             reused_process = mock.Mock(pid=4321)
             reused_process.create_time.return_value = 200.0
             reused_process.exe.return_value = sys.executable
-            with mock.patch("pandrator_installer.lifecycle.psutil.Process", return_value=reused_process):
+            with mock.patch(
+                "pandrator_installer.process_identity.psutil.Process",
+                return_value=reused_process,
+            ):
                 code, _output, error = self.invoke(["stop", "--workspace", workspace])
             self.assertEqual(code, 2)
-            self.assertIn("different process", error)
+            self.assertIn("unrelated PID", error)
             reused_process.terminate.assert_not_called()
 
     def test_stop_terminates_a_matching_supervisor_identity(self):
@@ -370,13 +408,17 @@ class InstallerLifecycleTests(unittest.TestCase):
                     "instance_id": "current-instance",
                     "pid": 4321,
                     "process_create_time": 100.0,
+                    "executable": sys.executable,
                 }),
                 encoding="utf-8",
             )
             supervisor = mock.Mock(pid=4321)
             supervisor.create_time.return_value = 100.0
             supervisor.exe.return_value = sys.executable
-            with mock.patch("pandrator_installer.lifecycle.psutil.Process", return_value=supervisor):
+            with mock.patch(
+                "pandrator_installer.process_identity.psutil.Process",
+                return_value=supervisor,
+            ):
                 code, output, error = self.invoke(["stop", "--workspace", workspace, "--json"])
             self.assertEqual(code, 0, error)
             self.assertEqual(json.loads(output)["status"], "stop_requested")

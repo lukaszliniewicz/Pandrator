@@ -16,7 +16,6 @@ import webbrowser
 import subprocess
 import sqlite3
 import time
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +24,11 @@ import psutil
 from .catalog import COMPONENTS
 from .models import InstallSelection, LaunchSelection, WorkspacePaths
 from .platforms import is_windows, resolve_launcher_workspace
+from .process_identity import (
+    ProcessIdentityError,
+    identity_from_mapping,
+    validated_process,
+)
 from .service import HeadlessInstaller
 from .supervisor import ManagedProcessSpec, ProcessSupervisor
 from .update import health_check, install_wheel, restore_database, restore_installed_package, run_migrations, snapshot_installed_package, snapshot_sqlite, verify_release_manifest
@@ -74,38 +78,24 @@ def _workspace(args) -> WorkspacePaths:
     return WorkspacePaths.from_value(resolve_launcher_workspace(args.workspace))
 
 
-def _normalized_executable(path: str | os.PathLike[str]) -> str:
-    return os.path.normcase(os.path.realpath(os.path.abspath(os.fspath(path))))
-
-
 def _validated_supervisor_process(paths: WorkspacePaths, payload: dict[str, Any]):
     """Return the recorded supervisor only when durable process identity matches."""
     try:
-        supervisor_pid = int(payload.get("supervisor_pid") or 0)
-        expected_create_time = float(payload.get("supervisor_create_time"))
-    except (TypeError, ValueError):
-        raise RuntimeError("Runtime state does not contain a verifiable supervisor identity.") from None
-
-    instance_id = str(payload.get("instance_id") or "").strip()
-    expected_executable = str(payload.get("supervisor_executable") or "").strip()
-    if supervisor_pid <= 0 or not instance_id or not expected_executable:
-        raise RuntimeError("Runtime state does not contain a verifiable supervisor identity.")
-
-    try:
-        process = psutil.Process(supervisor_pid)
-        actual_create_time = process.create_time()
-        actual_executable = process.exe()
-    except psutil.NoSuchProcess:
-        return None
-    except (psutil.AccessDenied, OSError) as error:
-        raise RuntimeError("Could not validate the recorded Pandrator supervisor process.") from error
-
-    if abs(actual_create_time - expected_create_time) > 0.01 or (
-        _normalized_executable(actual_executable) != _normalized_executable(expected_executable)
-    ):
-        raise RuntimeError(
-            "Runtime state points to a different process; refusing to signal a potentially unrelated PID."
+        identity = identity_from_mapping(
+            payload,
+            pid_key="supervisor_pid",
+            create_time_key="supervisor_create_time",
+            executable_key="supervisor_executable",
+            require_instance_id=True,
         )
+        process = validated_process(identity)
+    except ProcessIdentityError as error:
+        raise RuntimeError(
+            "Runtime state does not identify the current Pandrator supervisor; "
+            "refusing to signal a potentially unrelated PID."
+        ) from error
+    if process is None:
+        return None
 
     lock_path = paths.install_root / "pandrator.instance.lock"
     try:
@@ -115,15 +105,22 @@ def _validated_supervisor_process(paths: WorkspacePaths, payload: dict[str, Any]
     if not isinstance(lock_payload, dict):
         raise RuntimeError("The Pandrator supervisor lock must contain a JSON object.")
     try:
-        lock_pid = int(lock_payload.get("pid") or 0)
-        lock_create_time = lock_payload.get("process_create_time")
-        if lock_create_time is not None:
-            lock_create_time = float(lock_create_time)
-    except (TypeError, ValueError) as error:
+        lock_identity = identity_from_mapping(
+            lock_payload,
+            require_instance_id=True,
+        )
+    except ProcessIdentityError as error:
         raise RuntimeError("The Pandrator supervisor lock contains an invalid process identity.") from error
-    if str(lock_payload.get("instance_id") or "") != instance_id or lock_pid != supervisor_pid:
+    if (
+        lock_identity.instance_id != identity.instance_id
+        or lock_identity.pid != identity.pid
+    ):
         raise RuntimeError("Runtime state and supervisor lock do not identify the same process.")
-    if lock_create_time is not None and abs(float(lock_create_time) - expected_create_time) > 0.01:
+    if (
+        abs(lock_identity.create_time - identity.create_time) > 0.01
+        or os.path.normcase(os.path.realpath(lock_identity.executable))
+        != os.path.normcase(os.path.realpath(identity.executable))
+    ):
         raise RuntimeError("Runtime state and supervisor lock have different process creation times.")
 
     return process
@@ -257,7 +254,12 @@ def _runtime_specs(paths: WorkspacePaths, args, bootstrap_token: str = "") -> li
     }
     if crispasr_executable.is_file():
         speech_environment["CRISPASR_EXECUTABLE"] = str(crispasr_executable)
-    raw_components = [item.strip() for raw in (getattr(args, "components", []) or []) for item in raw.split(",") if item.strip()]
+    raw_components = list(dict.fromkeys(
+        item.strip()
+        for raw in (getattr(args, "components", []) or [])
+        for item in raw.split(",")
+        if item.strip()
+    ))
     unknown = sorted(set(raw_components).difference(SERVICE_HEALTH_URLS))
     if unknown:
         raise ValueError("Unsupported supervised service(s): " + ", ".join(unknown))
@@ -268,6 +270,7 @@ def _runtime_specs(paths: WorkspacePaths, args, bootstrap_token: str = "") -> li
             label=f"Pandrator service {component}",
             command=tuple([*launcher, "service", "--workspace", str(paths.workspace), "--component", component]),
             cwd=cwd,
+            ports=((COMPONENTS[component].port,) if COMPONENTS[component].port else ()),
             health_url=SERVICE_HEALTH_URLS[component],
             restart_limit=1,
             startup_timeout_seconds=SERVICE_STARTUP_TIMEOUT_SECONDS.get(component, 180),
@@ -302,7 +305,9 @@ def _runtime_specs(paths: WorkspacePaths, args, bootstrap_token: str = "") -> li
             command=tuple(api_command),
             cwd=cwd,
             env=api_environment,
+            ports=(port,),
             health_url=f"http://127.0.0.1:{port}/api/v1/health",
+            health_expected={"status": "ok", "service": "pandrator"},
             restart_limit=2,
             startup_timeout_seconds=45,
         ),

@@ -15,6 +15,7 @@ from .capabilities import CapabilityService, crispasr_install_preferences
 from .database import Database
 from .jobs import JobQueue
 from .legacy_migration import import_legacy_data
+from .manager_proxy import LocalManagerProxy
 from .models import AppSetting, SessionRecord
 from .pronunciations import PronunciationLibrary
 from .sessions import SessionService
@@ -47,6 +48,7 @@ class ApplicationServices:
     artifacts: ArtifactService
     workflows: WorkflowService
     workflow_handlers: WorkflowHandlers
+    manager_bridge: LocalManagerProxy
     tts_providers: TtsProviderRegistry
     tts_catalogue: TtsCatalogueService
     workspace_settings: WorkspaceSettingsService
@@ -99,16 +101,19 @@ class ApplicationServices:
         sessions = SessionService(database)
         artifacts = ArtifactService(database, paths)
         workflows = WorkflowService(database, jobs)
+        manager_bridge = LocalManagerProxy()
         tts_providers = TtsProviderRegistry()
         workflow_handlers = WorkflowHandlers(
             database,
             paths,
             tts_providers=tts_providers,
+            manager_bridge=manager_bridge,
         )
         tts_catalogue = TtsCatalogueService(
             database,
             paths,
             tts_providers,
+            manager_bridge=manager_bridge,
         )
         workspace_settings = WorkspaceSettingsService(database)
         outcome_plans = OutcomePlanService(database)
@@ -159,6 +164,7 @@ class ApplicationServices:
             artifacts=artifacts,
             workflows=workflows,
             workflow_handlers=workflow_handlers,
+            manager_bridge=manager_bridge,
             tts_providers=tts_providers,
             tts_catalogue=tts_catalogue,
             workspace_settings=workspace_settings,
@@ -187,6 +193,7 @@ class ApplicationServices:
             "artifacts": self.artifacts,
             "workflows": self.workflows,
             "workflow_handlers": self.workflow_handlers,
+            "manager_bridge": self.manager_bridge,
             "tts_providers": self.tts_providers,
             "tts_catalogue": self.tts_catalogue,
             "workspace_settings": self.workspace_settings,

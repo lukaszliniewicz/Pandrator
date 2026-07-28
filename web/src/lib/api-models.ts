@@ -388,6 +388,19 @@ export type TtsService = {
   provider?: string;
   adapter?: string;
   api_base?: string;
+  connection_mode?: 'external' | 'managed_local';
+  managed_service_id?: string;
+  manager_available?: boolean;
+  manager_component_id?: string;
+  manager_component_state?: string;
+  manager_supported_actions?: string[];
+  manager_endpoint_read_only?: boolean;
+  manager_service?: {
+    id?: string;
+    endpoint?: string | null;
+    process?: { pid?: number } | null;
+    health?: { state?: string; message?: string } | null;
+  } | null;
   api_key_env?: string;
   secret_ref?: string;
   speech_path?: string;

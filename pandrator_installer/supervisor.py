@@ -6,17 +6,28 @@ import json
 import logging
 import os
 import signal
+import socket
 import subprocess
 import sys
 import threading
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
+from urllib.parse import urlparse
 from urllib.request import urlopen
 
+from .process_identity import (
+    ProcessIdentityError,
+    ProcessIdentityMismatch,
+    ProcessInspectionError,
+    capture_process_identity,
+    identity_from_mapping,
+    identity_payload,
+    validated_process,
+)
 from .subprocess_env import external_subprocess_environment
 
 try:
@@ -51,14 +62,19 @@ class InstanceLock:
 
     def acquire(self) -> str:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"instance_id": self.instance_id, "pid": os.getpid(), "created_at": time.time()}
-        if psutil is not None:
-            try:
-                process = psutil.Process(os.getpid())
-                payload["process_create_time"] = process.create_time()
-                payload["executable"] = process.exe()
-            except (psutil.Error, OSError):
-                pass
+        if psutil is None:
+            raise RuntimeError("psutil is required for safe supervisor process identity.")
+        try:
+            current_identity = capture_process_identity(
+                psutil.Process(os.getpid()),
+                instance_id=self.instance_id,
+            )
+        except (psutil.Error, OSError) as error:
+            raise RuntimeError("Could not capture the supervisor process identity.") from error
+        payload = {
+            **identity_payload(current_identity),
+            "created_at": time.time(),
+        }
         for _attempt in range(2):
             try:
                 descriptor = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -67,11 +83,39 @@ class InstanceLock:
                     current = json.loads(self.path.read_text(encoding="utf-8"))
                 except (OSError, json.JSONDecodeError):
                     current = {}
-                pid = int(current.get("pid") or 0)
-                if _pid_exists(pid):
-                    raise InstanceAlreadyRunning(
-                        f"Pandrator data root is already supervised by PID {pid}."
+                try:
+                    raw_pid = int(current.get("pid") or 0) if isinstance(current, dict) else 0
+                except (TypeError, ValueError):
+                    raw_pid = 0
+                try:
+                    owner_identity = identity_from_mapping(
+                        current,
+                        require_instance_id=True,
                     )
+                except ProcessIdentityError:
+                    if raw_pid > 0 and _pid_exists(raw_pid):
+                        raise InstanceAlreadyRunning(
+                            "The existing Pandrator supervisor lock is live but "
+                            "does not contain a verifiable process identity."
+                        ) from None
+                    owner_identity = None
+
+                if owner_identity is not None:
+                    try:
+                        owner = validated_process(owner_identity)
+                    except ProcessIdentityMismatch:
+                        owner = None
+                    except ProcessInspectionError as error:
+                        raise InstanceAlreadyRunning(
+                            "Could not safely inspect the existing Pandrator supervisor."
+                        ) from error
+                else:
+                    owner = None
+
+                if owner is not None:
+                    raise InstanceAlreadyRunning(
+                        f"Pandrator data root is already supervised by PID {owner.pid}."
+                    ) from None
                 try:
                     self.path.unlink()
                 except FileNotFoundError:
@@ -92,7 +136,7 @@ class InstanceLock:
             current = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             current = {}
-        if current.get("instance_id") == self.instance_id:
+        if isinstance(current, dict) and current.get("instance_id") == self.instance_id:
             try:
                 self.path.unlink()
             except FileNotFoundError:
@@ -114,7 +158,9 @@ class ManagedProcessSpec:
     command: tuple[str, ...]
     cwd: str | None = None
     env: dict[str, str] = field(default_factory=dict)
+    ports: tuple[int, ...] = ()
     health_url: str | None = None
+    health_expected: dict[str, Any] = field(default_factory=dict)
     required: bool = True
     restart_limit: int = 1
     startup_timeout_seconds: float = 30.0
@@ -124,13 +170,33 @@ class ManagedProcessSpec:
         command = payload.get("command")
         if not isinstance(command, list) or not command or not all(isinstance(item, str) and item for item in command):
             raise ValueError("Managed process command must be a non-empty string array.")
+        raw_ports = payload.get("ports") or []
+        if not isinstance(raw_ports, list):
+            raise ValueError("Managed process ports must be an integer array.")
+        try:
+            ports = tuple(int(port) for port in raw_ports)
+        except (TypeError, ValueError):
+            raise ValueError("Managed process ports must be an integer array.") from None
+        if any(port < 1 or port > 65535 for port in ports):
+            raise ValueError("Managed process ports must be between 1 and 65535.")
+        raw_environment = payload.get("env") or {}
+        if not isinstance(raw_environment, dict):
+            raise ValueError("Managed process environment must be a JSON object.")
+        raw_health_expected = payload.get("health_expected") or {}
+        if not isinstance(raw_health_expected, dict):
+            raise ValueError("Managed process health expectation must be a JSON object.")
         return cls(
             key=str(payload.get("key") or "").strip(),
             label=str(payload.get("label") or payload.get("key") or "Process").strip(),
             command=tuple(command),
             cwd=str(payload.get("cwd") or "") or None,
-            env={str(key): str(value) for key, value in dict(payload.get("env") or {}).items()},
+            env={str(key): str(value) for key, value in raw_environment.items()},
+            ports=ports,
             health_url=str(payload.get("health_url") or "") or None,
+            health_expected={
+                str(key): value
+                for key, value in raw_health_expected.items()
+            },
             required=bool(payload.get("required", True)),
             restart_limit=max(0, int(payload.get("restart_limit", 1))),
             startup_timeout_seconds=max(1.0, float(payload.get("startup_timeout_seconds", 30))),
@@ -142,7 +208,10 @@ class ManagedProcess:
     spec: ManagedProcessSpec
     process: subprocess.Popen
     log_handle: Any
+    process_create_time: float
+    executable: str
     restarts: int = 0
+    consecutive_health_failures: int = 0
     started_at: float = field(default_factory=time.time)
 
 
@@ -157,6 +226,7 @@ class ProcessSupervisor:
     ):
         self.data_root = Path(data_root).expanduser().resolve()
         self.specs = list(specs)
+        self._validate_specs(self.specs)
         self.status_callback = status_callback or (lambda _message: None)
         self.ready_callback = ready_callback or (lambda: None)
         self.lock = InstanceLock(self.data_root / "pandrator.instance.lock")
@@ -176,6 +246,36 @@ class ProcessSupervisor:
                 self.supervisor_executable = current_process.exe()
             except (psutil.Error, OSError):
                 pass
+
+    @staticmethod
+    def _validate_specs(specs: list[ManagedProcessSpec]) -> None:
+        keys: dict[str, str] = {}
+        ports: dict[int, str] = {}
+        for spec in specs:
+            if not spec.key:
+                raise ValueError("Managed process key is required.")
+            if spec.key in keys:
+                raise ValueError(f"Managed process key is duplicated: {spec.key}")
+            keys[spec.key] = spec.label
+
+            declared_ports = tuple(spec.ports)
+            if not declared_ports and spec.health_url:
+                try:
+                    parsed_port = urlparse(spec.health_url).port
+                except ValueError:
+                    parsed_port = None
+                declared_ports = (parsed_port,) if parsed_port else ()
+            for port in declared_ports:
+                if port < 1 or port > 65535:
+                    raise ValueError(
+                        f"Managed process {spec.key} declares invalid port {port}."
+                    )
+                if port in ports:
+                    raise ValueError(
+                        f"Managed processes {ports[port]} and {spec.key} both "
+                        f"declare port {port}."
+                    )
+                ports[port] = spec.key
 
     def _status(self, message: str) -> None:
         logging.info(message)
@@ -200,6 +300,9 @@ class ProcessSupervisor:
             "processes": {
                 key: {
                     "pid": managed.process.pid,
+                    "process_create_time": managed.process_create_time,
+                    "executable": managed.executable,
+                    "instance_id": self.lock.instance_id,
                     "label": managed.spec.label,
                     "command": list(managed.spec.command),
                     "started_at": managed.started_at,
@@ -254,13 +357,32 @@ class ProcessSupervisor:
             return True
         try:
             with urlopen(spec.health_url, timeout=2) as response:
-                return 200 <= int(response.status) < 500
-        except (URLError, OSError, ValueError):
+                if not 200 <= int(response.status) < 300:
+                    return False
+                if not spec.health_expected:
+                    return True
+                payload = json.loads(response.read().decode("utf-8"))
+                return isinstance(payload, dict) and all(
+                    payload.get(key) == expected
+                    for key, expected in spec.health_expected.items()
+                )
+        except (URLError, OSError, ValueError, TypeError, json.JSONDecodeError):
             return False
+
+    @staticmethod
+    def _assert_ports_available(spec: ManagedProcessSpec) -> None:
+        for port in spec.ports:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                probe.settimeout(0.25)
+                if probe.connect_ex(("127.0.0.1", port)) == 0:
+                    raise RuntimeError(
+                        f"{spec.label} cannot start because port {port} is already in use."
+                    )
 
     def _start_one(self, spec: ManagedProcessSpec, restarts: int = 0) -> ManagedProcess:
         if not spec.key:
             raise ValueError("Managed process key is required.")
+        self._assert_ports_available(spec)
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         log_path = self.logs_dir / f"{spec.key}.log"
         log_handle = log_path.open("a", encoding="utf-8")
@@ -276,7 +398,25 @@ class ProcessSupervisor:
             shell=False,
             **self._popen_options(),
         )
-        managed = ManagedProcess(spec=spec, process=process, log_handle=log_handle, restarts=restarts)
+        try:
+            child_identity = capture_process_identity(
+                psutil.Process(process.pid),
+                instance_id=self.lock.instance_id,
+            )
+        except (psutil.Error, OSError) as error:
+            self._terminate_process_tree(process)
+            log_handle.close()
+            raise RuntimeError(
+                f"Could not capture a safe process identity for {spec.label}."
+            ) from error
+        managed = ManagedProcess(
+            spec=spec,
+            process=process,
+            log_handle=log_handle,
+            process_create_time=child_identity.create_time,
+            executable=child_identity.executable,
+            restarts=restarts,
+        )
         self.processes[spec.key] = managed
 
         deadline = time.monotonic() + spec.startup_timeout_seconds
@@ -326,8 +466,19 @@ class ProcessSupervisor:
         for key, managed in list(self.processes.items()):
             return_code = managed.process.poll()
             if return_code is None:
-                continue
-            managed.log_handle.close()
+                if not managed.spec.health_url or self._healthy(managed.spec):
+                    managed.consecutive_health_failures = 0
+                    continue
+                managed.consecutive_health_failures += 1
+                if managed.consecutive_health_failures < 3:
+                    continue
+                self._status(
+                    f"{managed.spec.label} is no longer healthy; restarting."
+                )
+                self._stop_one(managed)
+                return_code = "unhealthy"
+            else:
+                managed.log_handle.close()
             del self.processes[key]
             spec = managed.spec
             if self.stop_event.is_set():
@@ -463,7 +614,5 @@ def load_runtime_manifest(path: str | os.PathLike[str]) -> list[ManagedProcessSp
     if not isinstance(raw_specs, list):
         raise ValueError("Runtime manifest must contain a 'processes' array.")
     specs = [ManagedProcessSpec.from_dict(item) for item in raw_specs if isinstance(item, dict)]
-    keys = [spec.key for spec in specs]
-    if len(keys) != len(set(keys)):
-        raise ValueError("Runtime process keys must be unique.")
+    ProcessSupervisor._validate_specs(specs)
     return specs

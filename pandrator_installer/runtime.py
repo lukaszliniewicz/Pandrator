@@ -485,7 +485,7 @@ class RuntimeMixin:
                     logging.error(error_msg)
                     raise FileNotFoundError(error_msg)
 
-                fishs2_gpu_support = install_config.get('fishs2_gpu_support', True)
+                fishs2_gpu_support = bool(install_config.get('fishs2_gpu_support', False))
                 fishs2_launch_gpu = fishs2_gpu_support and not getattr(self, 'fishs2_cpu_launch_var', False)
                 
                 backend = install_config.get('fishs2_backend', 'auto') if fishs2_launch_gpu else 'cpu'

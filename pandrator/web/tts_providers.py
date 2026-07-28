@@ -26,6 +26,8 @@ from .credentials import (
     tts_service_credential_key,
 )
 from .database import Database
+from .managed_services import binding_for_provider
+from .manager_proxy import LocalManagerProxy, ManagerProxyError
 from .models import AppSetting, Artifact
 from .workspace import BUILTIN_DEFAULTS
 
@@ -567,10 +569,13 @@ class TtsCatalogueService:
         database: Database,
         paths: DataPaths,
         providers: TtsProviderRegistry,
+        *,
+        manager_bridge: LocalManagerProxy | None = None,
     ):
         self.database = database
         self.paths = paths
         self.providers = providers
+        self.manager_bridge = manager_bridge or LocalManagerProxy()
 
     def _settings(
         self,
@@ -661,7 +666,7 @@ class TtsCatalogueService:
             max_workers=min(12, max(1, len(services)))
         ) as executor:
             states = list(executor.map(probe, services))
-        for service, state in zip(services, states):
+        for service, state in zip(services, states, strict=True):
             service.update(
                 {
                     "online": state.online,
@@ -685,6 +690,87 @@ class TtsCatalogueService:
                         "availability_reason": str(error),
                     }
                 )
+
+    def _project_manager(
+        self,
+        services: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        summary: dict[str, Any] = {
+            "configured": self.manager_bridge.configured,
+            "available": False,
+        }
+        try:
+            inventory = self.manager_bridge.inventory()
+        except ManagerProxyError as error:
+            summary["error"] = {
+                "code": error.code,
+                "message": str(error),
+            }
+            for service in services:
+                if binding_for_provider(service.get("id")) is not None:
+                    service["manager_available"] = False
+            return summary
+
+        summary.update(
+            {
+                "available": True,
+                "status": inventory.get("status") or {},
+            }
+        )
+        components = {
+            str((item.get("definition") or {}).get("id") or ""): item
+            for item in inventory.get("components") or []
+            if isinstance(item, dict)
+        }
+        managed_services = {
+            str(item.get("id") or ""): item
+            for item in inventory.get("services") or []
+            if isinstance(item, dict)
+        }
+        for service in services:
+            binding = binding_for_provider(service.get("id"))
+            if binding is None:
+                continue
+            component = components.get(binding.component_id, {})
+            definition = component.get("definition") or {}
+            inspection = component.get("inspection") or {}
+            managed = managed_services.get(binding.service_id)
+            connection_mode = str(
+                service.get("connection_mode") or "external"
+            )
+            service.update(
+                {
+                    "connection_mode": connection_mode,
+                    "manager_available": True,
+                    "manager_component_id": binding.component_id,
+                    "manager_component_state": str(
+                        inspection.get("state") or "unknown"
+                    ),
+                    "manager_supported_actions": list(
+                        definition.get("supported_actions") or []
+                    ),
+                    "managed_service_id": binding.service_id,
+                    "manager_service": managed,
+                    "manager_endpoint_read_only": (
+                        connection_mode == "managed_local"
+                    ),
+                }
+            )
+            if connection_mode != "managed_local":
+                continue
+            if managed is None or not str(managed.get("endpoint") or "").strip():
+                service.update(
+                    {
+                        "online": False,
+                        "available": False,
+                        "availability_reason": (
+                            "The selected manager-owned service is not available."
+                        ),
+                    }
+                )
+                continue
+            service["api_base"] = str(managed["endpoint"]).rstrip("/")
+        return summary
 
     def _previews(self) -> list[dict[str, Any]]:
         previews: list[dict[str, Any]] = []
@@ -736,6 +822,7 @@ class TtsCatalogueService:
                 {**default_value, **connection_value}
             )
         ]
+        manager = self._project_manager(services)
         for service in services:
             self._decorate_credentials(service)
         if refresh:
@@ -755,6 +842,7 @@ class TtsCatalogueService:
             "services": redact_inline_secrets(services),
             "profiles": list_tts_provider_profiles(),
             "previews": self._previews(),
+            "manager": manager,
         }
         return payload, revision
 

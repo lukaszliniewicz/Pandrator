@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from pandrator.runtime import DataPaths
 
 from .database import Database
+from .managed_services import binding_for_provider
 from .models import AppSetting, Provider, StoredCredential, utcnow
 
 
@@ -705,6 +706,30 @@ def prepare_tts_settings_for_storage(
         normalized_id = service_id.lower().replace("-", "_")
         current_ids.add(normalized_id)
         previous_record = previous_records.get(normalized_id, {})
+        connection_mode = str(
+            record.get("connection_mode") or "external"
+        ).strip().lower()
+        if connection_mode not in {"external", "managed_local"}:
+            raise ValueError(
+                "TTS connection mode must be 'external' or 'managed_local'."
+            )
+        record["connection_mode"] = connection_mode
+        if connection_mode == "managed_local":
+            binding = binding_for_provider(normalized_id)
+            if binding is None:
+                raise ValueError(
+                    f"{service_id} cannot be bound to a manager-owned service."
+                )
+            requested_service = str(
+                record.get("managed_service_id") or binding.service_id
+            ).strip()
+            if requested_service != binding.service_id:
+                raise ValueError(
+                    f"{service_id} must use managed service {binding.service_id}."
+                )
+            record["managed_service_id"] = binding.service_id
+        else:
+            record.pop("managed_service_id", None)
         record.pop("credential_configured", None)
         record.pop("credential_source", None)
         record.pop("previous_credential_retained", None)
@@ -760,7 +785,13 @@ def prepare_tts_settings_for_storage(
     return prepared
 
 
-def hydrate_tts_settings(database: Database, paths: DataPaths, settings: dict[str, Any]) -> dict[str, Any]:
+def hydrate_tts_settings(
+    database: Database,
+    paths: DataPaths,
+    settings: dict[str, Any],
+    *,
+    manager_bridge: Any | None = None,
+) -> dict[str, Any]:
     """Inject only the selected TTS credential into a transient runtime settings copy."""
 
     from pandrator.logic import tts_handler
@@ -799,6 +830,45 @@ def hydrate_tts_settings(database: Database, paths: DataPaths, settings: dict[st
     elif resolved.environment_variable:
         record["api_key_env"] = resolved.environment_variable
     hydrated["provider_configs"] = records
+    if str(selected.get("connection_mode") or "external") == "managed_local":
+        from .manager_proxy import LocalManagerProxy, ManagerProxyError
+
+        binding = binding_for_provider(service_id)
+        if binding is None:
+            raise ValueError(
+                f"{selected_value} has no qualified local manager binding."
+            )
+        requested_service = str(
+            selected.get("managed_service_id") or binding.service_id
+        ).strip()
+        if requested_service != binding.service_id:
+            raise ValueError(
+                f"{selected_value} has an invalid managed-service binding."
+            )
+        bridge = manager_bridge or LocalManagerProxy()
+        try:
+            managed = bridge.managed_service(binding.service_id)
+        except ManagerProxyError as error:
+            raise RuntimeError(
+                f"The managed local {selected_value} service is unavailable: {error}"
+            ) from error
+        endpoint = str(managed.get("endpoint") or "").strip().rstrip("/")
+        health = str((managed.get("health") or {}).get("state") or "stopped")
+        if not endpoint:
+            raise RuntimeError(
+                f"The managed local {selected_value} service has no endpoint."
+            )
+        if health != "healthy":
+            raise RuntimeError(
+                f"The managed local {selected_value} service is {health}. "
+                "Start it in Providers & Services before generating audio."
+            )
+        hydrated[binding.settings_url_key] = endpoint
+        if str(hydrated.get("preview_service_id") or "") == service_id:
+            hydrated["preview_api_base"] = endpoint
+        record["api_base"] = endpoint
+        record["connection_mode"] = "managed_local"
+        record["managed_service_id"] = binding.service_id
     return hydrated
 
 

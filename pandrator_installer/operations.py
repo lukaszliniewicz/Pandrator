@@ -54,6 +54,28 @@ COMMAND_OUTPUT_TAIL_LINES = 4000
 
 
 class OperationsMixin:
+    def _terminate_timed_out_process(self, process, *, drain=True):
+        """Terminate and reap a timed-out subprocess and its descendants."""
+        if process is None:
+            return
+
+        terminator = getattr(self, 'terminate_process_tree', None)
+        try:
+            if callable(terminator):
+                terminator(process)
+            elif process.poll() is None:
+                process.kill()
+                process.wait(timeout=10)
+        finally:
+            if drain:
+                try:
+                    process.communicate(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+                except (OSError, ValueError):
+                    pass
+
     def initialize_logging(self):
         """Initialize robust file, console, and GUI logging."""
         pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
@@ -106,21 +128,40 @@ class OperationsMixin:
             return
 
         self.tls_configured = True
+        self.ca_bundle_path = None
 
-        for env_name in ('SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE'):
+        certificate_variables = (
+            'REQUESTS_CA_BUNDLE',
+            'SSL_CERT_FILE',
+            'CURL_CA_BUNDLE',
+            'GIT_SSL_CAINFO',
+        )
+        valid_explicit_bundles = []
+        for env_name in certificate_variables:
             value = os.environ.get(env_name)
             if value and not os.path.exists(value):
                 logging.warning(f"Ignoring invalid {env_name} path: {value}")
                 os.environ.pop(env_name, None)
+            elif value:
+                valid_explicit_bundles.append((env_name, os.path.abspath(value)))
+
+        if valid_explicit_bundles:
+            source, ca_bundle = valid_explicit_bundles[0]
+            self.ca_bundle_path = ca_bundle
+            logging.info(
+                "Using explicit TLS certificate bundle from %s: %s",
+                source,
+                ca_bundle,
+            )
+            return
 
         try:
             import certifi
 
             ca_bundle = certifi.where()
             if ca_bundle and os.path.exists(ca_bundle):
-                os.environ['SSL_CERT_FILE'] = ca_bundle
-                os.environ['REQUESTS_CA_BUNDLE'] = ca_bundle
-                os.environ['CURL_CA_BUNDLE'] = ca_bundle
+                for env_name in certificate_variables:
+                    os.environ.setdefault(env_name, ca_bundle)
                 self.ca_bundle_path = ca_bundle
                 logging.info(f"Configured TLS certificate bundle: {ca_bundle}")
             else:
@@ -198,10 +239,13 @@ class OperationsMixin:
     def get_network_subprocess_env(self):
         env = self.get_external_subprocess_env()
         if self.ca_bundle_path and os.path.exists(self.ca_bundle_path):
-            env['SSL_CERT_FILE'] = self.ca_bundle_path
-            env['REQUESTS_CA_BUNDLE'] = self.ca_bundle_path
-            env['CURL_CA_BUNDLE'] = self.ca_bundle_path
-            env['GIT_SSL_CAINFO'] = self.ca_bundle_path
+            for env_name in (
+                'SSL_CERT_FILE',
+                'REQUESTS_CA_BUNDLE',
+                'CURL_CA_BUNDLE',
+                'GIT_SSL_CAINFO',
+            ):
+                env.setdefault(env_name, self.ca_bundle_path)
         return env
 
     def get_external_subprocess_env(self, base_env=None):
@@ -333,17 +377,17 @@ class OperationsMixin:
             try:
                 process.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
-                terminator = getattr(self, 'terminate_process_tree', None)
-                if callable(terminator):
-                    terminator(process)
-                elif process.poll() is None:
-                    process.kill()
-                    process.wait(timeout=10)
+                self._terminate_timed_out_process(process, drain=False)
                 stdout_thread.join(timeout=10)
                 stderr_thread.join(timeout=10)
                 stdout = self._command_output_text(stdout_tail, stdout_state)
                 stderr = self._command_output_text(stderr_tail, stderr_state)
-                raise subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr)
+                raise subprocess.TimeoutExpired(
+                    command,
+                    timeout,
+                    output=stdout,
+                    stderr=stderr,
+                ) from None
 
             stdout_thread.join(timeout=10)
             stderr_thread.join(timeout=10)
@@ -759,9 +803,7 @@ class OperationsMixin:
                 f"Chocolatey 'choco' command exited with code {process.returncode}. STDERR: {stderr}"
             )
         except subprocess.TimeoutExpired:
-            if process is not None:
-                process.kill()
-                process.communicate()
+            self._terminate_timed_out_process(process)
             logging.warning(f"Chocolatey install for {package_name} timed out using 'choco' command.")
         except Exception as e:
             logging.error(f"Error using 'choco' command: {str(e)}")
@@ -793,9 +835,7 @@ class OperationsMixin:
             else:
                 logging.error(f"Chocolatey executable not found at: {choco_exe}")
         except subprocess.TimeoutExpired:
-            if process is not None:
-                process.kill()
-                process.communicate()
+            self._terminate_timed_out_process(process)
             logging.warning(
                 f"Chocolatey install for {package_name} timed out using Chocolatey executable."
             )
@@ -828,6 +868,7 @@ class OperationsMixin:
         temp_msi_path = os.path.join(temp_root, 'calibre.msi')
         temp_extract_dir = os.path.join(temp_root, 'extract')
         extracted_calibre_dir = os.path.join(temp_extract_dir, 'PFiles64', 'Calibre2')
+        process = None
 
         try:
             self.download_verified_file(
@@ -888,6 +929,7 @@ class OperationsMixin:
             logging.info(f"Bundled Calibre installed successfully at {bundled_calibre_dir}")
             return True
         except subprocess.TimeoutExpired:
+            self._terminate_timed_out_process(process)
             logging.warning("Timed out while extracting bundled Calibre MSI.")
             return False
         except Exception as e:
@@ -926,6 +968,7 @@ class OperationsMixin:
                 winget_cmd = winget_alt
 
             if winget_cmd:
+                process = None
                 try:
                     self.reporter.status("Installing Calibre via winget...")
                     process = subprocess.Popen(
@@ -956,6 +999,7 @@ class OperationsMixin:
                             f"winget calibre install returned {process.returncode}: {stderr}"
                         )
                 except subprocess.TimeoutExpired:
+                    self._terminate_timed_out_process(process)
                     logging.warning(
                         "winget calibre install timed out, falling back to other methods."
                     )
@@ -1104,6 +1148,7 @@ class OperationsMixin:
         )
         logging.info("Using temporary eSpeak NG download directory: %s", temp_root)
         temp_msi_path = os.path.join(temp_root, 'espeak-ng.msi')
+        process = None
 
         try:
             self.download_verified_file(
@@ -1144,6 +1189,7 @@ class OperationsMixin:
             )
             return False
         except subprocess.TimeoutExpired:
+            self._terminate_timed_out_process(process)
             logging.warning("Timed out while installing eSpeak NG MSI.")
             return False
         except Exception as e:

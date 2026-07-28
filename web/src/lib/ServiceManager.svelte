@@ -1,6 +1,6 @@
 <script lang="ts">
   import { CheckCircle2, ExternalLink, Library, Plus, RefreshCw, Server, Settings2, X } from '@lucide/svelte';
-  import { credentialApi, settingApi, speechServiceApi } from './admin-api';
+  import { credentialApi, managerApi, settingApi, speechServiceApi } from './admin-api';
   import type { TtsCatalogue, TtsDiscovery, TtsService, TtsSettingsValue } from './api-models';
   import SettingField from './SettingField.svelte';
   import CredentialStorageFields, { type CredentialBackendProfile } from './CredentialStorageFields.svelte';
@@ -45,6 +45,8 @@
   let editingModelsText = $state('');
   let removeEditingApiKey = $state(false);
   let selectedModel = $state('');
+  let managerBusy = $state('');
+  let editingExternalApiBase = $state('');
 
   const normalizedId = (service: TtsService | null) => String(service?.id ?? '').toLowerCase().replaceAll('-', '_');
   const settingKeys = $derived(SERVICE_SETTING_KEYS[normalizedId(editing)] ?? []);
@@ -74,6 +76,14 @@
       name: candidate.name ?? existing.name ?? id, kind: candidate.kind, api_base: candidate.api_base, provider: candidate.provider,
       adapter: candidate.adapter, speech_path: candidate.speech_path, models_path: candidate.models_path,
       voices_path: candidate.voices_path, request_fields: candidate.request_fields, request_defaults: candidate.request_defaults,
+      connection_mode: candidate.connection_mode ?? existing.connection_mode ?? 'external',
+      managed_service_id: candidate.managed_service_id ?? existing.managed_service_id,
+      manager_available: candidate.manager_available,
+      manager_component_id: candidate.manager_component_id,
+      manager_component_state: candidate.manager_component_state,
+      manager_supported_actions: candidate.manager_supported_actions,
+      manager_endpoint_read_only: candidate.manager_endpoint_read_only,
+      manager_service: candidate.manager_service,
       auth_mode: candidate.auth_mode ?? existing.auth_mode, direct_http: candidate.direct_http ?? existing.direct_http,
       vertex_project: candidate.vertex_project ?? existing.vertex_project, vertex_location: candidate.vertex_location ?? existing.vertex_location,
       models: candidate.models ?? [], voices: candidate.voices ?? [], default_model: candidate.default_model,
@@ -91,10 +101,17 @@
 
   const configuredRecord = (service: TtsService) => (payload.value.provider_configs ?? []).find((item) => item.id === service.id || item.api_base === service.api_base);
   const isDefault = (service: TtsService) => [service.id, service.name].map((value) => String(value ?? '').toLowerCase()).includes(String(payload.default_service ?? '').toLowerCase());
+  const isManaged = (service: TtsService) => service.connection_mode === 'managed_local';
+  const managedHealth = (service: TtsService) => service.manager_service?.health?.state ?? 'stopped';
 
   function openSettings(service: TtsService) {
-    const saved = configuredRecord(service) ?? {};
-    editing = recordFrom({ ...service, ...saved }, saved);
+    const saved: Partial<TtsService> = configuredRecord(service) ?? {};
+    editingExternalApiBase = String(
+      saved.api_base
+      ?? (service.connection_mode === 'external' ? service.api_base : '')
+      ?? ''
+    );
+    editing = recordFrom({ ...saved, ...service }, saved);
     editingApiKey = '';
     editingCredentialBackend = editing.credential_backend ?? (String(editing.secret_ref ?? '').startsWith('env:') ? 'environment' : String(editing.secret_ref ?? '').startsWith('keyring:') ? 'keyring' : String(editing.secret_ref ?? '').startsWith('file') ? 'file' : 'database');
     editingExistingCredentialBackend = editingCredentialBackend;
@@ -109,6 +126,19 @@
   }
 
   function setServiceSetting(key: string, value: unknown) { if (editing) editing = { ...editing, settings: { ...(editing.settings ?? {}), [key]: value } }; }
+  function setEditingConnectionMode(mode: 'external' | 'managed_local') {
+    if (!editing) return;
+    if (editing.connection_mode !== 'managed_local') {
+      editingExternalApiBase = String(editing.api_base ?? '');
+    }
+    editing = {
+      ...editing,
+      connection_mode: mode,
+      api_base: mode === 'managed_local'
+        ? String(editing.manager_service?.endpoint ?? editing.api_base ?? '')
+        : editingExternalApiBase
+    };
+  }
   function setDefaultModel(value: string) {
     selectedModel = value;
     if (editing) editing = { ...editing, default_model: value, models: Array.from(new Set([...(editing.models ?? []), value].filter(Boolean))) };
@@ -120,8 +150,18 @@
     const defaultModel = editing.default_model || selectedModel || manualModels[0] || '';
     const models = Array.from(new Set([defaultModel, ...manualModels].filter(Boolean)));
     const baseRecord = recordFrom({ ...editing, models, default_model: defaultModel }, editing);
+    const savedRecord = configuredRecord(editing);
+    if (editing.connection_mode === 'managed_local') {
+      baseRecord.api_base = editingExternalApiBase || savedRecord?.api_base;
+    }
     delete baseRecord.credential_backend;
     delete baseRecord.credential_reference;
+    delete baseRecord.manager_available;
+    delete baseRecord.manager_component_id;
+    delete baseRecord.manager_component_state;
+    delete baseRecord.manager_supported_actions;
+    delete baseRecord.manager_endpoint_read_only;
+    delete baseRecord.manager_service;
     const credential = removeEditingApiKey ? { clear_api_key: true } : {
       credential_backend: editingCredentialBackend,
       credential_reference: editingCredentialReference.trim() || null,
@@ -156,6 +196,40 @@
     await load();
   }
   async function removeService(service: TtsService) { await persist({ ...payload.value, provider_configs: (payload.value.provider_configs ?? []).filter((item) => item.id !== service.id && item.api_base !== service.api_base) }); }
+  async function setConnectionMode(service: TtsService, mode: 'external' | 'managed_local') {
+    const existing = configuredRecord(service) ?? { id: service.id, name: service.name, api_base: service.api_base };
+    const record = recordFrom(service, existing);
+    if (existing.api_base) record.api_base = existing.api_base;
+    delete record.manager_available;
+    delete record.manager_component_id;
+    delete record.manager_component_state;
+    delete record.manager_supported_actions;
+    delete record.manager_endpoint_read_only;
+    delete record.manager_service;
+    record.connection_mode = mode;
+    if (mode === 'managed_local') record.managed_service_id = service.managed_service_id;
+    else delete record.managed_service_id;
+    await persist({
+      ...payload.value,
+      provider_configs: [
+        ...(payload.value.provider_configs ?? []).filter((item) => item.id !== service.id),
+        record
+      ]
+    });
+  }
+  async function managedRuntime(service: TtsService, action: 'start' | 'stop' | 'restart') {
+    if (!service.managed_service_id) return;
+    managerBusy = service.id;
+    error = '';
+    try {
+      await managerApi.runtime(action, [service.managed_service_id]);
+      await load();
+    } catch (caught) {
+      error = caught instanceof Error ? caught.message : String(caught);
+    } finally {
+      managerBusy = '';
+    }
+  }
   async function refreshService(service: TtsService) {
     refreshing = service.id; error = '';
     try {
@@ -174,7 +248,53 @@
   {#if error}<p class="mt-3 rounded-xl border border-red-400/40 bg-red-500/10 p-3 text-sm text-red-600">{error}</p>{/if}
   <div class="mt-5 grid gap-3 md:grid-cols-2">
     {#each payload.services ?? [] as service}
-      <article class="rounded-2xl border border-[var(--line)] p-4"><div class="flex items-center gap-3"><div class="grid size-9 place-items-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]"><Server size={17}/></div><div class="min-w-0 flex-1"><div class="flex flex-wrap items-center gap-2"><div class="truncate font-semibold">{service.name}</div><span class="rounded-full border border-[var(--line)] px-2 py-0.5 text-[.62rem] font-bold uppercase">{service.credential_configured ? `Key: ${service.credential_source}` : 'No key'}</span></div><div class="muted truncate text-xs">{service.api_base}</div></div>{#if service.models?.length}<CheckCircle2 class="text-[var(--success)]" size={17}/>{/if}</div><div class="muted mt-3 text-xs">{service.models?.length ?? 0} models · {service.voices?.length ?? 0} voices{service.default_model ? ` · default ${service.default_model}` : ''}</div><div class="mt-3 flex flex-wrap gap-2"><button class="btn btn-sm btn-secondary" onclick={() => openSettings(service)}><Settings2 size={13}/> Service settings</button>{#if service.supports_prebuilt_voices}<a href={`/voices?view=prebuilt&service=${encodeURIComponent(service.id)}`} class="btn btn-sm btn-secondary"><Library size={13}/> Preview voices</a>{/if}<button class="btn btn-sm btn-secondary" onclick={() => setDefault(service)} disabled={isDefault(service)}>{isDefault(service) ? 'Default' : 'Make default'}</button>{#if !service.direct_http && normalizedId(service) !== 'vertex_ai'}<button class="btn btn-sm btn-secondary" onclick={() => refreshService(service)} disabled={refreshing === service.id}><RefreshCw size={13}/>{refreshing === service.id ? 'Testing…' : 'Test & refresh'}</button>{/if}{#if configuredRecord(service)}<button class="btn btn-sm btn-secondary text-red-500" onclick={() => removeService(service)}>Remove</button>{/if}</div></article>
+      <article class="rounded-2xl border border-[var(--line)] p-4">
+        <div class="flex items-center gap-3">
+          <div class="grid size-9 place-items-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]"><Server size={17}/></div>
+          <div class="min-w-0 flex-1">
+            <div class="flex flex-wrap items-center gap-2">
+              <div class="truncate font-semibold">{service.name}</div>
+              <span class="rounded-full border border-[var(--line)] px-2 py-0.5 text-[.62rem] font-bold uppercase">{service.credential_configured ? `Key: ${service.credential_source}` : 'No key'}</span>
+              {#if service.manager_component_id}
+                <span class="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[.62rem] font-bold uppercase text-[var(--accent)]">{isManaged(service) ? 'Managed local' : 'External'}</span>
+              {/if}
+            </div>
+            <div class="muted truncate text-xs">{service.api_base}</div>
+          </div>
+          {#if service.models?.length}<CheckCircle2 class="text-[var(--success)]" size={17}/>{/if}
+        </div>
+        <div class="muted mt-3 text-xs">
+          {service.models?.length ?? 0} models · {service.voices?.length ?? 0} voices{service.default_model ? ` · default ${service.default_model}` : ''}
+          {#if service.manager_component_id}
+            · local {service.manager_component_state ?? 'unknown'}{service.manager_service ? ` / ${managedHealth(service)}` : ''}
+          {/if}
+        </div>
+        <div class="mt-3 flex flex-wrap gap-2">
+          <button class="btn btn-sm btn-secondary" onclick={() => openSettings(service)}><Settings2 size={13}/> Service settings</button>
+          {#if service.supports_prebuilt_voices}<a href={`/voices?view=prebuilt&service=${encodeURIComponent(service.id)}`} class="btn btn-sm btn-secondary"><Library size={13}/> Preview voices</a>{/if}
+          <button class="btn btn-sm btn-secondary" onclick={() => setDefault(service)} disabled={isDefault(service)}>{isDefault(service) ? 'Default' : 'Make default'}</button>
+          {#if !service.direct_http && normalizedId(service) !== 'vertex_ai'}<button class="btn btn-sm btn-secondary" onclick={() => refreshService(service)} disabled={refreshing === service.id}><RefreshCw size={13}/>{refreshing === service.id ? 'Testing…' : 'Test & refresh'}</button>{/if}
+          {#if service.manager_available && service.manager_component_id}
+            {#if ['absent', 'unknown'].includes(service.manager_component_state ?? '') && service.manager_supported_actions?.includes('install')}
+              <a class="btn btn-sm btn-primary" data-sveltekit-reload href={`/providers?tab=local#component-${service.manager_component_id}`}>Install locally</a>
+            {:else if service.manager_component_state === 'degraded' && service.manager_supported_actions?.includes('repair')}
+              <a class="btn btn-sm btn-primary" data-sveltekit-reload href={`/providers?tab=local#component-${service.manager_component_id}`}>Repair local service</a>
+            {:else if service.manager_component_state === 'present'}
+              {#if !service.manager_service?.process}
+                <button class="btn btn-sm btn-secondary" disabled={managerBusy === service.id} onclick={() => managedRuntime(service, 'start')}>Start local service</button>
+              {:else}
+                <button class="btn btn-sm btn-secondary" disabled={managerBusy === service.id} onclick={() => managedRuntime(service, 'stop')}>Stop local service</button>
+              {/if}
+              {#if isManaged(service)}
+                <button class="btn btn-sm btn-secondary" disabled={managerBusy === service.id} onclick={() => setConnectionMode(service, 'external')}>Use external endpoint</button>
+              {:else if managedHealth(service) === 'healthy'}
+                <button class="btn btn-sm btn-primary" disabled={managerBusy === service.id} onclick={() => setConnectionMode(service, 'managed_local')}>Use managed local</button>
+              {/if}
+            {/if}
+          {/if}
+          {#if configuredRecord(service)}<button class="btn btn-sm btn-secondary text-red-500" onclick={() => removeService(service)}>Remove</button>{/if}
+        </div>
+      </article>
     {/each}
   </div>
   <details class="mt-6 rounded-2xl border border-[var(--line)] p-4"><summary class="cursor-pointer font-semibold">Known compatible endpoint profiles</summary><div class="mt-4 grid gap-2 md:grid-cols-2">{#each payload.profiles ?? [] as profile}<div class="rounded-xl border border-[var(--line)] p-3"><div class="text-sm font-semibold">{profile.name}</div><div class="muted mt-1 text-xs">{profile.description}</div><div class="mt-3 flex gap-2"><button onclick={() => useProfile(profile)} class="btn btn-sm btn-secondary">Use profile</button>{#if profile.source_url}<a href={profile.source_url} target="_blank" rel="noreferrer" class="btn btn-sm btn-quiet">Project <ExternalLink size={12}/></a>{/if}</div></div>{/each}</div></details>
@@ -182,7 +302,7 @@
 
 {#if editing}
   <div class="fixed inset-0 z-50 grid place-items-center bg-black/40 p-2 sm:p-5"><div class="surface modal-panel flex w-full max-w-3xl flex-col" role="dialog" aria-modal="true" aria-labelledby="service-settings-title"><header class="flex shrink-0 items-start justify-between gap-4 border-b border-[var(--line)] px-5 py-4 sm:px-7"><div><div class="eyebrow">TTS service</div><h2 id="service-settings-title" class="mt-1 text-2xl font-semibold">{editing.name}</h2><p class="muted mt-2 text-sm">Connection, model, and generation defaults.</p></div><button onclick={() => editing = null} class="btn btn-icon btn-secondary" aria-label="Close service settings"><X size={18}/></button></header>
-    <div class="modal-scroll p-5 sm:p-7"><section class="rounded-2xl border border-[var(--line)] p-4 sm:p-5"><h3 class="font-semibold">Connection and defaults</h3><label class="mt-4 block text-sm font-semibold">Base URL<input bind:value={editing.api_base} class="field"/></label>{#if normalizedId(editing) === 'vertex_ai'}<div class="mt-4 grid gap-3 sm:grid-cols-2"><label class="block text-sm font-semibold">Google Cloud project<input bind:value={editing.vertex_project} placeholder="Uses project_id from JSON when blank" class="field"/></label><label class="block text-sm font-semibold">Vertex location<input bind:value={editing.vertex_location} placeholder="us-central1" class="field"/></label></div>{/if}<div class="mt-4"><CredentialStorageFields backends={credentialBackends} bind:backend={editingCredentialBackend} bind:reference={editingCredentialReference} bind:secret={editingApiKey} bind:deletePrevious={deletePreviousCredential} configured={Boolean(editing.credential_configured)} currentSource={editing.credential_source ?? 'none'} existingBackend={editingExistingCredentialBackend} suggestedEnvironment={editing.api_key_env ?? ''} secretLabel={normalizedId(editing) === 'vertex_ai' ? 'Google service-account JSON' : 'API key'} multiline={normalizedId(editing) === 'vertex_ai'}/></div>{#if editing.credential_configured || editing.secret_ref}<label class="mt-3 flex items-center gap-2 text-sm"><input type="checkbox" bind:checked={removeEditingApiKey} onchange={() => { if (removeEditingApiKey) { editingApiKey = ''; deletePreviousCredential = false; } }} class="accent-[var(--accent)]"/> Remove this service's credential reference{#if ['database', 'keyring'].includes(editing.credential_source ?? '')} and stored value{/if}</label>{/if}<label class="mt-4 block text-sm font-semibold">Models / deployment names<textarea bind:value={editingModelsText} rows="4" spellcheck="false" placeholder="One model or Azure deployment name per line" class="field font-mono text-xs"></textarea><small class="muted mt-1 block font-normal">Enter one ID per line. Azure deployment names are kept exactly as entered.</small></label><label class="mt-4 block text-sm font-semibold">Default model{#if modelChoices.length}<select value={selectedModel} onchange={(event) => setDefaultModel(event.currentTarget.value)} class="field">{#each modelChoices as model}<option value={model}>{model}</option>{/each}</select>{:else}<input value={selectedModel} oninput={(event) => setDefaultModel(event.currentTarget.value)} placeholder="Model ID" class="field"/>{/if}</label>{#if settingKeys.length}<details class="mt-5 border-t border-[var(--line)] pt-4" open><summary class="cursor-pointer text-sm font-semibold">Provider defaults</summary><div class="provider-default-grid mt-4">{#each settingKeys as key}<SettingField section="tts" keyName={key} value={editing.settings?.[key] ?? payload.builtin_defaults?.[key]} onchange={(value) => setServiceSetting(key, value)} compact/>{/each}</div></details>{/if}</section>
+    <div class="modal-scroll p-5 sm:p-7"><section class="rounded-2xl border border-[var(--line)] p-4 sm:p-5"><h3 class="font-semibold">Connection and defaults</h3>{#if editing.manager_component_id}<label class="mt-4 block text-sm font-semibold">Connection type<select value={editing.connection_mode ?? 'external'} onchange={(event) => setEditingConnectionMode(event.currentTarget.value as 'external' | 'managed_local')} class="field"><option value="external">External endpoint</option><option value="managed_local" disabled={!editing.manager_available || editing.manager_component_state !== 'present'}>Managed local service</option></select></label>{/if}<label class="mt-4 block text-sm font-semibold">Base URL<input bind:value={editing.api_base} disabled={editing.connection_mode === 'managed_local'} class="field"/>{#if editing.connection_mode === 'managed_local'}<small class="muted mt-1 block font-normal">Resolved at runtime from {editing.managed_service_id}; managed by Pandrator Manager.</small>{/if}</label>{#if normalizedId(editing) === 'vertex_ai'}<div class="mt-4 grid gap-3 sm:grid-cols-2"><label class="block text-sm font-semibold">Google Cloud project<input bind:value={editing.vertex_project} placeholder="Uses project_id from JSON when blank" class="field"/></label><label class="block text-sm font-semibold">Vertex location<input bind:value={editing.vertex_location} placeholder="us-central1" class="field"/></label></div>{/if}<div class="mt-4"><CredentialStorageFields backends={credentialBackends} bind:backend={editingCredentialBackend} bind:reference={editingCredentialReference} bind:secret={editingApiKey} bind:deletePrevious={deletePreviousCredential} configured={Boolean(editing.credential_configured)} currentSource={editing.credential_source ?? 'none'} existingBackend={editingExistingCredentialBackend} suggestedEnvironment={editing.api_key_env ?? ''} secretLabel={normalizedId(editing) === 'vertex_ai' ? 'Google service-account JSON' : 'API key'} multiline={normalizedId(editing) === 'vertex_ai'}/></div>{#if editing.credential_configured || editing.secret_ref}<label class="mt-3 flex items-center gap-2 text-sm"><input type="checkbox" bind:checked={removeEditingApiKey} onchange={() => { if (removeEditingApiKey) { editingApiKey = ''; deletePreviousCredential = false; } }} class="accent-[var(--accent)]"/> Remove this service's credential reference{#if ['database', 'keyring'].includes(editing.credential_source ?? '')} and stored value{/if}</label>{/if}<label class="mt-4 block text-sm font-semibold">Models / deployment names<textarea bind:value={editingModelsText} rows="4" spellcheck="false" placeholder="One model or Azure deployment name per line" class="field font-mono text-xs"></textarea><small class="muted mt-1 block font-normal">Enter one ID per line. Azure deployment names are kept exactly as entered.</small></label><label class="mt-4 block text-sm font-semibold">Default model{#if modelChoices.length}<select value={selectedModel} onchange={(event) => setDefaultModel(event.currentTarget.value)} class="field">{#each modelChoices as model}<option value={model}>{model}</option>{/each}</select>{:else}<input value={selectedModel} oninput={(event) => setDefaultModel(event.currentTarget.value)} placeholder="Model ID" class="field"/>{/if}</label>{#if settingKeys.length}<details class="mt-5 border-t border-[var(--line)] pt-4" open><summary class="cursor-pointer text-sm font-semibold">Provider defaults</summary><div class="provider-default-grid mt-4">{#each settingKeys as key}<SettingField section="tts" keyName={key} value={editing.settings?.[key] ?? payload.builtin_defaults?.[key]} onchange={(value) => setServiceSetting(key, value)} compact/>{/each}</div></details>{/if}</section>
       {#if editing.supports_prebuilt_voices}<a href={`/voices?view=prebuilt&service=${encodeURIComponent(editing.id)}`} class="mt-5 flex items-center gap-3 rounded-2xl border border-[var(--line)] bg-[var(--accent-soft)] p-4"><Library class="shrink-0 text-[var(--accent)]" size={20}/><span class="min-w-0 flex-1"><strong class="block text-sm">Voice preview is in the Voice Library</strong><span class="muted mt-1 block text-xs">Browse by language, compare samples, and choose defaults there.</span></span><ExternalLink size={15}/></a>{/if}
     </div>
     <footer class="flex shrink-0 justify-end gap-2 border-t border-[var(--line)] px-5 py-4 sm:px-7"><button onclick={() => editing = null} class="btn btn-secondary">Cancel</button><button onclick={persistEditing} class="btn btn-primary">{editingCredentialBackend !== editingExistingCredentialBackend ? 'Verify move and save' : 'Save service settings'}</button></footer>

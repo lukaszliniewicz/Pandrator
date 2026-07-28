@@ -51,6 +51,13 @@ from .constants import (
     XTTS_FINETUNING_BUNDLED_WHEEL_PREFIX,
 )
 from .platforms import is_windows, pixi_env_python_path
+from .process_identity import (
+    ProcessIdentityError,
+    ProcessIdentityMismatch,
+    ProcessInspectionError,
+    identity_from_mapping,
+    validated_process,
+)
 from .crispasr import CRISPASR_VERSION, detect_compute_backends, resolve_asset
 
 
@@ -71,8 +78,8 @@ class ComponentOperationsMixin:
         return protected
 
     @staticmethod
-    def _runtime_process_labels(pandrator_path):
-        """Read supervised process identities, including a frozen supervisor.
+    def _validated_runtime_processes(pandrator_path):
+        """Read and validate supervised identities, including a frozen supervisor.
 
         A frozen launcher starts the supervisor as another copy of the launcher
         executable.  That executable can live outside the installation tree,
@@ -84,33 +91,86 @@ class ComponentOperationsMixin:
                 payload = json.load(handle)
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             return {}
+        if not isinstance(payload, dict):
+            return {}
 
-        labels = {}
         try:
-            supervisor_pid = int(payload.get("supervisor_pid") or 0)
-        except (TypeError, ValueError):
-            supervisor_pid = 0
-        if supervisor_pid > 0:
-            labels[supervisor_pid] = "Pandrator web supervisor"
+            with open(
+                os.path.join(pandrator_path, "pandrator.instance.lock"),
+                "r",
+                encoding="utf-8",
+            ) as handle:
+                lock_payload = json.load(handle)
+            lock_identity = identity_from_mapping(
+                lock_payload,
+                require_instance_id=True,
+            )
+            lock_process = validated_process(lock_identity)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError, ProcessIdentityError):
+            lock_identity = None
+            lock_process = None
 
-        for key, process in dict(payload.get("processes") or {}).items():
+        records = {}
+        try:
+            supervisor_identity = identity_from_mapping(
+                payload,
+                pid_key="supervisor_pid",
+                create_time_key="supervisor_create_time",
+                executable_key="supervisor_executable",
+                require_instance_id=True,
+            )
+            supervisor_process = validated_process(supervisor_identity)
+        except ProcessIdentityError:
+            supervisor_identity = None
+            supervisor_process = None
+
+        if (
+            supervisor_identity is not None
+            and supervisor_process is not None
+            and lock_identity is not None
+            and lock_process is not None
+            and supervisor_identity == lock_identity
+        ):
+            records[supervisor_identity.pid] = (
+                "Pandrator web supervisor",
+                supervisor_process,
+                supervisor_identity,
+            )
+
+        raw_processes = payload.get("processes")
+        if not isinstance(raw_processes, dict):
+            raw_processes = {}
+        for key, process in raw_processes.items():
             try:
-                pid = int(process.get("pid") or 0)
-            except (AttributeError, TypeError, ValueError):
+                identity = identity_from_mapping(
+                    process,
+                    require_instance_id=True,
+                )
+                if (
+                    supervisor_identity is None
+                    or identity.instance_id != supervisor_identity.instance_id
+                ):
+                    continue
+                live_process = validated_process(identity)
+            except (AttributeError, TypeError, ValueError, ProcessIdentityError):
                 continue
-            if pid > 0:
-                labels[pid] = str(process.get("label") or key or "Pandrator service")
-        return labels
+            if live_process is not None:
+                records[identity.pid] = (
+                    str(process.get("label") or key or "Pandrator service"),
+                    live_process,
+                    identity,
+                )
+        return records
 
     def get_running_installation_processes(self, pandrator_path):
         """Return processes executing binaries from the installation tree."""
         installation_root = os.path.normcase(os.path.realpath(pandrator_path))
         protected_pids = self._protected_installer_process_ids()
-        managed_labels = self._runtime_process_labels(pandrator_path)
+        managed_processes = self._validated_runtime_processes(pandrator_path)
         running_processes = []
         seen_pids = set()
 
-        for process in psutil.process_iter(['pid', 'name', 'exe']):
+        for process in psutil.process_iter(['pid', 'name', 'exe', 'create_time']):
             try:
                 if process.pid in protected_pids:
                     continue
@@ -123,11 +183,18 @@ class ComponentOperationsMixin:
                 running_processes.append(
                     {
                         'pid': process.pid,
-                        'name': managed_labels.get(
-                            process.pid,
+                        'name': (
+                            managed_processes[process.pid][0]
+                            if process.pid in managed_processes
+                            else
                             str(process.info.get('name') or os.path.basename(executable)),
                         ),
                         'exe': executable,
+                        'create_time': float(
+                            process.info.get('create_time')
+                            if process.info.get('create_time') is not None
+                            else process.create_time()
+                        ),
                     }
                 )
                 seen_pids.add(process.pid)
@@ -137,21 +204,18 @@ class ComponentOperationsMixin:
         # The supervisor can be a frozen launcher executable outside the
         # installation directory.  Its state file is authoritative for these
         # additional managed PIDs.
-        for pid, label in managed_labels.items():
-            if pid in protected_pids or pid in seen_pids or not psutil.pid_exists(pid):
+        for pid, (label, _process, identity) in managed_processes.items():
+            if pid in protected_pids or pid in seen_pids:
                 continue
-            try:
-                process = psutil.Process(pid)
-                running_processes.append(
-                    {
-                        'pid': pid,
-                        'name': label,
-                        'exe': str(process.exe() or ''),
-                    }
-                )
-                seen_pids.add(pid)
-            except (OSError, ValueError, psutil.AccessDenied, psutil.NoSuchProcess):
-                continue
+            running_processes.append(
+                {
+                    'pid': pid,
+                    'name': label,
+                    'exe': identity.executable,
+                    'create_time': identity.create_time,
+                }
+            )
+            seen_pids.add(pid)
 
         return running_processes
 
@@ -166,39 +230,83 @@ class ComponentOperationsMixin:
         return process_preview
 
     def _remove_stale_runtime_metadata(self, pandrator_path):
+        def metadata_record_is_live(
+            record,
+            *,
+            pid_key="pid",
+            create_time_key="process_create_time",
+            executable_key="executable",
+            require_instance_id=True,
+        ):
+            try:
+                raw_pid = int(record.get(pid_key) or 0) if isinstance(record, dict) else 0
+            except (TypeError, ValueError):
+                raw_pid = 0
+            try:
+                identity = identity_from_mapping(
+                    record,
+                    pid_key=pid_key,
+                    create_time_key=create_time_key,
+                    executable_key=executable_key,
+                    require_instance_id=require_instance_id,
+                )
+            except ProcessIdentityError:
+                # Legacy or partially-written metadata cannot authorize a stop,
+                # but a live PID is enough reason not to delete evidence that an
+                # active supervisor may shortly replace atomically.
+                return raw_pid > 0 and psutil.pid_exists(raw_pid)
+            try:
+                return validated_process(identity) is not None
+            except ProcessIdentityMismatch:
+                # A complete record whose PID now belongs to another process is
+                # stale and may be removed without touching that process.
+                return False
+            except ProcessInspectionError:
+                # AccessDenied and transient inspection failures are not proof
+                # that the owner is stale.
+                return True
+
+        def remove_file(path):
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            except OSError as error:
+                logging.warning("Could not remove stale runtime metadata %s: %s", path, error)
+
         runtime_state = os.path.join(pandrator_path, "runtime-processes.json")
         try:
             with open(runtime_state, "r", encoding="utf-8") as handle:
                 payload = json.load(handle)
-            runtime_pids = {int(payload.get("supervisor_pid") or 0)}
-            runtime_pids.update(
-                int(process.get("pid") or 0)
-                for process in dict(payload.get("processes") or {}).values()
-                if isinstance(process, dict)
-            )
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
-            runtime_pids = set()
-        if not any(pid > 0 and psutil.pid_exists(pid) for pid in runtime_pids):
-            try:
-                os.remove(runtime_state)
-            except FileNotFoundError:
-                pass
-            except OSError as error:
-                logging.warning("Could not remove stale runtime metadata %s: %s", runtime_state, error)
+            payload = None
+
+        runtime_is_live = False
+        if isinstance(payload, dict):
+            runtime_is_live = metadata_record_is_live(
+                payload,
+                pid_key="supervisor_pid",
+                create_time_key="supervisor_create_time",
+                executable_key="supervisor_executable",
+            )
+            raw_processes = payload.get("processes")
+            if isinstance(raw_processes, dict):
+                runtime_is_live = runtime_is_live or any(
+                    metadata_record_is_live(process)
+                    for process in raw_processes.values()
+                    if isinstance(process, dict)
+                )
+        if not runtime_is_live:
+            remove_file(runtime_state)
 
         lock_path = os.path.join(pandrator_path, "pandrator.instance.lock")
         try:
             with open(lock_path, "r", encoding="utf-8") as handle:
-                lock_pid = int(json.load(handle).get("pid") or 0)
+                lock_payload = json.load(handle)
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
-            lock_pid = 0
-        if lock_pid <= 0 or not psutil.pid_exists(lock_pid):
-            try:
-                os.remove(lock_path)
-            except FileNotFoundError:
-                pass
-            except OSError as error:
-                logging.warning("Could not remove stale runtime metadata %s: %s", lock_path, error)
+            lock_payload = None
+        if not metadata_record_is_live(lock_payload):
+            remove_file(lock_path)
 
     def stop_running_installation_processes(self, pandrator_path, running_processes=None, timeout=20):
         """Terminate supervised and standalone installation processes safely.
@@ -222,11 +330,41 @@ class ComponentOperationsMixin:
             return []
 
         processes_by_pid = {}
+        invalid_candidates = []
         for pid in requested_pids:
             try:
-                process = psutil.Process(pid)
+                candidate = next(
+                    item
+                    for item in candidates
+                    if int(item.get('pid') or 0) == pid
+                )
+                identity = identity_from_mapping(
+                    candidate,
+                    create_time_key='create_time',
+                    executable_key='exe',
+                    instance_id_key=None,
+                )
+                process = validated_process(identity)
+                if process is None:
+                    continue
                 processes_by_pid[pid] = process
-            except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+            except (
+                AttributeError,
+                StopIteration,
+                TypeError,
+                ValueError,
+                ProcessIdentityError,
+            ):
+                invalid_candidates.append(
+                    next(
+                        (
+                            item
+                            for item in candidates
+                            if str(item.get('pid') or '') == str(pid)
+                        ),
+                        {'pid': pid, 'name': 'unknown process'},
+                    )
+                )
                 continue
             try:
                 for child in process.children(recursive=True):
@@ -234,6 +372,13 @@ class ComponentOperationsMixin:
                         processes_by_pid[child.pid] = child
             except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
                 pass
+
+        if invalid_candidates:
+            raise RuntimeError(
+                "Refusing to stop process metadata that does not contain a "
+                "verifiable creation time and executable: "
+                + self.describe_running_installation_processes(invalid_candidates)
+            )
 
         processes = list(processes_by_pid.values())
         for process in processes:
@@ -1004,31 +1149,49 @@ class ComponentOperationsMixin:
         try:
             parent = psutil.Process(process.pid)
         except psutil.NoSuchProcess:
+            try:
+                process.wait(timeout=1)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
             return
 
+        descendants = []
         try:
-            for child in parent.children(recursive=True):
+            descendants = parent.children(recursive=True)
+            for child in descendants:
                 try:
                     child.terminate()
-                except psutil.AccessDenied:
+                except (psutil.AccessDenied, psutil.NoSuchProcess):
                     logging.warning(f"Access denied when terminating child process with PID: {child.pid}")
             parent.terminate()
-            process.wait(timeout=timeout)
-            return
-        except (psutil.TimeoutExpired, subprocess.TimeoutExpired):
-            logging.warning(f"Process tree did not terminate in {timeout}s, forcing kill")
+            _, alive = psutil.wait_procs(
+                [*descendants, parent],
+                timeout=max(0.1, float(timeout)),
+            )
         except psutil.NoSuchProcess:
-            return
+            alive = []
+        except psutil.AccessDenied:
+            alive = [*descendants, parent]
+
+        if alive:
+            logging.warning(f"Process tree did not terminate in {timeout}s, forcing kill")
+            for item in alive:
+                try:
+                    item.kill()
+                except (psutil.AccessDenied, psutil.NoSuchProcess):
+                    logging.warning(
+                        "Access denied when killing process with PID: %s",
+                        item.pid,
+                    )
+            psutil.wait_procs(alive, timeout=5)
 
         try:
-            for child in parent.children(recursive=True):
-                try:
-                    child.kill()
-                except psutil.AccessDenied:
-                    logging.warning(f"Access denied when killing child process with PID: {child.pid}")
-            parent.kill()
-        except psutil.NoSuchProcess:
-            return
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+        except OSError:
+            pass
 
     def is_xtts_runtime_ready(self, xtts_repo_path):
         run_script_path = os.path.join(xtts_repo_path, 'run.bat' if is_windows() else 'run.py')
@@ -1146,7 +1309,7 @@ class ComponentOperationsMixin:
             log_handle.close()
 
     def is_fishs2_runtime_ready(self, fishs2_repo_path):
-        run_script_name = 'run.bat' if is_windows() else 'run.sh'
+        run_script_name = 'run.bat' if is_windows() else 'run.py'
         run_script_path = os.path.join(fishs2_repo_path, run_script_name)
         env_python_path = pixi_env_python_path(os.path.join(fishs2_repo_path, '.pixi', 'envs', 'default'))
         return all(os.path.exists(path) for path in (run_script_path, env_python_path))
@@ -2038,67 +2201,3 @@ class ComponentOperationsMixin:
             "runtime_variant": asset.runtime_variant,
             "compiled_backends": list(asset.compiled_backends),
         }
-
-    def set_permissive_permissions(self, path):
-        """Set permissive file permissions on installation directories"""
-        if not self.is_admin():
-            logging.info(f"Skipping permission setting on {path} (not running as admin)")
-            return False
-
-        try:
-            self.update_status(f"Setting permissions on {os.path.basename(path)}...")
-            logging.info(f"Setting permissive permissions on: {path}")
-
-            icacls_executable = shutil.which('icacls')
-            if not icacls_executable:
-                system_root = os.environ.get('SystemRoot', r'C:\Windows')
-                fallback_icacls = os.path.join(system_root, 'System32', 'icacls.exe')
-                if os.path.exists(fallback_icacls):
-                    icacls_executable = fallback_icacls
-
-            if not icacls_executable:
-                logging.error(f"Could not locate icacls.exe. Skipping permission update for {path}")
-                return False
-
-            # Use icacls to give Users full control (F) with inheritance flags (OI)(CI)
-            # OI = Object Inherit, CI = Container Inherit, F = Full Control
-            command = [
-                icacls_executable,
-                path,
-                '/grant:r',
-                'Users:(OI)(CI)F',
-                '/T',
-                '/Q',
-            ]
-            completed_process = subprocess.run(
-                command,
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                **self.get_hidden_subprocess_kwargs(),
-            )
-
-            if completed_process.stdout:
-                logging.debug(f"icacls output for {path}: {completed_process.stdout}")
-            if completed_process.stderr:
-                logging.debug(f"icacls stderr for {path}: {completed_process.stderr}")
-
-            logging.info(f"Successfully set permissions on: {path}")
-            return True
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Failed to set permissions on {path}: {str(e)}")
-            if e.stdout:
-                logging.error(f"icacls stdout: {e.stdout}")
-            if e.stderr:
-                logging.error(f"icacls stderr: {e.stderr}")
-            logging.error(traceback.format_exc())
-            return False
-        except FileNotFoundError as e:
-            logging.error(f"Permission tool missing while updating {path}: {str(e)}")
-            logging.error(traceback.format_exc())
-            return False
-        except Exception as e:
-            logging.error(f"Unexpected error while setting permissions on {path}: {str(e)}")
-            logging.error(traceback.format_exc())
-            return False

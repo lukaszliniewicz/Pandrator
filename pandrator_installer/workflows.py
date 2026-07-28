@@ -61,6 +61,19 @@ from .reporting import HeadlessReporter, NullReporter
 
 
 class WorkflowMixin:
+    @staticmethod
+    def resolve_fishs2_runtime_options(*, gpu_support, backend="auto", model_quant="q6_k"):
+        """Normalize FishS2 install/update options from one variant decision."""
+        return {
+            "gpu_support": bool(gpu_support),
+            "backend": (
+                str(backend or "auto").strip().lower()
+                if gpu_support
+                else "cpu"
+            ),
+            "model_quant": str(model_quant or "q6_k").strip().lower(),
+        }
+
     def ensure_pandrator_environment_conda_packages(self, pandrator_path):
         """Install application command-line tools inside the portable Pixi environment."""
         for package_spec in (
@@ -227,9 +240,8 @@ class WorkflowMixin:
             # Create Pandrator directory if it doesn't exist
             if not pandrator_already_installed:
                 os.makedirs(pandrator_path, exist_ok=True)
-                if is_admin:
-                    self.set_permissive_permissions(pandrator_path)
-                  # Phase 1: Concurrently download dependencies and clone top-level repos
+
+            # Phase 1: Concurrently download dependencies and clone top-level repos
             concurrent_tasks = {}
 
             # Calibre installation task
@@ -255,8 +267,6 @@ class WorkflowMixin:
             def install_pixi_task():
                 if not self.check_pixi(pandrator_path):
                     self.install_pixi(pandrator_path)
-                    if is_admin:
-                        self.set_permissive_permissions(os.path.join(pandrator_path, 'bin'))
 
             concurrent_tasks["Pixi Setup"] = install_pixi_task
 
@@ -281,7 +291,7 @@ class WorkflowMixin:
                 concurrent_tasks["Clone XTTS"] = (self.clone_repo, (XTTS_API_REPO_URL, xtts_repo_path), {})
             if voxcpm_var and not os.path.exists(voxcpm_repo_path):
                 concurrent_tasks["Clone VoxCPM"] = (self.clone_repo, (VOXCPM_API_REPO_URL, voxcpm_repo_path), {})
-            if fishs2_var and not os.path.exists(fishs2_repo_path):
+            if (fishs2_var or fishs2_cpu_var) and not os.path.exists(fishs2_repo_path):
                 concurrent_tasks["Clone FishS2"] = (self.clone_repo, (FISHS2_API_REPO_URL, fishs2_repo_path), {})
             if voxtral_var and not os.path.exists(voxtral_repo_path):
                 concurrent_tasks["Clone Voxtral"] = (self.clone_repo, (VOXTRAL_API_REPO_URL, voxtral_repo_path), {})
@@ -363,14 +373,15 @@ class WorkflowMixin:
             if fishs2_var or fishs2_cpu_var:
                 self.reporter.progress(0.88)
                 self.reporter.status("Bootstrapping FishS2 API server (temporary startup)...")
-                
-                backend = selection.fishs2_backend if fishs2_var else 'cpu'
-                model_quant = selection.fishs2_model_quant
-                
+                fishs2_options = self.resolve_fishs2_runtime_options(
+                    gpu_support=fishs2_var,
+                    backend=selection.fishs2_backend,
+                    model_quant=selection.fishs2_model_quant,
+                )
                 self.install_fishs2_api_server(
                     fishs2_repo_path,
-                    backend=backend,
-                    model_quant=model_quant,
+                    backend=fishs2_options["backend"],
+                    model_quant=fishs2_options["model_quant"],
                     pixi_path=shared_pixi_path,
                 )
 
@@ -494,10 +505,15 @@ class WorkflowMixin:
             config['xtts_support'] = config.get('xtts_support', False) or xtts_var or xtts_cpu_var
             config['voxcpm_support'] = config.get('voxcpm_support', False) or voxcpm_var
             config['fishs2_support'] = config.get('fishs2_support', False) or fishs2_var or fishs2_cpu_var
-            config['fishs2_gpu_support'] = config.get('fishs2_gpu_support', False) or fishs2_var
             if fishs2_var or fishs2_cpu_var:
-                config['fishs2_backend'] = getattr(selection, 'fishs2_backend', 'auto')
-                config['fishs2_model_quant'] = getattr(selection, 'fishs2_model_quant', 'q6_k')
+                fishs2_options = self.resolve_fishs2_runtime_options(
+                    gpu_support=fishs2_var,
+                    backend=getattr(selection, 'fishs2_backend', 'auto'),
+                    model_quant=getattr(selection, 'fishs2_model_quant', 'q6_k'),
+                )
+                config['fishs2_gpu_support'] = fishs2_options["gpu_support"]
+                config['fishs2_backend'] = fishs2_options["backend"]
+                config['fishs2_model_quant'] = fishs2_options["model_quant"]
             config['silero_support'] = config.get('silero_support', False) or silero_var
             config['voxtral_support'] = config.get('voxtral_support', False) or voxtral_var
             config['kokoro_support'] = config.get('kokoro_support', False) or kokoro_var or kokoro_cpu_var
@@ -557,12 +573,6 @@ class WorkflowMixin:
             self.reporter.status("Cleaning installer package caches...")
             self.cleanup_installer_package_caches(pandrator_path)
 
-            # Set final permissions if admin
-            if is_admin:
-                self.reporter.progress(0.98)
-                self.reporter.status("Finalizing permissions...")
-                self.set_permissive_permissions(pandrator_path)
-
             self.reporter.progress(1.0)
             self.reporter.status("Installation complete!")
             logging.info("Installation completed successfully.")
@@ -603,7 +613,6 @@ class WorkflowMixin:
             self.save_install_config(pandrator_base_path, config)
         self.validate_platform_update_config(config)
 
-        pandrator_env_missing = not os.path.exists(self.get_pixi_manifest_path(pandrator_base_path, 'pandrator_installer'))
         kokoro_env_missing = not os.path.exists(self.get_pixi_manifest_path(pandrator_base_path, KOKORO_ENV_NAME))
 
         # Check admin status
@@ -625,8 +634,6 @@ class WorkflowMixin:
             def update_pixi_task():
                 if not self.check_pixi(pandrator_base_path):
                     self.install_pixi(pandrator_base_path)
-                    if is_admin:
-                        self.set_permissive_permissions(os.path.join(pandrator_base_path, 'bin'))
 
             update_tasks["Pixi Check"] = update_pixi_task
 
@@ -825,8 +832,15 @@ class WorkflowMixin:
             if config.get('fishs2_support', False):
                 if not self.is_fishs2_runtime_ready(fishs2_repo_path):
                     self.reporter.status("Bootstrapping FishS2 API server...")
+                    fishs2_options = self.resolve_fishs2_runtime_options(
+                        gpu_support=config.get('fishs2_gpu_support', False),
+                        backend=config.get('fishs2_backend', 'auto'),
+                        model_quant=config.get('fishs2_model_quant', 'q6_k'),
+                    )
                     self.install_fishs2_api_server(
                         fishs2_repo_path,
+                        backend=fishs2_options["backend"],
+                        model_quant=fishs2_options["model_quant"],
                         pixi_path=shared_pixi_path,
                     )
 
@@ -996,11 +1010,6 @@ class WorkflowMixin:
 
             self.reporter.status("Cleaning installer package caches...")
             self.cleanup_installer_package_caches(pandrator_base_path)
-
-            # Set permissions if running as admin
-            if is_admin:
-                self.reporter.status("Setting permissions after update...")
-                self.set_permissive_permissions(pandrator_base_path)
 
             self.reporter.status("Update completed successfully!")
             logging.info("Update process completed successfully")

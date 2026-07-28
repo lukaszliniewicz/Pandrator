@@ -153,6 +153,7 @@ class ApiGuards:
                     "auth_login",
                     "auth_logout",
                     "auth_bootstrap",
+                    "auth_manager_bootstrap",
                     "job_cancel",
                     "training_cancel",
                 }
@@ -164,7 +165,13 @@ class ApiGuards:
                 )
             if (
                 request.method in {"POST", "PUT", "PATCH", "DELETE"}
-                and endpoint not in {"auth_login", "auth_bootstrap", "health"}
+                and endpoint
+                not in {
+                    "auth_login",
+                    "auth_bootstrap",
+                    "auth_manager_bootstrap",
+                    "health",
+                }
             ):
                 if self.bearer_authenticated():
                     return None

@@ -786,6 +786,8 @@ def _merge_service_config(
         "auth_mode",
         "vertex_project",
         "vertex_location",
+        "connection_mode",
+        "managed_service_id",
     ):
         if str(raw_record.get(key) or "").strip():
             record[key] = str(raw_record[key]).strip()
@@ -3259,7 +3261,6 @@ def get_magpie_voices(base_url: str = MAGPIE_API_BASE_URL) -> list[str]:
 
 def _request_magpie_audio(text: str, tts_settings: dict, magpie_base_url: str) -> requests.Response:
     """Sends a TTS request to the Magpie TTS server."""
-    from ..constants import MAGPIE_LOCALE_MAP, MAGPIE_SPEAKERS
 
     voice = str(tts_settings.get("speaker") or "").strip() or "Magpie-Multilingual.EN-US.Aria"
     normalized_base_url = _normalize_base_url(magpie_base_url, MAGPIE_API_BASE_URL)

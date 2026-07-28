@@ -6,9 +6,18 @@
 
 Pandrator is a local-first workspace for creating audiobooks, subtitles, and voiceovers. It combines document preparation, transcription, optional LLM correction and translation, speech generation, detailed review, and export in one browser-based interface.
 
-The desktop installer and launcher manage Pandrator and its optional local model services. Docker and WSL are not required.
+Pandrator's browser interface is becoming the primary place to configure and
+operate optional local model services. An independent, per-user
+`pandrator-manager` process performs installation, update, repair, removal,
+and process supervision, so those operations continue if the browser, tray,
+or Pandrator itself exits. Docker and WSL are not required.
 
-The application itself is web-only. The retired Qt application is preserved on the `qt-maintenance` branch; Qt remains in `main` only for the desktop installer and launcher.
+Pandrator Manager is the primary installer and launcher. Its Qt-free Windows
+and Linux artifacts share the same per-user control plane, remember the chosen
+installation location, and can update the Manager through project-signed
+release manifests. The older Qt installer remains in the source tree as a
+feature-frozen migration fallback. See
+[Installer and manager architecture](INSTALLER_MANAGER_ARCHITECTURE.md).
 
 ## TL;DR
 
@@ -20,7 +29,9 @@ The application itself is web-only. The retired Qt application is preserved on t
 | Correct or translate text and subtitles | Configure a local or cloud LLM provider. This is optional for basic speech generation. |
 | Convert generated speech to another trained voice | Install **RVC**. It runs after speech generation and is optional. |
 
-Download the launcher from [GitHub Releases](https://github.com/lukaszliniewicz/Pandrator/releases). You can begin with only the components you need and add others later.
+For the current packaged release, download the launcher from
+[GitHub Releases](https://github.com/lukaszliniewicz/Pandrator/releases). You
+can begin with only the components you need and add others later.
 
 Local models process content on your machine. Cloud LLM and speech providers are optional; when used, they may send content to an external service and incur charges.
 
@@ -55,32 +66,183 @@ Local models process content on your machine. Cloud LLM and speech providers are
 
 ## Installation
 
+### Current packaged releases
+
+Pandrator Manager is the supported packaged setup and recovery path. It
+installs Pandrator first, then any selected speech components, and can add,
+update, repair, or remove components on later runs without changing the
+remembered workspace.
+
 ### Windows
 
-Download `PandratorInstaller.exe` from [Releases](https://github.com/lukaszliniewicz/Pandrator/releases) and run it. Choose an installation location and the local services you need. The same application is used later to launch, update, repair, or extend the installation.
+Download `PandratorManager-0.9.0-windows-x86_64.exe` from
+[Releases](https://github.com/lukaszliniewicz/Pandrator/releases) and run it.
+Choose the parent installation folder; the managed installation is created in
+its `Pandrator` subdirectory. The same Manager is used later to launch,
+update, repair, or extend the installation.
+
+The Windows executable is not Authenticode-signed and may be shown as
+**Unknown publisher** or trigger a SmartScreen warning. Where a release
+publishes a SHA-256 checksum, verify it before running the download.
 
 ### Linux
 
-Download `PandratorInstaller-x86_64.AppImage`, make it executable, and run it:
+Download `PandratorManager-0.9.0-x86_64.AppImage`, make it executable, and run it:
 
 ```bash
-chmod +x PandratorInstaller-x86_64.AppImage
-./PandratorInstaller-x86_64.AppImage
+chmod +x PandratorManager-0.9.0-x86_64.AppImage
+./PandratorManager-0.9.0-x86_64.AppImage
 ```
 
-The default installation location is `~/Pandrator`. The installer keeps Pixi environments, services, model caches, and application data under the selected workspace. It does not install system packages. Calibre is optional and is needed only for MOBI conversion.
+The first desktop launch offers a folder chooser. Headless systems can pass
+`setup --workspace /path/to/parent --no-open`. The Manager keeps Pixi
+environments, services, model caches, and application data under the selected
+workspace. It does not install system packages. Calibre is optional and is
+needed only for MOBI conversion.
+
+### Manager package and automation
+
+`pandrator-manager` is a separate, Qt-free Python distribution. Installing its
+wheel has no service-registration, elevation, component-download, or other
+host side effects. The wheel is suitable for developers, automation, and
+advanced users; this README does not claim that it has been uploaded to PyPI.
+Self-contained native artifacts remain the recommended consumer path because
+they provide their own tested runtime and desktop integration.
+
+Product-update signatures are project-controlled Ed25519 signatures over
+release manifests and artifact hashes; they do not require an EV certificate.
+The Windows bootstrap remains deliberately Authenticode-unsigned, so this
+cryptographic verification does not remove Windows' first-download
+Unknown-publisher warning.
+
+To exercise the current source checkout in an isolated environment:
+
+```bash
+python -m pip install ./pandrator_manager
+pandrator-manager --workspace /path/to/workspace start-manager
+pandrator-manager --workspace /path/to/workspace open --recovery
+```
+
+On Linux, build the self-contained Qt-free manager AppImage with:
+
+```bash
+python scripts/build_manager_appimage.py
+sha256sum --check dist/PandratorManager-0.9.0-x86_64.AppImage.sha256
+chmod +x dist/PandratorManager-0.9.0-x86_64.AppImage
+APPIMAGE_EXTRACT_AND_RUN=1 \
+  dist/PandratorManager-0.9.0-x86_64.AppImage setup --workspace "$HOME"
+```
+
+`APPIMAGE_EXTRACT_AND_RUN=1` is a compatibility fallback for systems where
+FUSE AppImage mounting is unavailable; ordinary desktops may run the AppImage
+directly.
+
+Use `pandrator-manager --help` for planning, component, runtime, operation,
+cancellation, and per-user autostart commands. Mutations always produce an
+exact reviewable plan followed by a durable operation; a normal package
+installation never downloads models or enables autostart.
+
+Common recovery and release commands are:
+
+```bash
+pandrator-manager --workspace /path/to/workspace doctor
+pandrator-manager --workspace /path/to/workspace legacy
+pandrator-manager --workspace /path/to/workspace legacy-import --yes
+pandrator-manager --workspace /path/to/workspace releases
+pandrator-manager --workspace /path/to/workspace release-plan \
+  --manifest /path/to/signed-manifest.json
+pandrator-manager --workspace /path/to/workspace release-update \
+  --manifest /path/to/signed-manifest.json --yes --wait
+pandrator-manager --workspace /path/to/workspace uninstall \
+  --preserve-data --yes --wait
+```
+
+`legacy` is read-only. `legacy-import` requires the exact inspected source
+digest internally and is idempotent. Uninstall preserves `Pandrator/data` by
+default; `--purge-data` is a separate destructive confirmation, while
+`--export-data NEW_ARCHIVE.zip` creates and verifies an archive before
+removal.
+
+Each non-empty plan includes typed host preflight results and repeats them
+immediately before the first mutation. Checks cover disk headroom, supported
+runtime-tool artifacts, custom CA paths, source transport, offline
+availability, conservative Windows path pressure, and occupied ports. When a
+backend needs Pixi, the manager installs one pinned, SHA-256-verified copy in
+its private runtime path and journals its promotion so failure restores the
+previous owned executable. It never terminates an unknown process merely to
+free a port.
+
+Tray support is optional:
+
+```bash
+python -m pip install "./pandrator_manager[tray]"
+pandrator-tray --workspace /path/to/workspace --check
+pandrator-tray --workspace /path/to/workspace
+```
+
+Closing or omitting the tray does not stop the manager, Pandrator, or any
+managed backend. Headless Linux systems can use the same manager and CLI
+without installing the tray extra. With the extra installed but no graphical
+session, `--check` returns a concise unavailable capability instead of an X11
+traceback.
+
+Kokoro and VoxCPM have Manager-owned bootstrap adapters with fixed service
+ports and persistent model/data roots. CrispASR uses a pinned native runtime
+and defaults to the MOSS diarization model; Qwen3 TTS defaults to the 1.7B
+model. XTTS fine-tuning remains explicitly unavailable until its training
+environment receives the same qualification.
+The WebUI derives whether to show an action from the manager's canonical
+capabilities; it must not invent an installation path for an unavailable
+action.
 
 ### Launching and access
 
-The launcher starts the web application, worker, and selected speech services, waits for Pandrator to become ready, and opens it in your browser. Its **Open Web UI** action reopens the page if you close the tab.
+The Manager starts the web application, worker, and selected speech services,
+waits for Pandrator to become ready, and opens it in your browser. The native
+launcher and optional tray are clients; the independent Manager owns the
+processes and durable operations.
 
-Pandrator listens on `127.0.0.1` by default. The installer can enable access from other devices; non-local access requires owner authentication. Use HTTPS through a reverse proxy when exposing Pandrator beyond a trusted local network.
+Pandrator and its setup manager listen on `127.0.0.1` by default. Explicit
+private-network and HTTPS-ingress profiles support a home server, rented GPU
+machine, or pod while preserving that safe default. A headless native first
+run can configure both workstation-facing addresses:
 
-Closing the browser does not stop generation. Use the launcher to reopen the interface or stop the managed processes.
+```bash
+pandrator-manager-launcher setup \
+  --workspace /srv/pandrator \
+  --remote-setup-url https://setup.example.test \
+  --remote-pandrator-url https://pandrator.example.test \
+  --trusted-proxy-hops 1 \
+  --no-open
+```
+
+The command prints an expiring, one-use recovery URL instead of trying to
+depend on a browser on the server. HTTPS mode expects an operated reverse
+proxy and binds to loopback by default; cross-namespace pod ingress requires
+an explicit `--network-bind-host 0.0.0.0` plus network policy. Trusted-LAN
+HTTP requires exact `http://host:port` URLs and
+`--allow-insecure-private-network`. Non-local Pandrator access requires owner
+authentication, and passwords cannot be submitted over remote plain HTTP.
+The recovery manager controls one host/workspace rather than acting as a fleet
+manager.
+
+Closing the browser does not stop generation. Use the launcher or Manager
+recovery UI to reopen the interface or explicitly stop managed processes.
 
 ### Updating
 
-Use **Update** in the installer. If Pandrator or one of its services is running, the installer can stop it before continuing. User data is preserved unless removal with data purging is explicitly requested.
+Open Pandrator Manager and choose **Maintenance → Check for update** to update
+the Manager from the project-signed release channel. Pandrator and backend
+updates use the contextual **Review update** actions in **Install & launch**.
+The Manager stages a fresh repository checkout, validates it, and switches the
+active release only after the operation succeeds, so the Manager itself can
+also be updated without downloading a new bootstrap executable.
+
+Install, update, repair, and removal share the same staged, journalled
+operation model. A running backend is stopped before replacement, its previous
+running intent is restored after validation, and an activation or
+database-commit failure returns to the previous slot. User data is separate
+and preserved unless a purge is explicitly reviewed and confirmed.
 
 Before the first web-based launch, Pandrator backs up legacy metadata and imports existing sessions into its new database without rewriting the original Qt data. Keep a separate backup of important work before any major application upgrade.
 
@@ -101,6 +263,21 @@ Before the first web-based launch, Pandrator backs up legacy metadata and import
 | RVC | Speech-to-speech | CPU or CUDA | Applies a `.pth` model and matching `.index` after generation. |
 
 Hardware requirements vary with model size, quantization, input length, and the selected compute backend. The installer shows the available variants and model licences before downloading them.
+
+In the manager-enabled WebUI, each compatible TTS card has an explicit
+connection mode:
+
+- **Managed local** binds the provider to a stable manager service identity.
+  The endpoint is resolved at execution time, so a port change does not rewrite
+  the provider profile.
+- **External endpoint** retains the user-entered URL and works without a local
+  manager.
+
+Install, update, repair, remove, compute selection, and start/stop actions are
+shown contextually under **Providers & services**. The canonical component
+inventory and exact operation plan remain manager-owned. Installing a local
+backend never silently changes the default TTS provider, and a removal plan
+reports provider profiles that still depend on that component.
 
 ## Speech generation language support
 
@@ -275,7 +452,12 @@ Git.
 
 The `pandrator` CLI also exposes session, source, workflow, job, artifact, provider, voice, RVC, training, export, authentication, migration, and doctor commands. Use `pandrator --help` and the subcommand help for the current interface. Stable JSON output is available through `--json`.
 
-The separately packaged `pandrator-installer` CLI supports probing, planning, installing, updating, repairing, launching, stopping, and uninstalling. Uninstall preserves user data unless `--purge-data` is explicitly supplied.
+During migration, the legacy `pandrator_installer` package still supplies the
+Qt compatibility workflows. The new `pandrator-manager` distribution also
+exports a temporary `pandrator-installer` command alias, but that alias is only
+a bridge to the manager CLI and will be removed after the documented
+deprecation window. Manager uninstall preserves user data unless
+`--purge-data` is explicitly reviewed and confirmed.
 
 ## Security and privacy
 
@@ -338,7 +520,11 @@ multi-user hosted service.
 
 `pyproject.toml` is authoritative for the Pandrator package and
 `pandrator_installer/pyproject.toml` is authoritative for the separately
-packaged installer. The pip-compatible files are generated projections:
+packaged compatibility installer. `pandrator_manager/pyproject.toml` is the
+independent Qt-free manager distribution and intentionally has its own
+Python-version range and optional `tray`, `build`, and `dev` extras. The
+pip-compatible application/compatibility-installer files are generated
+projections:
 
 ```bash
 python scripts/generate_requirements.py
@@ -369,6 +555,54 @@ python scripts/build_appimage_container.py
 ```
 
 The wrapper auto-detects Docker or Podman, builds inside the pinned Debian 11/Pixi environment, and writes only the final artifact to `dist/`. The checkout is mounted read-only, so host `.pixi`, `build`, and `dist` contents cannot leak into the Linux build. The locked release target is currently `linux/amd64`; the host may be Windows, macOS, x86_64 Linux, or an ARM machine with x86_64 container emulation. Run `python scripts/build_appimage_container.py --help` for runtime, output, rebuild, and smoke-test options.
+
+## Building and qualifying Pandrator Manager
+
+Use Python 3.11 or 3.12 in an isolated environment:
+
+```bash
+python -m pip install -e "./pandrator_manager[build,dev]"
+python -m pytest -q tests/test_manager_*.py
+ruff check --config pandrator_manager/pyproject.toml \
+  pandrator_manager \
+  scripts/build_manager_appimage.py \
+  scripts/build_manager_bootstrap.py \
+  scripts/build_manager_release_bundle.py \
+  scripts/generate_manager_release_key.py \
+  scripts/qualify_manager_lifecycle.py
+python -m build pandrator_manager --outdir manager-dist
+python scripts/build_manager_bootstrap.py --wheel-dir manager-dist
+python scripts/build_manager_release_bundle.py
+python scripts/qualify_manager_lifecycle.py
+```
+
+The bootstrap builder extracts and analyzes the one wheel in `manager-dist`;
+it fails if PyInstaller resolves manager code from the checkout, records the
+wheel SHA-256 in its report, uses a disposable PyInstaller cache, runs a frozen
+self-check, and excludes Qt. The lifecycle qualification uses a disposable
+workspace and ephemeral test signing key to exercise bootstrap setup,
+authenticated manager takeover, and preserve-data uninstall. It must never be
+pointed at a real workspace.
+
+On Windows the output is `dist/PandratorManagerBootstrap.exe` plus
+`dist/pandrator-manager-<version>-windows-x86_64.zip`. The executable is
+intentionally not Authenticode-signed. On Linux the corresponding bootstrap is
+a native ELF and the release bundle suffix is `linux-x86_64`; a universal
+release build still needs the oldest supported glibc baseline.
+
+To smoke-test the wheel as a tool before public PyPI publication:
+
+```bash
+pipx install manager-dist/pandrator_manager-*.whl
+# or
+uv tool install manager-dist/pandrator_manager-*.whl
+```
+
+The cross-platform workflow in `.github/workflows/manager-ci.yml` repeats
+manager tests, packaging, exact-wheel freezing, signed lifecycle handoff, and
+uninstall on Python 3.11/3.12 and Windows/Ubuntu runners. Publishing,
+production release signing, SBOM/provenance generation, and channel promotion
+remain separate release gates.
 
 ## Contributing
 

@@ -13,6 +13,7 @@ conda/
 # Build and packaging artifacts
 build/
 dist/
+/manager-dist*/
 /*.whl
 .release_blocks/
 .release_staging/
@@ -26,6 +27,7 @@ pip-wheel-metadata/
 *.spec
 !pandrator_installer_launcher.spec
 !pandrator_installer_launcher_linux.spec
+!pandrator_manager_bootstrap.spec
 
 # Test and tooling caches
 .pytest_cache/
