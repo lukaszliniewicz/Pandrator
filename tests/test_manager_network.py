@@ -275,7 +275,7 @@ class RemoteRecoveryBoundaryTests(unittest.TestCase):
                     "Idempotency-Key": "remote-recovery",
                 },
                 json={},
-                environ_overrides=remote,
+                environ_overrides={"REMOTE_ADDR": "127.0.0.1"},
             )
 
         self.assertEqual(200, response.status_code)
@@ -305,7 +305,7 @@ class RemoteRecoveryBoundaryTests(unittest.TestCase):
             issued = client.post(
                 "/v1/recovery-sessions",
                 headers={
-                    **forwarded,
+                    "Host": "setup.example",
                     "Authorization": f"Bearer {'n' * 43}",
                     "Idempotency-Key": "https-recovery",
                 },
@@ -351,12 +351,14 @@ class RemoteRecoveryBoundaryTests(unittest.TestCase):
                 issued = client.post(
                     "/v1/recovery-sessions",
                     headers={
-                        **headers,
+                        "Host": "gpu-box.local:8098",
                         "Authorization": f"Bearer {'n' * 43}",
                         "Idempotency-Key": key,
                     },
                     json={},
-                    environ_overrides=remote,
+                    environ_overrides={
+                        "REMOTE_ADDR": "127.0.0.1"
+                    },
                 )
                 token = parse_qs(
                     urlsplit(issued.get_json()["url"]).fragment

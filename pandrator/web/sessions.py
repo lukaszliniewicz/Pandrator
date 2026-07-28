@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from .database import Database
 from .models import SessionRecord, utcnow
@@ -36,21 +37,36 @@ class SessionService:
 
     def find_active_by_name(self, name: str) -> SessionRecord | None:
         """Return the newest active session whose display name matches exactly."""
-        normalized = str(name or "").strip().casefold()
-        if not normalized:
-            return None
         with self.database.session() as session:
-            records = list(
-                session.scalars(
-                    select(SessionRecord)
-                    .where(SessionRecord.trashed_at.is_(None))
-                    .order_by(SessionRecord.updated_at.desc())
-                ).all()
-            )
-            record = next((item for item in records if str(item.name or "").strip().casefold() == normalized), None)
+            record = self.find_active_by_name_in_session(session, name)
             if record is not None:
                 session.expunge(record)
             return record
+
+    @staticmethod
+    def find_active_by_name_in_session(
+        session: Session,
+        name: str,
+    ) -> SessionRecord | None:
+        normalized = str(name or "").strip().casefold()
+        if not normalized:
+            return None
+        records = list(
+            session.scalars(
+                select(SessionRecord)
+                .where(SessionRecord.trashed_at.is_(None))
+                .order_by(SessionRecord.updated_at.desc())
+            ).all()
+        )
+        return next(
+            (
+                item
+                for item in records
+                if str(item.name or "").strip().casefold()
+                == normalized
+            ),
+            None,
+        )
 
     def create(
         self,
@@ -61,11 +77,16 @@ class SessionService:
         target_language: str | None = None,
         workflow_preset: str = "custom",
         included_stages: list[str] | None = None,
+        record_id: str | None = None,
+        storage_key: str | None = None,
+        db_session: Session | None = None,
     ) -> SessionRecord:
         normalized_name = str(name or "").strip()
         if not normalized_name:
             raise ValueError("Session name is required.")
         record = SessionRecord(
+            **({"id": record_id} if record_id else {}),
+            **({"storage_key": storage_key} if storage_key else {}),
             name=normalized_name,
             workflow_kind=workflow_kind,
             source_language=str(source_language or "auto").strip().lower(),
@@ -73,45 +94,107 @@ class SessionService:
             workflow_preset=workflow_preset,
             included_stages_json=list(included_stages or []),
         )
+        if db_session is not None:
+            db_session.add(record)
+            db_session.flush()
+            return record
         with self.database.session() as session:
             session.add(record)
             session.flush()
             session.expunge(record)
         return record
 
-    def update(self, session_id: str, revision: int, changes: dict) -> SessionRecord:
-        allowed = {"name", "workflow_kind", "source_language", "target_language", "workflow_preset", "included_stages_json", "status"}
+    def update(
+        self,
+        session_id: str,
+        revision: int,
+        changes: dict,
+        *,
+        db_session: Session | None = None,
+    ) -> SessionRecord:
+        if db_session is not None:
+            return self.update_in_session(
+                db_session,
+                session_id,
+                revision,
+                changes,
+            )
         with self.database.session() as session:
-            record = session.get(SessionRecord, session_id)
-            if record is None:
-                raise KeyError(session_id)
-            if record.revision != revision:
-                raise RevisionConflict(f"Expected revision {revision}, found {record.revision}.")
-            for key, value in changes.items():
-                if key in allowed:
-                    setattr(record, key, value)
-            if not str(record.name or "").strip():
-                raise ValueError("Session name is required.")
-            record.revision += 1
-            record.updated_at = utcnow()
-            session.flush()
+            record = self.update_in_session(
+                session,
+                session_id,
+                revision,
+                changes,
+            )
             session.expunge(record)
             return record
 
-    def trash(self, session_id: str, revision: int) -> SessionRecord:
+    @staticmethod
+    def update_in_session(
+        session: Session,
+        session_id: str,
+        revision: int,
+        changes: dict,
+    ) -> SessionRecord:
+        allowed = {"name", "workflow_kind", "source_language", "target_language", "workflow_preset", "included_stages_json", "status"}
+        record = session.get(SessionRecord, session_id)
+        if record is None:
+            raise KeyError(session_id)
+        if record.revision != revision:
+            raise RevisionConflict(
+                f"Expected revision {revision}, found {record.revision}."
+            )
+        for key, value in changes.items():
+            if key in allowed:
+                setattr(record, key, value)
+        if not str(record.name or "").strip():
+            raise ValueError("Session name is required.")
+        record.revision += 1
+        record.updated_at = utcnow()
+        session.flush()
+        return record
+
+    def trash(
+        self,
+        session_id: str,
+        revision: int,
+        *,
+        db_session: Session | None = None,
+    ) -> SessionRecord:
+        if db_session is not None:
+            return self.trash_in_session(
+                db_session,
+                session_id,
+                revision,
+            )
         with self.database.session() as session:
-            record = session.get(SessionRecord, session_id)
-            if record is None:
-                raise KeyError(session_id)
-            if record.revision != revision:
-                raise RevisionConflict(f"Expected revision {revision}, found {record.revision}.")
-            record.trashed_at = utcnow()
-            record.status = "trashed"
-            record.revision += 1
-            record.updated_at = utcnow()
-            session.flush()
+            record = self.trash_in_session(
+                session,
+                session_id,
+                revision,
+            )
             session.expunge(record)
             return record
+
+    @staticmethod
+    def trash_in_session(
+        session: Session,
+        session_id: str,
+        revision: int,
+    ) -> SessionRecord:
+        record = session.get(SessionRecord, session_id)
+        if record is None:
+            raise KeyError(session_id)
+        if record.revision != revision:
+            raise RevisionConflict(
+                f"Expected revision {revision}, found {record.revision}."
+            )
+        record.trashed_at = utcnow()
+        record.status = "trashed"
+        record.revision += 1
+        record.updated_at = utcnow()
+        session.flush()
+        return record
 
     def restore(self, session_id: str, revision: int) -> SessionRecord:
         with self.database.session() as session:

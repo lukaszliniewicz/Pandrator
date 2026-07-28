@@ -235,6 +235,32 @@ manager.
 Closing the browser does not stop generation. Use the launcher or Manager
 recovery UI to reopen the interface or explicitly stop managed processes.
 
+### Agent access with Pandrator MCP
+
+The repository includes a separately packaged local stdio MCP sidecar that can
+explain Pandrator, inspect sessions and durable work, make revision-safe
+session changes, run immutable workflow plans, and perform bounded Manager
+planning and recovery actions.
+
+It can manage a local installation or one fixed Pandrator instance on a home
+LAN/VPN, external HTTPS server, or pod. For remote use, the sidecar still runs
+beside the agent host on the user's workstation; only its fixed Pandrator
+target is remote. Codex is the current maintained live qualification gate.
+Secret-free Claude Code, OpenCode, and Antigravity templates are also
+generated, but have not yet received the same live compatibility run.
+Application and optional app-down Manager recovery credentials are enrolled
+separately through browser owner consent and stored in the OS keyring.
+
+Start with the complete
+[`pandrator_mcp/README.md`](pandrator_mcp/README.md) walkthrough. It includes
+home/server/pod preparation, least-privilege scopes, identity pinning,
+diagnostics, secret-free host-config generation, and a guarded prompt an agent
+can use to help create reviewable pod infrastructure.
+
+The first end-to-end record uses a fresh Fedora 44 Pandrator target and Codex
+0.145.0 on the controller:
+[`docs/qualification/pandrator-mcp-0.1.0-fedora44-codex-0.145.0.md`](docs/qualification/pandrator-mcp-0.1.0-fedora44-codex-0.145.0.md).
+
 ### Updating
 
 Open Pandrator Manager and choose **Maintenance → Check for update** to update

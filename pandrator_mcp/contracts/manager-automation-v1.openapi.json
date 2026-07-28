@@ -1,0 +1,641 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Pandrator Manager Automation Enrollment Contract",
+    "version": "1.0.0-contract",
+    "description": "Versioned contract for scoped, expiring, audience-bound direct recovery credentials. This contract does not authorize the Manager's permanent local client secret for remote use."
+  },
+  "servers": [
+    {
+      "url": "/"
+    }
+  ],
+  "paths": {
+    "/v1/automation/authorize": {
+      "get": {
+        "operationId": "authorizeManagerAutomationClient",
+        "description": "Show an authenticated human the exact client, origins, scopes, and expiry requested by a native client.",
+        "security": [
+          {
+            "managerBrowserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Human authorization review"
+          },
+          "400": {
+            "$ref": "#/components/responses/Invalid"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          }
+        }
+      },
+      "post": {
+        "operationId": "completeManagerAutomationAuthorization",
+        "description": "Approve or deny the exact reviewed request and return a one-use result to the native client.",
+        "security": [
+          {
+            "managerBrowserSession": []
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "One-use result returned to a loopback callback"
+          },
+          "400": {
+            "$ref": "#/components/responses/Invalid"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          }
+        }
+      }
+    },
+    "/v1/automation/identity": {
+      "get": {
+        "operationId": "getManagerAutomationIdentity",
+        "description": "Return non-secret Manager identity and automation policy availability.",
+        "responses": {
+          "200": {
+            "description": "Manager automation identity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagerAutomationIdentity"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/automation/enrollment-grants": {
+      "post": {
+        "operationId": "createManagerAutomationEnrollmentGrant",
+        "description": "Create a short-lived, single-use grant after an authenticated human reviews exact client identity, origins, scopes, and expiry.",
+        "security": [
+          {
+            "managerBrowserSession": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnrollmentGrantRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "One-use enrollment grant",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnrollmentGrant"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/Denied"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          }
+        }
+      }
+    },
+    "/v1/automation/token": {
+      "post": {
+        "operationId": "exchangeManagerAutomationEnrollmentGrant",
+        "description": "Exchange one grant with its PKCE verifier for an audience-bound Manager automation credential.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnrollmentExchangeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Credential returned exactly once to the trusted CLI",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutomationTokenResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Invalid"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          }
+        }
+      }
+    },
+    "/v1/automation/principal": {
+      "get": {
+        "operationId": "getManagerAutomationPrincipal",
+        "description": "Inspect the current credential without returning it.",
+        "security": [
+          {
+            "managerAutomationBearer": [
+              "manager.read"
+            ]
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current automation principal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagerAutomationPrincipal"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/v1/automation/clients": {
+      "get": {
+        "operationId": "listManagerAutomationClients",
+        "description": "List non-secret enrolled client status for human review.",
+        "security": [
+          {
+            "managerBrowserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Enrolled clients",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "items"
+                  ],
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ManagerAutomationPrincipal"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/automation/clients/{clientId}": {
+      "delete": {
+        "operationId": "revokeManagerAutomationClient",
+        "description": "Revoke every direct recovery credential for one enrolled client.",
+        "security": [
+          {
+            "managerBrowserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "clientId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Client access revoked"
+          },
+          "404": {
+            "description": "Client not found"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "managerBrowserSession": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "pandrator_manager_session",
+        "description": "Human recovery UI session with CSRF protection on writes."
+      },
+      "managerAutomationBearer": {
+        "type": "oauth2",
+        "description": "Distinct Manager-recovery audience. Never the permanent local Manager client secret.",
+        "flows": {
+          "authorizationCode": {
+            "authorizationUrl": "/v1/automation/authorize",
+            "tokenUrl": "/v1/automation/token",
+            "scopes": {
+              "manager.read": "Read Manager state and diagnostics.",
+              "manager.runtime": "Start, stop, or restart approved managed runtime.",
+              "manager.mutate": "Execute an exact reviewed Manager plan."
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "ManagerAutomationIdentity": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema_version",
+          "service",
+          "manager_instance_id",
+          "manager_version",
+          "canonical_recovery_origin",
+          "automation_enabled",
+          "maximum_scopes",
+          "maximum_credential_lifetime_seconds"
+        ],
+        "properties": {
+          "schema_version": {
+            "const": "1"
+          },
+          "service": {
+            "const": "pandrator-manager"
+          },
+          "manager_instance_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "manager_version": {
+            "type": "string"
+          },
+          "canonical_recovery_origin": {
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https://"
+          },
+          "automation_enabled": {
+            "type": "boolean"
+          },
+          "maximum_scopes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ManagerScope"
+            },
+            "uniqueItems": true
+          },
+          "maximum_credential_lifetime_seconds": {
+            "type": "integer",
+            "minimum": 300,
+            "maximum": 2592000
+          }
+        }
+      },
+      "ManagerScope": {
+        "type": "string",
+        "enum": [
+          "manager.read",
+          "manager.runtime",
+          "manager.mutate"
+        ]
+      },
+      "EnrollmentGrantRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "client_id",
+          "client_name",
+          "subject",
+          "application_instance_id",
+          "canonical_application_origin",
+          "canonical_recovery_origin",
+          "requested_scopes",
+          "expires_in_seconds",
+          "code_challenge",
+          "code_challenge_method"
+        ],
+        "properties": {
+          "client_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "client_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "subject": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "application_instance_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "canonical_application_origin": {
+            "type": "string",
+            "format": "uri"
+          },
+          "canonical_recovery_origin": {
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https://"
+          },
+          "requested_scopes": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/ManagerScope"
+            }
+          },
+          "expires_in_seconds": {
+            "type": "integer",
+            "minimum": 300,
+            "maximum": 2592000
+          },
+          "code_challenge": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{43,128}$"
+          },
+          "code_challenge_method": {
+            "const": "S256"
+          }
+        }
+      },
+      "EnrollmentGrant": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "grant_code",
+          "expires_at",
+          "manager_instance_id",
+          "approved_scopes"
+        ],
+        "properties": {
+          "grant_code": {
+            "type": "string",
+            "minLength": 32,
+            "writeOnly": true
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "manager_instance_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "approved_scopes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ManagerScope"
+            }
+          }
+        }
+      },
+      "EnrollmentExchangeRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "client_id",
+          "grant_code",
+          "code_verifier",
+          "manager_instance_id"
+        ],
+        "properties": {
+          "client_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "grant_code": {
+            "type": "string",
+            "minLength": 32,
+            "writeOnly": true
+          },
+          "code_verifier": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._~-]{43,128}$",
+            "writeOnly": true
+          },
+          "manager_instance_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "AutomationTokenResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "access_token",
+          "token_type",
+          "audience",
+          "expires_at",
+          "principal"
+        ],
+        "properties": {
+          "access_token": {
+            "type": "string",
+            "minLength": 32,
+            "writeOnly": true
+          },
+          "token_type": {
+            "const": "Bearer"
+          },
+          "audience": {
+            "const": "pandrator-manager-recovery"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "principal": {
+            "$ref": "#/components/schemas/ManagerAutomationPrincipal"
+          }
+        }
+      },
+      "ManagerAutomationPrincipal": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema_version",
+          "subject",
+          "client_id",
+          "client_name",
+          "manager_instance_id",
+          "application_instance_id",
+          "scopes",
+          "expires_at",
+          "created_at"
+        ],
+        "properties": {
+          "schema_version": {
+            "const": "1"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "client_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "client_name": {
+            "type": "string"
+          },
+          "manager_instance_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "application_instance_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ManagerScope"
+            },
+            "uniqueItems": true
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_used_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "revoked_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
+      "ErrorEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "code",
+              "message"
+            ],
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "request_id": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          }
+        }
+      }
+    },
+    "responses": {
+      "Invalid": {
+        "description": "Invalid or expired enrollment request",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      },
+      "Unauthenticated": {
+        "description": "Authentication required",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      },
+      "Denied": {
+        "description": "Requested scopes or policy denied",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      },
+      "Conflict": {
+        "description": "Identity, origin, revision, or one-use grant conflict",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      },
+      "RateLimited": {
+        "description": "Authenticated recovery client request rate exceeded; retry after the response Retry-After interval",
+        "headers": {
+          "Retry-After": {
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      }
+    }
+  }
+}

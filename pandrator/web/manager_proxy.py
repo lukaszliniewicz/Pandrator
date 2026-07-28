@@ -20,7 +20,7 @@ from urllib.parse import urlsplit
 
 import psutil
 import requests
-from flask import jsonify, request
+from flask import g, has_request_context, jsonify, request
 
 from .schemas import (
     ManagerLegacyImportRequest,
@@ -215,6 +215,17 @@ class LocalManagerProxy:
             "Accept": "application/json",
             "Authorization": f"Bearer {connection.secret}",
         }
+        if has_request_context():
+            request_id = str(
+                getattr(g, "request_id", "") or ""
+            )
+            traceparent = str(
+                getattr(g, "traceparent", "") or ""
+            )
+            if request_id:
+                headers["X-Request-ID"] = request_id[:120]
+            if traceparent:
+                headers["traceparent"] = traceparent[:160]
         if method.upper() not in {"GET", "HEAD"}:
             headers["Idempotency-Key"] = (
                 idempotency_key or str(uuid.uuid4())

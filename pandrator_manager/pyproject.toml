@@ -80,6 +80,12 @@ pandrator_manager = "."
   "static/**",
 ]
 
+[tool.setuptools.exclude-package-data]
+"*" = [
+  "__pycache__/*",
+  "*.py[cod]",
+]
+
 [tool.ruff]
 target-version = "py311"
 line-length = 100

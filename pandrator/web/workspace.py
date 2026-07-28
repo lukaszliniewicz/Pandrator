@@ -4,17 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
 from .artifact_selection import select_source_path
 from .database import Database
 from .jobs import JobQueue
-from .tts_optimization import DEFAULT_FIRST_PROMPT, DEFAULT_PROMPT, DEFAULT_SECOND_PROMPT, DEFAULT_THIRD_PROMPT
 from .models import (
     AppSetting,
     Artifact,
@@ -29,19 +28,21 @@ from .models import (
     OutcomePlan,
     OutcomePlanHistory,
     OutputAssembly,
-    Segment,
     SessionRecord,
     SessionSetting,
     SessionSettingHistory,
     SessionSource,
     SourceAsset,
     SourceRecord,
-    TimedWord,
     UsageEvent,
-    new_id,
     utcnow,
 )
-
+from .tts_optimization import (
+    DEFAULT_FIRST_PROMPT,
+    DEFAULT_PROMPT,
+    DEFAULT_SECOND_PROMPT,
+    DEFAULT_THIRD_PROMPT,
+)
 
 SETTING_SECTIONS = (
     "text",
@@ -617,54 +618,141 @@ class WorkspaceSettingsService:
                 "global_revision": global_record.revision if global_record else 0,
             }
 
-    def update(self, session_id: str, section: str, expected_revision: int, value: dict[str, Any]) -> dict[str, Any]:
+    def update(
+        self,
+        session_id: str,
+        section: str,
+        expected_revision: int,
+        value: dict[str, Any],
+        *,
+        db_session: Session | None = None,
+    ) -> dict[str, Any]:
         section = self._validate_section(section)
+        if db_session is not None:
+            return self.update_in_session(
+                db_session,
+                session_id,
+                section,
+                expected_revision,
+                value,
+            )
         with self.database.session() as session:
-            session_record = session.get(SessionRecord, session_id)
-            if session_record is None:
-                raise KeyError(session_id)
-            value = dict(value)
-            if section == "output" and session_record.workflow_kind != "audiobook":
-                for key in ("title", "artist", "album", "genre", "cover_artifact_id"):
-                    value.pop(key, None)
-                output_context = self._output_context(session, session_record)
-                if session_record.workflow_kind == "subtitles":
-                    allowed = {"export_mode", "subtitle_selection", "subtitle_format", "language"}
-                    value = {key: item for key, item in value.items() if key in allowed}
-                else:
-                    if output_context["has_source_video"]:
-                        value.pop("format", None)
-                        value.pop("bitrate", None)
-                    else:
-                        for key in (
-                            "subtitle_mode", "burn_video_encoder", "burn_video_resolution",
-                            "burn_video_quality", "burn_video_speed", "burn_audio_codec",
-                            "burn_audio_bitrate",
-                        ):
-                            value.pop(key, None)
-                    if not output_context["has_source_audio"]:
-                        value.pop("audio_mode", None)
-                        for key in (
-                            "mix_source_gain_db", "mix_voice_gain_db", "mix_voice_lufs",
-                            "mix_ducking", "mix_attack_ms", "mix_release_ms", "mix_audio_bitrate",
-                        ):
-                            value.pop(key, None)
-            record = session.get(SessionSetting, (session_id, section))
-            if record is None:
-                if expected_revision != 0:
-                    raise RevisionConflict("Session settings were created in another client.")
-                record = SessionSetting(session_id=session_id, section=section, value_json=value, revision=1)
-                session.add(record)
-            else:
-                if expected_revision != record.revision:
-                    raise RevisionConflict("Session settings changed in another client.")
-                session.add(SessionSettingHistory(session_id=session_id, section=section, value_json=record.value_json, revision=record.revision))
-                record.value_json = value
-                record.revision += 1
-                record.updated_at = utcnow()
-            session.flush()
-            revision = record.revision
+            result = self.update_in_session(
+                session,
+                session_id,
+                section,
+                expected_revision,
+                value,
+            )
+            revision = int(result["revision"])
         return self.get(session_id, section) | {"revision": revision}
+
+    def update_in_session(
+        self,
+        session: Session,
+        session_id: str,
+        section: str,
+        expected_revision: int,
+        value: dict[str, Any],
+    ) -> dict[str, Any]:
+        section = self._validate_section(section)
+        session_record = session.get(SessionRecord, session_id)
+        if session_record is None:
+            raise KeyError(session_id)
+        value = dict(value)
+        if (
+            section == "output"
+            and session_record.workflow_kind != "audiobook"
+        ):
+            for key in (
+                "title",
+                "artist",
+                "album",
+                "genre",
+                "cover_artifact_id",
+            ):
+                value.pop(key, None)
+            output_context = self._output_context(
+                session,
+                session_record,
+            )
+            if session_record.workflow_kind == "subtitles":
+                allowed = {
+                    "export_mode",
+                    "subtitle_selection",
+                    "subtitle_format",
+                    "language",
+                }
+                value = {
+                    key: item
+                    for key, item in value.items()
+                    if key in allowed
+                }
+            else:
+                if output_context["has_source_video"]:
+                    value.pop("format", None)
+                    value.pop("bitrate", None)
+                else:
+                    for key in (
+                        "subtitle_mode",
+                        "burn_video_encoder",
+                        "burn_video_resolution",
+                        "burn_video_quality",
+                        "burn_video_speed",
+                        "burn_audio_codec",
+                        "burn_audio_bitrate",
+                    ):
+                        value.pop(key, None)
+                if not output_context["has_source_audio"]:
+                    value.pop("audio_mode", None)
+                    for key in (
+                        "mix_source_gain_db",
+                        "mix_voice_gain_db",
+                        "mix_voice_lufs",
+                        "mix_ducking",
+                        "mix_attack_ms",
+                        "mix_release_ms",
+                        "mix_audio_bitrate",
+                    ):
+                        value.pop(key, None)
+        record = session.get(
+            SessionSetting,
+            (session_id, section),
+        )
+        if record is None:
+            if expected_revision != 0:
+                raise RevisionConflict(
+                    "Session settings were created in another client."
+                )
+            record = SessionSetting(
+                session_id=session_id,
+                section=section,
+                value_json=value,
+                revision=1,
+            )
+            session.add(record)
+        else:
+            if expected_revision != record.revision:
+                raise RevisionConflict(
+                    "Session settings changed in another client."
+                )
+            session.add(
+                SessionSettingHistory(
+                    session_id=session_id,
+                    section=section,
+                    value_json=record.value_json,
+                    revision=record.revision,
+                )
+            )
+            record.value_json = value
+            record.revision += 1
+            record.updated_at = utcnow()
+        session.flush()
+        return {
+            "section": section,
+            "override": deepcopy(value),
+            "revision": record.revision,
+        }
 
     def resolve(self, session_id: str, sections: list[str] | None = None, run_override: dict[str, Any] | None = None) -> tuple[dict[str, Any], str]:
         requested = sections or list(SETTING_SECTIONS)
@@ -852,27 +940,103 @@ class SourceLibraryService:
             session.expunge(asset)
             return asset
 
-    def attach(self, session_id: str, source_asset_id: str, *, role: str = "primary") -> dict[str, Any]:
+    def attach(
+        self,
+        session_id: str,
+        source_asset_id: str,
+        *,
+        role: str = "primary",
+        expected_session_revision: int | None = None,
+        db_session: Session | None = None,
+    ) -> dict[str, Any]:
+        if db_session is not None:
+            return self.attach_in_session(
+                db_session,
+                session_id,
+                source_asset_id,
+                role=role,
+                expected_session_revision=(
+                    expected_session_revision
+                ),
+            )
         with self.database.session() as session:
-            if session.get(SessionRecord, session_id) is None or session.get(SourceAsset, source_asset_id) is None:
-                raise KeyError(session_id)
-            for current in session.scalars(select(SessionSource).where(SessionSource.session_id == session_id, SessionSource.role == role, SessionSource.is_current.is_(True))).all():
-                current.is_current = False
-                current.revision += 1
-                current.updated_at = utcnow()
-            attachment = session.scalar(select(SessionSource).where(SessionSource.session_id == session_id, SessionSource.source_asset_id == source_asset_id, SessionSource.role == role))
-            if attachment is None:
-                attachment = SessionSource(session_id=session_id, source_asset_id=source_asset_id, role=role)
-                session.add(attachment)
-            else:
-                attachment.is_current = True
-                attachment.revision += 1
-                attachment.updated_at = utcnow()
-            asset = session.get(SourceAsset, source_asset_id)
-            if role == "primary":
-                select_source_path(session, session_id, asset.artifact_id if asset else None)
-            session.flush()
-            return {"id": attachment.id, "session_id": session_id, "source_asset_id": source_asset_id, "role": role, "is_current": True, "revision": attachment.revision}
+            return self.attach_in_session(
+                session,
+                session_id,
+                source_asset_id,
+                role=role,
+                expected_session_revision=(
+                    expected_session_revision
+                ),
+            )
+
+    @staticmethod
+    def attach_in_session(
+        session: Session,
+        session_id: str,
+        source_asset_id: str,
+        *,
+        role: str = "primary",
+        expected_session_revision: int | None = None,
+    ) -> dict[str, Any]:
+        session_record = session.get(SessionRecord, session_id)
+        asset = session.get(SourceAsset, source_asset_id)
+        if session_record is None or asset is None:
+            raise KeyError(session_id)
+        if (
+            expected_session_revision is not None
+            and session_record.revision != expected_session_revision
+        ):
+            raise RevisionConflict(
+                "The session changed before its source was attached."
+            )
+        for current in session.scalars(
+            select(SessionSource).where(
+                SessionSource.session_id == session_id,
+                SessionSource.role == role,
+                SessionSource.is_current.is_(True),
+            )
+        ).all():
+            current.is_current = False
+            current.revision += 1
+            current.updated_at = utcnow()
+        attachment = session.scalar(
+            select(SessionSource).where(
+                SessionSource.session_id == session_id,
+                SessionSource.source_asset_id == source_asset_id,
+                SessionSource.role == role,
+            )
+        )
+        if attachment is None:
+            attachment = SessionSource(
+                session_id=session_id,
+                source_asset_id=source_asset_id,
+                role=role,
+            )
+            session.add(attachment)
+        else:
+            attachment.is_current = True
+            attachment.revision += 1
+            attachment.updated_at = utcnow()
+        if role == "primary":
+            select_source_path(
+                session,
+                session_id,
+                asset.artifact_id,
+            )
+        if expected_session_revision is not None:
+            session_record.revision += 1
+            session_record.updated_at = utcnow()
+        session.flush()
+        return {
+            "id": attachment.id,
+            "session_id": session_id,
+            "source_asset_id": source_asset_id,
+            "role": role,
+            "is_current": True,
+            "revision": attachment.revision,
+            "session_revision": session_record.revision,
+        }
 
     def detach(self, session_id: str, attachment_id: str, expected_revision: int) -> None:
         with self.database.session() as session:

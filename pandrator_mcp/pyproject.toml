@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pandrator-mcp"
+version = "0.1.0"
+description = "Secure local MCP sidecar for Pandrator guidance and automation"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = [
+  "anyio>=4,<5",
+  "authlib>=1.7,<2",
+  "mcp==2.0.0",
+  "pydantic>=2.10,<3",
+  "requests>=2.32,<3",
+]
+
+[project.optional-dependencies]
+credential-stores = [
+  "keyring>=25,<26",
+]
+manager = [
+  "pandrator-manager>=0.9,<1",
+]
+dev = [
+  "cryptography>=44,<46",
+  "pytest>=8.3,<9",
+  "ruff==0.16.0",
+]
+
+[project.scripts]
+pandrator-mcp = "pandrator_mcp.__main__:main"
+
+[tool.setuptools]
+packages = [
+  "pandrator_mcp",
+  "pandrator_mcp.clients",
+  "pandrator_mcp.schemas",
+  "pandrator_mcp.tools",
+]
+include-package-data = false
+
+[tool.setuptools.package-dir]
+pandrator_mcp = "."
+"pandrator_mcp.clients" = "clients"
+"pandrator_mcp.schemas" = "schemas"
+"pandrator_mcp.tools" = "tools"
+
+[tool.setuptools.package-data]
+pandrator_mcp = [
+  "contracts/**",
+  "guides/**",
+]
+
+[tool.setuptools.exclude-package-data]
+"*" = [
+  "__pycache__/*",
+  "*.py[cod]",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B"]

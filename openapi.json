@@ -20,6 +20,121 @@
         "title": "AgentRunCreateRequest",
         "type": "object"
       },
+      "ApplicationIdentityDocument": {
+        "additionalProperties": false,
+        "description": "Versioned identity response pinned by remote MCP target profiles.",
+        "properties": {
+          "api_version": {
+            "default": "v1",
+            "title": "Api Version",
+            "type": "string"
+          },
+          "application_version": {
+            "default": "0.48.0.dev0",
+            "title": "Application Version",
+            "type": "string"
+          },
+          "canonical_origin": {
+            "title": "Canonical Origin",
+            "type": "string"
+          },
+          "instance_id": {
+            "title": "Instance Id",
+            "type": "string"
+          },
+          "managed": {
+            "title": "Managed",
+            "type": "boolean"
+          },
+          "manager_instance_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Manager Instance Id"
+          },
+          "protocol_version": {
+            "default": "v1",
+            "title": "Protocol Version",
+            "type": "string"
+          },
+          "schema_version": {
+            "default": "1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "service": {
+            "default": "pandrator",
+            "title": "Service",
+            "type": "string"
+          }
+        },
+        "required": [
+          "instance_id",
+          "canonical_origin",
+          "managed"
+        ],
+        "title": "ApplicationIdentityDocument",
+        "type": "object"
+      },
+      "AutomationClientCreateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "client_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "title": "Client Id",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "redirect_uris": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 10,
+            "minItems": 1,
+            "title": "Redirect Uris",
+            "type": "array"
+          },
+          "scopes": {
+            "items": {
+              "enum": [
+                "app.read",
+                "app.write",
+                "app.run",
+                "app.cancel",
+                "app.credentials.read",
+                "app.credentials.write",
+                "manager.read",
+                "manager.runtime",
+                "manager.mutate",
+                "app.admin"
+              ],
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Scopes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "client_id",
+          "name",
+          "redirect_uris",
+          "scopes"
+        ],
+        "title": "AutomationClientCreateRequest",
+        "type": "object"
+      },
       "BootstrapRequest": {
         "additionalProperties": false,
         "properties": {
@@ -229,6 +344,36 @@
           "request_id"
         ],
         "title": "ErrorBody",
+        "type": "object"
+      },
+      "EventBounds": {
+        "additionalProperties": false,
+        "properties": {
+          "latest": {
+            "title": "Latest",
+            "type": "integer"
+          },
+          "oldest": {
+            "title": "Oldest",
+            "type": "integer"
+          },
+          "retained_after": {
+            "title": "Retained After",
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": "1",
+            "default": "1",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "oldest",
+          "latest",
+          "retained_after"
+        ],
+        "title": "EventBounds",
         "type": "object"
       },
       "GenerationPlanCreate": {
@@ -591,6 +736,33 @@
           "password"
         ],
         "title": "LoginRequest",
+        "type": "object"
+      },
+      "ManagerBootstrapRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "scopes": {
+            "items": {
+              "enum": [
+                "app.read",
+                "app.write",
+                "app.run",
+                "app.cancel",
+                "app.credentials.read",
+                "app.credentials.write",
+                "manager.read",
+                "manager.runtime",
+                "manager.mutate",
+                "app.admin"
+              ],
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Scopes",
+            "type": "array"
+          }
+        },
+        "title": "ManagerBootstrapRequest",
         "type": "object"
       },
       "ManagerDesiredComponentState": {
@@ -2144,13 +2316,50 @@
       "TokenCreateRequest": {
         "additionalProperties": false,
         "properties": {
+          "expires_in_days": {
+            "anyOf": [
+              {
+                "maximum": 365,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expires In Days"
+          },
           "label": {
             "default": "CLI token",
             "maxLength": 160,
             "title": "Label",
             "type": "string"
+          },
+          "scopes": {
+            "items": {
+              "enum": [
+                "app.read",
+                "app.write",
+                "app.run",
+                "app.cancel",
+                "app.credentials.read",
+                "app.credentials.write",
+                "manager.read",
+                "manager.runtime",
+                "manager.mutate",
+                "app.admin"
+              ],
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Scopes",
+            "type": "array"
           }
         },
+        "required": [
+          "scopes"
+        ],
         "title": "TokenCreateRequest",
         "type": "object"
       },
@@ -2349,6 +2558,343 @@
         ],
         "title": "VoiceTranscriptReview",
         "type": "object"
+      },
+      "WorkError": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Code"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "WorkError",
+        "type": "object"
+      },
+      "WorkEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "data": {
+            "additionalProperties": true,
+            "title": "Data",
+            "type": "object"
+          },
+          "event_type": {
+            "title": "Event Type",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": "1",
+            "default": "1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "work_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Work Id"
+          }
+        },
+        "required": [
+          "id",
+          "event_type",
+          "created_at"
+        ],
+        "title": "WorkEvent",
+        "type": "object"
+      },
+      "WorkEventPage": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/WorkEvent"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "title": "Next Cursor",
+            "type": "integer"
+          },
+          "retained_after": {
+            "title": "Retained After",
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": "1",
+            "default": "1",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor",
+          "retained_after"
+        ],
+        "title": "WorkEventPage",
+        "type": "object"
+      },
+      "WorkView": {
+        "additionalProperties": false,
+        "description": "Stable public work projection; raw job inputs are intentionally absent.",
+        "properties": {
+          "cancellable": {
+            "title": "Cancellable",
+            "type": "boolean"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Created At"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Detail"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkError"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Finished At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "poll_after_ms": {
+            "maximum": 60000,
+            "minimum": 0,
+            "title": "Poll After Ms",
+            "type": "integer"
+          },
+          "progress": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Progress"
+          },
+          "result_summary": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Result Summary"
+          },
+          "schema_version": {
+            "const": "1",
+            "default": "1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Started At"
+          },
+          "state": {
+            "enum": [
+              "queued",
+              "running",
+              "waiting",
+              "succeeded",
+              "failed",
+              "cancelled"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "type": {
+            "const": "job",
+            "default": "job",
+            "title": "Type",
+            "type": "string"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Updated At"
+          },
+          "workflow_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Workflow Run Id"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "state",
+          "cancellable",
+          "poll_after_ms"
+        ],
+        "title": "WorkView",
+        "type": "object"
+      },
+      "WorkflowPlanCreateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expires_in_minutes": {
+            "default": 30,
+            "maximum": 60,
+            "minimum": 1,
+            "title": "Expires In Minutes",
+            "type": "integer"
+          },
+          "overrides": {
+            "additionalProperties": true,
+            "title": "Overrides",
+            "type": "object"
+          },
+          "target_stage": {
+            "default": "generate_audio",
+            "pattern": "^[a-z][a-z0-9_]{0,79}$",
+            "title": "Target Stage",
+            "type": "string"
+          }
+        },
+        "title": "WorkflowPlanCreateRequest",
+        "type": "object"
+      },
+      "WorkflowPlanExecuteRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted_confirmations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Accepted Confirmations",
+            "type": "array"
+          },
+          "plan_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Plan Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "plan_digest"
+        ],
+        "title": "WorkflowPlanExecuteRequest",
+        "type": "object"
       }
     },
     "securitySchemes": {
@@ -2360,6 +2906,26 @@
         "in": "cookie",
         "name": "session",
         "type": "apiKey"
+      },
+      "nativeOAuth": {
+        "flows": {
+          "authorizationCode": {
+            "authorizationUrl": "/api/v1/auth/automation/authorize",
+            "scopes": {
+              "app.cancel": "Cancel durable application work.",
+              "app.credentials.read": "Inspect credential status.",
+              "app.credentials.write": "Change credential references.",
+              "app.read": "Read application state.",
+              "app.run": "Start durable application work.",
+              "app.write": "Change reversible application state.",
+              "manager.mutate": "Execute approved Manager plans.",
+              "manager.read": "Inspect Manager state and plans.",
+              "manager.runtime": "Control managed runtime services."
+            },
+            "tokenUrl": "/api/v1/auth/automation/token"
+          }
+        },
+        "type": "oauth2"
       }
     }
   },
@@ -2416,7 +2982,20 @@
           "200": {
             "description": "Artifacts"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/artifacts/{artifactId}/content": {
@@ -2529,6 +3108,88 @@
         }
       }
     },
+    "/api/v1/audit/events": {
+      "get": {
+        "operationId": "listAuditEvents",
+        "responses": {
+          "200": {
+            "description": "Bounded content-free audit events"
+          }
+        }
+      }
+    },
+    "/api/v1/auth/automation-clients": {
+      "get": {
+        "operationId": "listAutomationClients",
+        "responses": {
+          "200": {
+            "description": "Automation clients"
+          }
+        }
+      },
+      "post": {
+        "operationId": "registerAutomationClient",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutomationClientCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Registered"
+          }
+        }
+      }
+    },
+    "/api/v1/auth/automation-clients/{clientId}": {
+      "delete": {
+        "operationId": "revokeAutomationClient",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "clientId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Revoked"
+          }
+        }
+      }
+    },
+    "/api/v1/auth/automation/authorize": {
+      "get": {
+        "description": "Trusted owner consent with exact redirect matching and mandatory S256 PKCE.",
+        "operationId": "authorizeAutomationClient",
+        "responses": {
+          "200": {
+            "description": "Consent page"
+          },
+          "302": {
+            "description": "Authorization response"
+          }
+        }
+      }
+    },
+    "/api/v1/auth/automation/token": {
+      "post": {
+        "operationId": "exchangeAutomationCode",
+        "responses": {
+          "200": {
+            "description": "Bound automation credential"
+          }
+        }
+      }
+    },
     "/api/v1/auth/bootstrap": {
       "post": {
         "operationId": "exchangeBootstrapToken",
@@ -2579,6 +3240,26 @@
         }
       }
     },
+    "/api/v1/auth/manager-bootstrap": {
+      "post": {
+        "operationId": "createManagerBootstrapGrant",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManagerBootstrapRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Scoped one-use bootstrap grant"
+          }
+        }
+      }
+    },
     "/api/v1/auth/status": {
       "get": {
         "operationId": "getAuthStatus",
@@ -2600,6 +3281,16 @@
       },
       "post": {
         "operationId": "createApiToken",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "201": {
             "description": "Created"
@@ -2614,7 +3305,20 @@
           "200": {
             "description": "Runtime capabilities"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/credential-backends": {
@@ -2970,7 +3674,20 @@
           "200": {
             "description": "Manager component inventory"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "manager.read"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/manager/doctor": {
@@ -2980,7 +3697,20 @@
           "200": {
             "description": "Non-mutating host diagnostics"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "manager.read"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/manager/legacy": {
@@ -3048,7 +3778,20 @@
           "202": {
             "description": "Manager operation accepted"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "manager.mutate"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/manager/operations/{operationId}": {
@@ -3068,7 +3811,20 @@
           "200": {
             "description": "Durable manager operation"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "manager.read"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/manager/operations/{operationId}/cancel": {
@@ -3088,7 +3844,20 @@
           "200": {
             "description": "Safe cancellation requested"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "manager.mutate"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/manager/operations/{operationId}/tasks": {
@@ -3108,7 +3877,20 @@
           "200": {
             "description": "Durable manager operation tasks"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "manager.read"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/manager/plans": {
@@ -3128,7 +3910,20 @@
           "201": {
             "description": "Immutable manager plan"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "manager.read"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/manager/releases": {
@@ -3138,7 +3933,20 @@
           "200": {
             "description": "Accepted product releases and activation slots"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "manager.read"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/manager/releases/plans": {
@@ -3188,7 +3996,20 @@
           "200": {
             "description": "Managed runtime action completed"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "manager.runtime"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/manager/services": {
@@ -3198,7 +4019,20 @@
           "200": {
             "description": "Manager service inventory"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "manager.read"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/manager/status": {
@@ -3208,7 +4042,20 @@
           "200": {
             "description": "Local manager availability and status"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "manager.read"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/manager/uninstall/plans": {
@@ -3324,7 +4171,20 @@
           "200": {
             "description": "Providers"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
       },
       "post": {
         "operationId": "createProvider",
@@ -3715,10 +4575,36 @@
           "200": {
             "description": "Sessions"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
       },
       "post": {
         "operationId": "createSession",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3733,7 +4619,20 @@
           "201": {
             "description": "Created"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/sessions/{sessionId}": {
@@ -3784,7 +4683,20 @@
           "200": {
             "description": "Session"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
       },
       "patch": {
         "operationId": "updateSession",
@@ -3803,6 +4715,17 @@
             "name": "If-Match",
             "required": true,
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
               "type": "string"
             }
           }
@@ -3824,7 +4747,20 @@
           "409": {
             "description": "Revision conflict"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/sessions/{sessionId}/agent-runs": {
@@ -4297,11 +5233,43 @@
           "200": {
             "description": "Effective settings and inheritance"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
       },
       "put": {
         "operationId": "putSessionSettings",
         "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
           {
             "in": "path",
             "name": "sessionId",
@@ -4333,7 +5301,20 @@
           "200": {
             "description": "Session override saved"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/sessions/{sessionId}/sources": {
@@ -4359,6 +5340,25 @@
         "operationId": "attachSessionSource",
         "parameters": [
           {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "in": "path",
             "name": "sessionId",
             "required": true,
@@ -4381,7 +5381,20 @@
           "201": {
             "description": "Source attached"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/sessions/{sessionId}/sources/reuse": {
@@ -4725,7 +5738,63 @@
           "200": {
             "description": "Workflow snapshot"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/sessions/{sessionId}/workflow-plans": {
+      "post": {
+        "operationId": "createWorkflowPlan",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkflowPlanCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Immutable workflow execution preview"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/settings/{settingKey}": {
@@ -4786,7 +5855,20 @@
           "200": {
             "description": "Reusable source library"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/sources/{sourceAssetId}": {
@@ -4855,6 +5937,36 @@
             "description": "Source asset restored"
           }
         }
+      }
+    },
+    "/api/v1/system/identity": {
+      "get": {
+        "operationId": "getSystemIdentity",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplicationIdentityDocument"
+                }
+              }
+            },
+            "description": "Stable authenticated application identity"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/training": {
@@ -5049,7 +6161,20 @@
           "200": {
             "description": "Voices"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
       },
       "post": {
         "operationId": "createVoice",
@@ -5200,6 +6325,248 @@
             "description": "Transcript reviewed"
           }
         }
+      }
+    },
+    "/api/v1/work": {
+      "get": {
+        "operationId": "listWork",
+        "responses": {
+          "200": {
+            "description": "Payload-free durable work projections"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/work/{jobId}": {
+      "get": {
+        "operationId": "getWork",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "jobId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkView"
+                }
+              }
+            },
+            "description": "Payload-free durable work projection"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/work/{jobId}/cancel": {
+      "post": {
+        "operationId": "cancelWork",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "jobId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkView"
+                }
+              }
+            },
+            "description": "Cancellation requested"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.cancel"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/work/{jobId}/events": {
+      "get": {
+        "operationId": "listWorkEvents",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "jobId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkEventPage"
+                }
+              }
+            },
+            "description": "Bounded redacted work events"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/workflow-plans/{planId}": {
+      "get": {
+        "operationId": "getWorkflowPlan",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "planId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Immutable workflow execution preview"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/workflow-plans/{planId}/execute": {
+      "post": {
+        "operationId": "executeWorkflowPlan",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "planId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkflowPlanExecuteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Exact plan consumed and queued"
+          },
+          "409": {
+            "description": "Plan stale, consumed, expired, or confirmation missing"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
       }
     }
   },

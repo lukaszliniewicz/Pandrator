@@ -106,20 +106,23 @@ class StateStoreTests(unittest.TestCase):
             reopened = ManagerStore(database)
             desired, persisted = reopened.component_records()["fish_speech"]
             self.assertEqual(revision, 1)
-            self.assertEqual(reopened.schema_version(), 5)
+            self.assertEqual(reopened.schema_version(), 6)
             self.assertEqual(reopened.configuration_revision(), 1)
             self.assertEqual(desired.compute, ComputeVariant.CPU)
             self.assertEqual(persisted.component_id, "fish_speech")
 
-    def test_version_four_database_gains_browser_sessions_without_reset(self):
+    def test_version_four_database_gains_browser_and_automation_state(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "manager.sqlite3"
             original = ManagerStore(database)
             original.set_setting("migration-fixture", {"preserved": True})
             with closing(sqlite3.connect(database)) as connection:
                 connection.execute("DROP TABLE browser_sessions")
+                connection.execute("DROP TABLE automation_enrollment_grants")
+                connection.execute("DROP TABLE automation_tokens")
+                connection.execute("DROP TABLE automation_clients")
                 connection.execute(
-                    "DELETE FROM schema_migrations WHERE version=5"
+                    "DELETE FROM schema_migrations WHERE version IN (5, 6)"
                 )
                 connection.commit()
 
@@ -131,9 +134,16 @@ class StateStoreTests(unittest.TestCase):
                     WHERE type='table' AND name='browser_sessions'
                     """
                 ).fetchone()
+                automation_table = connection.execute(
+                    """
+                    SELECT name FROM sqlite_master
+                    WHERE type='table' AND name='automation_clients'
+                    """
+                ).fetchone()
 
-            self.assertEqual(5, migrated.schema_version())
+            self.assertEqual(6, migrated.schema_version())
             self.assertIsNotNone(table)
+            self.assertIsNotNone(automation_table)
             self.assertEqual(
                 {"preserved": True},
                 migrated.setting("migration-fixture"),

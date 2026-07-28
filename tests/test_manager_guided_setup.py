@@ -347,11 +347,34 @@ class ManagerBootstrapSecurityTests(unittest.TestCase):
                             environ_overrides={"REMOTE_ADDR": "192.0.2.20"},
                         ).status_code,
                     )
+                    self.assertEqual(
+                        403,
+                        client.post(
+                            "/api/v1/auth/manager-bootstrap",
+                            headers={
+                                "Authorization": (
+                                    "Bearer manager-secret"
+                                )
+                            },
+                            json={"scopes": ["app.admin"]},
+                        ).status_code,
+                    )
                     issued = client.post(
                         "/api/v1/auth/manager-bootstrap",
                         headers={"Authorization": "Bearer manager-secret"},
+                        json={
+                            "scopes": [
+                                "app.read",
+                                "app.admin",
+                                "app.credentials.write",
+                            ]
+                        },
                     )
                     self.assertEqual(200, issued.status_code)
+                    self.assertEqual(
+                        ["app.read"],
+                        issued.get_json()["scopes"],
+                    )
                     token = issued.get_json()["token"]
                     self.assertEqual(
                         200,
@@ -360,6 +383,14 @@ class ManagerBootstrapSecurityTests(unittest.TestCase):
                             json={"token": token},
                         ).status_code,
                     )
+                    principal = client.get(
+                        "/api/v1/auth/status"
+                    ).get_json()["principal"]
+                    self.assertEqual(
+                        "manager_bootstrap",
+                        principal["kind"],
+                    )
+                    self.assertEqual(["app.read"], principal["scopes"])
                     self.assertEqual(
                         401,
                         client.post(

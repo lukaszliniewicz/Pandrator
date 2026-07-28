@@ -200,6 +200,63 @@ by default. A deliberately administered single-owner deployment may set
 `PANDRATOR_ALLOW_REMOTE_MANAGER_MUTATIONS=1`, while the recovery UI remains
 the recommended remote installation and repair surface.
 
+### MCP recovery enrollment
+
+Pandrator MCP normally reaches Manager through the authenticated application
+proxy. This keeps the permanent Manager client bearer on the managed host.
+
+An operator who needs app-down remote diagnostics or recovery may expose the
+Manager's separately bounded HTTPS recovery origin and enroll a distinct MCP
+credential:
+
+```bash
+pandrator-mcp target add production \
+  --mode external \
+  --origin https://pandrator.example \
+  --recovery-origin https://recovery.pandrator.example \
+  --scope app.read \
+  --scope manager.read \
+  --recovery-scope manager.read \
+  --recovery-scope manager.runtime
+
+pandrator-mcp target login production
+pandrator-mcp target pin production
+pandrator-mcp target login production --manager-recovery
+pandrator-mcp doctor --target production
+```
+
+Open the one-use Manager recovery URL first so the enrollment approval opens
+in an authorized browser. The approval page shows the client, both canonical
+origins, requested scopes, and expiry. The issued recovery credential is
+audience- and instance-bound, expires after at most 30 days, is rate-limited
+per client, and is stored directly in the workstation's OS keyring.
+
+Direct automation is disabled unless Manager is configured with an exact
+HTTPS recovery origin. It cannot use the permanent local bearer, change
+network settings, access arbitrary files, or bypass native plans and
+confirmations. Application and recovery clients can be revoked independently
+through their owner-authorized client-administration APIs.
+
+The local workspace owner can inspect and revoke recovery clients without
+copying the permanent Manager bearer out of the host:
+
+```bash
+pandrator-manager --workspace /srv/pandrator automation-client list
+pandrator-manager --workspace /srv/pandrator automation-client revoke CLIENT_ID --yes
+```
+
+The recovery browser offers the same owner operation. After server-side
+revocation, delete the controller's separate keyring value with
+`pandrator-mcp target logout production --manager-recovery --yes`.
+
+For a pod, persist both the Pandrator data root and the Manager workspace/state
+and restrict a cross-namespace `--network-bind-host 0.0.0.0` listener with
+platform network policy. Losing either state volume changes the identity that
+the MCP pins and requires deliberate re-enrollment.
+
+The complete workstation, LAN, external-server, pod, and agent-host setup is in
+[`pandrator_mcp/README.md`](../pandrator_mcp/README.md).
+
 ## Legacy import, releases, and uninstall
 
 Inspect legacy state without changing it:

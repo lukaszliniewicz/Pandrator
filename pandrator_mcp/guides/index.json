@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "guides": [
+    {
+      "topic": "artifacts-and-revisions",
+      "title": "Artifacts, selections, and revisions",
+      "summary": "Artifact metadata, lineage, current selections, and revision-safe changes.",
+      "audiences": ["new_user", "operator", "developer"],
+      "related_tools": ["pandrator_list_artifacts", "pandrator_get_workflow"],
+      "minimum_application_version": "0.6.0",
+      "revision": 1,
+      "file": "artifacts-and-revisions.md"
+    },
+    {
+      "topic": "audiobooks",
+      "title": "Audiobook workflow",
+      "summary": "Document cleanup, narration preparation, generation, assembly, and export.",
+      "audiences": ["new_user", "operator"],
+      "related_tools": ["pandrator_get_capabilities", "pandrator_get_workflow"],
+      "minimum_application_version": "0.6.0",
+      "revision": 1,
+      "file": "audiobooks.md"
+    },
+    {
+      "topic": "durable-work",
+      "title": "Durable work and failure diagnosis",
+      "summary": "Safe work projections, normalized states, redacted logs, and diagnosis.",
+      "audiences": ["operator", "developer", "administrator"],
+      "related_tools": ["pandrator_list_work", "pandrator_get_work", "pandrator_get_work_log"],
+      "minimum_application_version": "0.6.0",
+      "minimum_manager_version": "0.9.0",
+      "revision": 1,
+      "file": "durable-work.md"
+    },
+    {
+      "topic": "manager-and-recovery",
+      "title": "Manager and recovery",
+      "summary": "Normal Manager proxying, app-down diagnostics, recovery enrollment, and plan-first repair.",
+      "audiences": ["operator", "developer", "administrator"],
+      "related_tools": ["pandrator_manager_status", "pandrator_manager_doctor"],
+      "minimum_application_version": "0.6.0",
+      "minimum_manager_version": "0.9.0",
+      "revision": 2,
+      "file": "manager-and-recovery.md"
+    },
+    {
+      "topic": "overview",
+      "title": "How Pandrator works",
+      "summary": "The workspace, workflow, artifact, provider, and durable-work model.",
+      "audiences": ["new_user", "operator", "developer"],
+      "related_tools": [
+        "pandrator_get_system_status",
+        "pandrator_list_sessions",
+        "pandrator_list_work"
+      ],
+      "minimum_application_version": "0.6.0",
+      "minimum_manager_version": "0.9.0",
+      "revision": 2,
+      "file": "overview.md"
+    },
+    {
+      "topic": "providers-and-voices",
+      "title": "Providers, models, and voices",
+      "summary": "Provider readiness, credential boundaries, model availability, and voice selection.",
+      "audiences": ["new_user", "operator", "administrator"],
+      "related_tools": ["pandrator_get_provider_status", "pandrator_get_voice_catalog"],
+      "minimum_application_version": "0.6.0",
+      "revision": 1,
+      "file": "providers-and-voices.md"
+    },
+    {
+      "topic": "remote-targets",
+      "title": "Remote Pandrator targets",
+      "summary": "Safe local, LAN/VPN, external HTTPS, server, and pod connectivity.",
+      "audiences": ["operator", "developer", "administrator"],
+      "related_tools": ["pandrator_get_target_status", "pandrator_manager_status"],
+      "minimum_application_version": "0.6.0",
+      "minimum_manager_version": "0.9.0",
+      "revision": 3,
+      "file": "remote-targets.md"
+    },
+    {
+      "topic": "security-boundaries",
+      "title": "Pandrator MCP threat model",
+      "summary": "Trust boundaries, threats, controls, and release acceptance criteria.",
+      "audiences": ["developer", "administrator"],
+      "related_tools": ["pandrator_get_target_status", "pandrator_get_system_status"],
+      "minimum_application_version": "0.6.0",
+      "minimum_manager_version": "0.9.0",
+      "revision": 1,
+      "file": "threat-model.md"
+    },
+    {
+      "topic": "subtitles",
+      "title": "Subtitle workflow",
+      "summary": "Transcription, correction, translation, comparison, and subtitle export.",
+      "audiences": ["new_user", "operator"],
+      "related_tools": ["pandrator_get_workflow", "pandrator_list_artifacts"],
+      "minimum_application_version": "0.6.0",
+      "revision": 1,
+      "file": "subtitles.md"
+    },
+    {
+      "topic": "voiceover-and-dubbing",
+      "title": "Voiceover and dubbing workflow",
+      "summary": "Timed speech generation, take review, assembly, mixing, and media export.",
+      "audiences": ["new_user", "operator"],
+      "related_tools": ["pandrator_get_provider_status", "pandrator_get_voice_catalog", "pandrator_get_workflow"],
+      "minimum_application_version": "0.6.0",
+      "revision": 1,
+      "file": "dubbing-voiceover.md"
+    },
+    {
+      "topic": "workflows",
+      "title": "Pandrator workflows",
+      "summary": "How audiobook, subtitle, and voiceover sessions move through inspect, plan, execute, and review.",
+      "audiences": ["new_user", "operator", "developer"],
+      "related_tools": ["pandrator_recommend_next_steps", "pandrator_get_workflow"],
+      "minimum_application_version": "0.6.0",
+      "revision": 1,
+      "file": "workflows.md"
+    }
+  ]
+}

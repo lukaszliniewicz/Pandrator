@@ -2,18 +2,17 @@
 
 from __future__ import annotations
 
+import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
-import sqlite3
 
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
-
-SCHEMA_HEAD = "0022_source_asset_backfill"
+SCHEMA_HEAD = "0025_workflow_execution_plans"
 
 
 def sqlite_url(path: Path) -> str:

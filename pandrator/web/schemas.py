@@ -6,8 +6,19 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-
 CredentialBackend = Literal["database", "environment", "keyring", "file"]
+ApiScope = Literal[
+    "app.read",
+    "app.write",
+    "app.run",
+    "app.cancel",
+    "app.credentials.read",
+    "app.credentials.write",
+    "manager.read",
+    "manager.runtime",
+    "manager.mutate",
+    "app.admin",
+]
 
 
 class StrictModel(BaseModel):
@@ -56,8 +67,51 @@ class BootstrapRequest(StrictModel):
     token: str
 
 
+class ManagerBootstrapRequest(StrictModel):
+    scopes: list[ApiScope] = Field(
+        default_factory=lambda: [
+            "app.read",
+            "app.write",
+            "app.run",
+            "app.cancel",
+            "manager.read",
+            "manager.runtime",
+            "manager.mutate",
+        ],
+        min_length=1,
+    )
+
+
 class TokenCreateRequest(StrictModel):
     label: str = Field(default="CLI token", max_length=160)
+    scopes: list[ApiScope] = Field(min_length=1)
+    expires_in_days: int | None = Field(default=None, ge=1, le=365)
+
+
+class AutomationClientCreateRequest(StrictModel):
+    client_id: str = Field(
+        pattern=(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        )
+    )
+    name: str = Field(min_length=1, max_length=160)
+    redirect_uris: list[str] = Field(min_length=1, max_length=10)
+    scopes: list[ApiScope] = Field(min_length=1)
+
+
+class WorkflowPlanCreateRequest(StrictModel):
+    target_stage: str = Field(
+        default="generate_audio",
+        pattern=r"^[a-z][a-z0-9_]{0,79}$",
+    )
+    overrides: dict[str, Any] = Field(default_factory=dict)
+    expires_in_minutes: int = Field(default=30, ge=1, le=60)
+
+
+class WorkflowPlanExecuteRequest(StrictModel):
+    plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    accepted_confirmations: list[str] = Field(default_factory=list)
 
 
 class ProviderCreate(StrictModel):
@@ -407,7 +461,11 @@ SCHEMA_MODELS = {
         JobCreate,
         LoginRequest,
         BootstrapRequest,
+        ManagerBootstrapRequest,
         TokenCreateRequest,
+        AutomationClientCreateRequest,
+        WorkflowPlanCreateRequest,
+        WorkflowPlanExecuteRequest,
         ProviderCreate,
         ProviderUpdate,
         ProviderTestRequest,

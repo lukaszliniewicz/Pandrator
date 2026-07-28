@@ -4,12 +4,23 @@ from __future__ import annotations
 
 import re
 
+from .identity import ApplicationIdentityDocument
 from .schemas import SCHEMA_MODELS
+from .work import EventBounds, WorkError, WorkEvent, WorkEventPage, WorkView
 
 
 def build_openapi_document() -> dict:
     schemas: dict[str, dict] = {}
-    for name, model in SCHEMA_MODELS.items():
+    contract_models = {
+        **SCHEMA_MODELS,
+        "ApplicationIdentityDocument": ApplicationIdentityDocument,
+        "EventBounds": EventBounds,
+        "WorkError": WorkError,
+        "WorkEvent": WorkEvent,
+        "WorkEventPage": WorkEventPage,
+        "WorkView": WorkView,
+    }
+    for name, model in contract_models.items():
         schema = model.model_json_schema(
             ref_template="#/components/schemas/{model}"
         )
@@ -28,6 +39,23 @@ def build_openapi_document() -> dict:
         "servers": [{"url": "/"}],
         "paths": {
             "/api/v1/health": {"get": {"operationId": "getHealth", "responses": {"200": {"description": "Healthy"}}}},
+            "/api/v1/system/identity": {
+                "get": {
+                    "operationId": "getSystemIdentity",
+                    "responses": {
+                        "200": {
+                            "description": "Stable authenticated application identity",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/ApplicationIdentityDocument"
+                                    }
+                                }
+                            },
+                        }
+                    },
+                }
+            },
             "/api/v1/capabilities": {"get": {"operationId": "getCapabilities", "responses": {"200": {"description": "Runtime capabilities"}}}},
             "/api/v1/sessions": {
                 "get": {"operationId": "listSessions", "responses": {"200": {"description": "Sessions"}}},
@@ -65,13 +93,92 @@ def build_openapi_document() -> dict:
                     "responses": {"202": {"description": "Queued"}},
                 },
             },
+            "/api/v1/work": {
+                "get": {
+                    "operationId": "listWork",
+                    "responses": {
+                        "200": {
+                            "description": "Payload-free durable work projections"
+                        }
+                    },
+                }
+            },
+            "/api/v1/work/{jobId}": {
+                "get": {
+                    "operationId": "getWork",
+                    "responses": {
+                        "200": {
+                            "description": "Payload-free durable work projection",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/WorkView"
+                                    }
+                                }
+                            },
+                        }
+                    },
+                }
+            },
+            "/api/v1/work/{jobId}/events": {
+                "get": {
+                    "operationId": "listWorkEvents",
+                    "responses": {
+                        "200": {
+                            "description": "Bounded redacted work events",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/WorkEventPage"
+                                    }
+                                }
+                            },
+                        }
+                    },
+                }
+            },
+            "/api/v1/work/{jobId}/cancel": {
+                "post": {
+                    "operationId": "cancelWork",
+                    "parameters": [
+                        {
+                            "name": "Idempotency-Key",
+                            "in": "header",
+                            "required": True,
+                            "schema": {
+                                "type": "string",
+                                "minLength": 8,
+                                "maxLength": 200,
+                            },
+                        }
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "Cancellation requested",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/WorkView"
+                                    }
+                                }
+                            },
+                        }
+                    },
+                }
+            },
             "/api/v1/events": {"get": {"operationId": "streamEvents", "responses": {"200": {"description": "SSE job events"}}}},
             "/api/v1/events/snapshot": {"get": {"operationId": "getEventSnapshot", "responses": {"200": {"description": "Initial event-stream resource snapshot and cursor"}}}},
             "/api/v1/auth/status": {"get": {"operationId": "getAuthStatus", "responses": {"200": {"description": "Authentication status"}}}},
             "/api/v1/auth/bootstrap": {"post": {"operationId": "exchangeBootstrapToken", "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BootstrapRequest"}}}}, "responses": {"200": {"description": "Authenticated"}}}},
+            "/api/v1/auth/manager-bootstrap": {"post": {"operationId": "createManagerBootstrapGrant", "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ManagerBootstrapRequest"}}}}, "responses": {"200": {"description": "Scoped one-use bootstrap grant"}}}},
             "/api/v1/auth/login": {"post": {"operationId": "login", "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LoginRequest"}}}}, "responses": {"200": {"description": "Authenticated"}}}},
             "/api/v1/auth/logout": {"post": {"operationId": "logout", "responses": {"204": {"description": "Signed out"}}}},
-            "/api/v1/auth/tokens": {"get": {"operationId": "listApiTokens", "responses": {"200": {"description": "Tokens"}}}, "post": {"operationId": "createApiToken", "responses": {"201": {"description": "Created"}}}},
+            "/api/v1/auth/tokens": {"get": {"operationId": "listApiTokens", "responses": {"200": {"description": "Tokens"}}}, "post": {"operationId": "createApiToken", "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TokenCreateRequest"}}}}, "responses": {"201": {"description": "Created"}}}},
+            "/api/v1/auth/automation/authorize": {"get": {"operationId": "authorizeAutomationClient", "description": "Trusted owner consent with exact redirect matching and mandatory S256 PKCE.", "responses": {"200": {"description": "Consent page"}, "302": {"description": "Authorization response"}}}},
+            "/api/v1/auth/automation/token": {"post": {"operationId": "exchangeAutomationCode", "responses": {"200": {"description": "Bound automation credential"}}}},
+            "/api/v1/auth/automation-clients": {"get": {"operationId": "listAutomationClients", "responses": {"200": {"description": "Automation clients"}}}, "post": {"operationId": "registerAutomationClient", "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AutomationClientCreateRequest"}}}}, "responses": {"201": {"description": "Registered"}}}},
+            "/api/v1/auth/automation-clients/{clientId}": {"delete": {"operationId": "revokeAutomationClient", "responses": {"204": {"description": "Revoked"}}}},
+            "/api/v1/audit/events": {"get": {"operationId": "listAuditEvents", "responses": {"200": {"description": "Bounded content-free audit events"}}}},
             "/api/v1/settings/{settingKey}": {"get": {"operationId": "getSetting", "responses": {"200": {"description": "Setting"}}}, "put": {"operationId": "putSetting", "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SettingUpdate"}}}}, "responses": {"200": {"description": "Saved"}, "409": {"description": "Revision conflict"}}}},
             "/api/v1/uploads": {"post": {"operationId": "uploadSource", "responses": {"201": {"description": "Uploaded"}}}},
             "/api/v1/sessions/{sessionId}/sources/url": {"post": {"operationId": "downloadSourceUrl", "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SourceUrlRequest"}}}}, "responses": {"202": {"description": "Queued"}}}},
@@ -81,6 +188,9 @@ def build_openapi_document() -> dict:
             "/api/v1/artifacts/{artifactId}/content": {"get": {"operationId": "getArtifactContent", "responses": {"200": {"description": "Range-capable artifact content"}}}},
             "/api/v1/artifacts/{artifactId}/pdf": {"get": {"operationId": "inspectPdf", "responses": {"200": {"description": "PDF geometry"}}}},
             "/api/v1/sessions/{sessionId}/workflow": {"get": {"operationId": "getWorkflow", "responses": {"200": {"description": "Workflow snapshot"}}}},
+            "/api/v1/sessions/{sessionId}/workflow-plans": {"post": {"operationId": "createWorkflowPlan", "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/WorkflowPlanCreateRequest"}}}}, "responses": {"201": {"description": "Immutable workflow execution preview"}}}},
+            "/api/v1/workflow-plans/{planId}": {"get": {"operationId": "getWorkflowPlan", "responses": {"200": {"description": "Immutable workflow execution preview"}}}},
+            "/api/v1/workflow-plans/{planId}/execute": {"post": {"operationId": "executeWorkflowPlan", "parameters": [{"name": "Idempotency-Key", "in": "header", "required": True, "schema": {"type": "string", "minLength": 8, "maxLength": 200}}], "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/WorkflowPlanExecuteRequest"}}}}, "responses": {"202": {"description": "Exact plan consumed and queued"}, "409": {"description": "Plan stale, consumed, expired, or confirmation missing"}}}},
             "/api/v1/sessions/{sessionId}/stages/{stageKey}/run": {"post": {"operationId": "runWorkflowStage", "responses": {"202": {"description": "Queued"}}}},
             "/api/v1/sessions/{sessionId}/stages/{stageKey}/artifacts": {
                 "get": {
@@ -159,6 +269,26 @@ def build_openapi_document() -> dict:
             "securitySchemes": {
                 "bearerToken": {"type": "http", "scheme": "bearer"},
                 "cookieAuth": {"type": "apiKey", "in": "cookie", "name": "session"},
+                "nativeOAuth": {
+                    "type": "oauth2",
+                    "flows": {
+                        "authorizationCode": {
+                            "authorizationUrl": "/api/v1/auth/automation/authorize",
+                            "tokenUrl": "/api/v1/auth/automation/token",
+                            "scopes": {
+                                "app.read": "Read application state.",
+                                "app.write": "Change reversible application state.",
+                                "app.run": "Start durable application work.",
+                                "app.cancel": "Cancel durable application work.",
+                                "app.credentials.read": "Inspect credential status.",
+                                "app.credentials.write": "Change credential references.",
+                                "manager.read": "Inspect Manager state and plans.",
+                                "manager.runtime": "Control managed runtime services.",
+                                "manager.mutate": "Execute approved Manager plans.",
+                            },
+                        }
+                    },
+                },
             },
         },
     }
@@ -283,6 +413,141 @@ def build_openapi_document() -> dict:
         "/api/v1/sessions/{sessionId}/restore": {"post": operation("restoreSession", "Session restored")},
         "/api/v1/sessions/{sessionId}/reindex": {"post": operation("reindexSession", "Reconciliation report")},
     })
+
+    idempotency_parameter = {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": True,
+        "schema": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
+        },
+    }
+    revision_parameter = {
+        "name": "If-Match",
+        "in": "header",
+        "required": True,
+        "schema": {"type": "string"},
+    }
+    for path, method in (
+        ("/api/v1/sessions", "post"),
+        ("/api/v1/sessions/{sessionId}", "patch"),
+        (
+            "/api/v1/sessions/{sessionId}/settings/{section}",
+            "put",
+        ),
+        ("/api/v1/sessions/{sessionId}/sources", "post"),
+    ):
+        parameters = paths[path][method].setdefault("parameters", [])
+        if not any(
+            item.get("name") == "Idempotency-Key"
+            for item in parameters
+        ):
+            parameters.append(dict(idempotency_parameter))
+    for path, method in (
+        (
+            "/api/v1/sessions/{sessionId}/settings/{section}",
+            "put",
+        ),
+        ("/api/v1/sessions/{sessionId}/sources", "post"),
+    ):
+        parameters = paths[path][method].setdefault("parameters", [])
+        if not any(
+            item.get("name") == "If-Match"
+            for item in parameters
+        ):
+            parameters.append(dict(revision_parameter))
+
+    mcp_scoped_operations = (
+        ("/api/v1/system/identity", "get", "app.read"),
+        ("/api/v1/capabilities", "get", "app.read"),
+        ("/api/v1/sessions", "get", "app.read"),
+        ("/api/v1/sessions", "post", "app.write"),
+        ("/api/v1/sessions/{sessionId}", "get", "app.read"),
+        ("/api/v1/sessions/{sessionId}", "patch", "app.write"),
+        (
+            "/api/v1/sessions/{sessionId}/workflow",
+            "get",
+            "app.read",
+        ),
+        (
+            "/api/v1/sessions/{sessionId}/workflow-plans",
+            "post",
+            "app.read",
+        ),
+        (
+            "/api/v1/workflow-plans/{planId}",
+            "get",
+            "app.read",
+        ),
+        (
+            "/api/v1/workflow-plans/{planId}/execute",
+            "post",
+            "app.run",
+        ),
+        ("/api/v1/artifacts", "get", "app.read"),
+        ("/api/v1/providers", "get", "app.read"),
+        ("/api/v1/voices", "get", "app.read"),
+        ("/api/v1/work", "get", "app.read"),
+        ("/api/v1/work/{jobId}", "get", "app.read"),
+        ("/api/v1/work/{jobId}/events", "get", "app.read"),
+        ("/api/v1/work/{jobId}/cancel", "post", "app.cancel"),
+        (
+            "/api/v1/sessions/{sessionId}/settings/{section}",
+            "get",
+            "app.read",
+        ),
+        (
+            "/api/v1/sessions/{sessionId}/settings/{section}",
+            "put",
+            "app.write",
+        ),
+        ("/api/v1/sources", "get", "app.read"),
+        (
+            "/api/v1/sessions/{sessionId}/sources",
+            "post",
+            "app.write",
+        ),
+        ("/api/v1/manager/status", "get", "manager.read"),
+        ("/api/v1/manager/components", "get", "manager.read"),
+        ("/api/v1/manager/doctor", "get", "manager.read"),
+        ("/api/v1/manager/services", "get", "manager.read"),
+        ("/api/v1/manager/releases", "get", "manager.read"),
+        ("/api/v1/manager/plans", "post", "manager.read"),
+        (
+            "/api/v1/manager/operations",
+            "post",
+            "manager.mutate",
+        ),
+        (
+            "/api/v1/manager/operations/{operationId}",
+            "get",
+            "manager.read",
+        ),
+        (
+            "/api/v1/manager/operations/{operationId}/tasks",
+            "get",
+            "manager.read",
+        ),
+        (
+            "/api/v1/manager/operations/{operationId}/cancel",
+            "post",
+            "manager.mutate",
+        ),
+        (
+            "/api/v1/manager/runtime/{action}",
+            "post",
+            "manager.runtime",
+        ),
+    )
+    for path, method, scope in mcp_scoped_operations:
+        paths[path][method]["security"] = [
+            {"cookieAuth": []},
+            {"bearerToken": []},
+            {"nativeOAuth": [scope]},
+        ]
 
     # Every templated route must expose its parameters to generated clients.
     # Most operations use the same UUID-like string identifiers, while chunk

@@ -12,11 +12,11 @@ from datetime import timedelta
 from typing import Any
 
 from sqlalchemy import and_, delete, func, or_, select, update
+from sqlalchemy.orm import Session
 
 from .credentials import SecretRedactor
 from .database import Database
 from .models import Job, JobEvent, ResourceClaim, utcnow
-
 
 JobHandler = Callable[[dict[str, Any], Callable[[float, str | None], None], threading.Event], dict[str, Any] | None]
 
@@ -40,9 +40,13 @@ class JobQueue:
         "model_id",
     )
 
-    def __init__(self, database: Database):
+    def __init__(
+        self,
+        database: Database,
+        secret_redactor: SecretRedactor | None = None,
+    ):
         self.database = database
-        self.secret_redactor = SecretRedactor(database)
+        self.secret_redactor = secret_redactor or SecretRedactor(database)
 
     def redact_diagnostic(self, value: Any) -> Any:
         """Remove credential-shaped fields and known secret values from diagnostics."""
@@ -237,6 +241,33 @@ class JobQueue:
         max_attempts: int = 1,
         resource_keys: list[str] | None = None,
     ) -> Job:
+        with self.database.session() as session:
+            job = self.enqueue_in_session(
+                session,
+                kind,
+                payload,
+                session_id=session_id,
+                workflow_run_id=workflow_run_id,
+                max_attempts=max_attempts,
+                resource_keys=resource_keys,
+            )
+            session.flush()
+            session.expunge(job)
+            return job
+
+    def enqueue_in_session(
+        self,
+        session: Session,
+        kind: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        session_id: str | None = None,
+        workflow_run_id: str | None = None,
+        max_attempts: int = 1,
+        resource_keys: list[str] | None = None,
+    ) -> Job:
+        """Enqueue within a caller-owned transaction without committing it."""
+
         job = Job(
             kind=kind,
             payload_json=payload or {},
@@ -245,13 +276,16 @@ class JobQueue:
             max_attempts=max(1, int(max_attempts)),
             resource_keys_json=sorted({str(key) for key in (resource_keys or []) if str(key).strip()}),
         )
-        with self.database.session() as session:
-            session.add(job)
-            session.flush()
-            self._event(session, job.id, "job.queued", {"kind": kind, "session_id": session_id})
-            session.flush()
-            session.expunge(job)
-            return job
+        session.add(job)
+        session.flush()
+        self._event(
+            session,
+            job.id,
+            "job.queued",
+            {"kind": kind, "session_id": session_id},
+        )
+        session.flush()
+        return job
 
     def acquire_resources(
         self,
@@ -541,30 +575,36 @@ class JobQueue:
                 and (job.lease_owner in {None, worker_id})
             )
 
+    def request_cancel_in_session(self, session: Session, job_id: str) -> Job:
+        """Cancel one job inside the caller's existing write transaction."""
+
+        job = session.get(Job, job_id)
+        if job is None:
+            raise KeyError(job_id)
+        if job.status == "queued":
+            job.status = "canceled"
+            job.finished_at = utcnow()
+            event_type = "job.canceled"
+        elif job.status in {"running", "cancel_requested"}:
+            # Cancellation is a terminal state immediately. The worker's
+            # monitor notices it independently of progress callbacks and
+            # prevents any later result from replacing this state.
+            self._event(session, job.id, "job.cancel_requested")
+            job.status = "canceled"
+            job.finished_at = utcnow()
+            job.lease_owner = None
+            job.lease_expires_at = None
+            event_type = "job.canceled"
+        else:
+            event_type = "job.cancel_ignored"
+        job.updated_at = utcnow()
+        self._event(session, job.id, event_type)
+        session.flush()
+        return job
+
     def request_cancel(self, job_id: str) -> Job:
         with self.database.immediate_session() as session:
-            job = session.get(Job, job_id)
-            if job is None:
-                raise KeyError(job_id)
-            if job.status == "queued":
-                job.status = "canceled"
-                job.finished_at = utcnow()
-                event_type = "job.canceled"
-            elif job.status in {"running", "cancel_requested"}:
-                # Cancellation is a terminal state immediately. The worker's
-                # monitor notices it independently of progress callbacks and
-                # prevents any later result from replacing this state.
-                self._event(session, job.id, "job.cancel_requested")
-                job.status = "canceled"
-                job.finished_at = utcnow()
-                job.lease_owner = None
-                job.lease_expires_at = None
-                event_type = "job.canceled"
-            else:
-                event_type = "job.cancel_ignored"
-            job.updated_at = utcnow()
-            self._event(session, job.id, event_type)
-            session.flush()
+            job = self.request_cancel_in_session(session, job_id)
             session.expunge(job)
             return job
 

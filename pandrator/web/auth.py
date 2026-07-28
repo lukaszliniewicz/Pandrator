@@ -9,16 +9,104 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from typing import Literal
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from .database import Database
-from .models import ApiToken, OwnerAccount, utcnow
-
+from .models import ApiToken, AutomationClient, OwnerAccount, utcnow
 
 _password_hasher = PasswordHasher()
+
+ALL_SCOPES = frozenset(
+    {
+        "app.read",
+        "app.write",
+        "app.run",
+        "app.cancel",
+        "app.credentials.read",
+        "app.credentials.write",
+        "manager.read",
+        "manager.runtime",
+        "manager.mutate",
+        "app.admin",
+    }
+)
+MCP_BOOTSTRAP_SCOPES = frozenset(
+    {
+        "app.read",
+        "app.write",
+        "app.run",
+        "app.cancel",
+        "manager.read",
+        "manager.runtime",
+        "manager.mutate",
+    }
+)
+
+PrincipalKind = Literal[
+    "owner_session",
+    "api_token",
+    "manager_bootstrap",
+    "automation_client",
+    "service",
+]
+NetworkZone = Literal["loopback", "private", "public"]
+PRINCIPAL_KINDS = frozenset(
+    {
+        "owner_session",
+        "api_token",
+        "manager_bootstrap",
+        "automation_client",
+        "service",
+    }
+)
+
+
+def normalize_scopes(
+    scopes: object,
+    *,
+    allow_empty: bool = False,
+) -> frozenset[str]:
+    if isinstance(scopes, str):
+        values = scopes.split()
+    elif isinstance(scopes, (list, tuple, set, frozenset)):
+        values = [str(value) for value in scopes]
+    else:
+        values = []
+    normalized = frozenset(value.strip() for value in values if value.strip())
+    unknown = normalized - ALL_SCOPES
+    if unknown:
+        raise ValueError(f"Unknown API scope(s): {', '.join(sorted(unknown))}.")
+    if not normalized and not allow_empty:
+        raise ValueError("At least one API scope is required.")
+    return normalized
+
+
+def _aware(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+@dataclass(frozen=True, slots=True)
+class Principal:
+    subject: str
+    kind: PrincipalKind
+    scopes: frozenset[str]
+    token_id: str | None
+    network_zone: NetworkZone
+    target_instance_id: str
+    client_id: str | None = None
+
+    def has_scope(self, scope: str) -> bool:
+        return scope in self.scopes or "app.admin" in self.scopes
 
 
 def _token_digest(token: str) -> str:
@@ -29,6 +117,10 @@ def _token_digest(token: str) -> str:
 class BootstrapToken:
     digest: str
     expires_at: float
+    subject: str = "owner"
+    kind: PrincipalKind = "owner_session"
+    scopes: frozenset[str] = ALL_SCOPES
+    client_id: str | None = None
 
 
 class BootstrapTokenStore:
@@ -38,24 +130,47 @@ class BootstrapTokenStore:
         self._tokens: dict[str, BootstrapToken] = {}
         self._lock = threading.Lock()
 
-    def issue(self, ttl_seconds: int = 120) -> str:
+    def issue(
+        self,
+        ttl_seconds: int = 120,
+        *,
+        subject: str = "owner",
+        kind: PrincipalKind = "owner_session",
+        scopes: object = ALL_SCOPES,
+        client_id: str | None = None,
+    ) -> str:
         raw = secrets.token_urlsafe(32)
         prefix = raw[:12]
         with self._lock:
-            self._tokens[prefix] = BootstrapToken(_token_digest(raw), time.monotonic() + max(10, ttl_seconds))
+            self._tokens[prefix] = BootstrapToken(
+                _token_digest(raw),
+                time.monotonic() + max(10, ttl_seconds),
+                subject=str(subject),
+                kind=kind,
+                scopes=normalize_scopes(scopes),
+                client_id=client_id,
+            )
         return raw
 
     def add(self, raw: str, ttl_seconds: int = 120) -> None:
         with self._lock:
-            self._tokens[raw[:12]] = BootstrapToken(_token_digest(raw), time.monotonic() + max(10, ttl_seconds))
+            self._tokens[raw[:12]] = BootstrapToken(
+                _token_digest(raw),
+                time.monotonic() + max(10, ttl_seconds),
+            )
 
-    def consume(self, raw: str) -> bool:
+    def consume_grant(self, raw: str) -> BootstrapToken | None:
         prefix = str(raw or "")[:12]
         with self._lock:
             record = self._tokens.pop(prefix, None)
         if record is None or record.expires_at < time.monotonic():
-            return False
-        return hmac.compare_digest(record.digest, _token_digest(raw))
+            return None
+        if not hmac.compare_digest(record.digest, _token_digest(raw)):
+            return None
+        return record
+
+    def consume(self, raw: str) -> bool:
+        return self.consume_grant(raw) is not None
 
 
 @dataclass(slots=True)
@@ -184,29 +299,168 @@ class AuthService:
         except VerifyMismatchError:
             return False
 
-    def create_api_token(self, label: str) -> tuple[ApiToken, str]:
-        raw = f"pan_{secrets.token_urlsafe(32)}"
-        token = ApiToken(label=str(label or "CLI token").strip() or "CLI token", token_hash=_token_digest(raw), token_prefix=raw[:12])
+    def create_api_token(
+        self,
+        label: str,
+        *,
+        scopes: object = ALL_SCOPES,
+        expires_at: datetime | None = None,
+        principal_kind: PrincipalKind = "api_token",
+        created_by: str | None = None,
+        subject: str | None = None,
+        client_id: str | None = None,
+        target_instance_id: str | None = None,
+        canonical_origin: str | None = None,
+    ) -> tuple[ApiToken, str]:
         with self.database.session() as session:
-            session.add(token)
-            session.flush()
+            token, raw = self.create_api_token_in_session(
+                session,
+                label,
+                scopes=scopes,
+                expires_at=expires_at,
+                principal_kind=principal_kind,
+                created_by=created_by,
+                subject=subject,
+                client_id=client_id,
+                target_instance_id=target_instance_id,
+                canonical_origin=canonical_origin,
+            )
             session.expunge(token)
+            return token, raw
+
+    def create_api_token_in_session(
+        self,
+        session: Session,
+        label: str,
+        *,
+        scopes: object = ALL_SCOPES,
+        expires_at: datetime | None = None,
+        principal_kind: PrincipalKind = "api_token",
+        created_by: str | None = None,
+        subject: str | None = None,
+        client_id: str | None = None,
+        target_instance_id: str | None = None,
+        canonical_origin: str | None = None,
+    ) -> tuple[ApiToken, str]:
+        """Create a token in a caller-owned transaction."""
+
+        if principal_kind not in PRINCIPAL_KINDS:
+            raise ValueError("The API principal kind is invalid.")
+        raw = f"pan_{secrets.token_urlsafe(32)}"
+        selected_scopes = normalize_scopes(scopes)
+        token = ApiToken(
+            label=str(label or "CLI token").strip() or "CLI token",
+            token_hash=_token_digest(raw),
+            token_prefix=raw[:12],
+            subject=subject,
+            scopes_json=sorted(selected_scopes),
+            expires_at=_aware(expires_at),
+            principal_kind=principal_kind,
+            created_by=created_by,
+            client_id=client_id,
+            target_instance_id=target_instance_id,
+            canonical_origin=canonical_origin,
+        )
+        session.add(token)
+        session.flush()
+        if not token.subject:
+            token.subject = f"api-token:{token.id}"
+            session.flush()
         return token, raw
 
-    def verify_api_token(self, raw: str) -> bool:
+    def resolve_api_token(
+        self,
+        raw: str,
+        *,
+        network_zone: NetworkZone,
+        target_instance_id: str | None,
+        canonical_origin: str | None = None,
+    ) -> Principal | None:
         prefix = str(raw or "")[:12]
         digest = _token_digest(str(raw or ""))
+        now = utcnow()
         with self.database.session() as session:
             candidates = list(
                 session.scalars(
-                    select(ApiToken).where(ApiToken.token_prefix == prefix, ApiToken.revoked_at.is_(None))
+                    select(ApiToken).where(
+                        ApiToken.token_prefix == prefix,
+                        ApiToken.revoked_at.is_(None),
+                    )
                 ).all()
             )
             for candidate in candidates:
-                if hmac.compare_digest(candidate.token_hash, digest):
-                    candidate.last_used_at = utcnow()
-                    return True
-        return False
+                if not hmac.compare_digest(candidate.token_hash, digest):
+                    continue
+                expires_at = _aware(candidate.expires_at)
+                if expires_at is not None and expires_at <= now:
+                    return None
+                if (
+                    candidate.target_instance_id
+                    and target_instance_id is not None
+                    and candidate.target_instance_id != target_instance_id
+                ):
+                    return None
+                if (
+                    candidate.canonical_origin
+                    and canonical_origin is not None
+                    and candidate.canonical_origin != canonical_origin
+                ):
+                    return None
+                try:
+                    scopes = normalize_scopes(candidate.scopes_json)
+                except ValueError:
+                    return None
+                raw_kind = str(candidate.principal_kind or "api_token")
+                if raw_kind not in PRINCIPAL_KINDS:
+                    return None
+                candidate.last_used_at = now
+                if candidate.client_id:
+                    client = session.get(
+                        AutomationClient,
+                        candidate.client_id,
+                    )
+                    if client is None or client.revoked_at is not None:
+                        return None
+                    if (
+                        target_instance_id is not None
+                        and client.target_instance_id != target_instance_id
+                    ):
+                        return None
+                    if (
+                        canonical_origin is not None
+                        and client.canonical_origin != canonical_origin
+                    ):
+                        return None
+                    client.last_used_at = now
+                return Principal(
+                    subject=(
+                        str(candidate.subject)
+                        if candidate.subject
+                        else f"api-token:{candidate.id}"
+                    ),
+                    kind=raw_kind,
+                    scopes=scopes,
+                    token_id=candidate.id,
+                    network_zone=network_zone,
+                    target_instance_id=(
+                        target_instance_id
+                        or str(candidate.target_instance_id or "")
+                    ),
+                    client_id=candidate.client_id,
+                )
+        return None
+
+    def verify_api_token(self, raw: str) -> bool:
+        """Compatibility helper for non-request callers."""
+
+        return (
+            self.resolve_api_token(
+                raw,
+                network_zone="loopback",
+                target_instance_id=None,
+            )
+            is not None
+        )
 
     def list_tokens(self) -> list[ApiToken]:
         with self.database.session() as session:
@@ -221,4 +475,20 @@ class AuthService:
             if token is None:
                 raise KeyError(token_id)
             token.revoked_at = utcnow()
+
+    def cleanup_expired_tokens(self, *, grace_days: int = 30) -> int:
+        cutoff = utcnow() - timedelta(days=max(1, int(grace_days)))
+        removed = 0
+        with self.database.session() as session:
+            tokens = list(
+                session.scalars(
+                    select(ApiToken).where(ApiToken.expires_at.is_not(None))
+                ).all()
+            )
+            for token in tokens:
+                expires_at = _aware(token.expires_at)
+                if expires_at is not None and expires_at < cutoff:
+                    session.delete(token)
+                    removed += 1
+        return removed
 

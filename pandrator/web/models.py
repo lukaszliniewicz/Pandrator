@@ -7,13 +7,13 @@ from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     DateTime,
     Float,
     ForeignKey,
     Index,
     Integer,
-    JSON,
     String,
     Text,
     UniqueConstraint,
@@ -723,6 +723,43 @@ class OwnerAccount(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
+class AutomationClient(Base):
+    __tablename__ = "automation_clients"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    subject: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
+    redirect_uris_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    allowed_scopes_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    target_instance_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    canonical_origin: Mapped[str] = mapped_column(Text, nullable=False)
+    created_by: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class AutomationEnrollmentGrant(Base):
+    __tablename__ = "automation_enrollment_grants"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    client_id: Mapped[str] = mapped_column(
+        ForeignKey("automation_clients.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    code_hash: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    code_prefix: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    redirect_uri: Mapped[str | None] = mapped_column(Text)
+    scopes_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    code_challenge: Mapped[str] = mapped_column(String(128), nullable=False)
+    code_challenge_method: Mapped[str] = mapped_column(String(16), nullable=False, default="S256")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    token_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
 class ApiToken(Base):
     __tablename__ = "api_tokens"
 
@@ -730,9 +767,129 @@ class ApiToken(Base):
     label: Mapped[str] = mapped_column(String(160), nullable=False)
     token_hash: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
     token_prefix: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    subject: Mapped[str | None] = mapped_column(String(200), index=True)
+    scopes_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    principal_kind: Mapped[str] = mapped_column(String(40), nullable=False, default="api_token")
+    created_by: Mapped[str | None] = mapped_column(String(200))
+    client_id: Mapped[str | None] = mapped_column(
+        ForeignKey("automation_clients.id", ondelete="SET NULL"),
+        index=True,
+    )
+    target_instance_id: Mapped[str | None] = mapped_column(String(36))
+    canonical_origin: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AuditEvent(Base):
+    __tablename__ = "audit_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    request_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    traceparent: Mapped[str | None] = mapped_column(String(80))
+    principal_subject: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
+    principal_kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    scopes_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    action: Mapped[str] = mapped_column(String(160), nullable=False, index=True)
+    method: Mapped[str] = mapped_column(String(12), nullable=False)
+    path: Mapped[str] = mapped_column(String(500), nullable=False)
+    idempotency_key: Mapped[str | None] = mapped_column(String(200), index=True)
+    plan_id: Mapped[str | None] = mapped_column(String(120), index=True)
+    plan_digest: Mapped[str | None] = mapped_column(String(128))
+    resource_kind: Mapped[str | None] = mapped_column(String(80))
+    resource_id: Mapped[str | None] = mapped_column(String(160), index=True)
+    outcome: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    status_code: Mapped[int] = mapped_column(Integer, nullable=False)
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False, index=True)
+
+
+class ApiIdempotency(Base):
+    __tablename__ = "api_idempotency"
+    __table_args__ = (
+        UniqueConstraint(
+            "principal_subject",
+            "operation_id",
+            "idempotency_key",
+            name="uq_api_idempotency_principal_operation_key",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    principal_subject: Mapped[str] = mapped_column(String(200), nullable=False)
+    operation_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(24), nullable=False, default="in_progress")
+    status_code: Mapped[int | None] = mapped_column(Integer)
+    response_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    resource_kind: Mapped[str | None] = mapped_column(String(80))
+    resource_id: Mapped[str | None] = mapped_column(String(160), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+
+class WorkflowExecutionPlan(Base):
+    __tablename__ = "workflow_execution_plans"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=new_id,
+    )
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    principal_subject: Mapped[str] = mapped_column(
+        String(200),
+        nullable=False,
+        index=True,
+    )
+    target_instance_id: Mapped[str] = mapped_column(
+        String(36),
+        nullable=False,
+    )
+    plan_digest: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        index=True,
+    )
+    plan_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON,
+        nullable=False,
+    )
+    state_fingerprint: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+    )
+    required_confirmations_json: Mapped[list[str]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+    )
+    resulting_job_id: Mapped[str | None] = mapped_column(
+        ForeignKey("jobs.id", ondelete="SET NULL"),
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        nullable=False,
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        index=True,
+    )
+    consumed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        index=True,
+    )
 
 
 class CapabilitySnapshot(Base):

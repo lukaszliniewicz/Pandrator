@@ -7,7 +7,6 @@ from typing import Any
 
 from flask import Blueprint, Flask
 
-
 DOMAIN_ORDER = (
     "system",
     "auth",
@@ -41,7 +40,7 @@ def route_domain(rule: str) -> str:
         )
     ):
         return "library"
-    if rule.startswith(("/api/v1/jobs", "/api/v1/events")):
+    if rule.startswith(("/api/v1/jobs", "/api/v1/events", "/api/v1/work")):
         return "jobs"
     if rule.startswith(
         (

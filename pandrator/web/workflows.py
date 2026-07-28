@@ -15,8 +15,17 @@ from .artifact_selection import (
 )
 from .database import Database
 from .jobs import JobQueue
-from .models import Artifact, GenerationPlan, GenerationRun, Job, OutcomePlan, SessionRecord, SessionSource, SourceAsset, UsageEvent
-
+from .models import (
+    Artifact,
+    GenerationPlan,
+    GenerationRun,
+    Job,
+    OutcomePlan,
+    SessionRecord,
+    SessionSource,
+    SourceAsset,
+    UsageEvent,
+)
 
 WORKFLOW_HISTORY_PREVIEW_LIMIT = 10
 
@@ -137,6 +146,20 @@ AUDIOBOOK_STAGES = (
     StageDefinition("generate_audio", "Generate audio", "Run missing document preparation, then create reviewable narration takes from editable segments. Assembly remains manual.", prerequisite_roles=("prepared_text", "clean_text", "upload"), job_kind="audiobook.generate_audio"),
     StageDefinition("export", "Export", "Package the assembled audio with the selected format, metadata, and cover.", prerequisite_roles=("assembled_audio", "audiobook_audio"), output_role="export", job_kind="export.create"),
 )
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedWorkflowStage:
+    """Immutable queue submission resolved without changing durable state."""
+
+    job_kind: str
+    payload: dict[str, Any]
+    resource_keys: tuple[str, ...]
+    session_revision: int
+    workflow_kind: str
+    source_artifact_id: str | None
+    source_content_hash: str | None
+    outcome_revision: int
 
 
 class WorkflowService:
@@ -423,7 +446,16 @@ class WorkflowService:
                 ],
             }
 
-    def run_stage(self, session_id: str, stage_key: str, settings: dict[str, Any] | None = None) -> Job:
+    def resolve_stage(
+        self,
+        session_id: str,
+        stage_key: str,
+        settings: dict[str, Any] | None = None,
+        *,
+        continuation: bool = False,
+    ) -> ResolvedWorkflowStage:
+        """Resolve exact queue input without enqueuing work."""
+
         # Resolve persisted defaults before the run is enqueued.  The resulting
         # snapshot is immutable job input: later settings edits affect only
         # future runs, and Run Now values still take highest precedence.
@@ -557,7 +589,7 @@ class WorkflowService:
                 "resolved_settings_snapshot": resolved,
                 "settings_hash": settings_hash,
             }
-        if stage_key == "generate_audio":
+        if stage_key == "generate_audio" or continuation:
             payload.update({"target_stage": stage_key, "stage_settings": resolved_stage_settings})
             if reuse_stages:
                 payload["reuse_stages"] = reuse_stages
@@ -570,13 +602,67 @@ class WorkflowService:
                 filename = str((upload.metadata_json or {}).get("original_filename") or upload.relative_path).lower()
                 if not filename.endswith(".srt") and not any(artifact.state == "current" and artifact.role == "transcription" for artifact in all_artifacts):
                     resource_keys.append("service:stt")
-            return self.jobs.enqueue("workflow.continue", payload, session_id=session_id, resource_keys=list(dict.fromkeys(resource_keys)))
-        return self.jobs.enqueue(definition.job_kind, payload, session_id=session_id, resource_keys=self._resource_keys(session_id, stage_key, flattened))
+            return ResolvedWorkflowStage(
+                job_kind="workflow.continue",
+                payload=payload,
+                resource_keys=tuple(dict.fromkeys(resource_keys)),
+                session_revision=record.revision,
+                workflow_kind=record.workflow_kind,
+                source_artifact_id=source.id if source else None,
+                source_content_hash=(
+                    source.content_hash if source else None
+                ),
+                outcome_revision=outcome.revision if outcome else 0,
+            )
+        return ResolvedWorkflowStage(
+            job_kind=definition.job_kind,
+            payload=payload,
+            resource_keys=tuple(
+                self._resource_keys(
+                    session_id,
+                    stage_key,
+                    flattened,
+                )
+            ),
+            session_revision=record.revision,
+            workflow_kind=record.workflow_kind,
+            source_artifact_id=source.id if source else None,
+            source_content_hash=source.content_hash if source else None,
+            outcome_revision=outcome.revision if outcome else 0,
+        )
+
+    def run_stage(
+        self,
+        session_id: str,
+        stage_key: str,
+        settings: dict[str, Any] | None = None,
+    ) -> Job:
+        """Preserve the WebUI contract while sharing pure resolution."""
+
+        resolved = self.resolve_stage(
+            session_id,
+            stage_key,
+            settings,
+        )
+        return self.jobs.enqueue(
+            resolved.job_kind,
+            resolved.payload,
+            session_id=session_id,
+            resource_keys=list(resolved.resource_keys),
+        )
 
     @staticmethod
     def _resource_keys(session_id: str, stage_key: str, settings: dict[str, Any]) -> list[str]:
         keys = [f"session:{session_id}"]
-        if stage_key in {"correct", "translate", "optimize_tts", "optimize_document", "clean_source"}:
+        if stage_key in {
+            "correct",
+            "translate",
+            "optimize_tts",
+            "optimize_document",
+        } or (
+            stage_key == "clean_source"
+            and bool(settings.get("agentic", False))
+        ):
             keys.append("service:llm")
         if stage_key == "generate_audio":
             service = str(settings.get("service") or "tts").lower().replace(" ", "_")

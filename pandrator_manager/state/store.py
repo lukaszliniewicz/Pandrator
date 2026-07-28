@@ -1353,6 +1353,316 @@ class ManagerStore:
             "accepted_at": row["accepted_at"],
         }
 
+    def save_automation_grant(
+        self,
+        grant: Mapping[str, Any],
+    ) -> None:
+        with self.transaction(write=True) as connection:
+            connection.execute(
+                """
+                DELETE FROM automation_enrollment_grants
+                WHERE expires_at <= ? OR consumed_at IS NOT NULL
+                """,
+                (float(grant["created_at"]),),
+            )
+            connection.execute(
+                """
+                INSERT INTO automation_enrollment_grants(
+                    grant_digest, client_id, client_name, subject,
+                    manager_instance_id, application_instance_id,
+                    canonical_application_origin,
+                    canonical_recovery_origin, scopes_json,
+                    code_challenge, created_at, expires_at,
+                    token_expires_at, consumed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                """,
+                (
+                    grant["grant_digest"],
+                    grant["client_id"],
+                    grant["client_name"],
+                    grant["subject"],
+                    grant["manager_instance_id"],
+                    grant["application_instance_id"],
+                    grant["canonical_application_origin"],
+                    grant["canonical_recovery_origin"],
+                    _json(list(grant["scopes"])),
+                    grant["code_challenge"],
+                    float(grant["created_at"]),
+                    float(grant["expires_at"]),
+                    float(grant["token_expires_at"]),
+                ),
+            )
+
+    def consume_automation_grant(
+        self,
+        grant_digest: str,
+        *,
+        now: float,
+    ) -> dict[str, Any] | None:
+        with self.transaction(write=True) as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM automation_enrollment_grants
+                WHERE grant_digest=?
+                """,
+                (grant_digest,),
+            ).fetchone()
+            if (
+                row is None
+                or row["consumed_at"] is not None
+                or float(row["expires_at"]) <= float(now)
+            ):
+                return None
+            connection.execute(
+                """
+                UPDATE automation_enrollment_grants
+                SET consumed_at=?
+                WHERE grant_digest=? AND consumed_at IS NULL
+                """,
+                (float(now), grant_digest),
+            )
+            return {
+                "client_id": row["client_id"],
+                "client_name": row["client_name"],
+                "subject": row["subject"],
+                "manager_instance_id": row["manager_instance_id"],
+                "application_instance_id": row[
+                    "application_instance_id"
+                ],
+                "canonical_application_origin": row[
+                    "canonical_application_origin"
+                ],
+                "canonical_recovery_origin": row[
+                    "canonical_recovery_origin"
+                ],
+                "scopes": tuple(json.loads(row["scopes_json"])),
+                "code_challenge": row["code_challenge"],
+                "created_at": float(row["created_at"]),
+                "expires_at": float(row["expires_at"]),
+                "token_expires_at": float(row["token_expires_at"]),
+            }
+
+    def save_automation_token(
+        self,
+        *,
+        principal: Mapping[str, Any],
+        token_id: str,
+        token_digest: str,
+        now: float,
+        expires_at: float,
+    ) -> None:
+        with self.transaction(write=True) as connection:
+            connection.execute(
+                """
+                INSERT INTO automation_clients(
+                    client_id, client_name, subject, manager_instance_id,
+                    application_instance_id, canonical_application_origin,
+                    canonical_recovery_origin, scopes_json, created_at,
+                    last_used_at, revoked_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+                ON CONFLICT(client_id) DO UPDATE SET
+                    client_name=excluded.client_name,
+                    subject=excluded.subject,
+                    manager_instance_id=excluded.manager_instance_id,
+                    application_instance_id=excluded.application_instance_id,
+                    canonical_application_origin=
+                        excluded.canonical_application_origin,
+                    canonical_recovery_origin=
+                        excluded.canonical_recovery_origin,
+                    scopes_json=excluded.scopes_json,
+                    revoked_at=NULL
+                """,
+                (
+                    principal["client_id"],
+                    principal["client_name"],
+                    principal["subject"],
+                    principal["manager_instance_id"],
+                    principal["application_instance_id"],
+                    principal["canonical_application_origin"],
+                    principal["canonical_recovery_origin"],
+                    _json(list(principal["scopes"])),
+                    float(now),
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE automation_tokens
+                SET revoked_at=?
+                WHERE client_id=? AND revoked_at IS NULL
+                """,
+                (float(now), principal["client_id"]),
+            )
+            connection.execute(
+                """
+                INSERT INTO automation_tokens(
+                    token_id, client_id, token_digest, created_at,
+                    expires_at, last_used_at, revoked_at
+                ) VALUES (?, ?, ?, ?, ?, NULL, NULL)
+                """,
+                (
+                    token_id,
+                    principal["client_id"],
+                    token_digest,
+                    float(now),
+                    float(expires_at),
+                ),
+            )
+
+    @staticmethod
+    def _automation_principal_payload(
+        row: sqlite3.Row,
+    ) -> dict[str, Any]:
+        return {
+            "schema_version": "1",
+            "subject": row["subject"],
+            "client_id": row["client_id"],
+            "client_name": row["client_name"],
+            "manager_instance_id": row["manager_instance_id"],
+            "application_instance_id": row["application_instance_id"],
+            "canonical_application_origin": row[
+                "canonical_application_origin"
+            ],
+            "canonical_recovery_origin": row[
+                "canonical_recovery_origin"
+            ],
+            "scopes": tuple(json.loads(row["scopes_json"])),
+            "expires_at": float(row["expires_at"]),
+            "created_at": float(row["created_at"]),
+            "last_used_at": (
+                float(row["effective_last_used_at"])
+                if row["effective_last_used_at"] is not None
+                else None
+            ),
+            "revoked_at": (
+                float(row["effective_revoked_at"])
+                if row["effective_revoked_at"] is not None
+                else None
+            ),
+            "token_id": row["token_id"],
+        }
+
+    def automation_principal(
+        self,
+        token_digest: str,
+        *,
+        now: float,
+    ) -> dict[str, Any] | None:
+        with self.transaction(write=True) as connection:
+            row = connection.execute(
+                """
+                SELECT c.*, t.token_id, t.expires_at,
+                       t.created_at AS token_created_at,
+                       COALESCE(
+                           t.last_used_at, c.last_used_at
+                       ) AS effective_last_used_at,
+                       COALESCE(
+                           t.revoked_at, c.revoked_at
+                       ) AS effective_revoked_at
+                FROM automation_tokens AS t
+                JOIN automation_clients AS c
+                    ON c.client_id=t.client_id
+                WHERE t.token_digest=?
+                """,
+                (token_digest,),
+            ).fetchone()
+            if (
+                row is None
+                or row["effective_revoked_at"] is not None
+                or float(row["expires_at"]) <= float(now)
+            ):
+                return None
+            if (
+                row["effective_last_used_at"] is None
+                or float(now)
+                - float(row["effective_last_used_at"])
+                >= 60
+            ):
+                connection.execute(
+                    """
+                    UPDATE automation_tokens
+                    SET last_used_at=?
+                    WHERE token_id=?
+                    """,
+                    (float(now), row["token_id"]),
+                )
+                connection.execute(
+                    """
+                    UPDATE automation_clients
+                    SET last_used_at=?
+                    WHERE client_id=?
+                    """,
+                    (float(now), row["client_id"]),
+                )
+            payload = self._automation_principal_payload(row)
+            payload["created_at"] = float(row["token_created_at"])
+            payload["last_used_at"] = float(now)
+            return payload
+
+    def automation_clients(self) -> list[dict[str, Any]]:
+        with self.transaction() as connection:
+            rows = connection.execute(
+                """
+                SELECT c.*, t.token_id, t.expires_at,
+                       t.created_at AS token_created_at,
+                       COALESCE(
+                           t.last_used_at, c.last_used_at
+                       ) AS effective_last_used_at,
+                       COALESCE(
+                           t.revoked_at, c.revoked_at
+                       ) AS effective_revoked_at
+                FROM automation_clients AS c
+                LEFT JOIN automation_tokens AS t
+                    ON t.token_id=(
+                        SELECT selected.token_id
+                        FROM automation_tokens AS selected
+                        WHERE selected.client_id=c.client_id
+                        ORDER BY selected.created_at DESC
+                        LIMIT 1
+                    )
+                ORDER BY c.created_at DESC, c.client_id
+                """
+            ).fetchall()
+        payloads = []
+        for row in rows:
+            payload = self._automation_principal_payload(row)
+            payload["expires_at"] = (
+                float(row["expires_at"])
+                if row["expires_at"] is not None
+                else 0.0
+            )
+            payload["token_id"] = (
+                str(row["token_id"])
+                if row["token_id"] is not None
+                else None
+            )
+            payloads.append(payload)
+        return payloads
+
+    def revoke_automation_client(
+        self,
+        client_id: str,
+        *,
+        now: float,
+    ) -> bool:
+        with self.transaction(write=True) as connection:
+            result = connection.execute(
+                """
+                UPDATE automation_clients
+                SET revoked_at=?
+                WHERE client_id=? AND revoked_at IS NULL
+                """,
+                (float(now), client_id),
+            )
+            connection.execute(
+                """
+                UPDATE automation_tokens
+                SET revoked_at=?
+                WHERE client_id=? AND revoked_at IS NULL
+                """,
+                (float(now), client_id),
+            )
+            return bool(result.rowcount)
+
 
 class StoreEventSink:
     def __init__(self, store: ManagerStore) -> None:

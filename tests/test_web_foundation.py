@@ -1,12 +1,13 @@
+import hashlib
+import io
 import json
+import logging
 import os
 import sqlite3
 import tempfile
 import unittest
-import io
-import logging
-from datetime import timedelta
 from contextlib import closing
+from datetime import timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -16,11 +17,29 @@ from sqlalchemy import func, select
 
 from pandrator.runtime import DataPaths, PathBoundaryError
 from pandrator.web.api import create_app
-from pandrator.web.auth import BootstrapTokenStore
+from pandrator.web.auth import (
+    ALL_SCOPES,
+    AuthService,
+    BootstrapTokenStore,
+)
 from pandrator.web.database import SCHEMA_HEAD, Database, sqlite_url, upgrade_database
 from pandrator.web.jobs import JobQueue, Worker, noop_handler
 from pandrator.web.legacy_migration import import_legacy_data
-from pandrator.web.models import Artifact, DocumentRevision, GenerationPlan, GenerationPlanRevision, GenerationSegment, Job, JobEvent, ProviderModel, Segment, SessionRecord, SessionSource, SourceAsset, SourceRecord, utcnow
+from pandrator.web.models import (
+    Artifact,
+    GenerationPlan,
+    GenerationPlanRevision,
+    GenerationSegment,
+    Job,
+    JobEvent,
+    ProviderModel,
+    Segment,
+    SessionRecord,
+    SessionSource,
+    SourceAsset,
+    SourceRecord,
+    utcnow,
+)
 from pandrator.web.sessions import SessionService
 from tests.web_test_support import prepare_web_test_data_root
 
@@ -50,6 +69,71 @@ class DataPathsTests(unittest.TestCase):
 
 
 class SchemaUpgradeTests(unittest.TestCase):
+    def test_legacy_api_tokens_gain_compatible_admin_scopes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "pandrator.sqlite3"
+            upgrade_database(database_path)
+            config = Config()
+            config.set_main_option(
+                "script_location",
+                str(
+                    Path(__file__).parents[1]
+                    / "pandrator"
+                    / "web"
+                    / "migrations"
+                ),
+            )
+            config.set_main_option(
+                "sqlalchemy.url",
+                sqlite_url(database_path),
+            )
+            command.downgrade(config, "0022_source_asset_backfill")
+            raw = "pan_legacy_compatible_token"
+            token_id = "11111111-1111-4111-8111-111111111111"
+            with closing(sqlite3.connect(database_path)) as connection:
+                connection.execute(
+                    """
+                    INSERT INTO api_tokens (
+                        id, label, token_hash, token_prefix, created_at,
+                        last_used_at, revoked_at
+                    ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, NULL, NULL)
+                    """,
+                    (
+                        token_id,
+                        "Legacy token",
+                        hashlib.sha256(raw.encode()).hexdigest(),
+                        raw[:12],
+                    ),
+                )
+                connection.commit()
+
+            upgrade_database(database_path)
+
+            with closing(sqlite3.connect(database_path)) as connection:
+                row = connection.execute(
+                    """
+                    SELECT subject, scopes_json, principal_kind, created_by
+                    FROM api_tokens WHERE id = ?
+                    """,
+                    (token_id,),
+                ).fetchone()
+            self.assertEqual(f"api-token:{token_id}", row[0])
+            self.assertEqual(ALL_SCOPES, frozenset(json.loads(row[1])))
+            self.assertEqual("api_token", row[2])
+            self.assertEqual("legacy-migration", row[3])
+
+            database = Database(database_path)
+            try:
+                principal = AuthService(database).resolve_api_token(
+                    raw,
+                    network_zone="loopback",
+                    target_instance_id="current-instance",
+                )
+                self.assertIsNotNone(principal)
+                self.assertTrue(principal.has_scope("app.admin"))
+            finally:
+                database.dispose()
+
     def test_existing_web_preview_database_upgrades_from_previous_head(self):
         with tempfile.TemporaryDirectory() as directory:
             database_path = Path(directory) / "pandrator.sqlite3"

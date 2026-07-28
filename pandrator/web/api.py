@@ -29,6 +29,7 @@ def create_app(
     bootstrap_tokens: BootstrapTokenStore | None = None,
     capability_ttl_seconds: int | None = None,
     background_maintenance: bool | None = None,
+    public_origin: str | None = None,
 ) -> Flask:
     """Compose the dependency graph, HTTP lifecycle, and domain routes."""
 
@@ -36,6 +37,7 @@ def create_app(
         data_root=data_root,
         bootstrap_tokens=bootstrap_tokens,
         capability_ttl_seconds=capability_ttl_seconds,
+        public_origin=public_origin,
     )
     static_dir = Path(__file__).with_name("static")
     app = Flask(

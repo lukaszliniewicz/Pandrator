@@ -12,6 +12,7 @@ import sys
 import uuid
 import webbrowser
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -24,7 +25,8 @@ from pandrator.runtime import DataPaths
 
 from .api import create_app
 from .artifacts import ArtifactService, sha256_file
-from .auth import AuthService, BootstrapTokenStore
+from .auth import ALL_SCOPES, AuthService, BootstrapTokenStore
+from .automation_enrollment import AutomationEnrollmentService
 from .bundles import SessionBundleService
 from .database import Database
 from .job_registry import JobHandlerRegistry
@@ -186,6 +188,32 @@ def command_remote(args) -> int:
             result = _remote_api(args, "POST", f"/training/{args.training_id}/cancel")
         else:
             result = _remote_api(args, "POST", "/training", payload={"model_name": args.model_name, "source_artifact_id": args.artifact_id, "source_text_artifact_id": args.text_artifact_id, "settings": json.loads(args.settings)})
+    elif command == "auth":
+        if args.auth_command != "automation-client":
+            raise RuntimeError(
+                "Remote auth mode supports only automation-client "
+                "administration with an owner app.admin token."
+            )
+        if args.automation_client_command == "list":
+            result = _remote_api(
+                args,
+                "GET",
+                "/auth/automation-clients",
+            )
+        else:
+            if not args.yes:
+                raise RuntimeError(
+                    "Automation-client revocation requires --yes."
+                )
+            _remote_api(
+                args,
+                "DELETE",
+                (
+                    "/auth/automation-clients/"
+                    f"{args.client_id}"
+                ),
+            )
+            result = {"revoked": args.client_id}
     elif command == "openapi":
         result = _remote_api(args, "GET", "/openapi.json")
     else:
@@ -414,6 +442,7 @@ def command_serve(args) -> int:
         proxy_hops=args.proxy_hops,
         secure_cookies=network.public_scheme == "https",
         bootstrap_tokens=bootstrap,
+        public_origin=network.browser_url,
     )
     if args.open_browser:
         token = bootstrap.issue()
@@ -513,9 +542,27 @@ def command_auth_init(args) -> int:
 
 def command_auth_token_create(args) -> int:
     _, database = _database(args)
-    record, raw = AuthService(database).create_api_token(args.label)
+    record, raw = AuthService(database).create_api_token(
+        args.label,
+        scopes=args.scope,
+        expires_at=(
+            utcnow() + timedelta(days=args.expires_in_days)
+            if args.expires_in_days is not None
+            else None
+        ),
+        created_by="owner-cli",
+    )
     database.dispose()
-    _emit({"id": record.id, "label": record.label, "token": raw}, args.json)
+    _emit(
+        {
+            "id": record.id,
+            "label": record.label,
+            "token": raw,
+            "scopes": list(record.scopes_json or []),
+            "expires_at": record.expires_at,
+        },
+        args.json,
+    )
     return 0
 
 
@@ -544,6 +591,38 @@ def command_auth_token_revoke(args) -> int:
     AuthService(database).revoke_token(args.token_id)
     database.dispose()
     _emit({"revoked": args.token_id}, args.json)
+    return 0
+
+
+def command_auth_automation_client_list(args) -> int:
+    _, database = _database(args)
+    auth = AuthService(database)
+    try:
+        items = AutomationEnrollmentService(
+            database,
+            auth,
+        ).list_clients()
+    finally:
+        database.dispose()
+    _emit({"items": items}, args.json)
+    return 0
+
+
+def command_auth_automation_client_revoke(args) -> int:
+    if not args.yes:
+        raise RuntimeError(
+            "Automation-client revocation requires --yes."
+        )
+    _, database = _database(args)
+    auth = AuthService(database)
+    try:
+        AutomationEnrollmentService(
+            database,
+            auth,
+        ).revoke(args.client_id)
+    finally:
+        database.dispose()
+    _emit({"revoked": args.client_id}, args.json)
     return 0
 
 
@@ -894,7 +973,12 @@ def build_parser() -> argparse.ArgumentParser:
     worker.add_argument("--poll-interval", type=float, default=0.5)
     worker.set_defaults(handler=command_worker)
 
-    auth = commands.add_parser("auth", help="Initialize the owner and manage API tokens.")
+    auth = commands.add_parser(
+        "auth",
+        help=(
+            "Initialize the owner and manage API tokens or automation clients."
+        ),
+    )
     auth_commands = auth.add_subparsers(dest="auth_command", required=True)
     auth_init = auth_commands.add_parser("init")
     auth_init.add_argument("--password")
@@ -904,12 +988,50 @@ def build_parser() -> argparse.ArgumentParser:
     token_commands = token.add_subparsers(dest="token_command", required=True)
     token_create = token_commands.add_parser("create")
     token_create.add_argument("--label", default="CLI token")
+    token_create.add_argument(
+        "--scope",
+        action="append",
+        required=True,
+        choices=sorted(ALL_SCOPES),
+        help="Grant one explicit API scope; repeat for additional scopes.",
+    )
+    token_create.add_argument(
+        "--expires-in-days",
+        type=int,
+        choices=range(1, 366),
+    )
     token_create.set_defaults(handler=command_auth_token_create)
     token_list = token_commands.add_parser("list")
     token_list.set_defaults(handler=command_auth_token_list)
     token_revoke = token_commands.add_parser("revoke")
     token_revoke.add_argument("token_id")
     token_revoke.set_defaults(handler=command_auth_token_revoke)
+    automation_client = auth_commands.add_parser(
+        "automation-client",
+        help="List or revoke enrolled native automation clients.",
+    )
+    automation_client_commands = automation_client.add_subparsers(
+        dest="automation_client_command",
+        required=True,
+    )
+    automation_client_list = automation_client_commands.add_parser(
+        "list"
+    )
+    automation_client_list.set_defaults(
+        handler=command_auth_automation_client_list
+    )
+    automation_client_revoke = automation_client_commands.add_parser(
+        "revoke"
+    )
+    automation_client_revoke.add_argument("client_id", type=uuid.UUID)
+    automation_client_revoke.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirm revocation of the client and all of its tokens.",
+    )
+    automation_client_revoke.set_defaults(
+        handler=command_auth_automation_client_revoke
+    )
 
     session = commands.add_parser("session", help="Manage sessions.")
     session_commands = session.add_subparsers(dest="session_command", required=True)

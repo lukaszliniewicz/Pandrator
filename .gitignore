@@ -37,6 +37,7 @@ pip-wheel-metadata/
 .hypothesis/
 .tox/
 .nox/
+graphify-out/
 .pixi/
 .pixi-cache/
 .pixi-home/
@@ -75,6 +76,7 @@ tts_voices/voice_library.json
 
 # Local planning notes (name contains "plan")
 *[Pp][Ll][Aa][Nn]*.md
+!/MCP_IMPLEMENTATION_PLAN.md
 /AGENTIC_TEXT_AND_SPEECH.md
 /FUTURE_TTS_OPTIMIZATION_NOTES.md
 
@@ -98,5 +100,10 @@ LINUX_COMPATIBILITY.md
 
 # Local documentation
 docs/
+!docs/
+docs/*
+!docs/qualification/
+docs/qualification/*
+!docs/qualification/pandrator-mcp-0.1.0-fedora44-codex-0.145.0.md
 web/playwright-report/
 web/test-results/

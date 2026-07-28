@@ -24,7 +24,6 @@ from .database import Database
 from .managed_services import binding_for_provider
 from .models import AppSetting, Provider, StoredCredential, utcnow
 
-
 DATABASE_REFERENCE_PREFIX = "db:"
 ENVIRONMENT_REFERENCE_PREFIX = "env:"
 KEYRING_REFERENCE_PREFIX = "keyring:"
@@ -957,8 +956,8 @@ def redact_secret_text(value: object, secret_values: list[str] | tuple[str, ...]
         reverse=True,
     ):
         text = text.replace(secret_value, "[REDACTED]")
-    text = _TEXT_SECRET_ASSIGNMENT.sub(r"\1\2[REDACTED]", text)
     text = re.sub(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}", "Bearer [REDACTED]", text)
+    text = _TEXT_SECRET_ASSIGNMENT.sub(r"\1\2[REDACTED]", text)
     return text
 
 

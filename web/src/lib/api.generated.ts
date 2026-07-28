@@ -132,6 +132,87 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/audit/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listAuditEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/automation-clients": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listAutomationClients"];
+        put?: never;
+        post: operations["registerAutomationClient"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/automation-clients/{clientId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["revokeAutomationClient"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/automation/authorize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Trusted owner consent with exact redirect matching and mandatory S256 PKCE. */
+        get: operations["authorizeAutomationClient"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/automation/token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["exchangeAutomationCode"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/bootstrap": {
         parameters: {
             query?: never;
@@ -174,6 +255,22 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["logout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/manager-bootstrap": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createManagerBootstrapGrant"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1508,6 +1605,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/workflow-plans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createWorkflowPlan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/settings/{settingKey}": {
         parameters: {
             query?: never;
@@ -1566,6 +1679,22 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["restoreSourceAsset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/identity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getSystemIdentity"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1780,6 +1909,102 @@ export interface paths {
         patch: operations["reviewVoiceSampleTranscript"];
         trace?: never;
     };
+    "/api/v1/work": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listWork"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/work/{jobId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getWork"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/work/{jobId}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["cancelWork"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/work/{jobId}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listWorkEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workflow-plans/{planId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getWorkflowPlan"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workflow-plans/{planId}/execute": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["executeWorkflowPlan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1792,6 +2017,59 @@ export interface components {
             };
             /** Source Artifact Id */
             source_artifact_id: string;
+        };
+        /**
+         * ApplicationIdentityDocument
+         * @description Versioned identity response pinned by remote MCP target profiles.
+         */
+        ApplicationIdentityDocument: {
+            /**
+             * Api Version
+             * @default v1
+             */
+            api_version?: string;
+            /**
+             * Application Version
+             * @default 0.48.0.dev0
+             */
+            application_version?: string;
+            /** Canonical Origin */
+            canonical_origin: string;
+            /** Instance Id */
+            instance_id: string;
+            /** Managed */
+            managed: boolean;
+            /**
+             * Manager Instance Id
+             * @default null
+             */
+            manager_instance_id?: string | null;
+            /**
+             * Protocol Version
+             * @default v1
+             */
+            protocol_version?: string;
+            /**
+             * Schema Version
+             * @default 1
+             */
+            schema_version?: string;
+            /**
+             * Service
+             * @default pandrator
+             */
+            service?: string;
+        };
+        /** AutomationClientCreateRequest */
+        AutomationClientCreateRequest: {
+            /** Client Id */
+            client_id: string;
+            /** Name */
+            name: string;
+            /** Redirect Uris */
+            redirect_uris: string[];
+            /** Scopes */
+            scopes: ("app.read" | "app.write" | "app.run" | "app.cancel" | "app.credentials.read" | "app.credentials.write" | "manager.read" | "manager.runtime" | "manager.mutate" | "app.admin")[];
         };
         /** BootstrapRequest */
         BootstrapRequest: {
@@ -1884,6 +2162,21 @@ export interface components {
             message: string;
             /** Request Id */
             request_id: string;
+        };
+        /** EventBounds */
+        EventBounds: {
+            /** Latest */
+            latest: number;
+            /** Oldest */
+            oldest: number;
+            /** Retained After */
+            retained_after: number;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version?: "1";
         };
         /** GenerationPlanCreate */
         GenerationPlanCreate: {
@@ -2038,6 +2331,11 @@ export interface components {
         LoginRequest: {
             /** Password */
             password: string;
+        };
+        /** ManagerBootstrapRequest */
+        ManagerBootstrapRequest: {
+            /** Scopes */
+            scopes?: ("app.read" | "app.write" | "app.run" | "app.cancel" | "app.credentials.read" | "app.credentials.write" | "manager.read" | "manager.runtime" | "manager.mutate" | "app.admin")[];
         };
         /** ManagerDesiredComponentState */
         ManagerDesiredComponentState: {
@@ -2697,10 +2995,17 @@ export interface components {
         /** TokenCreateRequest */
         TokenCreateRequest: {
             /**
+             * Expires In Days
+             * @default null
+             */
+            expires_in_days?: number | null;
+            /**
              * Label
              * @default CLI token
              */
             label?: string;
+            /** Scopes */
+            scopes: ("app.read" | "app.write" | "app.run" | "app.cancel" | "app.credentials.read" | "app.credentials.write" | "manager.read" | "manager.runtime" | "manager.mutate" | "app.admin")[];
         };
         /** TrainingCreateRequest */
         TrainingCreateRequest: {
@@ -2782,6 +3087,162 @@ export interface components {
             language?: string | null;
             /** Transcript */
             transcript: string;
+        };
+        /** WorkError */
+        WorkError: {
+            /**
+             * Code
+             * @default null
+             */
+            code?: string | null;
+            /** Message */
+            message: string;
+        };
+        /** WorkEvent */
+        WorkEvent: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Data */
+            data?: {
+                [key: string]: unknown;
+            };
+            /** Event Type */
+            event_type: string;
+            /** Id */
+            id: number;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version?: "1";
+            /**
+             * Work Id
+             * @default null
+             */
+            work_id?: string | null;
+        };
+        /** WorkEventPage */
+        WorkEventPage: {
+            /** Items */
+            items: components["schemas"]["WorkEvent"][];
+            /** Next Cursor */
+            next_cursor: number;
+            /** Retained After */
+            retained_after: number;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version?: "1";
+        };
+        /**
+         * WorkView
+         * @description Stable public work projection; raw job inputs are intentionally absent.
+         */
+        WorkView: {
+            /** Cancellable */
+            cancellable: boolean;
+            /**
+             * Created At
+             * @default null
+             */
+            created_at?: string | null;
+            /**
+             * Detail
+             * @default null
+             */
+            detail?: string | null;
+            /** @default null */
+            error?: components["schemas"]["WorkError"] | null;
+            /**
+             * Finished At
+             * @default null
+             */
+            finished_at?: string | null;
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Poll After Ms */
+            poll_after_ms: number;
+            /**
+             * Progress
+             * @default null
+             */
+            progress?: number | null;
+            /**
+             * Result Summary
+             * @default null
+             */
+            result_summary?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version?: "1";
+            /**
+             * Session Id
+             * @default null
+             */
+            session_id?: string | null;
+            /**
+             * Started At
+             * @default null
+             */
+            started_at?: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "queued" | "running" | "waiting" | "succeeded" | "failed" | "cancelled";
+            /**
+             * Type
+             * @default job
+             * @constant
+             */
+            type?: "job";
+            /**
+             * Updated At
+             * @default null
+             */
+            updated_at?: string | null;
+            /**
+             * Workflow Run Id
+             * @default null
+             */
+            workflow_run_id?: string | null;
+        };
+        /** WorkflowPlanCreateRequest */
+        WorkflowPlanCreateRequest: {
+            /**
+             * Expires In Minutes
+             * @default 30
+             */
+            expires_in_minutes?: number;
+            /** Overrides */
+            overrides?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Target Stage
+             * @default generate_audio
+             */
+            target_stage?: string;
+        };
+        /** WorkflowPlanExecuteRequest */
+        WorkflowPlanExecuteRequest: {
+            /** Accepted Confirmations */
+            accepted_confirmations?: string[];
+            /** Plan Digest */
+            plan_digest: string;
         };
     };
     responses: never;
@@ -2954,6 +3415,127 @@ export interface operations {
             };
         };
     };
+    listAuditEvents: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bounded content-free audit events */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listAutomationClients: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Automation clients */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    registerAutomationClient: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AutomationClientCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Registered */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    revokeAutomationClient: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                clientId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Revoked */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    authorizeAutomationClient: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Consent page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authorization response */
+            302: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    exchangeAutomationCode: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bound automation credential */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     exchangeBootstrapToken: {
         parameters: {
             query?: never;
@@ -3016,6 +3598,28 @@ export interface operations {
             };
         };
     };
+    createManagerBootstrapGrant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ManagerBootstrapRequest"];
+            };
+        };
+        responses: {
+            /** @description Scoped one-use bootstrap grant */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getAuthStatus: {
         parameters: {
             query?: never;
@@ -3059,7 +3663,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TokenCreateRequest"];
+            };
+        };
         responses: {
             /** @description Created */
             201: {
@@ -4347,7 +4955,9 @@ export interface operations {
     createSession: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
             path?: never;
             cookie?: never;
         };
@@ -4420,6 +5030,7 @@ export interface operations {
             query?: never;
             header: {
                 "If-Match": string;
+                "Idempotency-Key": string;
             };
             path: {
                 sessionId: string;
@@ -4871,7 +5482,10 @@ export interface operations {
     putSessionSettings: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                "Idempotency-Key": string;
+                "If-Match": string;
+            };
             path: {
                 sessionId: string;
                 section: string;
@@ -4916,7 +5530,10 @@ export interface operations {
     attachSessionSource: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                "Idempotency-Key": string;
+                "If-Match": string;
+            };
             path: {
                 sessionId: string;
             };
@@ -5198,6 +5815,30 @@ export interface operations {
             };
         };
     };
+    createWorkflowPlan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkflowPlanCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Immutable workflow execution preview */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getSetting: {
         parameters: {
             query?: never;
@@ -5328,6 +5969,26 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    getSystemIdentity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Stable authenticated application identity */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationIdentityDocument"];
+                };
             };
         };
     };
@@ -5672,6 +6333,145 @@ export interface operations {
         responses: {
             /** @description Transcript reviewed */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listWork: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Payload-free durable work projections */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getWork: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                jobId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Payload-free durable work projection */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkView"];
+                };
+            };
+        };
+    };
+    cancelWork: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                jobId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cancellation requested */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkView"];
+                };
+            };
+        };
+    };
+    listWorkEvents: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                jobId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bounded redacted work events */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkEventPage"];
+                };
+            };
+        };
+    };
+    getWorkflowPlan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                planId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Immutable workflow execution preview */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    executeWorkflowPlan: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                planId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkflowPlanExecuteRequest"];
+            };
+        };
+        responses: {
+            /** @description Exact plan consumed and queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Plan stale, consumed, expired, or confirmation missing */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

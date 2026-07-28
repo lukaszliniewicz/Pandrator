@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+import html
 import ipaddress
 import logging
 import sqlite3
@@ -21,6 +22,7 @@ from flask import (
     g,
     jsonify,
     make_response,
+    redirect,
     request,
     send_from_directory,
     stream_with_context,
@@ -31,7 +33,12 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 from .. import __version__
 from ..application import ManagerApplication
-from ..auth import RecoverySessionManager, derive_browser_session_keys
+from ..auth import (
+    ManagerAutomationRateLimiter,
+    ManagerAutomationService,
+    RecoverySessionManager,
+    derive_browser_session_keys,
+)
 from ..errors import ManagerError, NotFoundError
 from ..models import API_VERSION
 from ..network import (
@@ -45,6 +52,8 @@ from ..supervisor import ProcessSupervisor
 from .openapi import build_openapi
 from .schemas import (
     ApplicationNetworkRequest,
+    AutomationEnrollmentGrantRequest,
+    AutomationTokenRequest,
     LegacyImportRequest,
     OperationRequest,
     PlanRequest,
@@ -129,6 +138,7 @@ def create_api(
     manager_exposure: EndpointExposure | None = None,
     application_exposure: EndpointExposure | None = None,
     application_environment: dict[str, str] | None = None,
+    automation_rate_limiter: ManagerAutomationRateLimiter | None = None,
 ) -> Flask:
     api = Flask(
         "pandrator_manager",
@@ -174,6 +184,70 @@ def create_api(
         sessions = recovery_sessions
     recovery_static = Path(__file__).resolve().parent.parent / "recovery_ui" / "static"
     mutation_lock = threading.Lock()
+    automation = ManagerAutomationService(
+        application.store,
+        manager_instance_id=str(application.instance_id or ""),
+        canonical_recovery_origin=str(
+            selected_manager_exposure.public_url or ""
+        ),
+        enabled=(
+            selected_manager_exposure.mode.value == "https_proxy"
+        ),
+    )
+    recovery_rate_limiter = (
+        automation_rate_limiter or ManagerAutomationRateLimiter()
+    )
+
+    automation_read_endpoints = {
+        "status",
+        "capabilities",
+        "components",
+        "component",
+        "doctor",
+        "services",
+        "service",
+        "application_status",
+        "releases",
+        "manager_update",
+        "operation",
+        "operation_tasks",
+        "activity",
+        "automation_principal",
+    }
+    automation_plan_endpoints = {
+        "plans",
+        "release_plans",
+        "uninstall_plans",
+    }
+    automation_runtime_endpoints = {
+        "application_start",
+        "application_stop",
+        "application_restart",
+        "runtime_start",
+        "runtime_stop",
+        "runtime_restart",
+    }
+    automation_mutate_endpoints = {
+        "cancel_operation",
+    }
+
+    def automation_scope_for_request() -> str | None:
+        endpoint = str(request.endpoint or "")
+        if endpoint == "operations":
+            return (
+                "manager.read"
+                if request.method == "GET"
+                else "manager.mutate"
+            )
+        if endpoint in automation_read_endpoints:
+            return "manager.read"
+        if endpoint in automation_plan_endpoints:
+            return "manager.read"
+        if endpoint in automation_runtime_endpoints:
+            return "manager.runtime"
+        if endpoint in automation_mutate_endpoints:
+            return "manager.mutate"
+        return None
 
     def session_policy() -> dict:
         return {
@@ -258,8 +332,33 @@ def create_api(
             "/v1/session",
             "/v1/browser-sessions",
             "/v1/recovery/exchange",
-        }:
+        } or request.path.startswith("/v1/automation/"):
             response.headers["Cache-Control"] = "no-store"
+        principal = getattr(
+            g,
+            "manager_automation_principal",
+            None,
+        )
+        if isinstance(principal, dict):
+            application.context.event_sink.emit(
+                "automation.request",
+                {
+                    "subject": str(principal.get("subject") or "")[:200],
+                    "client_id": str(
+                        principal.get("client_id") or ""
+                    )[:80],
+                    "scopes": list(principal.get("scopes") or ()),
+                    "method": request.method,
+                    "path": request.path[:300],
+                    "status_code": response.status_code,
+                    "request_id": str(
+                        request.headers.get("X-Request-ID") or ""
+                    )[:120],
+                    "traceparent": str(
+                        request.headers.get("traceparent") or ""
+                    )[:160],
+                },
+            )
         return response
 
     def idempotent(handler):
@@ -359,24 +458,91 @@ def create_api(
             "recovery_index",
             "recovery_asset",
             "recovery_exchange",
+            "automation_identity",
+            "automation_token",
         }
         if request.endpoint in public:
             return None
         authorization = request.headers.get("Authorization", "")
         bearer = authorization[7:] if authorization.startswith("Bearer ") else ""
-        bearer_valid = bool(bearer) and hmac.compare_digest(bearer, client_secret)
+        bearer_valid = (
+            bool(bearer)
+            and _is_loopback(request.remote_addr)
+            and hmac.compare_digest(bearer, client_secret)
+        )
+        automation_principal = (
+            None
+            if bearer_valid or not bearer
+            else automation.authenticate(bearer)
+        )
         session_id = request.cookies.get(RECOVERY_COOKIE)
         selected_session = sessions.authenticate(session_id)
         requires_csrf = request.method not in {"GET", "HEAD", "OPTIONS"}
+        supplied_csrf = request.headers.get("X-CSRF-Token", "")
+        if (
+            request.endpoint == "automation_authorize"
+            and request.method == "POST"
+        ):
+            supplied_csrf = str(
+                request.form.get("csrf_token") or supplied_csrf
+            )
         session_valid = selected_session is not None and (
             not requires_csrf
             or hmac.compare_digest(
                 selected_session.csrf_token,
-                request.headers.get("X-CSRF-Token", ""),
+                supplied_csrf,
             )
         )
         g.recovery_session = selected_session if session_valid else None
         g.manager_bearer_authenticated = bearer_valid
+        g.manager_automation_principal = automation_principal
+        if automation_principal is not None:
+            retry_after = recovery_rate_limiter.consume(
+                str(automation_principal.get("client_id") or "")
+            )
+            if retry_after is not None:
+                response = jsonify(
+                    error={
+                        "code": "automation_rate_limited",
+                        "message": (
+                            "The Manager recovery client exceeded its "
+                            "request rate limit."
+                        ),
+                    }
+                )
+                response.status_code = 429
+                response.headers["Retry-After"] = str(retry_after)
+                return response
+            required_scope = automation_scope_for_request()
+            if required_scope is None:
+                return (
+                    jsonify(
+                        error={
+                            "code": "automation_route_denied",
+                            "message": (
+                                "This Manager route is not available to "
+                                "automation principals."
+                            ),
+                        }
+                    ),
+                    403,
+                )
+            if required_scope not in set(
+                automation_principal.get("scopes") or ()
+            ):
+                return (
+                    jsonify(
+                        error={
+                            "code": "scope_denied",
+                            "message": (
+                                "The Manager automation principal lacks "
+                                f"{required_scope}."
+                            ),
+                        }
+                    ),
+                    403,
+                )
+            return None
         if not bearer_valid and not session_valid:
             response = jsonify(error={"code": "authentication_required"})
             if session_id and selected_session is None:
@@ -447,6 +613,272 @@ def create_api(
             version=__version__,
             instance_id=application.instance_id,
         )
+
+    @api.get("/v1/automation/identity")
+    def automation_identity():
+        return jsonify(automation.identity())
+
+    @api.route(
+        "/v1/automation/authorize",
+        methods=["GET", "POST"],
+    )
+    def automation_authorize():
+        if request.method == "GET":
+            try:
+                pending = automation.begin_authorization(
+                    {
+                        "client_id": request.args.get("client_id"),
+                        "client_name": request.args.get("client_name"),
+                        "subject": request.args.get("subject"),
+                        "application_instance_id": request.args.get(
+                            "application_instance_id"
+                        ),
+                        "canonical_application_origin": request.args.get(
+                            "canonical_application_origin"
+                        ),
+                        "canonical_recovery_origin": request.args.get(
+                            "canonical_recovery_origin"
+                        ),
+                        "requested_scopes": request.args.get(
+                            "scope",
+                            "",
+                        ),
+                        "expires_in_seconds": request.args.get(
+                            "expires_in_seconds",
+                            "604800",
+                        ),
+                        "code_challenge": request.args.get(
+                            "code_challenge"
+                        ),
+                        "code_challenge_method": request.args.get(
+                            "code_challenge_method"
+                        ),
+                        "redirect_uri": request.args.get("redirect_uri"),
+                        "state": request.args.get("state"),
+                    }
+                )
+            except (PermissionError, ValueError) as error:
+                return (
+                    jsonify(
+                        error={
+                            "code": "invalid_automation_request",
+                            "message": str(error),
+                        }
+                    ),
+                    400,
+                )
+            selected_session = g.recovery_session
+            return Response(
+                (
+                    "<!doctype html><html lang=\"en\"><head>"
+                    "<meta charset=\"utf-8\"><meta name=\"viewport\" "
+                    "content=\"width=device-width,initial-scale=1\">"
+                    "<title>Authorize Pandrator recovery agent</title>"
+                    "<link rel=\"stylesheet\" href=\"/recovery/styles.css\">"
+                    "</head><body><main><section class=\"panel\">"
+                    "<p class=\"eyebrow\">Agent access</p>"
+                    "<h1>Authorize recovery access?</h1>"
+                    f"<p><strong>{html.escape(pending.client_name)}</strong> "
+                    "is requesting a separate, expiring Manager credential.</p>"
+                    "<dl>"
+                    f"<dt>Subject</dt><dd>{html.escape(pending.subject)}</dd>"
+                    f"<dt>Application</dt><dd>{html.escape(pending.canonical_application_origin)}</dd>"
+                    f"<dt>Recovery endpoint</dt><dd>{html.escape(pending.canonical_recovery_origin)}</dd>"
+                    f"<dt>Scopes</dt><dd>{html.escape(', '.join(pending.scopes))}</dd>"
+                    f"<dt>Expires in</dt><dd>{pending.expires_in_seconds // 3600} hours</dd>"
+                    "</dl><p>This credential cannot change network settings, "
+                    "read arbitrary files, reveal the permanent Manager "
+                    "credential, or bypass exact operation plans.</p>"
+                    "<form method=\"post\" action=\"/v1/automation/authorize\">"
+                    f"<input type=\"hidden\" name=\"authorization_nonce\" value=\"{html.escape(pending.nonce)}\">"
+                    f"<input type=\"hidden\" name=\"csrf_token\" value=\"{html.escape(selected_session.csrf_token)}\">"
+                    "<button class=\"button primary\" name=\"decision\" "
+                    "value=\"approve\" type=\"submit\">Authorize</button> "
+                    "<button class=\"button secondary\" name=\"decision\" "
+                    "value=\"deny\" type=\"submit\">Deny</button>"
+                    "</form></section></main></body></html>"
+                ),
+                content_type="text/html; charset=utf-8",
+                headers={"Cache-Control": "no-store"},
+            )
+
+        nonce = str(
+            request.form.get("authorization_nonce") or ""
+        )
+        decision = str(request.form.get("decision") or "")
+        try:
+            if decision == "approve":
+                pending, grant_code = automation.approve(nonce)
+                callback = automation.callback_url(
+                    pending,
+                    code=grant_code,
+                )
+            else:
+                pending = automation.deny(nonce)
+                if pending is None:
+                    raise ValueError(
+                        "The Manager automation authorization expired."
+                    )
+                callback = automation.callback_url(
+                    pending,
+                    error="access_denied",
+                )
+        except (PermissionError, ValueError) as error:
+            return (
+                jsonify(
+                    error={
+                        "code": "invalid_automation_request",
+                        "message": str(error),
+                    }
+                ),
+                400,
+            )
+        if callback.startswith("urn:"):
+            return Response(
+                (
+                    "<!doctype html><html lang=\"en\"><head>"
+                    "<meta charset=\"utf-8\"><title>Manager agent access</title>"
+                    "<link rel=\"stylesheet\" href=\"/recovery/styles.css\">"
+                    "</head><body><main><section class=\"panel\">"
+                    "<h1>Authorization result</h1>"
+                    f"<p><code>{html.escape(callback)}</code></p>"
+                    "<p>Return this value to the waiting trusted CLI.</p>"
+                    "</section></main></body></html>"
+                ),
+                content_type="text/html; charset=utf-8",
+                headers={"Cache-Control": "no-store"},
+            )
+        return redirect(callback, code=302)
+
+    @api.post("/v1/automation/enrollment-grants")
+    def automation_enrollment_grant():
+        payload = AutomationEnrollmentGrantRequest.model_validate(
+            request.get_json(silent=False) or {}
+        )
+        try:
+            result = automation.create_grant(
+                payload.model_dump(mode="python")
+            )
+        except PermissionError as error:
+            return (
+                jsonify(
+                    error={
+                        "code": "automation_disabled",
+                        "message": str(error),
+                    }
+                ),
+                403,
+            )
+        except ValueError as error:
+            return (
+                jsonify(
+                    error={
+                        "code": "invalid_automation_request",
+                        "message": str(error),
+                    }
+                ),
+                400,
+            )
+        return jsonify(result), 201
+
+    @api.post("/v1/automation/token")
+    def automation_token():
+        payload = AutomationTokenRequest.model_validate(
+            request.get_json(silent=False) or {}
+        )
+        try:
+            result = automation.exchange(
+                payload.model_dump(mode="python")
+            )
+        except PermissionError as error:
+            return (
+                jsonify(
+                    error={
+                        "code": "automation_disabled",
+                        "message": str(error),
+                    }
+                ),
+                403,
+            )
+        except (UnicodeError, ValueError) as error:
+            return (
+                jsonify(
+                    error={
+                        "code": "invalid_grant",
+                        "message": str(error),
+                    }
+                ),
+                400,
+            )
+        return jsonify(result)
+
+    @api.get("/v1/automation/principal")
+    def automation_principal():
+        principal = getattr(
+            g,
+            "manager_automation_principal",
+            None,
+        )
+        if not isinstance(principal, dict):
+            return (
+                jsonify(
+                    error={
+                        "code": "automation_authentication_required",
+                        "message": (
+                            "A Manager recovery automation credential "
+                            "is required."
+                        ),
+                    }
+                ),
+                401,
+            )
+        return jsonify(automation.project_principal(principal))
+
+    @api.get("/v1/automation/clients")
+    def automation_clients():
+        if (
+            g.recovery_session is None
+            and not g.manager_bearer_authenticated
+        ):
+            return (
+                jsonify(
+                    error={
+                        "code": "owner_control_required",
+                        "message": (
+                            "An authorized recovery browser or local Manager "
+                            "client is required."
+                        ),
+                    }
+                ),
+                403,
+            )
+        return jsonify(items=automation.clients())
+
+    @api.delete("/v1/automation/clients/<client_id>")
+    @idempotent
+    def automation_client_revoke(client_id: str):
+        if (
+            g.recovery_session is None
+            and not g.manager_bearer_authenticated
+        ):
+            return (
+                jsonify(
+                    error={
+                        "code": "owner_control_required",
+                        "message": (
+                            "An authorized recovery browser or local Manager "
+                            "client is required."
+                        ),
+                    }
+                ),
+                403,
+            )
+        if not automation.revoke(client_id):
+            raise NotFoundError(
+                "Manager automation client was not found.",
+                {"client_id": client_id},
+            )
+        return jsonify(revoked=True, client_id=client_id)
 
     @api.get("/v1/status")
     def status():

@@ -195,12 +195,68 @@ def migration_0005(connection: sqlite3.Connection) -> None:
     )
 
 
+def migration_0006(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
+        CREATE TABLE automation_clients (
+            client_id TEXT PRIMARY KEY,
+            client_name TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            manager_instance_id TEXT NOT NULL,
+            application_instance_id TEXT NOT NULL,
+            canonical_application_origin TEXT NOT NULL,
+            canonical_recovery_origin TEXT NOT NULL,
+            scopes_json TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            last_used_at REAL,
+            revoked_at REAL
+        );
+        CREATE INDEX automation_clients_subject_idx
+            ON automation_clients(subject, created_at DESC);
+
+        CREATE TABLE automation_tokens (
+            token_id TEXT PRIMARY KEY,
+            client_id TEXT NOT NULL,
+            token_digest TEXT NOT NULL UNIQUE,
+            created_at REAL NOT NULL,
+            expires_at REAL NOT NULL,
+            last_used_at REAL,
+            revoked_at REAL,
+            FOREIGN KEY(client_id) REFERENCES automation_clients(client_id)
+                ON DELETE CASCADE
+        );
+        CREATE INDEX automation_tokens_client_idx
+            ON automation_tokens(client_id, expires_at);
+
+        CREATE TABLE automation_enrollment_grants (
+            grant_digest TEXT PRIMARY KEY,
+            client_id TEXT NOT NULL,
+            client_name TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            manager_instance_id TEXT NOT NULL,
+            application_instance_id TEXT NOT NULL,
+            canonical_application_origin TEXT NOT NULL,
+            canonical_recovery_origin TEXT NOT NULL,
+            scopes_json TEXT NOT NULL,
+            code_challenge TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            expires_at REAL NOT NULL,
+            token_expires_at REAL NOT NULL,
+            consumed_at REAL
+        );
+        CREATE INDEX automation_grants_expiry_idx
+            ON automation_enrollment_grants(expires_at);
+        """
+    )
+
+
 MIGRATIONS: tuple[tuple[int, Migration], ...] = (
     (1, migration_0001),
     (2, migration_0002),
     (3, migration_0003),
     (4, migration_0004),
     (5, migration_0005),
+    (6, migration_0006),
 )
 
 

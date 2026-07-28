@@ -207,6 +207,29 @@ def _parser() -> argparse.ArgumentParser:
     cancel.add_argument("operation_id")
     cancel.add_argument("--idempotency-key")
 
+    automation_client = subparsers.add_parser(
+        "automation-client",
+        help=(
+            "List or revoke Manager recovery automation clients as the "
+            "local workspace owner."
+        ),
+    )
+    automation_client_commands = automation_client.add_subparsers(
+        dest="automation_client_command",
+        required=True,
+    )
+    automation_client_commands.add_parser("list")
+    automation_client_revoke = automation_client_commands.add_parser(
+        "revoke"
+    )
+    automation_client_revoke.add_argument("client_id", type=uuid.UUID)
+    automation_client_revoke.add_argument("--idempotency-key")
+    automation_client_revoke.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirm revocation of the client and all of its tokens.",
+    )
+
     autostart = subparsers.add_parser(
         "autostart",
         help="Configure per-user manager startup.",
@@ -357,7 +380,28 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         client = ManagerClient.ensure_running(args.workspace)
-        if args.command in {"status", "start-manager"}:
+        if args.command == "automation-client":
+            if args.automation_client_command == "list":
+                payload = client.request(
+                    "GET",
+                    "/v1/automation/clients",
+                ).json()
+            else:
+                if not args.yes:
+                    raise ValueError(
+                        "Automation-client revocation requires --yes."
+                    )
+                payload = client.request(
+                    "DELETE",
+                    (
+                        "/v1/automation/clients/"
+                        f"{args.client_id}"
+                    ),
+                    idempotency_key=(
+                        args.idempotency_key or str(uuid.uuid4())
+                    ),
+                ).json()
+        elif args.command in {"status", "start-manager"}:
             payload = client.status()
         elif args.command == "doctor":
             report = client.doctor().model_dump(mode="json")

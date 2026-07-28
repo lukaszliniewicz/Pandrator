@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import secrets
 import shutil
 import time
 import uuid
-import ipaddress
-from importlib.metadata import PackageNotFoundError, version as package_version
+from datetime import timedelta
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, Response, jsonify, request, send_file, send_from_directory, session
+from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory, session
 from sqlalchemy import func, select
 from werkzeug.utils import secure_filename
 
@@ -21,6 +23,8 @@ from pandrator.runtime import DataPaths
 
 from .artifact_selection import choose_artifact, clear_selection, rerun_impact, stage_history
 from .artifacts import sha256_file
+from .auth import ALL_SCOPES, MCP_BOOTSTRAP_SCOPES, normalize_scopes
+from .automation_routes import register_automation_routes
 from .credentials import (
     AUXILIARY_CREDENTIALS,
     DEFAULT_PROVIDER_ENVS,
@@ -34,9 +38,9 @@ from .credentials import (
     credential_reference_input,
     database_reference,
     delete_managed_reference,
+    llm_provider_credential_key,
     prepare_tts_settings_for_storage,
     provider_credential_key,
-    llm_provider_credential_key,
     provider_credential_status,
     redact_inline_secrets,
     resolve_provider_credential,
@@ -46,17 +50,86 @@ from .credentials import (
 )
 from .database import Database
 from .domain_blueprints import DomainBlueprints
-from .models import AgentRun, AgentStep, AppSetting, AppSettingHistory, Artifact, ArtifactEdge, Document, DocumentRevision, Job, OutputAssembly, Provider, ProviderModel, Segment, SessionRecord, SourceRecord, TimedWord, TrainingRun, UsageEvent, Voice, VoiceSample, new_id, utcnow
-from .manager_proxy import register_manager_routes
+from .idempotency import IdempotencyConflict, IdempotencyInProgress
 from .managed_services import binding_for_provider, normalize_tts_provider_id
+from .manager_proxy import register_manager_routes
+from .models import (
+    AgentRun,
+    AgentStep,
+    AppSetting,
+    AppSettingHistory,
+    Artifact,
+    ArtifactEdge,
+    Document,
+    DocumentRevision,
+    Job,
+    OutputAssembly,
+    Provider,
+    ProviderModel,
+    Segment,
+    SessionRecord,
+    SessionSetting,
+    SourceAsset,
+    SourceRecord,
+    TimedWord,
+    TrainingRun,
+    UsageEvent,
+    Voice,
+    VoiceSample,
+    new_id,
+    utcnow,
+)
 from .openapi import build_openapi_document
 from .parity_registry import build_registry
 from .route_context import RouteContext
-from .schemas import AgentRunCreateRequest, BootstrapRequest, BundleExportRequest, BundleImportRequest, ChunkUploadInitialize, CredentialUpdate, GenerationPlanCreate, GenerationSegmentUpdate, GenerationStartRequest, JobCreate, LoginRequest, ModelCreate, ModelUpdate, OptimizationReviewRequest, OutcomePlanUpdate, OutputAssemblyCreateRequest, PdfEditRequest, PronunciationCreate, PronunciationUpdate, ProviderCreate, ProviderTestRequest, ProviderUpdate, RvcConvertRequest, RvcModelUploadRequest, SessionCreate, SessionSettingsUpdate, SessionUpdate, SettingUpdate, SourceAttachRequest, SourceReuseRequest, SourceUpdateRequest, SourceUrlRequest, StageSelectionUpdate, SubtitleReviewRequest, TokenCreateRequest, TrainingCreateRequest, TtsEndpointDiscoveryRequest, TtsVoicePreviewRequest, VoiceCreate, VoiceTranscriptReview
+from .schemas import (
+    AgentRunCreateRequest,
+    BootstrapRequest,
+    BundleExportRequest,
+    BundleImportRequest,
+    ChunkUploadInitialize,
+    CredentialUpdate,
+    GenerationPlanCreate,
+    GenerationSegmentUpdate,
+    GenerationStartRequest,
+    JobCreate,
+    LoginRequest,
+    ManagerBootstrapRequest,
+    ModelCreate,
+    ModelUpdate,
+    OptimizationReviewRequest,
+    OutcomePlanUpdate,
+    OutputAssemblyCreateRequest,
+    PdfEditRequest,
+    PronunciationCreate,
+    PronunciationUpdate,
+    ProviderCreate,
+    ProviderTestRequest,
+    ProviderUpdate,
+    RvcConvertRequest,
+    RvcModelUploadRequest,
+    SessionCreate,
+    SessionSettingsUpdate,
+    SessionUpdate,
+    SettingUpdate,
+    SourceAttachRequest,
+    SourceReuseRequest,
+    SourceUpdateRequest,
+    SourceUrlRequest,
+    StageSelectionUpdate,
+    SubtitleReviewRequest,
+    TokenCreateRequest,
+    TrainingCreateRequest,
+    TtsEndpointDiscoveryRequest,
+    TtsVoicePreviewRequest,
+    VoiceCreate,
+    VoiceTranscriptReview,
+)
 from .sessions import RevisionConflict
 from .voice_library import ensure_bundled_voice
-from .workspace import BUILTIN_DEFAULTS, SETTING_SECTIONS, RevisionConflict as WorkspaceRevisionConflict
-
+from .workflow_plan_routes import register_workflow_plan_routes
+from .workspace import BUILTIN_DEFAULTS, SETTING_SECTIONS
+from .workspace import RevisionConflict as WorkspaceRevisionConflict
 
 try:
     PANDRATOR_VERSION = package_version("pandrator")
@@ -150,9 +223,9 @@ SSE_EVENT_FIELDS = {
 
 def _sse_event_payload(event) -> dict[str, Any]:
     """Project a durable event onto the small, secret-free browser contract."""
-    source = event.payload_json if isinstance(event.payload_json, dict) else {}
+    source = event.data if isinstance(event.data, dict) else {}
     payload = {key: source[key] for key in SSE_EVENT_FIELDS if key in source}
-    payload["job_id"] = event.job_id
+    payload["job_id"] = event.work_id
     payload["created_at"] = event.created_at.isoformat()
     return redact_inline_secrets(payload)
 
@@ -169,6 +242,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     login_throttle = services.login_throttle
     capability_service = services.capabilities
     jobs = services.jobs
+    work = services.work
     sessions = services.sessions
     artifacts = services.artifacts
     workflows = services.workflows
@@ -187,6 +261,51 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     inline_credential_error = context.guards.inline_credential_error
     authenticated = context.guards.authenticated
     require_auth = context.guards.require_auth
+
+    def mutation_idempotency_key():
+        """Require retry identity for MCP principals, preserve browser UX."""
+
+        key = str(
+            request.headers.get("Idempotency-Key") or ""
+        ).strip()
+        principal = context.guards.principal()
+        if key:
+            return key, None
+        if (
+            principal is not None
+            and principal.kind
+            in {"automation_client", "manager_bootstrap"}
+        ):
+            return None, error_response(
+                "idempotency_key_required",
+                "This automation write requires Idempotency-Key.",
+                400,
+            )
+        return None, None
+
+    def idempotency_failure(error):
+        if isinstance(
+            error,
+            (IdempotencyConflict, IdempotencyInProgress),
+        ):
+            return error_response(
+                error.code,
+                str(error),
+                409,
+                {"retryable": error.retryable},
+            )
+        return error_response(
+            "validation_error",
+            str(error),
+            422,
+        )
+
+    def abandon_idempotency(db_session, reservation) -> None:
+        """Do not retain a reservation when no domain mutation occurred."""
+
+        if not reservation.replayed:
+            db_session.delete(reservation.record)
+            db_session.flush()
 
     def enrich_manager_plan(
         manager_plan: dict[str, Any],
@@ -261,6 +380,8 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         proxy=services.manager_bridge,
         plan_response_transform=enrich_manager_plan,
     )
+    register_automation_routes(app, context)
+    register_workflow_plan_routes(app, context)
 
     @app.get("/api/v1/health")
     def health():
@@ -275,12 +396,19 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             }
         )
 
+    @app.get("/api/v1/system/identity")
+    @require_auth
+    def system_identity():
+        identity = services.identity.snapshot(observed_origin=request.url_root)
+        return jsonify(identity.model_dump(mode="json"))
+
     @app.get("/api/v1/openapi.json")
     def openapi():
         return jsonify(build_openapi_document())
 
     @app.get("/api/v1/auth/status")
     def auth_status():
+        principal = context.guards.principal()
         remote_access = not _is_loopback_address(request.remote_addr)
         warning = ""
         if remote_access:
@@ -294,6 +422,16 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 "initialized": auth.initialized(),
                 "authenticated": authenticated(),
                 "csrf_token": session.get("csrf_token") if session.get("authenticated") else None,
+                "principal": (
+                    {
+                        "subject": principal.subject,
+                        "kind": principal.kind,
+                        "scopes": sorted(principal.scopes),
+                        "client_id": principal.client_id,
+                    }
+                    if principal is not None
+                    else None
+                ),
                 "remote_access": remote_access,
                 "secure_transport": bool(request.is_secure),
                 "security_warning": warning,
@@ -303,17 +441,26 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.post("/api/v1/auth/bootstrap")
     def auth_bootstrap():
         payload = BootstrapRequest.model_validate(request.get_json(silent=True) or {})
-        if not bootstrap.consume(payload.token):
+        grant = bootstrap.consume_grant(payload.token)
+        if grant is None:
             return error_response("invalid_bootstrap_token", "The local bootstrap token is invalid or expired.", 401)
         session.clear()
         session["authenticated"] = True
         session["csrf_token"] = secrets.token_urlsafe(24)
+        session["principal_subject"] = grant.subject
+        session["principal_kind"] = grant.kind
+        session["principal_scopes"] = sorted(grant.scopes)
+        if grant.client_id:
+            session["principal_client_id"] = grant.client_id
         return jsonify({"authenticated": True, "csrf_token": session["csrf_token"]})
 
     @app.post("/api/v1/auth/manager-bootstrap")
     def auth_manager_bootstrap():
         """Mint a browser token for the authenticated loopback manager only."""
 
+        payload = ManagerBootstrapRequest.model_validate(
+            request.get_json(silent=True) or {}
+        )
         if not _is_loopback_address(request.remote_addr):
             return error_response(
                 "manager_authentication_failed",
@@ -358,7 +505,42 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 "The manager launch credential is invalid.",
                 401,
             )
-        return jsonify({"token": bootstrap.issue(), "expires_in_seconds": 120})
+        extra_policy = normalize_scopes(
+            os.environ.get("PANDRATOR_MCP_BOOTSTRAP_EXTRA_SCOPES", ""),
+            allow_empty=True,
+        )
+        allowed = MCP_BOOTSTRAP_SCOPES | (
+            extra_policy
+            & frozenset(
+                {
+                    "app.credentials.read",
+                    "app.credentials.write",
+                    "app.admin",
+                }
+            )
+        )
+        selected_scopes = normalize_scopes(payload.scopes) & allowed
+        if not selected_scopes:
+            return error_response(
+                "scope_denied",
+                "None of the requested scopes are allowed for Manager bootstrap.",
+                403,
+            )
+        manager_instance_id = (
+            services.identity.manager_instance_id or "local-manager"
+        )
+        return jsonify(
+            {
+                "token": bootstrap.issue(
+                    subject=f"manager:{manager_instance_id}",
+                    kind="manager_bootstrap",
+                    scopes=selected_scopes,
+                    client_id="pandrator-mcp-local",
+                ),
+                "expires_in_seconds": 120,
+                "scopes": sorted(selected_scopes),
+            }
+        )
 
     @app.post("/api/v1/auth/login")
     def auth_login():
@@ -391,6 +573,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         session.clear()
         session["authenticated"] = True
         session["csrf_token"] = secrets.token_urlsafe(24)
+        session["principal_subject"] = "owner"
+        session["principal_kind"] = "owner_session"
+        session["principal_scopes"] = sorted(ALL_SCOPES)
         return jsonify({"authenticated": True, "csrf_token": session["csrf_token"]})
 
     @app.post("/api/v1/auth/logout")
@@ -402,14 +587,71 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.get("/api/v1/auth/tokens")
     @require_auth
     def token_list():
-        return jsonify({"items": [_model_dict(item, ("id", "label", "token_prefix", "created_at", "last_used_at", "revoked_at")) for item in auth.list_tokens()]})
+        return jsonify(
+            {
+                "items": [
+                    _model_dict(
+                        item,
+                        (
+                            "id",
+                            "label",
+                            "token_prefix",
+                            "subject",
+                            "scopes_json",
+                            "expires_at",
+                            "principal_kind",
+                            "created_by",
+                            "client_id",
+                            "target_instance_id",
+                            "canonical_origin",
+                            "created_at",
+                            "last_used_at",
+                            "revoked_at",
+                        ),
+                    )
+                    for item in auth.list_tokens()
+                ]
+            }
+        )
 
     @app.post("/api/v1/auth/tokens")
     @require_auth
     def token_create():
         payload = TokenCreateRequest.model_validate(request.get_json(silent=True) or {})
-        token, raw = auth.create_api_token(payload.label)
-        return jsonify({"id": token.id, "label": token.label, "token": raw}), 201
+        principal = context.guards.principal()
+        assert principal is not None
+        identity = services.identity.snapshot(observed_origin=request.url_root)
+        expires_at = (
+            utcnow() + timedelta(days=payload.expires_in_days)
+            if payload.expires_in_days is not None
+            else None
+        )
+        token, raw = auth.create_api_token(
+            payload.label,
+            scopes=payload.scopes,
+            expires_at=expires_at,
+            created_by=principal.subject,
+            target_instance_id=identity.instance_id,
+            canonical_origin=identity.canonical_origin,
+        )
+        return (
+            jsonify(
+                {
+                    "id": token.id,
+                    "label": token.label,
+                    "token": raw,
+                    "subject": token.subject,
+                    "scopes": list(token.scopes_json or []),
+                    "expires_at": (
+                        token.expires_at.isoformat()
+                        if token.expires_at
+                        else None
+                    ),
+                    "target_instance_id": token.target_instance_id,
+                }
+            ),
+            201,
+        )
 
     @app.delete("/api/v1/auth/tokens/<token_id>")
     @require_auth
@@ -569,6 +811,155 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @require_auth
     def session_create():
         payload = SessionCreate.model_validate(request.get_json(silent=True) or {})
+        idempotency_key, idempotency_error = (
+            mutation_idempotency_key()
+        )
+        if idempotency_error is not None:
+            return idempotency_error
+        if idempotency_key is not None:
+            request_payload = payload.model_dump(mode="json")
+            created_directory: Path | None = None
+            try:
+                with database.immediate_session() as db_session:
+                    try:
+                        reservation = services.idempotency.begin(
+                            db_session,
+                            principal=context.guards.principal(),
+                            operation_id="createSession",
+                            idempotency_key=idempotency_key,
+                            payload=request_payload,
+                        )
+                    except (
+                        IdempotencyConflict,
+                        IdempotencyInProgress,
+                        ValueError,
+                    ) as error:
+                        return idempotency_failure(error)
+                    if reservation.response is not None:
+                        result, status_code = reservation.response
+                        response = jsonify(result)
+                        response.status_code = status_code
+                        response.headers[
+                            "Idempotency-Replayed"
+                        ] = "true"
+                        if result.get("revision") is not None:
+                            response.headers["ETag"] = (
+                                f'"{result["revision"]}"'
+                            )
+                        return response
+                    existing = sessions.find_active_by_name_in_session(
+                        db_session,
+                        payload.name,
+                    )
+                    if (
+                        existing is not None
+                        and payload.overwrite_session_id
+                        != existing.id
+                    ):
+                        abandon_idempotency(
+                            db_session,
+                            reservation,
+                        )
+                        return error_response(
+                            "duplicate_session",
+                            f'A session named "{existing.name}" already exists.',
+                            409,
+                            {
+                                "existing_session": _session_payload(
+                                    existing
+                                )
+                            },
+                        )
+                    if payload.overwrite_session_id and (
+                        existing is None
+                        or existing.id
+                        != payload.overwrite_session_id
+                    ):
+                        abandon_idempotency(
+                            db_session,
+                            reservation,
+                        )
+                        return error_response(
+                            "overwrite_conflict",
+                            "The session selected for replacement no longer "
+                            "matches this name.",
+                            409,
+                        )
+                    if existing is not None:
+                        active = db_session.scalar(
+                            select(Job).where(
+                                Job.session_id == existing.id,
+                                Job.status.in_(
+                                    (
+                                        "queued",
+                                        "running",
+                                        "cancel_requested",
+                                    )
+                                ),
+                            )
+                        )
+                        if active is not None:
+                            abandon_idempotency(
+                                db_session,
+                                reservation,
+                            )
+                            return error_response(
+                                "session_busy",
+                                "Stop or cancel active work before replacing "
+                                "this session.",
+                                409,
+                            )
+                    if existing is not None:
+                        sessions.trash(
+                            existing.id,
+                            existing.revision,
+                            db_session=db_session,
+                        )
+                    record_id = new_id()
+                    storage_key = new_id()
+                    record = sessions.create(
+                        payload.name,
+                        workflow_kind=payload.workflow_kind,
+                        source_language=payload.source_language,
+                        target_language=payload.target_language,
+                        workflow_preset=payload.workflow_preset,
+                        included_stages=payload.included_stages,
+                        record_id=record_id,
+                        storage_key=storage_key,
+                        db_session=db_session,
+                    )
+                    created_directory = (
+                        paths.sessions / record.storage_key
+                    )
+                    created_directory.mkdir(
+                        parents=True,
+                        exist_ok=False,
+                    )
+                    result = _session_payload(record)
+                    services.idempotency.complete(
+                        db_session,
+                        reservation,
+                        response=result,
+                        status_code=201,
+                        resource_kind="session",
+                        resource_id=record.id,
+                    )
+                    g.audit_resource_kind = "session"
+                    g.audit_resource_id = record.id
+                response = jsonify(result)
+                response.status_code = 201
+                response.headers["ETag"] = f'"{result["revision"]}"'
+                return response
+            except Exception:
+                if (
+                    created_directory is not None
+                    and created_directory.is_dir()
+                ):
+                    try:
+                        created_directory.rmdir()
+                    except OSError:
+                        pass
+                raise
         existing = sessions.find_active_by_name(payload.name)
         if existing is not None and payload.overwrite_session_id != existing.id:
             return error_response(
@@ -636,6 +1027,100 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         changes = {key: value for key, value in raw_changes.items() if value is not None or key == "target_language"}
         if "included_stages" in changes:
             changes["included_stages_json"] = changes.pop("included_stages")
+        idempotency_key, idempotency_error = (
+            mutation_idempotency_key()
+        )
+        if idempotency_error is not None:
+            return idempotency_error
+        if idempotency_key is not None:
+            try:
+                with database.immediate_session() as db_session:
+                    reservation = services.idempotency.begin(
+                        db_session,
+                        principal=context.guards.principal(),
+                        operation_id="updateSession",
+                        idempotency_key=idempotency_key,
+                        payload={
+                            "session_id": session_id,
+                            "expected_revision": revision,
+                            "changes": changes,
+                        },
+                    )
+                    if reservation.response is not None:
+                        result, status_code = reservation.response
+                        response = jsonify(result)
+                        response.status_code = status_code
+                        response.headers[
+                            "Idempotency-Replayed"
+                        ] = "true"
+                        if result.get("revision") is not None:
+                            response.headers["ETag"] = (
+                                f'"{result["revision"]}"'
+                            )
+                        return response
+                    current = db_session.get(
+                        SessionRecord,
+                        session_id,
+                    )
+                    if current is None:
+                        abandon_idempotency(
+                            db_session,
+                            reservation,
+                        )
+                        return error_response(
+                            "not_found",
+                            "Session not found.",
+                            404,
+                        )
+                    if current.revision != revision:
+                        abandon_idempotency(
+                            db_session,
+                            reservation,
+                        )
+                        return error_response(
+                            "revision_conflict",
+                            f"Expected revision {revision}, found "
+                            f"{current.revision}.",
+                            409,
+                            {
+                                "current_revision": (
+                                    current.revision
+                                )
+                            },
+                        )
+                    record = sessions.update(
+                        session_id,
+                        revision,
+                        changes,
+                        db_session=db_session,
+                    )
+                    result = _session_payload(record)
+                    services.idempotency.complete(
+                        db_session,
+                        reservation,
+                        response=result,
+                        status_code=200,
+                        resource_kind="session",
+                        resource_id=session_id,
+                    )
+                    g.audit_resource_kind = "session"
+                    g.audit_resource_id = session_id
+            except (
+                IdempotencyConflict,
+                IdempotencyInProgress,
+                RevisionConflict,
+                ValueError,
+            ) as error:
+                if isinstance(error, RevisionConflict):
+                    return error_response(
+                        "revision_conflict",
+                        str(error),
+                        409,
+                    )
+                return idempotency_failure(error)
+            response = jsonify(result)
+            response.headers["ETag"] = f'"{result["revision"]}"'
+            return response
         try:
             record = sessions.update(session_id, revision, changes)
         except KeyError:
@@ -719,6 +1204,108 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             expected = int(raw_etag)
         except ValueError:
             return error_response("precondition_required", "If-Match must contain the current settings revision.", 428)
+        idempotency_key, idempotency_error = (
+            mutation_idempotency_key()
+        )
+        if idempotency_error is not None:
+            return idempotency_error
+        if idempotency_key is not None:
+            try:
+                with database.immediate_session() as db_session:
+                    reservation = services.idempotency.begin(
+                        db_session,
+                        principal=context.guards.principal(),
+                        operation_id="putSessionSettings",
+                        idempotency_key=idempotency_key,
+                        payload={
+                            "session_id": session_id,
+                            "section": section,
+                            "expected_revision": expected,
+                            "value": payload.value,
+                        },
+                    )
+                    if reservation.response is not None:
+                        result, status_code = reservation.response
+                        response = jsonify(result)
+                        response.status_code = status_code
+                        response.headers[
+                            "Idempotency-Replayed"
+                        ] = "true"
+                        if result.get("revision") is not None:
+                            response.headers["ETag"] = (
+                                f'"{result["revision"]}"'
+                            )
+                        return response
+                    session_record = db_session.get(
+                        SessionRecord,
+                        session_id,
+                    )
+                    if session_record is None:
+                        abandon_idempotency(
+                            db_session,
+                            reservation,
+                        )
+                        return error_response(
+                            "not_found",
+                            "Session not found.",
+                            404,
+                        )
+                    current = db_session.get(
+                        SessionSetting,
+                        (session_id, section),
+                    )
+                    current_revision = (
+                        current.revision
+                        if current is not None
+                        else 0
+                    )
+                    if current_revision != expected:
+                        abandon_idempotency(
+                            db_session,
+                            reservation,
+                        )
+                        return error_response(
+                            "revision_conflict",
+                            "Session settings changed in another client.",
+                            409,
+                            {
+                                "current_revision": (
+                                    current_revision
+                                )
+                            },
+                        )
+                    result = workspace_settings.update(
+                        session_id,
+                        section,
+                        expected,
+                        payload.value,
+                        db_session=db_session,
+                    )
+                    services.idempotency.complete(
+                        db_session,
+                        reservation,
+                        response=result,
+                        status_code=200,
+                        resource_kind="session_settings",
+                        resource_id=f"{session_id}:{section}",
+                    )
+                    g.audit_resource_kind = "session_settings"
+                    g.audit_resource_id = f"{session_id}:{section}"
+            except (
+                IdempotencyConflict,
+                IdempotencyInProgress,
+                ValueError,
+            ) as error:
+                if isinstance(error, WorkspaceRevisionConflict):
+                    return error_response(
+                        "revision_conflict",
+                        str(error),
+                        409,
+                    )
+                return idempotency_failure(error)
+            response = jsonify(result)
+            response.headers["ETag"] = f'"{result["revision"]}"'
+            return response
         try:
             result = workspace_settings.update(session_id, section, expected, payload.value)
         except KeyError:
@@ -852,6 +1439,143 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @require_auth
     def session_source_attach(session_id: str):
         payload = SourceAttachRequest.model_validate(request.get_json(silent=True) or {})
+        idempotency_key, idempotency_error = (
+            mutation_idempotency_key()
+        )
+        if idempotency_error is not None:
+            return idempotency_error
+        if idempotency_key is not None:
+            raw_etag = request.headers.get(
+                "If-Match",
+                "",
+            ).strip('W/" ')
+            try:
+                expected_session_revision = int(raw_etag)
+            except ValueError:
+                return error_response(
+                    "precondition_required",
+                    "If-Match must contain the current session revision.",
+                    428,
+                )
+            try:
+                with database.immediate_session() as db_session:
+                    reservation = services.idempotency.begin(
+                        db_session,
+                        principal=context.guards.principal(),
+                        operation_id="attachSessionSource",
+                        idempotency_key=idempotency_key,
+                        payload={
+                            "session_id": session_id,
+                            "source_asset_id": (
+                                payload.source_asset_id
+                            ),
+                            "role": payload.role,
+                            "expected_session_revision": (
+                                expected_session_revision
+                            ),
+                        },
+                    )
+                    if reservation.response is not None:
+                        result, status_code = reservation.response
+                        response = jsonify(result)
+                        response.status_code = status_code
+                        response.headers[
+                            "Idempotency-Replayed"
+                        ] = "true"
+                        if (
+                            result.get("session_revision")
+                            is not None
+                        ):
+                            response.headers["ETag"] = (
+                                f'"{result["session_revision"]}"'
+                            )
+                        return response
+                    session_record = db_session.get(
+                        SessionRecord,
+                        session_id,
+                    )
+                    if session_record is None:
+                        abandon_idempotency(
+                            db_session,
+                            reservation,
+                        )
+                        return error_response(
+                            "not_found",
+                            "Session not found.",
+                            404,
+                        )
+                    if (
+                        session_record.revision
+                        != expected_session_revision
+                    ):
+                        abandon_idempotency(
+                            db_session,
+                            reservation,
+                        )
+                        return error_response(
+                            "revision_conflict",
+                            "The session changed before its source was "
+                            "attached.",
+                            409,
+                            {
+                                "current_revision": (
+                                    session_record.revision
+                                )
+                            },
+                        )
+                    if (
+                        db_session.get(
+                            SourceAsset,
+                            payload.source_asset_id,
+                        )
+                        is None
+                    ):
+                        abandon_idempotency(
+                            db_session,
+                            reservation,
+                        )
+                        return error_response(
+                            "not_found",
+                            "Source asset not found.",
+                            404,
+                        )
+                    result = source_library.attach(
+                        session_id,
+                        payload.source_asset_id,
+                        role=payload.role,
+                        expected_session_revision=(
+                            expected_session_revision
+                        ),
+                        db_session=db_session,
+                    )
+                    services.idempotency.complete(
+                        db_session,
+                        reservation,
+                        response=result,
+                        status_code=201,
+                        resource_kind="session_source",
+                        resource_id=str(result["id"]),
+                    )
+                    g.audit_resource_kind = "session_source"
+                    g.audit_resource_id = str(result["id"])
+            except (
+                IdempotencyConflict,
+                IdempotencyInProgress,
+                ValueError,
+            ) as error:
+                if isinstance(error, WorkspaceRevisionConflict):
+                    return error_response(
+                        "revision_conflict",
+                        str(error),
+                        409,
+                    )
+                return idempotency_failure(error)
+            response = jsonify(result)
+            response.status_code = 201
+            response.headers["ETag"] = (
+                f'"{result["session_revision"]}"'
+            )
+            return response
         try:
             result = source_library.attach(session_id, payload.source_asset_id, role=payload.role)
         except KeyError:
@@ -1211,7 +1935,16 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.get("/api/v1/jobs")
     @require_auth
     def job_list():
-        return jsonify({"items": [_job_payload(item) for item in jobs.list(request.args.get("limit", 100, type=int))]})
+        return jsonify(
+            {
+                "items": [
+                    _job_payload(item)
+                    for item in work.diagnostic_list(
+                        request.args.get("limit", 100, type=int)
+                    )
+                ]
+            }
+        )
 
     @app.post("/api/v1/jobs")
     @require_auth
@@ -1226,7 +1959,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @require_auth
     def job_get(job_id: str):
         try:
-            return jsonify(_job_payload(jobs.get(job_id)))
+            return jsonify(_job_payload(work.diagnostic_get(job_id)))
         except KeyError:
             return error_response("not_found", "Job not found.", 404)
 
@@ -1235,7 +1968,10 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     def job_logs(job_id: str):
         """Return the job's durable event and captured worker-log timeline."""
         try:
-            events = jobs.events_for(job_id, request.args.get("limit", 1000, type=int))
+            events = work.diagnostic_events(
+                job_id,
+                request.args.get("limit", 1000, type=int),
+            )
         except KeyError:
             return error_response("not_found", "Job not found.", 404)
         return jsonify(
@@ -1253,6 +1989,113 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 ]
             }
         )
+
+    def _query_values(name: str) -> tuple[str, ...]:
+        values: list[str] = []
+        for supplied in request.args.getlist(name):
+            values.extend(
+                item.strip()
+                for item in str(supplied).split(",")
+                if item.strip()
+            )
+        return tuple(values)
+
+    @app.get("/api/v1/work")
+    @require_auth
+    def work_list():
+        items = work.list(
+            session_id=str(request.args.get("session_id") or "").strip() or None,
+            kinds=_query_values("kind"),
+            states=_query_values("state"),
+            limit=request.args.get("limit", 50, type=int) or 50,
+        )
+        return jsonify(
+            {
+                "schema_version": "1",
+                "items": [item.model_dump(mode="json") for item in items],
+            }
+        )
+
+    @app.get("/api/v1/work/<job_id>")
+    @require_auth
+    def work_get(job_id: str):
+        try:
+            return jsonify(work.get(job_id).model_dump(mode="json"))
+        except KeyError:
+            return error_response("not_found", "Work item not found.", 404)
+
+    @app.get("/api/v1/work/<job_id>/events")
+    @require_auth
+    def work_events(job_id: str):
+        try:
+            page = work.events(
+                job_id,
+                after=request.args.get("after", 0, type=int) or 0,
+                limit=request.args.get("limit", 200, type=int) or 200,
+            )
+        except KeyError:
+            return error_response("not_found", "Work item not found.", 404)
+        return jsonify(page.model_dump(mode="json"))
+
+    @app.post("/api/v1/work/<job_id>/cancel")
+    @require_auth
+    def work_cancel(job_id: str):
+        principal = context.guards.principal()
+        if principal is None:
+            return error_response(
+                "authentication_required",
+                "Authentication is required.",
+                401,
+            )
+        try:
+            with database.immediate_session() as db_session:
+                reservation = services.idempotency.begin(
+                    db_session,
+                    principal=principal,
+                    operation_id="cancelWork",
+                    idempotency_key=request.headers.get("Idempotency-Key"),
+                    payload={"work_id": job_id},
+                )
+                if reservation.replayed:
+                    replay = reservation.response
+                    assert replay is not None
+                    payload, status_code = replay
+                    response = jsonify(payload)
+                    response.status_code = status_code
+                    response.headers["Idempotency-Replayed"] = "true"
+                    return response
+                payload = work.cancel_in_session(
+                    db_session,
+                    job_id,
+                ).model_dump(mode="json")
+                services.idempotency.complete(
+                    db_session,
+                    reservation,
+                    response=payload,
+                    status_code=200,
+                    resource_kind="work",
+                    resource_id=job_id,
+                )
+            g.audit_resource_kind = "work"
+            g.audit_resource_id = job_id
+            return jsonify(payload)
+        except KeyError:
+            return error_response("not_found", "Work item not found.", 404)
+        except ValueError as error:
+            return error_response(
+                "idempotency_key_required",
+                str(error),
+                400,
+            )
+        except IdempotencyConflict as error:
+            return error_response(error.code, str(error), 409)
+        except IdempotencyInProgress as error:
+            return error_response(
+                error.code,
+                str(error),
+                409,
+                {"retryable": True},
+            )
 
     @app.get("/api/v1/sessions/<session_id>/workflow")
     @require_auth
@@ -1378,7 +2221,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @require_auth
     def job_cancel(job_id: str):
         try:
-            return jsonify(_job_payload(jobs.request_cancel(job_id)))
+            return jsonify(_job_payload(work.diagnostic_cancel(job_id)))
         except KeyError:
             return error_response("not_found", "Job not found.", 404)
 
@@ -1387,17 +2230,20 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     def event_snapshot():
         # Capture the cursor before reading resources. Events committed while
         # the snapshot is assembled are replayed after this cursor.
-        bounds = jobs.event_bounds()
+        bounds = work.event_bounds()
         local_mode = _is_loopback_address(request.remote_addr)
         return jsonify(
             {
-                "cursor": bounds["latest"],
-                "retained_after": max(0, bounds["oldest"] - 1),
+                "cursor": bounds.latest,
+                "retained_after": bounds.retained_after,
                 "sessions": {
                     "items": [_session_payload(item) for item in sessions.list()]
                 },
                 "jobs": {
-                    "items": [_job_payload(item) for item in jobs.list(40)]
+                    "items": [
+                        _job_payload(item)
+                        for item in work.diagnostic_list(40)
+                    ]
                 },
                 "capabilities": capability_service.get(local_mode=local_mode),
             }
@@ -1406,7 +2252,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.get("/api/v1/events")
     @require_auth
     def events():
-        bounds = jobs.event_bounds()
+        bounds = work.event_bounds()
         supplied_cursor = request.headers.get("Last-Event-ID")
         if supplied_cursor is None:
             supplied_cursor = request.args.get("after")
@@ -1414,18 +2260,18 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         if supplied_cursor is None:
             # A new tab subscribes to future changes instead of replaying the
             # complete retained job history.
-            cursor = bounds["latest"]
+            cursor = bounds.latest
         else:
             try:
                 cursor = max(0, int(supplied_cursor))
             except (TypeError, ValueError):
-                cursor = bounds["latest"]
+                cursor = bounds.latest
                 reset_reason = "invalid_cursor"
-            if cursor > bounds["latest"]:
-                cursor = bounds["latest"]
+            if cursor > bounds.latest:
+                cursor = bounds.latest
                 reset_reason = "cursor_ahead"
-            elif bounds["oldest"] and cursor < bounds["oldest"] - 1:
-                cursor = bounds["latest"]
+            elif bounds.oldest and cursor < bounds.oldest - 1:
+                cursor = bounds.latest
                 reset_reason = "cursor_expired"
 
         def stream():
@@ -1439,16 +2285,16 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 reset_reason = None
             deadline = time.monotonic() + 25
             while time.monotonic() < deadline:
-                retained = jobs.event_bounds()
-                if retained["oldest"] and cursor < retained["oldest"] - 1:
-                    cursor = retained["latest"]
+                retained = work.event_bounds()
+                if retained.oldest and cursor < retained.oldest - 1:
+                    cursor = retained.latest
                     yield (
                         f"id: {cursor}\n"
                         "event: stream.reset\n"
                         f"data: {json.dumps({'cursor': cursor, 'reason': 'cursor_expired'})}\n\n"
                     )
                     continue
-                new_events = jobs.events_after(cursor)
+                new_events = work.events_after(cursor).items
                 if new_events:
                     last_visible_id = cursor
                     for event in new_events:
@@ -2020,6 +2866,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @require_auth
     def provider_test(provider_id: str):
         from pandrator.logic.llm_handler import chat_completion_with_metadata
+
         from .provider_settings import build_llm_settings
 
         payload = ProviderTestRequest.model_validate(request.get_json(silent=True) or {})
@@ -2302,6 +3149,22 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         except ValueError as error:
             return error_response("revision_conflict", str(error), 409)
         return "", 204
+
+    @app.get("/api/v1/audit/events")
+    @require_auth
+    def audit_events():
+        principal_subject = (
+            str(request.args.get("principal_subject") or "").strip()
+            or None
+        )
+        return jsonify(
+            {
+                "items": services.audit.list(
+                    principal_subject=principal_subject,
+                    limit=request.args.get("limit", 100, type=int) or 100,
+                )
+            }
+        )
 
     @app.get("/api/v1/voices")
     @require_auth
