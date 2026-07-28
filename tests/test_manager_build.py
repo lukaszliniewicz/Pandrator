@@ -1,12 +1,28 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import json
 import os
 import stat
+import subprocess
+import sys
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
 
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+)
+from cryptography.hazmat.primitives.serialization import (
+    Encoding,
+    NoEncryption,
+    PrivateFormat,
+    PublicFormat,
+)
+
+from pandrator_manager.releases.trust import TrustStore
 from scripts.build_manager_appimage import stage_appdir, write_checksum
 from scripts.build_manager_bootstrap import (
     _extract_wheel,
@@ -50,6 +66,91 @@ class ManagerBootstrapBuildTests(unittest.TestCase):
             ),
             root / "dist" / "pandrator-manager-0.9.0-linux-x86_64.zip",
         )
+
+    def test_release_signer_signs_the_normalized_document_it_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            private = Ed25519PrivateKey.generate()
+            public = base64.b64encode(
+                private.public_key().public_bytes(
+                    Encoding.Raw,
+                    PublicFormat.Raw,
+                )
+            ).decode("ascii")
+            key = root / "release-key.json"
+            key.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "algorithm": "ed25519",
+                        "key_id": "qualification",
+                        "private_key": base64.b64encode(
+                            private.private_bytes(
+                                Encoding.Raw,
+                                PrivateFormat.Raw,
+                                NoEncryption(),
+                            )
+                        ).decode("ascii"),
+                        "public_key": public,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            bundles: list[Path] = []
+            for system in ("windows", "linux"):
+                bundle = root / f"manager-{system}.zip"
+                with zipfile.ZipFile(bundle, "w") as archive:
+                    archive.writestr(
+                        "pandrator-release.json",
+                        json.dumps(
+                            {
+                                "product": "pandrator-manager",
+                                "version": "0.9.0",
+                                "runtime_kind": "native_launcher",
+                            }
+                        ),
+                    )
+                bundles.append(bundle)
+
+            output = root / "release.json"
+            repository = Path(__file__).resolve().parents[1]
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(repository / "scripts" / "sign_manager_release.py"),
+                    "--key",
+                    str(key),
+                    "--version",
+                    "0.9.0",
+                    "--sequence",
+                    "1",
+                    "--release-tag",
+                    "v0.9.0",
+                    "--windows-bundle",
+                    str(bundles[0]),
+                    "--linux-bundle",
+                    str(bundles[1]),
+                    "--output",
+                    str(output),
+                ],
+                cwd=repository,
+                check=True,
+                stdout=subprocess.PIPE,
+                text=True,
+            )
+
+            verified = TrustStore({"qualification": public}).verify(
+                output.read_bytes()
+            )
+            self.assertEqual(verified.payload.version, "0.9.0")
+            self.assertEqual(
+                output.with_suffix(".json.sha256").read_text(
+                    encoding="ascii"
+                ),
+                f"{hashlib.sha256(output.read_bytes()).hexdigest()}  "
+                "release.json\n",
+            )
 
     def test_wheel_source_staging_excludes_local_build_residue(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

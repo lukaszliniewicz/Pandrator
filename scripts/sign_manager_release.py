@@ -132,7 +132,7 @@ def main() -> int:
         raise ValueError("--sequence must be positive.")
     repo_root = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(repo_root))
-    from pandrator_manager.releases.models import ReleaseEnvelope
+    from pandrator_manager.releases.models import ReleaseEnvelope, ReleasePayload
     from pandrator_manager.releases.trust import canonical_json
 
     key_id, private = _load_key(args.key)
@@ -177,13 +177,16 @@ def main() -> int:
         ],
         "key_rotation": None,
     }
+    normalized_signed = ReleasePayload.model_validate(signed).model_dump(
+        mode="json"
+    )
     envelope = {
-        "signed": signed,
+        "signed": normalized_signed,
         "signatures": [
             {
                 "key_id": key_id,
                 "signature": base64.b64encode(
-                    private.sign(canonical_json(signed))
+                    private.sign(canonical_json(normalized_signed))
                 ).decode("ascii"),
             }
         ],
