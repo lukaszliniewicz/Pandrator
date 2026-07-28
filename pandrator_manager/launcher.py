@@ -702,7 +702,11 @@ def _parser() -> argparse.ArgumentParser:
         prog="pandrator-manager-launcher",
         description="Bootstrap and recover the Pandrator Manager.",
     )
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(
+        dest="command",
+        required=True,
+        metavar="{setup,start,self-check}",
+    )
 
     setup = subparsers.add_parser(
         "setup",
@@ -775,17 +779,17 @@ def _parser() -> argparse.ArgumentParser:
     )
     start.add_argument("--open-recovery", action="store_true")
 
-    daemon = subparsers.add_parser("daemon", help=argparse.SUPPRESS)
+    daemon = subparsers.add_parser("daemon")
     daemon.add_argument("--workspace", required=True)
     daemon.add_argument("--port", type=int)
     daemon.add_argument("--handoff-child")
 
     for command in ("handoff", "uninstall"):
-        helper = subparsers.add_parser(command, help=argparse.SUPPRESS)
+        helper = subparsers.add_parser(command)
         helper.add_argument("--workspace", required=True)
         helper.add_argument("--operation-id", required=True)
 
-    probe = subparsers.add_parser("probe", help=argparse.SUPPRESS)
+    probe = subparsers.add_parser("probe")
     probe.add_argument("--workspace", required=True)
     probe.add_argument("--operation-id", required=True)
     probe.add_argument("--probe-database", type=Path, required=True)

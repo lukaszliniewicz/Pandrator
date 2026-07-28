@@ -11,6 +11,7 @@ from pandrator_manager.errors import ManagerError
 from pandrator_manager.launcher import (
     LauncherRuntime,
     _installed_launcher_workspace,
+    _parser,
     deployment_endpoint,
     external_cleanup_runtime,
     install_stable_launcher,
@@ -75,6 +76,15 @@ class StableLauncherTests(unittest.TestCase):
         )
         if os.name != "nt":
             self.assertTrue(os.access(runtime.executable, os.X_OK))
+
+    def test_help_lists_only_public_launcher_commands(self):
+        help_text = _parser().format_help()
+
+        self.assertIn("{setup,start,self-check}", help_text)
+        self.assertIn("Install this native launcher", help_text)
+        self.assertNotIn("==SUPPRESS==", help_text)
+        for internal_command in ("daemon", "handoff", "uninstall", "probe"):
+            self.assertNotIn(f"    {internal_command}", help_text)
 
     def test_corrupt_installed_launcher_fails_closed(self):
         install_stable_launcher(self.layout, source=self.source)
