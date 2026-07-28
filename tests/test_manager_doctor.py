@@ -87,7 +87,10 @@ class ManagerDoctorTests(unittest.TestCase):
         )
         ownership = self.check(report, "ownership.manifest")
         self.assertEqual(ownership.status, "error")
-        self.assertEqual(ownership.details["unsafe_paths"], [str(outside)])
+        self.assertEqual(
+            ownership.details["unsafe_paths"],
+            [str(outside.resolve(strict=False))],
+        )
 
     def test_desired_unhealthy_service_is_repairable(self):
         service = ManagedService(

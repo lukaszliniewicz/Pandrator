@@ -635,6 +635,15 @@ def resolve_launcher_workspace(
         environ=values,
         home=selected_home,
     )
+    # Windows can surface the same directory through an 8.3 alias (for
+    # example RUNNER~1) or its long name.  Normalize every persisted or
+    # launcher-derived candidate just as we do CLI and environment values so
+    # later comparisons, ownership checks, and preference writes cannot drift
+    # between the two spellings.
+    if installed is not None:
+        installed = installed.expanduser().resolve(strict=False)
+    if remembered is not None:
+        remembered = remembered.expanduser().resolve(strict=False)
     if not choose_workspace:
         if installed is not None:
             return LauncherWorkspaceResolution(installed, "installed_launcher")
