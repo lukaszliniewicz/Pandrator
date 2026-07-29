@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -168,9 +169,81 @@ def launch_tray_background(layout: WorkspaceLayout) -> tuple[bool, str]:
     return True, ""
 
 
+def _tray_instance_path(layout: WorkspaceLayout) -> Path:
+    return layout.state / "tray.pid"
+
+
+def stop_tray_background(
+    layout: WorkspaceLayout,
+    *,
+    timeout_seconds: float = 10,
+) -> tuple[bool, str]:
+    """Stop this workspace's tray without risking an unrelated reused PID."""
+
+    path = _tray_instance_path(layout)
+    try:
+        raw_identity = path.read_text(encoding="ascii").strip()
+    except FileNotFoundError:
+        return False, ""
+    try:
+        decoded = json.loads(raw_identity)
+        if isinstance(decoded, dict):
+            pid = int(decoded["pid"])
+            expected_create_time = float(decoded["create_time"])
+        else:
+            pid = int(decoded)
+            expected_create_time = None
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return False, "The tray process identity file is invalid."
+
+    try:
+        process = psutil.Process(pid)
+        actual_create_time = process.create_time()
+        command = process.cmdline()
+    except psutil.NoSuchProcess:
+        path.unlink(missing_ok=True)
+        return False, ""
+    except (OSError, psutil.Error) as error:
+        return False, f"The tray process identity could not be inspected: {error}"
+
+    if (
+        expected_create_time is not None
+        and abs(actual_create_time - expected_create_time) > 1e-3
+    ):
+        return False, "The tray process identity no longer matches."
+    normalized = [str(argument).casefold() for argument in command]
+    workspace = str(layout.workspace).casefold()
+    is_tray = "tray" in normalized or "pandrator_manager.tray" in normalized
+    has_workspace = any(argument == workspace for argument in normalized)
+    if not is_tray or not has_workspace:
+        return False, "The tray process command no longer matches this workspace."
+
+    try:
+        process.terminate()
+        _gone, alive = psutil.wait_procs(
+            [process],
+            timeout=max(0.1, timeout_seconds),
+        )
+        for remaining in alive:
+            remaining.kill()
+        if alive:
+            _gone, still_alive = psutil.wait_procs(
+                alive,
+                timeout=max(0.1, timeout_seconds),
+            )
+            if still_alive:
+                return False, "The desktop tray did not exit before uninstall."
+    except psutil.NoSuchProcess:
+        pass
+    except (OSError, psutil.Error) as error:
+        return False, f"The desktop tray could not be stopped: {error}"
+    path.unlink(missing_ok=True)
+    return True, ""
+
+
 def _claim_tray_instance(layout: WorkspaceLayout) -> Path | None:
     layout.state.mkdir(parents=True, exist_ok=True)
-    path = layout.state / "tray.pid"
+    path = _tray_instance_path(layout)
     for _attempt in range(2):
         try:
             descriptor = os.open(
@@ -180,8 +253,14 @@ def _claim_tray_instance(layout: WorkspaceLayout) -> Path | None:
             )
         except FileExistsError:
             try:
-                pid = int(path.read_text(encoding="ascii").strip())
-            except (OSError, ValueError):
+                raw_identity = path.read_text(encoding="ascii").strip()
+                decoded = json.loads(raw_identity)
+                pid = (
+                    int(decoded["pid"])
+                    if isinstance(decoded, dict)
+                    else int(decoded)
+                )
+            except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
                 pid = 0
             if pid > 0 and psutil.pid_exists(pid):
                 return None
@@ -191,7 +270,15 @@ def _claim_tray_instance(layout: WorkspaceLayout) -> Path | None:
                 pass
             continue
         with os.fdopen(descriptor, "w", encoding="ascii") as handle:
-            handle.write(str(os.getpid()))
+            handle.write(
+                json.dumps(
+                    {
+                        "pid": os.getpid(),
+                        "create_time": psutil.Process().create_time(),
+                    },
+                    sort_keys=True,
+                )
+            )
         return path
     return None
 
@@ -299,8 +386,12 @@ def main(argv: list[str] | None = None) -> int:
         TrayApplication(client).run()
     finally:
         try:
-            if instance.read_text(encoding="ascii").strip() == str(os.getpid()):
+            identity = json.loads(instance.read_text(encoding="ascii"))
+            if (
+                isinstance(identity, dict)
+                and int(identity.get("pid", 0)) == os.getpid()
+            ):
                 instance.unlink()
-        except OSError:
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
             pass
     return 0

@@ -1230,6 +1230,11 @@ def run_uninstall_handoff(
         if integration.status().installed:
             integration.remove()
         autostart_removed = payload.autostart_installed
+        from .tray import stop_tray_background
+
+        _tray_stopped, tray_error = stop_tray_background(layout)
+        if tray_error:
+            raise RuntimeError(tray_error)
         moved = _move_to_quarantine(layout, payload)
         secret = _read_secret(layout, operation_id)
         _write_authenticated(

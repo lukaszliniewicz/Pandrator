@@ -34,6 +34,7 @@ from pandrator_manager.supervisor import ProcessSupervisor
 from pandrator_manager.tray import (
     TrayApplication,
     configure_tray_autostart,
+    stop_tray_background,
     tray_available,
 )
 
@@ -965,6 +966,40 @@ class OptionalDesktopIntegrationTests(unittest.TestCase):
         icon.stop.assert_called_once_with()
         client.runtime.assert_not_called()
         client.stop_manager.assert_not_called()
+
+    def test_stopping_tray_validates_identity_before_terminating_process(self):
+        with tempfile.TemporaryDirectory() as directory:
+            layout = create_application(Path(directory) / "workspace").context.layout
+            layout.state.mkdir(parents=True, exist_ok=True)
+            identity = layout.state / "tray.pid"
+            identity.write_text(
+                json.dumps({"pid": 8123, "create_time": 45.5}),
+                encoding="ascii",
+            )
+            process = mock.Mock()
+            process.create_time.return_value = 45.5
+            process.cmdline.return_value = [
+                str(layout.bin / "pandrator-manager-launcher.exe"),
+                "tray",
+                "--workspace",
+                str(layout.workspace),
+            ]
+            with (
+                mock.patch(
+                    "pandrator_manager.tray.psutil.Process",
+                    return_value=process,
+                ),
+                mock.patch(
+                    "pandrator_manager.tray.psutil.wait_procs",
+                    return_value=([process], []),
+                ),
+            ):
+                stopped, reason = stop_tray_background(layout)
+
+            self.assertTrue(stopped)
+            self.assertEqual("", reason)
+            process.terminate.assert_called_once_with()
+            self.assertFalse(identity.exists())
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -242,6 +243,13 @@ class StableLauncherTests(unittest.TestCase):
                 return_value=Path(self.temporary.name) / "manager-launcher.json",
             ) as remember,
             mock.patch("pandrator_manager.launcher.webbrowser.open") as browser,
+            mock.patch.object(sys, "frozen", True, create=True),
+            mock.patch(
+                "pandrator_manager.tray.configure_tray_autostart",
+            ),
+            mock.patch(
+                "pandrator_manager.tray.launch_tray_background",
+            ) as launch_tray,
         ):
             result = main(
                 [
@@ -256,6 +264,7 @@ class StableLauncherTests(unittest.TestCase):
         client.recovery_url.assert_called_once_with()
         browser.assert_not_called()
         remember.assert_called_once_with(self.layout.workspace)
+        launch_tray.assert_not_called()
 
     def test_graphical_setup_does_not_print_the_one_use_recovery_token(self):
         client = mock.Mock()
@@ -284,6 +293,14 @@ class StableLauncherTests(unittest.TestCase):
                 "pandrator_manager.launcher.webbrowser.open",
                 return_value=True,
             ),
+            mock.patch.object(sys, "frozen", True, create=True),
+            mock.patch(
+                "pandrator_manager.tray.configure_tray_autostart",
+            ),
+            mock.patch(
+                "pandrator_manager.tray.launch_tray_background",
+                return_value=(True, ""),
+            ) as launch_tray,
             mock.patch("builtins.print") as output,
         ):
             result = main(
@@ -297,7 +314,9 @@ class StableLauncherTests(unittest.TestCase):
         self.assertEqual(0, result)
         payload = json.loads(output.call_args.args[0])
         self.assertTrue(payload["browser_opened"])
+        self.assertTrue(payload["tray_started"])
         self.assertIsNone(payload["recovery_url"])
+        launch_tray.assert_called_once_with(self.layout)
 
 
 class WorkspaceSelectionTests(unittest.TestCase):

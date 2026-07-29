@@ -966,7 +966,7 @@ def main(argv: list[str] | None = None) -> int:
         else False
     )
     tray_started = False
-    if getattr(sys, "frozen", False):
+    if getattr(sys, "frozen", False) and should_open_browser:
         from .tray import launch_tray_background
 
         tray_started, tray_reason = launch_tray_background(layout)
