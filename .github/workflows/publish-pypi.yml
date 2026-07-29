@@ -53,25 +53,16 @@ jobs:
           --project pandrator_mcp
           package-dist/*/*
 
-      - name: Collect upload set
-        shell: bash
-        run: |
-          mkdir upload-dist
-          cp package-dist/pandrator/* upload-dist/
-          cp package-dist/pandrator-manager/* upload-dist/
-          cp package-dist/pandrator-mcp/* upload-dist/
-          test "$(find upload-dist -maxdepth 1 -type f | wc -l)" -eq 6
-
       - name: Upload verified distributions
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: pypi-distributions
           if-no-files-found: error
-          path: upload-dist/
+          path: package-dist/
           retention-days: 7
 
-  publish:
-    name: Publish to PyPI
+  publish-pandrator:
+    name: Publish Pandrator to PyPI
     needs: build
     runs-on: ubuntu-22.04
     timeout-minutes: 10
@@ -89,5 +80,55 @@ jobs:
           name: pypi-distributions
           path: dist
 
-      - name: Publish packages
+      - name: Publish Pandrator
         uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # release/v1
+        with:
+          packages-dir: dist/pandrator
+
+  publish-manager:
+    name: Publish Pandrator Manager to PyPI
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    environment:
+      name: pypi-manager
+      url: https://pypi.org/project/pandrator-manager/
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Download verified distributions
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: pypi-distributions
+          path: dist
+
+      - name: Publish Pandrator Manager
+        uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # release/v1
+        with:
+          packages-dir: dist/pandrator-manager
+
+  publish-mcp:
+    name: Publish Pandrator MCP to PyPI
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    environment:
+      name: pypi-mcp
+      url: https://pypi.org/project/pandrator-mcp/
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Download verified distributions
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: pypi-distributions
+          path: dist
+
+      - name: Publish Pandrator MCP
+        uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # release/v1
+        with:
+          packages-dir: dist/pandrator-mcp
