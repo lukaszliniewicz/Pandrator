@@ -30,8 +30,8 @@ feature-frozen migration fallback. See
 | Convert generated speech to another trained voice | Install **RVC**. It runs after speech generation and is optional. |
 
 The current packaged release is
-[Pandrator 0.6.0](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.6.0),
-with Pandrator Manager 0.9.0 for Windows and Linux. You can begin with only the
+[Pandrator 0.6.1](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.6.1),
+with Pandrator Manager 0.9.1 for Windows and Linux. You can begin with only the
 components you need and add others later.
 
 Local models process content on your machine. Cloud LLM and speech providers are optional; when used, they may send content to an external service and incur charges.
@@ -77,7 +77,7 @@ remembered workspace.
 ### Windows
 
 Download
-[`PandratorManager-0.9.0-windows-x86_64.exe`](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.6.0/PandratorManager-0.9.0-windows-x86_64.exe)
+[`PandratorManager-0.9.1-windows-x86_64.exe`](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.6.1/PandratorManager-0.9.1-windows-x86_64.exe)
 and run it.
 Choose the parent installation folder; the managed installation is created in
 its `Pandrator` subdirectory. The same Manager is used later to launch,
@@ -86,18 +86,18 @@ update, repair, or extend the installation.
 The Windows executable is not Authenticode-signed and may be shown as
 **Unknown publisher** or trigger a SmartScreen warning. Where a release
 publishes a SHA-256 checksum, verify it before running the download. The
-[0.6.0 release page](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.6.0)
+[0.6.1 release page](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.6.1)
 contains the checksum and all other package formats.
 
 ### Linux
 
 Download
-[`PandratorManager-0.9.0-x86_64.AppImage`](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.6.0/PandratorManager-0.9.0-x86_64.AppImage),
+[`PandratorManager-0.9.1-x86_64.AppImage`](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.6.1/PandratorManager-0.9.1-x86_64.AppImage),
 make it executable, and run it:
 
 ```bash
-chmod +x PandratorManager-0.9.0-x86_64.AppImage
-./PandratorManager-0.9.0-x86_64.AppImage
+chmod +x PandratorManager-0.9.1-x86_64.AppImage
+./PandratorManager-0.9.1-x86_64.AppImage
 ```
 
 The first desktop launch offers a folder chooser. Headless systems can pass
@@ -133,10 +133,10 @@ On Linux, build the self-contained Qt-free manager AppImage with:
 
 ```bash
 python scripts/build_manager_appimage.py
-sha256sum --check dist/PandratorManager-0.9.0-x86_64.AppImage.sha256
-chmod +x dist/PandratorManager-0.9.0-x86_64.AppImage
+sha256sum --check dist/PandratorManager-0.9.1-x86_64.AppImage.sha256
+chmod +x dist/PandratorManager-0.9.1-x86_64.AppImage
 APPIMAGE_EXTRACT_AND_RUN=1 \
-  dist/PandratorManager-0.9.0-x86_64.AppImage setup --workspace "$HOME"
+  dist/PandratorManager-0.9.1-x86_64.AppImage setup --workspace "$HOME"
 ```
 
 `APPIMAGE_EXTRACT_AND_RUN=1` is a compatibility fallback for systems where
@@ -555,8 +555,11 @@ multi-user hosted service.
 packaged compatibility installer. `pandrator_manager/pyproject.toml` is the
 independent Qt-free manager distribution and intentionally has its own
 Python-version range and optional `tray`, `build`, and `dev` extras. The
-pip-compatible application/compatibility-installer files are generated
-projections:
+default Pixi environment installs Pandrator itself as an editable local
+project, so its Python runtime dependencies are resolved directly from
+`pyproject.toml`; `pixi.toml` declares only the Python interpreter and
+non-Python runtime tools such as FFmpeg. The pip-compatible
+application/compatibility-installer files are generated projections:
 
 ```bash
 python scripts/generate_requirements.py

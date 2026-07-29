@@ -1,0 +1,48 @@
+name: Pandrator locked runtime
+
+on:
+  push:
+    paths:
+      - ".github/workflows/runtime-ci.yml"
+      - "pandrator/**"
+      - "pixi.toml"
+      - "pixi.lock"
+      - "pyproject.toml"
+      - "tests/test_dependency_manifests.py"
+  pull_request:
+    paths:
+      - ".github/workflows/runtime-ci.yml"
+      - "pandrator/**"
+      - "pixi.toml"
+      - "pixi.lock"
+      - "pyproject.toml"
+      - "tests/test_dependency_manifests.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  locked-runtime:
+    name: Locked runtime (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-22.04]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: prefix-dev/setup-pixi@v0.10.0
+        with:
+          pixi-version: v0.72.0
+          locked: true
+          cache: true
+
+      - name: Check the canonical dependency projection
+        run: pixi run --locked python -m unittest tests.test_dependency_manifests
+
+      - name: Import the Manager-launched application runtime
+        run: pixi run --locked python -m pandrator --help

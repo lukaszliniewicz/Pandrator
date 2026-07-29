@@ -2,10 +2,40 @@ import tomllib
 import unittest
 from pathlib import Path
 
-from scripts.generate_requirements import TARGETS, _dependencies, _render
+from scripts.generate_requirements import (
+    TARGETS,
+    _dependencies,
+    _normalized_name,
+    _render,
+)
 
 
 class DependencyManifestTests(unittest.TestCase):
+    def test_default_pixi_runtime_installs_the_canonical_project(self):
+        root = Path(__file__).resolve().parents[1]
+        manifest = tomllib.loads(
+            (root / "pixi.toml").read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(
+            manifest["pypi-dependencies"]["pandrator"],
+            {"path": ".", "editable": True},
+        )
+        conda_dependencies = set(manifest["dependencies"])
+        self.assertTrue(
+            {"python", "ffmpeg"}.issubset(conda_dependencies),
+        )
+        project_dependencies = tomllib.loads(
+            (root / "pyproject.toml").read_text(encoding="utf-8")
+        )["project"]["dependencies"]
+        duplicated_python_dependencies = conda_dependencies.intersection(
+            _normalized_name(item) for item in project_dependencies
+        )
+        self.assertEqual(
+            duplicated_python_dependencies,
+            set(),
+        )
+
     def test_project_distributions_use_the_canonical_mit_license(self):
         root = Path(__file__).resolve().parents[1]
         canonical = (root / "LICENSE").read_text(encoding="utf-8")

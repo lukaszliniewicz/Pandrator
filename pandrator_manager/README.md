@@ -12,17 +12,18 @@ distribution, exact-wheel native bootstrap, project-signed handoff, and
 preserve-data uninstall are qualified on Windows 11 and Fedora. The native
 artifacts are the recommended consumer installation path; a PyPI upload is a
 separate distribution decision.
+Version `0.9.1` is the current maintenance release.
 
 The Linux build also produces Qt-free canonical and versioned AppImages,
 `PandratorManager-x86_64.AppImage` and
-`PandratorManager-0.9.0-x86_64.AppImage`, plus SHA-256 sidecars. The Manager
+`PandratorManager-0.9.1-x86_64.AppImage`, plus SHA-256 sidecars. The Manager
 remembers the selected installation folder, supports loopback, private-LAN,
 and explicit HTTPS-ingress recovery profiles, and can update itself without a
 second manual executable download.
 
 The Windows build produces
-`PandratorManager-0.9.0-windows-x86_64.exe` and the deterministic
-`pandrator-manager-0.9.0-windows-x86_64.zip` runtime bundle. The executable is
+`PandratorManager-0.9.1-windows-x86_64.exe` and the deterministic
+`pandrator-manager-0.9.1-windows-x86_64.zip` runtime bundle. The executable is
 deliberately unsigned at the Windows publisher/Authenticode layer; project
 release manifests use a separate Ed25519 signature.
 
@@ -109,7 +110,7 @@ non-interactively:
 
 ```bash
 PandratorManager-x86_64.AppImage setup --workspace /path/to/parent
-PandratorManager-0.9.0-windows-x86_64.exe setup --workspace D:\path\to\parent
+PandratorManager-0.9.1-windows-x86_64.exe setup --workspace D:\path\to\parent
 ```
 
 `--workspace` takes precedence over `PANDRATOR_WORKSPACE`, which takes
@@ -364,7 +365,7 @@ ruff check --config pandrator_manager/pyproject.toml \
 python -m build pandrator_manager --outdir manager-dist
 python scripts/build_manager_bootstrap.py --wheel-dir manager-dist
 python scripts/build_manager_release_bundle.py \
-  --output dist/pandrator-manager-0.9.0-windows-x86_64.zip  # Windows
+  --output dist/pandrator-manager-0.9.1-windows-x86_64.zip  # Windows
 python scripts/build_manager_appimage.py --wheel-dir manager-dist  # Linux
 python scripts/qualify_manager_lifecycle.py
 ```
@@ -381,9 +382,9 @@ bootstrap in desktop-friendly, Qt-free versioned and canonical AppImages and
 writes adjacent SHA-256 checksums:
 
 ```bash
-(cd dist && sha256sum --check PandratorManager-0.9.0-x86_64.AppImage.sha256)
+(cd dist && sha256sum --check PandratorManager-0.9.1-x86_64.AppImage.sha256)
 APPIMAGE_EXTRACT_AND_RUN=1 \
-  dist/PandratorManager-0.9.0-x86_64.AppImage self-check
+  dist/PandratorManager-0.9.1-x86_64.AppImage self-check
 ```
 
 The AppImage is only the distribution wrapper. First setup copies the native
