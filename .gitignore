@@ -74,9 +74,11 @@ tts_voices/voice_library.json
 .env.*
 !.env.example
 
-# Local planning notes (name contains "plan")
+# Local planning, architecture, and qualification notes
 *[Pp][Ll][Aa][Nn]*.md
-!/MCP_IMPLEMENTATION_PLAN.md
+/BACKEND_ARCHITECTURE.md
+/FRONTEND_ARCHITECTURE.md
+/INSTALLER_MANAGER_ARCHITECTURE.md
 /AGENTIC_TEXT_AND_SPEECH.md
 /FUTURE_TTS_OPTIMIZATION_NOTES.md
 
@@ -98,12 +100,7 @@ desktop.ini
 # Linux compatibility documentation (untracked locally)
 LINUX_COMPATIBILITY.md
 
-# Local documentation
+# Local documentation and qualification records
 docs/
-!docs/
-docs/*
-!docs/qualification/
-docs/qualification/*
-!docs/qualification/pandrator-mcp-0.1.0-fedora44-codex-0.145.0.md
 web/playwright-report/
 web/test-results/

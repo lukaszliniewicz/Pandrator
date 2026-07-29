@@ -34,6 +34,13 @@ dev = [
 [project.scripts]
 pandrator-mcp = "pandrator_mcp.__main__:main"
 
+[project.urls]
+Homepage = "https://github.com/lukaszliniewicz/Pandrator"
+Documentation = "https://github.com/lukaszliniewicz/Pandrator/tree/main/pandrator_mcp"
+Repository = "https://github.com/lukaszliniewicz/Pandrator"
+Issues = "https://github.com/lukaszliniewicz/Pandrator/issues"
+Releases = "https://github.com/lukaszliniewicz/Pandrator/releases"
+
 [tool.setuptools]
 packages = [
   "pandrator_mcp",

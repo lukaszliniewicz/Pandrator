@@ -34,14 +34,25 @@ Guidance remains available even when no target can be reached.
 
 ## Install
 
-From the repository root:
+The current release is 0.1.0. With Python 3.11 or 3.12, install it as an
+isolated command-line tool:
 
 ```console
-python -m pip install -e "./pandrator_mcp[credential-stores]"
+pipx install "pandrator-mcp[credential-stores,manager]"
+# or
+uv tool install "pandrator-mcp[credential-stores,manager]"
 ```
 
-The optional `credential-stores` extra installs keyring support used by the
-native enrollment flow. The MCP Python SDK is pinned to `mcp==2.0.0`.
+For development from the repository root:
+
+```console
+python -m pip install -e "./pandrator_mcp[credential-stores,manager]"
+```
+
+The `credential-stores` extra is recommended because the enrollment flow can
+then save tokens in Windows Credential Manager, macOS Keychain, or Linux
+Secret Service. The `manager` extra supports local Manager discovery; you may
+omit it when the sidecar will use only external targets.
 
 For a local Manager installation:
 
@@ -237,7 +248,7 @@ parallel supported Python and create a dedicated data root:
 ```bash
 sudo dnf install python3.12 python3.12-devel
 python3.12 -m venv ~/.local/share/pandrator/venv
-~/.local/share/pandrator/venv/bin/pip install /path/to/pandrator-0.6.0-py3-none-any.whl
+~/.local/share/pandrator/venv/bin/pip install /path/to/pandrator-0.6.1-py3-none-any.whl
 ffmpeg -version
 
 export PANDRATOR_DATA_DIR="$HOME/.local/share/pandrator/data"
@@ -317,11 +328,8 @@ unrelated servers. Give each Pandrator target a separate entry. Never add an
 origin, token, proxy, certificate path, or credential reference to model-
 visible tool arguments.
 
-The generators are syntax-validated and tested to remain secret-free. Live
-end-to-end qualification currently uses Codex as the maintained host gate.
-Claude Code, OpenCode, and Antigravity fragments remain generated,
-syntax-tested convenience templates until separately qualified; users do not
-need all four hosts to operate Pandrator.
+The generated fragments contain commands and non-secret file paths, never
+tokens. You need to configure only the agent host you actually use.
 
 For Codex, either merge the generated TOML or register the exact stdio command:
 
@@ -334,13 +342,6 @@ The generated Codex fragment uses `default_tools_approval_mode = "writes"`.
 Interactive writes therefore remain reviewable. A non-interactive `codex
 exec` run rejects an approval-requiring write unless the operator explicitly
 selects an appropriate approval policy for that already reviewed action.
-
-Current configuration references:
-
-- [Codex MCP configuration](https://learn.chatgpt.com/docs/extend/mcp)
-- [Claude Code MCP](https://code.claude.com/docs/en/mcp)
-- [OpenCode MCP servers](https://opencode.ai/v2/docs/mcp-servers)
-- [Antigravity MCP setup](https://antigravity.google/docs/mcp)
 
 ## Diagnostics and lifecycle
 
@@ -382,23 +383,23 @@ options still leave server-side revocation to the owner commands above.
 Changing a credential-store reference during re-login is also refused until
 logout, preventing an old native secret from becoming an invisible orphan.
 
-The initial Fedora 44/Codex qualification record is
-[`docs/qualification/pandrator-mcp-0.1.0-fedora44-codex-0.145.0.md`](../docs/qualification/pandrator-mcp-0.1.0-fedora44-codex-0.145.0.md).
+## Security boundaries
 
-## Security invariants
+- The sidecar connects only to the fixed target saved in its local profile;
+  tools cannot supply a different destination.
+- Tokens are resolved from the credential store and are never accepted in MCP
+  arguments.
+- Inherited HTTP proxy settings, redirects, and model-supplied URLs are
+  ignored or rejected.
+- Internet targets require HTTPS and public DNS addresses. LAN targets must
+  stay inside the private networks listed in their profile.
+- Direct Manager recovery always uses authenticated HTTPS.
+- Pandrator application access and Manager recovery use separate credentials
+  that can be revoked independently.
+- A changed server identity fails closed until the owner verifies and pins the
+  replacement.
+- Work and event tools return bounded, redacted projections rather than raw
+  job payloads or secrets.
 
-- `TargetRegistry` is the only downstream endpoint resolver.
-- `CredentialResolver` is the only credential-handle resolver.
-- Inherited HTTP proxy settings are ignored.
-- Direct connections use policy-approved DNS addresses while preserving the
-  original Host header and TLS hostname.
-- Redirects and model-supplied destinations are rejected.
-- Internet targets require HTTPS and public-only DNS answers.
-- Direct Manager recovery always requires authenticated HTTPS.
-- Application and recovery credentials have different audiences.
-- Identity changes fail closed.
-- `/api/v1/work` never exposes raw job payloads.
-
-The full architecture and threat model are in
-`MCP_IMPLEMENTATION_PLAN.md` and the packaged
-`pandrator://guide/security-boundaries` guide.
+Agents can read the packaged `pandrator://guide/security-boundaries` guide for
+the same rules while they work.

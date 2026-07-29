@@ -52,6 +52,13 @@ dev = [
 [project.scripts]
 pandrator = "pandrator.web.cli:main"
 
+[project.urls]
+Homepage = "https://github.com/lukaszliniewicz/Pandrator"
+Documentation = "https://github.com/lukaszliniewicz/Pandrator#readme"
+Repository = "https://github.com/lukaszliniewicz/Pandrator"
+Issues = "https://github.com/lukaszliniewicz/Pandrator/issues"
+Releases = "https://github.com/lukaszliniewicz/Pandrator/releases"
+
 [tool.hatch.build.targets.wheel]
 packages = ["pandrator"]
 include = [

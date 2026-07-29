@@ -42,6 +42,13 @@ pandrator-manager-launcher = "pandrator_manager.launcher:main"
 pandrator-tray = "pandrator_manager.tray:main"
 pandrator-installer = "pandrator_manager.compat:main"
 
+[project.urls]
+Homepage = "https://github.com/lukaszliniewicz/Pandrator"
+Documentation = "https://github.com/lukaszliniewicz/Pandrator/tree/main/pandrator_manager"
+Repository = "https://github.com/lukaszliniewicz/Pandrator"
+Issues = "https://github.com/lukaszliniewicz/Pandrator/issues"
+Releases = "https://github.com/lukaszliniewicz/Pandrator/releases"
+
 [tool.setuptools]
 packages = [
   "pandrator_manager",
