@@ -239,6 +239,81 @@ class ManagedApplicationLaunchTests(unittest.TestCase):
             all("-m" in spec.arguments and "pandrator" in spec.arguments for spec in specs)
         )
 
+    def test_generic_runtime_start_refreshes_specs_after_first_install(self):
+        with tempfile.TemporaryDirectory() as directory:
+            application = create_application(directory)
+            application.instance_id = "guided-test"
+            layout = application.context.layout
+            supervisor = ProcessSupervisor(
+                application.context,
+                application.store,
+                manager_instance_id="guided-test",
+            )
+            supervisor.register_many(pandrator_runtime_specs(layout))
+            fallback = supervisor.spec("pandrator.api")
+            self.assertIsNotNone(fallback)
+            self.assertNotEqual(
+                str(layout.bin / ("pixi.exe" if os.name == "nt" else "pixi")),
+                fallback.executable,
+            )
+
+            source = layout.root / "app" / "versions" / "revision"
+            (source / "pandrator" / "web").mkdir(parents=True)
+            (source / "pyproject.toml").write_text(
+                "[project]\nname='pandrator'\n",
+                encoding="utf-8",
+            )
+            (source / "pixi.toml").write_text(
+                "[workspace]\nname='pandrator'\n",
+                encoding="utf-8",
+            )
+            (source / "pandrator" / "web" / "cli.py").write_text(
+                "",
+                encoding="utf-8",
+            )
+            component_pointer(layout, "pandrator").write_text(
+                json.dumps({"path": str(source)}),
+                encoding="utf-8",
+            )
+            pixi = layout.bin / ("pixi.exe" if os.name == "nt" else "pixi")
+            pixi.write_bytes(b"pixi")
+
+            secret = "m" * 43
+            api = create_api(
+                application,
+                supervisor,
+                client_secret=secret,
+            )
+            client = api.test_client()
+
+            def start_without_spawning(service_id):
+                return next(
+                    service
+                    for service in supervisor.snapshot()
+                    if service.id == service_id
+                )
+
+            with mock.patch.object(
+                supervisor,
+                "start",
+                side_effect=start_without_spawning,
+            ):
+                response = client.post(
+                    "/v1/runtime/start",
+                    headers={
+                        "Authorization": f"Bearer {secret}",
+                        "Idempotency-Key": "start-after-first-install",
+                    },
+                    json={"service_ids": ["pandrator.api"]},
+                )
+
+            self.assertEqual(200, response.status_code)
+            refreshed = supervisor.spec("pandrator.api")
+            self.assertIsNotNone(refreshed)
+            self.assertEqual(str(pixi), refreshed.executable)
+            self.assertEqual("run", refreshed.arguments[0])
+            self.assertIn("--locked", refreshed.arguments)
+
     def test_frozen_manager_uses_pixi_for_python_backend_bootstrappers(self):
         from pandrator_manager.models import ResolvedComponentState
         from pandrator_manager.runtime_specs import component_runtime_spec

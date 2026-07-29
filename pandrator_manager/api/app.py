@@ -1633,6 +1633,17 @@ def create_api(
         selected = payload.service_ids or tuple(
             service.id for service in supervisor.snapshot()
         )
+        if (
+            action in {"start", "restart"}
+            and {"pandrator.api", "pandrator.worker"}.intersection(selected)
+        ):
+            # The daemon registers a conservative fallback before a first
+            # Pandrator installation exists. Recompose that launch contract
+            # after activation so the generic runtime API, CLI, and MCP paths
+            # use the active slot's locked Pixi environment just like the
+            # guided application-start endpoint does.
+            ensure_application_installed()
+            refresh_application_specs()
         results = []
         for service_id in selected:
             method = getattr(supervisor, action)
