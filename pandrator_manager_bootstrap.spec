@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 import os
+import sys
 from pathlib import Path
 
 
@@ -18,13 +19,20 @@ manager_package = package_root / "pandrator_manager"
 if not manager_package.is_dir() or manager_package.is_symlink():
     raise RuntimeError(f"Unsafe or missing wheel package root: {manager_package}")
 recovery_static = manager_package / "recovery_ui" / "static"
+tray_backend = (
+    "pystray._win32"
+    if os.name == "nt"
+    else "pystray._darwin"
+    if sys.platform == "darwin"
+    else "pystray._xorg"
+)
 
 a = Analysis(
     [str(entrypoint)],
     pathex=[str(package_root)],
     binaries=[],
     datas=[(str(recovery_static), "pandrator_manager/recovery_ui/static")],
-    hiddenimports=[],
+    hiddenimports=["PIL.Image", "pystray", tray_backend],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

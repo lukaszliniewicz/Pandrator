@@ -51,6 +51,13 @@ def test_api_core_is_the_only_direct_network_gateway():
     assert source(API_CORE).count("fetch(") == 1
 
 
+def test_api_core_assigns_idempotency_keys_to_mutations():
+    core = source(API_CORE)
+    assert "headers.has('Idempotency-Key')" in core
+    assert "headers.set('Idempotency-Key', createIdempotencyKey())" in core
+    assert "globalThis.crypto.randomUUID()" in core
+
+
 def test_legacy_catch_all_api_client_cannot_return():
     call = re.compile(r"\bapi\s*(?:<[^>]+>)?\s*\(")
     offenders = [

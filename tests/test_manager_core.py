@@ -57,6 +57,7 @@ from pandrator_manager.models import (
     OperationKind,
     ResolvedComponentState,
 )
+from pandrator_manager.network import private_network_candidates
 from pandrator_manager.processes import CommandRunner, CommandSpec
 from pandrator_manager.runtime_specs import component_runtime_spec
 from pandrator_manager.state import ManagerStore
@@ -197,8 +198,10 @@ class RegistryAndPlanningTests(unittest.TestCase):
         with mock.patch(
             "pandrator_manager.components.host._graphics_descriptions",
             return_value=(
-                "AMD Radeon(TM) Vega 8 Graphics "
-                r"PCI\VEN_1002&DEV_15DD",
+                (
+                    "AMD Radeon(TM) Vega 8 Graphics "
+                    r"PCI\VEN_1002&DEV_15DD"
+                ),
             ),
         ), mock.patch(
             "pandrator_manager.components.host.shutil.which",
@@ -222,10 +225,14 @@ class RegistryAndPlanningTests(unittest.TestCase):
         with mock.patch(
             "pandrator_manager.components.host._graphics_descriptions",
             return_value=(
-                "03:00.0 VGA compatible controller: Advanced Micro Devices, Inc. "
-                "[AMD/ATI] Ellesmere [Radeon RX 470/480/570/570X/580/580X/590]",
-                "03:00.1 Audio device: Advanced Micro Devices, Inc. [AMD/ATI] "
-                "Ellesmere HDMI Audio",
+                (
+                    "03:00.0 VGA compatible controller: Advanced Micro Devices, Inc. "
+                    "[AMD/ATI] Ellesmere [Radeon RX 470/480/570/570X/580/580X/590]"
+                ),
+                (
+                    "03:00.1 Audio device: Advanced Micro Devices, Inc. [AMD/ATI] "
+                    "Ellesmere HDMI Audio"
+                ),
             ),
         ), mock.patch(
             "pandrator_manager.components.host.shutil.which",
@@ -236,7 +243,7 @@ class RegistryAndPlanningTests(unittest.TestCase):
         ):
             resolved = resolve_auto_compute(context, definition)
 
-        self.assertEqual(ComputeVariant.CPU, resolved)
+        self.assertEqual(ComputeVariant.VULKAN, resolved)
 
     def test_rocm_requires_a_supported_gpu_agent_and_polaris_falls_back_to_cpu(self):
         definition = builtin_registry().definition("kokoro")
@@ -394,6 +401,64 @@ class RegistryAndPlanningTests(unittest.TestCase):
                     desired=desired,
                     expected_revision=99,
                 )
+
+    def test_pandrator_install_plan_starts_application_after_all_tasks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            application = create_application(directory)
+            plan = application.plan(
+                kind=OperationKind.INSTALL,
+                desired={
+                    "pandrator": DesiredComponentState(
+                        options={"start_after_install": True}
+                    )
+                },
+            )
+
+        start = plan.tasks[-1]
+        self.assertEqual("pandrator:start", start.id)
+        self.assertEqual("start_application", start.kind)
+        self.assertEqual(
+            {task.id for task in plan.tasks[:-1]},
+            set(start.dependencies),
+        )
+
+    def test_private_network_candidates_prefer_active_private_ipv4_interfaces(self):
+        addresses = {
+            "lo": [mock.Mock(family=socket.AF_INET, address="127.0.0.1")],
+            "ethernet": [
+                mock.Mock(family=socket.AF_INET, address="192.168.20.14")
+            ],
+            "offline": [
+                mock.Mock(family=socket.AF_INET, address="10.10.10.10")
+            ],
+        }
+        stats = {
+            "lo": mock.Mock(isup=True),
+            "ethernet": mock.Mock(isup=True),
+            "offline": mock.Mock(isup=False),
+        }
+        with (
+            mock.patch(
+                "pandrator_manager.network.psutil.net_if_addrs",
+                return_value=addresses,
+            ),
+            mock.patch(
+                "pandrator_manager.network.psutil.net_if_stats",
+                return_value=stats,
+            ),
+        ):
+            candidates = private_network_candidates(8097)
+
+        self.assertEqual(
+            (
+                {
+                    "interface": "ethernet",
+                    "address": "192.168.20.14",
+                    "url": "http://192.168.20.14:8097",
+                },
+            ),
+            candidates,
+        )
 
     def test_preflight_rejects_missing_configured_ca_bundle(self):
         with tempfile.TemporaryDirectory() as directory:

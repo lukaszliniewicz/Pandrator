@@ -44,6 +44,7 @@ from ..models import API_VERSION
 from ..network import (
     EndpointExposure,
     NetworkConfiguration,
+    private_network_candidates,
     save_network_configuration,
 )
 from ..processes import CommandRunner, CommandSpec
@@ -1265,6 +1266,9 @@ def create_api(
                 "browser_url": application_exposure_state[
                     "value"
                 ].browser_base_url,
+                "private_network_candidates": private_network_candidates(
+                    application_exposure_state["value"].port or 8097
+                ),
                 "remote_enabled": application_exposure_state[
                     "value"
                 ].remote_enabled,

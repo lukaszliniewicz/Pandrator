@@ -37,6 +37,7 @@ from ..models import (
     PreflightCheck,
     TaskSpec,
 )
+from ..network import load_network_configuration
 from ..preflight import HostPreflight
 from ..processes import CommandRunner, CommandSpec
 from ..releases.authority import ReleaseAuthority
@@ -149,6 +150,7 @@ class FilesystemTaskHandler:
             "reconcile_legacy_data",
             "activate_application_release",
             "prepare_manager_handoff",
+            "start_application",
             "stop_all_services",
             "export_uninstall_data",
             "prepare_uninstall_handoff",
@@ -1564,6 +1566,82 @@ class FilesystemTaskHandler:
             )
         else:
             execution.supervisor.unregister(service_id)
+
+    def _execute_start_application(
+        self,
+        execution: OperationTaskContext,
+        task: TaskSpec,
+    ) -> dict:
+        if execution.supervisor is None:
+            return {
+                "started": False,
+                "error": "The process supervisor is unavailable.",
+            }
+        preferences: dict[str, str] = {}
+        crispasr = execution.plan.desired.get("crispasr")
+        if crispasr is not None and crispasr.present:
+            engine = str(crispasr.options.get("engine") or "").strip()
+            quantization = str(
+                crispasr.quantization
+                or crispasr.options.get("quantization")
+                or ""
+            ).strip()
+            if engine:
+                preferences["CRISPASR_DEFAULT_ENGINE"] = engine
+            if quantization:
+                preferences["CRISPASR_DEFAULT_QUANTIZATION"] = quantization
+        try:
+            exposure = load_network_configuration(
+                execution.context.layout,
+                environment=execution.context.environment,
+            ).application
+            specifications = pandrator_runtime_specs(
+                execution.context.layout,
+                exposure=exposure,
+                preferences=preferences,
+            )
+            for specification in specifications:
+                execution.supervisor.replace_spec(specification)
+            service = execution.supervisor.start("pandrator.worker")
+        except Exception as error:
+            for service_id in ("pandrator.worker", "pandrator.api"):
+                try:
+                    execution.supervisor.stop(service_id)
+                except Exception:
+                    pass
+            execution.context.event_sink.emit(
+                "application.autostart_failed",
+                {"error": str(error)},
+                component_id="pandrator",
+                operation_id=execution.operation.id,
+            )
+            return {"started": False, "error": str(error)}
+        execution.context.event_sink.emit(
+            "application.started",
+            {"action": "install"},
+            component_id="pandrator",
+            operation_id=execution.operation.id,
+        )
+        return {
+            "started": True,
+            "service_id": service.id,
+            "health": (
+                service.health.model_dump(mode="json")
+                if service.health is not None
+                else None
+            ),
+        }
+
+    def _rollback_start_application(
+        self,
+        execution: OperationTaskContext,
+        task: TaskSpec,
+        result: dict,
+    ) -> None:
+        if execution.supervisor is None or not result.get("started"):
+            return
+        execution.supervisor.stop("pandrator.worker")
+        execution.supervisor.stop("pandrator.api")
 
     def _execute_stop_service(
         self,

@@ -99,6 +99,7 @@
         id="active-operation"
         class="panel operation-panel hidden"
         aria-live="polite"
+        tabindex="-1"
       >
         <div class="row">
           <div>
@@ -358,9 +359,9 @@
                     autocomplete="url"
                     placeholder="http://gpu-box.local:8097"
                   />
-                  <small>
-                    Enter the exact address used on your workstation, including
-                    http:// or https://.
+                  <small id="network-public-url-help">
+                    Pandrator will suggest a private address detected on this
+                    computer.
                   </small>
                 </label>
                 <label class="network-remote-field">
@@ -615,6 +616,104 @@
           </button>
         </div>
         <div id="plan-summary" class="plan-summary"></div>
+        <section id="plan-access" class="plan-access hidden">
+          <p class="eyebrow">Access after installation</p>
+          <h3>Where should Pandrator be available?</h3>
+          <div class="plan-access-options">
+            <label class="plan-access-option">
+              <input
+                type="radio"
+                name="plan-access-mode"
+                value="local"
+                checked
+              />
+              <span>
+                <strong>This device</strong>
+                <small>Safest default. Open Pandrator only on this computer.</small>
+              </span>
+            </label>
+            <label class="plan-access-option">
+              <input
+                type="radio"
+                name="plan-access-mode"
+                value="private_network"
+              />
+              <span>
+                <strong>Trusted home or office network</strong>
+                <small>Use Pandrator from another device on the same LAN or VPN.</small>
+              </span>
+            </label>
+            <label class="plan-access-option">
+              <input
+                type="radio"
+                name="plan-access-mode"
+                value="https_proxy"
+              />
+              <span>
+                <strong>HTTPS proxy or ingress</strong>
+                <small>For a server, pod, or other internet-facing deployment.</small>
+              </span>
+            </label>
+          </div>
+          <div id="plan-lan-fields" class="plan-access-fields hidden">
+            <label>
+              Address detected on this computer
+              <select id="plan-lan-candidate"></select>
+            </label>
+            <details>
+              <summary>Use a different hostname or IP address</summary>
+              <label>
+                LAN address
+                <input
+                  id="plan-lan-url"
+                  type="url"
+                  autocomplete="url"
+                  placeholder="http://pandrator.local:8097"
+                />
+              </label>
+            </details>
+            <p class="problem">
+              LAN access uses unencrypted HTTP. Choose it only for a network
+              you trust.
+            </p>
+          </div>
+          <div id="plan-https-fields" class="plan-access-fields hidden">
+            <label>
+              Public HTTPS address
+              <input
+                id="plan-https-url"
+                type="url"
+                autocomplete="url"
+                placeholder="https://pandrator.example.com"
+              />
+            </label>
+          </div>
+          <div id="plan-password-fields" class="plan-access-fields hidden">
+            <label>
+              Owner password
+              <input
+                id="plan-owner-password"
+                type="password"
+                autocomplete="new-password"
+                minlength="10"
+                placeholder="At least 10 characters"
+              />
+            </label>
+            <label>
+              Confirm owner password
+              <input
+                id="plan-owner-confirm"
+                type="password"
+                autocomplete="new-password"
+                minlength="10"
+              />
+            </label>
+            <small>
+              The password stays in this browser only until installation
+              finishes; it is never added to the plan.
+            </small>
+          </div>
+        </section>
         <h3>What the manager will do</h3>
         <ol id="plan-tasks"></ol>
         <div id="plan-confirmations"></div>

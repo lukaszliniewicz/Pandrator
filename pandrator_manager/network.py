@@ -11,12 +11,14 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import socket
 import tempfile
 from enum import StrEnum
 from pathlib import Path
 from typing import Mapping
 from urllib.parse import urlsplit, urlunsplit
 
+import psutil
 from pydantic import Field, field_validator, model_validator
 
 from .auth import protect_path
@@ -211,6 +213,52 @@ class NetworkConfiguration(StrictModel):
     application: EndpointExposure = Field(
         default_factory=lambda: EndpointExposure(port=8097)
     )
+
+
+def private_network_candidates(port: int) -> tuple[dict[str, str], ...]:
+    """Return usable private IPv4 origins without asking users to find an IP."""
+
+    selected_port = int(port)
+    if selected_port < 1 or selected_port > 65535:
+        return ()
+    try:
+        addresses = psutil.net_if_addrs()
+        stats = psutil.net_if_stats()
+    except (OSError, RuntimeError):
+        return ()
+    candidates: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for interface, interface_addresses in addresses.items():
+        status = stats.get(interface)
+        if status is not None and not status.isup:
+            continue
+        for item in interface_addresses:
+            if item.family != socket.AF_INET:
+                continue
+            try:
+                address = ipaddress.ip_address(str(item.address).split("%", 1)[0])
+            except ValueError:
+                continue
+            if (
+                not address.is_private
+                or address.is_loopback
+                or address.is_link_local
+                or address.is_unspecified
+                or address.is_multicast
+            ):
+                continue
+            value = str(address)
+            if value in seen:
+                continue
+            seen.add(value)
+            candidates.append(
+                {
+                    "interface": interface,
+                    "address": value,
+                    "url": f"http://{value}:{selected_port}",
+                }
+            )
+    return tuple(candidates)
 
 
 def _truthy(value: str | None) -> bool:

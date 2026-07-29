@@ -80,7 +80,7 @@ class StableLauncherTests(unittest.TestCase):
     def test_help_lists_only_public_launcher_commands(self):
         help_text = _parser().format_help()
 
-        self.assertIn("{setup,start,self-check}", help_text)
+        self.assertIn("{setup,start,tray,self-check}", help_text)
         self.assertIn("Install this native launcher", help_text)
         self.assertNotIn("==SUPPRESS==", help_text)
         for internal_command in ("daemon", "handoff", "uninstall", "probe"):
@@ -256,6 +256,48 @@ class StableLauncherTests(unittest.TestCase):
         client.recovery_url.assert_called_once_with()
         browser.assert_not_called()
         remember.assert_called_once_with(self.layout.workspace)
+
+    def test_graphical_setup_does_not_print_the_one_use_recovery_token(self):
+        client = mock.Mock()
+        client.recovery_url.return_value = (
+            "https://setup.example/recovery#token=one-use"
+        )
+        runtime = LauncherRuntime(
+            mode="native_launcher",
+            executable=self.source,
+            sha256="a" * 64,
+        )
+        with (
+            mock.patch(
+                "pandrator_manager.launcher.install_stable_launcher",
+                return_value=runtime,
+            ),
+            mock.patch(
+                "pandrator_manager.client.ManagerClient.ensure_running",
+                return_value=client,
+            ),
+            mock.patch(
+                "pandrator_manager.launcher.remember_workspace",
+                return_value=Path(self.temporary.name) / "manager-launcher.json",
+            ),
+            mock.patch(
+                "pandrator_manager.launcher.webbrowser.open",
+                return_value=True,
+            ),
+            mock.patch("builtins.print") as output,
+        ):
+            result = main(
+                [
+                    "setup",
+                    "--workspace",
+                    str(self.layout.workspace),
+                ]
+            )
+
+        self.assertEqual(0, result)
+        payload = json.loads(output.call_args.args[0])
+        self.assertTrue(payload["browser_opened"])
+        self.assertIsNone(payload["recovery_url"])
 
 
 class WorkspaceSelectionTests(unittest.TestCase):

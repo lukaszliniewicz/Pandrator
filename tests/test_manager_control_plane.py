@@ -31,7 +31,11 @@ from pandrator_manager.models import (
 )
 from pandrator_manager.network import EndpointExposure
 from pandrator_manager.supervisor import ProcessSupervisor
-from pandrator_manager.tray import TrayApplication, tray_available
+from pandrator_manager.tray import (
+    TrayApplication,
+    configure_tray_autostart,
+    tray_available,
+)
 
 
 def free_port():
@@ -921,6 +925,37 @@ class OptionalDesktopIntegrationTests(unittest.TestCase):
             self.assertIn("start-manager", unit)
             self.assertIn("Restart=on-failure", unit)
             self.assertNotIn("WantedBy=multi-user.target", unit)
+
+    def test_linux_tray_autostart_targets_the_stable_launcher_command(self):
+        with tempfile.TemporaryDirectory() as directory:
+            layout = create_application(Path(directory) / "workspace").context.layout
+            config = Path(directory) / "config"
+            with (
+                mock.patch("pandrator_manager.tray.sys.platform", "linux"),
+                mock.patch.dict(
+                    "pandrator_manager.tray.os.environ",
+                    {"XDG_CONFIG_HOME": str(config)},
+                    clear=True,
+                ),
+                mock.patch(
+                    "pandrator_manager.tray._tray_command",
+                    return_value=(
+                        "/opt/pandrator/PandratorManager",
+                        "tray",
+                        "--workspace",
+                        str(layout.workspace),
+                    ),
+                ),
+            ):
+                path = configure_tray_autostart(layout, enabled=True)
+
+            content = path.read_text(encoding="utf-8")
+            self.assertIn(
+                "Exec=/opt/pandrator/PandratorManager tray --workspace",
+                content,
+            )
+            self.assertIn("X-KDE-autostart-after=panel", content)
+            self.assertNotIn("-m pandrator_manager.tray", content)
 
     def test_quitting_tray_only_stops_the_tray_icon(self):
         client = mock.Mock()

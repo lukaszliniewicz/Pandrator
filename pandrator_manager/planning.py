@@ -248,6 +248,28 @@ class Planner:
                 *((pixi_task,) if pixi_task is not None else ()),
                 *adjusted_tasks,
             )
+        pandrator_desired = normalized.get("pandrator")
+        if (
+            tasks
+            and task_groups.get("pandrator")
+            and pandrator_desired is not None
+            and pandrator_desired.present
+            and bool(pandrator_desired.options.get("start_after_install", False))
+        ):
+            tasks = (
+                *tasks,
+                TaskSpec(
+                    id="pandrator:start",
+                    kind="start_application",
+                    label="Start Pandrator",
+                    component_id="pandrator",
+                    dependencies=tuple(task.id for task in tasks),
+                    resource_locks=("service:pandrator",),
+                    inputs={"failure_policy": "report_without_rollback"},
+                    verification={"strategy": "supervisor_health"},
+                    rollback={"strategy": "stop_started_application"},
+                ),
+            )
         if not tasks:
             warnings.append("The requested state already matches the inspected host.")
         created_at = datetime.fromtimestamp(self.context.clock.time(), timezone.utc)

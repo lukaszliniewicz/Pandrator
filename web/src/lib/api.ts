@@ -66,6 +66,14 @@ export function setCsrfToken(value: string | null | undefined) {
   csrfToken = value ?? '';
 }
 
+function createIdempotencyKey() {
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID();
+  }
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
+}
+
 function interpolatePath(
   template: string,
   parameters?: Record<string, unknown>
@@ -139,7 +147,11 @@ async function errorFromResponse(response: Response) {
 export async function apiResponse(path: string, init: RequestInit = {}) {
   const headers = new Headers(init.headers);
   const method = String(init.method ?? 'GET').toUpperCase();
-  if (csrfToken && !['GET', 'HEAD'].includes(method)) {
+  const isMutation = !['GET', 'HEAD', 'OPTIONS'].includes(method);
+  if (isMutation && !headers.has('Idempotency-Key')) {
+    headers.set('Idempotency-Key', createIdempotencyKey());
+  }
+  if (csrfToken && isMutation) {
     headers.set('X-CSRF-Token', csrfToken);
   }
   const body = serializeBody(init.body, headers);

@@ -714,7 +714,7 @@ def _parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(
         dest="command",
         required=True,
-        metavar="{setup,start,self-check}",
+        metavar="{setup,start,tray,self-check}",
     )
 
     setup = subparsers.add_parser(
@@ -793,6 +793,12 @@ def _parser() -> argparse.ArgumentParser:
     daemon.add_argument("--port", type=int)
     daemon.add_argument("--handoff-child")
 
+    tray = subparsers.add_parser("tray", help="Run the desktop tray client.")
+    tray.add_argument("--workspace", required=True)
+    tray.add_argument("--check", action="store_true")
+    tray.add_argument("--install-autostart", action="store_true")
+    tray.add_argument("--remove-autostart", action="store_true")
+
     for command in ("handoff", "uninstall"):
         helper = subparsers.add_parser(command)
         helper.add_argument("--workspace", required=True)
@@ -826,6 +832,17 @@ def main(argv: list[str] | None = None) -> int:
             port=args.port,
             handoff_child=args.handoff_child,
         )
+    if args.command == "tray":
+        from .tray import main as tray_main
+
+        tray_arguments = ["--workspace", args.workspace]
+        if args.check:
+            tray_arguments.append("--check")
+        if args.install_autostart:
+            tray_arguments.append("--install-autostart")
+        if args.remove_autostart:
+            tray_arguments.append("--remove-autostart")
+        return tray_main(tray_arguments)
     if args.command == "handoff":
         from .releases.handoff import run_handoff
 
@@ -922,6 +939,15 @@ def main(argv: list[str] | None = None) -> int:
             from .autostart import autostart_adapter
 
             autostart_adapter(layout).install(activate=True)
+        if getattr(sys, "frozen", False):
+            try:
+                from .tray import configure_tray_autostart
+
+                configure_tray_autostart(layout, enabled=True)
+            except (OSError, RuntimeError, ValueError) as error:
+                warnings.append(
+                    f"The desktop tray could not be registered for login: {error}"
+                )
     client = ManagerClient.ensure_running(layout.workspace)
     should_prepare_recovery = (
         args.command == "setup" or bool(args.open_recovery)
@@ -939,6 +965,13 @@ def main(argv: list[str] | None = None) -> int:
         if recovery_url and should_open_browser
         else False
     )
+    tray_started = False
+    if getattr(sys, "frozen", False):
+        from .tray import launch_tray_background
+
+        tray_started, tray_reason = launch_tray_background(layout)
+        if tray_reason and should_open_browser:
+            warnings.append(f"The desktop tray did not start: {tray_reason}")
     print(
         json.dumps(
             {
@@ -953,8 +986,9 @@ def main(argv: list[str] | None = None) -> int:
                         else None
                     )
                 ),
-                "recovery_url": recovery_url,
+                "recovery_url": recovery_url if not opened else None,
                 "browser_opened": opened,
+                "tray_started": tray_started,
                 "workspace_source": resolution.source,
                 "workspace_remembered": (
                     settings_path is not None

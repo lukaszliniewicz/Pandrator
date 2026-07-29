@@ -5,10 +5,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import subprocess
 import sys
 import tempfile
 import webbrowser
 from pathlib import Path
+
+import psutil
 
 from ..client import ManagerClient
 from ..context import WorkspaceLayout
@@ -42,7 +45,7 @@ def tray_available() -> tuple[bool, str]:
 
 def _tray_autostart_path(layout: WorkspaceLayout) -> Path:
     suffix = hashlib.sha256(str(layout.workspace).encode("utf-8")).hexdigest()[:10]
-    if os.name == "nt":
+    if sys.platform.startswith("win"):
         return (
             Path(os.environ["APPDATA"])
             / "Microsoft"
@@ -52,10 +55,35 @@ def _tray_autostart_path(layout: WorkspaceLayout) -> Path:
             / "Startup"
             / f"PandratorTray-{suffix}.cmd"
         )
+    configured_home = os.environ.get("XDG_CONFIG_HOME")
+    config_home = Path(configured_home) if configured_home else Path.home() / ".config"
+    return config_home / "autostart" / f"pandrator-tray-{suffix}.desktop"
+
+
+def _tray_command(layout: WorkspaceLayout) -> tuple[str, ...]:
+    from ..launcher import installed_launcher
+
+    installed = installed_launcher(layout)
+    if installed is not None:
+        return (
+            str(installed.executable),
+            "tray",
+            "--workspace",
+            str(layout.workspace),
+        )
+    if getattr(sys, "frozen", False):
+        return (
+            str(sys.executable),
+            "tray",
+            "--workspace",
+            str(layout.workspace),
+        )
     return (
-        Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-        / "autostart"
-        / f"pandrator-tray-{suffix}.desktop"
+        str(sys.executable),
+        "-m",
+        "pandrator_manager.tray",
+        "--workspace",
+        str(layout.workspace),
     )
 
 
@@ -72,23 +100,27 @@ def configure_tray_autostart(
             pass
         return path
     path.parent.mkdir(parents=True, exist_ok=True)
-    if os.name == "nt":
+    command = _tray_command(layout)
+    if sys.platform.startswith("win"):
+        executable, *arguments = command
+        argument_text = " ".join(f'"{argument}"' for argument in arguments)
         content = (
             "@echo off\n"
-            f"start \"\" /b \"{sys.executable}\" -m pandrator_manager.tray "
-            f"--workspace \"{layout.workspace}\"\n"
+            f"start \"\" /b \"{executable}\" {argument_text}\n"
         )
     else:
-        escaped_executable = str(sys.executable).replace("\\", "\\\\").replace(" ", "\\ ")
-        escaped_workspace = str(layout.workspace).replace("\\", "\\\\").replace(" ", "\\ ")
+        escaped_command = " ".join(
+            str(value).replace("\\", "\\\\").replace(" ", "\\ ")
+            for value in command
+        )
         content = (
             "[Desktop Entry]\n"
             "Type=Application\n"
             "Name=Pandrator Tray\n"
-            f"Exec={escaped_executable} -m pandrator_manager.tray "
-            f"--workspace {escaped_workspace}\n"
+            f"Exec={escaped_command}\n"
             "Terminal=false\n"
             "X-GNOME-Autostart-enabled=true\n"
+            "X-KDE-autostart-after=panel\n"
         )
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.",
@@ -109,6 +141,59 @@ def configure_tray_autostart(
         except FileNotFoundError:
             pass
     return path
+
+
+def launch_tray_background(layout: WorkspaceLayout) -> tuple[bool, str]:
+    available, reason = tray_available()
+    if not available:
+        return False, reason
+    kwargs: dict[str, object] = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "close_fds": True,
+    }
+    if sys.platform.startswith("win"):
+        kwargs["creationflags"] = (
+            subprocess.CREATE_NEW_PROCESS_GROUP
+            | subprocess.DETACHED_PROCESS
+            | subprocess.CREATE_NO_WINDOW
+        )
+    else:
+        kwargs["start_new_session"] = True
+    try:
+        subprocess.Popen(_tray_command(layout), **kwargs)
+    except OSError as error:
+        return False, str(error)
+    return True, ""
+
+
+def _claim_tray_instance(layout: WorkspaceLayout) -> Path | None:
+    layout.state.mkdir(parents=True, exist_ok=True)
+    path = layout.state / "tray.pid"
+    for _attempt in range(2):
+        try:
+            descriptor = os.open(
+                path,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o600,
+            )
+        except FileExistsError:
+            try:
+                pid = int(path.read_text(encoding="ascii").strip())
+            except (OSError, ValueError):
+                pid = 0
+            if pid > 0 and psutil.pid_exists(pid):
+                return None
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            continue
+        with os.fdopen(descriptor, "w", encoding="ascii") as handle:
+            handle.write(str(os.getpid()))
+        return path
+    return None
 
 
 class TrayApplication:
@@ -206,6 +291,16 @@ def main(argv: list[str] | None = None) -> int:
     if not available:
         print(f"Pandrator tray is unavailable: {reason}", file=sys.stderr)
         return 1
-    client = ManagerClient.ensure_running(layout.workspace)
-    TrayApplication(client).run()
+    instance = _claim_tray_instance(layout)
+    if instance is None:
+        return 0
+    try:
+        client = ManagerClient.ensure_running(layout.workspace)
+        TrayApplication(client).run()
+    finally:
+        try:
+            if instance.read_text(encoding="ascii").strip() == str(os.getpid()):
+                instance.unlink()
+        except OSError:
+            pass
     return 0

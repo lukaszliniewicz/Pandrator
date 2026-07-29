@@ -25,6 +25,9 @@ let networkDirty = false;
 let networkInitialized = false;
 let networkPreviousMode = "local";
 let activeManagerTab = "install";
+let pendingInstallOperationId = "";
+let pendingPostInstallAccess = null;
+let finishingInstall = false;
 
 const componentState = new Map();
 const componentNodes = new Map();
@@ -1128,15 +1131,27 @@ function updateNetworkFields() {
     if (byId("network-bind-host").value === "127.0.0.1") {
       byId("network-bind-host").value = "0.0.0.0";
     }
+    const candidates =
+      snapshot.network?.application?.private_network_candidates || [];
+    if (!byId("network-public-url").value.trim() && candidates.length) {
+      byId("network-public-url").value = candidates[0].url;
+    }
+    byId("network-public-url-help").textContent = candidates.length
+      ? "A private address detected on this computer is filled in for you. Change it only if you use another LAN hostname."
+      : "No private IPv4 address was detected. Enter the LAN hostname or IP address you use from another device.";
   } else if (proxy) {
     byId("network-mode-help").textContent =
       "Recommended for pods, rented GPU machines, and internet-facing servers.";
     warning.textContent =
       "Only configure the number of reverse proxies you operate. The public URL must already terminate HTTPS.";
+    byId("network-public-url-help").textContent =
+      "Enter the exact HTTPS origin configured in your proxy or ingress.";
   } else {
     byId("network-mode-help").textContent =
       "Pandrator listens only on this computer.";
     byId("network-bind-host").value = "127.0.0.1";
+    byId("network-public-url-help").textContent =
+      "Pandrator is not exposed outside this computer.";
   }
   const application = snapshot.network?.application;
   if (application?.owner_authentication_initialized) {
@@ -1367,13 +1382,77 @@ function renderActiveOperation() {
   const panel = byId("active-operation");
   if (!activeOperation || terminalStates.has(activeOperation.state)) {
     panel.classList.add("hidden");
+    document.body.classList.remove("operation-running");
     return;
   }
   panel.classList.remove("hidden");
+  document.body.classList.add("operation-running");
   byId("operation-title").textContent = stateLabel(activeOperation.kind);
   byId("operation-detail").textContent =
     `${stateLabel(activeOperation.state)}${activeOperation.current_task_id ? ` · ${stateLabel(activeOperation.current_task_id)}` : ""}`;
   byId("operation-progress").value = Number(activeOperation.progress || 0);
+}
+
+function focusActiveOperation() {
+  renderApplication();
+  renderCatalogue();
+  renderNetwork();
+  renderActiveOperation();
+  const panel = byId("active-operation");
+  window.requestAnimationFrame(() => {
+    panel.scrollIntoView({ behavior: "smooth", block: "center" });
+    panel.focus({ preventScroll: true });
+  });
+}
+
+async function finishPendingInstall() {
+  if (!pendingInstallOperationId || finishingInstall) return;
+  const operation = snapshot.operations.find(
+    (item) => item.id === pendingInstallOperationId,
+  );
+  if (!operation || !terminalStates.has(operation.state)) return;
+  if (operation.state !== "succeeded") {
+    pendingInstallOperationId = "";
+    pendingPostInstallAccess = null;
+    showMessage(
+      `Installation ${stateLabel(operation.state)}. Review the activity details before trying again.`,
+      true,
+    );
+    return;
+  }
+  finishingInstall = true;
+  const access = pendingPostInstallAccess;
+  pendingInstallOperationId = "";
+  pendingPostInstallAccess = null;
+  let accessWarning = "";
+  try {
+    if (access) {
+      try {
+        await requestJson("/v1/network/application", {
+          method: "PUT",
+          body: JSON.stringify(access),
+        });
+      } catch (error) {
+        accessWarning = ` Access settings need attention: ${error.message}`;
+      }
+    }
+    const result = await requestJson("/v1/application/launch", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    if (result.launch_url) {
+      window.location.assign(result.launch_url);
+      return;
+    }
+    showMessage(`Pandrator is installed and running.${accessWarning}`);
+  } catch (error) {
+    showMessage(
+      `Pandrator is installed, but could not be opened automatically: ${error.message}${accessWarning}`,
+      true,
+    );
+  } finally {
+    finishingInstall = false;
+  }
 }
 
 function renderReleaseStatus() {
@@ -1441,6 +1520,7 @@ async function refresh() {
     renderActivity();
     renderReleaseStatus();
     renderActiveOperation();
+    await finishPendingInstall();
   } catch (error) {
     showMessage(error.message, true);
     if (error.code === "authentication_required") {
@@ -1526,10 +1606,138 @@ async function planComponent(component, kind) {
   );
 }
 
+function selectedPlanAccessMode() {
+  return (
+    document.querySelector('input[name="plan-access-mode"]:checked')?.value ||
+    "local"
+  );
+}
+
+function updatePlanAccessFields() {
+  const mode = selectedPlanAccessMode();
+  byId("plan-lan-fields").classList.toggle(
+    "hidden",
+    mode !== "private_network",
+  );
+  byId("plan-https-fields").classList.toggle(
+    "hidden",
+    mode !== "https_proxy",
+  );
+  byId("plan-password-fields").classList.toggle(
+    "hidden",
+    mode === "local",
+  );
+}
+
+function preparePlanAccess() {
+  const root = byId("plan-access");
+  const includesPandrator =
+    selectedPlan?.kind === "install" &&
+    Boolean(selectedPlan.desired?.pandrator?.present);
+  root.classList.toggle("hidden", !includesPandrator);
+  if (!includesPandrator) return;
+
+  const application = snapshot.network?.application || {};
+  const currentMode = application.mode || "local";
+  const selected =
+    document.querySelector(
+      `input[name="plan-access-mode"][value="${currentMode}"]`,
+    ) ||
+    document.querySelector('input[name="plan-access-mode"][value="local"]');
+  selected.checked = true;
+
+  const candidates = application.private_network_candidates || [];
+  const candidateSelect = byId("plan-lan-candidate");
+  clear(candidateSelect);
+  if (candidates.length) {
+    for (const candidate of candidates) {
+      const option = document.createElement("option");
+      option.value = candidate.url;
+      option.textContent = `${candidate.url} · ${candidate.interface}`;
+      candidateSelect.append(option);
+    }
+  } else {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "No private IPv4 address detected";
+    candidateSelect.append(option);
+  }
+  byId("plan-lan-url").value =
+    currentMode === "private_network" ? application.public_url || "" : "";
+  byId("plan-https-url").value =
+    currentMode === "https_proxy" ? application.public_url || "" : "";
+  byId("plan-owner-password").value = "";
+  byId("plan-owner-confirm").value = "";
+  updatePlanAccessFields();
+}
+
+function collectPlanAccess() {
+  if (byId("plan-access").classList.contains("hidden")) return null;
+  const mode = selectedPlanAccessMode();
+  const application = snapshot.network?.application || {};
+  const port = Number(application.port || 8097);
+  const password = byId("plan-owner-password").value;
+  const confirmation = byId("plan-owner-confirm").value;
+  if (password !== confirmation) {
+    throw new Error("The owner password confirmation does not match.");
+  }
+  if (password && password.length < 10) {
+    throw new Error("The owner password must contain at least 10 characters.");
+  }
+  if (
+    mode !== "local" &&
+    !application.owner_authentication_initialized &&
+    !password
+  ) {
+    throw new Error(
+      "Choose an owner password before making Pandrator available to other devices.",
+    );
+  }
+
+  let publicUrl = null;
+  if (mode === "private_network") {
+    publicUrl =
+      byId("plan-lan-url").value.trim() ||
+      byId("plan-lan-candidate").value.trim();
+    if (!publicUrl.toLowerCase().startsWith("http://")) {
+      throw new Error(
+        "Choose a detected LAN address or enter one beginning with http://.",
+      );
+    }
+  } else if (mode === "https_proxy") {
+    publicUrl = byId("plan-https-url").value.trim().replace(/\/+$/, "");
+    if (!publicUrl.toLowerCase().startsWith("https://")) {
+      throw new Error("Enter the HTTPS address provided by your proxy or ingress.");
+    }
+  }
+  return {
+    exposure: {
+      mode,
+      bind_host:
+        mode === "private_network"
+          ? "0.0.0.0"
+          : mode === "https_proxy"
+            ? "127.0.0.1"
+            : "127.0.0.1",
+      port,
+      public_url: publicUrl,
+      trusted_hosts: [],
+      proxy_hops: mode === "https_proxy" ? 1 : 0,
+      allow_insecure_remote: mode === "private_network",
+    },
+    owner_password: password || null,
+    replace_owner_password: Boolean(
+      password && application.owner_authentication_initialized,
+    ),
+    restart_if_running: true,
+  };
+}
+
 function showPlan(plan, title = "") {
   selectedPlan = plan;
   selectedPlanTitle = title || stateLabel(plan.kind);
   byId("plan-title").textContent = selectedPlanTitle;
+  preparePlanAccess();
   const summary = byId("plan-summary");
   clear(summary);
   summary.append(
@@ -1624,6 +1832,13 @@ function showPlan(plan, title = "") {
 
 async function executePlan() {
   if (!selectedPlan) return;
+  let postInstallAccess = null;
+  try {
+    postInstallAccess = collectPlanAccess();
+  } catch (error) {
+    showMessage(error.message, true);
+    return;
+  }
   const confirm = byId("confirm-plan");
   confirm.disabled = true;
   confirm.classList.add("busy");
@@ -1639,10 +1854,14 @@ async function executePlan() {
       }),
     });
     const kind = activeOperation.kind;
+    if (postInstallAccess) {
+      pendingInstallOperationId = activeOperation.id;
+      pendingPostInstallAccess = postInstallAccess;
+    }
     selectedPlan = null;
     selectedPlanTitle = "";
     byId("plan-dialog").close();
-    renderActiveOperation();
+    focusActiveOperation();
     if (kind === "uninstall") {
       pollingStopped = true;
       if (refreshTimer !== null) window.clearTimeout(refreshTimer);
@@ -1664,6 +1883,8 @@ async function executePlan() {
 function closePlan() {
   selectedPlan = null;
   selectedPlanTitle = "";
+  byId("plan-owner-password").value = "";
+  byId("plan-owner-confirm").value = "";
   byId("plan-dialog").close();
 }
 
@@ -2109,6 +2330,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     });
   }
   byId("save-network").addEventListener("click", saveNetwork);
+  for (const option of document.querySelectorAll(
+    'input[name="plan-access-mode"]',
+  )) {
+    option.addEventListener("change", updatePlanAccessFields);
+  }
   byId("confirm-plan").addEventListener("click", executePlan);
   byId("close-plan").addEventListener("click", closePlan);
   byId("cancel-plan").addEventListener("click", closePlan);

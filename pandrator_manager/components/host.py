@@ -16,10 +16,9 @@ from ..models import ComponentDefinition, ComputeVariant
 
 _ROCM_ARCHITECTURE = re.compile(r"\bgfx[0-9a-f]+\b", re.IGNORECASE)
 _LEGACY_AMD_PATTERNS = (
-    re.compile(r"\b(pol(?:aris)?|ellesmere|baffin|lexa|vega)\b", re.IGNORECASE),
-    re.compile(r"\bradeon\s+(?:rx\s*)?[45]\d{2}\b", re.IGNORECASE),
+    re.compile(r"\bvega\b", re.IGNORECASE),
     re.compile(r"\bradeon\s+(?:r[579]|hd)\b", re.IGNORECASE),
-    re.compile(r"\bdev_(?:15dd|67[cd-ef][0-9a-f])\b", re.IGNORECASE),
+    re.compile(r"\bdev_15dd\b", re.IGNORECASE),
 )
 _LINUX_DISPLAY_CLASSES = (
     "vga compatible controller",
