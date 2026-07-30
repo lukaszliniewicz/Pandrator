@@ -62,6 +62,9 @@ export class GenerationStore {
   status = $state<LoadState>('idle');
   error = $state('');
   private loadedFilter: SegmentFilter | '' = '';
+  private loadedRunId = '';
+  private loadedPlanRevisionId: string | null = null;
+  private loadedThroughOrdinal = -1;
   private initialized = false;
   private controller?: AbortController;
   private unsubscribe?: () => void;
@@ -134,27 +137,53 @@ export class GenerationStore {
       } else if (
         preserveLoaded
         && this.loadedFilter === filter
+        && this.loadedRunId === selectedRunId
         && this.payload.plan_revision_id === next.plan_revision_id
-        && this.payload.items.length > next.items.length
+        && this.loadedThroughOrdinal > (next.items.at(-1)?.ordinal ?? -1)
       ) {
-        const incoming = new Map(next.items.map((item) => [item.id, item]));
-        const lastOrdinal = next.items.at(-1)?.ordinal ?? -1;
+        const items = [...next.items];
+        const known = new Set(items.map((item) => item.id));
+        const lastLoadedOrdinal = this.loadedThroughOrdinal;
+        let nextCursor = next.next_cursor;
+        while (
+          nextCursor != null
+          && (items.at(-1)?.ordinal ?? -1) < lastLoadedOrdinal
+        ) {
+          const pageQuery = new URLSearchParams(query);
+          pageQuery.set('cursor', String(nextCursor));
+          const page = await generationApi.segments(
+            this.sessionId,
+            pageQuery,
+            controller.signal
+          );
+          if (controller.signal.aborted) {
+            return { selectedRunId, shouldExpand: false };
+          }
+          items.push(...page.items.filter((item) => !known.has(item.id)));
+          for (const item of page.items) known.add(item.id);
+          nextCursor = page.next_cursor;
+        }
         payload = {
           ...next,
-          items: [
-            ...next.items,
-            ...this.payload.items.filter(
-              (item) => item.ordinal > lastOrdinal && !incoming.has(item.id)
-            )
-          ],
-          next_cursor: this.payload.next_cursor
+          items,
+          next_cursor: nextCursor
         };
       }
       this.payload = payload;
       this.runs = runs;
       this.activeRun = activeRun;
       this.assembly = latestAssembly.item;
+      const sameLoadedScope = (
+        this.loadedFilter === filter
+        && this.loadedRunId === selectedRunId
+        && this.loadedPlanRevisionId === payload.plan_revision_id
+      );
       this.loadedFilter = filter;
+      this.loadedRunId = selectedRunId;
+      this.loadedPlanRevisionId = payload.plan_revision_id;
+      this.loadedThroughOrdinal = sameLoadedScope
+        ? Math.max(this.loadedThroughOrdinal, payload.items.at(-1)?.ordinal ?? -1)
+        : payload.items.at(-1)?.ordinal ?? -1;
       const shouldExpand = this.initialized && (
         (previousTotal === 0 && payload.total > 0)
         || (
