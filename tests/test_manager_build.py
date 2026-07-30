@@ -35,6 +35,15 @@ from scripts.qualify_manager_lifecycle import _default_bundle_path
 
 
 class ManagerBootstrapBuildTests(unittest.TestCase):
+    def test_windows_bootstrap_uses_the_gui_subsystem(self) -> None:
+        repository = Path(__file__).resolve().parents[1]
+        specification = (
+            repository / "pandrator_manager_bootstrap.spec"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('console=os.name != "nt"', specification)
+        self.assertIn('collect_submodules("dbus_next")', specification)
+
     def test_release_bundle_uses_public_platform_names(self) -> None:
         self.assertEqual(
             _release_platform(system="win32", machine="AMD64"),

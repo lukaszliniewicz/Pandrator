@@ -265,14 +265,18 @@ def main(argv: list[str] | None = None) -> int:
         _verify_wheel_provenance(repo_root, wheel_root)
         suffix = ".exe" if sys.platform == "win32" else ""
         executable = repo_root / "dist" / f"PandratorManagerBootstrap{suffix}"
-        result = subprocess.run(
-            [str(executable), "self-check"],
+        result_path = temporary / "self-check.json"
+        subprocess.run(
+            [
+                str(executable),
+                "self-check",
+                "--result-file",
+                str(result_path),
+            ],
             cwd=repo_root,
             check=True,
-            text=True,
-            stdout=subprocess.PIPE,
         )
-        report = json.loads(result.stdout)
+        report = json.loads(result_path.read_text(encoding="utf-8"))
         if not report.get("ok") or not report.get("frozen"):
             raise RuntimeError("Packaged manager bootstrap self-check failed.")
         digest = sha256_file(executable)

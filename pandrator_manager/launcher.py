@@ -21,7 +21,6 @@ import stat
 import subprocess
 import sys
 import tempfile
-import webbrowser
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,6 +30,7 @@ from urllib.parse import urlsplit
 from . import __version__
 from .auth import protect_path
 from .context import WorkspaceLayout
+from .desktop import open_desktop_url
 from .errors import ManagerError
 from .network import AccessMode, EndpointExposure
 from .workspace_selection import (
@@ -65,6 +65,42 @@ class LauncherWorkspaceResolution:
     @property
     def cancelled(self) -> bool:
         return self.workspace is None
+
+
+def _emit_launcher_result(
+    payload: dict,
+    *,
+    result_file: str | os.PathLike[str] | None = None,
+) -> None:
+    """Emit launcher JSON to a terminal and/or a windowed-build result file."""
+
+    serialized = json.dumps(payload, sort_keys=True)
+    if result_file is not None:
+        selected = Path(result_file).expanduser().resolve(strict=False)
+        selected.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{selected.name}.",
+            suffix=".tmp",
+            dir=selected.parent,
+            text=True,
+        )
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(
+                descriptor,
+                "w",
+                encoding="utf-8",
+                newline="\n",
+            ) as handle:
+                handle.write(serialized)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, selected)
+        finally:
+            temporary.unlink(missing_ok=True)
+    if sys.stdout is not None:
+        print(serialized)
 
 
 def current_runtime_executable() -> Path:
@@ -736,6 +772,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     setup.add_argument("--autostart", action="store_true")
     setup.add_argument("--no-open", action="store_true")
+    setup.add_argument("--result-file", help=argparse.SUPPRESS)
     setup.add_argument(
         "--remote-setup-url",
         help=(
@@ -787,6 +824,7 @@ def _parser() -> argparse.ArgumentParser:
         help="Override the remembered parent directory for this launch.",
     )
     start.add_argument("--open-recovery", action="store_true")
+    start.add_argument("--result-file", help=argparse.SUPPRESS)
 
     daemon = subparsers.add_parser("daemon")
     daemon.add_argument("--workspace", required=True)
@@ -810,7 +848,11 @@ def _parser() -> argparse.ArgumentParser:
     probe.add_argument("--probe-database", type=Path, required=True)
     probe.add_argument("--expected-version", required=True)
 
-    subparsers.add_parser("self-check", help="Validate the packaged launcher.")
+    self_check = subparsers.add_parser(
+        "self-check",
+        help="Validate the packaged launcher.",
+    )
+    self_check.add_argument("--result-file", help=argparse.SUPPRESS)
     return parser
 
 
@@ -822,7 +864,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "self-check":
         report = _self_check()
-        print(json.dumps(report, sort_keys=True))
+        _emit_launcher_result(report, result_file=args.result_file)
         return 0 if report["ok"] else 2
     if args.command == "daemon":
         from .daemon import run_daemon
@@ -868,14 +910,12 @@ def main(argv: list[str] | None = None) -> int:
         allow_selection=not bool(getattr(args, "no_open", False)),
     )
     if resolution.cancelled:
-        print(
-            json.dumps(
-                {
-                    "status": "cancelled",
-                    "reason": "workspace_selection_cancelled",
-                },
-                sort_keys=True,
-            )
+        _emit_launcher_result(
+            {
+                "status": "cancelled",
+                "reason": "workspace_selection_cancelled",
+            },
+            result_file=getattr(args, "result_file", None),
         )
         return 0
 
@@ -961,7 +1001,7 @@ def main(argv: list[str] | None = None) -> int:
         client.recovery_url() if should_prepare_recovery else None
     )
     opened = (
-        bool(webbrowser.open(recovery_url))
+        open_desktop_url(recovery_url)
         if recovery_url and should_open_browser
         else False
     )
@@ -972,35 +1012,33 @@ def main(argv: list[str] | None = None) -> int:
         tray_started, tray_reason = launch_tray_background(layout)
         if tray_reason and should_open_browser:
             warnings.append(f"The desktop tray did not start: {tray_reason}")
-    print(
-        json.dumps(
-            {
-                "status": "ready",
-                "workspace": str(layout.workspace),
-                "launcher": (
-                    str(installed.executable)
-                    if installed is not None
-                    else (
-                        str(current.executable)
-                        if (current := installed_launcher(layout)) is not None
-                        else None
-                    )
-                ),
-                "recovery_url": recovery_url if not opened else None,
-                "browser_opened": opened,
-                "tray_started": tray_started,
-                "workspace_source": resolution.source,
-                "workspace_remembered": (
-                    settings_path is not None
-                    or resolution.source in {"remembered", "installed_launcher"}
-                ),
-                "workspace_settings": (
-                    str(settings_path) if settings_path is not None else None
-                ),
-                "warnings": warnings,
-            },
-            sort_keys=True,
-        )
+    _emit_launcher_result(
+        {
+            "status": "ready",
+            "workspace": str(layout.workspace),
+            "launcher": (
+                str(installed.executable)
+                if installed is not None
+                else (
+                    str(current.executable)
+                    if (current := installed_launcher(layout)) is not None
+                    else None
+                )
+            ),
+            "recovery_url": recovery_url if not opened else None,
+            "browser_opened": opened,
+            "tray_started": tray_started,
+            "workspace_source": resolution.source,
+            "workspace_remembered": (
+                settings_path is not None
+                or resolution.source in {"remembered", "installed_launcher"}
+            ),
+            "workspace_settings": (
+                str(settings_path) if settings_path is not None else None
+            ),
+            "warnings": warnings,
+        },
+        result_file=getattr(args, "result_file", None),
     )
     return 0
 

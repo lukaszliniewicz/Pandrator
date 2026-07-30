@@ -87,6 +87,22 @@ class StableLauncherTests(unittest.TestCase):
         for internal_command in ("daemon", "handoff", "uninstall", "probe"):
             self.assertNotIn(f"    {internal_command}", help_text)
 
+    def test_windowed_launcher_can_write_self_check_without_stdout(self):
+        result_path = Path(self.temporary.name) / "self-check.json"
+        with mock.patch.object(sys, "stdout", None):
+            result = main(
+                [
+                    "self-check",
+                    "--result-file",
+                    str(result_path),
+                ]
+            )
+
+        self.assertEqual(0, result)
+        report = json.loads(result_path.read_text(encoding="utf-8"))
+        self.assertTrue(report["ok"])
+        self.assertEqual("pandrator-manager-launcher", report["service"])
+
     def test_corrupt_installed_launcher_fails_closed(self):
         install_stable_launcher(self.layout, source=self.source)
         stable_launcher_path(self.layout).write_bytes(b"tampered")
@@ -242,7 +258,7 @@ class StableLauncherTests(unittest.TestCase):
                 "pandrator_manager.launcher.remember_workspace",
                 return_value=Path(self.temporary.name) / "manager-launcher.json",
             ) as remember,
-            mock.patch("pandrator_manager.launcher.webbrowser.open") as browser,
+            mock.patch("pandrator_manager.launcher.open_desktop_url") as browser,
             mock.patch.object(sys, "frozen", True, create=True),
             mock.patch(
                 "pandrator_manager.tray.configure_tray_autostart",
@@ -290,7 +306,7 @@ class StableLauncherTests(unittest.TestCase):
                 return_value=Path(self.temporary.name) / "manager-launcher.json",
             ),
             mock.patch(
-                "pandrator_manager.launcher.webbrowser.open",
+                "pandrator_manager.launcher.open_desktop_url",
                 return_value=True,
             ),
             mock.patch.object(sys, "frozen", True, create=True),

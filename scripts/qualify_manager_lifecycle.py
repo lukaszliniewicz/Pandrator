@@ -283,18 +283,23 @@ def main(argv: list[str] | None = None) -> int:
     qualification_environment["LOCALAPPDATA"] = str(settings_root)
     qualification_environment["XDG_CONFIG_HOME"] = str(settings_root)
     try:
-        setup = _run(
+        setup_result = settings_root / "bootstrap-setup-result.json"
+        _run(
             [
                 str(bootstrap),
                 "setup",
                 "--workspace",
                 str(workspace),
                 "--no-open",
+                "--result-file",
+                str(setup_result),
             ],
             cwd=repo_root,
             env=qualification_environment,
         )
-        report["bootstrap_setup"] = _json_from_output(setup.stdout)
+        report["bootstrap_setup"] = _json_from_output(
+            setup_result.read_text(encoding="utf-8")
+        )
         remembered_path = Path(
             str(report["bootstrap_setup"].get("workspace_settings") or "")
         ).resolve(strict=False)
@@ -319,16 +324,19 @@ def main(argv: list[str] | None = None) -> int:
             old_descriptor.process_create_time,
         )
 
-        remembered_start = _run(
+        remembered_result = settings_root / "remembered-start-result.json"
+        _run(
             [
                 str(bootstrap),
                 "start",
+                "--result-file",
+                str(remembered_result),
             ],
             cwd=repo_root,
             env=qualification_environment,
         )
         report["remembered_start"] = _json_from_output(
-            remembered_start.stdout
+            remembered_result.read_text(encoding="utf-8")
         )
         if (
             report["remembered_start"].get("workspace") != str(workspace)

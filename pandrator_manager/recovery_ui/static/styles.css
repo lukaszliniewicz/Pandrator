@@ -427,7 +427,6 @@ summary:focus-visible,
   align-items: center;
   min-height: 5rem;
   padding: 0.9rem 1rem;
-  border-top: 2px solid var(--text);
 }
 
 .application-copy {

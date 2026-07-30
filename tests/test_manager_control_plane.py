@@ -958,6 +958,51 @@ class OptionalDesktopIntegrationTests(unittest.TestCase):
             self.assertIn("X-KDE-autostart-after=panel", content)
             self.assertNotIn("-m pandrator_manager.tray", content)
 
+    @unittest.skipUnless(
+        sys.platform.startswith("win"),
+        "Windows registry startup integration requires winreg.",
+    )
+    def test_windows_tray_autostart_uses_registry_without_a_batch_window(self):
+        import winreg
+
+        with tempfile.TemporaryDirectory() as directory:
+            layout = create_application(Path(directory) / "workspace").context.layout
+            legacy = Path(directory) / "PandratorTray.cmd"
+            legacy.write_text("@echo off\n", encoding="utf-8")
+            key = mock.MagicMock()
+            opened = mock.MagicMock()
+            opened.__enter__.return_value = key
+            with (
+                mock.patch("pandrator_manager.tray.sys.platform", "win32"),
+                mock.patch(
+                    "pandrator_manager.tray._tray_autostart_path",
+                    return_value=legacy,
+                ),
+                mock.patch(
+                    "pandrator_manager.tray._tray_command",
+                    return_value=(
+                        r"C:\Program Files\Pandrator\manager.exe",
+                        "tray",
+                        "--workspace",
+                        str(layout.workspace),
+                    ),
+                ),
+                mock.patch.object(
+                    winreg,
+                    "CreateKeyEx",
+                    return_value=opened,
+                ),
+                mock.patch.object(winreg, "SetValueEx") as set_value,
+            ):
+                location = configure_tray_autostart(layout, enabled=True)
+
+            command = set_value.call_args.args[4]
+            self.assertIn(r'"C:\Program Files\Pandrator\manager.exe"', command)
+            self.assertIn(" tray ", command)
+            self.assertNotIn("cmd.exe", command.casefold())
+            self.assertTrue(str(location).startswith("HKCU\\"))
+            self.assertFalse(legacy.exists())
+
     def test_quitting_tray_only_stops_the_tray_icon(self):
         client = mock.Mock()
         tray = TrayApplication(client)

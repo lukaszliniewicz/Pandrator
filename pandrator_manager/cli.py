@@ -8,7 +8,6 @@ import subprocess
 import sys
 import time
 import uuid
-import webbrowser
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +23,7 @@ from .client import (
 )
 from .context import WorkspaceLayout
 from .daemon import run_daemon
+from .desktop import open_desktop_url
 from .errors import ManagerError
 from .models import (
     TERMINAL_OPERATION_STATES,
@@ -545,7 +545,7 @@ def main(argv: list[str] | None = None) -> int:
                     if app_service and app_service.get("endpoint")
                     else client.recovery_url()
                 )
-            opened = webbrowser.open(url)
+            opened = open_desktop_url(url)
             payload = {"url": url, "browser_opened": bool(opened)}
         elif args.command in {"list", "probe"}:
             items = client.components()

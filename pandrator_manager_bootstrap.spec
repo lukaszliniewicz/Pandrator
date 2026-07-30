@@ -4,6 +4,8 @@ import os
 import sys
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_submodules
+
 
 root = Path(SPEC).resolve().parent
 package_root_value = os.environ.get("PANDRATOR_MANAGER_WHEEL_ROOT")
@@ -32,7 +34,12 @@ a = Analysis(
     pathex=[str(package_root)],
     binaries=[],
     datas=[(str(recovery_static), "pandrator_manager/recovery_ui/static")],
-    hiddenimports=["PIL.Image", "pystray", tray_backend],
+    hiddenimports=[
+        "PIL.Image",
+        "pystray",
+        tray_backend,
+        *collect_submodules("dbus_next"),
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -59,7 +66,10 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    console=True,
+    # Windows is a desktop bootstrap: using the GUI subsystem prevents the
+    # setup, daemon, and tray entry points from creating console windows.
+    # Linux retains stdout for AppImage diagnostics and shell operation.
+    console=os.name != "nt",
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

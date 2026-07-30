@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pandrator-manager"
-version = "0.9.2"
+version = "0.9.3"
 description = "Per-user installation, update, repair, and runtime manager for Pandrator"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
@@ -13,6 +13,7 @@ license-files = ["LICENSE"]
 dependencies = [
   "certifi>=2024.8",
   "cryptography>=43,<46",
+  "dbus-next==0.2.3",
   "dulwich>=0.22,<1",
   "flask>=3.1,<4",
   "packaging>=24,<26",

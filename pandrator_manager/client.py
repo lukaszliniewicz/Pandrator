@@ -17,6 +17,7 @@ import requests
 
 from .auth import read_client_secret
 from .context import WorkspaceLayout
+from .desktop import host_process_environment
 from .launcher import (
     LauncherRuntime,
     current_runtime_executable,
@@ -334,6 +335,7 @@ class ManagerClient:
                 stderr=subprocess.STDOUT,
                 shell=False,
                 cwd=cwd,
+                env=host_process_environment(),
                 **options,
             )
         except Exception:

@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .auth import protect_path
+from .desktop import host_process_environment
 
 SETTINGS_SCHEMA_VERSION = 1
 SETTINGS_DIRECTORY = "pandrator"
@@ -408,7 +409,7 @@ def _select_command_directory(
         stderr=subprocess.PIPE,
         text=True,
         shell=False,
-        env=dict(environ),
+        env=host_process_environment(environ),
     )
     error_text = result.stderr.strip()
     if result.returncode in {1, 130} and (

@@ -9,17 +9,30 @@ import os
 import subprocess
 import sys
 import tempfile
-import webbrowser
 from pathlib import Path
 
 import psutil
 
 from ..client import ManagerClient
 from ..context import WorkspaceLayout
+from ..desktop import host_process_environment, open_desktop_url
 from ..workspace_selection import default_workspace
+
+_WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
 
 def tray_available() -> tuple[bool, str]:
+    if (
+        sys.platform.startswith("linux")
+        and os.environ.get("DBUS_SESSION_BUS_ADDRESS")
+    ):
+        try:
+            from .status_notifier import run_status_notifier
+
+            del run_status_notifier
+            return True, ""
+        except ImportError:
+            pass
     # pystray selects and initializes its X11 backend during import.  Check
     # session availability first so a headless Linux host gets a normal
     # optional-feature result instead of an Xlib traceback.
@@ -92,8 +105,40 @@ def configure_tray_autostart(
     layout: WorkspaceLayout,
     *,
     enabled: bool,
-) -> Path:
+) -> Path | str:
     path = _tray_autostart_path(layout)
+    if sys.platform.startswith("win"):
+        import winreg
+
+        suffix = hashlib.sha256(
+            str(layout.workspace).encode("utf-8")
+        ).hexdigest()[:10]
+        value_name = f"PandratorTray-{suffix}"
+        try:
+            with winreg.CreateKeyEx(
+                winreg.HKEY_CURRENT_USER,
+                _WINDOWS_RUN_KEY,
+                0,
+                winreg.KEY_SET_VALUE,
+            ) as key:
+                if enabled:
+                    winreg.SetValueEx(
+                        key,
+                        value_name,
+                        0,
+                        winreg.REG_SZ,
+                        subprocess.list2cmdline(_tray_command(layout)),
+                    )
+                else:
+                    try:
+                        winreg.DeleteValue(key, value_name)
+                    except FileNotFoundError:
+                        pass
+        finally:
+            # Retire the legacy batch-file integration so login never creates
+            # a transient cmd.exe window.
+            path.unlink(missing_ok=True)
+        return f"HKCU\\{_WINDOWS_RUN_KEY}\\{value_name}"
     if not enabled:
         try:
             path.unlink()
@@ -149,6 +194,7 @@ def launch_tray_background(layout: WorkspaceLayout) -> tuple[bool, str]:
     if not available:
         return False, reason
     kwargs: dict[str, object] = {
+        "env": host_process_environment(),
         "stdin": subprocess.DEVNULL,
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
@@ -312,12 +358,12 @@ class TrayApplication:
     def open_pandrator(self, _icon=None, _item=None) -> None:
         for service in self.client.services():
             if service["id"] == "pandrator.api" and service.get("endpoint"):
-                webbrowser.open(service["endpoint"])
+                open_desktop_url(service["endpoint"])
                 return
         self.open_recovery()
 
     def open_recovery(self, _icon=None, _item=None) -> None:
-        webbrowser.open(self.client.recovery_url())
+        open_desktop_url(self.client.recovery_url())
 
     def start_pandrator(self, _icon=None, _item=None) -> None:
         self.client.runtime(
@@ -383,7 +429,36 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     try:
         client = ManagerClient.ensure_running(layout.workspace)
-        TrayApplication(client).run()
+        application = TrayApplication(client)
+        if (
+            sys.platform.startswith("linux")
+            and os.environ.get("DBUS_SESSION_BUS_ADDRESS")
+        ):
+            try:
+                from .status_notifier import run_status_notifier
+
+                run_status_notifier(
+                    {
+                        "open_pandrator": application.open_pandrator,
+                        "open_recovery": application.open_recovery,
+                        "start_pandrator": application.start_pandrator,
+                        "stop_pandrator": application.stop_pandrator,
+                    }
+                )
+                return 0
+            except (ImportError, RuntimeError) as error:
+                if (
+                    os.environ.get("WAYLAND_DISPLAY")
+                    or os.environ.get("XDG_SESSION_TYPE", "").casefold()
+                    == "wayland"
+                    or not os.environ.get("DISPLAY")
+                ):
+                    print(
+                        f"Pandrator native tray is unavailable: {error}",
+                        file=sys.stderr,
+                    )
+                    return 1
+        application.run()
     finally:
         try:
             identity = json.loads(instance.read_text(encoding="ascii"))
