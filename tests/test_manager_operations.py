@@ -316,12 +316,18 @@ class OperationEngineTests(unittest.TestCase):
             side_effect=RuntimeError("injected database commit failure"),
         ):
             engine.start()
-            _plan, submitted = self._plan_and_submit(
-                OperationKind.INSTALL,
-                DesiredComponentState(),
-            )
-            completed = _wait(self.application, submitted.id)
-            engine.shutdown()
+            try:
+                _plan, submitted = self._plan_and_submit(
+                    OperationKind.INSTALL,
+                    DesiredComponentState(),
+                )
+                completed = _wait(
+                    self.application,
+                    submitted.id,
+                    timeout=30,
+                )
+            finally:
+                engine.shutdown(timeout=30)
 
         self.assertEqual(completed.state, OperationState.FAILED)
         self.assertIsNone(
