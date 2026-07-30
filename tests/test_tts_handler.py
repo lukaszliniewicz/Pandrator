@@ -639,7 +639,7 @@ class TTSHandlerTests(unittest.TestCase):
                 "Hello world",
                 {
                     "model": "Prebuilt Voices",
-                    "voice": "Ryan",
+                    "voice": "Aiden",
                     "generation_prompt": "Sound excited but controlled.",
                 },
                 "http://localhost:8042",
@@ -676,6 +676,35 @@ class TTSHandlerTests(unittest.TestCase):
                 {"model": "Prebuilt Voices", "voice": "my-uploaded-voice"},
                 "http://localhost:8042",
             )
+
+    def test_kobold_qwen_current_model_overrides_stale_legacy_alias(self):
+        with patch("requests.post") as mock_post:
+            mock_post.return_value.status_code = 200
+            tts_handler._request_kobold_qwen_audio(
+                "Hello world",
+                {
+                    "model": "Voice Cloning",
+                    "xtts_model": "Prebuilt Voices",
+                    "voice": "cloned-voice",
+                },
+                "http://localhost:8042",
+            )
+
+        self.assertEqual("Voice Cloning", mock_post.call_args.kwargs["json"]["model"])
+        self.assertEqual("cloned-voice", mock_post.call_args.kwargs["json"]["voice"])
+
+    def test_kobold_qwen_metadata_resolves_an_unselected_cloned_voice(self):
+        settings = {
+            "voice": "cloned-voice",
+            "voice_metadata": {
+                "Voice Cloning:cloned-voice": {
+                    "id": "cloned-voice",
+                    "type": "cloned",
+                    "model": "Voice Cloning",
+                }
+            },
+        }
+        self.assertEqual("Voice Cloning", tts_handler.resolve_kobold_qwen_model(settings))
 
     def test_kobold_qwen_catalogue_seeds_kobo_as_a_cloning_voice(self):
         with patch(

@@ -893,8 +893,6 @@ class TtsCatalogueService:
             or service_id
         )
         resolved_model = model or str(service.get("default_model") or "")
-        if resolved_id == "kobold_qwen":
-            resolved_model = tts_handler.KOBOLD_QWEN_DEFAULT_MODEL
         default_voices = (
             service.get("default_voices")
             if isinstance(service.get("default_voices"), dict)
