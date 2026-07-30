@@ -5,6 +5,33 @@ from pandrator_manager.tray import TrayApplication
 from pandrator_manager.tray.menu import build_engine_menu_snapshot
 
 
+class FakeMenu:
+    SEPARATOR = object()
+
+    def __init__(self, *items):
+        self._items = items
+
+    @property
+    def items(self):
+        if len(self._items) == 1 and callable(self._items[0]):
+            return tuple(self._items[0]())
+        return self._items
+
+
+class FakeMenuItem:
+    def __init__(self, text, action=None, **options):
+        self._text = text
+        self.action = action
+        self.submenu = action if isinstance(action, FakeMenu) else None
+        self.options = options
+
+    @property
+    def text(self):
+        if callable(self._text):
+            return self._text(None)
+        return self._text
+
+
 def component(
     component_id="kokoro",
     *,
@@ -185,13 +212,15 @@ class TrayApplicationEngineTests(unittest.TestCase):
         application = TrayApplication(client)
         application.engine_snapshot()
 
-        top_level = application._pystray_menu_items()
-        engine_group = next(
-            item
-            for item in top_level
-            if getattr(item, "text", "").startswith("Speech engines")
-        )
-        engine = engine_group.submenu.items[0]
+        fake_pystray = mock.Mock(Menu=FakeMenu, MenuItem=FakeMenuItem)
+        with mock.patch.dict("sys.modules", {"pystray": fake_pystray}):
+            top_level = application._pystray_menu_items()
+            engine_group = next(
+                item
+                for item in top_level
+                if getattr(item, "text", "").startswith("Speech engines")
+            )
+            engine = engine_group.submenu.items[0]
 
         self.assertEqual("Speech engines — 0/1 running", engine_group.text)
         self.assertEqual("Kokoro — Stopped", engine.text)
