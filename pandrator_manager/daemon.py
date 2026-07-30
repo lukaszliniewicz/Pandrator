@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import uuid
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import psutil
@@ -283,7 +284,12 @@ def run_daemon(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
         handlers=[
-            logging.FileHandler(layout.logs / "manager.log", encoding="utf-8"),
+            RotatingFileHandler(
+                layout.logs / "manager.log",
+                maxBytes=5 * 1024 * 1024,
+                backupCount=3,
+                encoding="utf-8",
+            ),
             logging.StreamHandler(),
         ],
     )

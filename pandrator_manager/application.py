@@ -121,6 +121,7 @@ class ManagerApplication:
                 "durable_operations",
                 "event_replay",
                 "doctor",
+                "diagnostic_bundle",
                 "legacy_import",
                 "uninstall_planning",
                 "signed_release_plans",

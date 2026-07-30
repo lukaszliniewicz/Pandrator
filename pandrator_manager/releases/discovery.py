@@ -10,18 +10,13 @@ import requests
 
 from ..context import ManagerContext
 from ..errors import ManagerError
+from ..tls import select_ca_bundle
 
 DEFAULT_MANAGER_MANIFEST_URL = (
     "https://github.com/lukaszliniewicz/Pandrator/releases/latest/download/"
     "pandrator-manager-release.json"
 )
 MAXIMUM_MANIFEST_BYTES = 1024 * 1024
-_CA_ENVIRONMENT_KEYS = (
-    "PANDRATOR_CA_BUNDLE",
-    "REQUESTS_CA_BUNDLE",
-    "SSL_CERT_FILE",
-    "CURL_CA_BUNDLE",
-)
 
 
 def _https_url(value: str) -> str:
@@ -57,12 +52,7 @@ def fetch_manager_manifest(
     """Fetch a bounded JSON document; signature verification remains separate."""
 
     url = manager_manifest_url(context)
-    verify: bool | str = True
-    for key in _CA_ENVIRONMENT_KEYS:
-        candidate = str(context.environment.get(key) or "").strip()
-        if candidate:
-            verify = candidate
-            break
+    verify = str(select_ca_bundle(context.environment).path)
     client = session or requests.Session()
     try:
         response = client.get(

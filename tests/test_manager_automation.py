@@ -208,6 +208,15 @@ class ManagerAutomationApiTests(unittest.TestCase):
             "automation_route_denied",
             denied_route.get_json()["error"]["code"],
         )
+        denied_diagnostics = self.client.get(
+            "/v1/diagnostics/bundle",
+            headers=authorization,
+        )
+        self.assertEqual(403, denied_diagnostics.status_code)
+        self.assertEqual(
+            "automation_route_denied",
+            denied_diagnostics.get_json()["error"]["code"],
+        )
 
         listed = self.client.get(
             "/v1/automation/clients",
@@ -286,6 +295,10 @@ class ManagerAutomationApiTests(unittest.TestCase):
         self.assertNotIn(
             {"managerAutomationBearer": ["manager.read"]},
             document["paths"]["/v1/network"]["get"]["security"],
+        )
+        self.assertNotIn(
+            {"managerAutomationBearer": ["manager.read"]},
+            document["paths"]["/v1/diagnostics/bundle"]["get"]["security"],
         )
         for path, method in (
             ("/v1/automation/authorize", "get"),

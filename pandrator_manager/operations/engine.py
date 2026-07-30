@@ -11,7 +11,7 @@ from pathlib import Path
 
 from ..components import ComponentRegistry
 from ..context import ManagerContext
-from ..errors import CancellationRequested
+from ..errors import CancellationRequested, ManagerError
 from ..models import (
     TERMINAL_OPERATION_STATES,
     OperationRecord,
@@ -235,6 +235,13 @@ class OperationEngine:
         except CancellationRequested as error:
             self._rollback(execution, operation, error, cancelled=True)
         except Exception as error:
+            payload = self._error_payload(error)
+            logging.exception(
+                "Operation %s failed in task %s [%s]",
+                operation.id,
+                operation.current_task_id or "unknown",
+                payload["code"],
+            )
             self._rollback(execution, operation, error, cancelled=False)
         else:
             cleanup_warnings: list[dict] = []
@@ -460,17 +467,18 @@ class OperationEngine:
         *,
         cancelled: bool,
     ) -> None:
+        error_payload = self._error_payload(cause)
         operation.state = OperationState.ROLLING_BACK
         operation.error_code = (
-            "cancelled" if cancelled else type(cause).__name__.lower()
+            "cancelled" if cancelled else str(error_payload["code"])
         )
-        operation.error_message = str(cause)[:2000]
+        operation.error_message = str(error_payload["message"])
         operation.updated_at = self._now()
         self.store.update_operation(operation)
         self._event(
             operation,
             "operation.rolling_back",
-            {"error": self._error_payload(cause)},
+            {"error": error_payload},
         )
         rollback_errors: list[dict] = []
         for record in reversed(self.store.operation_tasks(operation.id)):
@@ -488,9 +496,16 @@ class OperationEngine:
                     state=TaskState.ROLLED_BACK,
                     attempt=record.attempt,
                     result=record.result,
-                    finished_at=self._now(),
+                    error=record.error,
+                    started_at=record.started_at,
+                    finished_at=record.finished_at or self._now(),
                 )
             except Exception as rollback_error:
+                logging.exception(
+                    "Rollback failed for operation %s task %s",
+                    operation.id,
+                    record.task.id,
+                )
                 rollback_errors.append(
                     {
                         "task_id": record.task.id,
@@ -500,6 +515,10 @@ class OperationEngine:
         try:
             self.task_handler.finalize(execution, succeeded=False)
         except Exception as cleanup_error:
+            logging.exception(
+                "Rollback finalization failed for operation %s",
+                operation.id,
+            )
             rollback_errors.append(
                 {
                     "task_id": "finalize",
@@ -545,6 +564,14 @@ class OperationEngine:
 
     @staticmethod
     def _error_payload(error: Exception) -> dict:
+        if isinstance(error, ManagerError):
+            payload = {
+                "code": error.code,
+                "message": error.message[:2000],
+            }
+            if error.details:
+                payload["details"] = dict(error.details)
+            return payload
         return {
             "code": type(error).__name__.lower(),
             "message": str(error)[:2000],

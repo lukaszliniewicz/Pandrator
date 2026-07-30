@@ -170,6 +170,59 @@ a {
   background: var(--accent-soft);
 }
 
+.failure-panel {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--line));
+  background: color-mix(in srgb, var(--danger) 7%, var(--panel));
+}
+
+.failure-panel:focus {
+  outline: none;
+}
+
+.failure-panel .eyebrow {
+  color: var(--danger);
+}
+
+.failure-details {
+  margin-top: 0.9rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--line);
+}
+
+.failure-details summary {
+  color: var(--muted-strong);
+  font-size: 0.75rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.failure-details dl {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0.75rem 0 0;
+}
+
+.failure-details dl > div {
+  display: grid;
+  grid-template-columns: 7rem minmax(0, 1fr);
+  gap: 0.65rem;
+}
+
+.failure-details dt,
+.failure-details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.72rem;
+}
+
+.failure-details dt {
+  color: var(--muted);
+}
+
+.failure-actions {
+  margin-top: 1rem;
+}
+
 .button,
 button {
   -webkit-tap-highlight-color: transparent;

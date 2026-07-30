@@ -11,6 +11,7 @@ import subprocess
 import threading
 import time
 from functools import wraps
+from io import BytesIO
 from pathlib import Path
 from typing import Callable
 from urllib.parse import urlsplit
@@ -24,6 +25,7 @@ from flask import (
     make_response,
     redirect,
     request,
+    send_file,
     send_from_directory,
     stream_with_context,
 )
@@ -39,6 +41,7 @@ from ..auth import (
     RecoverySessionManager,
     derive_browser_session_keys,
 )
+from ..diagnostics import build_diagnostic_bundle
 from ..errors import ManagerError, NotFoundError
 from ..models import API_VERSION
 from ..network import (
@@ -333,6 +336,7 @@ def create_api(
             "/v1/session",
             "/v1/browser-sessions",
             "/v1/recovery/exchange",
+            "/v1/diagnostics/bundle",
         } or request.path.startswith("/v1/automation/"):
             response.headers["Cache-Control"] = "no-store"
         principal = getattr(
@@ -908,6 +912,17 @@ def create_api(
     def doctor():
         return jsonify(
             application.doctor(supervisor=supervisor).model_dump(mode="json")
+        )
+
+    @api.get("/v1/diagnostics/bundle")
+    def diagnostics_bundle():
+        bundle = build_diagnostic_bundle(application, supervisor)
+        return send_file(
+            BytesIO(bundle.payload),
+            mimetype="application/zip",
+            as_attachment=True,
+            download_name=bundle.filename,
+            max_age=0,
         )
 
     @api.get("/v1/legacy")

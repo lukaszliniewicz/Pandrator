@@ -124,6 +124,61 @@
         ></progress>
       </section>
 
+      <section
+        id="operation-failure"
+        class="panel failure-panel hidden"
+        role="alert"
+        tabindex="-1"
+      >
+        <div class="row">
+          <div>
+            <p class="eyebrow">Operation needs attention</p>
+            <h2 id="failure-title">Installation did not complete</h2>
+            <p id="failure-message"></p>
+          </div>
+          <button
+            id="dismiss-failure"
+            class="button secondary"
+            type="button"
+          >
+            Dismiss
+          </button>
+        </div>
+        <details class="failure-details">
+          <summary>Technical details for an issue report</summary>
+          <dl>
+            <div>
+              <dt>Error code</dt>
+              <dd id="failure-code"></dd>
+            </div>
+            <div>
+              <dt>Operation</dt>
+              <dd id="failure-operation-id"></dd>
+            </div>
+            <div>
+              <dt>Failed task</dt>
+              <dd id="failure-task"></dd>
+            </div>
+          </dl>
+        </details>
+        <div class="actions failure-actions">
+          <button
+            id="download-failure-diagnostics"
+            class="button primary"
+            type="button"
+          >
+            Download diagnostics
+          </button>
+          <button
+            id="copy-failure-summary"
+            class="button secondary"
+            type="button"
+          >
+            Copy issue summary
+          </button>
+        </div>
+      </section>
+
       <nav
         class="manager-tabs"
         role="tablist"
@@ -442,9 +497,18 @@
                 workspace, or use advanced recovery controls.
               </p>
             </div>
-            <button id="run-doctor" class="button secondary" type="button">
-              Run diagnostics
-            </button>
+            <div class="actions">
+              <button
+                id="download-diagnostics"
+                class="button secondary"
+                type="button"
+              >
+                Download support bundle
+              </button>
+              <button id="run-doctor" class="button secondary" type="button">
+                Run diagnostics
+              </button>
+            </div>
           </div>
 
           <div id="doctor-summary" class="maintenance-result muted">

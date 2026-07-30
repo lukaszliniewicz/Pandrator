@@ -15,6 +15,7 @@ from typing import Any
 from .autostart import autostart_adapter
 from .components import ComponentRegistry
 from .context import ManagerContext
+from .errors import ManagerError
 from .launcher import (
     external_cleanup_runtime,
     installed_launcher,
@@ -32,12 +33,8 @@ from .releases.bundles import validate_release_bundle
 from .state import ManagerStore
 from .state.migrations import MIGRATIONS
 from .supervisor import ProcessSupervisor
+from .tls import CA_ENVIRONMENT_KEYS, select_ca_bundle
 
-_CA_ENVIRONMENT_KEYS = (
-    "PANDRATOR_CA_BUNDLE",
-    "REQUESTS_CA_BUNDLE",
-    "SSL_CERT_FILE",
-)
 _STALE_TRANSACTION_SECONDS = 24 * 60 * 60
 _STALE_OPERATION_SECONDS = 60 * 60
 
@@ -199,7 +196,7 @@ class ManagerDoctor:
             ),
             projected_length=length,
         )
-        for key in _CA_ENVIRONMENT_KEYS:
+        for key in CA_ENVIRONMENT_KEYS:
             value = str(self.context.environment.get(key) or "").strip()
             if not value:
                 continue
@@ -214,6 +211,24 @@ class ManagerDoctor:
                     else f"{key} points to a missing CA bundle."
                 ),
                 path=str(candidate),
+            )
+        try:
+            ca_bundle = select_ca_bundle(self.context.environment)
+        except ManagerError as error:
+            yield _check(
+                "network.ca.selected",
+                "network",
+                "error",
+                error.message,
+                **dict(error.details or {}),
+            )
+        else:
+            yield _check(
+                "network.ca.selected",
+                "network",
+                "pass",
+                "A verified CA bundle is selected for secure downloads.",
+                **ca_bundle.diagnostic_payload(),
             )
 
     def _database_checks(self) -> Iterable[DoctorCheck]:

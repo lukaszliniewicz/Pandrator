@@ -13,6 +13,7 @@ from urllib.parse import urljoin, urlparse
 import requests
 
 from ..context import CancellationToken
+from ..tls import select_ca_bundle
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,23 +48,7 @@ class ArtifactDownloader:
         self.environment = dict(os.environ if environment is None else environment)
         self.maximum_bytes = int(maximum_bytes)
         self.maximum_redirects = max(0, int(maximum_redirects))
-        configured_ca = next(
-            (
-                str(self.environment[key]).strip()
-                for key in (
-                    "PANDRATOR_CA_BUNDLE",
-                    "REQUESTS_CA_BUNDLE",
-                    "SSL_CERT_FILE",
-                )
-                if str(self.environment.get(key) or "").strip()
-            ),
-            "",
-        )
-        self.verify: bool | str = (
-            str(Path(configured_ca).expanduser().resolve(strict=False))
-            if configured_ca
-            else True
-        )
+        self.verify = str(select_ca_bundle(self.environment).path)
 
     @staticmethod
     def matches(path: Path, spec: ArtifactSpec) -> bool:

@@ -149,6 +149,9 @@ class OperationEngineTests(unittest.TestCase):
         tasks = self.application.store.operation_tasks(submitted.id)
         self.assertEqual(tasks[0].task.id, "operation:preflight")
         self.assertEqual(tasks[0].state, TaskState.ROLLED_BACK)
+        self.assertEqual(tasks[0].error["code"], "preflight_failed")
+        self.assertIsNotNone(tasks[0].started_at)
+        self.assertIsNotNone(tasks[0].finished_at)
         self.assertTrue(
             all(task.state == TaskState.PENDING for task in tasks[1:])
         )

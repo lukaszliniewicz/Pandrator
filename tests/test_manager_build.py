@@ -31,10 +31,53 @@ from scripts.build_manager_bootstrap import (
     _wheel_from_directory,
 )
 from scripts.build_manager_release_bundle import _release_platform
+from scripts.build_release_checksums import (
+    checksum_manifest,
+    release_assets,
+    write_checksum_manifest,
+)
 from scripts.qualify_manager_lifecycle import _default_bundle_path
 
 
 class ManagerBootstrapBuildTests(unittest.TestCase):
+    def test_release_checksum_manifest_is_single_sorted_file(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            second = root / "second.zip"
+            first = root / "first.exe"
+            first.write_bytes(b"first")
+            second.write_bytes(b"second")
+            (root / "first.exe.sha256").write_text(
+                "legacy sidecar",
+                encoding="ascii",
+            )
+            (root / "release-notes.md").write_text(
+                "notes",
+                encoding="utf-8",
+            )
+
+            selected = release_assets(root)
+            output = write_checksum_manifest(
+                selected,
+                root / "SHA256SUMS",
+            )
+
+            self.assertEqual(
+                [path.name for path in selected],
+                ["first.exe", "second.zip"],
+            )
+            self.assertEqual(
+                output.read_text(encoding="ascii"),
+                checksum_manifest((second, first)),
+            )
+            self.assertEqual(
+                output.read_text(encoding="ascii").splitlines(),
+                [
+                    f"{hashlib.sha256(b'first').hexdigest()}  first.exe",
+                    f"{hashlib.sha256(b'second').hexdigest()}  second.zip",
+                ],
+            )
+
     def test_windows_bootstrap_uses_the_gui_subsystem(self) -> None:
         repository = Path(__file__).resolve().parents[1]
         specification = (

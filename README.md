@@ -15,38 +15,38 @@ computer. Cloud language and speech providers are optional.
 ## Quick start
 
 The current release is
-[Pandrator 0.6.3](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.6.3)
-with Pandrator Manager 0.9.3. The Manager installs Pandrator, launches it, and
+[Pandrator 0.6.4](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.6.4)
+with Pandrator Manager 0.9.4. The Manager installs Pandrator, launches it, and
 lets you add or remove speech components later. Docker and WSL are not
 required.
 
 ### Windows
 
 1. Download
-   [PandratorManager-0.9.3-windows-x86_64.exe](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.6.3/PandratorManager-0.9.3-windows-x86_64.exe).
+   [PandratorManager-0.9.4-windows-x86_64.exe](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.6.4/PandratorManager-0.9.4-windows-x86_64.exe).
 2. Run it and choose the parent folder for your installation.
 3. Let the Manager install Pandrator, then open the browser interface.
 4. Under **Providers & services**, install only the local models you want.
 
 The Windows executable is not Authenticode-signed, so Windows may show
 **Unknown publisher** or a SmartScreen warning. The
-[release page](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.6.3)
-includes a SHA-256 checksum for verifying the download.
+[release page](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.6.4)
+collects the checksums for all downloadable files in one `SHA256SUMS` file.
 
 ### Linux
 
 Download the AppImage, make it executable, and run it:
 
 ```bash
-chmod +x PandratorManager-0.9.3-x86_64.AppImage
-./PandratorManager-0.9.3-x86_64.AppImage
+chmod +x PandratorManager-0.9.4-x86_64.AppImage
+./PandratorManager-0.9.4-x86_64.AppImage
 ```
 
 The first launch asks where to create the managed `Pandrator` folder. On a
 headless machine, choose the workspace explicitly:
 
 ```bash
-./PandratorManager-0.9.3-x86_64.AppImage \
+./PandratorManager-0.9.4-x86_64.AppImage \
   setup --workspace /srv/pandrator --no-open
 ```
 
@@ -290,7 +290,8 @@ because it supplies its own runtime and guides component setup.
 Use [GitHub Issues](https://github.com/lukaszliniewicz/Pandrator/issues) for
 bug reports, workflow suggestions, and documentation corrections. Include
 your operating system, the model or provider involved, steps to reproduce the
-problem, and logs with secrets removed.
+problem, and the Manager's reviewed **Download diagnostics** support bundle
+when an installation or service operation fails.
 
 Focused pull requests are welcome. Please keep changes scoped and include
 tests where practical.

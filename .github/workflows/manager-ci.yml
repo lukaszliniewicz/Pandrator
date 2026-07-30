@@ -66,6 +66,7 @@ jobs:
             scripts/build_manager_appimage.py \
             scripts/build_manager_bootstrap.py \
             scripts/build_manager_release_bundle.py \
+            scripts/build_release_checksums.py \
             scripts/generate_manager_release_key.py \
             scripts/qualify_manager_lifecycle.py \
             scripts/sign_manager_release.py

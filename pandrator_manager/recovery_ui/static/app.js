@@ -28,6 +28,9 @@ let activeManagerTab = "install";
 let pendingInstallOperationId = "";
 let pendingPostInstallAccess = null;
 let finishingInstall = false;
+let failedOperation = null;
+let failedOperationTasks = [];
+let dismissedFailureOperationId = "";
 
 const componentState = new Map();
 const componentNodes = new Map();
@@ -1351,7 +1354,7 @@ function renderActivity() {
   const operations = snapshot.operations.map((operation) => ({
     label: `${stateLabel(operation.kind)} · ${stateLabel(operation.state)} · ${Math.round(operation.progress * 100)}%`,
     created_at: operation.created_at,
-    error: operation.error?.message || "",
+    error: operation.error_message || "",
   }));
   const combined = [...events, ...operations]
     .sort(
@@ -1405,6 +1408,152 @@ function focusActiveOperation() {
   });
 }
 
+function failedTask() {
+  return [...failedOperationTasks]
+    .reverse()
+    .find((task) => task.error && Object.keys(task.error).length);
+}
+
+function renderOperationFailure() {
+  const panel = byId("operation-failure");
+  if (
+    !failedOperation ||
+    failedOperation.id === dismissedFailureOperationId
+  ) {
+    panel.classList.add("hidden");
+    return;
+  }
+  const task = failedTask();
+  const kind = stateLabel(failedOperation.kind);
+  byId("failure-title").textContent = `${kind} did not complete`;
+  byId("failure-message").textContent =
+    failedOperation.error_message ||
+    "The manager stopped safely, but did not provide an error message.";
+  byId("failure-code").textContent =
+    failedOperation.error_code || task?.error?.code || "unknown";
+  byId("failure-operation-id").textContent = failedOperation.id;
+  byId("failure-task").textContent = task
+    ? `${task.task?.label || stateLabel(task.task?.id)} (${task.task?.id})`
+    : "No failed task was retained";
+  panel.classList.remove("hidden");
+}
+
+async function updateFailureContext() {
+  const latest = snapshot.operations[0] || null;
+  const selected =
+    latest && ["failed", "recovery_required"].includes(latest.state)
+      ? latest
+      : null;
+  if (!selected) {
+    failedOperation = null;
+    failedOperationTasks = [];
+    return;
+  }
+  if (failedOperation?.id === selected.id && failedOperationTasks.length) {
+    failedOperation = selected;
+    return;
+  }
+  failedOperation = selected;
+  failedOperationTasks = [];
+  try {
+    const payload = await requestJson(
+      `/v1/operations/${encodeURIComponent(selected.id)}/tasks`,
+    );
+    failedOperationTasks = payload.items || [];
+  } catch (_error) {
+    // The operation-level error is still useful if task detail is unavailable.
+  }
+}
+
+function focusOperationFailure() {
+  renderOperationFailure();
+  const panel = byId("operation-failure");
+  if (panel.classList.contains("hidden")) return;
+  window.requestAnimationFrame(() => {
+    panel.scrollIntoView({ behavior: "smooth", block: "center" });
+    panel.focus({ preventScroll: true });
+  });
+}
+
+function issueSummary() {
+  if (!failedOperation) return "";
+  const task = failedTask();
+  return [
+    `Pandrator Manager ${snapshot.status?.manager_version || "unknown"}`,
+    `Operation: ${failedOperation.id}`,
+    `Kind/state: ${failedOperation.kind} / ${failedOperation.state}`,
+    `Task: ${task?.task?.id || "unknown"}`,
+    `Error: ${failedOperation.error_code || task?.error?.code || "unknown"}`,
+    failedOperation.error_message || task?.error?.message || "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+async function copyIssueSummary() {
+  const summary = issueSummary();
+  if (!summary) return;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(summary);
+    } else {
+      const temporary = document.createElement("textarea");
+      temporary.value = summary;
+      temporary.setAttribute("readonly", "");
+      temporary.style.position = "fixed";
+      temporary.style.opacity = "0";
+      document.body.append(temporary);
+      temporary.select();
+      document.execCommand("copy");
+      temporary.remove();
+    }
+    showMessage("Issue summary copied. Attach the diagnostic bundle as well.");
+  } catch (error) {
+    showMessage(`The issue summary could not be copied: ${error.message}`, true);
+  }
+}
+
+async function downloadDiagnostics(event) {
+  const button = event?.currentTarget;
+  if (button) {
+    button.disabled = true;
+    button.classList.add("busy");
+  }
+  try {
+    const response = await fetch("/v1/diagnostics/bundle", {
+      headers: { Accept: "application/zip" },
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(
+        payload.error?.message ||
+          `Manager returned HTTP ${response.status}.`,
+      );
+    }
+    const disposition = response.headers.get("Content-Disposition") || "";
+    const match = disposition.match(/filename="?([^";]+)"?/i);
+    const filename = match?.[1] || "pandrator-diagnostics.zip";
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    showMessage(
+      "Diagnostic bundle downloaded. Review it before attaching it to an issue.",
+    );
+  } catch (error) {
+    showMessage(`Diagnostics could not be downloaded: ${error.message}`, true);
+  } finally {
+    if (button) {
+      button.classList.remove("busy");
+      button.disabled = false;
+    }
+  }
+}
+
 async function finishPendingInstall() {
   if (!pendingInstallOperationId || finishingInstall) return;
   const operation = snapshot.operations.find(
@@ -1414,10 +1563,14 @@ async function finishPendingInstall() {
   if (operation.state !== "succeeded") {
     pendingInstallOperationId = "";
     pendingPostInstallAccess = null;
+    const detail = operation.error_message
+      ? ` ${operation.error_message}`
+      : "";
     showMessage(
-      `Installation ${stateLabel(operation.state)}. Review the activity details before trying again.`,
+      `Installation ${stateLabel(operation.state)}.${detail}`,
       true,
     );
+    focusOperationFailure();
     return;
   }
   finishingInstall = true;
@@ -1511,6 +1664,7 @@ async function refresh() {
       snapshot.operations.find(
         (operation) => !terminalStates.has(operation.state),
       ) || null;
+    await updateFailureContext();
     byId("status").textContent = JSON.stringify(status, null, 2);
     setManagerHealth("ready", "Manager ready");
     renderApplication();
@@ -1520,6 +1674,7 @@ async function refresh() {
     renderActivity();
     renderReleaseStatus();
     renderActiveOperation();
+    renderOperationFailure();
     await finishPendingInstall();
   } catch (error) {
     showMessage(error.message, true);
@@ -2340,6 +2495,22 @@ document.addEventListener("DOMContentLoaded", async () => {
   byId("cancel-plan").addEventListener("click", closePlan);
   byId("cancel-operation").addEventListener("click", cancelOperation);
   byId("run-doctor").addEventListener("click", runDoctor);
+  byId("download-diagnostics").addEventListener(
+    "click",
+    downloadDiagnostics,
+  );
+  byId("download-failure-diagnostics").addEventListener(
+    "click",
+    downloadDiagnostics,
+  );
+  byId("copy-failure-summary").addEventListener(
+    "click",
+    copyIssueSummary,
+  );
+  byId("dismiss-failure").addEventListener("click", () => {
+    dismissedFailureOperationId = failedOperation?.id || "";
+    renderOperationFailure();
+  });
   byId("inspect-legacy").addEventListener("click", inspectLegacy);
   byId("review-release").addEventListener("click", reviewRelease);
   byId("check-manager-update").addEventListener(

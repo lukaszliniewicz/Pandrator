@@ -13,6 +13,7 @@ from contextlib import closing
 from pathlib import Path
 from unittest import mock
 
+import certifi
 import psutil
 
 from pandrator_manager.application import create_application
@@ -1030,7 +1031,7 @@ class CoreAdapterTests(unittest.TestCase):
     def test_artifact_downloader_uses_custom_ca_and_rejects_http_redirect(self):
         with tempfile.TemporaryDirectory() as directory:
             ca_bundle = Path(directory) / "company.pem"
-            ca_bundle.write_text("fixture", encoding="utf-8")
+            ca_bundle.write_bytes(Path(certifi.where()).read_bytes())
             session = mock.Mock()
             redirect = mock.Mock(
                 status_code=302,

@@ -509,6 +509,7 @@ def _self_check() -> dict:
     from .api import create_api
     from .daemon import run_daemon
     from .recovery_ui import __file__ as recovery_package
+    from .tls import select_ca_bundle
     from .uninstall import run_uninstall_handoff
 
     del create_api, run_daemon, run_uninstall_handoff
@@ -518,12 +519,14 @@ def _self_check() -> dict:
         for name in ("index.html", "app.js", "styles.css")
         if (static / name).is_file()
     )
+    ca_bundle = select_ca_bundle()
     return {
-        "ok": len(assets) == 3,
+        "ok": len(assets) == 3 and ca_bundle.path.is_file(),
         "service": "pandrator-manager-launcher",
         "manager_version": __version__,
         "frozen": bool(getattr(sys, "frozen", False)),
         "recovery_assets": list(assets),
+        "ca_bundle": ca_bundle.diagnostic_payload(),
         "authenticode_signed": False if os.name == "nt" else None,
     }
 

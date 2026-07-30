@@ -25,13 +25,9 @@ from .models import (
     SizeProvenance,
     TaskSpec,
 )
+from .tls import CA_ENVIRONMENT_KEYS, select_ca_bundle
 
 _RESERVED_DISK_BYTES = 512 * 1024 * 1024
-_CA_ENVIRONMENT_KEYS = (
-    "PANDRATOR_CA_BUNDLE",
-    "REQUESTS_CA_BUNDLE",
-    "SSL_CERT_FILE",
-)
 
 
 class HostPreflight:
@@ -135,7 +131,7 @@ class HostPreflight:
                 )
             )
 
-        for key in _CA_ENVIRONMENT_KEYS:
+        for key in CA_ENVIRONMENT_KEYS:
             value = str(self.context.environment.get(key) or "").strip()
             if not value:
                 continue
@@ -152,6 +148,30 @@ class HostPreflight:
                     details={"path": str(candidate.resolve(strict=False))},
                 )
             )
+        if any(task.kind == "stage_component" for task in tasks):
+            try:
+                ca_bundle = select_ca_bundle(self.context.environment)
+            except ManagerError as error:
+                checks.append(
+                    PreflightCheck(
+                        code="tls.ca_bundle",
+                        status="error",
+                        message=error.message,
+                        details=dict(error.details or {}),
+                    )
+                )
+            else:
+                checks.append(
+                    PreflightCheck(
+                        code="tls.ca_bundle",
+                        status="pass",
+                        message=(
+                            "A verified CA bundle is available for secure "
+                            "source downloads."
+                        ),
+                        details=ca_bundle.diagnostic_payload(),
+                    )
+                )
 
         stopped_components = {
             str(task.component_id)

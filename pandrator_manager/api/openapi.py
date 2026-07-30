@@ -11,6 +11,10 @@ def build_openapi() -> dict:
         "/v1/capabilities": ("get", "getManagerCapabilities"),
         "/v1/components": ("get", "listManagerComponents"),
         "/v1/doctor": ("get", "getManagerDoctorReport"),
+        "/v1/diagnostics/bundle": (
+            "get",
+            "downloadManagerDiagnosticBundle",
+        ),
         "/v1/legacy": ("get", "getLegacyImportReport"),
         "/v1/legacy/import": ("post", "importLegacyWorkspace"),
         "/v1/services": ("get", "listManagedServices"),
