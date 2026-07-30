@@ -32,7 +32,10 @@ class HostDesktopLaunchTests(unittest.TestCase):
 
         cleaned = host_process_environment(environment)
 
-        self.assertEqual(str(host.resolve(strict=False)), cleaned["LD_LIBRARY_PATH"])
+        self.assertEqual(
+            host.resolve(strict=False),
+            Path(cleaned["LD_LIBRARY_PATH"]).resolve(strict=False),
+        )
         self.assertNotIn("LD_LIBRARY_PATH_ORIG", cleaned)
         self.assertNotIn("_MEIPASS2", cleaned)
         self.assertNotIn("PYTHONHOME", cleaned)
