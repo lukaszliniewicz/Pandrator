@@ -14,6 +14,7 @@ from typing import Any
 
 from .autostart import autostart_adapter
 from .components import ComponentRegistry
+from .components.slots import active_component_path
 from .context import ManagerContext
 from .errors import ManagerError
 from .launcher import (
@@ -311,6 +312,38 @@ class ManagerDoctor:
                     reason=error,
                     path=str(pointer_path),
                 )
+                continue
+            if (
+                product == "pandrator"
+                and pointer.get("component_id") == product
+                and accepted is None
+                and not slots
+            ):
+                version = str(pointer.get("version") or "")
+                slot = active_component_path(layout, product)
+                if slot is not None and version and slot.name == version:
+                    yield _check(
+                        f"release.{product}.pointer",
+                        "release",
+                        "pass",
+                        (
+                            "Pandrator is active through a managed "
+                            "source-component slot."
+                        ),
+                        install_mode="source_component",
+                        version=version,
+                        slot_path=str(slot),
+                    )
+                else:
+                    yield _check(
+                        f"release.{product}.pointer",
+                        "release",
+                        "error",
+                        "The active Pandrator component pointer is invalid.",
+                        repairable=True,
+                        repair_target="component:pandrator",
+                        path=str(pointer_path),
+                    )
                 continue
             try:
                 version = str(pointer["version"])

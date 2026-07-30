@@ -4591,11 +4591,21 @@ def _kobold_qwen_cloning_model_from_metadata(tts_settings: dict, voice: str) -> 
     if not voice:
         return ""
     metadata_sources = [tts_settings.get("voice_metadata")]
-    metadata_sources.extend(
-        item.get("voice_metadata")
-        for item in tts_settings.get("provider_configs", [])
-        if isinstance(item, dict)
-    )
+    provider_configs = tts_settings.get("provider_configs")
+    if isinstance(provider_configs, list):
+        metadata_sources.extend(
+            item.get("voice_metadata")
+            for item in provider_configs
+            if (
+                isinstance(item, dict)
+                and _normalize_service_id(
+                    item.get("id")
+                    or item.get("name")
+                    or item.get("provider")
+                )
+                == "kobold_qwen"
+            )
+        )
     for metadata in metadata_sources:
         if not isinstance(metadata, dict):
             continue

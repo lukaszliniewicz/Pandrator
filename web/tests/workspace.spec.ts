@@ -350,6 +350,7 @@ test('generated segments return to the current filtered page after repeated rege
   let phase: 'completed' | 'running' = 'completed';
   let generatedRefreshes = 0;
   let generatedRunningRefreshes = 0;
+  let regeneratedRevision = 0;
   const runId = 'generation-run';
   const planRevisionId = 'generation-plan';
   const completed = Array.from({ length: 102 }, (_, ordinal) => ({
@@ -403,9 +404,18 @@ test('generated segments return to the current filtered page after repeated rege
   );
   await page.route(`**/api/v1/sessions/${sessionId}/generation-segments?*`, async (route) => {
     const query = new URL(route.request().url()).searchParams;
+    const authoritative = completed.map((item) =>
+      item.ordinal === 100 && regeneratedRevision
+        ? {
+            ...item,
+            text: `Regenerated segment 101 · revision ${regeneratedRevision}.`,
+            revision: item.revision + regeneratedRevision
+          }
+        : item
+    );
     const visible = query.get('status') === 'completed'
-      ? completed.filter((item) => phase === 'completed' || item.ordinal !== 100)
-      : [...completed, failed];
+      ? authoritative.filter((item) => phase === 'completed' || item.ordinal !== 100)
+      : [...authoritative, failed];
     if (query.get('status') === 'completed') {
       generatedRefreshes += 1;
       if (phase === 'running') generatedRunningRefreshes += 1;
@@ -442,12 +452,19 @@ test('generated segments return to the current filtered page after repeated rege
   await expect(page.getByRole('button', { name: 'Regenerate segment 101' })).toBeVisible();
   const versionPicker = page.locator('label.run-picker select');
   await expect(versionPicker).toHaveValue(runId);
+  const regeneratedRow = page.locator('tr').filter({
+    has: page.getByRole('button', { name: 'Regenerate segment 101' })
+  });
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
     await page.getByRole('button', { name: 'Regenerate segment 101' }).click();
     await expect.poll(() => generatedRunningRefreshes).toBeGreaterThan(attempt);
+    regeneratedRevision += 1;
     phase = 'completed';
     await expect(page.getByRole('button', { name: 'Regenerate segment 101' })).toBeVisible({ timeout: 12_000 });
+    await expect(regeneratedRow.locator('textarea')).toHaveValue(
+      `Regenerated segment 101 · revision ${regeneratedRevision}.`
+    );
     await expect(filter).toHaveValue('completed');
     await expect(versionPicker).toHaveValue(runId);
     await expect(page.getByRole('button', { name: 'Regenerate segment 101' })).toHaveCount(1);

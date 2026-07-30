@@ -706,6 +706,35 @@ class TTSHandlerTests(unittest.TestCase):
         }
         self.assertEqual("Voice Cloning", tts_handler.resolve_kobold_qwen_model(settings))
 
+    def test_kobold_qwen_metadata_ignores_other_provider_catalogues(self):
+        settings = {
+            "voice": "Aiden",
+            "provider_configs": [
+                {
+                    "id": "xtts",
+                    "voice_metadata": {
+                        "cloned:Aiden": {
+                            "id": "Aiden",
+                            "type": "cloned",
+                            "model": "XTTS",
+                        }
+                    },
+                }
+            ],
+        }
+        self.assertEqual(
+            "Prebuilt Voices",
+            tts_handler.resolve_kobold_qwen_model(settings),
+        )
+
+    def test_kobold_qwen_metadata_tolerates_a_null_provider_collection(self):
+        self.assertEqual(
+            "Prebuilt Voices",
+            tts_handler.resolve_kobold_qwen_model(
+                {"voice": "Aiden", "provider_configs": None}
+            ),
+        )
+
     def test_kobold_qwen_catalogue_seeds_kobo_as_a_cloning_voice(self):
         with patch(
             "requests.get",

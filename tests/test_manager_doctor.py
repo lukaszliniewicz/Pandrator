@@ -92,6 +92,34 @@ class ManagerDoctorTests(unittest.TestCase):
             [str(outside.resolve(strict=False))],
         )
 
+    def test_source_component_pointer_is_not_treated_as_a_release_bundle(self):
+        slot = self.layout.app_versions / "source-revision"
+        slot.mkdir(parents=True)
+        pointer = self.layout.root / "app" / "current.json"
+        pointer.parent.mkdir(parents=True, exist_ok=True)
+        pointer.write_text(
+            json.dumps(
+                {
+                    "component_id": "pandrator",
+                    "version": slot.name,
+                    "path": str(slot),
+                    "activated_by": "source-install",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        check = self.check(
+            self.application.doctor(),
+            "release.pandrator.pointer",
+        )
+
+        self.assertEqual(check.status, "pass")
+        self.assertFalse(check.repairable)
+        self.assertIsNone(check.repair_target)
+        self.assertEqual(check.details["install_mode"], "source_component")
+        self.assertEqual(check.details["slot_path"], str(slot.resolve()))
+
     def test_desired_unhealthy_service_is_repairable(self):
         service = ManagedService(
             id="tts.fixture",
