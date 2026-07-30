@@ -544,6 +544,35 @@ summary:focus-visible,
   background: var(--warning);
 }
 
+.engine-state.running {
+  color: var(--success);
+}
+
+.engine-state.running::before {
+  background: var(--success);
+}
+
+.engine-state.starting,
+.engine-state.restarting {
+  color: var(--accent-strong);
+}
+
+.engine-state.starting::before,
+.engine-state.restarting::before {
+  background: var(--accent);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.engine-state.unhealthy,
+.engine-state.failed {
+  color: var(--danger);
+}
+
+.engine-state.unhealthy::before,
+.engine-state.failed::before {
+  background: var(--danger);
+}
+
 .application-actions {
   flex: 0 0 auto;
   justify-content: flex-end;
@@ -706,7 +735,7 @@ summary:focus-visible,
 .engine-card > summary {
   position: relative;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 0.8rem;
   align-items: start;
   min-height: 4.7rem;
@@ -738,6 +767,16 @@ summary:focus-visible,
 .engine-summary-copy {
   grid-column: 2;
   min-width: 0;
+}
+
+.engine-runtime-action {
+  grid-column: 3;
+  align-self: center;
+  min-width: 4.1rem;
+  min-height: 2.15rem;
+  margin-right: 1.3rem;
+  padding: 0.4rem 0.65rem;
+  font-size: 0.69rem;
 }
 
 .engine-title-line {
@@ -1297,13 +1336,46 @@ pre {
   font-size: 0.74rem;
 }
 
+.service-row > div:first-child {
+  min-width: 0;
+}
+
+.service-row .engine-state {
+  margin-left: 0.55rem;
+}
+
+.service-controls {
+  display: flex;
+  flex: 0 1 55%;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.service-endpoint {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 0.65rem;
+}
+
+.service-runtime-action {
+  flex: 0 0 auto;
+  min-height: 2rem;
+  padding: 0.38rem 0.58rem;
+  font-size: 0.67rem;
+}
+
 .activity-row:last-child,
 .service-row:last-child {
   border-bottom: 0;
 }
 
-.activity-row time,
-.service-row span:last-child {
+.activity-row time {
   flex: 0 0 auto;
   color: var(--muted);
   font-size: 0.65rem;
@@ -1587,6 +1659,10 @@ body.operation-running [data-panel="install"] {
     padding-left: 0.8rem;
   }
 
+  .engine-runtime-action {
+    margin-right: 1.1rem;
+  }
+
   .engine-details {
     margin-left: 2.75rem;
   }
@@ -1640,5 +1716,16 @@ body.operation-running [data-panel="install"] {
 
   .access-summary-row {
     align-items: flex-start;
+  }
+
+  .service-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .service-controls {
+    width: 100%;
+    max-width: 100%;
+    justify-content: space-between;
   }
 }

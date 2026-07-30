@@ -44,6 +44,7 @@
   type Service = {
     id: string;
     component_id: string;
+    desired_running: boolean;
     endpoint?: string | null;
     process?: { pid: number } | null;
     health?: { state: string; message?: string } | null;
@@ -220,6 +221,50 @@
         || service.component_id === component.definition.id
     );
 
+  const runtimeStateFor = (component: Component, service?: Service) => {
+    const health = service?.health?.state ?? 'unknown';
+    let state: string = component.inspection.state;
+    let label: string = component.inspection.state.replaceAll('_', ' ');
+    if (service?.process) {
+      const runningStates: Record<string, { state: string; label: string }> = {
+        healthy: { state: 'running', label: 'Running' },
+        starting: { state: 'starting', label: 'Starting' },
+        degraded: { state: 'degraded', label: 'Running with warnings' },
+        unhealthy: { state: 'unhealthy', label: 'Not responding' },
+        failed: { state: 'failed', label: 'Failed' }
+      };
+      ({ state, label } = runningStates[health] ?? {
+        state: 'starting',
+        label: 'Starting'
+      });
+    } else if (service?.desired_running) {
+      ({ state, label } = health === 'failed'
+        ? { state: 'failed', label: 'Failed' }
+        : { state: 'restarting', label: 'Restarting' });
+    } else if (component.inspection.state === 'degraded') {
+      ({ state, label } = { state: 'degraded', label: 'Needs repair' });
+    } else if (component.inspection.state === 'present' && service) {
+      ({ state, label } = health === 'failed'
+        ? { state: 'failed', label: 'Failed' }
+        : { state: 'stopped', label: 'Stopped' });
+    } else if (component.inspection.state === 'present') {
+      ({ state, label } = { state: 'unavailable', label: 'Status unavailable' });
+    } else if (component.inspection.state === 'absent') {
+      label = 'Not installed';
+    }
+
+    const wantsToRun = Boolean(service?.process || service?.desired_running);
+    const action =
+      wantsToRun && component.definition.supported_actions.includes('stop')
+        ? 'stop'
+        : service
+            && component.inspection.state === 'present'
+            && component.definition.supported_actions.includes('start')
+          ? 'start'
+          : null;
+    return { state, label, action };
+  };
+
   function rememberOperation(value: Operation | null) {
     operation = value;
     if (value && !terminalStates.has(value.state)) {
@@ -289,11 +334,35 @@
     }
   }
 
+  async function refreshManagerState() {
+    if (!status?.available) return;
+    try {
+      const [nextStatus, servicePayload] = await Promise.all([
+        managerApi.status<ManagerStatus>(),
+        managerApi.services<{ items: Service[] }>()
+      ]);
+      status = nextStatus;
+      services = servicePayload.items;
+      const activeId = nextStatus.status?.active_operation_id;
+      if (activeId && (!operation || operation.id !== activeId)) {
+        rememberOperation(await managerApi.operation<Operation>(activeId));
+      }
+    } catch (caught) {
+      report(caught);
+    }
+  }
+
   async function pollOperation() {
     if (pollStopped) return;
-    await refreshOperation();
+    if (operation && !terminalStates.has(operation.state)) {
+      await refreshOperation();
+    } else {
+      await refreshManagerState();
+    }
     if (!pollStopped) {
-      pollTimer = setTimeout(() => void pollOperation(), 1000);
+      const delay =
+        operation && !terminalStates.has(operation.state) ? 1000 : 2500;
+      pollTimer = setTimeout(() => void pollOperation(), delay);
     }
   }
 
@@ -362,7 +431,9 @@
     runtimeBusy = component.definition.id;
     try {
       await managerApi.runtime(action, [serviceId]);
-      notice = `${component.definition.label} ${action} request completed.`;
+      notice = action === 'stop'
+        ? `${component.definition.label} stopped.`
+        : `${component.definition.label} is starting.`;
       await load();
     } catch (caught) {
       report(caught);
@@ -580,6 +651,7 @@
     <div class="mt-5 grid gap-3 lg:grid-cols-2">
       {#each components as component}
         {@const service = serviceFor(component)}
+        {@const runtimeState = runtimeStateFor(component, service)}
         {@const installed = component.inspection.state === 'present'}
         {@const degraded = component.inspection.state === 'degraded'}
         {@const busy = planning === component.definition.id || runtimeBusy === component.definition.id || Boolean(operation && !terminalStates.has(operation.state))}
@@ -588,12 +660,11 @@
             <div>
               <div class="font-semibold">{component.definition.label}</div>
               <div class="muted mt-1 text-xs">
-                {installed ? 'Installed' : degraded ? 'Repair needed' : component.inspection.state.replaceAll('_', ' ')}
-                {service?.health?.state ? ` · ${service.health.state}` : ''}
+                {runtimeState.label}
                 {component.definition.default_port ? ` · port ${component.definition.default_port}` : ''}
               </div>
             </div>
-            <span class:healthy={service?.health?.state === 'healthy'} class="status-dot" title={service?.health?.state ?? component.inspection.state}></span>
+            <span class={`status-dot ${runtimeState.state}`} title={runtimeState.label}></span>
           </div>
 
           {#if component.inspection.problems?.length}
@@ -633,12 +704,12 @@
                 <RefreshCw size={13}/> Check/update
               </button>
             {/if}
-            {#if installed && !service?.process && component.definition.supported_actions.includes('start')}
+            {#if runtimeState.action === 'start'}
               <button class="btn btn-sm btn-secondary" disabled={busy} onclick={() => runtime(component, 'start')}>
                 <Play size={13}/> Start
               </button>
             {/if}
-            {#if service?.process && component.definition.supported_actions.includes('stop')}
+            {#if runtimeState.action === 'stop'}
               <button class="btn btn-sm btn-secondary" disabled={busy} onclick={() => runtime(component, 'stop')}>
                 <Square size={13}/> Stop
               </button>
@@ -900,5 +971,9 @@
 <style>
   .field{margin-top:.4rem;width:100%;border:1px solid var(--line);border-radius:.72rem;background:var(--paper);padding:.55rem .65rem;color:var(--ink)}
   .status-dot{display:block;width:.65rem;height:.65rem;border-radius:999px;background:var(--muted);opacity:.5}
-  .status-dot.healthy{background:var(--success);opacity:1}
+  .status-dot.running{background:var(--success);opacity:1}
+  .status-dot.starting,.status-dot.restarting{background:var(--accent);opacity:1;animation:pulse 1.4s ease-in-out infinite}
+  .status-dot.degraded{background:#d97706;opacity:1}
+  .status-dot.unhealthy,.status-dot.failed{background:#dc2626;opacity:1}
+  @keyframes pulse{50%{opacity:.45}}
 </style>

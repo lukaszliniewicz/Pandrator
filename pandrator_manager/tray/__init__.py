@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import json
+import logging
 import os
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 import psutil
@@ -17,6 +20,11 @@ from ..client import ManagerClient
 from ..context import WorkspaceLayout
 from ..desktop import host_process_environment, open_desktop_url
 from ..workspace_selection import default_workspace
+from .menu import (
+    EngineMenuSnapshot,
+    build_engine_menu_snapshot,
+    unavailable_engine_snapshot,
+)
 
 _WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
@@ -333,6 +341,10 @@ class TrayApplication:
     def __init__(self, client: ManagerClient) -> None:
         self.client = client
         self.icon = None
+        self._engine_snapshot = unavailable_engine_snapshot(
+            "Loading engine status"
+        )
+        self._menu_refresh_stop = threading.Event()
 
     def _image(self):
         from PIL import Image, ImageDraw
@@ -344,16 +356,138 @@ class TrayApplication:
         return image
 
     def _status_label(self, _item=None) -> str:
+        return f"Pandrator Manager — {self._engine_snapshot.summary}"
+
+    def engine_snapshot(self) -> EngineMenuSnapshot:
         try:
-            services = self.client.services()
-            healthy = sum(
-                1
-                for service in services
-                if (service.get("health") or {}).get("state") == "healthy"
+            status = self.client.status()
+            snapshot = build_engine_menu_snapshot(
+                self.client.components(),
+                self.client.services(),
+                busy=bool(status.get("active_operation_id")),
             )
-            return f"Pandrator Manager — {healthy}/{len(services)} healthy"
         except Exception:
-            return "Pandrator Manager — unavailable"
+            logging.exception("Could not refresh desktop tray engine status.")
+            snapshot = unavailable_engine_snapshot()
+        self._engine_snapshot = snapshot
+        return snapshot
+
+    def _engine_group_label(self, _item=None) -> str:
+        snapshot = self._engine_snapshot
+        if not snapshot.available or not snapshot.items:
+            return "Speech engines"
+        return (
+            "Speech engines — "
+            f"{snapshot.running_count}/{len(snapshot.items)} running"
+        )
+
+    def control_engine(
+        self,
+        service_id: str,
+        action: str,
+        icon=None,
+        _item=None,
+    ) -> None:
+        try:
+            self.client.runtime(action, (service_id,))
+        except Exception:
+            logging.exception(
+                "Desktop tray could not %s engine %s.",
+                action,
+                service_id,
+            )
+        self.engine_snapshot()
+        selected = icon or self.icon
+        if selected is not None:
+            selected.title = self._status_label()
+            selected.update_menu()
+
+    def _pystray_engine_items(self):
+        import pystray
+
+        snapshot = self._engine_snapshot
+        if not snapshot.available:
+            return (
+                pystray.MenuItem(
+                    snapshot.message or "Engine status unavailable",
+                    None,
+                    enabled=False,
+                ),
+            )
+        if not snapshot.items:
+            return (
+                pystray.MenuItem(
+                    "No optional engines installed",
+                    None,
+                    enabled=False,
+                ),
+            )
+
+        result = []
+        for engine in snapshot.items:
+            if engine.action is None:
+                actions = pystray.Menu(
+                    pystray.MenuItem(
+                        engine.action_label,
+                        None,
+                        enabled=False,
+                    )
+                )
+            else:
+                callback = functools.partial(
+                    self.control_engine,
+                    engine.service_id,
+                    engine.action,
+                )
+                actions = pystray.Menu(
+                    pystray.MenuItem(
+                        engine.action_label,
+                        callback,
+                        enabled=engine.enabled,
+                    )
+                )
+            result.append(
+                pystray.MenuItem(
+                    f"{engine.label} — {engine.state_label}",
+                    actions,
+                )
+            )
+        return tuple(result)
+
+    def _pystray_menu_items(self):
+        import pystray
+
+        return (
+            pystray.MenuItem(self._status_label, None, enabled=False),
+            pystray.MenuItem(
+                "Open Pandrator",
+                self.open_pandrator,
+                default=True,
+            ),
+            pystray.MenuItem(
+                "Open setup / recovery",
+                self.open_recovery,
+            ),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Start Pandrator", self.start_pandrator),
+            pystray.MenuItem("Stop Pandrator", self.stop_pandrator),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem(
+                self._engine_group_label,
+                pystray.Menu(self._pystray_engine_items),
+            ),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Quit tray", self.quit_tray),
+        )
+
+    def _refresh_pystray_menu(self, icon) -> None:
+        icon.visible = True
+        while not self._menu_refresh_stop.is_set():
+            self.engine_snapshot()
+            icon.title = self._status_label()
+            icon.update_menu()
+            if self._menu_refresh_stop.wait(2.5):
+                break
 
     def open_pandrator(self, _icon=None, _item=None) -> None:
         for service in self.client.services():
@@ -378,6 +512,7 @@ class TrayApplication:
         )
 
     def quit_tray(self, icon=None, _item=None) -> None:
+        self._menu_refresh_stop.set()
         selected = icon or self.icon
         if selected is not None:
             selected.stop()
@@ -389,18 +524,9 @@ class TrayApplication:
             "pandrator",
             self._image(),
             "Pandrator Manager",
-            menu=pystray.Menu(
-                pystray.MenuItem(self._status_label, None, enabled=False),
-                pystray.MenuItem("Open Pandrator", self.open_pandrator, default=True),
-                pystray.MenuItem("Open setup / recovery", self.open_recovery),
-                pystray.Menu.SEPARATOR,
-                pystray.MenuItem("Start Pandrator", self.start_pandrator),
-                pystray.MenuItem("Stop Pandrator", self.stop_pandrator),
-                pystray.Menu.SEPARATOR,
-                pystray.MenuItem("Quit tray", self.quit_tray),
-            ),
+            menu=pystray.Menu(self._pystray_menu_items),
         )
-        self.icon.run()
+        self.icon.run(setup=self._refresh_pystray_menu)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -443,7 +569,9 @@ def main(argv: list[str] | None = None) -> int:
                         "open_recovery": application.open_recovery,
                         "start_pandrator": application.start_pandrator,
                         "stop_pandrator": application.stop_pandrator,
-                    }
+                    },
+                    engine_provider=application.engine_snapshot,
+                    engine_action=application.control_engine,
                 )
                 return 0
             except (ImportError, RuntimeError) as error:

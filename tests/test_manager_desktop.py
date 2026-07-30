@@ -5,9 +5,15 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from dbus_next import Variant
+
 from pandrator_manager.desktop import (
     host_process_environment,
     open_desktop_url,
+)
+from pandrator_manager.tray.menu import (
+    EngineMenuItem,
+    EngineMenuSnapshot,
 )
 from pandrator_manager.tray.status_notifier import (
     DBusMenu,
@@ -96,7 +102,8 @@ class StatusNotifierContractTests(unittest.TestCase):
         self.assertEqual([32, 64], [entry[0] for entry in notifier.IconPixmap])
 
     def test_dbus_menu_preserves_all_existing_tray_actions(self):
-        layout = DBusMenu._layout(0, -1, [])
+        menu = DBusMenu(self.dispatcher)
+        layout = menu._layout(0, -1, [])
         labels = [
             child.value[1]["label"].value
             for child in layout[2]
@@ -109,10 +116,123 @@ class StatusNotifierContractTests(unittest.TestCase):
                 "Open setup / recovery",
                 "Start Pandrator",
                 "Stop Pandrator",
+                "Speech engines",
                 "Quit tray",
             ],
             labels,
         )
+
+    def test_dbus_menu_exposes_engine_state_and_runtime_action(self):
+        snapshot = EngineMenuSnapshot(
+            items=(
+                EngineMenuItem(
+                    component_id="kokoro",
+                    service_id="tts.kokoro",
+                    label="Kokoro",
+                    state="running",
+                    state_label="Running",
+                    action="stop",
+                    action_label="Stop Kokoro",
+                    enabled=True,
+                    is_running=True,
+                ),
+            )
+        )
+        menu = DBusMenu(self.dispatcher, snapshot)
+
+        engine_layout = menu._layout(7, -1, [])
+        parent = engine_layout[2][0].value
+        action = parent[2][0].value
+
+        self.assertEqual("Kokoro — Running", parent[1]["label"].value)
+        self.assertEqual("Stop Kokoro", action[1]["label"].value)
+        with mock.patch.object(self.dispatcher, "dispatch") as dispatch:
+            menu.Event(101, "clicked", Variant("s", ""), 0)
+        dispatch.assert_called_once_with(("tts.kokoro", "stop"))
+
+    def test_dbus_menu_updates_revision_only_when_engine_state_changes(self):
+        menu = DBusMenu(self.dispatcher)
+        initial = menu.revision
+
+        self.assertFalse(
+            menu.update_engine_snapshot(
+                EngineMenuSnapshot(),
+                emit=False,
+            )
+        )
+        self.assertEqual(initial, menu.revision)
+
+        changed = EngineMenuSnapshot(available=False, message="Unavailable")
+        self.assertTrue(
+            menu.update_engine_snapshot(changed, emit=False)
+        )
+        self.assertEqual(initial + 1, menu.revision)
+        self.assertEqual(
+            "Unavailable",
+            menu._layout(7, -1, [])[2][0].value[1]["label"].value,
+        )
+
+    def test_status_notifier_tooltip_reports_engine_summary(self):
+        notifier = StatusNotifierItem(self.dispatcher)
+        notifier.update_engine_snapshot(
+            EngineMenuSnapshot(
+                items=(
+                    EngineMenuItem(
+                        component_id="kokoro",
+                        service_id="tts.kokoro",
+                        label="Kokoro",
+                        state="stopped",
+                        state_label="Stopped",
+                        action="start",
+                        action_label="Start Kokoro",
+                        enabled=True,
+                        is_running=False,
+                    ),
+                )
+            ),
+            emit=False,
+        )
+
+        self.assertEqual("0/1 engine running", notifier.ToolTip[3])
+
+    def test_disabled_engine_action_cannot_be_dispatched(self):
+        snapshot = EngineMenuSnapshot(
+            items=(
+                EngineMenuItem(
+                    component_id="kokoro",
+                    service_id="tts.kokoro",
+                    label="Kokoro",
+                    state="stopped",
+                    state_label="Stopped",
+                    action="start",
+                    action_label="Start Kokoro",
+                    enabled=False,
+                    is_running=False,
+                ),
+            ),
+            busy=True,
+        )
+        menu = DBusMenu(self.dispatcher, snapshot)
+
+        with mock.patch.object(self.dispatcher, "dispatch") as dispatch:
+            menu.Event(101, "clicked", Variant("s", ""), 0)
+
+        dispatch.assert_not_called()
+
+
+class StatusNotifierActionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_engine_action_is_forwarded_off_the_dbus_event_loop(self):
+        quit_event = asyncio.Event()
+        engine_action = mock.Mock()
+        dispatcher = _ActionDispatcher(
+            {},
+            quit_event,
+            engine_action=engine_action,
+        )
+
+        await dispatcher._invoke(("tts.kokoro", "stop"))
+
+        engine_action.assert_called_once_with("tts.kokoro", "stop")
 
 
 if __name__ == "__main__":

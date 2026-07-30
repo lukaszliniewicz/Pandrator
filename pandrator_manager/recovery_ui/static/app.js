@@ -35,6 +35,7 @@ let dismissedFailureOperationId = "";
 const componentState = new Map();
 const componentNodes = new Map();
 const sectionState = new Map();
+const runtimeBusy = new Set();
 
 const terminalStates = new Set([
   "succeeded",
@@ -334,6 +335,92 @@ function serviceFor(component) {
       service.id === component.definition.service_key ||
       service.component_id === component.definition.id,
   );
+}
+
+function serviceRuntimeState(service, inspectionState = "present") {
+  if (!service) {
+    return inspectionState === "degraded"
+      ? { state: "degraded", label: "Needs repair", running: false }
+      : {
+          state: "unavailable",
+          label: "Status unavailable",
+          running: false,
+        };
+  }
+  const health = service.health?.state || "unknown";
+  if (service.process) {
+    const states = {
+      healthy: { state: "running", label: "Running" },
+      starting: { state: "starting", label: "Starting" },
+      degraded: {
+        state: "degraded",
+        label: "Running with warnings",
+      },
+      unhealthy: {
+        state: "unhealthy",
+        label: "Not responding",
+      },
+      failed: { state: "failed", label: "Failed" },
+    };
+    return {
+      ...(states[health] || {
+        state: "starting",
+        label: "Starting",
+      }),
+      running: true,
+    };
+  }
+  if (service.desired_running) {
+    return health === "failed"
+      ? { state: "failed", label: "Failed", running: false }
+      : { state: "restarting", label: "Restarting", running: false };
+  }
+  if (inspectionState === "degraded") {
+    return { state: "degraded", label: "Needs repair", running: false };
+  }
+  if (health === "failed") {
+    return { state: "failed", label: "Failed", running: false };
+  }
+  return { state: "stopped", label: "Stopped", running: false };
+}
+
+function componentRuntimeState(component) {
+  const definition = component.definition;
+  const inspectionState = component.inspection.state;
+  if (
+    !definition.service_key ||
+    !["present", "degraded"].includes(inspectionState)
+  ) {
+    return {
+      state: inspectionState,
+      label: componentStateLabel(inspectionState),
+      action: null,
+      actionLabel: "",
+      serviceId: "",
+    };
+  }
+  const service = serviceFor(component);
+  const presentation = serviceRuntimeState(service, inspectionState);
+  const supported = new Set(definition.supported_actions || []);
+  const wantsToRun = Boolean(
+    service && (service.process || service.desired_running),
+  );
+  let action = null;
+  if (wantsToRun && supported.has("stop")) {
+    action = "stop";
+  } else if (
+    service &&
+    inspectionState === "present" &&
+    supported.has("start")
+  ) {
+    action = "start";
+  }
+  return {
+    ...presentation,
+    action,
+    actionLabel: action === "stop" ? "Stop" : action === "start" ? "Start" : "",
+    serviceId: service?.id || definition.service_key,
+  };
 }
 
 function selectable(component) {
@@ -719,9 +806,21 @@ function buildComponentCard(component) {
     text("p", definition.description || "", "engine-summary"),
     makeCapabilityLine(definition),
   );
+  const runtimeControl = makeButton(
+    "",
+    (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const serviceId = runtimeControl.dataset.serviceId;
+      const action = runtimeControl.dataset.action;
+      if (serviceId && action) runtime(serviceId, action);
+    },
+    "button secondary engine-runtime-action hidden",
+  );
   summary.append(
     selectLabel,
     summaryCopy,
+    runtimeControl,
     text("span", "⌄", "engine-chevron"),
   );
   card.append(summary);
@@ -730,6 +829,7 @@ function buildComponentCard(component) {
     card,
     checkbox,
     status,
+    runtimeControl,
     problem: null,
     unsupported: null,
     actions: null,
@@ -858,8 +958,27 @@ function updateComponentCard(component) {
   nodes.checkbox.checked = state.selected && canSelect;
   nodes.checkbox.disabled = !canSelect;
   nodes.checkbox.parentElement.classList.toggle("hidden", !selectable(component));
-  nodes.status.textContent = componentStateLabel(inspection.state);
-  nodes.status.className = `engine-state ${inspection.state}`;
+  const runtimeState = componentRuntimeState(component);
+  nodes.status.textContent = runtimeState.label;
+  nodes.status.className = `engine-state ${runtimeState.state}`;
+  nodes.runtimeControl.textContent = runtimeState.actionLabel;
+  nodes.runtimeControl.dataset.action = runtimeState.action || "";
+  nodes.runtimeControl.dataset.serviceId = runtimeState.serviceId || "";
+  nodes.runtimeControl.classList.toggle("hidden", !runtimeState.action);
+  nodes.runtimeControl.disabled =
+    Boolean(activeOperation) ||
+    runtimeBusy.has(runtimeState.serviceId) ||
+    !runtimeState.action;
+  nodes.runtimeControl.classList.toggle(
+    "busy",
+    runtimeBusy.has(runtimeState.serviceId),
+  );
+  nodes.runtimeControl.setAttribute(
+    "aria-label",
+    runtimeState.action
+      ? `${runtimeState.actionLabel} ${definition.label}`
+      : `${definition.label}: ${runtimeState.label}`,
+  );
   if (!nodes.detailsBuilt) return;
   nodes.problem.textContent = (inspection.problems || []).join(" ");
   nodes.problem.classList.toggle("hidden", !(inspection.problems || []).length);
@@ -872,7 +991,6 @@ function updateComponentCard(component) {
   );
 
   clear(nodes.actions);
-  const service = serviceFor(component);
   if (canSelect) {
     nodes.actions.append(
       makeButton(
@@ -899,34 +1017,6 @@ function updateComponentCard(component) {
       makeButton(
         "Repair installation",
         () => planComponent(component, "repair"),
-        "button secondary",
-      ),
-    );
-  }
-  if (
-    definition.id !== "pandrator" &&
-    inspection.state === "present" &&
-    definition.service_key &&
-    supported.has("start") &&
-    !service?.process
-  ) {
-    nodes.actions.append(
-      makeButton(
-        "Start engine",
-        () => runtime(definition.service_key, "start"),
-        "button secondary",
-      ),
-    );
-  }
-  if (
-    definition.id !== "pandrator" &&
-    service?.process &&
-    supported.has("stop")
-  ) {
-    nodes.actions.append(
-      makeButton(
-        "Stop engine",
-        () => runtime(definition.service_key, "stop"),
         "button secondary",
       ),
     );
@@ -1300,18 +1390,70 @@ function renderServices() {
   const root = byId("services");
   clear(root);
   for (const service of snapshot.services) {
+    const component = snapshot.components.find(
+      (item) =>
+        item.definition.service_key === service.id ||
+        item.definition.id === service.component_id,
+    );
+    const runtimeState = serviceRuntimeState(
+      service,
+      component?.inspection.state || "present",
+    );
+    const componentStateValue = component
+      ? componentRuntimeState(component)
+      : null;
+    const label =
+      {
+        "pandrator.api": "Pandrator web app",
+        "pandrator.worker": "Pandrator background worker",
+      }[service.id] ||
+      component?.definition.label ||
+      service.id;
     const row = document.createElement("div");
     row.className = "service-row";
     const copy = document.createElement("div");
     copy.append(
-      text("strong", service.id),
+      text("strong", label),
+      text(
+        "span",
+        runtimeState.label,
+        `engine-state ${runtimeState.state}`,
+      ),
       text(
         "div",
-        `${stateLabel(service.health?.state)}${service.process?.pid ? ` · PID ${service.process.pid}` : ""}`,
+        `${service.id}${service.process?.pid ? ` · PID ${service.process.pid}` : ""}`,
         "meta",
       ),
     );
-    row.append(copy, text("span", service.endpoint || "No endpoint"));
+    const controls = document.createElement("div");
+    controls.className = "service-controls";
+    controls.append(
+      text("span", service.endpoint || "No endpoint", "service-endpoint"),
+    );
+    if (componentStateValue?.action) {
+      const button = makeButton(
+        componentStateValue.actionLabel,
+        () =>
+          runtime(
+            componentStateValue.serviceId,
+            componentStateValue.action,
+          ),
+        "button secondary service-runtime-action",
+      );
+      button.disabled =
+        Boolean(activeOperation) ||
+        runtimeBusy.has(componentStateValue.serviceId);
+      button.classList.toggle(
+        "busy",
+        runtimeBusy.has(componentStateValue.serviceId),
+      );
+      button.setAttribute(
+        "aria-label",
+        `${componentStateValue.actionLabel} ${label}`,
+      );
+      controls.append(button);
+    }
+    row.append(copy, controls);
     root.append(row);
   }
   if (!snapshot.services.length) {
@@ -2099,15 +2241,36 @@ async function applicationAction(action) {
 }
 
 async function runtime(serviceId, action) {
+  if (runtimeBusy.has(serviceId)) return;
+  runtimeBusy.add(serviceId);
+  renderCatalogue();
+  renderServices();
   try {
     await requestJson(`/v1/runtime/${action}`, {
       method: "POST",
       body: JSON.stringify({ service_ids: [serviceId] }),
     });
     await refresh();
-    showMessage(`${stateLabel(action)} ${serviceId} completed.`);
+    const component = snapshot.components.find(
+      (item) =>
+        item.definition.service_key === serviceId ||
+        item.definition.id ===
+          snapshot.services.find((service) => service.id === serviceId)
+            ?.component_id,
+    );
+    const label = component?.definition.label || serviceId;
+    showMessage(
+      action === "stop"
+        ? `${label} stopped.`
+        : `${label} is starting.`,
+    );
   } catch (error) {
     showMessage(error.message, true);
+    await refresh();
+  } finally {
+    runtimeBusy.delete(serviceId);
+    renderCatalogue();
+    renderServices();
   }
 }
 

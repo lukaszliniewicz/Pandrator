@@ -5,6 +5,7 @@
 # ruff: noqa: F722, F821
 
 import asyncio
+import contextlib
 import logging
 import os
 from collections.abc import Callable, Mapping
@@ -14,6 +15,8 @@ from dbus_next.aio import MessageBus
 from dbus_next.constants import BusType, PropertyAccess, RequestNameReply
 from dbus_next.service import ServiceInterface, dbus_property, method, signal
 from PIL import Image, ImageDraw
+
+from .menu import EngineMenuSnapshot, unavailable_engine_snapshot
 
 
 class StatusNotifierUnavailable(RuntimeError):
@@ -54,21 +57,34 @@ class _ActionDispatcher:
         self,
         actions: Mapping[str, Callable[[], None]],
         quit_event: asyncio.Event,
+        engine_action: Callable[[str, str], None] | None = None,
     ):
         self.actions = dict(actions)
         self.quit_event = quit_event
+        self.engine_action = engine_action
 
-    async def _invoke(self, action: str) -> None:
+    async def _invoke(self, action: str | tuple[str, str]) -> None:
         try:
-            await asyncio.to_thread(self.actions[action])
+            if isinstance(action, tuple):
+                if self.engine_action is not None:
+                    await asyncio.to_thread(
+                        self.engine_action,
+                        action[0],
+                        action[1],
+                    )
+            else:
+                await asyncio.to_thread(self.actions[action])
         except Exception:
             logging.exception("Desktop tray action %s failed.", action)
 
-    def dispatch(self, action: str) -> None:
+    def dispatch(self, action: str | tuple[str, str]) -> None:
         if action == "quit":
             self.quit_event.set()
             return
-        if action in self.actions:
+        if (
+            isinstance(action, tuple)
+            and self.engine_action is not None
+        ) or action in self.actions:
             asyncio.create_task(self._invoke(action))
 
 
@@ -77,6 +93,22 @@ class StatusNotifierItem(ServiceInterface):
         super().__init__("org.kde.StatusNotifierItem")
         self.dispatcher = dispatcher
         self.pixmaps = _icon_pixmaps()
+        self.tooltip_description = (
+            "Open Pandrator or installation and recovery."
+        )
+
+    def update_engine_snapshot(
+        self,
+        snapshot: EngineMenuSnapshot,
+        *,
+        emit: bool = True,
+    ) -> None:
+        description = snapshot.summary
+        if description == self.tooltip_description:
+            return
+        self.tooltip_description = description
+        if emit:
+            self.NewToolTip()
 
     @dbus_property(access=PropertyAccess.READ)
     def Category(self) -> "s":
@@ -132,7 +164,7 @@ class StatusNotifierItem(ServiceInterface):
             "",
             self.pixmaps,
             "Pandrator Manager",
-            "Open Pandrator or installation and recovery.",
+            self.tooltip_description,
         ]
 
     @dbus_property(access=PropertyAccess.READ)
@@ -185,7 +217,7 @@ class StatusNotifierItem(ServiceInterface):
 
 
 class DBusMenu(ServiceInterface):
-    _ITEMS = {
+    _BASE_ITEMS = {
         0: {},
         1: {"label": "Open Pandrator"},
         2: {"label": "Open setup / recovery"},
@@ -193,20 +225,99 @@ class DBusMenu(ServiceInterface):
         4: {"label": "Start Pandrator"},
         5: {"label": "Stop Pandrator"},
         6: {"type": "separator"},
-        7: {"label": "Quit tray"},
+        7: {
+            "label": "Speech engines",
+            "children-display": "submenu",
+        },
+        8: {"type": "separator"},
+        9: {"label": "Quit tray"},
     }
-    _ACTIONS = {
+    _BASE_ACTIONS = {
         1: "open_pandrator",
         2: "open_recovery",
         4: "start_pandrator",
         5: "stop_pandrator",
-        7: "quit",
+        9: "quit",
     }
 
-    def __init__(self, dispatcher: _ActionDispatcher):
+    def __init__(
+        self,
+        dispatcher: _ActionDispatcher,
+        snapshot: EngineMenuSnapshot | None = None,
+    ):
         super().__init__("com.canonical.dbusmenu")
         self.dispatcher = dispatcher
         self.revision = 1
+        self._snapshot = snapshot or EngineMenuSnapshot()
+        self._items: dict[int, dict[str, str | bool]] = {}
+        self._actions: dict[int, str | tuple[str, str]] = {}
+        self._children: dict[int, list[int]] = {}
+        self._rebuild()
+
+    def _rebuild(self) -> None:
+        self._items = {
+            item_id: dict(properties)
+            for item_id, properties in self._BASE_ITEMS.items()
+        }
+        self._actions = dict(self._BASE_ACTIONS)
+        self._children = {
+            0: list(range(1, 10)),
+            7: [],
+        }
+
+        if not self._snapshot.available:
+            self._items[100] = {
+                "label": (
+                    self._snapshot.message
+                    or "Engine status unavailable"
+                ),
+                "enabled": False,
+            }
+            self._children[7].append(100)
+            return
+        if not self._snapshot.items:
+            self._items[100] = {
+                "label": "No optional engines installed",
+                "enabled": False,
+            }
+            self._children[7].append(100)
+            return
+
+        next_id = 100
+        for engine in self._snapshot.items:
+            parent_id = next_id
+            action_id = next_id + 1
+            next_id += 2
+            self._items[parent_id] = {
+                "label": f"{engine.label} — {engine.state_label}",
+                "children-display": "submenu",
+            }
+            self._children[7].append(parent_id)
+            self._children[parent_id] = [action_id]
+            self._items[action_id] = {
+                "label": engine.action_label,
+                "enabled": engine.enabled,
+            }
+            if engine.action is not None:
+                self._actions[action_id] = (
+                    engine.service_id,
+                    engine.action,
+                )
+
+    def update_engine_snapshot(
+        self,
+        snapshot: EngineMenuSnapshot,
+        *,
+        emit: bool = True,
+    ) -> bool:
+        if snapshot == self._snapshot:
+            return False
+        self._snapshot = snapshot
+        self._rebuild()
+        self.revision += 1
+        if emit:
+            self.LayoutUpdated(self.revision, 0)
+        return True
 
     @dbus_property(access=PropertyAccess.READ)
     def Version(self) -> "u":
@@ -224,32 +335,41 @@ class DBusMenu(ServiceInterface):
     def IconThemePath(self) -> "as":
         return []
 
-    @staticmethod
-    def _properties(item_id: int, names: list[str]):
-        raw = DBusMenu._ITEMS.get(item_id, {})
-        selected = raw if not names else {
-            key: value for key, value in raw.items() if key in names
-        }
+    def _properties(self, item_id: int, names: list[str]):
+        raw = self._items.get(item_id, {})
+        selected = (
+            raw
+            if not names
+            else {
+                key: value
+                for key, value in raw.items()
+                if key in names
+            }
+        )
         properties = {}
         for key, value in selected.items():
-            properties[key] = Variant("s", value)
-        if item_id not in {0, 3, 6} and (not names or "enabled" in names):
+            signature = "b" if isinstance(value, bool) else "s"
+            properties[key] = Variant(signature, value)
+        if (
+            item_id not in {0, 3, 6, 8}
+            and "enabled" not in raw
+            and (not names or "enabled" in names)
+        ):
             properties["enabled"] = Variant("b", True)
         return properties
 
-    @classmethod
-    def _layout(cls, item_id: int, depth: int, names: list[str]):
+    def _layout(self, item_id: int, depth: int, names: list[str]):
         children = []
-        if item_id == 0 and depth != 0:
+        if item_id in self._children and depth != 0:
             child_depth = depth - 1 if depth > 0 else depth
             children = [
                 Variant(
                     "(ia{sv}av)",
-                    cls._layout(child_id, child_depth, names),
+                    self._layout(child_id, child_depth, names),
                 )
-                for child_id in range(1, 8)
+                for child_id in self._children[item_id]
             ]
-        return [item_id, cls._properties(item_id, names), children]
+        return [item_id, self._properties(item_id, names), children]
 
     @method()
     def GetLayout(
@@ -269,11 +389,11 @@ class DBusMenu(ServiceInterface):
         item_ids: "ai",
         property_names: "as",
     ) -> "a(ia{sv})":
-        selected = item_ids or list(self._ITEMS)
+        selected = item_ids or list(self._items)
         return [
             [item_id, self._properties(item_id, property_names)]
             for item_id in selected
-            if item_id in self._ITEMS
+            if item_id in self._items
         ]
 
     @method()
@@ -288,15 +408,20 @@ class DBusMenu(ServiceInterface):
         _data: "v",
         _timestamp: "u",
     ):
-        if event_id == "clicked" and item_id in self._ACTIONS:
-            self.dispatcher.dispatch(self._ACTIONS[item_id])
+        enabled = self._items.get(item_id, {}).get("enabled", True)
+        if event_id == "clicked" and item_id in self._actions and enabled:
+            self.dispatcher.dispatch(self._actions[item_id])
 
     @method()
     def EventGroup(self, events: "a(isvu)") -> "ai":
         invalid = []
         for item_id, event_id, _data, _timestamp in events:
-            action = self._ACTIONS.get(item_id)
-            if action is None:
+            action = self._actions.get(item_id)
+            enabled = self._items.get(item_id, {}).get(
+                "enabled",
+                True,
+            )
+            if action is None or not enabled:
                 invalid.append(item_id)
             elif event_id == "clicked":
                 self.dispatcher.dispatch(action)
@@ -319,7 +444,34 @@ class DBusMenu(ServiceInterface):
         return [updated, removed]
 
 
-async def _serve(actions: Mapping[str, Callable[[], None]]) -> None:
+async def _poll_engine_status(
+    provider: Callable[[], EngineMenuSnapshot],
+    menu: DBusMenu,
+    notifier: StatusNotifierItem,
+    quit_event: asyncio.Event,
+) -> None:
+    while not quit_event.is_set():
+        try:
+            snapshot = await asyncio.to_thread(provider)
+            if not isinstance(snapshot, EngineMenuSnapshot):
+                raise TypeError("Engine provider returned an invalid snapshot.")
+        except Exception:
+            logging.exception("Could not refresh native tray engine status.")
+            snapshot = unavailable_engine_snapshot()
+        menu.update_engine_snapshot(snapshot)
+        notifier.update_engine_snapshot(snapshot)
+        try:
+            await asyncio.wait_for(quit_event.wait(), timeout=2.5)
+        except TimeoutError:
+            pass
+
+
+async def _serve(
+    actions: Mapping[str, Callable[[], None]],
+    *,
+    engine_provider: Callable[[], EngineMenuSnapshot] | None = None,
+    engine_action: Callable[[str, str], None] | None = None,
+) -> None:
     try:
         bus = await MessageBus(bus_type=BusType.SESSION).connect()
     except Exception as error:
@@ -327,10 +479,21 @@ async def _serve(actions: Mapping[str, Callable[[], None]]) -> None:
             f"The desktop session bus is unavailable: {error}"
         ) from error
     quit_event = asyncio.Event()
-    dispatcher = _ActionDispatcher(actions, quit_event)
+    dispatcher = _ActionDispatcher(
+        actions,
+        quit_event,
+        engine_action=engine_action,
+    )
     notifier = StatusNotifierItem(dispatcher)
-    menu = DBusMenu(dispatcher)
+    initial_snapshot = (
+        unavailable_engine_snapshot("Loading engine status")
+        if engine_provider is not None
+        else EngineMenuSnapshot()
+    )
+    menu = DBusMenu(dispatcher, initial_snapshot)
+    notifier.update_engine_snapshot(initial_snapshot, emit=False)
     service_name = f"org.freedesktop.StatusNotifierItem-{os.getpid()}-1"
+    poll_task = None
     try:
         bus.export("/StatusNotifierItem", notifier)
         bus.export("/MenuBar", menu)
@@ -352,6 +515,15 @@ async def _serve(actions: Mapping[str, Callable[[], None]]) -> None:
             introspection,
         ).get_interface("org.kde.StatusNotifierWatcher")
         await watcher.call_register_status_notifier_item(service_name)
+        if engine_provider is not None:
+            poll_task = asyncio.create_task(
+                _poll_engine_status(
+                    engine_provider,
+                    menu,
+                    notifier,
+                    quit_event,
+                )
+            )
         await quit_event.wait()
     except StatusNotifierUnavailable:
         raise
@@ -360,10 +532,23 @@ async def _serve(actions: Mapping[str, Callable[[], None]]) -> None:
             f"The desktop StatusNotifier host is unavailable: {error}"
         ) from error
     finally:
+        if poll_task is not None:
+            poll_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await poll_task
         bus.disconnect()
 
 
 def run_status_notifier(
     actions: Mapping[str, Callable[[], None]],
+    *,
+    engine_provider: Callable[[], EngineMenuSnapshot] | None = None,
+    engine_action: Callable[[str, str], None] | None = None,
 ) -> None:
-    asyncio.run(_serve(actions))
+    asyncio.run(
+        _serve(
+            actions,
+            engine_provider=engine_provider,
+            engine_action=engine_action,
+        )
+    )
