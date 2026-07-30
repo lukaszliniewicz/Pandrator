@@ -346,6 +346,115 @@ test('generation segment search and replace preserves partial words and saves ev
   expect((await saved.json()).items.map((item: any) => item.text)).toEqual(['A dog waits.', 'A catfish and dog.']);
 });
 
+test('generated segments return to the current filtered page after repeated regeneration', async ({ page }) => {
+  let phase: 'completed' | 'running' = 'completed';
+  let generatedRefreshes = 0;
+  let generatedRunningRefreshes = 0;
+  const runId = 'generation-run';
+  const planRevisionId = 'generation-plan';
+  const completed = Array.from({ length: 102 }, (_, ordinal) => ({
+    id: `segment-${ordinal}`,
+    ordinal,
+    node_kind: 'paragraph',
+    paragraph_break_after: false,
+    text: `Generated segment ${ordinal + 1}.`,
+    optimized_text: null,
+    speech_plan: {},
+    optimization_status: 'not_requested',
+    optimization_reviewed: false,
+    marked: false,
+    removed: false,
+    status: 'completed',
+    revision: 1,
+    takes: []
+  }));
+  const failed = {
+    ...completed[0],
+    id: 'failed-segment',
+    ordinal: 102,
+    text: 'This failed segment must remain excluded.',
+    status: 'failed'
+  };
+  const run = () => ({
+    id: runId,
+    session_id: 'mock-session',
+    plan_revision_id: planRevisionId,
+    sequence_number: 1,
+    operation: 'generate',
+    label: 'Run 1: test',
+    job_id: 'generation-job',
+    status: phase,
+    progress: phase === 'completed' ? 1 : 0.5
+  });
+
+  await page.route('**/api/v1/events?after=*', (route) => route.abort());
+  await signIn(page);
+  const sessionId = await createGenerationPlan(page, [{ text: 'Placeholder.' }]);
+  await page.route(`**/api/v1/sessions/${sessionId}/generation-runs`, async (route) => {
+    if (route.request().method() === 'POST') {
+      phase = 'running';
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify(run()) });
+      return;
+    }
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ items: [run()] }) });
+  });
+  await page.route(`**/api/v1/sessions/${sessionId}/output-assemblies/latest`, (route) =>
+    route.fulfill({ contentType: 'application/json', body: JSON.stringify({ item: null }) })
+  );
+  await page.route(`**/api/v1/sessions/${sessionId}/generation-segments?*`, async (route) => {
+    const query = new URL(route.request().url()).searchParams;
+    const visible = query.get('status') === 'completed'
+      ? completed.filter((item) => phase === 'completed' || item.ordinal !== 100)
+      : [...completed, failed];
+    if (query.get('status') === 'completed') {
+      generatedRefreshes += 1;
+      if (phase === 'running') generatedRunningRefreshes += 1;
+    }
+    const cursor = Number(query.get('cursor') ?? 0);
+    const items = visible.filter((item) => item.ordinal >= cursor).slice(0, 100);
+    const hasMore = visible.some((item) => item.ordinal > (items.at(-1)?.ordinal ?? -1));
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        items,
+        total: visible.length,
+        next_cursor: hasMore ? (items.at(-1)?.ordinal ?? 0) + 1 : null,
+        plan_revision_id: planRevisionId
+      })
+    });
+  });
+
+  await page.goto(`/sessions/${sessionId}`);
+  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  const filter = page.getByLabel('Segments to display');
+  await page.getByRole('button', { name: 'Load more' }).click();
+  await expect(page.getByRole('button', { name: 'Regenerate segment 101' })).toBeVisible();
+  await page.getByRole('button', { name: 'Regenerate segment 101' }).click();
+  await expect(page.getByRole('button', { name: 'Regenerate segment 101' })).toBeVisible();
+  await expect(filter).toHaveValue('all');
+  phase = 'completed';
+
+  const completedRefreshesBeforeFilter = generatedRefreshes;
+  await filter.selectOption('completed');
+  await expect.poll(() => generatedRefreshes).toBeGreaterThan(completedRefreshesBeforeFilter);
+  await page.getByRole('button', { name: 'Load more' }).click();
+  await expect.poll(() => generatedRefreshes).toBeGreaterThan(completedRefreshesBeforeFilter + 1);
+  await expect(page.getByRole('button', { name: 'Regenerate segment 101' })).toBeVisible();
+  const versionPicker = page.locator('label.run-picker select');
+  await expect(versionPicker).toHaveValue(runId);
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await page.getByRole('button', { name: 'Regenerate segment 101' }).click();
+    await expect.poll(() => generatedRunningRefreshes).toBeGreaterThan(attempt);
+    phase = 'completed';
+    await expect(page.getByRole('button', { name: 'Regenerate segment 101' })).toBeVisible({ timeout: 12_000 });
+    await expect(filter).toHaveValue('completed');
+    await expect(versionPicker).toHaveValue(runId);
+    await expect(page.getByRole('button', { name: 'Regenerate segment 101' })).toHaveCount(1);
+    await expect(page.getByText('This failed segment must remain excluded.')).toHaveCount(0);
+  }
+});
+
 test('editorial workspace visual smoke', async ({ page }) => {
   const isWindows = await page.evaluate(() => navigator.userAgent.includes('Windows'));
   test.skip(isWindows, 'The visual baseline is captured on Linux to avoid platform font-metric differences.');
