@@ -13,6 +13,34 @@ from pandrator_installer.service import HeadlessInstaller
 
 
 class InstallerUpdateMigrationTests(unittest.TestCase):
+    def test_update_runtime_sync_reinstalls_the_project_default_environment(self):
+        with tempfile.TemporaryDirectory() as install_root:
+            project = os.path.join(install_root, "Pandrator")
+            os.makedirs(project)
+            manifest = os.path.join(project, "pixi.toml")
+            with open(manifest, "w", encoding="utf-8") as handle:
+                handle.write("[workspace]\nname = \"pandrator\"\n")
+            database = os.path.join(install_root, "pandrator.sqlite3")
+            with open(database, "wb") as handle:
+                handle.write(b"user-data")
+            installer = HeadlessInstaller(working_dir=os.path.dirname(install_root))
+
+            with patch.object(installer, "run_pixi_command") as run_pixi:
+                installer.sync_project_runtime(install_root, project)
+                installer.sync_project_runtime(install_root, project)
+
+            self.assertEqual(run_pixi.call_count, 2)
+            self.assertEqual(
+                run_pixi.call_args.args,
+                (
+                    install_root,
+                    ["reinstall", "--locked", "--manifest-path", manifest],
+                ),
+            )
+            self.assertEqual(run_pixi.call_args.kwargs["cwd"], project)
+            with open(database, "rb") as handle:
+                self.assertEqual(handle.read(), b"user-data")
+
     def test_legacy_rvc_package_enables_service_migration(self):
         with tempfile.TemporaryDirectory() as install_root:
             site_packages = os.path.join(

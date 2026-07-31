@@ -357,6 +357,24 @@ class PixiEnvironmentMixin:
             logging.error(f"Error output: {e.stderr}")
             raise
 
+    def sync_project_runtime(self, pandrator_path, project_path):
+        """Reinstall the launch environment from the updated project manifest.
+
+        ``pixi install`` may leave an already-recorded prefix untouched.  A
+        reinstall both refreshes editable project metadata and materializes the
+        complete locked runtime before the launcher selects its interpreter.
+        """
+        manifest_path = os.path.join(project_path, "pixi.toml")
+        if not os.path.isfile(manifest_path):
+            raise FileNotFoundError(
+                f"Pandrator Pixi manifest not found: {manifest_path}"
+            )
+        self.run_pixi_command(
+            pandrator_path,
+            ["reinstall", "--locked", "--manifest-path", manifest_path],
+            cwd=project_path,
+        )
+
     def add_pixi_conda_package(self, pandrator_path, env_name, package_spec):
         logging.info(f"Adding {package_spec} to {env_name} via pixi...")
         manifest_path = self.get_pixi_manifest_path(pandrator_path, env_name)

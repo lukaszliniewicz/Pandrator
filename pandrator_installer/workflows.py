@@ -732,6 +732,9 @@ class WorkflowMixin:
 
             shared_pixi_path = self.get_pixi_executable(pandrator_base_path)
 
+            self.reporter.status("Synchronizing Pandrator runtime environment...")
+            self.sync_project_runtime(pandrator_base_path, pandrator_repo_path)
+
             self.reporter.status("Backing up local state database...")
             backup_paths = self.backup_state_database(pandrator_repo_path)
             if backup_paths:

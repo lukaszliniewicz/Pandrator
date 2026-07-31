@@ -10,13 +10,23 @@ from unittest import mock
 from pathlib import Path
 
 from pandrator_installer.cli import main as launcher_main, parse_launcher_cli_args, run_headless_install_from_cli
-from pandrator_installer.lifecycle import SERVICE_HEALTH_URLS, _owned_service_processes, _runtime_specs, main
+from pandrator_installer.lifecycle import SERVICE_HEALTH_URLS, _owned_service_processes, _runtime_python, _runtime_specs, main
 from pandrator_installer.models import WorkspacePaths, normalize_password_scope
 from pandrator_installer.supervisor import ProcessSupervisor
 from pandrator_installer.update import verify_release_manifest
 
 
 class InstallerLifecycleTests(unittest.TestCase):
+    def test_runtime_uses_the_synchronized_project_pixi_interpreter(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            paths = WorkspacePaths.from_value(workspace)
+            python = paths.pandrator_repo / ".pixi" / "envs" / "default" / "python.exe"
+            python.parent.mkdir(parents=True)
+            python.touch()
+
+            with mock.patch("pandrator_installer.lifecycle.is_windows", return_value=True):
+                self.assertEqual(_runtime_python(paths), python)
+
     def invoke(self, arguments):
         output = io.StringIO()
         error = io.StringIO()
